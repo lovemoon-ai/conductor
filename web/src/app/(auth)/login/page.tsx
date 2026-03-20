@@ -1,6 +1,7 @@
 "use client";
 
 import { LoginForm } from "@/components/auth/LoginForm";
+import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 function resolveSafeNextPath(value: string | null): string {
@@ -11,7 +12,7 @@ function resolveSafeNextPath(value: string | null): string {
   return nextPath;
 }
 
-export default function LoginPage() {
+function LoginPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const nextPath = resolveSafeNextPath(searchParams.get("next"));
@@ -22,5 +23,13 @@ export default function LoginPage() {
         <LoginForm onSuccess={() => router.replace(nextPath)} />
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginPageContent />
+    </Suspense>
   );
 }

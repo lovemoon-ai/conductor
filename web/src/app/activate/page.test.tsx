@@ -114,7 +114,7 @@ describe("ActivatePage", () => {
     await waitFor(() => {
       expect(screen.getByText("Device authorized, close current page.")).toBeInTheDocument();
     });
-    expect(screen.getByRole("button", { name: "Close me" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close page" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Authorize this device" })).toBeNull();
   });
 });

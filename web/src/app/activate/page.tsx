@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuthStore } from "@/lib/conductor/stores/auth";
 
@@ -18,7 +18,7 @@ interface DeviceSessionPayload {
   approved_at: string | null;
 }
 
-export default function ActivatePage() {
+function ActivatePageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const initFromStorage = useAuthStore((state) => state.initFromStorage);
@@ -202,6 +202,14 @@ export default function ActivatePage() {
         </section>
       </div>
     </div>
+  );
+}
+
+export default function ActivatePage() {
+  return (
+    <Suspense fallback={null}>
+      <ActivatePageContent />
+    </Suspense>
   );
 }
 

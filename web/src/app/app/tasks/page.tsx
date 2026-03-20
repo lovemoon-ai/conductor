@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { Suspense, useState, useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Header } from '@/components/conductor/layout/Header';
 import {
@@ -16,7 +16,7 @@ import { CreateTaskDialog } from '@/components/conductor/tasks/CreateTaskDialog'
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
 import { useProjectsStore } from '@/lib/conductor/stores/projects';
 
-export default function TasksPage() {
+function TasksPageContent() {
   const searchParams = useSearchParams();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [viewMode, setViewMode] = useState<TaskListViewMode>(() => readStoredTaskListViewMode());
@@ -117,5 +117,13 @@ export default function TasksPage() {
         onClose={() => setShowCreateDialog(false)}
       />
     </>
+  );
+}
+
+export default function TasksPage() {
+  return (
+    <Suspense fallback={null}>
+      <TasksPageContent />
+    </Suspense>
   );
 }
