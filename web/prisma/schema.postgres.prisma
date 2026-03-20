@@ -1,0 +1,373 @@
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                 String      @id @default(uuid()) @db.Uuid
+  email              String?     @unique
+  phone              String?     @unique
+  passwordHash       String      @map("password_hash")
+  passwordSalt       String      @map("password_salt")
+  provider           String      @default("LOCAL")
+  providerId         String?     @map("provider_id")
+  region             String      @default("INTL")
+  inviteCode         String?     @unique @map("invite_code")
+  invitedByUserId    String?     @map("invited_by_user_id") @db.Uuid
+  inviteRegisteredRewardAt DateTime? @map("invite_registered_reward_at")
+  invitePlusRewardAt DateTime?   @map("invite_plus_reward_at")
+  subscriptionStatus String      @default("FREE_TRIAL") @map("subscription_status")
+  subscriptionTier   String      @default("FREE") @map("subscription_tier")
+  trialEndsAt        DateTime?   @map("trial_ends_at")
+  subscriptionEndsAt DateTime?   @map("subscription_ends_at")
+  lastPaymentAt      DateTime?   @map("last_payment_at")
+  createdAt          DateTime    @default(now()) @map("created_at")
+  updatedAt          DateTime    @updatedAt @map("updated_at")
+
+  projects Project[]
+  tokens   UserToken[]
+  orders   Order[]
+  externalAccounts ExternalAccount[]
+  channelConversations ChannelConversation[]
+  channelProviderConfigs ChannelProviderConfig[]
+  invitedBy User? @relation("UserInvites", fields: [invitedByUserId], references: [id])
+  invitedUsers User[] @relation("UserInvites")
+
+  @@unique([provider, providerId])
+  @@index([email])
+  @@index([phone])
+  @@index([invitedByUserId])
+  @@map("users")
+}
+
+model UserToken {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  name        String?
+  tokenHash   String    @map("token_hash")
+  tokenSalt   String    @map("token_salt")
+  tokenPrefix String    @map("token_prefix")
+  tokenValue  String?   @map("token_value")
+  lastUsedAt  DateTime? @map("last_used_at")
+  revokedAt   DateTime? @map("revoked_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenPrefix])
+  @@map("user_tokens")
+}
+
+model Project {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  name      String
+  metadata  String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tasks Task[]
+  channelConversations ChannelConversation[]
+
+  @@index([userId])
+  @@unique([userId, name])
+  @@map("projects")
+}
+
+model Task {
+  id        String   @id @default(uuid()) @db.Uuid
+  projectId String   @map("project_id") @db.Uuid
+  title     String
+  taskType  String   @default("ai_task") @map("task_type")
+  status    String   @default("pending")
+  agentHost String?  @map("agent_host")
+  executionHost String? @map("execution_host")
+  backendType String? @map("backend_type")
+  sessionId String? @map("session_id")
+  sessionFilePath String? @map("session_file_path")
+  launchConfig String? @map("launch_config")
+  metadata  String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  messages Message[]
+  ptySession PtySession?
+  taskStatusEvents TaskStatusEvent[]
+  channelConversations ChannelConversation[]
+  channelOutboxEntries ChannelOutbox[]
+
+  @@index([projectId])
+  @@index([executionHost])
+  @@map("tasks")
+}
+
+model PtySession {
+  id            String    @id @default(uuid()) @db.Uuid
+  taskId        String    @unique @map("task_id") @db.Uuid
+  state         String    @default("pending")
+  entrypointType String?  @map("entrypoint_type")
+  toolPreset    String?   @map("tool_preset")
+  commandJson   String?   @map("command_json")
+  cwd           String?
+  envJson       String?   @map("env_json")
+  shell         String?
+  pid           Int?
+  cols          Int?
+  rows          Int?
+  lastOutputSeq Int       @default(0) @map("last_output_seq")
+  startedAt     DateTime? @map("started_at")
+  closedAt      DateTime? @map("closed_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([state])
+  @@map("pty_sessions")
+}
+
+model Message {
+  id              String   @id @default(uuid()) @db.Uuid
+  taskId          String   @map("task_id") @db.Uuid
+  role            String
+  content         String
+  metadata        String?
+  clientMessageId String?  @unique @map("client_message_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@index([clientMessageId])
+  @@map("messages")
+}
+
+model TaskStatusEvent {
+  id            String   @id @default(uuid()) @db.Uuid
+  taskId         String   @map("task_id") @db.Uuid
+  statusEventId  String   @unique @map("status_event_id")
+  status         String
+  summary        String?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+  @@map("task_status_events")
+}
+
+model AgentOutbox {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  agentHost   String?   @map("agent_host")
+  taskId      String?   @map("task_id") @db.Uuid
+  eventType   String    @map("event_type")
+  requestId   String    @unique @map("request_id")
+  payloadJson String    @map("payload_json")
+  status      String    @default("pending") // pending, sent, acked, failed, expired, moved_to_dlq
+  attemptCount Int      @default(0) @map("attempt_count")
+  maxAttempts Int      @default(20) @map("max_attempts")
+  ttlHours    Int      @default(24) @map("ttl_hours")
+  expiresAt   DateTime? @map("expires_at")
+  nextRetryAt DateTime? @map("next_retry_at")
+  lastError   String?   @map("last_error")
+  sentAt      DateTime? @map("sent_at")
+  ackedAt     DateTime? @map("acked_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([userId, status, nextRetryAt])
+  @@index([userId, agentHost, status, nextRetryAt])
+  @@index([taskId])
+  @@index([expiresAt])
+  @@map("agent_outbox")
+}
+
+model DeadLetterQueue {
+  id             String   @id @default(uuid()) @db.Uuid
+  originalId     String   @map("original_id")
+  userId         String   @map("user_id")
+  agentHost      String?  @map("agent_host")
+  taskId         String?  @map("task_id")
+  eventType      String   @map("event_type")
+  payload        String   @map("payload")
+  failedReason   String   @map("failed_reason")
+  attemptHistory String?  @map("attempt_history")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("dead_letter_queue")
+}
+
+model TaskDiagnosticsSnapshot {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id")
+  projectId   String?  @map("project_id") @db.Uuid
+  taskId      String   @map("task_id")
+  trigger     String
+  payloadJson String   @map("payload_json")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([userId, taskId, createdAt])
+  @@index([projectId, createdAt])
+  @@map("task_diagnostics_snapshots")
+}
+
+model Verification {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid
+  target    String
+  code      String
+  type      String
+  expiresAt DateTime @map("expires_at")
+  verified  Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([target, code])
+  @@map("verifications")
+}
+
+
+model ExternalAccount {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  provider        String
+  externalUserId  String   @map("external_user_id")
+  externalUnionId String?  @map("external_union_id")
+  tenantKey       String?  @map("tenant_key")
+  metadata        String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, externalUserId])
+  @@unique([provider, externalUnionId])
+  @@index([userId])
+  @@map("external_accounts")
+}
+
+model ChannelConversation {
+  id                    String   @id @default(uuid()) @db.Uuid
+  provider              String
+  externalChatId        String   @map("external_chat_id")
+  externalThreadId      String   @default("") @map("external_thread_id")
+  externalRootMessageId String?  @map("external_root_message_id")
+  userId                String   @map("user_id") @db.Uuid
+  projectId             String?  @map("project_id") @db.Uuid
+  taskId                String?  @map("task_id") @db.Uuid
+  boundDaemonName       String?  @map("bound_daemon_name")
+  status                String   @default("ACTIVE")
+  metadata              String?
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  task    Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  inboxEntries ChannelInbox[]
+  outboxEntries ChannelOutbox[]
+
+  @@unique([provider, externalChatId, externalThreadId])
+  @@index([userId, taskId])
+  @@index([projectId])
+  @@map("channel_conversations")
+}
+
+model ChannelInbox {
+  id                String    @id @default(uuid()) @db.Uuid
+  provider          String
+  externalEventId   String?   @map("external_event_id")
+  externalMessageId String    @map("external_message_id")
+  conversationId    String?   @map("conversation_id") @db.Uuid
+  payloadJson       String    @map("payload_json")
+  status            String    @default("pending")
+  error             String?
+  createdAt         DateTime  @default(now()) @map("created_at")
+  processedAt       DateTime? @map("processed_at")
+
+  conversation ChannelConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, externalMessageId])
+  @@index([provider, externalEventId])
+  @@index([conversationId])
+  @@map("channel_inbox")
+}
+
+model ChannelOutbox {
+  id                   String    @id @default(uuid()) @db.Uuid
+  provider             String
+  userId               String    @map("user_id") @db.Uuid
+  conversationId       String    @map("conversation_id") @db.Uuid
+  taskId               String?   @map("task_id") @db.Uuid
+  targetChatId         String    @map("target_chat_id")
+  targetReplyMessageId String?   @map("target_reply_message_id")
+  targetThreadId       String?   @map("target_thread_id")
+  targetTopicId        String?   @map("target_topic_id")
+  eventType            String    @map("event_type")
+  dedupeKey            String    @unique @map("dedupe_key")
+  payloadJson          String    @map("payload_json")
+  status               String    @default("pending")
+  attemptCount         Int       @default(0) @map("attempt_count")
+  nextRetryAt          DateTime? @map("next_retry_at")
+  lastError            String?   @map("last_error")
+  sentAt               DateTime? @map("sent_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  conversation ChannelConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  task         Task?               @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([status, nextRetryAt])
+  @@index([userId, taskId])
+  @@index([conversationId])
+  @@map("channel_outbox")
+}
+
+model ChannelProviderConfig {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @map("user_id") @db.Uuid
+  provider          String
+  appId             String   @map("app_id")
+  appSecret         String   @map("app_secret")
+  verificationToken String   @map("verification_token")
+  encryptKey        String?  @map("encrypt_key")
+  defaultDaemonName String?  @map("default_daemon_name")
+  metadata          String?
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@unique([provider, verificationToken])
+  @@index([provider, appId])
+  @@map("channel_provider_configs")
+}
+
+model Order {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  amount          Int
+  currency        String   @default("CNY")
+  provider        String
+  providerOrderId String?  @map("provider_order_id")
+  status          String   @default("PENDING")
+  metadata        String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([providerOrderId])
+  @@map("orders")
+}

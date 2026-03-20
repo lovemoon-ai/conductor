@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal
+
+# Environment
+.env.local
+.env.local.*
+.env.production.vercel
+.env.production.volcengine
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+*.tsbuildinfo
+public/app
+public/app_volc.tar.gz
+public/app_vercel.tar.gz
+
+# PWA
+public/sw.js
+public/sw.js.map
+public/workbox-*.js
+public/workbox-*.js.map

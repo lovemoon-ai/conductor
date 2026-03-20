@@ -1,0 +1,1651 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import yaml from "js-yaml";
+import { filterRuntimeSupportedAllowCliList } from "../src/runtime-backends.js";
+
+import {
+  applyWorkingDirectory,
+  buildConductorConnectHeaders,
+  BridgeRunner,
+  FireWatchdog,
+  formatFatalError,
+  injectResolvedTaskId,
+  parseCliArgs,
+  resolveAiSessionCommandLine,
+  resolveFreshSessionBootstrapLockPath,
+  resolveRequestedTaskTitle,
+  withFreshSessionBootstrapLock,
+  writeFireTaskMarker,
+} from "../bin/conductor-fire.js";
+import { detectTaskId } from "../bin/conductor-send-file.js";
+
+const CONFIG_PATH = os.homedir() + "/.conductor/config-dev.yaml";
+
+function loadAllowCliList() {
+  assert.ok(fs.existsSync(CONFIG_PATH), `Config file not found: ${CONFIG_PATH}`);
+  const content = fs.readFileSync(CONFIG_PATH, "utf8");
+  const parsed = yaml.load(content);
+  assert.ok(parsed && typeof parsed === "object", "Config file is invalid");
+  assert.ok(parsed.allow_cli_list && typeof parsed.allow_cli_list === "object", "allow_cli_list missing");
+  return filterRuntimeSupportedAllowCliList(parsed.allow_cli_list);
+}
+
+function runCli(args) {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const cliPath = path.resolve(__dirname, "..", "bin", "conductor-fire.js");
+  return new Promise((resolve, reject) => {
+    execFile(process.execPath, [cliPath, ...args], { env: process.env }, (err, stdout, stderr) => {
+      if (err) {
+        const message = stderr ? `${err.message}\n${stderr}` : err.message;
+        reject(new Error(message));
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+async function assertStartupProcessesOnlyLiveQueue({
+  backendName,
+  createBackendSession,
+  expectedContents,
+  resumeSessionId = "",
+}) {
+  const sentMessages = [];
+  const originalFetch = global.fetch;
+  let fetchCalls = 0;
+  let runTurnCalls = 0;
+  let runner;
+  let receiveCount = 0;
+
+  global.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error("startup backfill should not fetch task history");
+  };
+
+  try {
+    const backendSession = createBackendSession({
+      onRunTurn: () => {
+        runTurnCalls += 1;
+      },
+    });
+
+    runner = new BridgeRunner({
+      backendSession,
+      conductor: {
+        receiveMessages: async () => {
+          receiveCount += 1;
+          if (receiveCount === 1) {
+            return {
+              messages: [{ message_id: `msg-${backendName}-1`, role: "user", content: "hello" }],
+              has_more: false,
+            };
+          }
+          runner.stopped = true;
+          return { messages: [] };
+        },
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: `task-start-live-${backendName}`,
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName,
+      resumeSessionId,
+    });
+
+    await runner.start();
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(runTurnCalls, 1);
+  assert.deepEqual(
+    sentMessages.map((entry) => entry.content),
+    expectedContents,
+  );
+}
+
+describe("conductor-fire backends", () => {
+  it("uses allow_cli_list from config-dev.yaml", () => {
+    const allowCliList = loadAllowCliList();
+    const backends = Object.keys(allowCliList);
+    assert.ok(backends.length > 0, "allow_cli_list is empty");
+  });
+
+  it("defaults to first allow_cli_list entry when --backend is omitted", () => {
+    const allowCliList = loadAllowCliList();
+    const defaultBackend = Object.keys(allowCliList)[0];
+    const args = parseCliArgs([
+      "node",
+      "conductor-fire",
+      "--config-file",
+      CONFIG_PATH,
+      "--",
+      "ping",
+    ]);
+    assert.equal(args.backend, defaultBackend);
+  });
+
+  it("lists backends from config-dev.yaml", async () => {
+    const allowCliList = loadAllowCliList();
+    const defaultBackend = Object.keys(allowCliList)[0];
+    const output = await runCli(["--config-file", CONFIG_PATH, "--list-backends"]);
+    assert.ok(output.includes("Supported backends (from config):"));
+    for (const [name, command] of Object.entries(allowCliList)) {
+      assert.ok(output.includes(`  ${name}: ${command}`));
+    }
+    assert.ok(output.includes(`Default: ${defaultBackend}`));
+  });
+
+  it("resolves the opencode ai-sdk command from allow_cli_list", () => {
+    const commandLine = resolveAiSessionCommandLine(
+      "opencode",
+      {
+        opencode: "\"/custom/Open Code/bin/opencode\" --flag=\"a b\"",
+      },
+      {},
+    );
+
+    assert.equal(commandLine, "\"/custom/Open Code/bin/opencode\" --flag=\"a b\"");
+  });
+
+  it("falls back to the daemon cli command for opencode sessions", () => {
+    const commandLine = resolveAiSessionCommandLine(
+      "opencode",
+      {},
+      {
+        CONDUCTOR_CLI_COMMAND: "\"/daemon/Open Code/bin/opencode\" --flag=\"a b\"",
+      },
+    );
+
+    assert.equal(commandLine, "\"/daemon/Open Code/bin/opencode\" --flag=\"a b\"");
+  });
+
+  it("switches process cwd before backend/conductor startup when resume is used", async () => {
+    const originalCwd = process.cwd();
+    const originalPwd = process.env.PWD;
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-resume-cwd-"));
+    try {
+      const switched = await applyWorkingDirectory(tempDir);
+      assert.equal(fs.realpathSync(switched), fs.realpathSync(tempDir));
+      assert.equal(fs.realpathSync(process.cwd()), fs.realpathSync(tempDir));
+      assert.equal(fs.realpathSync(process.env.PWD), fs.realpathSync(tempDir));
+    } finally {
+      process.chdir(originalCwd);
+      if (originalPwd === undefined) {
+        delete process.env.PWD;
+      } else {
+        process.env.PWD = originalPwd;
+      }
+    }
+  });
+
+  it("uses resume runtime path basename as default task title", () => {
+    const runtimePath = "/tmp/workspace-from-resume";
+    const resolved = resolveRequestedTaskTitle({
+      cliTaskTitle: "",
+      hasExplicitTaskTitle: false,
+      envTaskTitle: "",
+      runtimeProjectPath: runtimePath,
+    });
+    assert.equal(resolved, "workspace-from-resume");
+  });
+
+  it("stores the resolved task id in CONDUCTOR_TASK_ID for child tools", () => {
+    const env = {};
+    const taskId = injectResolvedTaskId(" 12345678-1234-1234-1234-1234567890ab ", env);
+
+    assert.equal(taskId, "12345678-1234-1234-1234-1234567890ab");
+    assert.equal(env.CONDUCTOR_TASK_ID, "12345678-1234-1234-1234-1234567890ab");
+  });
+
+  it("writes a fire task marker that send-file can auto-detect", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-task-marker-"));
+    const oldTaskId = "11111111-1111-1111-1111-111111111111";
+    const nextTaskId = "22222222-2222-2222-2222-222222222222";
+    const oldMarkerPath = writeFireTaskMarker(oldTaskId, tempDir);
+    const markerPath = writeFireTaskMarker(nextTaskId, tempDir);
+    const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+
+    assert.equal(fs.existsSync(oldMarkerPath), false);
+    assert.equal(marker.taskId, nextTaskId);
+    assert.equal(marker.source, "conductor-fire");
+    assert.equal(detectTaskId({ cwd: tempDir, env: {} }), nextTaskId);
+  });
+
+  it("builds conductor websocket headers with the CLI version", () => {
+    assert.deepEqual(buildConductorConnectHeaders("0.2.21"), {
+      "x-conductor-version": "0.2.21",
+    });
+  });
+
+  it("keeps explicit cli title even when resume runtime path is provided", () => {
+    const resolved = resolveRequestedTaskTitle({
+      cliTaskTitle: "manual-title",
+      hasExplicitTaskTitle: true,
+      envTaskTitle: "",
+      runtimeProjectPath: "/tmp/workspace-from-resume",
+    });
+    assert.equal(resolved, "manual-title");
+  });
+
+  it("formats fatal error without stack by default", () => {
+    const error = new Error("Free plan limit reached");
+    error.stack = "Error: Free plan limit reached\n    at main (fake.js:1:1)";
+    const formatted = formatFatalError(error, { showStack: false });
+    assert.equal(formatted, "Free plan limit reached");
+  });
+
+  it("formats fatal error with stack when enabled", () => {
+    const error = new Error("Free plan limit reached");
+    error.stack = "Error: Free plan limit reached\n    at main (fake.js:1:1)";
+    const formatted = formatFatalError(error, { showStack: true });
+    assert.ok(formatted.includes("at main (fake.js:1:1)"));
+  });
+
+  it("derives a stable codex fresh-session lock path from cwd", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-lock-"));
+    const samePath = resolveFreshSessionBootstrapLockPath("codex", tempDir);
+    const samePathAgain = resolveFreshSessionBootstrapLockPath("codex", tempDir);
+    const otherBackendPath = resolveFreshSessionBootstrapLockPath("claude", tempDir);
+
+    assert.ok(samePath);
+    assert.equal(samePath, samePathAgain);
+    assert.equal(otherBackendPath, null);
+  });
+
+  it("releases fresh-session lock after bootstrap finishes", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-lock-"));
+    const lockPath = resolveFreshSessionBootstrapLockPath("codex", tempDir);
+    assert.ok(lockPath);
+
+    const result = await withFreshSessionBootstrapLock("codex", tempDir, async () => {
+      assert.equal(fs.existsSync(lockPath), true);
+      return "ok";
+    });
+
+    assert.equal(result, "ok");
+    assert.equal(fs.existsSync(lockPath), false);
+  });
+
+  it("fire watchdog force-reconnects on stale websocket health", async () => {
+    let now = 0;
+    const reconnectReasons = [];
+    const watchdog = new FireWatchdog({
+      staleWsMs: 20,
+      connectGraceMs: 1,
+      reconnectCooldownMs: 10,
+      onForceReconnect: async (reason) => {
+        reconnectReasons.push(reason);
+      },
+      logger: () => {},
+      now: () => now,
+    });
+
+    watchdog.onConnected({ isReconnect: false, connectedAt: 0 });
+    now = 25;
+    await watchdog.runOnce();
+
+    assert.deepEqual(reconnectReasons, ["watchdog:stale_ws_health"]);
+    assert.equal(watchdog.getDebugState().wsConnected, false);
+  });
+
+  it("fire watchdog respects reconnect cooldown for repeated stale checks", async () => {
+    let now = 0;
+    const reconnectReasons = [];
+    const watchdog = new FireWatchdog({
+      staleWsMs: 20,
+      connectGraceMs: 1,
+      reconnectCooldownMs: 10,
+      onForceReconnect: async (reason) => {
+        reconnectReasons.push(reason);
+      },
+      logger: () => {},
+      now: () => now,
+    });
+
+    watchdog.onConnected({ isReconnect: false, connectedAt: 0 });
+    now = 25;
+    await watchdog.runOnce();
+    watchdog.onConnected({ isReconnect: true, connectedAt: 26 });
+    now = 30;
+    await watchdog.runOnce();
+
+    assert.deepEqual(reconnectReasons, ["watchdog:stale_ws_health"]);
+  });
+
+  it("fire watchdog clears heal attempts after a post-reconnect pong", async () => {
+    let now = 0;
+    const reconnectReasons = [];
+    const logs = [];
+    const watchdog = new FireWatchdog({
+      staleWsMs: 20,
+      connectGraceMs: 1,
+      reconnectCooldownMs: 10,
+      onForceReconnect: async (reason) => {
+        reconnectReasons.push(reason);
+      },
+      logger: (line) => {
+        logs.push(line);
+      },
+      now: () => now,
+    });
+
+    watchdog.onConnected({ isReconnect: false, connectedAt: 0 });
+    now = 25;
+    await watchdog.runOnce();
+    watchdog.onConnected({ isReconnect: true, connectedAt: 30 });
+    watchdog.onPong({ at: 31 });
+
+    assert.deepEqual(reconnectReasons, ["watchdog:stale_ws_health"]);
+    assert.equal(watchdog.getDebugState().healAttempts, 0);
+    assert.ok(logs.some((line) => line.includes("healthy again after self-heal via pong")));
+  });
+
+  it("stops bridge runner when stop_task is requested remotely", async () => {
+    let backendCloseCalls = 0;
+    const runner = new BridgeRunner({
+      backendSession: {
+        close: async () => {
+          backendCloseCalls += 1;
+        },
+        runTurn: async () => ({ text: "", usage: null, items: [], metadata: {} }),
+        threadId: "thread-1",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async () => ({}),
+      },
+      taskId: "task-stop-1",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    await runner.requestStopFromRemote({
+      taskId: "task-stop-1",
+      reason: "deleted_by_user",
+      requestId: "req-stop-1",
+    });
+
+    assert.equal(runner.stopped, true);
+    assert.equal(backendCloseCalls, 1);
+    assert.equal(runner.getRemoteStopSummary(), "task stopped by app: deleted_by_user");
+  });
+
+  it("exits start loop immediately when already stopped by remote command", async () => {
+    let polled = false;
+    const runner = new BridgeRunner({
+      backendSession: {
+        close: async () => {},
+        runTurn: async () => ({ text: "", usage: null, items: [], metadata: {} }),
+        threadId: "thread-1",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => {
+          polled = true;
+          return { messages: [] };
+        },
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async () => ({}),
+      },
+      taskId: "task-stop-2",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    await runner.requestStopFromRemote({
+      taskId: "task-stop-2",
+      reason: "deleted_by_user",
+    });
+    await runner.start();
+    assert.equal(polled, false);
+  });
+
+  it("exits promptly when stop_task arrives during an in-flight turn", async () => {
+    let runTurnReject;
+    let closeCalls = 0;
+    let startedResolve;
+    const turnStarted = new Promise((resolve) => {
+      startedResolve = resolve;
+    });
+    const blockedTurn = new Promise((_, reject) => {
+      runTurnReject = reject;
+    });
+
+    let receiveCount = 0;
+    const runner = new BridgeRunner({
+      backendSession: {
+        close: async () => {
+          closeCalls += 1;
+          const closedError = new Error("TUI session closed");
+          closedError.reason = "session_closed";
+          runTurnReject(closedError);
+        },
+        runTurn: async () => {
+          startedResolve();
+          return blockedTurn;
+        },
+        threadId: "thread-1",
+        threadOptions: { model: "claude" },
+      },
+      conductor: {
+        receiveMessages: async () => {
+          receiveCount += 1;
+          if (receiveCount === 1) {
+            return {
+              messages: [{ message_id: "msg-1", role: "user", content: "hi, 1+1=" }],
+              has_more: false,
+            };
+          }
+          return { messages: [] };
+        },
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async () => ({}),
+      },
+      taskId: "task-stop-inflight",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "claude",
+    });
+
+    const startPromise = runner.start();
+    await turnStarted;
+    await runner.requestStopFromRemote({
+      taskId: "task-stop-inflight",
+      reason: "deleted_by_user",
+      requestId: "req-stop-inflight",
+    });
+
+    const result = await Promise.race([
+      startPromise.then(() => "done"),
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), 1000)),
+    ]);
+
+    assert.equal(result, "done");
+    assert.equal(closeCalls, 1);
+    assert.equal(runner.stopped, true);
+  });
+
+  it("announces session started without id when real session id is unavailable", async () => {
+    const sentMessages = [];
+    const sentRuntimeStatuses = [];
+    const runner = new BridgeRunner({
+      backendSession: {
+        ensureSessionInfo: async () => null,
+        getSessionInfo: () => null,
+        getSessionUsageSummary: async () => null,
+        close: async () => {},
+        runTurn: async () => ({ text: "", usage: null, items: [], metadata: {} }),
+        threadId: "codex-1772707261812",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async (taskId, payload) => {
+          sentRuntimeStatuses.push({ taskId, payload });
+          return {};
+        },
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-session-announcement-no-id",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    await runner.announceBackendSession();
+
+    assert.equal(sentMessages.length, 1);
+    assert.equal(sentMessages[0].content, "codex session started");
+    assert.equal(sentMessages[0].metadata?.session_id, undefined);
+    assert.equal(sentMessages[0].metadata?.thread_id, undefined);
+    assert.equal(sentRuntimeStatuses.length, 1);
+    assert.equal(sentRuntimeStatuses[0].payload?.session_id, undefined);
+    assert.equal(sentRuntimeStatuses[0].payload?.thread_id, undefined);
+  });
+
+  it("announces resumed session id even when backend cannot rediscover it yet", async () => {
+    const sentMessages = [];
+    const sentRuntimeStatuses = [];
+    const resumedSessionId = "resume-session-1";
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        ensureSessionInfo: async () => null,
+        getSessionInfo: () => null,
+        getSessionUsageSummary: async () => null,
+        close: async () => {},
+        runTurn: async () => ({ text: "", usage: null, items: [], metadata: {} }),
+        threadId: "fresh-thread-id-should-not-leak",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async (taskId, payload) => {
+          sentRuntimeStatuses.push({ taskId, payload });
+          return {};
+        },
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-session-announcement-resume-id",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+      resumeSessionId: resumedSessionId,
+    });
+
+    await runner.announceBackendSession();
+
+    assert.equal(sentMessages.length, 1);
+    assert.equal(sentMessages[0].content, `codex session started: ${resumedSessionId}`);
+    assert.equal(sentMessages[0].metadata?.session_id, resumedSessionId);
+    assert.equal(sentMessages[0].metadata?.thread_id, resumedSessionId);
+    assert.equal(sentRuntimeStatuses.length, 1);
+    assert.equal(sentRuntimeStatuses[0].payload?.session_id, resumedSessionId);
+    assert.equal(sentRuntimeStatuses[0].payload?.thread_id, resumedSessionId);
+  });
+
+  it("announces session started with id when real session id is available", async () => {
+    const sentMessages = [];
+    const sentRuntimeStatuses = [];
+    const realSessionId = "019cb2a4-de18-70b0-816b-a9b0d99400bb";
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        ensureSessionInfo: async () => ({ sessionId: realSessionId, sessionFilePath: "/tmp/session.jsonl" }),
+        getSessionInfo: () => ({ sessionId: realSessionId, sessionFilePath: "/tmp/session.jsonl" }),
+        getSessionUsageSummary: async () => null,
+        close: async () => {},
+        runTurn: async () => ({ text: "", usage: null, items: [], metadata: {} }),
+        threadId: "codex-1772707261812",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async (taskId, payload) => {
+          sentRuntimeStatuses.push({ taskId, payload });
+          return {};
+        },
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-session-announcement-with-id",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    await runner.announceBackendSession();
+
+    assert.equal(sentMessages.length, 1);
+    assert.equal(sentMessages[0].content, `codex session started: ${realSessionId}`);
+    assert.equal(sentMessages[0].metadata?.session_id, realSessionId);
+    assert.equal(sentMessages[0].metadata?.thread_id, realSessionId);
+    assert.equal(sentRuntimeStatuses.length, 1);
+    assert.equal(sentRuntimeStatuses[0].payload?.session_id, realSessionId);
+    assert.equal(sentRuntimeStatuses[0].payload?.thread_id, realSessionId);
+  });
+
+  it("does not emit WAIT_READY state for session-file backend session announcement", async () => {
+    const sentRuntimeStatuses = [];
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        usesSessionFileReplyStream: () => true,
+        ensureSessionInfo: async () => ({ sessionId: "session-stream", sessionFilePath: "/tmp/session-stream.jsonl" }),
+        getSessionInfo: () => ({ sessionId: "session-stream", sessionFilePath: "/tmp/session-stream.jsonl" }),
+        getSessionUsageSummary: async () => null,
+        close: async () => {},
+        runTurn: async () => ({ text: "", usage: null, items: [], metadata: {} }),
+        threadId: "thread-stream",
+        threadOptions: { model: "copilot" },
+        setSessionMessageHandler: () => {},
+        setWorkingStatusHandler: () => {},
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async (taskId, payload) => {
+          sentRuntimeStatuses.push({ taskId, payload });
+          return {};
+        },
+        ackMessages: async () => ({}),
+        sendMessage: async () => ({}),
+      },
+      taskId: "task-session-announcement-stream",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "copilot",
+    });
+
+    await runner.announceBackendSession();
+
+    assert.equal(sentRuntimeStatuses.length, 1);
+    assert.equal(sentRuntimeStatuses[0].payload?.phase, "session_started");
+    assert.equal(sentRuntimeStatuses[0].payload?.state, undefined);
+    assert.equal(sentRuntimeStatuses[0].payload?.status_done_line, undefined);
+  });
+
+  it("binds discovered session id after streamed claude reply when announcement had no id", async () => {
+    const sentMessages = [];
+    const bindCalls = [];
+    let sessionInfo = null;
+    let sessionMessageHandler = null;
+    let workingStatusHandler = null;
+    let activeReplyTo = "";
+    const realSessionId = "22222222-2222-2222-2222-222222222222";
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        usesSessionFileReplyStream: () => true,
+        ensureSessionInfo: async () => sessionInfo,
+        getSessionInfo: () => sessionInfo,
+        getSessionUsageSummary: async () => null,
+        setSessionMessageHandler: (handler) => {
+          sessionMessageHandler = handler;
+        },
+        setSessionReplyTarget: (replyTo) => {
+          activeReplyTo = String(replyTo || "");
+        },
+        setWorkingStatusHandler: (handler) => {
+          workingStatusHandler = handler;
+        },
+        runTurn: async () => {
+          sessionInfo = {
+            sessionId: realSessionId,
+            sessionFilePath: "/tmp/claude-session.jsonl",
+          };
+          await workingStatusHandler?.({
+            phase: "message_aggregation",
+            source: "claude-agent-sdk",
+            reply_in_progress: true,
+            status_line: "claude composing reply",
+            replyTo: activeReplyTo,
+          });
+          await sessionMessageHandler?.({
+            text: "Claude streamed reply",
+            source: "claude-agent-sdk",
+            preserveWhitespace: true,
+            sessionId: realSessionId,
+            sessionFilePath: "/tmp/claude-session.jsonl",
+            replyTo: activeReplyTo,
+          });
+          return {
+            text: "Claude streamed reply",
+            usage: null,
+            items: [],
+            metadata: { source: "claude-agent-sdk" },
+          };
+        },
+        close: async () => {},
+        threadId: "",
+        threadOptions: { model: "claude" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+        bindTaskSession: async (taskId, payload) => {
+          bindCalls.push({ taskId, payload });
+          return {};
+        },
+      },
+      taskId: "task-session-bind-late-claude",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "claude",
+    });
+
+    await runner.announceBackendSession();
+    assert.equal(bindCalls.length, 0);
+    assert.equal(sentMessages[0]?.content, "claude session started");
+
+    await runner.respondToMessage({ message_id: "msg-claude-late-bind", role: "user", content: "hello" });
+
+    assert.equal(bindCalls.length, 1);
+    assert.equal(bindCalls[0].payload.session_id, realSessionId);
+    assert.equal(bindCalls[0].payload.session_file_path, "/tmp/claude-session.jsonl");
+    assert.equal(sentMessages[1]?.content, "Claude streamed reply");
+    assert.equal(sentMessages[1]?.metadata?.session_id, realSessionId);
+  });
+
+  it("streams codex replies from session file handler instead of runTurn text", async () => {
+    const sentMessages = [];
+    const sentRuntimeStatuses = [];
+    let sessionMessageHandler = null;
+    let workingStatusHandler = null;
+    let activeReplyTo = "";
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        usesSessionFileReplyStream: () => true,
+        setSessionMessageHandler: (handler) => {
+          sessionMessageHandler = handler;
+        },
+        setSessionReplyTarget: (replyTo) => {
+          activeReplyTo = String(replyTo || "");
+        },
+        setWorkingStatusHandler: (handler) => {
+          workingStatusHandler = handler;
+        },
+        runTurn: async (_content, { onProgress }) => {
+          await workingStatusHandler?.({
+            phase: "working_status_monitor",
+            reply_in_progress: true,
+            status_line: "• Working (12s • esc to interrupt)",
+            replyTo: activeReplyTo,
+          });
+          await sessionMessageHandler?.({
+            text: "first streamed reply",
+            sessionId: "session-stream-1",
+            sessionFilePath: "/tmp/session-stream-1.jsonl",
+            replyTo: activeReplyTo,
+          });
+          await sessionMessageHandler?.({
+            text: "second streamed reply",
+            sessionId: "session-stream-1",
+            sessionFilePath: "/tmp/session-stream-1.jsonl",
+            replyTo: activeReplyTo,
+          });
+          await workingStatusHandler?.({
+            phase: "working_status_clear",
+            reply_in_progress: false,
+            replyTo: activeReplyTo,
+          });
+          return {
+            text: "direct result should be ignored",
+            usage: null,
+            items: [],
+            metadata: {},
+          };
+        },
+        threadId: "thread-stream-1",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async (taskId, payload) => {
+          sentRuntimeStatuses.push({ taskId, payload });
+          return {};
+        },
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-session-stream",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    await runner.respondToMessage({ message_id: "msg-stream-1", role: "user", content: "hello" });
+
+    assert.deepEqual(
+      sentMessages.map((entry) => entry.content),
+      ["first streamed reply", "second streamed reply"],
+    );
+    assert.equal(
+      sentMessages.every((entry) => entry.metadata?.reply_to === "msg-stream-1"),
+      true,
+    );
+    assert.equal(
+      sentMessages.some((entry) => entry.content.includes("direct result should be ignored")),
+      false,
+    );
+    assert.equal(
+      sentRuntimeStatuses.some((entry) => entry.payload?.status_done_line === "codex finished"),
+      false,
+    );
+    assert.equal(
+      sentRuntimeStatuses.some(
+        (entry) => entry.payload?.status_line === "• Working (12s • esc to interrupt)",
+      ),
+      true,
+    );
+    assert.equal(
+      sentRuntimeStatuses.some((entry) => entry.payload?.state === "DONE"),
+      false,
+    );
+  });
+
+  it("forwards codex app-server messages without fire-side aggregation", async () => {
+    const sentMessages = [];
+    const sentRuntimeStatuses = [];
+    let sessionMessageHandler = null;
+    let workingStatusHandler = null;
+    let activeReplyTo = "";
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        usesSessionFileReplyStream: () => true,
+        setSessionMessageHandler: (handler) => {
+          sessionMessageHandler = handler;
+        },
+        setSessionReplyTarget: (replyTo) => {
+          activeReplyTo = String(replyTo || "");
+        },
+        setWorkingStatusHandler: (handler) => {
+          workingStatusHandler = handler;
+        },
+        runTurn: async () => {
+          await workingStatusHandler?.({
+            phase: "turn_started",
+            source: "codex-app-server",
+            reply_in_progress: true,
+            status_line: "codex is working",
+            replyTo: activeReplyTo,
+          });
+          await sessionMessageHandler?.({
+            text: "hello world",
+            source: "codex-app-server",
+            preserveWhitespace: true,
+            sessionId: "session-app-server-1",
+            sessionFilePath: "/tmp/session-app-server-1.jsonl",
+            replyTo: activeReplyTo,
+          });
+          await workingStatusHandler?.({
+            phase: "turn_completed",
+            source: "codex-app-server",
+            reply_in_progress: false,
+            status_done_line: "codex finished",
+            replyTo: activeReplyTo,
+          });
+          return {
+            text: "hello world",
+            usage: null,
+            items: [],
+            metadata: { source: "codex-app-server" },
+          };
+        },
+        threadId: "thread-app-server-1",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async (taskId, payload) => {
+          sentRuntimeStatuses.push({ taskId, payload });
+          return {};
+        },
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-session-app-server",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    await runner.respondToMessage({ message_id: "msg-app-server-1", role: "user", content: "hello" });
+
+    assert.deepEqual(
+      sentMessages.map((entry) => entry.content),
+      ["hello world"],
+    );
+    assert.equal(sentMessages[0].metadata?.reply_to, "msg-app-server-1");
+    assert.equal(sentMessages[0].metadata?.session_stream, true);
+    assert.equal(
+      sentRuntimeStatuses.some((entry) => entry.payload?.status_line === "codex is working"),
+      true,
+    );
+    assert.equal(
+      sentRuntimeStatuses.some((entry) => entry.payload?.status_done_line === "codex finished"),
+      true,
+    );
+  });
+
+  it("keeps multiple codex app-server assistant messages separated", async () => {
+    const sentMessages = [];
+    let sessionMessageHandler = null;
+    let workingStatusHandler = null;
+    let activeReplyTo = "";
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        usesSessionFileReplyStream: () => true,
+        setSessionMessageHandler: (handler) => {
+          sessionMessageHandler = handler;
+        },
+        setSessionReplyTarget: (replyTo) => {
+          activeReplyTo = String(replyTo || "");
+        },
+        setWorkingStatusHandler: (handler) => {
+          workingStatusHandler = handler;
+        },
+        runTurn: async () => {
+          await workingStatusHandler?.({
+            phase: "turn_started",
+            source: "codex-app-server",
+            reply_in_progress: true,
+            status_line: "codex is working",
+            replyTo: activeReplyTo,
+          });
+          await sessionMessageHandler?.({
+            text: "开始计时 2 分钟。",
+            source: "codex-app-server",
+            preserveWhitespace: true,
+            sessionId: "session-app-server-2",
+            sessionFilePath: "/tmp/session-app-server-2.jsonl",
+            replyTo: activeReplyTo,
+          });
+          await sessionMessageHandler?.({
+            text: "完成",
+            source: "codex-app-server",
+            preserveWhitespace: true,
+            sessionId: "session-app-server-2",
+            sessionFilePath: "/tmp/session-app-server-2.jsonl",
+            replyTo: activeReplyTo,
+          });
+          await workingStatusHandler?.({
+            phase: "turn_completed",
+            source: "codex-app-server",
+            reply_in_progress: false,
+            status_done_line: "codex finished",
+            replyTo: activeReplyTo,
+          });
+          return {
+            text: "开始计时 2 分钟。完成",
+            usage: null,
+            items: [],
+            metadata: { source: "codex-app-server" },
+          };
+        },
+        threadId: "thread-app-server-2",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-session-app-server-multi",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    await runner.respondToMessage({ message_id: "msg-app-server-2", role: "user", content: "hello" });
+
+    assert.deepEqual(
+      sentMessages.map((entry) => entry.content),
+      ["开始计时 2 分钟。", "完成"],
+    );
+    assert.ok(sentMessages.every((entry) => entry.metadata?.reply_to === "msg-app-server-2"));
+    assert.ok(sentMessages.every((entry) => entry.metadata?.session_stream === true));
+  });
+
+  it("streams copilot replies from session file handler instead of runTurn text", async () => {
+    const sentMessages = [];
+    const sentRuntimeStatuses = [];
+    let sessionMessageHandler = null;
+    let workingStatusHandler = null;
+    let activeReplyTo = "";
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        usesSessionFileReplyStream: () => true,
+        setSessionMessageHandler: (handler) => {
+          sessionMessageHandler = handler;
+        },
+        setSessionReplyTarget: (replyTo) => {
+          activeReplyTo = String(replyTo || "");
+        },
+        setWorkingStatusHandler: (handler) => {
+          workingStatusHandler = handler;
+        },
+        runTurn: async () => {
+          await workingStatusHandler?.({
+            phase: "working_status_monitor",
+            reply_in_progress: true,
+            status_line: "◎ Running timer (Esc to cancel · 202 B)",
+            replyTo: activeReplyTo,
+          });
+          await sessionMessageHandler?.({
+            text: "copilot streamed reply",
+            sessionId: "session-stream-copilot",
+            sessionFilePath: "/tmp/session-stream-copilot.jsonl",
+            replyTo: activeReplyTo,
+          });
+          await workingStatusHandler?.({
+            phase: "working_status_clear",
+            reply_in_progress: false,
+            replyTo: activeReplyTo,
+          });
+          return {
+            text: "copilot direct result should be ignored",
+            usage: null,
+            items: [],
+            metadata: {},
+          };
+        },
+        threadId: "thread-stream-copilot",
+        threadOptions: { model: "copilot" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async (taskId, payload) => {
+          sentRuntimeStatuses.push({ taskId, payload });
+          return {};
+        },
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-session-stream-copilot",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "copilot",
+    });
+
+    await runner.respondToMessage({ message_id: "msg-stream-copilot-1", role: "user", content: "hello" });
+
+    assert.deepEqual(
+      sentMessages.map((entry) => entry.content),
+      ["copilot streamed reply"],
+    );
+    assert.equal(sentMessages[0].metadata?.reply_to, "msg-stream-copilot-1");
+    assert.equal(
+      sentMessages.some((entry) => entry.content.includes("direct result should be ignored")),
+      false,
+    );
+    assert.equal(
+      sentRuntimeStatuses.some(
+        (entry) => entry.payload?.status_line === "◎ Running timer (Esc to cancel · 202 B)",
+      ),
+      true,
+    );
+    assert.equal(
+      sentRuntimeStatuses.some((entry) => entry.payload?.state === "DONE"),
+      false,
+    );
+  });
+
+  it("keeps forwarding codex session file replies after runTurn has resolved", async () => {
+    const sentMessages = [];
+    let sessionMessageHandler = null;
+    let workingStatusHandler = null;
+    let activeReplyTo = "";
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        usesSessionFileReplyStream: () => true,
+        setSessionMessageHandler: (handler) => {
+          sessionMessageHandler = handler;
+        },
+        setSessionReplyTarget: (replyTo) => {
+          activeReplyTo = String(replyTo || "");
+        },
+        setWorkingStatusHandler: (handler) => {
+          workingStatusHandler = handler;
+        },
+        runTurn: async () => ({
+          text: "",
+          usage: null,
+          items: [],
+          metadata: {},
+        }),
+        threadId: "thread-stream-late",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-session-stream-late",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    await runner.respondToMessage({ message_id: "msg-stream-late", role: "user", content: "hello again" });
+    await workingStatusHandler?.({
+      phase: "working_status_monitor",
+      reply_in_progress: true,
+      status_line: "• Working (21s • esc to interrupt)",
+      replyTo: activeReplyTo,
+    });
+    await sessionMessageHandler?.({
+      text: "late streamed follow-up",
+      sessionId: "session-stream-late",
+      sessionFilePath: "/tmp/session-stream-late.jsonl",
+      replyTo: activeReplyTo,
+    });
+
+    assert.deepEqual(
+      sentMessages.map((entry) => entry.content),
+      ["late streamed follow-up"],
+    );
+    assert.equal(sentMessages[0].metadata?.reply_to, "msg-stream-late");
+  });
+
+  it("does not report codex checkpoint unavailable after a streamed reply was already sent", async () => {
+    const sentMessages = [];
+    const sentRuntimeStatuses = [];
+    let sessionMessageHandler = null;
+    let activeReplyTo = "";
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        usesSessionFileReplyStream: () => true,
+        setSessionMessageHandler: (handler) => {
+          sessionMessageHandler = handler;
+        },
+        setSessionReplyTarget: (replyTo) => {
+          activeReplyTo = String(replyTo || "");
+        },
+        setWorkingStatusHandler: () => {},
+        runTurn: async () => {
+          await sessionMessageHandler?.({
+            text: "streamed before checkpoint error",
+            sessionId: "session-stream-checkpoint",
+            sessionFilePath: "/tmp/session-stream-checkpoint.jsonl",
+            replyTo: activeReplyTo,
+          });
+          throw new Error("Codex session file checkpoint unavailable");
+        },
+        threadId: "thread-stream-checkpoint",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async (taskId, payload) => {
+          sentRuntimeStatuses.push({ taskId, payload });
+          return {};
+        },
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-session-stream-checkpoint",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    await runner.respondToMessage({ message_id: "msg-stream-checkpoint", role: "user", content: "hello" });
+
+    assert.deepEqual(
+      sentMessages.map((entry) => entry.content),
+      ["streamed before checkpoint error"],
+    );
+    assert.equal(
+      sentMessages.some((entry) => String(entry.content || "").includes("处理失败")),
+      false,
+    );
+    assert.equal(runner.processedMessageIds.has("msg-stream-checkpoint"), true);
+    assert.equal(
+      sentRuntimeStatuses.some((entry) => entry.payload?.state === "ERROR"),
+      false,
+    );
+    assert.equal(
+      sentRuntimeStatuses.some((entry) => entry.payload?.phase === "session_stream_settled"),
+      true,
+    );
+  });
+
+  it("keeps forwarding codex Working status updates outside runTurn callbacks", async () => {
+    const sentRuntimeStatuses = [];
+    let workingStatusHandler = null;
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        usesSessionFileReplyStream: () => true,
+        setSessionMessageHandler: () => {},
+        setWorkingStatusHandler: (handler) => {
+          workingStatusHandler = handler;
+        },
+        runTurn: async () => ({
+          text: "",
+          usage: null,
+          items: [],
+          metadata: {},
+        }),
+        threadId: "thread-working-monitor",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async (taskId, payload) => {
+          sentRuntimeStatuses.push({ taskId, payload });
+          return {};
+        },
+        ackMessages: async () => ({}),
+        sendMessage: async () => ({}),
+      },
+      taskId: "task-working-monitor",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    await workingStatusHandler?.({
+      phase: "working_status_monitor",
+      reply_in_progress: true,
+      status_line: "• Working (5s • esc to interrupt)",
+      replyTo: "msg-working-1",
+    });
+    await workingStatusHandler?.({
+      phase: "working_status_monitor",
+      reply_in_progress: true,
+      status_line: "• Working (6s • esc to interrupt)",
+      replyTo: "msg-working-1",
+    });
+    await workingStatusHandler?.({
+      phase: "working_status_clear",
+      reply_in_progress: false,
+      replyTo: "msg-working-1",
+    });
+
+    assert.deepEqual(
+      sentRuntimeStatuses.map((entry) => entry.payload?.status_line || ""),
+      ["• Working (5s • esc to interrupt)", "• Working (6s • esc to interrupt)", ""],
+    );
+    assert.equal(sentRuntimeStatuses[0].payload?.reply_in_progress, true);
+    assert.equal(sentRuntimeStatuses[1].payload?.reply_in_progress, true);
+    assert.equal(sentRuntimeStatuses[2].payload?.reply_in_progress, false);
+    assert.equal(sentRuntimeStatuses[2].payload?.state, undefined);
+  });
+
+  it("starts codex from live queue without startup history backfill", async () => {
+    let sessionMessageHandler = null;
+    let activeReplyTo = "";
+
+    await assertStartupProcessesOnlyLiveQueue({
+      backendName: "codex",
+      createBackendSession: ({ onRunTurn }) => ({
+        usesSessionFileReplyStream: () => true,
+        setSessionMessageHandler: (handler) => {
+          sessionMessageHandler = handler;
+        },
+        setSessionReplyTarget: (replyTo) => {
+          activeReplyTo = String(replyTo || "");
+        },
+        setWorkingStatusHandler: () => {},
+        runTurn: async () => {
+          onRunTurn();
+          await sessionMessageHandler?.({
+            text: "codex live reply",
+            sessionId: "session-live-codex",
+            sessionFilePath: "/tmp/session-live-codex.jsonl",
+            replyTo: activeReplyTo,
+          });
+          return { text: "", usage: null, items: [], metadata: {} };
+        },
+        threadId: "thread-live-codex",
+        threadOptions: { model: "codex" },
+      }),
+      expectedContents: ["codex live reply"],
+    });
+  });
+
+  it("starts claude from live queue without startup history backfill", async () => {
+    await assertStartupProcessesOnlyLiveQueue({
+      backendName: "claude",
+      createBackendSession: ({ onRunTurn }) => ({
+        runTurn: async () => {
+          onRunTurn();
+          return {
+            text: "claude live reply",
+            usage: null,
+            items: [],
+            metadata: {},
+          };
+        },
+        threadId: "thread-live-claude",
+        threadOptions: { model: "claude" },
+      }),
+      expectedContents: ["claude live reply"],
+    });
+  });
+
+  it("starts opencode from live queue without startup history backfill", async () => {
+    let sessionMessageHandler = null;
+    let activeReplyTo = "";
+
+    await assertStartupProcessesOnlyLiveQueue({
+      backendName: "opencode",
+      createBackendSession: ({ onRunTurn }) => ({
+        usesSessionFileReplyStream: () => true,
+        setSessionMessageHandler: (handler) => {
+          sessionMessageHandler = handler;
+        },
+        setSessionReplyTarget: (replyTo) => {
+          activeReplyTo = String(replyTo || "");
+        },
+        setWorkingStatusHandler: () => {},
+        runTurn: async () => {
+          onRunTurn();
+          await sessionMessageHandler?.({
+            text: "opencode live reply",
+            sessionId: "session-live-opencode",
+            replyTo: activeReplyTo,
+          });
+          return {
+            text: "opencode direct result should be ignored",
+            usage: null,
+            items: [],
+            metadata: { source: "opencode-sdk" },
+          };
+        },
+        threadId: "thread-live-opencode",
+        threadOptions: { model: "opencode" },
+      }),
+      expectedContents: ["opencode live reply"],
+    });
+  });
+
+  it("starts copilot from live queue without startup history backfill", async () => {
+    await assertStartupProcessesOnlyLiveQueue({
+      backendName: "copilot",
+      createBackendSession: ({ onRunTurn }) => ({
+        runTurn: async () => {
+          onRunTurn();
+          return {
+            text: "copilot live reply",
+            usage: null,
+            items: [],
+            metadata: {},
+          };
+        },
+        threadId: "thread-live-copilot",
+        threadOptions: { model: "copilot" },
+      }),
+      expectedContents: ["copilot live reply"],
+    });
+  });
+
+  it("processes the initial prompt once from the live queue and preserves initial images", async () => {
+    const sentMessages = [];
+    const runTurnCalls = [];
+    let runner;
+    let receiveCount = 0;
+
+    const backendSession = {
+      runTurn: async (content, options = {}) => {
+        runTurnCalls.push({ content, options });
+        return {
+          text: "initial live reply",
+          usage: null,
+          items: [],
+          metadata: {},
+        };
+      },
+      threadId: "thread-initial-live",
+      threadOptions: { model: "claude" },
+    };
+
+    runner = new BridgeRunner({
+      backendSession,
+      conductor: {
+        receiveMessages: async () => {
+          receiveCount += 1;
+          if (receiveCount === 1) {
+            return {
+              messages: [{ message_id: "msg-initial-1", role: "user", content: "hello with image" }],
+              has_more: false,
+            };
+          }
+          runner.stopped = true;
+          return { messages: [] };
+        },
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-initial-live-once",
+      pollIntervalMs: 500,
+      initialPrompt: "hello with image",
+      initialPromptDelivery: "queued",
+      includeInitialImages: true,
+      cliArgs: [],
+      backendName: "claude",
+    });
+
+    await runner.start();
+
+    assert.equal(runTurnCalls.length, 1);
+    assert.equal(runTurnCalls[0].content, "hello with image");
+    assert.equal(runTurnCalls[0].options.useInitialImages, true);
+    assert.deepEqual(
+      sentMessages.map((entry) => entry.content),
+      ["initial live reply"],
+    );
+    assert.equal(sentMessages[0].metadata?.reply_to, "msg-initial-1");
+  });
+
+  it("retries queued initial prompts with initial images until the turn succeeds", async () => {
+    const runTurnCalls = [];
+    let attempt = 0;
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        runTurn: async (content, options = {}) => {
+          attempt += 1;
+          runTurnCalls.push({ content, options });
+          if (attempt === 1) {
+            throw new Error("transient opencode failure");
+          }
+          return {
+            text: "initial retry reply",
+            usage: null,
+            items: [],
+            metadata: {},
+          };
+        },
+        threadId: "thread-initial-retry",
+        threadOptions: { model: "opencode" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async () => ({}),
+      },
+      taskId: "task-initial-retry",
+      pollIntervalMs: 500,
+      initialPrompt: "hello with image",
+      initialPromptDelivery: "queued",
+      includeInitialImages: true,
+      cliArgs: [],
+      backendName: "opencode",
+    });
+
+    await runner.respondToMessage({ message_id: "msg-initial-retry", role: "user", content: "hello with image" });
+    assert.equal(runTurnCalls.length, 1);
+    assert.equal(runTurnCalls[0].options.useInitialImages, true);
+    assert.equal(runner.pendingInitialPrompt, "hello with image");
+
+    await runner.respondToMessage({ message_id: "msg-initial-retry", role: "user", content: "hello with image" });
+    assert.equal(runTurnCalls.length, 2);
+    assert.equal(runTurnCalls[1].options.useInitialImages, true);
+    assert.equal(runner.pendingInitialPrompt, "");
+  });
+
+  it("keeps synthetic initial prompt handling when attaching to an existing task", async () => {
+    const sentMessages = [];
+    let sessionMessageHandler = null;
+    let activeReplyTo = "";
+    let runner;
+    let receiveCount = 0;
+    const runTurnCalls = [];
+
+    const backendSession = {
+      usesSessionFileReplyStream: () => true,
+      setSessionMessageHandler: (handler) => {
+        sessionMessageHandler = handler;
+      },
+      setSessionReplyTarget: (replyTo) => {
+        activeReplyTo = String(replyTo || "");
+      },
+      setWorkingStatusHandler: () => {},
+      runTurn: async (content, options = {}) => {
+        runTurnCalls.push({ content, options });
+        await sessionMessageHandler?.({
+          text: "attach live reply",
+          sessionId: "session-attach-live",
+          replyTo: activeReplyTo,
+        });
+        return { text: "", usage: null, items: [], metadata: {} };
+      },
+      threadId: "thread-attach-live",
+      threadOptions: { model: "opencode" },
+    };
+
+    runner = new BridgeRunner({
+      backendSession,
+      conductor: {
+        receiveMessages: async () => {
+          receiveCount += 1;
+          if (receiveCount === 1) {
+            runner.stopped = true;
+          }
+          return { messages: [] };
+        },
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-attach-initial",
+      pollIntervalMs: 500,
+      initialPrompt: "attach prompt",
+      initialPromptDelivery: "synthetic",
+      includeInitialImages: true,
+      cliArgs: [],
+      backendName: "opencode",
+    });
+
+    await runner.start();
+
+    assert.equal(runTurnCalls.length, 1);
+    assert.equal(runTurnCalls[0].content, "attach prompt");
+    assert.equal(runTurnCalls[0].options.useInitialImages, true);
+    assert.deepEqual(
+      sentMessages.map((entry) => entry.content),
+      ["attach live reply"],
+    );
+    assert.equal(sentMessages[0].metadata?.reply_to, "initial");
+  });
+
+  it("starts resumed backend sessions from live queue without startup drain", async () => {
+    let sessionMessageHandler = null;
+    let activeReplyTo = "";
+
+    await assertStartupProcessesOnlyLiveQueue({
+      backendName: "codex",
+      resumeSessionId: "019cb2a4-de18-70b0-816b-a9b0d99400bb",
+      createBackendSession: ({ onRunTurn }) => ({
+        usesSessionFileReplyStream: () => true,
+        setSessionMessageHandler: (handler) => {
+          sessionMessageHandler = handler;
+        },
+        setSessionReplyTarget: (replyTo) => {
+          activeReplyTo = String(replyTo || "");
+        },
+        setWorkingStatusHandler: () => {},
+        runTurn: async () => {
+          onRunTurn();
+          await sessionMessageHandler?.({
+            text: "codex resumed live reply",
+            sessionId: "session-live-codex-resume",
+            sessionFilePath: "/tmp/session-live-codex-resume.jsonl",
+            replyTo: activeReplyTo,
+          });
+          return { text: "", usage: null, items: [], metadata: {} };
+        },
+        threadId: "thread-live-codex-resume",
+        threadOptions: { model: "codex" },
+      }),
+      expectedContents: ["codex resumed live reply"],
+    });
+  });
+});

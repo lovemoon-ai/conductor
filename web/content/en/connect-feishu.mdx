@@ -1,0 +1,262 @@
+---
+title: Connect Feishu
+description: Connect a deployed Conductor environment to a Feishu bot for inbound messages, account binding, task control, and AI reply delivery
+---
+
+This guide explains how to connect Conductor to a Feishu bot so you can complete the full loop:
+
+- Receive Feishu messages in Conductor
+- Bind a Feishu account to a Conductor user
+- Create or switch tasks from Feishu
+- Push AI replies back to Feishu
+
+Prerequisites:
+
+- The daemon is already connected in production mode
+
+## 1. Prepare a Feishu app
+
+Go to the Feishu Open Platform, then create or select an app and enable bot capabilities.
+
+At minimum, you need these values:
+
+- `app_id`
+- `app_secret`
+- `verification_token`
+- `encrypt_key` if encryption is enabled
+
+## 2. Configure Feishu event subscriptions
+
+Set up event subscriptions for the app in the Feishu Open Platform.
+
+### 2.1 Configure the callback URL
+
+Set the request URL to:
+
+```text
+https://conductor-ai.top/api/channel/feishu/webhook
+```
+
+### 2.2 Configure the Verification Token
+
+The `Verification Token` configured in Feishu must match the value you will later upload to Conductor.
+
+### 2.3 Subscribe to message events
+
+Subscribe to at least:
+
+- `im.message.receive_v1`
+
+If the challenge check succeeds, the webhook is connected.
+
+## 3. Add Feishu credentials to the Conductor config
+
+Add the Feishu config to your Conductor config file at `~/.conductor/config.yaml`:
+
+```yaml
+backend_url: https://conductor-ai.top
+agent_token: your_agent_token
+daemon_name: your_daemon_name
+
+channels:
+  feishu:
+    app_id: cli_xxx
+    app_secret: xxxxx
+    verification_token: xxxxx
+    encrypt_key: xxxxx # optional
+```
+
+Notes:
+
+- `backend_url`: your production Conductor URL
+- `agent_token`: the current user's token
+- `channels.feishu.verification_token`: must match the token configured in Feishu
+
+## 4. Upload the Feishu config to the Conductor server
+
+Run:
+
+```bash
+conductor channel connect feishu --config-file ~/.conductor/config.yaml
+```
+
+Expected output looks like:
+
+```text
+Connected Feishu channel from /path/to/config.yaml
+app_id: cli_xxx
+verification_token: xxxxx
+```
+
+After this step, the server persists the Feishu config for the current user.
+
+## 5. Generate a bind code
+
+After signing in to Conductor Web, call:
+
+```http
+POST /api/channel/bind-code
+```
+
+Example response:
+
+```json
+{
+  "code": "ABC123",
+  "expiresIn": 600
+}
+```
+
+Notes:
+
+- The bind code is valid for 10 minutes
+- It is best to bind in Feishu right after generating it
+
+## 6. Bind your account in Feishu
+
+Open a direct message with the bot and send:
+
+```text
+/bind ABC123
+```
+
+Expected reply:
+
+```text
+Your Feishu account is now bound to Conductor.
+```
+
+After binding succeeds, that Feishu account is mapped to the current Conductor user.
+
+## 7. Work with tasks in Feishu
+
+### 7.1 List online daemons
+
+```text
+/daemons
+```
+
+### 7.2 Create a new task
+
+Explicitly create one with:
+
+```text
+/new
+```
+
+You can also send plain text directly. If the current conversation is not attached to a task yet, Conductor creates a new task automatically.
+
+For example:
+
+```text
+Analyze the login flow of this project
+```
+
+### 7.3 Common commands
+
+- `/new`: create a new task
+- `/tasks`: show recent tasks
+- `/tasks active`: show active tasks
+- `/tasks recent`: show recent tasks
+- `/task <taskId>`: switch to a specific task
+- `/daemons`: show online daemons
+- `/use-daemon <name>`: switch the daemon used by the current conversation
+- `/stop`: stop the current task
+
+## 8. Deliver AI replies back to Feishu
+
+In the current implementation, AI replies and task status updates are pushed to Feishu through `channel_outbox`.
+
+In production, it is recommended to call the following endpoint from a scheduled job as a fallback:
+
+```http
+POST /api/cron/channel-outbox
+```
+
+## 9. Group chat guidance
+
+Recommendations:
+
+- **Use direct messages for primary production usage**
+- In group chats, mention the bot before sending the message
+
+For example, in a group chat:
+
+```text
+@bot 1+1=
+```
+
+The final text that enters the task becomes:
+
+```text
+1+1=
+```
+
+## 10. Share one bot across multiple people
+
+Multiple people can share the same Feishu bot.
+
+How it works:
+
+- Each person signs in to their own Conductor account
+- Each person generates their own bind code
+- Each person runs `/bind <code>` in Feishu
+
+After binding, the system routes each message to the correct Conductor user based on the Feishu sender identity.
+
+Recommendations:
+
+- In company usage, prefer **DM binding and DM execution**
+- Group chats work better as an entry point; do not start by running everyone's formal tasks in the same group
+
+## 11. Troubleshooting
+
+### 11.1 The webhook challenge fails
+
+Check these first:
+
+- The webhook URL points to the real production domain
+- HTTPS is reachable
+- `verification_token` matches the config uploaded to Conductor
+
+### 11.2 `/bind <code>` returns `expired`
+
+Bind codes are valid for 10 minutes by default. Generate a new one and send it in Feishu immediately.
+
+### 11.3 Feishu messages arrive, but AI replies never come back
+
+Check these first:
+
+- The daemon is really sending `/api/agent/events`
+- `channel_outbox` has pending records
+- `/api/cron/channel-outbox` is wired into a scheduled job
+- The Feishu `app_id` and `app_secret` are correct
+
+### 11.4 `/daemons` shows no daemon
+
+Check these first:
+
+- The daemon is online
+- The daemon user matches the user that owns the bind code
+- `agent_token` belongs to the correct user
+
+## 12. Recommended setup order
+
+Follow this order:
+
+1. Create a Feishu app in the Feishu Open Platform and enable bot capability
+2. Configure event subscriptions and the webhook URL
+3. Add `channels.feishu` to the Conductor config
+4. Run `conductor channel connect feishu`
+5. Sign in to Conductor Web and generate a bind code
+6. Send `/bind <code>` in a direct message to the Feishu bot
+7. Send `/daemons` in Feishu
+8. Send a normal message such as `hi`
+9. Confirm a task is created and an AI reply is delivered
+
+## 13. Related APIs
+
+- `POST /api/channel/bind-code`
+- `POST /api/channel/feishu/config`
+- `POST /api/channel/feishu/webhook`
+- `POST /api/cron/channel-outbox`

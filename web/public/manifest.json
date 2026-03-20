@@ -1,0 +1,18 @@
+{
+  "name": "Conductor",
+  "short_name": "Conductor",
+  "description": "Chat to your AI workers, like conducting a symphony.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#000000",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg?v=20260309b",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

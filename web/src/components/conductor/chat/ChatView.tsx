@@ -1,0 +1,313 @@
+'use client';
+
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useChatStore } from '@/lib/conductor/stores/chat';
+import { useRuntimeStore } from '@/lib/conductor/stores/runtime';
+import { useTasksStore } from '@/lib/conductor/stores/tasks';
+import { MessageBubble } from './MessageBubble';
+import { MessageInput } from './MessageInput';
+import { LoadingSpinner } from '../common/LoadingSpinner';
+import { InlineNotice } from '../common/InlineNotice';
+
+interface ChatViewProps {
+  taskId: string;
+}
+
+const SCROLL_STORAGE_PREFIX = 'conductor-task-scroll:';
+const SCROLL_BOTTOM_THRESHOLD_PX = 40;
+
+interface StoredScrollState {
+  scrollTop: number;
+  stickToBottom: boolean;
+}
+
+const getScrollStorageKey = (taskId: string) => `${SCROLL_STORAGE_PREFIX}${taskId}`;
+
+const getMaxScrollTop = (element: HTMLDivElement) => Math.max(0, element.scrollHeight - element.clientHeight);
+
+const clampScrollTop = (element: HTMLDivElement, scrollTop: number) => (
+  Math.min(Math.max(scrollTop, 0), getMaxScrollTop(element))
+);
+
+const isNearBottom = (element: HTMLDivElement) => (
+  getMaxScrollTop(element) - element.scrollTop <= SCROLL_BOTTOM_THRESHOLD_PX
+);
+
+const readStoredScrollState = (taskId: string): StoredScrollState | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const rawValue = window.sessionStorage.getItem(getScrollStorageKey(taskId));
+    if (!rawValue) {
+      return null;
+    }
+
+    const parsed = JSON.parse(rawValue);
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      Number.isFinite(parsed.scrollTop) &&
+      typeof parsed.stickToBottom === 'boolean'
+    ) {
+      return {
+        scrollTop: Math.max(0, parsed.scrollTop),
+        stickToBottom: parsed.stickToBottom,
+      };
+    }
+
+    if (Number.isFinite(parsed)) {
+      return {
+        scrollTop: Math.max(0, parsed),
+        stickToBottom: false,
+      };
+    }
+  } catch {
+    // ignore storage errors
+  }
+
+  return null;
+};
+
+const writeStoredScrollState = (taskId: string, state: StoredScrollState) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.sessionStorage.setItem(getScrollStorageKey(taskId), JSON.stringify(state));
+  } catch {
+    // ignore storage errors
+  }
+};
+
+const isAiSdkRuntimeSource = (source?: string) => {
+  const normalized = source?.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return normalized === 'ai-sdk'
+    || normalized.endsWith('-sdk')
+    || normalized.endsWith('-app-server');
+};
+
+const getAiRuntimeStatusText = (runtime?: {
+  source?: string;
+  statusLine?: string;
+  statusDoneLine?: string;
+} | null) => {
+  if (!runtime || !isAiSdkRuntimeSource(runtime.source)) {
+    return null;
+  }
+
+  return runtime.statusLine?.trim() || runtime.statusDoneLine?.trim() || null;
+};
+
+export function ChatView({ taskId }: ChatViewProps) {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const previousMessageCountRef = useRef(0);
+  const pendingRestoreScrollStateRef = useRef<StoredScrollState | null>(null);
+  const shouldRestoreScrollRef = useRef(true);
+  const shouldStickToBottomRef = useRef(true);
+  const forceScrollToBottomRef = useRef(false);
+  const { messagesByTask, loadingTasks, fetchMessages, sendMessage } = useChatStore();
+  const runtime = useRuntimeStore((state) => state.byTask[taskId]);
+  const clearRuntime = useRuntimeStore((state) => state.clearTask);
+  const tasks = useTasksStore((state) => state.tasks);
+  const task = tasks.find((t) => t.id === taskId);
+  const isTaskRunning = task?.status === 'running';
+  const [composerFeedback, setComposerFeedback] = useState<{
+    variant: 'warning' | 'error';
+    message: string;
+  } | null>(null);
+
+  const messages = messagesByTask[taskId] || [];
+  const isLoading = loadingTasks.has(taskId);
+  const aiRuntimeStatusText = getAiRuntimeStatusText(runtime);
+
+  const persistScrollPosition = (scrollTop?: number) => {
+    const container = scrollContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const nextScrollTop = typeof scrollTop === 'number'
+      ? clampScrollTop(container, scrollTop)
+      : clampScrollTop(container, container.scrollTop);
+    const stickToBottom = isNearBottom(container);
+
+    shouldStickToBottomRef.current = stickToBottom;
+    writeStoredScrollState(taskId, {
+      scrollTop: nextScrollTop,
+      stickToBottom,
+    });
+  };
+
+  const scrollToBottom = () => {
+    const container = scrollContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const nextScrollTop = getMaxScrollTop(container);
+    container.scrollTop = nextScrollTop;
+    shouldStickToBottomRef.current = true;
+    writeStoredScrollState(taskId, {
+      scrollTop: nextScrollTop,
+      stickToBottom: true,
+    });
+  };
+
+  useEffect(() => {
+    fetchMessages(taskId);
+  }, [taskId, fetchMessages]);
+
+  useLayoutEffect(() => {
+    pendingRestoreScrollStateRef.current = readStoredScrollState(taskId);
+    shouldRestoreScrollRef.current = true;
+    forceScrollToBottomRef.current = false;
+    previousMessageCountRef.current = messages.length;
+  }, [taskId]);
+
+  useEffect(() => (
+    () => {
+      persistScrollPosition();
+    }
+  ), [taskId]);
+
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    if (shouldRestoreScrollRef.current) {
+      if (isLoading && messages.length === 0) {
+        return;
+      }
+
+      const storedScrollState = pendingRestoreScrollStateRef.current;
+      if (storedScrollState?.stickToBottom) {
+        scrollToBottom();
+      } else if (storedScrollState) {
+        const nextScrollTop = clampScrollTop(container, storedScrollState.scrollTop);
+        container.scrollTop = nextScrollTop;
+        persistScrollPosition(nextScrollTop);
+      } else {
+        scrollToBottom();
+      }
+
+      shouldRestoreScrollRef.current = false;
+      pendingRestoreScrollStateRef.current = null;
+      previousMessageCountRef.current = messages.length;
+      return;
+    }
+
+    const previousMessageCount = previousMessageCountRef.current;
+    if (
+      messages.length > previousMessageCount &&
+      (forceScrollToBottomRef.current || shouldStickToBottomRef.current)
+    ) {
+      scrollToBottom();
+    }
+
+    forceScrollToBottomRef.current = false;
+    previousMessageCountRef.current = messages.length;
+  }, [isLoading, messages.length, taskId]);
+
+  useEffect(() => {
+    setComposerFeedback(null);
+  }, [taskId]);
+
+  useEffect(() => {
+    if (isTaskRunning && composerFeedback?.variant === 'warning') {
+      setComposerFeedback(null);
+    }
+  }, [composerFeedback?.variant, isTaskRunning]);
+
+  const handleSend = async (content: string) => {
+    if (!isTaskRunning) {
+      setComposerFeedback({
+        variant: 'warning',
+        message:
+          task?.status === 'completed'
+            ? 'This task is already completed. Start a new run before sending more messages.'
+            : task?.status === 'killed'
+              ? 'This task has stopped. Restart it before sending more messages.'
+              : 'The session is still starting. You can keep drafting, and send once the task is ready.',
+      });
+      return;
+    }
+
+    try {
+      setComposerFeedback(null);
+      clearRuntime(taskId);
+      forceScrollToBottomRef.current = true;
+      await sendMessage(taskId, { content, role: 'user' });
+    } catch {
+      setComposerFeedback({
+        variant: 'error',
+        message: 'Failed to send the message. Please try again in a moment.',
+      });
+    }
+  };
+
+  return (
+    <div className="flex h-full flex-col bg-paper">
+      <div
+        ref={scrollContainerRef}
+        className="webapp-scrollbar flex-1 overflow-y-auto px-4 py-5 md:px-6"
+        onScroll={() => persistScrollPosition()}
+      >
+        {isLoading && messages.length === 0 ? (
+          <div className="flex h-full items-center justify-center">
+            <LoadingSpinner size="lg" />
+          </div>
+        ) : messages.length === 0 ? (
+          <div className="flex h-full items-center justify-center">
+            <div className="w-full max-w-3xl rounded-3xl border border-dashed border-border bg-panel/70 px-8 py-10 text-center shadow-sm">
+              <svg className="mx-auto mb-4 h-14 w-14 opacity-35" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+              <p className="text-lg font-semibold text-ink">No messages yet</p>
+              <p className="mt-2 text-sm text-muted">
+                {isTaskRunning
+                  ? 'Ask Conductor what to do next, or paste a concrete task to get started.'
+                  : 'The conversation history will appear here once the session is ready and messages start flowing.'}
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {messages.map((message) => (
+              <MessageBubble key={message.id} message={message} />
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="border-t border-border bg-paper/40 px-4 py-3">
+        <div className="mx-auto w-full max-w-5xl space-y-3">
+          {aiRuntimeStatusText ? (
+            <div className="flex flex-wrap gap-2 text-xs text-muted">
+              <span className="rounded-full bg-border/50 px-2.5 py-1">
+                {aiRuntimeStatusText}
+              </span>
+            </div>
+          ) : null}
+          {composerFeedback ? (
+            <InlineNotice variant={composerFeedback.variant}>
+              {composerFeedback.message}
+            </InlineNotice>
+          ) : null}
+        </div>
+      </div>
+      <MessageInput
+        taskId={taskId}
+        onSend={handleSend}
+        sendDisabled={!isTaskRunning}
+      />
+    </div>
+  );
+}

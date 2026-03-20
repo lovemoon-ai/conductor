@@ -1,0 +1,356 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { TaskItem } from './TaskItem';
+
+const pushMock = vi.fn();
+const updateTaskMock = vi.fn();
+const deleteTaskMock = vi.fn();
+const markTaskReadMock = vi.fn();
+const sendMessageMock = vi.fn();
+const clearRuntimeMock = vi.fn();
+let runtimeByTask: Record<string, unknown> = {};
+let messagesByTask: Record<string, Array<{ id: string; role: string; content: string }>> = {};
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: pushMock,
+  }),
+}));
+
+vi.mock('@/lib/conductor/stores/tasks', () => ({
+  useTasksStore: () => ({
+    updateTask: updateTaskMock,
+    deleteTask: deleteTaskMock,
+    markTaskRead: markTaskReadMock,
+  }),
+}));
+
+vi.mock('@/lib/conductor/stores/chat', () => ({
+  useChatStore: (
+    selector: (state: {
+      sendMessage: typeof sendMessageMock;
+      messagesByTask: typeof messagesByTask;
+    }) => unknown,
+  ) =>
+    selector({ sendMessage: sendMessageMock, messagesByTask }),
+}));
+
+vi.mock('@/lib/conductor/stores/projects', () => ({
+  useProjectsStore: (selector: (state: { projects: Array<{ id: string; name: string }> }) => unknown) =>
+    selector({ projects: [] }),
+}));
+
+vi.mock('@/lib/conductor/stores/runtime', () => ({
+  useRuntimeStore: (
+    selector: (state: { byTask: Record<string, unknown>; clearTask: typeof clearRuntimeMock }) => unknown,
+  ) =>
+    selector({ byTask: runtimeByTask, clearTask: clearRuntimeMock }),
+}));
+
+describe('TaskItem', () => {
+  beforeEach(() => {
+    runtimeByTask = {};
+    messagesByTask = {};
+    window.sessionStorage.clear();
+    pushMock.mockReset();
+    updateTaskMock.mockReset();
+    deleteTaskMock.mockReset();
+    markTaskReadMock.mockReset();
+    sendMessageMock.mockReset();
+    clearRuntimeMock.mockReset();
+  });
+
+  it('shows backend and daemon labels in task list item', () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-1',
+          title: 'Task One',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          metadata: { backendType: 'claude' },
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    expect(screen.getByText('claude')).toBeInTheDocument();
+    expect(screen.getByText('daemon-a')).toBeInTheDocument();
+    expect(screen.getByText('AI')).toBeInTheDocument();
+  });
+
+  it('shows daemon name for direct conductor-fire tasks', () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-2',
+          title: 'Task Two',
+          status: 'running',
+          projectId: null,
+          agentHost: 'conductor-fire-mac-m1-12345',
+          metadata: { backendType: 'codex', daemonName: 'mac-studio' },
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    expect(screen.getByText('mac-studio')).toBeInTheDocument();
+    expect(screen.queryByText('conductor-fire-mac-m1-12345')).not.toBeInTheDocument();
+  });
+
+  it('shows PTY badge and tool preset for pty_task items', () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-3',
+          title: 'Terminal Task',
+          taskType: 'pty_task',
+          status: 'unknown',
+          projectId: null,
+          agentHost: 'daemon-a',
+          launchConfig: { toolPreset: 'codex' },
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    expect(screen.getByText('PTY')).toBeInTheDocument();
+    expect(screen.getByText('codex')).toBeInTheDocument();
+  });
+
+  it('shows input and last ai preview in grid mode', () => {
+    runtimeByTask = {
+      'task-4': {
+        replyPreview: 'Fresh assistant preview',
+        replyInProgress: true,
+      },
+    };
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-4',
+          title: 'Grid Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          lastUserMessage: 'Write a landing page with pricing cards',
+          lastAssistantMessage: 'Older assistant reply',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+        viewMode="grid"
+      />
+    );
+
+    expect(screen.getByText('Last AI')).toBeInTheDocument();
+    expect(screen.getByText('Fresh assistant preview')).toBeInTheDocument();
+    expect(screen.getByText('Live')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /rename/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /delete/i })).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Write a landing page with pricing cards')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /send message/i })).toBeInTheDocument();
+    expect(screen.queryByText('Enter to send • Shift+Enter for newline')).not.toBeInTheDocument();
+    expect(screen.queryByText('Draft saved')).not.toBeInTheDocument();
+  });
+
+  it('sends a real message from the grid input composer', async () => {
+    sendMessageMock.mockResolvedValue({
+      id: 'message-1',
+      taskId: 'task-5',
+      role: 'user',
+      content: 'Ship the pricing page',
+      createdAt: new Date().toISOString(),
+    });
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-5',
+          title: 'Grid Composer Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+        viewMode="grid"
+      />
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('Type a message...'), {
+      target: { value: 'Ship the pricing page' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /send message/i }));
+
+    await waitFor(() => {
+      expect(clearRuntimeMock).toHaveBeenCalledWith('task-5');
+      expect(sendMessageMock).toHaveBeenCalledWith('task-5', {
+        content: 'Ship the pricing page',
+        role: 'user',
+      });
+    });
+
+    expect(screen.getByPlaceholderText('Ship the pricing page')).toHaveValue('');
+  });
+
+  it('prefers the latest ai message content over runtime status and does not navigate when clicking ai/input areas', () => {
+    runtimeByTask = {
+      'task-8': {
+        statusLine: 'Thinking...',
+      },
+    };
+    messagesByTask = {
+      'task-8': [
+        { id: 'm1', role: 'user', content: 'hello' },
+        { id: 'm2', role: 'assistant', content: 'Latest assistant reply' },
+      ],
+    };
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-8',
+          title: 'Clickable Grid Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+        viewMode="grid"
+      />
+    );
+
+    expect(screen.getByText('Latest assistant reply')).toBeInTheDocument();
+    expect(screen.getByText('Thinking...')).toBeInTheDocument();
+    expect(screen.queryByText('Last AI')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Thinking...'));
+    fireEvent.click(screen.getByPlaceholderText('Type a message...'));
+
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('supports Enter to send and Shift+Enter to keep drafting in grid mode', async () => {
+    sendMessageMock.mockResolvedValue({
+      id: 'message-2',
+      taskId: 'task-6',
+      role: 'user',
+      content: 'Line one',
+      createdAt: new Date().toISOString(),
+    });
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-6',
+          title: 'Keyboard Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+        viewMode="grid"
+      />
+    );
+
+    const textarea = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(textarea, { target: { value: 'Line one' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true });
+
+    expect(sendMessageMock).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(sendMessageMock).toHaveBeenCalledWith('task-6', {
+        content: 'Line one',
+        role: 'user',
+      });
+    });
+  });
+
+  it('persists grid draft in session storage', () => {
+    const { unmount } = render(
+      <TaskItem
+        task={{
+          id: 'task-7',
+          title: 'Draft Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+        viewMode="grid"
+      />
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('Type a message...'), {
+      target: { value: 'Saved draft content' },
+    });
+
+    expect(window.sessionStorage.getItem('conductor-grid-task-draft:task-7')).toBe('Saved draft content');
+
+    unmount();
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-7',
+          title: 'Draft Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+        viewMode="grid"
+      />
+    );
+
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('Saved draft content');
+  });
+});

@@ -1,0 +1,44 @@
+{
+  "name": "@love-moon/conductor-cli",
+  "version": "0.2.22",
+  "gitCommitId": "d04b18c",
+  "type": "module",
+  "bin": {
+    "conductor": "bin/conductor.js"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@love-moon/ai-sdk": "0.2.22",
+    "@love-moon/conductor-sdk": "0.2.22",
+    "dotenv": "^16.4.5",
+    "enquirer": "^2.4.1",
+    "js-yaml": "^4.1.1",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0",
+    "yargs": "^17.7.2",
+    "chrome-launcher": "^1.2.1",
+    "chrome-remote-interface": "^0.33.0"
+  },
+  "optionalDependencies": {
+    "@roamhq/wrtc": "^0.10.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "node-pty",
+      "@roamhq/wrtc"
+    ],
+    "overrides": {
+      "@love-moon/ai-sdk": "file:../modules/ai-sdk",
+      "@love-moon/conductor-sdk": "file:../modules/conductor-sdk"
+    }
+  }
+}

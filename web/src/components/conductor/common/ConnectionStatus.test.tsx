@@ -1,0 +1,107 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { ConnectionStatus } from './ConnectionStatus';
+
+const useParamsMock = vi.fn();
+const useWebSocketStoreMock = vi.fn();
+const useRuntimeStoreMock = vi.fn();
+const useTasksStoreMock = vi.fn();
+const useAgentsStoreMock = vi.fn();
+
+vi.mock('next/navigation', () => ({
+  useParams: () => useParamsMock(),
+}));
+
+vi.mock('@/lib/conductor/stores/websocket', () => ({
+  useWebSocketStore: (selector: (state: { status: 'connected' | 'connecting' | 'disconnected' }) => unknown) =>
+    useWebSocketStoreMock(selector),
+}));
+
+vi.mock('@/lib/conductor/stores/runtime', () => ({
+  useRuntimeStore: (selector: (state: { byTask: Record<string, unknown> }) => unknown) =>
+    useRuntimeStoreMock(selector),
+}));
+
+vi.mock('@/lib/conductor/stores/tasks', () => ({
+  useTasksStore: (selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
+    useTasksStoreMock(selector),
+}));
+
+vi.mock('@/lib/conductor/stores/agents', () => ({
+  useAgentsStore: (selector: (state: { agents: Array<Record<string, unknown>> }) => unknown) =>
+    useAgentsStoreMock(selector),
+}));
+
+describe('ConnectionStatus', () => {
+  beforeEach(() => {
+    useParamsMock.mockReset();
+    useWebSocketStoreMock.mockReset();
+    useRuntimeStoreMock.mockReset();
+    useTasksStoreMock.mockReset();
+    useAgentsStoreMock.mockReset();
+
+    useParamsMock.mockReturnValue({ taskId: 'task-123' });
+    useWebSocketStoreMock.mockImplementation((selector: (state: { status: 'connected' }) => unknown) =>
+      selector({ status: 'connected' }),
+    );
+    useRuntimeStoreMock.mockImplementation((selector: (state: { byTask: Record<string, unknown> }) => unknown) =>
+      selector({
+        byTask: {
+          'task-123': {
+            taskId: 'task-123',
+            daemon: 'daemon-a',
+            pid: 2345,
+            backend: 'codex',
+            sessionId: 'session-xyz',
+            tokenUsagePercent: 12,
+            contextUsagePercent: 34,
+          },
+        },
+      }),
+    );
+    useTasksStoreMock.mockImplementation((selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
+      selector({
+        tasks: [{ id: 'task-123', executionHost: 'daemon-a' }],
+      }),
+    );
+    useAgentsStoreMock.mockImplementation((selector: (state: { agents: Array<Record<string, unknown>> }) => unknown) =>
+      selector({
+        agents: [{ id: 'agent-1', host: 'daemon-a' }],
+      }),
+    );
+  });
+
+  it('shows task id and runtime detail fields in required order when details are enabled', () => {
+    render(<ConnectionStatus detailsEnabled />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open connection details' }));
+
+    expect(screen.getByText('task-123')).toBeInTheDocument();
+
+    const details = screen.getByText('Runtime Details').parentElement;
+    expect(details).not.toBeNull();
+
+    const labels = Array.from(details!.querySelectorAll('span.text-muted')).map((item) => item.textContent);
+    expect(labels).toEqual([
+      'Connection',
+      'Task ID',
+      'Daemon',
+      'PID',
+      'Backend',
+      'Session ID',
+      'Token Usage',
+      'Context Usage',
+    ]);
+  });
+
+  it('keeps the status indicator visible but does not open details when disabled', () => {
+    render(<ConnectionStatus />);
+
+    const button = screen.getByRole('button', { name: 'Open connection details' });
+    expect(button).toBeInTheDocument();
+
+    fireEvent.click(button);
+
+    expect(screen.queryByText('Runtime Details')).toBeNull();
+  });
+});

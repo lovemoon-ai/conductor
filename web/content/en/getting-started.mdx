@@ -1,0 +1,76 @@
+---
+title: Getting Started
+description: The shortest path from login to first task
+---
+
+This page walks you through the basic Conductor flow.
+
+## Log in to Web
+
+1. Open [https://conductor-ai.top/login](https://conductor-ai.top/login)
+2. Complete sign-in by following the prompts
+3. After login, you will land on the home page
+
+## Open the App
+
+You can enter the app from the top-right button on the home page, or click **[here](/app)**.
+
+The app is a [PWA](https://en.wikipedia.org/wiki/Progressive_web_app). On mobile you can install it to your home screen, so it behaves like a native app.
+
+This app interface is your command panel.
+
+## Install the CLI
+
+```bash
+curl -fsSL https://conductor-ai.top/install.sh | bash
+```
+
+Check the version after installation:
+
+```bash
+conductor --version
+```
+
+Currently supported: macOS, Linux, WSL2 on Windows.
+
+## Authorize the CLI Device
+
+1. Run:
+
+```bash
+conductor config
+```
+
+2. The CLI will show a device code and an authorization link
+3. Open the link, sign in on the web page, and approve the device
+4. After approval, the CLI will automatically write `~/.conductor/config.yaml`
+
+Currently supported AI tools: codex, claude code, copilot.
+
+Make sure you have at least one of them installed locally.
+
+More AI tool support is on the way.
+
+## Desktop to Mobile
+
+```
+conductor fire --backend codex -- "hi"
+```
+
+You will see the task in the mobile app, and can direct it from your phone.
+
+## Mobile to Desktop
+
+Set `daemon_name` in `~/.conductor/config.yaml`, then run a resident process on Desktop so it can receive messages from Conductor:
+
+```yaml
+daemon_name: my-desktop
+```
+
+```bash
+conductor daemon
+```
+
+You will see this daemon in the mobile app Settings.
+
+Now you can start tasks from your phone.

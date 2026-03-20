@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Engineering workflow
+    url: https://github.com/dang217/conductor/blob/main/claw/developer/github-linear-workflow.md
+    about: Use Linear for planning, issue state, and acceptance criteria. Use GitHub for code and PR review.
+  - name: RFC and ADR guides
+    url: https://github.com/dang217/conductor/tree/main/claw
+    about: Start here for cross-package proposals, architecture decisions, and evaluation conventions.

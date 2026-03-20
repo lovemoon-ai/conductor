@@ -1,0 +1,27 @@
+{
+  "name": "@dang7up/volc-sms",
+  "version": "0.1.0",
+  "description": "Volcano Engine SMS SDK for sending SMS messages",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "clean": "rimraf dist",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "tslib": "^2.6.2",
+    "@types/node": "^20.19.25",
+    "typescript": "^5.9.3"
+  },
+  "devDependencies": {
+    "rimraf": "^5.0.10"
+  }
+}

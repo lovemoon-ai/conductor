@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Conductor logo">
+  <defs>
+    <linearGradient id="gold" x1="184" y1="180" x2="852" y2="792" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F06543" />
+      <stop offset="0.38" stop-color="#E4572E" />
+      <stop offset="0.72" stop-color="#D84B24" />
+      <stop offset="1" stop-color="#F06543" />
+    </linearGradient>
+  </defs>
+
+  <g
+    fill="url(#gold)"
+    stroke="url(#gold)"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    transform="translate(-132 -94) scale(1.19)"
+  >
+    <path d="M183 295 596 777" fill="none" stroke-width="34" />
+
+    <path d="M286 356 C353 288 433 248 547 243" fill="none" stroke-width="14" />
+    <path d="M324 408 C390 348 460 312 536 304" fill="none" stroke-width="14" />
+    <path d="M371 498 C477 448 591 456 687 506 C781 554 876 556 918 494" fill="none" stroke-width="14" />
+
+    <g>
+      <path d="M549 371 549 185 685 213 682 382" fill="none" stroke-width="25" />
+      <ellipse cx="525" cy="376" rx="35" ry="28" transform="rotate(-20 525 376)" stroke="none" />
+      <ellipse cx="638" cy="405" rx="37" ry="29" transform="rotate(-20 638 405)" stroke="none" />
+    </g>
+
+    <g>
+      <path d="M818 438 818 257" fill="none" stroke-width="21" />
+      <path d="M818 259 C824 284 845 298 863 316 C888 342 892 377 878 405 C869 424 852 439 836 446" fill="none" stroke-width="21" />
+      <ellipse cx="786" cy="456" rx="35" ry="28" transform="rotate(-20 786 456)" stroke="none" />
+    </g>
+
+    <g>
+      <path d="M605 669 605 530" fill="none" stroke-width="21" />
+      <path d="M605 532 C611 555 632 569 650 587 C675 611 680 645 667 672 C659 690 646 703 632 709" fill="none" stroke-width="21" />
+      <ellipse cx="579" cy="684" rx="35" ry="28" transform="rotate(-20 579 684)" stroke="none" />
+    </g>
+  </g>
+</svg>
