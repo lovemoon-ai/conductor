@@ -1,6 +1,14 @@
 ---
 name: Conductor
-description: Operate the Conductor cli directly. Default to executing or explaining the exact `conductor` subcommand the user asked for—especially `conductor fire`, `conductor fire --backend <name> --resume <session-id>`, `conductor send-file`, `conductor daemon`, `conductor diagnose`, `conductor config`, and `conductor update`. Strictly forbid the “handoff prompt” workflow: do not summarize the current Codex conversation into a new Conductor prompt, and do not convert user intent into a fresh `conductor fire -- "<prompt>"` task unless the user explicitly provided that prompt text and asked to run it.
+description: >-
+  Operate the Conductor cli directly. Default to executing or explaining the
+  exact `conductor` subcommand the user asked for, especially `conductor fire`,
+  `conductor fire --backend <name> --resume <session-id>`, `conductor send-file`,
+  `conductor daemon`, `conductor diagnose`, `conductor config`, and
+  `conductor update`. Strictly forbid the "handoff prompt" workflow: do not
+  summarize the current Codex conversation into a new Conductor prompt, and do
+  not convert user intent into a fresh `conductor fire -- "<prompt>"` task
+  unless the user explicitly provided that prompt text and asked to run it.
 ---
 
 # Conductor
@@ -50,7 +58,7 @@ Only run `conductor --help`, subcommand help, or read `~/.conductor/config.yaml`
 
 - install script: bootstrap the public CLI when `conductor` is not installed yet.
 - `conductor send-file`: upload a local file into the active task session. This is the main path for AI-generated screenshots, videos, logs, JSON, and other artifacts.
-- `conductor config`: bootstrap `~/.conductor/config.yaml` with `agent_token`, `backend_url`, `daemon_name`, `workspace`, and `allow_cli_list`.
+- `conductor config`: bootstrap `~/.conductor/config.yaml` with browser device authorization by default, plus `agent_token`, `backend_url`, `daemon_name`, `workspace`, and `allow_cli_list`.
 - `conductor fire`: run a coding CLI in the foreground and bridge it to a Conductor task.
 - `conductor daemon`: keep a desktop agent online so tasks created from the app can run remotely.
 - `conductor diagnose <task-id>`: inspect a stuck or failed task and print likely root cause.
@@ -127,9 +135,12 @@ If auto-detection fails, pass `--task-id` or run the command from an active `con
 ### Bootstrap A Machine
 
 Use `conductor config` first.
+It now starts browser-based device authorization by default.
+Use `--manual` or `--token` only when you need to skip that flow.
 
 ```bash
 conductor config
+conductor config --manual
 conductor config --token <token>
 conductor config --token <token> --force
 ```

@@ -43,7 +43,7 @@ pnpm build
 pnpm start
 ```
 
-## Feishu Channel Gateway (P1/P1.5)
+## Feishu Channel Gateway
 
 Minimum setup steps:
 
