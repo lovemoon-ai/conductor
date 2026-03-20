@@ -672,6 +672,6 @@ The conclusion is very clear:
 - `codex-appserver` should become the default production path for Codex.
 - Other providers must also be made explicit variants, and a single source of authority defined for each variant.
 ## Related documents
-- `claw/rfc/codex-app-server-usage.md`
-- `claw/rfc/codex-app-server-integration-plan.md`
-- `claw/rfc/daemon-fire-survivability-plan.md`
+- `claw/rfc/0003-codex-app-server-usage.md`
+- `claw/rfc/0002-codex-app-server-integration-plan.md`
+- `claw/rfc/0004-daemon-fire-survivability-plan.md`

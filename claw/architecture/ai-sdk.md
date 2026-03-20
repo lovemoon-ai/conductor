@@ -1,6 +1,6 @@
 # AI SDK Architecture
 
-This document describes the actual architecture of the current `modules/ai-sdk/` based on [RFC: `claw/rfc/refactor-ai-sdk.md`](../rfc/refactor-ai-sdk.md).
+This document describes the actual architecture of the current `modules/ai-sdk/` based on [RFC: `claw/rfc/0017-refactor-ai-sdk.md`](../rfc/0017-refactor-ai-sdk.md).
 
 The conclusion after this convergence is simple:
 

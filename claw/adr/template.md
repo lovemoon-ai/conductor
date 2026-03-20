@@ -10,7 +10,7 @@ YYYY-MM-DD
 
 ## Related RFC
 
-RFC-XXXX
+0001
 
 ## Context
 

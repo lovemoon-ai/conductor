@@ -64,5 +64,5 @@ The first publishable slice of transport-split:
 
 ## Links
 
-- RFC: [feature-agent-transport-split-http-upstream-websocket-downstream.md](/Users/duino/ws/conductor/claw/rfc/feature-agent-transport-split-http-upstream-websocket-downstream.md)
+- RFC: [0005-feature-agent-transport-split-http-upstream-websocket-downstream.md](/Users/duino/ws/conductor/claw/rfc/0005-feature-agent-transport-split-http-upstream-websocket-downstream.md)
 - Related diagnosis: [stable_4090_four_killed_tasks_20260310.md](/Users/duino/ws/conductor/claw/issues/stable_4090_four_killed_tasks_20260310.md)

@@ -67,7 +67,7 @@ On the premise that the control plane is still controlled by the server:
 
 ## Links
 
-- RFC: `claw/rfc/feature-pty-task-transport-optimization.md`
+- RFC: `claw/rfc/0012-feature-pty-task-transport-optimization.md`
 - Depends on issue:
 - `claw/issues/pty-task-transport-phase1-relay-latency-observability
 - 20260317.md`
