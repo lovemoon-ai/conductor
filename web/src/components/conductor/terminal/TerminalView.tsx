@@ -44,6 +44,11 @@ const TERMINAL_SHORTCUTS = [
   { id: 'tab', label: 'Tab', data: '\t' },
   { id: 'enter', label: 'Enter', data: '\r' },
   { id: 'ctrl_l', label: 'Ctrl+L', data: '\u000c' },
+  { id: 'tmux_next_window', label: 'Ctrl+B, n', data: '\u0002n' },
+  { id: 'tmux_up', label: 'Ctrl+B, ↑', data: '\u0002\u001b[A' },
+  { id: 'tmux_down', label: 'Ctrl+B, ↓', data: '\u0002\u001b[B' },
+  { id: 'tmux_left', label: 'Ctrl+B, ←', data: '\u0002\u001b[D' },
+  { id: 'tmux_right', label: 'Ctrl+B, →', data: '\u0002\u001b[C' },
   { id: 'up', label: '↑ Up', data: '\u001b[A' },
   { id: 'down', label: '↓ Down', data: '\u001b[B' },
 ] as const;

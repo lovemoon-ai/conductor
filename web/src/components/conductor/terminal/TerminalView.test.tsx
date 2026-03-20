@@ -367,7 +367,7 @@ describe('TerminalView', () => {
     expect(screen.getByText('Relay')).toBeInTheDocument();
   });
 
-  it('sends common shortcut input from the header dropdown', async () => {
+  it('sends shortcut input from the header dropdown', async () => {
     const task = {
       id: 'task-pty-shortcuts',
       title: 'PTY Shortcuts',
@@ -401,21 +401,33 @@ describe('TerminalView', () => {
 
     render(<TerminalView task={task} />);
     await flushMicrotasks();
-    sendMock.mockClear();
 
-    fireEvent.change(screen.getByRole('combobox', { name: /terminal shortcuts/i }), {
-      target: { value: 'ctrl_c' },
-    });
+    const shortcutCases = [
+      { value: 'ctrl_c', data: '\u0003' },
+      { value: 'tmux_next_window', data: '\u0002n' },
+      { value: 'tmux_up', data: '\u0002\u001b[A' },
+      { value: 'tmux_down', data: '\u0002\u001b[B' },
+      { value: 'tmux_left', data: '\u0002\u001b[D' },
+      { value: 'tmux_right', data: '\u0002\u001b[C' },
+    ] as const;
 
-    expect(sendMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: 'terminal_input',
-        payload: expect.objectContaining({
-          task_id: 'task-pty-shortcuts',
-          data: '\u0003',
+    const shortcuts = screen.getByRole('combobox', { name: /terminal shortcuts/i });
+    for (const shortcut of shortcutCases) {
+      sendMock.mockClear();
+      fireEvent.change(shortcuts, {
+        target: { value: shortcut.value },
+      });
+
+      expect(sendMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'terminal_input',
+          payload: expect.objectContaining({
+            task_id: 'task-pty-shortcuts',
+            data: shortcut.data,
+          }),
         }),
-      }),
-    );
+      );
+    }
   });
 
   it('renders shortcut dropdown as mobile-only UI', async () => {
