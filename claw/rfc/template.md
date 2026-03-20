@@ -1,4 +1,4 @@
-# RFC-XXXX Short Title
+# 0001 Short Title
 
 ## Status
 

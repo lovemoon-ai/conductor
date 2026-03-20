@@ -55,7 +55,7 @@ Establish a set of front-end design infrastructure that is lightweight but clear
 
 ## Links
 
-- RFC: `claw/rfc/frontend-design-refresh.md`
+- RFC: `claw/rfc/0015-frontend-design-refresh.md`
 -Related codes:
 - `web/src/app/globals.css`
   - `web/src/components/conductor/common/Dialog.tsx`

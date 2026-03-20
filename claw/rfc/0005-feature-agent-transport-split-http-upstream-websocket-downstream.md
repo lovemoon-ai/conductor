@@ -240,7 +240,7 @@ This is the stage with the greatest benefit, because it first removes the main l
 - Remove the client's blocking wait for these two types of websocket ACK
 ## Relationship to existing RFCs
 This article is the long-term architectural direction.
-The relationship with [feature-agent-websocket-reliable-delivery.md](./feature-agent-websocket-reliable-delivery.md) is as follows:
+The relationship with [0006-feature-agent-websocket-reliable-delivery.md](./0006-feature-agent-websocket-reliable-delivery.md) is as follows:
 - The existing RFC addresses "how to make key messages confirmable and resendable within the current websocket architecture."
 - This article addresses "Should websocket continue to be responsible for critical upstream submissions?"
 There is no conflict between the two:

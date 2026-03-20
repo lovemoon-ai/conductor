@@ -1,6 +1,6 @@
 # Agent WebSocket reliable delivery minimal implementation solution
 ## background
-Note: This article focuses on the short-term hemostasis of "complementing reliable delivery within the existing websocket architecture". If you redo the transport responsibility split from the long-term architecture, see [feature-agent-transport-split-http-upstream-websocket-downstream.md](./feature-agent-transport-split-http-upstream-websocket-downstream.md).
+Note: This article focuses on the short-term hemostasis of "complementing reliable delivery within the existing websocket architecture". If you redo the transport responsibility split from the long-term architecture, see [0005-feature-agent-transport-split-http-upstream-websocket-downstream.md](./0005-feature-agent-transport-split-http-upstream-websocket-downstream.md).
 The online mission `562df949-3c10-4ade-a3ee-9c436650af7f` exposed a clear problem:
 - fire has processed user messages locally and generated AI replies
 - But within the backend restart/websocket jitter window, this `sdk_message` did not fall stably to the server.

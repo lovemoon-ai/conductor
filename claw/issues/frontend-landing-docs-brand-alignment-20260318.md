@@ -46,7 +46,7 @@ Complete the brand alignment of landing and docs, and refocus the homepage respo
 
 ## Links
 
-- RFC: `claw/rfc/frontend-design-refresh.md`
+- RFC: `claw/rfc/0015-frontend-design-refresh.md`
 Related code:
 - 
 - `web/src/app/page.tsx`

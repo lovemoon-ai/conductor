@@ -59,7 +59,7 @@ Under the premise that relay is still used by default:
 
 ## Links
 
-- RFC: `claw/rfc/feature-pty-task-transport-optimization.md`
+- RFC: `claw/rfc/0012-feature-pty-task-transport-optimization.md`
 Related code:
 - 
 - `web/src/lib/realtime/app-gateway.ts`

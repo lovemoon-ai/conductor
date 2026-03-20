@@ -60,7 +60,7 @@ Without changing the overall topology:
 
 ## Links
 
-- RFC: `claw/rfc/feature-pty-task-transport-optimization.md`
+- RFC: `claw/rfc/0012-feature-pty-task-transport-optimization.md`
 -Related codes:
 - `web/src/lib/conductor/stores/websocket.ts`
   - `web/src/components/conductor/terminal/TerminalView.tsx`

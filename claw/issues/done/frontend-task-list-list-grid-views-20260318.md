@@ -50,7 +50,7 @@ Upgrade the Task List to a task workspace that supports multi-view switching, wh
 
 ## Links
 
-- RFC: `claw/rfc/frontend-design-refresh.md`
+- RFC: `claw/rfc/0015-frontend-design-refresh.md`
 Related code:
 - 
 - `web/src/app/app/tasks/page.tsx`

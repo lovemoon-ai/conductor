@@ -45,7 +45,7 @@ Upgrade the creation task pop-up window to a creation process that is more in li
 
 ## Links
 
-- RFC: `claw/rfc/frontend-design-refresh.md`
+- RFC: `claw/rfc/0015-frontend-design-refresh.md`
 Related code:
 - 
 - `web/src/components/conductor/tasks/CreateTaskDialog.tsx`

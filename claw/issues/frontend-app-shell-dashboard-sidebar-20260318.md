@@ -49,7 +49,7 @@ Refactor the `/app` desktop shell to make the sidebar a workbench navigation ske
 
 ## Links
 
-- RFC: `claw/rfc/frontend-design-refresh.md`
+- RFC: `claw/rfc/0015-frontend-design-refresh.md`
 Related code:
 - 
 - `web/src/app/app/layout.tsx`

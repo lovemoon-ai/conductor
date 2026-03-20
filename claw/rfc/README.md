@@ -11,7 +11,7 @@ Use an RFC when:
 
 File naming:
 
-- prefer `RFC-0001-short-title.md` for new RFCs
+- prefer `0001-short-title.md` for new RFCs
 - existing historical descriptive names can remain as-is
 
 Start from `claw/rfc/template.md`.
