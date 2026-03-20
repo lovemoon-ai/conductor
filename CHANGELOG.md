@@ -24,6 +24,34 @@ This project follows [Semantic Versioning](https://semver.org/) where practical.
 
 ---
 
+## [0.2.23] - 2026-03-20
+
+### Added
+
+- Added tmux-style terminal shortcuts in the terminal toolbar so power users can drive common terminal actions faster.
+
+### Changed
+
+- _None._
+
+### Fixed
+
+- _None._
+
+### Removed
+
+- _None._
+
+### Security
+
+- _None._
+
+### Commits
+
+- `aeddc03` add tmux terminal shortcuts
+
+---
+
 ## [0.2.22] - 2026-03-19
 
 ### Added
