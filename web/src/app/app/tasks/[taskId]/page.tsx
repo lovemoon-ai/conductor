@@ -75,7 +75,7 @@ export default function TaskDetailPage() {
         title={task.title}
         showBack
         onBack={() => router.push('/app/tasks')}
-        showConnectionStatus={task.taskType !== 'pty_task'}
+        showConnectionStatus
       />
       <div className="flex-1 overflow-hidden">
         {task.taskType === 'pty_task' ? (

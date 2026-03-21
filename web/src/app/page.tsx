@@ -12,6 +12,7 @@ type OAuthBootstrapState = "idle" | "loading" | "retrying" | "failed";
 
 const OAUTH_BOOTSTRAP_MAX_ATTEMPTS = 3;
 const OAUTH_BOOTSTRAP_RETRY_DELAY_MS = 2000;
+const GITHUB_REPO_URL = "https://github.com/lovemoon-ai/conductor";
 
 export default function Home() {
   const [apiToken, setApiToken] = useState<string | null>(null);
@@ -354,6 +355,18 @@ export default function Home() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 10.5h4M10 14h4M16.5 3.75V7.5h3" />
               </svg>
             </Link>
+            <a
+              href={GITHUB_REPO_URL}
+              target="_blank"
+              rel="noreferrer"
+              className={topbarCircleButtonClass}
+              aria-label="GitHub"
+              title="GitHub"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M12 .5a12 12 0 00-3.79 23.39c.6.11.82-.26.82-.58v-2.04c-3.34.73-4.04-1.42-4.04-1.42-.55-1.38-1.33-1.74-1.33-1.74-1.09-.74.08-.72.08-.72 1.2.09 1.84 1.22 1.84 1.22 1.08 1.82 2.82 1.3 3.5 1 .11-.77.42-1.3.76-1.6-2.67-.3-5.47-1.31-5.47-5.86 0-1.3.47-2.36 1.24-3.2-.12-.3-.54-1.52.12-3.16 0 0 1.01-.32 3.3 1.22a11.6 11.6 0 016 0c2.28-1.54 3.29-1.22 3.29-1.22.67 1.64.25 2.86.12 3.16.77.84 1.24 1.9 1.24 3.2 0 4.56-2.81 5.55-5.49 5.85.43.37.81 1.1.81 2.23v3.3c0 .32.21.7.82.58A12 12 0 0012 .5z" />
+              </svg>
+            </a>
             {token ? (
               <>
                 <Link href="/app" className="px-4 py-2 bg-[var(--accent)] text-white rounded-full text-sm">
@@ -399,6 +412,18 @@ export default function Home() {
                   </svg>
                   <span>{t.common.docs}</span>
                 </Link>
+                <a
+                  href={GITHUB_REPO_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--panel)]"
+                  onClick={() => setIsActionsMenuOpen(false)}
+                >
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M12 .5a12 12 0 00-3.79 23.39c.6.11.82-.26.82-.58v-2.04c-3.34.73-4.04-1.42-4.04-1.42-.55-1.38-1.33-1.74-1.33-1.74-1.09-.74.08-.72.08-.72 1.2.09 1.84 1.22 1.84 1.22 1.08 1.82 2.82 1.3 3.5 1 .11-.77.42-1.3.76-1.6-2.67-.3-5.47-1.31-5.47-5.86 0-1.3.47-2.36 1.24-3.2-.12-.3-.54-1.52.12-3.16 0 0 1.01-.32 3.3 1.22a11.6 11.6 0 016 0c2.28-1.54 3.29-1.22 3.29-1.22.67 1.64.25 2.86.12 3.16.77.84 1.24 1.9 1.24 3.2 0 4.56-2.81 5.55-5.49 5.85.43.37.81 1.1.81 2.23v3.3c0 .32.21.7.82.58A12 12 0 0012 .5z" />
+                  </svg>
+                  <span>GitHub</span>
+                </a>
                 {token ? (
                   <>
                     <Link
