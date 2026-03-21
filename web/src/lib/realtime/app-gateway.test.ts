@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./hub", () => ({
   realtimeHub: {
@@ -19,9 +19,20 @@ const {
   shouldRevokePreviousWriterTransport,
 } = await import("./app-gateway");
 
+const originalPtyTransportPolicy = process.env.PTY_TRANSPORT_POLICY;
+
 describe("app-gateway terminal attach delivery", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    if (originalPtyTransportPolicy === undefined) {
+      delete process.env.PTY_TRANSPORT_POLICY;
+      return;
+    }
+    process.env.PTY_TRANSPORT_POLICY = originalPtyTransportPolicy;
   });
 
   it("falls back to executionHost when the task binding was cleared during reconnect", () => {
@@ -55,6 +66,7 @@ describe("app-gateway terminal attach delivery", () => {
   it("builds a relay PTY transport session envelope", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-17T10:00:00.000Z"));
+    process.env.PTY_TRANSPORT_POLICY = "relay_only";
 
     const envelope = buildPtyTransportSessionEnvelope({
       taskId: "task-pty-3",
@@ -76,8 +88,6 @@ describe("app-gateway terminal attach delivery", () => {
       },
     });
     expect("transport_state" in (envelope.payload as Record<string, unknown>)).toBe(false);
-
-    vi.useRealTimers();
   });
 
   it("can force a fresh relay negotiation epoch in a PTY transport session envelope", () => {

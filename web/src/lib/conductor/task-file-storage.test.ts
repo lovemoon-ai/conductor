@@ -49,7 +49,7 @@ describe("task-file-storage", () => {
   });
 
   it("returns null and removes files once they are expired", async () => {
-    process.env.CONDUCTOR_ATTACHMENT_TTL_MINUTES = "0";
+    process.env.CONDUCTOR_ATTACHMENT_TTL_MINUTES = "1";
 
     const attachment = await writeTaskAttachment({
       taskId: "task-1",
@@ -58,10 +58,14 @@ describe("task-file-storage", () => {
       mimeType: "image/png",
     });
 
+    const taskDir = path.join(tempRoot, "task-1");
+    const [storedFile] = await fs.readdir(taskDir);
+    const oldTime = new Date(Date.now() - 5 * 60 * 1000);
+    await fs.utimes(path.join(taskDir, storedFile), oldTime, oldTime);
+
     const content = await readTaskAttachment("task-1", attachment.id);
     expect(content).toBeNull();
 
-    const taskDir = path.join(tempRoot, "task-1");
     const entries = await fs.readdir(taskDir).catch(() => []);
     expect(entries).toEqual([]);
   });
