@@ -24,6 +24,38 @@ This project follows [Semantic Versioning](https://semver.org/) where practical.
 
 ---
 
+## [0.2.25] - 2026-03-22
+
+### Added
+
+- Added direct GitHub shortcuts to the landing page header and mobile actions menu so users can jump from the product site to the repository faster.
+
+### Changed
+
+- Improved PTY task runtime details with a terminal-friendly dark popover so connection diagnostics stay readable on terminal task pages.
+- Reworked the one-line installer to manage a Conductor-owned Node runtime more reliably, show resolved install paths, and offer safer shell PATH setup guidance.
+
+### Fixed
+
+- Restored the `Runtime Details` panel on PTY task pages so terminal sessions can inspect their runtime state again.
+- Fixed false `node-pty` verification failures during CLI installation when the probe hit benign `read EIO` errors.
+
+### Removed
+
+- _None._
+
+### Security
+
+- _None._
+
+### Commits
+
+- `8b4ef52` update readme
+- `f5fa6a8` update landing and runtime details
+- `ea600a8` update web/public/install.sh
+
+---
+
 ## [0.2.23] - 2026-03-20
 
 ### Added
