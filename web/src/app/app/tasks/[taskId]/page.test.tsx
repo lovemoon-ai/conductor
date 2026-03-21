@@ -6,6 +6,7 @@ import TaskDetailPage from './page';
 const pushMock = vi.fn();
 const fetchTaskMock = vi.fn();
 const markTaskReadMock = vi.fn();
+const headerMock = vi.fn();
 
 vi.mock('next/navigation', () => ({
   useParams: () => ({ taskId: 'task-pty-1' }),
@@ -13,7 +14,16 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('@/components/conductor/layout/Header', () => ({
-  Header: ({ title }: { title: string }) => <div>{title}</div>,
+  Header: ({
+    title,
+    showConnectionStatus,
+  }: {
+    title: string;
+    showConnectionStatus?: boolean;
+  }) => {
+    headerMock({ title, showConnectionStatus });
+    return <div>{title}</div>;
+  },
 }));
 
 vi.mock('@/components/conductor/chat/ChatView', () => ({
@@ -65,6 +75,7 @@ describe('TaskDetailPage', () => {
     fetchTaskMock.mockReset();
     markTaskReadMock.mockReset();
     pushMock.mockReset();
+    headerMock.mockReset();
     fetchTaskMock.mockResolvedValue(null);
   });
 
@@ -76,5 +87,11 @@ describe('TaskDetailPage', () => {
     });
     expect(markTaskReadMock).toHaveBeenCalledWith('task-pty-1');
     expect(await screen.findByText('terminal:task-pty-1')).toBeInTheDocument();
+    expect(headerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Persisted PTY',
+        showConnectionStatus: true,
+      }),
+    );
   });
 });

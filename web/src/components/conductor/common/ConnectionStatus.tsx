@@ -31,13 +31,14 @@ export function ConnectionStatus({ detailsEnabled = false }: { detailsEnabled?: 
   const taskId = useMemo(() => normalizeTaskId(params?.taskId), [params]);
   const runtime = useRuntimeStore((state) => (taskId ? state.byTask[taskId] : undefined));
   const agents = useAgentsStore((state) => state.agents);
-  const daemonFromTask = useTasksStore((state) => {
+  const currentTask = useTasksStore((state) => {
     if (!taskId) {
       return undefined;
     }
-    const task = state.tasks.find((item) => item.id === taskId);
-    return task?.executionHost || task?.agentHost || undefined;
+    return state.tasks.find((item) => item.id === taskId);
   });
+  const daemonFromTask = currentTask?.executionHost || currentTask?.agentHost || undefined;
+  const isPtyTask = currentTask?.taskType === 'pty_task';
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -135,25 +136,31 @@ export function ConnectionStatus({ detailsEnabled = false }: { detailsEnabled?: 
       </button>
 
       {detailsEnabled && open && (
-        <div className="absolute right-0 mt-2 w-[22rem] rounded-xl border border-border bg-panel/70 backdrop-blur-md shadow-xl p-3 z-30">
-          <div className="text-xs font-semibold text-ink mb-2">Runtime Details</div>
+        <div
+          className={`absolute right-0 mt-2 w-[22rem] rounded-xl border backdrop-blur-md shadow-xl p-3 z-30 ${
+            isPtyTask
+              ? 'border-white/10 bg-zinc-950/70 text-white'
+              : 'border-border bg-panel/70'
+          }`}
+        >
+          <div className={`mb-2 text-xs font-semibold ${isPtyTask ? 'text-white' : 'text-ink'}`}>Runtime Details</div>
           <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-y-1 gap-x-2 text-xs">
-            <span className="text-muted">Connection</span>
-            <span className="text-ink">{config.label}</span>
-            <span className="text-muted">Task ID</span>
-            <span className="text-ink break-all">{taskIdValue}</span>
-            <span className="text-muted">Daemon</span>
-            <span className="text-ink truncate" title={daemon}>{daemon}</span>
-            <span className="text-muted">PID</span>
-            <span className="text-ink">{pid ?? 'n/a'}</span>
-            <span className="text-muted">Backend</span>
-            <span className="text-ink truncate">{backend}</span>
-            <span className="text-muted">Session ID</span>
-            <span className="text-ink break-all">{sessionId}</span>
-            <span className="text-muted">Token Usage</span>
-            <span className="text-ink">{tokenUsagePercent}</span>
-            <span className="text-muted">Context Usage</span>
-            <span className="text-ink">{contextUsagePercent}</span>
+            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Connection</span>
+            <span className={isPtyTask ? 'text-white' : 'text-ink'}>{config.label}</span>
+            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Task ID</span>
+            <span className={`break-all ${isPtyTask ? 'text-white' : 'text-ink'}`}>{taskIdValue}</span>
+            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Daemon</span>
+            <span className={`truncate ${isPtyTask ? 'text-white' : 'text-ink'}`} title={daemon}>{daemon}</span>
+            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>PID</span>
+            <span className={isPtyTask ? 'text-white' : 'text-ink'}>{pid ?? 'n/a'}</span>
+            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Backend</span>
+            <span className={`truncate ${isPtyTask ? 'text-white' : 'text-ink'}`}>{backend}</span>
+            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Session ID</span>
+            <span className={`break-all ${isPtyTask ? 'text-white' : 'text-ink'}`}>{sessionId}</span>
+            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Token Usage</span>
+            <span className={isPtyTask ? 'text-white' : 'text-ink'}>{tokenUsagePercent}</span>
+            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Context Usage</span>
+            <span className={isPtyTask ? 'text-white' : 'text-ink'}>{contextUsagePercent}</span>
           </div>
         </div>
       )}

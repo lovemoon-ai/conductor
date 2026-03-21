@@ -94,6 +94,24 @@ describe('ConnectionStatus', () => {
     ]);
   });
 
+  it('uses a dark panel with white text for pty tasks', () => {
+    useTasksStoreMock.mockImplementation((selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
+      selector({
+        tasks: [{ id: 'task-123', executionHost: 'daemon-a', taskType: 'pty_task' }],
+      }),
+    );
+
+    render(<ConnectionStatus detailsEnabled />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open connection details' }));
+
+    const details = screen.getByText('Runtime Details').parentElement;
+    expect(details).not.toBeNull();
+    expect(details!.className).toContain('bg-zinc-950/70');
+    expect(details!.className).toContain('text-white');
+    expect(details!.className).toContain('backdrop-blur-md');
+  });
+
   it('keeps the status indicator visible but does not open details when disabled', () => {
     render(<ConnectionStatus />);
 

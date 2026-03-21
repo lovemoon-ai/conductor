@@ -8,7 +8,7 @@ Run agents locally. Keep data on your machine. Control everything from anywhere.
 
 It includes:
 - a web app for tasks and projects
-- a CLI and daemon for running agents on local machines
+- a cli and daemon for running agents on local machines
 - SDKs for backend, realtime, and session integration
 
 Conductor connects your task system with coding agents such as Codex, Claude, and OpenCode, making agent execution visible, connected, and manageable in one place.
