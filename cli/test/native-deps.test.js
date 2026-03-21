@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 
 import {
   ensurePnpmOnlyBuiltDependencies,
+  buildNodePtyVerificationScript,
   mergeBuiltDependencies,
   normalizeBuiltDependencyList,
+  shouldIgnoreNodePtyVerificationErrorMessage,
 } from "../src/native-deps.js";
 
 describe("native deps helpers", () => {
@@ -60,5 +62,17 @@ describe("native deps helpers", () => {
     assert.deepStrictEqual(calls, [
       ["pnpm", ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
     ]);
+  });
+
+  it("ignores benign PTY EIO verification errors", () => {
+    assert.equal(shouldIgnoreNodePtyVerificationErrorMessage("read EIO"), true);
+    assert.equal(shouldIgnoreNodePtyVerificationErrorMessage("Error: read EIO"), true);
+    assert.equal(shouldIgnoreNodePtyVerificationErrorMessage("spawn-helper missing"), false);
+  });
+
+  it("embeds the EIO ignore helper into the verification script", () => {
+    const script = buildNodePtyVerificationScript();
+    assert.match(script, /shouldIgnoreNodePtyVerificationErrorMessage/);
+    assert.match(script, /read eio/i);
   });
 });

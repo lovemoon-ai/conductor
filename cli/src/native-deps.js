@@ -48,6 +48,13 @@ function quoteForSingleQuotedShell(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
+export function shouldIgnoreNodePtyVerificationErrorMessage(message) {
+  const normalized = String(message || "")
+    .trim()
+    .toLowerCase();
+  return normalized === "read eio" || normalized.endsWith(": read eio");
+}
+
 export function normalizeBuiltDependencyList(value) {
   if (Array.isArray(value)) {
     return value
@@ -164,6 +171,7 @@ export function buildNodePtyVerificationScript() {
 const fs = require('node:fs');
 const path = require('node:path');
 const { createRequire } = require('node:module');
+const shouldIgnoreNodePtyVerificationErrorMessage = ${shouldIgnoreNodePtyVerificationErrorMessage.toString()};
 
 const packageDir = process.argv[1];
 if (!packageDir) {
@@ -226,7 +234,13 @@ const timer = setTimeout(() => {
 }, 5000);
 
 child.on('exit', (code) => finish(code, null));
-child.on('error', (error) => finish(null, error));
+child.on('error', (error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (shouldIgnoreNodePtyVerificationErrorMessage(message)) {
+    return;
+  }
+  finish(null, error);
+});
 `;
 }
 

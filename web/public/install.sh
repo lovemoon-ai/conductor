@@ -1,29 +1,30 @@
 #!/usr/bin/env bash
-# Conductor CLI Installation Script
-# Usage: curl -fsSL https://your-domain.com/install.sh | bash
 
 set -e
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Configuration
 PACKAGE_NAME="@love-moon/conductor-cli"
-TEMP_DIR="${HOME}/.conductor-install-tmp"
+CONDUCTOR_HOME="${HOME}/.conductor"
 NODE_VERSION="20.11.0"
 NODE_CMD="node"
+NPM_CMD="npm"
 INSTALL_USE_SUDO=""
 ORIGINAL_PATH="$PATH"
-LOCAL_NODE_DIR=""
-NPM_PREFIX=""
-NPM_BIN_DIR=""
-PATH_RC_FILE=""
-PATH_EXPORT_LINE=""
+USED_CONDUCTOR_NODE=0
+NODE_INSTALL_DIR=""
+NODE_LINK_DIR="${CONDUCTOR_HOME}/node"
+NODE_BIN_DIR=""
+NPM_GLOBAL_PREFIX=""
+GLOBAL_BIN_DIR=""
+RC_FILE=""
+RC_SHELL=""
+PATH_BLOCK_START="# >>> conductor install >>>"
+PATH_BLOCK_END="# <<< conductor install <<<"
 
-# Utility functions
 log_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
 }
@@ -36,19 +37,40 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-cleanup() {
-    if [ -d "$TEMP_DIR" ]; then
-        log_info "Cleaning up temporary files..."
-        rm -rf "$TEMP_DIR"
+print_installed_paths() {
+    local node_path=""
+    local npm_path=""
+    local conductor_path=""
+
+    if [ -n "$NODE_CMD" ] && [ -x "$NODE_CMD" ]; then
+        node_path="$NODE_CMD"
+    elif command -v node >/dev/null 2>&1; then
+        node_path="$(command -v node)"
     fi
+
+    if [ -n "$NPM_CMD" ] && [ -x "$NPM_CMD" ]; then
+        npm_path="$NPM_CMD"
+    elif command -v npm >/dev/null 2>&1; then
+        npm_path="$(command -v npm)"
+    fi
+
+    if [ -n "$GLOBAL_BIN_DIR" ] && [ -x "$GLOBAL_BIN_DIR/conductor" ]; then
+        conductor_path="$GLOBAL_BIN_DIR/conductor"
+    elif command -v conductor >/dev/null 2>&1; then
+        conductor_path="$(command -v conductor)"
+    fi
+
+    log_info "Resolved paths:"
+    log_info "  node: ${node_path:-not found}"
+    log_info "  npm: ${npm_path:-not found}"
+    log_info "  conductor: ${conductor_path:-not found}"
 }
 
-trap cleanup EXIT
-
-# Detect OS and architecture
 detect_platform() {
-    local os=$(uname -s | tr '[:upper:]' '[:lower:]')
-    local arch=$(uname -m)
+    local os
+    local arch
+    os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    arch=$(uname -m)
 
     case "$os" in
         darwin)
@@ -81,73 +103,127 @@ detect_platform() {
     log_info "Detected platform: $OS-$ARCH"
 }
 
-# Check if npm is available
+prepend_path_if_missing() {
+    local directory="$1"
+
+    if [ -z "$directory" ] || [ ! -d "$directory" ]; then
+        return
+    fi
+
+    case ":$PATH:" in
+        *":$directory:"*)
+            ;;
+        *)
+            export PATH="$directory:$PATH"
+            ;;
+    esac
+}
+
+refresh_runtime_paths() {
+    if [ -n "$NODE_CMD" ] && [ -x "$NODE_CMD" ]; then
+        NODE_BIN_DIR=$(cd "$(dirname "$NODE_CMD")" && pwd -P)
+    fi
+
+    if [ -n "$NPM_CMD" ] && [ -x "$NPM_CMD" ]; then
+        NPM_GLOBAL_PREFIX=$("$NPM_CMD" config get prefix 2>/dev/null || true)
+        if [ -n "$NPM_GLOBAL_PREFIX" ]; then
+            GLOBAL_BIN_DIR="${NPM_GLOBAL_PREFIX}/bin"
+        else
+            GLOBAL_BIN_DIR=""
+        fi
+    fi
+
+    prepend_path_if_missing "$NODE_BIN_DIR"
+    prepend_path_if_missing "$GLOBAL_BIN_DIR"
+}
+
+build_runtime_path() {
+    local runtime_path="$ORIGINAL_PATH"
+
+    if [ -n "$NODE_BIN_DIR" ] && [ -d "$NODE_BIN_DIR" ]; then
+        runtime_path="${NODE_BIN_DIR}:${runtime_path}"
+    fi
+
+    if [ -n "$GLOBAL_BIN_DIR" ] && [ -d "$GLOBAL_BIN_DIR" ]; then
+        runtime_path="${GLOBAL_BIN_DIR}:${runtime_path}"
+    fi
+
+    printf '%s' "$runtime_path"
+}
+
 check_npm() {
-    if command -v npm &> /dev/null; then
+    if command -v npm >/dev/null 2>&1; then
         NPM_CMD="$(command -v npm)"
         NODE_CMD="$(command -v node)"
-        log_info "Found npm: $($NPM_CMD --version)"
+        refresh_runtime_paths
+        log_info "Found npm: $("$NPM_CMD" --version)"
         log_info "Node path: $NODE_CMD"
         log_info "npm path: $NPM_CMD"
         return 0
     fi
+
     return 1
 }
 
-# Download and setup local Node.js
-setup_temp_node() {
-    log_info "npm not found. Setting up local Node.js environment..."
+setup_conductor_node() {
+    log_info "npm not found. Setting up Conductor-managed Node.js in ${CONDUCTOR_HOME}..."
 
-    local node_basename="node-v${NODE_VERSION}-${OS}-${ARCH}"
-    LOCAL_NODE_DIR="${HOME}/.conductor/${node_basename}"
-    mkdir -p "${HOME}/.conductor"
+    mkdir -p "$CONDUCTOR_HOME"
 
-    if [ -x "$LOCAL_NODE_DIR/bin/node" ] && [ -x "$LOCAL_NODE_DIR/bin/npm" ]; then
-        log_info "Using existing local Node.js: $LOCAL_NODE_DIR"
-    else
-        mkdir -p "$TEMP_DIR"
-        cd "$TEMP_DIR"
+    local node_filename="node-v${NODE_VERSION}-${OS}-${ARCH}.tar.gz"
+    local node_url="https://nodejs.org/dist/v${NODE_VERSION}/${node_filename}"
+    local archive_path="${CONDUCTOR_HOME}/${node_filename}"
+    NODE_INSTALL_DIR="${CONDUCTOR_HOME}/node-v${NODE_VERSION}-${OS}-${ARCH}"
 
-        # Construct Node.js download URL
-        local node_filename="${node_basename}.tar.gz"
-        local node_url="https://nodejs.org/dist/v${NODE_VERSION}/${node_filename}"
-
+    if [ ! -x "${NODE_INSTALL_DIR}/bin/node" ]; then
         log_info "Downloading Node.js ${NODE_VERSION}..."
-        if command -v curl &> /dev/null; then
-            curl -fsSL "$node_url" -o "$node_filename"
-        elif command -v wget &> /dev/null; then
-            wget -q "$node_url" -O "$node_filename"
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL "$node_url" -o "$archive_path"
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q "$node_url" -O "$archive_path"
         else
             log_error "Neither curl nor wget found. Please install one of them."
             exit 1
         fi
 
-        log_info "Extracting Node.js..."
-        tar -xzf "$node_filename"
-
-        log_info "Installing Node.js to $LOCAL_NODE_DIR..."
-        rm -rf "$LOCAL_NODE_DIR"
-        mv "$TEMP_DIR/$node_basename" "$LOCAL_NODE_DIR"
+        log_info "Extracting Node.js into ${CONDUCTOR_HOME}..."
+        rm -rf "$NODE_INSTALL_DIR"
+        tar -xzf "$archive_path" -C "$CONDUCTOR_HOME"
+        rm -f "$archive_path"
+    else
+        log_info "Reusing existing Node.js at ${NODE_INSTALL_DIR}"
     fi
 
-    export PATH="$LOCAL_NODE_DIR/bin:$PATH"
-    NPM_CMD="$LOCAL_NODE_DIR/bin/npm"
-    NODE_CMD="$LOCAL_NODE_DIR/bin/node"
+    if [ -L "$NODE_LINK_DIR" ] || [ ! -e "$NODE_LINK_DIR" ]; then
+        ln -sfn "$NODE_INSTALL_DIR" "$NODE_LINK_DIR"
+    else
+        rm -rf "$NODE_LINK_DIR"
+        ln -sfn "$NODE_INSTALL_DIR" "$NODE_LINK_DIR"
+    fi
 
-    log_info "Local Node.js setup complete: $($NODE_CMD --version)"
+    export npm_config_prefix="$CONDUCTOR_HOME"
+    NPM_CMD="${NODE_LINK_DIR}/bin/npm"
+    NODE_CMD="${NODE_LINK_DIR}/bin/node"
+    USED_CONDUCTOR_NODE=1
+    refresh_runtime_paths
+
+    log_info "Conductor-managed Node.js ready: $("$NODE_CMD" --version)"
     log_info "Node path: $NODE_CMD"
     log_info "npm path: $NPM_CMD"
 }
 
-# Install conductor-cli
 install_conductor() {
     log_info "Installing ${PACKAGE_NAME}..."
 
-    # Check write permission for global installation
-    local npm_prefix=$("$NPM_CMD" config get prefix)
+    local npm_prefix
+    npm_prefix=$("$NPM_CMD" config get prefix)
+    NPM_GLOBAL_PREFIX="$npm_prefix"
+    GLOBAL_BIN_DIR="${NPM_GLOBAL_PREFIX}/bin"
+    refresh_runtime_paths
+
     if [ ! -w "$npm_prefix" ] && [ "$EUID" -ne 0 ]; then
         log_warn "No write permission to $npm_prefix. Attempting to use sudo..."
-        if command -v sudo &> /dev/null; then
+        if command -v sudo >/dev/null 2>&1; then
             INSTALL_USE_SUDO="sudo"
         else
             log_error "sudo not found and no write permission to $npm_prefix."
@@ -156,15 +232,16 @@ install_conductor() {
         fi
     fi
 
-    # Try to install
     if [ -n "$INSTALL_USE_SUDO" ]; then
         if $INSTALL_USE_SUDO "$NPM_CMD" install -g "${PACKAGE_NAME}@latest"; then
             log_info "Successfully installed ${PACKAGE_NAME}"
+            refresh_runtime_paths
             return 0
         fi
     else
         if "$NPM_CMD" install -g "${PACKAGE_NAME}@latest"; then
             log_info "Successfully installed ${PACKAGE_NAME}"
+            refresh_runtime_paths
             return 0
         fi
     fi
@@ -173,11 +250,13 @@ install_conductor() {
     if [ -n "$INSTALL_USE_SUDO" ]; then
         if $INSTALL_USE_SUDO "$NPM_CMD" install -g --force "${PACKAGE_NAME}@latest"; then
             log_info "Successfully installed ${PACKAGE_NAME} with --force"
+            refresh_runtime_paths
             return 0
         fi
     else
         if "$NPM_CMD" install -g --force "${PACKAGE_NAME}@latest"; then
             log_info "Successfully installed ${PACKAGE_NAME} with --force"
+            refresh_runtime_paths
             return 0
         fi
     fi
@@ -186,121 +265,140 @@ install_conductor() {
     return 1
 }
 
-detect_shell_rc_file() {
+resolve_rc_file() {
+    if [ -n "$CONDUCTOR_INSTALL_RC_FILE" ]; then
+        RC_FILE="$CONDUCTOR_INSTALL_RC_FILE"
+        case "$RC_FILE" in
+            *.fish|*/fish/config.fish)
+                RC_SHELL="fish"
+                ;;
+            *)
+                RC_SHELL="sh"
+                ;;
+        esac
+        return
+    fi
+
     local shell_name
     shell_name=$(basename "${SHELL:-}")
 
     case "$shell_name" in
+        fish)
+            RC_FILE="${HOME}/.config/fish/config.fish"
+            RC_SHELL="fish"
+            ;;
         zsh)
-            PATH_RC_FILE="${HOME}/.zshrc"
-            PATH_EXPORT_LINE="export PATH=\"$NPM_BIN_DIR:\$PATH\""
+            RC_FILE="${HOME}/.zshrc"
+            RC_SHELL="sh"
             ;;
         bash)
-            if [ -f "${HOME}/.bash_profile" ]; then
-                PATH_RC_FILE="${HOME}/.bash_profile"
-            elif [ -f "${HOME}/.bash_login" ]; then
-                PATH_RC_FILE="${HOME}/.bash_login"
-            elif [ -f "${HOME}/.profile" ]; then
-                PATH_RC_FILE="${HOME}/.profile"
-            elif [ -f "${HOME}/.bashrc" ]; then
-                PATH_RC_FILE="${HOME}/.bashrc"
+            RC_SHELL="sh"
+            if [ "$OS" = "darwin" ]; then
+                if [ -f "${HOME}/.bash_profile" ]; then
+                    RC_FILE="${HOME}/.bash_profile"
+                elif [ -f "${HOME}/.bash_login" ]; then
+                    RC_FILE="${HOME}/.bash_login"
+                elif [ -f "${HOME}/.profile" ]; then
+                    RC_FILE="${HOME}/.profile"
+                else
+                    RC_FILE="${HOME}/.bash_profile"
+                fi
             else
-                PATH_RC_FILE="${HOME}/.profile"
+                if [ -f "${HOME}/.bashrc" ]; then
+                    RC_FILE="${HOME}/.bashrc"
+                elif [ -f "${HOME}/.profile" ]; then
+                    RC_FILE="${HOME}/.profile"
+                elif [ -f "${HOME}/.bash_profile" ]; then
+                    RC_FILE="${HOME}/.bash_profile"
+                else
+                    RC_FILE="${HOME}/.bashrc"
+                fi
             fi
-            PATH_EXPORT_LINE="export PATH=\"$NPM_BIN_DIR:\$PATH\""
-            ;;
-        fish)
-            PATH_RC_FILE="${HOME}/.config/fish/config.fish"
-            PATH_EXPORT_LINE="set -gx PATH \"$NPM_BIN_DIR\" \$PATH"
             ;;
         *)
-            PATH_RC_FILE="${HOME}/.profile"
-            PATH_EXPORT_LINE="export PATH=\"$NPM_BIN_DIR:\$PATH\""
+            RC_FILE="${HOME}/.profile"
+            RC_SHELL="sh"
             ;;
     esac
 }
 
-prompt_write_path_to_rc() {
-    if [ -z "$NPM_BIN_DIR" ]; then
-        log_warn "npm global bin directory is empty; skipping PATH update prompt"
-        return 1
+build_path_export_line() {
+    local node_path=""
+    local conductor_bin_path=""
+
+    if [ -z "$RC_FILE" ] || [ -z "$RC_SHELL" ]; then
+        resolve_rc_file
     fi
 
-    detect_shell_rc_file
-
-    if [ -f "$PATH_RC_FILE" ] && grep -Fqx "$PATH_EXPORT_LINE" "$PATH_RC_FILE"; then
-        log_info "PATH entry already exists in $PATH_RC_FILE"
-        return 0
+    if [ "$USED_CONDUCTOR_NODE" -eq 1 ]; then
+        node_path='$HOME/.conductor/node/bin'
+        conductor_bin_path='$HOME/.conductor/bin'
+    else
+        node_path="$NODE_BIN_DIR"
+        conductor_bin_path="$GLOBAL_BIN_DIR"
     fi
 
-    if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
-        log_warn "No interactive terminal detected; cannot prompt to update PATH"
-        log_warn "Add this line to $PATH_RC_FILE:"
-        log_warn "$PATH_EXPORT_LINE"
-        return 1
+    if [ "$RC_SHELL" = "fish" ]; then
+        local line="set -gx PATH"
+
+        if [ -n "$node_path" ]; then
+            line="${line} \"$node_path\""
+        fi
+        if [ -n "$conductor_bin_path" ]; then
+            line="${line} \"$conductor_bin_path\""
+        fi
+
+        if [ "$line" = "set -gx PATH" ]; then
+            return
+        fi
+
+        line="${line} \$PATH"
+        printf '%s' "$line"
+        return
     fi
 
-    printf "\n${YELLOW}[WARN]${NC} conductor is not on your default PATH\n" > /dev/tty
-    printf "${YELLOW}[WARN]${NC} Add %s to %s ? [Y/n] " "$NPM_BIN_DIR" "$PATH_RC_FILE" > /dev/tty
-
-    local answer=""
-    read -r answer < /dev/tty || true
-    case "$answer" in
-        n|N|no|No|NO)
-            log_warn "Skipped PATH update"
-            return 1
-            ;;
-    esac
-
-    local rc_dir
-    rc_dir=$(dirname "$PATH_RC_FILE")
-    if ! mkdir -p "$rc_dir"; then
-        log_warn "Failed to create directory for $PATH_RC_FILE"
-        return 1
+    local segments=""
+    if [ -n "$node_path" ]; then
+        segments="${segments}${node_path}:"
+    fi
+    if [ -n "$conductor_bin_path" ]; then
+        segments="${segments}${conductor_bin_path}:"
     fi
 
-    if [ ! -f "$PATH_RC_FILE" ] && ! touch "$PATH_RC_FILE"; then
-        log_warn "Failed to create $PATH_RC_FILE"
-        return 1
+    if [ -z "$segments" ]; then
+        return
     fi
 
-    if ! printf '\n%s\n' "$PATH_EXPORT_LINE" >> "$PATH_RC_FILE"; then
-        log_warn "Failed to update $PATH_RC_FILE"
-        return 1
-    fi
-
-    log_info "Added PATH entry to $PATH_RC_FILE"
-    log_info "Run: source \"$PATH_RC_FILE\" (or reopen your terminal)"
-    return 0
+    printf 'export PATH="%s$PATH"' "$segments"
 }
 
-# Verify installation
 verify_installation() {
     log_info "Verifying installation..."
+    refresh_runtime_paths
 
-    NPM_PREFIX=$("$NPM_CMD" config get prefix 2>/dev/null || true)
-    if [ -z "$NPM_PREFIX" ]; then
-        log_warn "Could not determine npm global prefix"
+    local conductor_bin=""
+    if [ -n "$GLOBAL_BIN_DIR" ] && [ -x "$GLOBAL_BIN_DIR/conductor" ]; then
+        conductor_bin="$GLOBAL_BIN_DIR/conductor"
+    elif command -v conductor >/dev/null 2>&1; then
+        conductor_bin="$(command -v conductor)"
+    fi
+
+    if [ -z "$conductor_bin" ]; then
+        log_warn "conductor command not found after installation"
+        local export_line
+        export_line=$(build_path_export_line)
+        if [ -n "$export_line" ]; then
+            log_warn "Add Conductor to your PATH with:"
+            log_warn "  $export_line"
+        fi
         return 1
     fi
 
-    NPM_BIN_DIR="$NPM_PREFIX/bin"
-    local conductor_bin="$NPM_BIN_DIR/conductor"
-    if [ ! -x "$conductor_bin" ]; then
-        detect_shell_rc_file
-        log_warn "conductor command not found at $conductor_bin"
-        log_warn "You may need to add npm global bin directory to your PATH"
-        log_warn "Add this line to $PATH_RC_FILE:"
-        log_warn "$PATH_EXPORT_LINE"
-        return 1
-    fi
-
-    log_info "Node path: $NODE_CMD"
-    log_info "npm path: $NPM_CMD"
-    log_info "conductor path: $conductor_bin"
+    local runtime_path
+    runtime_path=$(build_runtime_path)
 
     local version
-    if version=$(PATH="$NPM_BIN_DIR:$PATH" "$conductor_bin" --version 2>&1); then
+    if version=$(PATH="$runtime_path" "$conductor_bin" --version 2>&1); then
         log_info "✓ conductor is installed: $version"
     else
         log_warn "conductor is installed but failed to run"
@@ -308,7 +406,7 @@ verify_installation() {
         return 1
     fi
 
-    if [[ ":$ORIGINAL_PATH:" == *":$NPM_BIN_DIR:"* ]]; then
+    if PATH="$ORIGINAL_PATH" conductor --version >/dev/null 2>&1; then
         return 0
     fi
 
@@ -338,7 +436,7 @@ verify_node_pty() {
         return 0
     fi
 
-    local package_dir="$npm_root/$PACKAGE_NAME"
+    local package_dir="${npm_root}/${PACKAGE_NAME}"
     if [ ! -d "$package_dir" ]; then
         log_warn "Global package directory not found at $package_dir; skipping node-pty verification"
         return 0
@@ -354,68 +452,171 @@ verify_node_pty() {
     return 1
 }
 
-# Main installation flow
+rc_contains_current_path_setup() {
+    if [ ! -f "$RC_FILE" ]; then
+        return 1
+    fi
+
+    local export_line
+    export_line=$(build_path_export_line)
+    if [ -z "$export_line" ]; then
+        return 1
+    fi
+
+    grep -Fq "$PATH_BLOCK_START" "$RC_FILE" \
+        && grep -Fq "$PATH_BLOCK_END" "$RC_FILE" \
+        && grep -Fq "$export_line" "$RC_FILE"
+}
+
+remove_existing_path_block() {
+    if [ ! -f "$RC_FILE" ]; then
+        return
+    fi
+
+    local temp_file="${RC_FILE}.conductor.$$"
+    awk -v start="$PATH_BLOCK_START" -v end="$PATH_BLOCK_END" '
+        $0 == start { skipping = 1; next }
+        $0 == end { skipping = 0; next }
+        !skipping { print }
+    ' "$RC_FILE" > "$temp_file"
+    mv "$temp_file" "$RC_FILE"
+}
+
+write_path_to_rc() {
+    mkdir -p "$(dirname "$RC_FILE")"
+    touch "$RC_FILE"
+    remove_existing_path_block
+
+    local export_line
+    export_line=$(build_path_export_line)
+    {
+        printf '\n%s\n' "$PATH_BLOCK_START"
+        printf '# Added by Conductor installer\n'
+        printf '%s\n' "$export_line"
+        printf '%s\n' "$PATH_BLOCK_END"
+    } >> "$RC_FILE"
+}
+
+prompt_yes_no() {
+    local prompt="$1"
+    local reply
+
+    if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+        return 2
+    fi
+
+    printf '%s [Y/n] ' "$prompt" > /dev/tty
+    if ! read -r reply < /dev/tty; then
+        return 2
+    fi
+
+    case "$reply" in
+        ""|y|Y|yes|YES|Yes)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+print_manual_path_instructions() {
+    local export_line
+    export_line=$(build_path_export_line)
+    if [ -z "$export_line" ]; then
+        return
+    fi
+
+    resolve_rc_file
+    log_info "Add the following line to ${RC_FILE}:"
+    printf '%s\n' "$export_line"
+}
+
+offer_path_setup() {
+    local path_status="$1"
+    local prompt_status=0
+
+    if [ "$path_status" -ne 2 ]; then
+        return
+    fi
+
+    resolve_rc_file
+    if rc_contains_current_path_setup; then
+        log_info "PATH is already configured in ${RC_FILE}"
+        log_info "Open a new shell or run 'source ${RC_FILE}' to use it"
+        return
+    fi
+
+    if prompt_yes_no "Write Conductor PATH setup to ${RC_FILE}?"; then
+        write_path_to_rc
+        log_info "Wrote Conductor PATH setup to ${RC_FILE}"
+        log_info "Run 'source ${RC_FILE}' or open a new shell to use it"
+        return
+    fi
+    prompt_status=$?
+
+    if [ "$prompt_status" -eq 2 ]; then
+        log_warn "No interactive terminal available to update PATH automatically."
+    else
+        log_warn "Skipping shell rc update at your request."
+    fi
+    print_manual_path_instructions
+}
+
 main() {
     echo ""
     log_info "=== Conductor CLI Installation ==="
     echo ""
 
-    # Detect platform
     detect_platform
 
-    # Check for npm or setup local Node.js
     if check_npm; then
         log_info "Using system npm"
     else
-        setup_temp_node
+        setup_conductor_node
     fi
 
-    # Install conductor-cli
     if ! install_conductor; then
-        log_error "Installation failed"
+        echo ""
+        print_installed_paths
+        log_error "=== Installation Failed ==="
+        log_error "Failed to install Conductor CLI."
         exit 1
     fi
 
-    # Verify installation
     echo ""
     local path_status=0
     local node_pty_ok=0
     verify_installation || path_status=$?
     verify_node_pty || node_pty_ok=$?
 
+    if [ "$path_status" -eq 1 ]; then
+        echo ""
+        print_installed_paths
+        log_error "=== Installation Failed ==="
+        log_error "Conductor CLI was installed, but the command could not be verified."
+        exit 1
+    fi
+
     if [ "$node_pty_ok" -ne 0 ]; then
         echo ""
+        print_installed_paths
         log_error "=== Installation Failed ==="
         log_error "Conductor CLI was installed, but node-pty is not usable."
         exit 1
     fi
 
-    if [ "$path_status" -eq 2 ]; then
-        prompt_write_path_to_rc && path_status=3
-    fi
+    offer_path_setup "$path_status"
 
-    if [ "$path_status" -eq 0 ]; then
-        echo ""
-        log_info "=== Installation Complete ==="
-        log_info "You can now use 'conductor' command"
-        log_info "Run 'conductor --help' to get started"
-    elif [ "$path_status" -eq 3 ]; then
-        echo ""
-        log_info "=== Installation Complete ==="
-        log_info "You can now use 'conductor' command"
-        log_info "Open a new terminal or run: source \"$PATH_RC_FILE\""
-    else
-        echo ""
-        log_warn "=== Installation Complete (with warnings) ==="
-        log_warn "Please add npm global bin directory to your PATH"
-        if [ -n "$NPM_BIN_DIR" ]; then
-            detect_shell_rc_file
-            log_warn "Add this line to $PATH_RC_FILE:"
-            log_warn "$PATH_EXPORT_LINE"
-        fi
+    echo ""
+    print_installed_paths
+    log_info "=== Installation Complete ==="
+    if [ "$USED_CONDUCTOR_NODE" -eq 1 ]; then
+        log_info "Conductor-managed runtime lives in ${CONDUCTOR_HOME}"
     fi
+    log_info "You can now use 'conductor' command"
+    log_info "Run 'conductor --help' to get started"
     echo ""
 }
 
-# Run main function
 main
