@@ -17,6 +17,10 @@ import {
   isNewerVersion,
   detectPackageManager,
 } from "../src/version-check.js";
+import {
+  ensurePnpmOnlyBuiltDependencies,
+  repairAndVerifyGlobalNodePty,
+} from "../src/native-deps.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -140,41 +144,50 @@ async function confirmUpdate(version) {
 }
 
 async function performUpdate() {
-  return new Promise((resolve, reject) => {
-    // 检测使用的包管理器
-    const packageManager = detectPackageManager({
-      launcherPath: process.env.CONDUCTOR_LAUNCHER_SCRIPT || process.argv[1],
-      packageRoot: PKG_ROOT,
+  const packageManager = detectPackageManager({
+    launcherPath: process.env.CONDUCTOR_LAUNCHER_SCRIPT || process.argv[1],
+    packageRoot: PKG_ROOT,
+  });
+  console.log(`   Using package manager: ${colorize(packageManager, "cyan")}`);
+  console.log("");
+
+  if (packageManager === "pnpm") {
+    console.log("   Preparing pnpm native dependency allowlist...");
+    await ensurePnpmOnlyBuiltDependencies({
+      runCommand: runBufferedCommand,
+      dependencies: ["node-pty"],
+      global: true,
     });
-    console.log(`   Using package manager: ${colorize(packageManager, "cyan")}`);
     console.log("");
-    
-    let cmd, args;
-    
-    switch (packageManager) {
-      case "pnpm":
-        cmd = "pnpm";
-        args = ["add", "-g", `${PACKAGE_NAME}@latest`];
-        break;
-      case "yarn":
-        cmd = "yarn";
-        args = ["global", "add", `${PACKAGE_NAME}@latest`];
-        break;
-      case "npm":
-      default:
-        cmd = "npm";
-        args = ["install", "-g", `${PACKAGE_NAME}@latest`];
-        break;
-    }
-    
-    console.log(`   Running: ${colorize(`${cmd} ${args.join(" ")}`, "cyan")}`);
-    console.log("");
-    
+  }
+
+  let cmd, args;
+
+  switch (packageManager) {
+    case "pnpm":
+      cmd = "pnpm";
+      args = ["add", "-g", `${PACKAGE_NAME}@latest`];
+      break;
+    case "yarn":
+      cmd = "yarn";
+      args = ["global", "add", `${PACKAGE_NAME}@latest`];
+      break;
+    case "npm":
+    default:
+      cmd = "npm";
+      args = ["install", "-g", `${PACKAGE_NAME}@latest`];
+      break;
+  }
+
+  console.log(`   Running: ${colorize(`${cmd} ${args.join(" ")}`, "cyan")}`);
+  console.log("");
+
+  await new Promise((resolve, reject) => {
     const child = spawn(cmd, args, {
       stdio: "inherit",
       shell: true
     });
-    
+
     child.on("close", (code) => {
       if (code === 0) {
         resolve();
@@ -182,9 +195,57 @@ async function performUpdate() {
         reject(new Error(`Exit code ${code}`));
       }
     });
-    
+
     child.on("error", (error) => {
       reject(error);
+    });
+  });
+
+  console.log("   Repairing and verifying node-pty native binding...");
+  await repairAndVerifyGlobalNodePty({
+    packageManager,
+    packageName: PACKAGE_NAME,
+    runCommand: runBufferedCommand,
+    nodeExecutable: process.execPath,
+  });
+}
+
+function runBufferedCommand(command, args, options = {}) {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+      env: options.env || process.env,
+      cwd: options.cwd || process.cwd(),
+    });
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // ignore timeout failures
+      }
+    }, options.timeoutMs || 20_000);
+
+    child.stdout?.on("data", (chunk) => {
+      if (stdout.length < 16_000) stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk) => {
+      if (stderr.length < 16_000) stderr += chunk.toString();
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ success: code === 0, code, stdout, stderr });
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({
+        success: false,
+        code: -1,
+        stdout,
+        stderr: error instanceof Error ? error.message : String(error),
+      });
     });
   });
 }

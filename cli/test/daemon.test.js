@@ -5,7 +5,12 @@ import path from "node:path";
 
 import { WebSocketServer } from "ws";
 
-import { ensureNodePtySpawnHelperExecutable, startDaemon } from "../src/daemon.js";
+import {
+  ensureNodePtySpawnHelperExecutable,
+  probePtyTaskCapability,
+  resolveDefaultPtyShell,
+  startDaemon,
+} from "../src/daemon.js";
 
 function restoreEnv(key, value) {
   if (typeof value === "undefined") {
@@ -63,6 +68,70 @@ describe("Daemon", () => {
 
     assert.deepStrictEqual(result, { helperPath, updated: true });
     assert.deepStrictEqual(chmodCalls, [[helperPath, 0o755]]);
+  });
+
+  it("falls back to /bin/bash for PTY tasks on linux when SHELL is unset", () => {
+    const previousShell = process.env.SHELL;
+    try {
+      delete process.env.SHELL;
+      assert.strictEqual(
+        resolveDefaultPtyShell({
+          platform: "linux",
+          existsSync: (candidate) => candidate === "/bin/bash",
+        }),
+        "/bin/bash",
+      );
+    } finally {
+      restoreEnv("SHELL", previousShell);
+    }
+  });
+
+  it("falls back to /bin/sh for PTY tasks on linux when bash is unavailable", () => {
+    const previousShell = process.env.SHELL;
+    try {
+      delete process.env.SHELL;
+      assert.strictEqual(
+        resolveDefaultPtyShell({
+          platform: "linux",
+          existsSync: (candidate) => candidate === "/bin/sh",
+        }),
+        "/bin/sh",
+      );
+    } finally {
+      restoreEnv("SHELL", previousShell);
+    }
+  });
+
+  it("disables PTY capability when node-pty cannot be loaded at startup", () => {
+    const capability = probePtyTaskCapability({
+      ensureSpawnHelperExecutableFn: () => null,
+      requireFn: () => {
+        throw new Error("Failed to load native module: pty.node");
+      },
+    });
+
+    assert.deepStrictEqual(capability, {
+      enabled: false,
+      reason: "Failed to load native module: pty.node",
+      spawnHelperInfo: null,
+      spawnPty: null,
+    });
+  });
+
+  it("reports PTY capability when node-pty exposes spawn at startup", () => {
+    const spawnPty = () => {};
+    const capability = probePtyTaskCapability({
+      ensureSpawnHelperExecutableFn: () => ({ helperPath: "/tmp/spawn-helper", updated: false }),
+      requireFn: () => ({ spawn: spawnPty }),
+    });
+
+    assert.strictEqual(capability.enabled, true);
+    assert.strictEqual(capability.reason, null);
+    assert.deepStrictEqual(capability.spawnHelperInfo, {
+      helperPath: "/tmp/spawn-helper",
+      updated: false,
+    });
+    assert.strictEqual(capability.spawnPty, spawnPty);
   });
 
   it("skips auto-update for local installs by default", async () => {
@@ -128,6 +197,9 @@ describe("Daemon", () => {
     process.env.CONDUCTOR_DAEMON_WATCHDOG_INTERVAL_MS = "10";
 
     let installAttempts = 0;
+    let rebuildAttempts = 0;
+    let rootLookups = 0;
+    let nodePtyVerificationAttempts = 0;
     let versionChecks = 0;
     let restartAttempts = 0;
     let exitCode = null;
@@ -147,17 +219,37 @@ describe("Daemon", () => {
       {
         spawn: (cmd, args, opts) => {
           if (cmd === "npm") {
-            installAttempts += 1;
-            assert.deepStrictEqual(args, [
-              "install",
-              "-g",
-              "@love-moon/conductor-cli@0.2.21",
-            ]);
+            if (args[0] === "install") {
+              installAttempts += 1;
+              assert.deepStrictEqual(args, [
+                "install",
+                "-g",
+                "@love-moon/conductor-cli@0.2.21",
+              ]);
+            } else if (args[0] === "rebuild") {
+              rebuildAttempts += 1;
+              assert.deepStrictEqual(args, [
+                "rebuild",
+                "-g",
+                "@love-moon/conductor-cli",
+              ]);
+            } else if (args[0] === "root") {
+              rootLookups += 1;
+            } else {
+              throw new Error(`unexpected npm command: ${args.join(" ")}`);
+            }
             const child = new EventEmitter();
             child.stdout = new EventEmitter();
             child.stderr = new EventEmitter();
             child.kill = () => {};
-            setImmediate(() => child.emit("close", 0));
+            if (args[0] === "root") {
+              setImmediate(() => {
+                child.stdout.emit("data", "/mock/global/node_modules\n");
+                child.emit("close", 0);
+              });
+            } else {
+              setImmediate(() => child.emit("close", 0));
+            }
             return child;
           }
           if (cmd === process.execPath && args[0] === "/mock/bin/conductor" && args[1] === "--version") {
@@ -170,6 +262,17 @@ describe("Daemon", () => {
               child.stdout.emit("data", "conductor version 0.2.21 (test)\n");
               child.emit("close", 0);
             });
+            return child;
+          }
+          if (cmd === process.execPath && args[0] === "-e") {
+            nodePtyVerificationAttempts += 1;
+            assert.match(args[1], /node-pty/);
+            assert.strictEqual(args[2], "/mock/global/node_modules/@love-moon/conductor-cli");
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => child.emit("close", 0));
             return child;
           }
           if (
@@ -236,6 +339,9 @@ describe("Daemon", () => {
 
     restoreEnv("CONDUCTOR_DAEMON_WATCHDOG_INTERVAL_MS", previousWatchdogInterval);
     assert.strictEqual(installAttempts, 1);
+    assert.strictEqual(rebuildAttempts, 1);
+    assert.strictEqual(rootLookups, 1);
+    assert.strictEqual(nodePtyVerificationAttempts, 1);
     assert.strictEqual(versionChecks, 1);
     assert.strictEqual(restartAttempts, 1);
     assert.strictEqual(packageManagerOptions?.launcherPath, "/mock/bin/conductor");
@@ -268,7 +374,14 @@ describe("Daemon", () => {
             child.stdout = new EventEmitter();
             child.stderr = new EventEmitter();
             child.kill = () => {};
-            setImmediate(() => child.emit("close", 0));
+            if (args[0] === "root") {
+              setImmediate(() => {
+                child.stdout.emit("data", "/mock/global/node_modules\n");
+                child.emit("close", 0);
+              });
+            } else {
+              setImmediate(() => child.emit("close", 0));
+            }
             return child;
           }
           if (cmd === process.execPath && args[0] === "/mock/bin/conductor" && args[1] === "--version") {
@@ -280,6 +393,14 @@ describe("Daemon", () => {
               child.stdout.emit("data", "conductor version 0.2.21 (test)\n");
               child.emit("close", 0);
             });
+            return child;
+          }
+          if (cmd === process.execPath && args[0] === "-e") {
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => child.emit("close", 0));
             return child;
           }
           if (cmd === process.execPath && args[0] === "/mock/bin/conductor" && args[1] === "daemon") {
@@ -324,6 +445,162 @@ describe("Daemon", () => {
     restoreEnv("CONDUCTOR_DAEMON_WATCHDOG_INTERVAL_MS", previousWatchdogInterval);
     assert.strictEqual(restartAttempts, 1);
     assert.strictEqual(exitCode, 1);
+  });
+
+  it("prepares pnpm build approval before auto-update installs node-pty", async () => {
+    const previousWatchdogInterval = process.env.CONDUCTOR_DAEMON_WATCHDOG_INTERVAL_MS;
+    process.env.CONDUCTOR_DAEMON_WATCHDOG_INTERVAL_MS = "10";
+
+    const calls = [];
+    let builtDependenciesJson = '"foo"';
+    let exitCode = null;
+    let restartAttempts = 0;
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-auto-update-pnpm",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-auto-update-pnpm",
+        RESTART_LAUNCHER_SCRIPT: "/mock/bin/conductor",
+        RESTART_LAUNCHER_ARGS: ["daemon"],
+        VERSION_CHECK_SCRIPT: "/mock/bin/conductor",
+        VERSION_CHECK_ARGS: ["--version"],
+      },
+      {
+        spawn: (cmd, args) => {
+          calls.push([cmd, args]);
+          if (cmd === "pnpm" && args[0] === "config" && args[1] === "get") {
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => {
+              child.stdout.emit("data", builtDependenciesJson);
+              child.emit("close", 0);
+            });
+            return child;
+          }
+          if (cmd === "pnpm" && args[0] === "config" && args[1] === "set") {
+            builtDependenciesJson = args[4];
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => child.emit("close", 0));
+            return child;
+          }
+          if (cmd === "pnpm" && args[0] === "add") {
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => child.emit("close", 0));
+            return child;
+          }
+          if (cmd === "pnpm" && args[0] === "rebuild") {
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => child.emit("close", 0));
+            return child;
+          }
+          if (cmd === "pnpm" && args[0] === "root") {
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => {
+              child.stdout.emit("data", "/mock/pnpm/global/node_modules\n");
+              child.emit("close", 0);
+            });
+            return child;
+          }
+          if (cmd === process.execPath && args[0] === "/mock/bin/conductor" && args[1] === "--version") {
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => {
+              child.stdout.emit("data", "conductor version 0.2.21 (test)\n");
+              child.emit("close", 0);
+            });
+            return child;
+          }
+          if (cmd === process.execPath && args[0] === "-e") {
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => child.emit("close", 0));
+            return child;
+          }
+          if (cmd === process.execPath && args[0] === "/mock/bin/conductor" && args[1] === "daemon") {
+            restartAttempts += 1;
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            child.unref = () => {};
+            child.pid = 43211;
+            setImmediate(() => child.emit("close", 0));
+            return child;
+          }
+          throw new Error(`unexpected spawn: ${cmd} ${args.join(" ")}`);
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => {
+          throw new Error("unexpected read");
+        },
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => [] }),
+        fetchLatestVersion: async () => "0.2.21",
+        isNewerVersion: () => true,
+        detectPackageManager: () => "pnpm",
+        isInUpdateWindow: () => true,
+        isManagedInstallPath: () => true,
+        isBackgroundProcess: true,
+        cliVersion: "0.2.20",
+        exit: (code) => {
+          exitCode = code;
+        },
+        createWebSocketClient: () => ({
+          registerHandler: () => {},
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async () => {},
+        }),
+      },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    daemonInstance.close();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    restoreEnv("CONDUCTOR_DAEMON_WATCHDOG_INTERVAL_MS", previousWatchdogInterval);
+    assert.deepStrictEqual(
+      calls.filter(([cmd]) => cmd === "pnpm").slice(0, 5),
+      [
+      ["pnpm", ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
+      ["pnpm", ["config", "set", "--global", "onlyBuiltDependencies", '["foo","node-pty"]']],
+      ["pnpm", ["add", "-g", "@love-moon/conductor-cli@0.2.21"]],
+      ["pnpm", ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
+      ["pnpm", ["rebuild", "-g", "node-pty"]],
+      ],
+    );
+    assert.ok(
+      calls.some(
+        ([cmd, args]) =>
+          cmd === "pnpm" && Array.isArray(args) && args[0] === "root" && args[1] === "-g",
+      ),
+    );
+    assert.strictEqual(restartAttempts, 1);
+    assert.strictEqual(exitCode, 0);
   });
 
   it("allows lock takeover when restart handoff token matches the existing daemon lock", async () => {
@@ -1244,7 +1521,15 @@ describe("Daemon", () => {
           return { ok: true, json: async () => ({}) };
         },
         createPty: async (command, args, options) => {
-          assert.strictEqual(command, "/bin/zsh");
+          assert.strictEqual(
+            command,
+            resolveDefaultPtyShell({
+              envShell: process.env.SHELL,
+              comspec: process.env.COMSPEC,
+              platform: process.platform,
+              existsSync: () => false,
+            }),
+          );
           assert.deepStrictEqual(args, ["-l"]);
           assert.strictEqual(options.cwd, "/tmp/test-ws-pty-bound");
           assert.strictEqual(options.cols, 120);
@@ -1468,6 +1753,100 @@ describe("Daemon", () => {
     if (daemonInstance && typeof daemonInstance.close === "function") {
       daemonInstance.close();
     }
+  });
+
+  it("disables PTY capability headers and rejects PTY tasks when startup self-check fails", async () => {
+    let handler;
+    let webSocketClientOptions;
+    const sentEvents = [];
+
+    startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-pty-disabled",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "pty-disabled-daemon",
+      },
+      {
+        spawn: () => {
+          throw new Error("spawn should not be called for create_pty_task");
+        },
+        createPty: () => {
+          throw new Error("createPty should not be called when PTY capability is disabled");
+        },
+        resolvePtyTaskCapability: () => ({
+          enabled: false,
+          reason: "Failed to load native module: pty.node",
+          spawnHelperInfo: null,
+          spawnPty: null,
+        }),
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return { ok: true, json: async () => ({ metadata: null }) };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: (_sdkConfig, options) => {
+          webSocketClientOptions = options;
+          return {
+            registerHandler: (nextHandler) => {
+              handler = nextHandler;
+            },
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async (payload) => {
+              sentEvents.push(payload);
+            },
+          };
+        },
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(webSocketClientOptions.extraHeaders, "x-conductor-capabilities"),
+      false,
+    );
+
+    handler({
+      type: "create_pty_task",
+      payload: {
+        task_id: "task-pty-disabled-1",
+        project_id: "proj-pty-disabled-1",
+        pty_session_id: "pty-session-disabled-1",
+        request_id: "req-pty-disabled-1",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expectEvent(sentEvents, "agent_command_ack", (payload) => {
+      assert.strictEqual(payload.task_id, "task-pty-disabled-1");
+      assert.strictEqual(payload.event_type, "create_pty_task");
+      assert.strictEqual(payload.accepted, false);
+    });
+    expectEvent(sentEvents, "terminal_error", (payload) => {
+      assert.strictEqual(payload.task_id, "task-pty-disabled-1");
+      assert.strictEqual(
+        payload.message,
+        "pty runtime unavailable: Failed to load native module: pty.node",
+      );
+    });
   });
 
   it("returns an answer placeholder and falls back to relay when receiving a PTY offer", async () => {

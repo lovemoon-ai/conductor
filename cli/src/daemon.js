@@ -20,6 +20,10 @@ import {
   isInUpdateWindow,
   isManagedInstallPath,
 } from "./version-check.js";
+import {
+  ensurePnpmOnlyBuiltDependencies,
+  repairAndVerifyGlobalNodePty,
+} from "./native-deps.js";
 
 dotenv.config();
 
@@ -47,6 +51,39 @@ const DEFAULT_TERMINAL_ROWS = 40;
 const DEFAULT_TERMINAL_RING_BUFFER_MAX_BYTES = 2 * 1024 * 1024;
 const DEFAULT_RTC_MODULE_CANDIDATES = ["@roamhq/wrtc", "wrtc"];
 let nodePtySpawnPromise = null;
+
+function resolveNodePtySpawnExport(mod) {
+  if (typeof mod?.spawn === "function") {
+    return mod.spawn;
+  }
+  if (mod?.default && typeof mod.default.spawn === "function") {
+    return mod.default.spawn.bind(mod.default);
+  }
+  throw new Error("node-pty spawn export not found");
+}
+
+export function probePtyTaskCapability({
+  requireFn = moduleRequire,
+  ensureSpawnHelperExecutableFn = ensureNodePtySpawnHelperExecutable,
+} = {}) {
+  try {
+    const spawnHelperInfo = ensureSpawnHelperExecutableFn();
+    const spawnPty = resolveNodePtySpawnExport(requireFn("node-pty"));
+    return {
+      enabled: true,
+      reason: null,
+      spawnHelperInfo,
+      spawnPty,
+    };
+  } catch (error) {
+    return {
+      enabled: false,
+      reason: error instanceof Error ? error.message : String(error),
+      spawnHelperInfo: null,
+      spawnPty: null,
+    };
+  }
+}
 
 function appendDaemonLog(line) {
   try {
@@ -154,18 +191,46 @@ async function defaultCreatePty(command, args, options) {
     if (spawnHelperInfo?.updated) {
       log(`Enabled execute permission on node-pty spawn-helper: ${spawnHelperInfo.helperPath}`);
     }
-    nodePtySpawnPromise = import("node-pty").then((mod) => {
-      if (typeof mod.spawn === "function") {
-        return mod.spawn;
-      }
-      if (mod.default && typeof mod.default.spawn === "function") {
-        return mod.default.spawn.bind(mod.default);
-      }
-      throw new Error("node-pty spawn export not found");
-    });
+    nodePtySpawnPromise = Promise.resolve(resolveNodePtySpawnExport(moduleRequire("node-pty")));
   }
   const spawnPty = await nodePtySpawnPromise;
   return spawnPty(command, args, options);
+}
+
+export function resolveDefaultPtyShell({
+  explicitShell,
+  envShell = process.env.SHELL,
+  comspec = process.env.COMSPEC,
+  platform = process.platform,
+  existsSync = fs.existsSync,
+} = {}) {
+  const normalizedExplicitShell = normalizeOptionalString(explicitShell);
+  if (normalizedExplicitShell) {
+    return normalizedExplicitShell;
+  }
+
+  const normalizedEnvShell = normalizeOptionalString(envShell);
+  if (normalizedEnvShell) {
+    return normalizedEnvShell;
+  }
+
+  if (platform === "win32") {
+    return normalizeOptionalString(comspec) || "cmd.exe";
+  }
+
+  if (platform === "darwin") {
+    return "/bin/zsh";
+  }
+
+  if (existsSync("/bin/bash")) {
+    return "/bin/bash";
+  }
+
+  if (existsSync("/bin/sh")) {
+    return "/bin/sh";
+  }
+
+  return "/bin/bash";
 }
 
 export function ensureNodePtySpawnHelperExecutable(deps = {}) {
@@ -719,13 +784,40 @@ export function startDaemon(config = {}, deps = {}) {
   let rtcAvailabilityLogKey = null;
   const logCollector = createLogCollector(BACKEND_HTTP);
   const createPtyFn = deps.createPty || defaultCreatePty;
+  const resolvePtyTaskCapabilityFn =
+    deps.resolvePtyTaskCapability ||
+    (deps.createPty
+      ? (() => ({ enabled: true, reason: null, spawnHelperInfo: null, spawnPty: null }))
+      : probePtyTaskCapability);
+  let ptyTaskCapability;
+  try {
+    ptyTaskCapability = resolvePtyTaskCapabilityFn();
+  } catch (error) {
+    ptyTaskCapability = {
+      enabled: false,
+      reason: error instanceof Error ? error.message : String(error),
+      spawnHelperInfo: null,
+      spawnPty: null,
+    };
+  }
+  const ptyTaskCapabilityEnabled = ptyTaskCapability?.enabled !== false;
+  const ptyTaskCapabilityError = normalizeOptionalString(ptyTaskCapability?.reason);
+  if (ptyTaskCapability?.spawnHelperInfo?.updated) {
+    log(`Enabled execute permission on node-pty spawn-helper: ${ptyTaskCapability.spawnHelperInfo.helperPath}`);
+  }
+  if (!ptyTaskCapabilityEnabled) {
+    logError(`[pty] Disabled PTY capability: ${ptyTaskCapabilityError || "unknown error"}`);
+  }
+  const extraHeaders = {
+    "x-conductor-host": AGENT_NAME,
+    "x-conductor-backends": SUPPORTED_BACKENDS.join(","),
+    "x-conductor-version": cliVersion,
+  };
+  if (ptyTaskCapabilityEnabled) {
+    extraHeaders["x-conductor-capabilities"] = "pty_task";
+  }
   const client = createWebSocketClient(sdkConfig, {
-    extraHeaders: {
-      "x-conductor-host": AGENT_NAME,
-      "x-conductor-backends": SUPPORTED_BACKENDS.join(","),
-      "x-conductor-capabilities": "pty_task",
-      "x-conductor-version": cliVersion,
-    },
+    extraHeaders,
     onConnected: ({ isReconnect, connectedAt } = { isReconnect: false, connectedAt: Date.now() }) => {
       wsConnected = true;
       lastConnectedAt = connectedAt || Date.now();
@@ -1081,6 +1173,14 @@ export function startDaemon(config = {}, deps = {}) {
     });
   }
 
+  function runBufferedCommand(command, args, options = {}) {
+    return runCommand(
+      command,
+      args,
+      typeof options === "number" ? options : options?.timeoutMs ?? 120_000,
+    );
+  }
+
   async function readInstalledCliVersion() {
     const commandAttempts = versionCheckScript
       ? [{
@@ -1117,6 +1217,16 @@ export function startDaemon(config = {}, deps = {}) {
       packageRoot: installedPackageRoot,
     });
     const pkgSpec = `${PACKAGE_NAME}@${targetVersion}`;
+
+    if (pm === "pnpm") {
+      log("[auto-update] Preparing pnpm native dependency allowlist for node-pty");
+      await ensurePnpmOnlyBuiltDependencies({
+        runCommand: runBufferedCommand,
+        dependencies: ["node-pty"],
+        global: true,
+      });
+    }
+
     log(`[auto-update] Installing ${pkgSpec} via ${pm}...`);
 
     // Step 1: install
@@ -1145,7 +1255,19 @@ export function startDaemon(config = {}, deps = {}) {
       throw new Error(`Version verification failed: ${verifyErr?.message || verifyErr}`);
     }
 
-    log(`[auto-update] Verified ${targetVersion}. Restarting daemon...`);
+    // Step 4: repair and verify native dependencies before shutting down the healthy daemon.
+    try {
+      await repairAndVerifyGlobalNodePty({
+        packageManager: pm,
+        packageName: PACKAGE_NAME,
+        runCommand: runBufferedCommand,
+        nodeExecutable: process.execPath,
+      });
+    } catch (verifyErr) {
+      throw new Error(`Native dependency verification failed: ${verifyErr?.message || verifyErr}`);
+    }
+
+    log(`[auto-update] Verified ${targetVersion} and node-pty. Restarting daemon...`);
 
     let logFd = null;
     if (isBackgroundProcess) {
@@ -1160,10 +1282,10 @@ export function startDaemon(config = {}, deps = {}) {
       logFd = fs.openSync(DAEMON_LOG_PATH, "a");
     }
 
-    // Step 4: graceful shutdown
+    // Step 5: graceful shutdown
     await shutdownDaemon("auto-update");
 
-    // Step 5: re-spawn (only in background/nohup mode)
+    // Step 6: re-spawn (only in background/nohup mode)
     if (isBackgroundProcess) {
       const handoffToken = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       const handoffExpiresAt = Date.now() + 15_000;
@@ -1430,6 +1552,31 @@ export function startDaemon(config = {}, deps = {}) {
     });
   }
 
+  function rejectCreatePtyTaskUnavailable(payload) {
+    const taskId = payload?.task_id ? String(payload.task_id) : "";
+    const projectId = payload?.project_id ? String(payload.project_id) : "";
+    const ptySessionId = payload?.pty_session_id ? String(payload.pty_session_id) : null;
+    const requestId = payload?.request_id ? String(payload.request_id) : "";
+    const message = ptyTaskCapabilityError
+      ? `pty runtime unavailable: ${ptyTaskCapabilityError}`
+      : "pty runtime unavailable";
+    log(`Rejecting create_pty_task for ${taskId || "unknown"}: ${message}`);
+    sendAgentCommandAck({
+      requestId,
+      taskId,
+      eventType: "create_pty_task",
+      accepted: false,
+    }).catch(() => {});
+    sendTerminalEvent("terminal_error", {
+      task_id: taskId || undefined,
+      project_id: projectId || undefined,
+      pty_session_id: ptySessionId,
+      message,
+    }).catch((err) => {
+      logError(`Failed to report PTY capability rejection for ${taskId || "unknown"}: ${err?.message || err}`);
+    });
+  }
+
   function sendPtyTransportSignal(payload) {
     return client.sendJson({
       type: "pty_transport_signal",
@@ -1656,10 +1803,13 @@ export function startDaemon(config = {}, deps = {}) {
       normalizeOptionalString(normalizedLaunchConfig.toolPreset)
         ? "tool_preset"
         : "shell");
-    const preferredShell =
-      normalizeOptionalString(normalizedLaunchConfig.shell) ||
-      process.env.SHELL ||
-      "/bin/zsh";
+    const preferredShell = resolveDefaultPtyShell({
+      explicitShell: normalizedLaunchConfig.shell,
+      envShell: process.env.SHELL,
+      comspec: process.env.COMSPEC,
+      platform: process.platform,
+      existsSync: existsSyncFn,
+    });
     const cwd =
       normalizeOptionalString(normalizedLaunchConfig.cwd) ||
       fallbackCwd;
@@ -1907,6 +2057,16 @@ export function startDaemon(config = {}, deps = {}) {
       return;
     }
 
+    if (daemonShuttingDown) {
+      rejectCreatePtyTaskDuringShutdown(payload);
+      return;
+    }
+
+    if (!ptyTaskCapabilityEnabled) {
+      rejectCreatePtyTaskUnavailable(payload);
+      return;
+    }
+
     if (requestId && !markRequestSeen(requestId)) {
       log(`Duplicate create_pty_task ignored for ${taskId} (request_id=${requestId})`);
       sendAgentCommandAck({
@@ -1915,11 +2075,6 @@ export function startDaemon(config = {}, deps = {}) {
         eventType: "create_pty_task",
         accepted: true,
       }).catch(() => {});
-      return;
-    }
-
-    if (daemonShuttingDown) {
-      rejectCreatePtyTaskDuringShutdown(payload);
       return;
     }
 

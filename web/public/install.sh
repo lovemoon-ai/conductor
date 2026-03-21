@@ -15,6 +15,7 @@ PACKAGE_NAME="@love-moon/conductor-cli"
 TEMP_DIR="${HOME}/.conductor-install-tmp"
 NODE_VERSION="20.11.0"
 NODE_CMD="node"
+INSTALL_USE_SUDO=""
 
 # Utility functions
 log_info() {
@@ -124,12 +125,10 @@ install_conductor() {
 
     # Check write permission for global installation
     local npm_prefix=$("$NPM_CMD" config get prefix)
-    local use_sudo=""
-
     if [ ! -w "$npm_prefix" ] && [ "$EUID" -ne 0 ]; then
         log_warn "No write permission to $npm_prefix. Attempting to use sudo..."
         if command -v sudo &> /dev/null; then
-            use_sudo="sudo"
+            INSTALL_USE_SUDO="sudo"
         else
             log_error "sudo not found and no write permission to $npm_prefix."
             log_error "Please run this script as root or fix npm permissions."
@@ -138,19 +137,33 @@ install_conductor() {
     fi
 
     # Try to install
-    if $use_sudo "$NPM_CMD" install -g "${PACKAGE_NAME}@latest"; then
-        log_info "Successfully installed ${PACKAGE_NAME}"
-        return 0
-    else
-        log_warn "Global installation failed. Trying with --force flag..."
-        if $use_sudo "$NPM_CMD" install -g --force "${PACKAGE_NAME}@latest"; then
-            log_info "Successfully installed ${PACKAGE_NAME} with --force"
+    if [ -n "$INSTALL_USE_SUDO" ]; then
+        if $INSTALL_USE_SUDO "$NPM_CMD" install -g "${PACKAGE_NAME}@latest"; then
+            log_info "Successfully installed ${PACKAGE_NAME}"
             return 0
-        else
-            log_error "Failed to install ${PACKAGE_NAME}"
-            return 1
+        fi
+    else
+        if "$NPM_CMD" install -g "${PACKAGE_NAME}@latest"; then
+            log_info "Successfully installed ${PACKAGE_NAME}"
+            return 0
         fi
     fi
+
+    log_warn "Global installation failed. Trying with --force flag..."
+    if [ -n "$INSTALL_USE_SUDO" ]; then
+        if $INSTALL_USE_SUDO "$NPM_CMD" install -g --force "${PACKAGE_NAME}@latest"; then
+            log_info "Successfully installed ${PACKAGE_NAME} with --force"
+            return 0
+        fi
+    else
+        if "$NPM_CMD" install -g --force "${PACKAGE_NAME}@latest"; then
+            log_info "Successfully installed ${PACKAGE_NAME} with --force"
+            return 0
+        fi
+    fi
+
+    log_error "Failed to install ${PACKAGE_NAME}"
+    return 1
 }
 
 # Verify installation
@@ -171,6 +184,19 @@ verify_installation() {
 }
 
 verify_node_pty() {
+    log_info "Rebuilding native dependencies..."
+    if [ -n "$INSTALL_USE_SUDO" ]; then
+        if ! $INSTALL_USE_SUDO "$NPM_CMD" rebuild -g "${PACKAGE_NAME}"; then
+            log_error "Failed to rebuild native dependencies for ${PACKAGE_NAME}"
+            return 1
+        fi
+    else
+        if ! "$NPM_CMD" rebuild -g "${PACKAGE_NAME}"; then
+            log_error "Failed to rebuild native dependencies for ${PACKAGE_NAME}"
+            return 1
+        fi
+    fi
+
     log_info "Verifying node-pty native binding..."
 
     local npm_root
@@ -186,7 +212,7 @@ verify_node_pty() {
         return 0
     fi
 
-    if "$NODE_CMD" -e "const {createRequire}=require('module'); const req=createRequire(process.argv[1] + '/package.json'); const pty=req('node-pty'); if (typeof pty.spawn !== 'function') throw new Error('node-pty spawn export not found'); console.log('node-pty OK');" "$package_dir"; then
+    if "$NODE_CMD" "$package_dir/bin/conductor-verify-node-pty.js" "$package_dir"; then
         log_info "✓ node-pty native binding is available"
         return 0
     fi
@@ -220,7 +246,19 @@ main() {
 
     # Verify installation
     echo ""
-    if verify_installation && verify_node_pty; then
+    local path_ok=0
+    local node_pty_ok=0
+    verify_installation || path_ok=$?
+    verify_node_pty || node_pty_ok=$?
+
+    if [ "$node_pty_ok" -ne 0 ]; then
+        echo ""
+        log_error "=== Installation Failed ==="
+        log_error "Conductor CLI was installed, but node-pty is not usable."
+        exit 1
+    fi
+
+    if [ "$path_ok" -eq 0 ]; then
         echo ""
         log_info "=== Installation Complete ==="
         log_info "You can now use 'conductor' command"
