@@ -87,7 +87,9 @@ const isDirectExecution = (() => {
     return false;
   }
   try {
-    return pathToFileURL(entryPath).href === import.meta.url;
+    const entryRealPath = fs.realpathSync(entryPath);
+    const currentRealPath = fs.realpathSync(__filename);
+    return pathToFileURL(entryRealPath).href === pathToFileURL(currentRealPath).href;
   } catch {
     return false;
   }
