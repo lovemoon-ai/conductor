@@ -298,6 +298,14 @@ const getOwnedPtyTask = async (userId: string, taskId: string) =>
         },
         include: {
           ptySession: true,
+          taskStatusEvents: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: {
+              status: true,
+              summary: true,
+            },
+          },
         },
       }),
     async () => null,
@@ -672,7 +680,7 @@ export const handleTerminalExitEvent = async (args: {
   });
 };
 
-const handleTerminalErrorEvent = async (args: {
+export const handleTerminalErrorEvent = async (args: {
   userId: string;
   agentHost: string;
   payload: Extract<AgentEvent, { type: "terminal_error" }>["payload"];
@@ -690,21 +698,48 @@ const handleTerminalErrorEvent = async (args: {
   await ensureAgentOwnsTask(args.userId, task, args.agentHost);
   const message = normalizeOptionalString(args.payload.message) || "terminal error";
   const closedAt = new Date().toISOString();
-  await db.$transaction([
-    db.task.update({
-      where: { id: task.id },
-      data: { status: "killed", executionHost: args.agentHost },
-    }),
-    db.ptySession.update({
-      where: { taskId: task.id },
-      data: {
-        state: "failed",
-        closedAt: new Date(closedAt),
-      },
-    }),
-  ]);
+  const currentTaskStatus = normalizeTaskStatus(task.status);
+  const taskWasActive = currentTaskStatus === "running" || currentTaskStatus === "unknown";
+  const latestStatusSummary = normalizeOptionalString(task.taskStatusEvents?.[0]?.summary);
+  const shouldCreateStatusEvent = taskWasActive && latestStatusSummary !== message;
 
-  broadcastTaskStatusUpdate(args.userId, task.projectId, task.id, "killed", message);
+  const writes = [];
+  if (shouldCreateStatusEvent) {
+    writes.push(
+      db.taskStatusEvent.create({
+        data: {
+          taskId: task.id,
+          statusEventId: randomUUID(),
+          status: "killed",
+          summary: message,
+        },
+      }),
+    );
+  }
+  if (taskWasActive) {
+    writes.push(
+      db.task.update({
+        where: { id: task.id },
+        data: { status: "killed", executionHost: args.agentHost },
+      }),
+    );
+    writes.push(
+      db.ptySession.update({
+        where: { taskId: task.id },
+        data: {
+          state: "failed",
+          closedAt: new Date(closedAt),
+        },
+      }),
+    );
+  }
+  if (writes.length > 0) {
+    await db.$transaction(writes);
+  }
+
+  if (taskWasActive) {
+    broadcastTaskStatusUpdate(args.userId, task.projectId, task.id, "killed", message);
+  }
   realtimeHub.broadcastTerminal(args.userId, task.id, {
     type: "terminal_error",
     payload: {

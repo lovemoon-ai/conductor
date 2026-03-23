@@ -58,6 +58,9 @@ vi.mock("@/lib/db", () => ({
     agentOutbox: {
       findMany: vi.fn(),
     },
+    taskStatusEvent: {
+      findFirst: vi.fn(),
+    },
     taskDiagnosticsSnapshot: {
       create: vi.fn(),
     },
@@ -116,6 +119,7 @@ describe("/api/tasks/[taskId]", () => {
     );
     vi.mocked(db.message.findMany).mockResolvedValue([]);
     vi.mocked(db.message.count).mockResolvedValue(0);
+    vi.mocked(db.taskStatusEvent.findFirst).mockResolvedValue(null);
     vi.mocked(db.ptySession.upsert).mockResolvedValue({
       id: "pty-1",
       taskId: "task-pty-1",

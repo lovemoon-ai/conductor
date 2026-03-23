@@ -8,6 +8,9 @@ vi.mock("@/lib/db", () => ({
     task: {
       findFirst: vi.fn(),
     },
+    taskStatusEvent: {
+      findFirst: vi.fn(),
+    },
     message: {
       findMany: vi.fn(),
       count: vi.fn(),
@@ -48,6 +51,7 @@ describe("/api/diagnostics/tasks/[taskId]", () => {
     vi.mocked(db.message.findMany).mockResolvedValue([]);
     vi.mocked(db.message.count).mockResolvedValue(0);
     vi.mocked(db.agentOutbox.findMany).mockResolvedValue([]);
+    vi.mocked(db.taskStatusEvent.findFirst).mockResolvedValue(null);
     vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(null);
     vi.mocked(realtimeHub.getTerminalLatencySample).mockReturnValue(null);
     vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
@@ -68,6 +72,8 @@ describe("/api/diagnostics/tasks/[taskId]", () => {
           title: "Task 1",
           status: "running",
           agent_host: "conductor-fire-host",
+          latest_status_summary: null,
+          latest_status_summary_created_at: null,
           created_at: "2026-03-05T12:00:00.000Z",
           updated_at: "2026-03-05T12:01:00.000Z",
         },
@@ -184,6 +190,10 @@ describe("/api/diagnostics/tasks/[taskId]", () => {
       daemon_input_to_first_output_ms: 80,
       recorded_at: "2026-03-05T12:00:30.010Z",
     } as any);
+    vi.mocked(db.taskStatusEvent.findFirst).mockResolvedValue({
+      summary: "spawn-helper missing execute bit",
+      createdAt: new Date("2026-03-05T12:00:59.000Z"),
+    } as any);
 
     const token = createTestToken("user-1");
     const request = createMockRequest({ token });
@@ -193,6 +203,8 @@ describe("/api/diagnostics/tasks/[taskId]", () => {
     expect(response.status).toBe(200);
     expect(data.source).toBe("live");
     expect(data.task?.id).toBe("task-live");
+    expect(data.task?.latest_status_summary).toBe("spawn-helper missing execute bit");
+    expect(data.task?.latest_status_summary_created_at).toBe("2026-03-05T12:00:59.000Z");
     expect(data.fire_logs?.daemon_host).toBe("daemon-a");
     expect(data.pty_transport?.latest_latency_sample).toMatchObject({
       task_id: "task-live",

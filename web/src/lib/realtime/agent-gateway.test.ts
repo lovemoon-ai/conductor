@@ -8,6 +8,9 @@ vi.mock("../db", () => ({
       update: vi.fn(),
       updateMany: vi.fn(),
     },
+    taskStatusEvent: {
+      create: vi.fn(),
+    },
     ptySession: {
       update: vi.fn(),
     },
@@ -45,6 +48,7 @@ const {
   ensureAgentOwnsTask,
   handlePtyTransportSignalEvent,
   handlePtyTransportStatusEvent,
+  handleTerminalErrorEvent,
   handleTerminalExitEvent,
   handleTerminalOutputEvent,
   processAgentResume,
@@ -62,6 +66,7 @@ describe("agent-gateway ownership handling", () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(null as any);
     vi.mocked(db.task.updateMany).mockResolvedValue({ count: 0 } as any);
     vi.mocked(db.task.update).mockResolvedValue({} as any);
+    vi.mocked(db.taskStatusEvent.create).mockResolvedValue({} as any);
     vi.mocked(db.ptySession.update).mockResolvedValue({} as any);
     vi.mocked(db.$transaction).mockResolvedValue([] as any);
   });
@@ -330,6 +335,136 @@ describe("agent-gateway ownership handling", () => {
         signal: "9",
         seq: 11,
         closed_at: "2026-03-11T08:00:00.000Z",
+      },
+    });
+  });
+
+  it("persists terminal error summaries for later diagnosis", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValueOnce({
+      id: "task-pty-err-1",
+      projectId: "proj-1",
+      taskType: "pty_task",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      ptySession: {
+        id: "pty-err-1",
+      },
+      taskStatusEvents: [],
+    } as any);
+
+    await handleTerminalErrorEvent({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      payload: {
+        task_id: "task-pty-err-1",
+        message: "spawn-helper missing execute bit",
+      },
+    });
+
+    expect(db.taskStatusEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        taskId: "task-pty-err-1",
+        status: "killed",
+        summary: "spawn-helper missing execute bit",
+      }),
+    });
+    expect(realtimeHub.broadcast).toHaveBeenCalledWith("user-1", "proj-1", {
+      type: "task_status_update",
+      payload: {
+        task_id: "task-pty-err-1",
+        project_id: "proj-1",
+        status: "killed",
+        summary: "spawn-helper missing execute bit",
+      },
+    });
+  });
+
+  it("skips duplicate terminal error summaries for the same active task", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValueOnce({
+      id: "task-pty-err-dup-1",
+      projectId: "proj-1",
+      taskType: "pty_task",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      ptySession: {
+        id: "pty-err-dup-1",
+      },
+      taskStatusEvents: [
+        {
+          status: "killed",
+          summary: "spawn-helper missing execute bit",
+        },
+      ],
+    } as any);
+
+    await handleTerminalErrorEvent({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      payload: {
+        task_id: "task-pty-err-dup-1",
+        message: "spawn-helper missing execute bit",
+      },
+    });
+
+    expect(db.taskStatusEvent.create).not.toHaveBeenCalled();
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-pty-err-dup-1" },
+      data: { status: "killed", executionHost: "daemon-a" },
+    });
+    expect(realtimeHub.broadcast).toHaveBeenCalledWith("user-1", "proj-1", {
+      type: "task_status_update",
+      payload: {
+        task_id: "task-pty-err-dup-1",
+        project_id: "proj-1",
+        status: "killed",
+        summary: "spawn-helper missing execute bit",
+      },
+    });
+  });
+
+  it("skips terminal error persistence once the task is already final", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValueOnce({
+      id: "task-pty-err-final-1",
+      projectId: "proj-1",
+      taskType: "pty_task",
+      status: "killed",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      ptySession: {
+        id: "pty-err-final-1",
+      },
+      taskStatusEvents: [
+        {
+          status: "killed",
+          summary: "previous failure",
+        },
+      ],
+    } as any);
+
+    await handleTerminalErrorEvent({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      payload: {
+        task_id: "task-pty-err-final-1",
+        message: "spawn-helper missing execute bit",
+      },
+    });
+
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(db.taskStatusEvent.create).not.toHaveBeenCalled();
+    expect(db.task.update).not.toHaveBeenCalled();
+    expect(db.ptySession.update).not.toHaveBeenCalled();
+    expect(realtimeHub.broadcast).not.toHaveBeenCalled();
+    expect(realtimeHub.broadcastTerminal).toHaveBeenCalledWith("user-1", "task-pty-err-final-1", {
+      type: "terminal_error",
+      payload: {
+        task_id: "task-pty-err-final-1",
+        project_id: "proj-1",
+        pty_session_id: "pty-err-final-1",
+        message: "spawn-helper missing execute bit",
+        closed_at: expect.any(String),
       },
     });
   });

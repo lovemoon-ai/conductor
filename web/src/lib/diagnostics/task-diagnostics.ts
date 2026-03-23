@@ -77,6 +77,8 @@ export type TaskDiagnosticsPayload = {
     status: string;
     agent_host: string | null;
     execution_host: string | null;
+    latest_status_summary: string | null;
+    latest_status_summary_created_at: string | null;
     created_at: string;
     updated_at: string;
   };
@@ -748,6 +750,15 @@ export async function buildTaskDiagnosticsPayload(params: {
     return null;
   }
 
+  const latestTaskStatusEvent = await db.taskStatusEvent.findFirst({
+    where: { taskId: task.id },
+    orderBy: { createdAt: "desc" },
+    select: {
+      summary: true,
+      createdAt: true,
+    },
+  });
+
   const recentMessages = await db.message.findMany({
     where: { taskId: task.id },
     orderBy: { createdAt: "desc" },
@@ -896,6 +907,8 @@ export async function buildTaskDiagnosticsPayload(params: {
       status: normalizeTaskStatus(task.status),
       agent_host: configuredAgentHost,
       execution_host: executionAgentHost,
+      latest_status_summary: latestTaskStatusEvent?.summary ?? null,
+      latest_status_summary_created_at: latestTaskStatusEvent?.createdAt?.toISOString?.() ?? null,
       created_at: task.createdAt.toISOString(),
       updated_at: task.updatedAt.toISOString(),
     },
