@@ -54,10 +54,6 @@ Phase 2 has solved the durable HTTP commit of upstream `sdk_message` / `task_sta
 
 ## Links
 
-- Phase 1: [agent-http-upstream-phase1
-- 20260310.md](/Users/duino/ws/conductor/claw/issues/agent-http-upstream-phase1
-- 20260310.md)
-- Phase 2: [agent-http-upstream-durable-outbox
-- 20260310.md](/Users/duino/ws/conductor/claw/issues/agent-http-upstream-durable-outbox
-- 20260310.md)
+- Phase 1: [agent-http-upstream-phase1-20260310.md](/Users/duino/ws/conductor/claw/issues/done/agent-http-upstream-phase1-20260310.md)
+- Phase 2: [agent-http-upstream-durable-outbox-20260310.md](/Users/duino/ws/conductor/claw/issues/done/agent-http-upstream-durable-outbox-20260310.md)
 - RFC: [0005-feature-agent-transport-split-http-upstream-websocket-downstream.md](/Users/duino/ws/conductor/claw/rfc/0005-feature-agent-transport-split-http-upstream-websocket-downstream.md)

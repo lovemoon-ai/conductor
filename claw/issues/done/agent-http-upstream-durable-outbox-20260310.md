@@ -52,7 +52,5 @@ Add project-level durable upstream outbox to `modules/conductor-sdk` so that the
 
 ## Links
 
-- Phase 1: [agent-http-upstream-phase1
-- 20260310.md](/Users/duino/ws/conductor/claw/issues/agent-http-upstream-phase1
-- 20260310.md)
+- Phase 1: [agent-http-upstream-phase1-20260310.md](/Users/duino/ws/conductor/claw/issues/done/agent-http-upstream-phase1-20260310.md)
 - RFC: [0005-feature-agent-transport-split-http-upstream-websocket-downstream.md](/Users/duino/ws/conductor/claw/rfc/0005-feature-agent-transport-split-http-upstream-websocket-downstream.md)

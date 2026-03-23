@@ -30,7 +30,7 @@
 - When the protocol evolves, upstream commit and downstream replay should be regarded as a set of semantic designs to avoid being durable while still relying on stateless websocket to fill holes.
 
 ## Related Documents
-- Phase 1: [agent-http-upstream-phase1-20260310.md](/Users/duino/ws/conductor/claw/issues/agent-http-upstream-phase1-20260310.md)
-- Phase 2: [agent-http-upstream-durable-outbox-20260310.md](/Users/duino/ws/conductor/claw/issues/agent-http-upstream-durable-outbox-20260310.md)
-- Phase 3: [agent-downstream-replay-and-stop-ack-20260310.md](/Users/duino/ws/conductor/claw/issues/agent-downstream-replay-and-stop-ack-20260310.md)
+- Phase 1: [agent-http-upstream-phase1-20260310.md](/Users/duino/ws/conductor/claw/issues/done/agent-http-upstream-phase1-20260310.md)
+- Phase 2: [agent-http-upstream-durable-outbox-20260310.md](/Users/duino/ws/conductor/claw/issues/done/agent-http-upstream-durable-outbox-20260310.md)
+- Phase 3: [agent-downstream-replay-and-stop-ack-20260310.md](/Users/duino/ws/conductor/claw/issues/done/agent-downstream-replay-and-stop-ack-20260310.md)
 - Diagnosis: [stable_4090_four_killed_tasks_20260310.md](/Users/duino/ws/conductor/claw/issues/stable_4090_four_killed_tasks_20260310.md)
