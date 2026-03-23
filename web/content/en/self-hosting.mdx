@@ -1,0 +1,106 @@
+---
+title: Self Hosting
+description: Run Conductor on your own server and bootstrap the first login
+---
+
+This page shows the smallest self-hosted setup for Conductor.
+
+## What you need
+
+- one server that can run the `web/` app
+- one database for Prisma
+- one public domain or reachable base URL
+- at least one machine that will run `conductor daemon`
+
+SMS is optional. You can bootstrap the first web login without SMS.
+
+## 1. Configure the server
+
+Create `web/.env.production.local` and set the values you need.
+
+At minimum, configure:
+
+```env
+DATABASE_URL=postgresql://user:password@host:5432/conductor
+NEXT_PUBLIC_URL=https://your-domain.com
+JWT_SECRET=replace-with-a-long-random-secret
+HOST=0.0.0.0
+PORT=6152
+```
+
+If you do not want to use PostgreSQL yet, SQLite also works for small setups:
+
+```env
+DATABASE_URL=file:/absolute/path/to/conductor.sqlite.db
+NEXT_PUBLIC_URL=https://your-domain.com
+JWT_SECRET=replace-with-a-long-random-secret
+HOST=0.0.0.0
+PORT=6152
+```
+
+## 2. Start the web service
+
+From `web/`:
+
+```bash
+pnpm install
+pnpm db:generate
+pnpm db:push
+pnpm build
+pnpm start
+```
+
+This starts the Conductor web app and API server.
+
+## 3. Bootstrap the first login without SMS
+
+If you have not configured SMS, create or reuse the first user with:
+
+```bash
+pnpm bootstrap:self-host --phone +8613800138000 --base-url https://your-domain.com
+```
+
+The command will:
+
+- create or reuse the user for that phone number
+- ensure the default project exists
+- issue a new API token
+- print a `Login URL`
+
+Open the printed `Login URL` once in the browser to establish the web session.
+
+Treat the printed API token and login URL as secrets.
+
+## 4. Configure the CLI on worker machines
+
+On each machine that will run agents:
+
+```bash
+conductor config
+```
+
+Then start the daemon:
+
+```bash
+conductor daemon
+```
+
+After that, tasks created from the web app can be picked up by the daemon.
+
+## 5. Optional integrations
+
+You only need these if your deployment requires them:
+
+- SMS provider for normal phone-code login
+- email provider
+- Stripe / Alipay
+- Feishu channel integration
+- OAuth providers such as GitHub or Google
+
+For the smallest self-hosted setup, you can skip all of them.
+
+## Notes
+
+- `AUTH_DEV_CODE` is for local development only. Do not use it as a production self-host login bypass.
+- The bootstrap login flow is intended for operator-controlled setup.
+- If you rotate domains later, update `NEXT_PUBLIC_URL` and rerun the bootstrap command if you need a fresh login link.

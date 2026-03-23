@@ -38,7 +38,10 @@ For a minimal self-hosted setup:
 
 1. Set up `web/.env.production.local` with your domain, database, and integration secrets.
 2. On the server, run `cd web && pnpm install && pnpm db:generate && pnpm db:push && pnpm build && pnpm start`.
-3. On each machine that will run agents, run `conductor config`, then `conductor daemon`.
+3. Bootstrap the first web login without SMS if needed:
+   - `cd web && pnpm bootstrap:self-host --phone +8613800138000 --base-url https://your-domain.com`
+   - open the printed `Login URL` once in the browser
+4. On each machine that will run agents, run `conductor config`, then `conductor daemon`.
 
 ## Packages
 

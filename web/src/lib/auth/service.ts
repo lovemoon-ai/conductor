@@ -1,5 +1,6 @@
 import { randomBytes, pbkdf2Sync, timingSafeEqual } from "crypto";
 import jwt from "jsonwebtoken";
+import { Prisma, type Project, type User } from "@prisma/client";
 import { db } from "../db";
 import { sendVerificationEmail } from "@/lib/verification/resend-email";
 import { sendVerificationSms } from "@/lib/verification/volc-sms";
@@ -14,8 +15,18 @@ const isDev = process.env.NODE_ENV === "development";
 const ITERATIONS = 100_000;
 const KEY_LENGTH = 32;
 const DIGEST = "sha256";
+const DEFAULT_PROJECT_NAME = "Default Project";
+const DEFAULT_PROJECT_METADATA = JSON.stringify({ autoCreated: true, isDefault: true });
+
+type DbClient = Prisma.TransactionClient;
 
 export type AuthUser = { id: string; email: string | null; phone: string | null };
+export type SelfHostBootstrapUserResult = {
+  user: User;
+  project: Project;
+  normalizedPhone: string;
+  created: boolean;
+};
 
 export function hashSecret(secret: string, existingSalt?: string): { hash: string; salt: string } {
   const salt = existingSalt ?? randomBytes(16).toString("hex");
@@ -26,6 +37,123 @@ export function hashSecret(secret: string, existingSalt?: string): { hash: strin
 export function verifySecret(secret: string, hash: string, salt: string): boolean {
   const computed = pbkdf2Sync(secret, salt, ITERATIONS, KEY_LENGTH, DIGEST);
   return timingSafeEqual(Buffer.from(hash, "hex"), computed);
+}
+
+export function normalizeSelfHostBootstrapPhone(rawPhone: string): string {
+  const normalized = rawPhone.trim().replace(/\s+/g, "");
+  if (!normalized.startsWith("+")) {
+    throw new Error("Phone must start with '+' and include country code");
+  }
+  if (!/^\+\d+$/.test(normalized)) {
+    throw new Error("Phone must contain only '+' and digits");
+  }
+  return normalized;
+}
+
+async function ensureDefaultProject(userId: string, client?: DbClient): Promise<Project> {
+  const prisma = client ?? db;
+  const existing = await prisma.project.findFirst({
+    where: { userId, name: DEFAULT_PROJECT_NAME },
+  });
+  if (existing) {
+    return existing;
+  }
+
+  try {
+    return await prisma.project.create({
+      data: {
+        userId,
+        name: DEFAULT_PROJECT_NAME,
+        metadata: DEFAULT_PROJECT_METADATA,
+      },
+    });
+  } catch {
+    const created = await prisma.project.findFirst({
+      where: { userId, name: DEFAULT_PROJECT_NAME },
+    });
+    if (!created) {
+      throw new Error("Failed to ensure default project");
+    }
+    return created;
+  }
+}
+
+function createPlaceholderPassword() {
+  const placeholder = randomBytes(16).toString("hex");
+  return hashSecret(placeholder);
+}
+
+export async function bootstrapSelfHostUserByPhone(rawPhone: string): Promise<SelfHostBootstrapUserResult> {
+  const normalizedPhone = normalizeSelfHostBootstrapPhone(rawPhone);
+
+  const loadExistingUser = async () => {
+    const existing = await db.user.findUnique({
+      where: { phone: normalizedPhone },
+    });
+
+    if (!existing) {
+      return null;
+    }
+
+    const project = await ensureDefaultProject(existing.id);
+    return {
+      user: existing,
+      project,
+      normalizedPhone,
+      created: false,
+    } satisfies SelfHostBootstrapUserResult;
+  };
+
+  const existing = await loadExistingUser();
+  if (existing) {
+    return existing;
+  }
+
+  let user: User;
+  let project: Project;
+  try {
+    ({ user, project } = await db.$transaction(async (tx) => {
+      const { hash, salt } = createPlaceholderPassword();
+      const user = await tx.user.create({
+        data: {
+          email: null,
+          phone: normalizedPhone,
+          passwordHash: hash,
+          passwordSalt: salt,
+        },
+      });
+
+      await startNewUserPlusAccess(user.id, tx);
+      const project = await ensureDefaultProject(user.id, tx);
+
+      const hydratedUser = await tx.user.findUnique({
+        where: { id: user.id },
+      });
+      if (!hydratedUser) {
+        throw new Error("Failed to load bootstrap user");
+      }
+
+      return {
+        user: hydratedUser,
+        project,
+      };
+    }));
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const concurrentExisting = await loadExistingUser();
+      if (concurrentExisting) {
+        return concurrentExisting;
+      }
+    }
+    throw error;
+  }
+
+  return {
+    user,
+    project,
+    normalizedPhone,
+    created: true,
+  };
 }
 
 export function signJwt(userId: string): string {
@@ -172,13 +300,13 @@ export async function registerWithCode(input: {
       await applyInviteRegisterRewardPolicy(inviter.id, created.id, inviteCode!, tx);
     }
 
-    await tx.project.create({
-      data: {
-        userId: created.id,
-        name: "Default Project",
-        metadata: JSON.stringify({ autoCreated: true, isDefault: true }),
-      },
-    });
+      await tx.project.create({
+        data: {
+          userId: created.id,
+          name: DEFAULT_PROJECT_NAME,
+          metadata: DEFAULT_PROJECT_METADATA,
+        },
+      });
 
     return created;
   });

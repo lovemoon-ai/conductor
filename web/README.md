@@ -43,6 +43,23 @@ pnpm build
 pnpm start
 ```
 
+## Self-host bootstrap login
+
+If you are self-hosting and do not want to configure SMS before the first login, run:
+
+```bash
+pnpm bootstrap:self-host --phone +8613800138000 --base-url https://your-domain.com
+```
+
+This command:
+
+- creates or reuses the user for that phone number
+- ensures the default project exists
+- issues a new API token
+- prints a `Login URL` you can open once in the browser
+
+Treat the printed API token and login URL as secrets.
+
 ## Feishu Channel Gateway
 
 Minimum setup steps:
