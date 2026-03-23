@@ -22,6 +22,7 @@ NPM_GLOBAL_PREFIX=""
 GLOBAL_BIN_DIR=""
 RC_FILE=""
 RC_SHELL=""
+USE_LOCAL_NPM_PREFIX=0
 PATH_BLOCK_START="# >>> conductor install >>>"
 PATH_BLOCK_END="# <<< conductor install <<<"
 
@@ -125,7 +126,11 @@ refresh_runtime_paths() {
     fi
 
     if [ -n "$NPM_CMD" ] && [ -x "$NPM_CMD" ]; then
-        NPM_GLOBAL_PREFIX=$("$NPM_CMD" config get prefix 2>/dev/null || true)
+        if [ "$USE_LOCAL_NPM_PREFIX" -eq 1 ] && [ -n "${npm_config_prefix:-}" ]; then
+            NPM_GLOBAL_PREFIX="$npm_config_prefix"
+        else
+            NPM_GLOBAL_PREFIX=$("$NPM_CMD" config get prefix 2>/dev/null || true)
+        fi
         if [ -n "$NPM_GLOBAL_PREFIX" ]; then
             GLOBAL_BIN_DIR="${NPM_GLOBAL_PREFIX}/bin"
         else
@@ -163,6 +168,65 @@ check_npm() {
     fi
 
     return 1
+}
+
+is_system_npm_prefix() {
+    local prefix="$1"
+
+    case "$prefix" in
+        /usr|/usr/*|/usr/local|/usr/local/*|/opt|/opt/*|/var/lib|/var/lib/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+configure_local_npm_prefix() {
+    mkdir -p "$CONDUCTOR_HOME"
+    export npm_config_prefix="$CONDUCTOR_HOME"
+    USE_LOCAL_NPM_PREFIX=1
+    INSTALL_USE_SUDO=""
+    NPM_GLOBAL_PREFIX="$CONDUCTOR_HOME"
+    GLOBAL_BIN_DIR="${CONDUCTOR_HOME}/bin"
+    refresh_runtime_paths
+    log_info "Using local npm prefix: ${CONDUCTOR_HOME}"
+}
+
+maybe_switch_to_local_npm_prefix() {
+    local npm_prefix="$1"
+    local prompt_status=0
+
+    if [ "$OS" != "linux" ] || [ "$USED_CONDUCTOR_NODE" -eq 1 ]; then
+        return
+    fi
+
+    if ! is_system_npm_prefix "$npm_prefix"; then
+        return
+    fi
+
+    log_warn "npm global prefix points to a system path: ${npm_prefix}"
+    log_warn "Installing there may require root permissions."
+
+    if prompt_yes_no "Install Conductor to ${CONDUCTOR_HOME} instead (recommended)?"; then
+        prompt_status=0
+    else
+        prompt_status=$?
+    fi
+
+    if [ "$prompt_status" -eq 0 ]; then
+        configure_local_npm_prefix
+        return
+    fi
+
+    if [ "$prompt_status" -eq 2 ]; then
+        log_warn "No interactive terminal available. Falling back to local npm prefix."
+        configure_local_npm_prefix
+        return
+    fi
+
+    log_warn "Continuing with the system npm prefix at your request."
 }
 
 setup_conductor_node() {
@@ -216,7 +280,15 @@ install_conductor() {
     log_info "Installing ${PACKAGE_NAME}..."
 
     local npm_prefix
-    npm_prefix=$("$NPM_CMD" config get prefix)
+    if [ "$USE_LOCAL_NPM_PREFIX" -eq 1 ] && [ -n "${npm_config_prefix:-}" ]; then
+        npm_prefix="$npm_config_prefix"
+    else
+        npm_prefix=$("$NPM_CMD" config get prefix)
+        maybe_switch_to_local_npm_prefix "$npm_prefix"
+        if [ "$USE_LOCAL_NPM_PREFIX" -eq 1 ] && [ -n "${npm_config_prefix:-}" ]; then
+            npm_prefix="$npm_config_prefix"
+        fi
+    fi
     NPM_GLOBAL_PREFIX="$npm_prefix"
     GLOBAL_BIN_DIR="${NPM_GLOBAL_PREFIX}/bin"
     refresh_runtime_paths
@@ -334,8 +406,13 @@ build_path_export_line() {
         node_path='$HOME/.conductor/node/bin'
         conductor_bin_path='$HOME/.conductor/bin'
     else
-        node_path="$NODE_BIN_DIR"
-        conductor_bin_path="$GLOBAL_BIN_DIR"
+        if [ "$USE_LOCAL_NPM_PREFIX" -eq 1 ]; then
+            node_path=""
+            conductor_bin_path='$HOME/.conductor/bin'
+        else
+            node_path="$NODE_BIN_DIR"
+            conductor_bin_path="$GLOBAL_BIN_DIR"
+        fi
     fi
 
     if [ "$RC_SHELL" = "fish" ]; then
@@ -370,6 +447,38 @@ build_path_export_line() {
     fi
 
     printf 'export PATH="%s$PATH"' "$segments"
+}
+
+build_npm_prefix_export_line() {
+    if [ "$USE_LOCAL_NPM_PREFIX" -ne 1 ]; then
+        return
+    fi
+
+    if [ -z "$RC_FILE" ] || [ -z "$RC_SHELL" ]; then
+        resolve_rc_file
+    fi
+
+    if [ "$RC_SHELL" = "fish" ]; then
+        printf 'set -gx npm_config_prefix "$HOME/.conductor"'
+        return
+    fi
+
+    printf 'export npm_config_prefix="$HOME/.conductor"'
+}
+
+build_shell_setup_block() {
+    local prefix_line=""
+    local path_line=""
+
+    prefix_line=$(build_npm_prefix_export_line)
+    path_line=$(build_path_export_line)
+
+    if [ -n "$prefix_line" ]; then
+        printf '%s\n' "$prefix_line"
+    fi
+    if [ -n "$path_line" ]; then
+        printf '%s\n' "$path_line"
+    fi
 }
 
 verify_installation() {
@@ -457,15 +566,28 @@ rc_contains_current_path_setup() {
         return 1
     fi
 
-    local export_line
-    export_line=$(build_path_export_line)
-    if [ -z "$export_line" ]; then
+    local block
+    block=$(build_shell_setup_block)
+    if [ -z "$block" ]; then
         return 1
     fi
 
-    grep -Fq "$PATH_BLOCK_START" "$RC_FILE" \
-        && grep -Fq "$PATH_BLOCK_END" "$RC_FILE" \
-        && grep -Fq "$export_line" "$RC_FILE"
+    if ! grep -Fq "$PATH_BLOCK_START" "$RC_FILE" \
+        || ! grep -Fq "$PATH_BLOCK_END" "$RC_FILE"; then
+        return 1
+    fi
+
+    local line
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        if ! grep -Fq "$line" "$RC_FILE"; then
+            return 1
+        fi
+    done <<EOF
+$block
+EOF
+
+    return 0
 }
 
 remove_existing_path_block() {
@@ -487,12 +609,12 @@ write_path_to_rc() {
     touch "$RC_FILE"
     remove_existing_path_block
 
-    local export_line
-    export_line=$(build_path_export_line)
+    local block
+    block=$(build_shell_setup_block)
     {
         printf '\n%s\n' "$PATH_BLOCK_START"
         printf '# Added by Conductor installer\n'
-        printf '%s\n' "$export_line"
+        printf '%s\n' "$block"
         printf '%s\n' "$PATH_BLOCK_END"
     } >> "$RC_FILE"
 }
@@ -501,7 +623,11 @@ prompt_yes_no() {
     local prompt="$1"
     local reply
 
-    if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    if [ -n "${CI:-}" ] || [ -n "${CONDUCTOR_INSTALL_NONINTERACTIVE:-}" ]; then
+        return 2
+    fi
+
+    if [ ! -t 0 ] || [ ! -t 1 ] || [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
         return 2
     fi
 
@@ -521,39 +647,44 @@ prompt_yes_no() {
 }
 
 print_manual_path_instructions() {
-    local export_line
-    export_line=$(build_path_export_line)
-    if [ -z "$export_line" ]; then
+    local block
+    block=$(build_shell_setup_block)
+    if [ -z "$block" ]; then
         return
     fi
 
     resolve_rc_file
-    log_info "Add the following line to ${RC_FILE}:"
-    printf '%s\n' "$export_line"
+    log_info "Add the following lines to ${RC_FILE}:"
+    printf '%s\n' "$block"
 }
 
 offer_path_setup() {
     local path_status="$1"
     local prompt_status=0
 
-    if [ "$path_status" -ne 2 ]; then
+    if [ "$path_status" -ne 2 ] && [ "$USE_LOCAL_NPM_PREFIX" -ne 1 ]; then
         return
     fi
 
     resolve_rc_file
     if rc_contains_current_path_setup; then
-        log_info "PATH is already configured in ${RC_FILE}"
+        log_info "Shell setup is already configured in ${RC_FILE}"
         log_info "Open a new shell or run 'source ${RC_FILE}' to use it"
         return
     fi
 
-    if prompt_yes_no "Write Conductor PATH setup to ${RC_FILE}?"; then
+    if prompt_yes_no "Write Conductor shell setup to ${RC_FILE}?"; then
+        prompt_status=0
+    else
+        prompt_status=$?
+    fi
+
+    if [ "$prompt_status" -eq 0 ]; then
         write_path_to_rc
-        log_info "Wrote Conductor PATH setup to ${RC_FILE}"
+        log_info "Wrote Conductor shell setup to ${RC_FILE}"
         log_info "Run 'source ${RC_FILE}' or open a new shell to use it"
         return
     fi
-    prompt_status=$?
 
     if [ "$prompt_status" -eq 2 ]; then
         log_warn "No interactive terminal available to update PATH automatically."
