@@ -155,7 +155,8 @@ Validate that `allow_cli_list` contains the installed coding CLIs:
 allow_cli_list:
   codex: codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check
   claude: claude --dangerously-skip-permissions
-  copilot: copilot --allow-all-paths --allow-all-tools
+  opencode: opencode
+  kimi: kimi
 ```
 
 ### Start A Foreground Task
