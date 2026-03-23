@@ -45,6 +45,48 @@ function runProcess(command, args, options = {}) {
   });
 }
 
+function runInteractiveProcess(command, args, { prompts, ...options }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      ...options,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let promptIndex = 0;
+
+    const maybeRespond = () => {
+      while (promptIndex < prompts.length) {
+        const prompt = prompts[promptIndex];
+        if (!stdout.includes(prompt.waitFor) && !stderr.includes(prompt.waitFor)) {
+          return;
+        }
+        child.stdin.write(prompt.reply);
+        promptIndex += 1;
+      }
+
+      if (promptIndex === prompts.length) {
+        child.stdin.end();
+      }
+    };
+
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+      maybeRespond();
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+      maybeRespond();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      resolve({ code, stdout, stderr });
+    });
+
+    maybeRespond();
+  });
+}
+
 describe("conductor-config", () => {
   it("writes allow_cli_list as a nested map in YAML when using manual token entry", () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-home-"));
@@ -81,6 +123,32 @@ describe("conductor-config", () => {
     assert.equal(typeof allowCliList.kimi, "string");
     assert.equal(typeof allowCliList.opencode, "string");
     assert.equal(typeof allowCliList.copilot, "undefined");
+  });
+
+  it("prompts to install opencode when no local coding CLI is detected", async () => {
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-home-"));
+    const env = {
+      ...process.env,
+      HOME: tempHome,
+      PATH: "",
+    };
+
+    const { code, stdout, stderr } = await runInteractiveProcess(process.execPath, [CONFIG_CLI_PATH, "--manual"], {
+      env,
+      prompts: [
+        { waitFor: "Do you want to install opencode now? (Y/n): ", reply: "n\n" },
+        { waitFor: "Do you want to continue creating the config anyway? (y/N): ", reply: "y\n" },
+        { waitFor: "Enter Conductor token: ", reply: "test-token\n" },
+      ],
+    });
+
+    const configPath = path.join(tempHome, ".conductor", "config.yaml");
+    const configContent = fs.readFileSync(configPath, "utf8");
+    assert.equal(code, 0, stderr);
+    assert.match(stdout, /Do you want to install opencode now\? \(Y\/n\):/);
+    assert.match(configContent, /# No CLI detected\. Add your installed CLI here:/);
+    assert.match(configContent, /# opencode runs via ai-sdk server mode with permission=allow/);
+    assert.match(configContent, /# opencode: opencode/);
   });
 
   it("authorizes the device in the browser flow and writes backend/websocket config", async () => {
@@ -160,7 +228,7 @@ describe("conductor-config", () => {
     }
   });
 
-  it("does not start browser authorization when no local coding CLI is detected and the user cancels", () => {
+  it("does not start browser authorization when no local coding CLI is detected and the user cancels", async () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-home-"));
     const env = {
       ...process.env,
@@ -169,18 +237,16 @@ describe("conductor-config", () => {
       CONDUCTOR_BACKEND_URL: "http://127.0.0.1:1",
     };
 
-    try {
-      execFileSync(process.execPath, [CONFIG_CLI_PATH], {
-        env,
-        input: "n\n",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      assert.fail("expected conductor-config to exit early");
-    } catch (error) {
-      assert.equal(error.status, 1);
-    }
+    const { code } = await runInteractiveProcess(process.execPath, [CONFIG_CLI_PATH], {
+      env,
+      prompts: [
+        { waitFor: "Do you want to install opencode now? (Y/n): ", reply: "n\n" },
+        { waitFor: "Do you want to continue creating the config anyway? (y/N): ", reply: "n\n" },
+      ],
+    });
 
     const configPath = path.join(tempHome, ".conductor", "config.yaml");
+    assert.equal(code, 1);
     assert.equal(fs.existsSync(configPath), false);
   });
 });

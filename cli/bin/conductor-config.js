@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import yargs from "yargs/yargs";
 import { hideBin } from "yargs/helpers";
 import { RUNTIME_SUPPORTED_BACKENDS } from "../src/runtime-backends.js";
@@ -45,6 +45,8 @@ const backendUrl =
   "https://conductor-ai.top";
 const defaultDaemonName = os.hostname() || "my-daemon";
 const cliVersion = packageJson.version || "unknown";
+const OPENCODE_INSTALL_URL = "https://opencode.ai/install";
+const OPENCODE_NPM_PACKAGE = "opencode-ai";
 
 const COLORS = {
   yellow: "\x1b[33m",
@@ -55,6 +57,7 @@ const COLORS = {
 };
 
 let lastDeviceAuthConfig = null;
+let promptInterface = null;
 
 function colorize(text, color) {
   return `${COLORS[color] || ""}${text}${COLORS.reset}`;
@@ -74,6 +77,29 @@ function buildConfigEntryLines(cli, info, { commented = false } = {}) {
 
   lines.push(`${entryPrefix}${cli}: ${fullCommand}`);
   return lines;
+}
+
+function getPromptInterface() {
+  if (!promptInterface) {
+    promptInterface = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+  }
+  return promptInterface;
+}
+
+function closePromptInterface() {
+  if (!promptInterface) {
+    return;
+  }
+  promptInterface.close();
+  promptInterface = null;
+}
+
+function exitWithCode(code) {
+  closePromptInterface();
+  process.exit(code);
 }
 
 async function main() {
@@ -109,12 +135,12 @@ async function main() {
     process.stderr.write(
       colorize(`Config already exists at ${CONFIG_FILE}. Use --force to overwrite.\n`, "yellow")
     );
-    process.exit(1);
+    exitWithCode(1);
   }
 
   let resolvedBackendUrl = backendUrl;
   let resolvedWebsocketUrl = null;
-  const detectedCLIs = detectInstalledCLIs();
+  let detectedCLIs = detectInstalledCLIs();
 
   if (detectedCLIs.length === 0) {
     console.log("");
@@ -132,16 +158,43 @@ async function main() {
     });
 
     console.log("");
-    console.log(colorize("After installing a CLI, run 'conductor config' again.", "yellow"));
-    console.log(colorize("=".repeat(70), "yellow"));
-    console.log("");
-
-    const shouldContinue = await promptYesNo(
-      "Do you want to continue creating the config anyway? (y/N): "
+    const shouldInstallOpencode = await promptYesNo(
+      "Do you want to install opencode now? (Y/n): ",
+      { defaultValue: true }
     );
 
-    if (!shouldContinue) {
-      process.exit(1);
+    if (shouldInstallOpencode) {
+      const installResult = installOpencode();
+      if (installResult.installed) {
+        detectedCLIs = detectInstalledCLIs();
+        if (!detectedCLIs.includes("opencode")) {
+          detectedCLIs = ["opencode", ...detectedCLIs];
+        }
+        console.log("");
+        if (installResult.message) {
+          console.log(colorize(installResult.message, "green"));
+        }
+        console.log(colorize("✓ OpenCode installed. Continuing with conductor config.", "green"));
+        console.log("");
+      } else {
+        console.log("");
+        console.log(colorize(installResult.message, "yellow"));
+        console.log("");
+      }
+    }
+
+    if (detectedCLIs.length === 0) {
+      console.log(colorize("After installing a CLI, run 'conductor config' again.", "yellow"));
+      console.log(colorize("=".repeat(70), "yellow"));
+      console.log("");
+
+      const shouldContinue = await promptYesNo(
+        "Do you want to continue creating the config anyway? (y/N): "
+      );
+
+      if (!shouldContinue) {
+        exitWithCode(1);
+      }
     }
   } else {
     console.log("");
@@ -159,7 +212,7 @@ async function main() {
       token = await promptForToken();
       if (!token) {
         process.stderr.write(colorize("No token provided. Aborting.\n", "yellow"));
-        process.exit(1);
+        exitWithCode(1);
       }
     } else {
       const authResult = await authorizeDeviceAndGetToken();
@@ -232,6 +285,22 @@ function detectInstalledCLIs() {
   return detected;
 }
 
+function resolveBundledCommandPath(command) {
+  const binDir = path.dirname(process.execPath);
+  const candidates = os.platform() === "win32"
+    ? [`${command}.cmd`, `${command}.exe`, command]
+    : [command];
+
+  for (const candidate of candidates) {
+    const fullPath = path.join(binDir, candidate);
+    if (fs.existsSync(fullPath)) {
+      return fullPath;
+    }
+  }
+
+  return null;
+}
+
 function isCommandAvailable(command) {
   try {
     const platform = os.platform();
@@ -271,6 +340,108 @@ function checkAlternativeInstallations(command) {
   }
 
   return commonPaths.some((checkPath) => fs.existsSync(checkPath));
+}
+
+function resolveInstallCommand(command) {
+  const bundledPath = resolveBundledCommandPath(command);
+  if (bundledPath) {
+    return bundledPath;
+  }
+  return isCommandAvailable(command) ? command : null;
+}
+
+function resolveOpencodeInstaller() {
+  const overrideCommand = process.env.CONDUCTOR_OPENCODE_INSTALL_COMMAND?.trim();
+  if (overrideCommand) {
+    return {
+      command: overrideCommand,
+      args: [],
+      display: overrideCommand,
+    };
+  }
+
+  const npmCommand = resolveInstallCommand("npm");
+  if (npmCommand) {
+    return {
+      command: npmCommand,
+      args: ["install", "-g", OPENCODE_NPM_PACKAGE],
+      display: `${path.basename(npmCommand)} install -g ${OPENCODE_NPM_PACKAGE}`,
+    };
+  }
+
+  const pnpmCommand = resolveInstallCommand("pnpm");
+  if (pnpmCommand) {
+    return {
+      command: pnpmCommand,
+      args: ["install", "-g", OPENCODE_NPM_PACKAGE],
+      display: `${path.basename(pnpmCommand)} install -g ${OPENCODE_NPM_PACKAGE}`,
+    };
+  }
+
+  const bunCommand = resolveInstallCommand("bun");
+  if (bunCommand) {
+    return {
+      command: bunCommand,
+      args: ["install", "-g", OPENCODE_NPM_PACKAGE],
+      display: `${path.basename(bunCommand)} install -g ${OPENCODE_NPM_PACKAGE}`,
+    };
+  }
+
+  if (os.platform() !== "win32" && isCommandAvailable("bash") && isCommandAvailable("curl")) {
+    return {
+      command: "bash",
+      args: ["-lc", `curl -fsSL ${OPENCODE_INSTALL_URL} | bash`],
+      display: `curl -fsSL ${OPENCODE_INSTALL_URL} | bash`,
+    };
+  }
+
+  return null;
+}
+
+function printOpencodeInstallInstructions() {
+  console.log(colorize("You can install OpenCode manually with one of these commands:", "yellow"));
+  console.log(`  curl -fsSL ${OPENCODE_INSTALL_URL} | bash`);
+  console.log(`  npm install -g ${OPENCODE_NPM_PACKAGE}`);
+}
+
+function installOpencode() {
+  const installer = resolveOpencodeInstaller();
+  if (!installer) {
+    printOpencodeInstallInstructions();
+    return {
+      installed: false,
+      message: "Could not find an automatic installer for opencode in the current environment.",
+    };
+  }
+
+  console.log("");
+  console.log(colorize(`Installing opencode with: ${installer.display}`, "cyan"));
+  console.log("");
+
+  try {
+    execFileSync(installer.command, installer.args, {
+      stdio: "inherit",
+      env: process.env,
+    });
+  } catch (error) {
+    printOpencodeInstallInstructions();
+    return {
+      installed: false,
+      message: `opencode installation failed: ${error?.message || error}`,
+    };
+  }
+
+  if (isCommandAvailable("opencode")) {
+    return {
+      installed: true,
+      message: "OpenCode installed successfully.",
+    };
+  }
+
+  return {
+    installed: true,
+    message: "OpenCode installed, but the current shell may need a refreshed PATH before detection works.",
+  };
 }
 
 async function authorizeDeviceAndGetToken() {
@@ -355,32 +526,21 @@ async function parseJsonResponse(response) {
 }
 
 async function promptForToken() {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  try {
-    let token = "";
-    while (!token) {
-      token = (await rl.question("Enter Conductor token: ")).trim();
-    }
-    return token;
-  } finally {
-    rl.close();
+  const rl = getPromptInterface();
+  let token = "";
+  while (!token) {
+    token = (await rl.question("Enter Conductor token: ")).trim();
   }
+  return token;
 }
 
-async function promptYesNo(question) {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  try {
-    const answer = (await rl.question(question)).trim().toLowerCase();
-    return answer === "y" || answer === "yes";
-  } finally {
-    rl.close();
+async function promptYesNo(question, { defaultValue = false } = {}) {
+  const rl = getPromptInterface();
+  const answer = (await rl.question(question)).trim().toLowerCase();
+  if (!answer) {
+    return defaultValue;
   }
+  return answer === "y" || answer === "yes";
 }
 
 function sleep(ms) {
@@ -393,7 +553,11 @@ function yamlQuote(value) {
   return JSON.stringify(value);
 }
 
-main().catch((error) => {
-  process.stderr.write(`Failed to write config: ${error?.message || error}\n`);
-  process.exit(1);
-});
+main()
+  .catch((error) => {
+    process.stderr.write(`Failed to write config: ${error?.message || error}\n`);
+    exitWithCode(1);
+  })
+  .finally(() => {
+    closePromptInterface();
+  });
