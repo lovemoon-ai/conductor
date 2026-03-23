@@ -317,6 +317,11 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
       break;
     }
 
+    case 'terminal_snapshot': {
+      useTerminalStore.getState().applySnapshot(payload);
+      break;
+    }
+
     case 'terminal_exit': {
       useTerminalStore.getState().markExit(payload);
       break;

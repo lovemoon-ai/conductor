@@ -92,6 +92,18 @@ type AgentEvent =
       };
     }
   | {
+      type: "terminal_snapshot";
+      payload: {
+        task_id: string;
+        project_id?: string;
+        pty_session_id?: string;
+        connection_id?: string;
+        last_seq?: number | string | null;
+        data?: string;
+        truncated?: boolean;
+      };
+    }
+  | {
       type: "terminal_exit";
       payload: {
         task_id: string;
@@ -621,6 +633,85 @@ export const handleTerminalOutputEvent = async (args: {
   }
 };
 
+export const handleTerminalSnapshotEvent = async (args: {
+  userId: string;
+  agentHost: string;
+  payload: Extract<AgentEvent, { type: "terminal_snapshot" }>["payload"];
+}) => {
+  const taskId = normalizeOptionalString(args.payload.task_id);
+  if (!taskId) {
+    return;
+  }
+
+  const boundHost = realtimeHub.getTaskAgentHost(taskId);
+  if (boundHost && boundHost !== args.agentHost) {
+    console.warn(
+      `[agent-gateway] dropped terminal_snapshot from ${args.agentHost} for ${taskId}: owner=${boundHost}`,
+    );
+    return;
+  }
+  if (!boundHost) {
+    let task;
+    try {
+      task = await db.task.findFirst({
+        where: {
+          id: taskId,
+          taskType: "pty_task",
+          project: { userId: args.userId },
+        },
+        select: {
+          id: true,
+          agentHost: true,
+          executionHost: true,
+        },
+      });
+    } catch (error) {
+      if (!isMissingPtySchemaError(error)) {
+        throw error;
+      }
+      task = null;
+    }
+    if (!task) {
+      console.warn(
+        `[agent-gateway] dropped terminal_snapshot from ${args.agentHost} for ${taskId}: task not found`,
+      );
+      return;
+    }
+    try {
+      await ensureAgentOwnsTask(args.userId, task, args.agentHost);
+    } catch (error) {
+      console.warn(
+        `[agent-gateway] dropped terminal_snapshot from ${args.agentHost} for ${taskId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+  }
+
+  const envelope = {
+    type: "terminal_snapshot",
+    payload: {
+      task_id: taskId,
+      project_id: normalizeOptionalString(args.payload.project_id) || undefined,
+      pty_session_id: normalizeOptionalString(args.payload.pty_session_id) || undefined,
+      last_seq: normalizeNonNegativeInt(args.payload.last_seq) ?? undefined,
+      data: typeof args.payload.data === "string" ? args.payload.data : "",
+      truncated: args.payload.truncated === true,
+    },
+  };
+  const connectionId = normalizeOptionalString(args.payload.connection_id);
+  if (connectionId) {
+    if (!realtimeHub.isTerminalAttached(connectionId, taskId)) {
+      return;
+    }
+    realtimeHub.sendToConnection(connectionId, envelope);
+    return;
+  }
+
+  realtimeHub.broadcastTerminal(args.userId, taskId, envelope);
+};
+
 export const handleTerminalExitEvent = async (args: {
   userId: string;
   agentHost: string;
@@ -1077,6 +1168,14 @@ export const setupAgentGateway = (): WebSocketServer => {
           }
           case "terminal_output": {
             await handleTerminalOutputEvent({
+              userId: user.id,
+              agentHost,
+              payload: event.payload,
+            });
+            break;
+          }
+          case "terminal_snapshot": {
+            await handleTerminalSnapshotEvent({
               userId: user.id,
               agentHost,
               payload: event.payload,

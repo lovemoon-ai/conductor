@@ -1,8 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_OUTPUT_BUFFER_BYTES,
+  TERMINAL_FRESH_RESUME_FALLBACK_MS,
+  TERMINAL_RESUME_SNAPSHOT_PERSIST_DELAY_MS,
   clearAllTerminalOutputSnapshots,
   getTerminalOutputSnapshot,
+  subscribeTerminalOutput,
   subscribeTerminalTransportSignal,
   useTerminalStore,
 } from './terminal';
@@ -12,9 +15,14 @@ const textEncoder = new TextEncoder();
 describe('terminal store', () => {
   beforeEach(() => {
     clearAllTerminalOutputSnapshots();
+    sessionStorage.clear();
     useTerminalStore.setState({
       byTask: {},
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('marks attached open sessions as reconnecting when websocket disconnects', () => {
@@ -162,6 +170,163 @@ describe('terminal store', () => {
     expect(restored.startsWith('中')).toBe(true);
     expect(restored.endsWith('中')).toBe(true);
     expect(snapshot.bufferedByteCount).toBe(textEncoder.encode(restored).length);
+  });
+
+  it('persists a bounded terminal resume snapshot for fresh reloads', () => {
+    vi.useFakeTimers();
+
+    useTerminalStore.getState().appendOutput({
+      task_id: 'task-pty-resume-storage',
+      seq: 1,
+      data: 'echo hello\r\n',
+    });
+    useTerminalStore.getState().appendOutput({
+      task_id: 'task-pty-resume-storage',
+      seq: 2,
+      data: 'hello\r\n',
+    });
+
+    vi.advanceTimersByTime(TERMINAL_RESUME_SNAPSHOT_PERSIST_DELAY_MS);
+
+    expect(
+      JSON.parse(sessionStorage.getItem('conductor-terminal-resume:task-pty-resume-storage') || 'null'),
+    ).toMatchObject({
+      lastSeq: 2,
+      data: 'echo hello\r\nhello\r\n',
+    });
+  });
+
+  it('retries resume snapshot persistence after an initial storage write failure', () => {
+    vi.useFakeTimers();
+
+    sessionStorage.setItem(
+      'conductor-terminal-resume:older-task',
+      JSON.stringify({
+        lastSeq: 1,
+        data: 'older\r\n',
+        updatedAt: '2026-03-23T00:00:00.000Z',
+      }),
+    );
+
+    const originalSetItem = Storage.prototype.setItem;
+    let shouldFailFirstWrite = true;
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (key: string, value: string) {
+      if (key === 'conductor-terminal-resume:task-pty-resume-quota' && shouldFailFirstWrite) {
+        shouldFailFirstWrite = false;
+        throw new DOMException('quota exceeded', 'QuotaExceededError');
+      }
+      return originalSetItem.call(this, key, value);
+    });
+
+    useTerminalStore.getState().appendOutput({
+      task_id: 'task-pty-resume-quota',
+      seq: 1,
+      data: 'latest\r\n',
+    });
+
+    vi.advanceTimersByTime(TERMINAL_RESUME_SNAPSHOT_PERSIST_DELAY_MS);
+
+    expect(JSON.parse(sessionStorage.getItem('conductor-terminal-resume:task-pty-resume-quota') || 'null')).toMatchObject({
+      lastSeq: 1,
+      data: 'latest\r\n',
+    });
+
+    setItemSpy.mockRestore();
+  });
+
+  it('replaces the snapshot and flushes queued output after a fresh attach snapshot arrives', () => {
+    const receivedEvents: Array<{ replace: boolean; data: string; seq: number }> = [];
+    const unsubscribe = subscribeTerminalOutput('task-pty-fresh-attach', (event) => {
+      receivedEvents.push({
+        replace: event.replace === true,
+        data: event.data,
+        seq: event.seq,
+      });
+    });
+
+    useTerminalStore.getState().beginFreshResumeAttach('task-pty-fresh-attach');
+    useTerminalStore.getState().appendOutput({
+      task_id: 'task-pty-fresh-attach',
+      seq: 6,
+      data: 'tail\r\n',
+    });
+
+    expect(getTerminalOutputSnapshot('task-pty-fresh-attach')).toMatchObject({
+      lastSeq: 0,
+      chunks: [],
+    });
+
+    useTerminalStore.getState().applySnapshot({
+      task_id: 'task-pty-fresh-attach',
+      last_seq: 5,
+      data: 'history\r\n',
+    });
+
+    expect(receivedEvents).toEqual([
+      { replace: true, data: 'history\r\n', seq: 5 },
+      { replace: false, data: 'tail\r\n', seq: 6 },
+    ]);
+    expect(getTerminalOutputSnapshot('task-pty-fresh-attach')).toMatchObject({
+      lastSeq: 6,
+      chunks: ['history\r\n', 'tail\r\n'],
+    });
+
+    unsubscribe();
+  });
+
+  it('falls back to queued terminal_output when a fresh attach snapshot never arrives', () => {
+    vi.useFakeTimers();
+    const receivedEvents: Array<{ replace: boolean; data: string; seq: number }> = [];
+    const unsubscribe = subscribeTerminalOutput('task-pty-fresh-fallback', (event) => {
+      receivedEvents.push({
+        replace: event.replace === true,
+        data: event.data,
+        seq: event.seq,
+      });
+    });
+
+    useTerminalStore.getState().beginFreshResumeAttach('task-pty-fresh-fallback');
+    useTerminalStore.getState().appendOutput({
+      task_id: 'task-pty-fresh-fallback',
+      seq: 2,
+      data: 'legacy replay\r\n',
+    });
+
+    expect(getTerminalOutputSnapshot('task-pty-fresh-fallback')).toMatchObject({
+      lastSeq: 0,
+      chunks: [],
+    });
+
+    vi.advanceTimersByTime(TERMINAL_FRESH_RESUME_FALLBACK_MS);
+
+    expect(receivedEvents).toEqual([
+      { replace: false, data: 'legacy replay\r\n', seq: 2 },
+    ]);
+    expect(getTerminalOutputSnapshot('task-pty-fresh-fallback')).toMatchObject({
+      lastSeq: 2,
+      chunks: ['legacy replay\r\n'],
+    });
+
+    unsubscribe();
+  });
+
+  it('ignores terminal_snapshot replacement when the viewer is already hydrated', () => {
+    useTerminalStore.getState().appendOutput({
+      task_id: 'task-pty-ignore-snapshot',
+      seq: 3,
+      data: 'existing output\r\n',
+    });
+
+    useTerminalStore.getState().applySnapshot({
+      task_id: 'task-pty-ignore-snapshot',
+      last_seq: 4,
+      data: 'recent tail\r\n',
+    });
+
+    expect(getTerminalOutputSnapshot('task-pty-ignore-snapshot')).toMatchObject({
+      lastSeq: 3,
+      chunks: ['existing output\r\n'],
+    });
   });
 
   it('stores PTY transport session state separately from terminal control state', () => {

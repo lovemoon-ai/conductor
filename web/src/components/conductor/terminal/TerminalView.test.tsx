@@ -1,7 +1,12 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TerminalView } from './TerminalView';
-import { MAX_OUTPUT_BUFFER_BYTES, clearAllTerminalOutputSnapshots, useTerminalStore } from '@/lib/conductor/stores/terminal';
+import {
+  MAX_OUTPUT_BUFFER_BYTES,
+  TERMINAL_FRESH_RESUME_FALLBACK_MS,
+  clearAllTerminalOutputSnapshots,
+  useTerminalStore,
+} from '@/lib/conductor/stores/terminal';
 import { useWebSocketStore } from '@/lib/conductor/stores/websocket';
 
 const { terminalWriteMock, terminalClearMock, MockTerminal, MockFitAddon } = vi.hoisted(() => {
@@ -211,6 +216,142 @@ describe('TerminalView', () => {
     expect(screen.queryByText('Live')).toBeNull();
     expect(screen.queryByText('view only')).toBeNull();
     expect(screen.queryByText(/viewers:/i)).toBeNull();
+  });
+
+  it('hydrates terminal output from a persisted browser snapshot on fresh reopen', async () => {
+    sessionStorage.setItem(
+      'conductor-terminal-resume:task-pty-persisted',
+      JSON.stringify({
+        lastSeq: 3,
+        data: 'saved from storage\r\n',
+        updatedAt: '2026-03-23T01:00:00.000Z',
+        truncated: false,
+      }),
+    );
+    const task = {
+      id: 'task-pty-persisted',
+      title: 'PTY Persisted',
+      taskType: 'pty_task',
+      status: 'running',
+      agentHost: 'debug',
+      executionHost: 'debug',
+      launchConfig: null,
+      ptySession: {
+        cols: 80,
+        rows: 24,
+        lastOutputSeq: 3,
+      },
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: null,
+    } as any;
+
+    render(<TerminalView task={task} />);
+    await flushMicrotasks();
+
+    expect(terminalWriteMock).toHaveBeenCalledWith('saved from storage\r\n');
+    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'terminal_attach',
+      payload: expect.objectContaining({
+        task_id: 'task-pty-persisted',
+        last_seq: 3,
+      }),
+    }));
+  });
+
+  it('waits for a fresh attach snapshot before rendering queued live output', async () => {
+    const task = {
+      id: 'task-pty-fresh-snapshot',
+      title: 'PTY Fresh Snapshot',
+      taskType: 'pty_task',
+      status: 'running',
+      agentHost: 'debug',
+      executionHost: 'debug',
+      launchConfig: null,
+      ptySession: {
+        cols: 80,
+        rows: 24,
+      },
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: null,
+    } as any;
+
+    render(<TerminalView task={task} />);
+    await flushMicrotasks();
+
+    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'terminal_attach',
+      payload: expect.objectContaining({
+        task_id: 'task-pty-fresh-snapshot',
+        last_seq: 0,
+        resume_strategy: 'snapshot',
+      }),
+    }));
+
+    terminalWriteMock.mockClear();
+    terminalClearMock.mockClear();
+
+    act(() => {
+      useTerminalStore.getState().appendOutput({
+        task_id: 'task-pty-fresh-snapshot',
+        seq: 2,
+        data: 'live tail\r\n',
+      });
+    });
+
+    expect(terminalWriteMock).not.toHaveBeenCalled();
+
+    act(() => {
+      useTerminalStore.getState().applySnapshot({
+        task_id: 'task-pty-fresh-snapshot',
+        last_seq: 1,
+        data: 'history\r\n',
+      });
+    });
+
+    expect(terminalClearMock).toHaveBeenCalledTimes(1);
+    expect(terminalWriteMock).toHaveBeenNthCalledWith(1, 'history\r\n');
+    expect(terminalWriteMock).toHaveBeenNthCalledWith(2, 'live tail\r\n');
+  });
+
+  it('falls back to legacy replay output when no fresh snapshot arrives', async () => {
+    const task = {
+      id: 'task-pty-fresh-fallback',
+      title: 'PTY Fresh Fallback',
+      taskType: 'pty_task',
+      status: 'running',
+      agentHost: 'debug',
+      executionHost: 'debug',
+      launchConfig: null,
+      ptySession: {
+        cols: 80,
+        rows: 24,
+      },
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: null,
+    } as any;
+
+    render(<TerminalView task={task} />);
+    await flushMicrotasks();
+
+    terminalWriteMock.mockClear();
+
+    act(() => {
+      useTerminalStore.getState().appendOutput({
+        task_id: 'task-pty-fresh-fallback',
+        seq: 1,
+        data: 'legacy replay\r\n',
+      });
+    });
+
+    expect(terminalWriteMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(TERMINAL_FRESH_RESUME_FALLBACK_MS);
+      await Promise.resolve();
+    });
+
+    expect(terminalWriteMock).toHaveBeenCalledWith('legacy replay\r\n');
+    expect(terminalClearMock).not.toHaveBeenCalled();
   });
 
   it('appends new output after buffer trimming without replaying the whole screen', async () => {

@@ -21,6 +21,7 @@ vi.mock("./hub", () => ({
     getTaskAgentHost: vi.fn().mockReturnValue(null),
     recordTerminalLatencySample: vi.fn(),
     hasAgentHost: vi.fn().mockReturnValue(false),
+    getAgentsForUser: vi.fn().mockReturnValue([]),
     isTerminalAttached: vi.fn().mockReturnValue(true),
     sendToConnection: vi.fn().mockReturnValue(true),
     broadcastTerminal: vi.fn(),
@@ -47,6 +48,7 @@ const {
   handlePtyTransportStatusEvent,
   handleTerminalExitEvent,
   handleTerminalOutputEvent,
+  handleTerminalSnapshotEvent,
   processAgentResume,
 } = await import("./agent-gateway");
 
@@ -290,6 +292,40 @@ describe("agent-gateway ownership handling", () => {
         },
       },
     });
+  });
+
+  it("routes terminal snapshots to the requesting connection after ownership validation", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValueOnce({
+      id: "task-pty-snapshot",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+    } as any);
+
+    await handleTerminalSnapshotEvent({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      payload: {
+        task_id: "task-pty-snapshot",
+        connection_id: "conn-app-1",
+        last_seq: 12,
+        data: "recent tail",
+        truncated: true,
+      },
+    });
+
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-snapshot", "daemon-a");
+    expect(realtimeHub.sendToConnection).toHaveBeenCalledWith("conn-app-1", {
+      type: "terminal_snapshot",
+      payload: {
+        task_id: "task-pty-snapshot",
+        project_id: undefined,
+        pty_session_id: undefined,
+        last_seq: 12,
+        data: "recent tail",
+        truncated: true,
+      },
+    });
+    expect(realtimeHub.broadcastTerminal).not.toHaveBeenCalled();
   });
 
   it("treats numeric exit signals as killed terminal exits", async () => {

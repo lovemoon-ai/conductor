@@ -377,6 +377,39 @@ describe('websocket runtime status handling', () => {
     });
   });
 
+  it('applies terminal_snapshot and flushes queued output for fresh attaches', () => {
+    useTerminalStore.getState().beginFreshResumeAttach('task-pty-snapshot');
+
+    handleWSMessage({
+      type: 'terminal_output',
+      payload: {
+        task_id: 'task-pty-snapshot',
+        seq: 4,
+        data: 'live tail',
+      },
+    });
+
+    expect(getTerminalOutputSnapshot('task-pty-snapshot')).toMatchObject({
+      lastSeq: 0,
+      chunks: [],
+    });
+
+    handleWSMessage({
+      type: 'terminal_snapshot',
+      payload: {
+        task_id: 'task-pty-snapshot',
+        last_seq: 3,
+        data: 'history',
+        truncated: false,
+      },
+    });
+
+    expect(getTerminalOutputSnapshot('task-pty-snapshot')).toMatchObject({
+      lastSeq: 4,
+      chunks: ['history', 'live tail'],
+    });
+  });
+
   it('removes deleted tasks and clears related stores', () => {
     useTasksStore.setState({
       tasks: [

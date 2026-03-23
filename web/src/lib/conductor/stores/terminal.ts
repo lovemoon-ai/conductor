@@ -48,6 +48,16 @@ export interface TerminalOutputEvent {
   seq: number;
   data: string;
   snapshot: TerminalOutputSnapshot;
+  replace?: boolean;
+}
+
+export interface TerminalResumeSnapshot {
+  taskId: string;
+  lastSeq: number;
+  data: string;
+  bufferedByteCount: number;
+  truncated: boolean;
+  updatedAt: string | null;
 }
 
 export interface TerminalTransportSignal {
@@ -92,8 +102,10 @@ interface TerminalStoreState {
   markDetached: (taskId: string) => void;
   setPreferredMode: (taskId: string, mode: TerminalPreferredMode) => void;
   markSocketDisconnected: () => void;
+  beginFreshResumeAttach: (taskId: string) => void;
   markOpened: (payload: Record<string, unknown>) => void;
   appendOutput: (payload: Record<string, unknown>) => void;
+  applySnapshot: (payload: Record<string, unknown>) => void;
   markExit: (payload: Record<string, unknown>) => void;
   markError: (payload: Record<string, unknown>) => void;
   markTaskStatus: (taskId: string, status: string) => void;
@@ -105,12 +117,21 @@ interface TerminalStoreState {
 }
 
 export const MAX_OUTPUT_BUFFER_BYTES = 2 * 1024 * 1024;
+export const TERMINAL_RESUME_SNAPSHOT_MAX_BYTES = 128 * 1024;
+export const TERMINAL_RESUME_SNAPSHOT_PERSIST_DELAY_MS = 200;
+export const TERMINAL_FRESH_RESUME_FALLBACK_MS = 500;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const terminalOutputSnapshots = new Map<string, TerminalOutputSnapshot>();
+const terminalResumeSnapshots = new Map<string, TerminalResumeSnapshot>();
 const terminalOutputListeners = new Map<string, Set<(event: TerminalOutputEvent) => void>>();
 const terminalTransportSignalListeners = new Map<string, Set<(signal: TerminalTransportSignal) => void>>();
+const pendingResumeHydrationTaskIds = new Set<string>();
+const pendingResumeOutputPayloads = new Map<string, Record<string, unknown>[]>();
+const pendingResumePersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingResumeFallbackTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const TERMINAL_RESUME_SNAPSHOT_STORAGE_PREFIX = 'conductor-terminal-resume:';
 
 const normalizeTaskId = (value: unknown): string | null => {
   if (typeof value !== 'string') {
@@ -234,17 +255,232 @@ const createOutputSnapshot = (taskId: string): TerminalOutputSnapshot => ({
   appendCount: 0,
 });
 
+const createResumeSnapshot = (taskId: string): TerminalResumeSnapshot => ({
+  taskId,
+  lastSeq: 0,
+  data: '',
+  bufferedByteCount: 0,
+  truncated: false,
+  updatedAt: null,
+});
+
 const cloneOutputSnapshot = (snapshot: TerminalOutputSnapshot): TerminalOutputSnapshot => ({
   ...snapshot,
   chunks: [...snapshot.chunks],
 });
+
+const cloneResumeSnapshot = (snapshot: TerminalResumeSnapshot): TerminalResumeSnapshot => ({ ...snapshot });
+
+const getSessionStorage = (): Storage | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+};
+
+const getResumeSnapshotStorageKey = (taskId: string): string => `${TERMINAL_RESUME_SNAPSHOT_STORAGE_PREFIX}${taskId}`;
+
+const clearPendingResumePersistTimer = (taskId: string): void => {
+  const timer = pendingResumePersistTimers.get(taskId);
+  if (!timer) {
+    return;
+  }
+  clearTimeout(timer);
+  pendingResumePersistTimers.delete(taskId);
+};
+
+const clearPendingResumeFallbackTimer = (taskId: string): void => {
+  const timer = pendingResumeFallbackTimers.get(taskId);
+  if (!timer) {
+    return;
+  }
+  clearTimeout(timer);
+  pendingResumeFallbackTimers.delete(taskId);
+};
+
+const safeStorageRemoveItem = (storage: Storage, key: string): void => {
+  try {
+    storage.removeItem(key);
+  } catch {}
+};
+
+const listPersistedResumeSnapshotKeys = (storage: Storage): string[] => {
+  const keys: string[] = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key?.startsWith(TERMINAL_RESUME_SNAPSHOT_STORAGE_PREFIX)) {
+      keys.push(key);
+    }
+  }
+  return keys;
+};
+
+const evictPersistedResumeSnapshots = (storage: Storage, preserveKey: string): void => {
+  const candidates = listPersistedResumeSnapshotKeys(storage)
+    .filter((key) => key !== preserveKey)
+    .map((key) => {
+      let updatedAt = 0;
+      try {
+        const raw = storage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw) as Record<string, unknown>;
+          const normalizedUpdatedAt = normalizeIsoTimestamp(parsed.updatedAt);
+          updatedAt = normalizedUpdatedAt ? Date.parse(normalizedUpdatedAt) : 0;
+        }
+      } catch {}
+      return { key, updatedAt };
+    })
+    .sort((left, right) => left.updatedAt - right.updatedAt);
+
+  for (const candidate of candidates) {
+    safeStorageRemoveItem(storage, candidate.key);
+  }
+};
+
+const persistResumeSnapshotNow = (taskId: string): void => {
+  clearPendingResumePersistTimer(taskId);
+  const storage = getSessionStorage();
+  if (!storage) {
+    return;
+  }
+  const snapshot = terminalResumeSnapshots.get(taskId);
+  const key = getResumeSnapshotStorageKey(taskId);
+  if (!snapshot || (snapshot.lastSeq === 0 && !snapshot.data)) {
+    safeStorageRemoveItem(storage, key);
+    return;
+  }
+  const serialized = JSON.stringify({
+    lastSeq: snapshot.lastSeq,
+    data: snapshot.data,
+    bufferedByteCount: snapshot.bufferedByteCount,
+    truncated: snapshot.truncated,
+    updatedAt: snapshot.updatedAt,
+  });
+  try {
+    storage.setItem(key, serialized);
+  } catch {
+    evictPersistedResumeSnapshots(storage, key);
+    try {
+      storage.setItem(key, serialized);
+    } catch {}
+  }
+};
+
+const scheduleResumeSnapshotPersist = (taskId: string): void => {
+  clearPendingResumePersistTimer(taskId);
+  pendingResumePersistTimers.set(
+    taskId,
+    setTimeout(() => {
+      persistResumeSnapshotNow(taskId);
+    }, TERMINAL_RESUME_SNAPSHOT_PERSIST_DELAY_MS),
+  );
+};
+
+const clearPersistedResumeSnapshot = (taskId: string): void => {
+  clearPendingResumePersistTimer(taskId);
+  const storage = getSessionStorage();
+  if (!storage) {
+    return;
+  }
+  safeStorageRemoveItem(storage, getResumeSnapshotStorageKey(taskId));
+};
+
+const loadPersistedResumeSnapshot = (taskId: string): TerminalResumeSnapshot | null => {
+  const existing = terminalResumeSnapshots.get(taskId);
+  if (existing) {
+    return existing;
+  }
+  const storage = getSessionStorage();
+  if (!storage) {
+    return null;
+  }
+  const raw = storage.getItem(getResumeSnapshotStorageKey(taskId));
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const data = typeof parsed.data === 'string' ? parsed.data : '';
+    const bufferedByteCount = getChunkByteLength(data);
+    const snapshot: TerminalResumeSnapshot = {
+      taskId,
+      lastSeq: normalizeNonNegativeInteger(parsed.lastSeq) ?? 0,
+      data,
+      bufferedByteCount,
+      truncated: parsed.truncated === true,
+      updatedAt: normalizeIsoTimestamp(parsed.updatedAt) ?? null,
+    };
+    terminalResumeSnapshots.set(taskId, snapshot);
+    return snapshot;
+  } catch {
+    safeStorageRemoveItem(storage, getResumeSnapshotStorageKey(taskId));
+    return null;
+  }
+};
+
+const createOutputSnapshotFromResumeSnapshot = (
+  taskId: string,
+  resumeSnapshot: TerminalResumeSnapshot,
+): TerminalOutputSnapshot => ({
+  taskId,
+  lastSeq: resumeSnapshot.lastSeq,
+  chunks: resumeSnapshot.data ? [resumeSnapshot.data] : [],
+  bufferedByteCount: resumeSnapshot.bufferedByteCount,
+  appendCount: resumeSnapshot.data ? 1 : 0,
+});
+
+const updateResumeSnapshot = (taskId: string, lastSeq: number, data: string): TerminalResumeSnapshot => {
+  const trimmedData = trimChunkToTailBytes(data, TERMINAL_RESUME_SNAPSHOT_MAX_BYTES);
+  const bufferedByteCount = getChunkByteLength(trimmedData);
+  const snapshot = terminalResumeSnapshots.get(taskId) ?? createResumeSnapshot(taskId);
+  const nextSnapshot: TerminalResumeSnapshot = {
+    taskId,
+    lastSeq: Math.max(0, lastSeq),
+    data: trimmedData,
+    bufferedByteCount,
+    truncated: bufferedByteCount < getChunkByteLength(data),
+    updatedAt: new Date().toISOString(),
+  };
+  terminalResumeSnapshots.set(taskId, nextSnapshot);
+  scheduleResumeSnapshotPersist(taskId);
+  return nextSnapshot;
+};
+
+const appendToResumeSnapshot = (taskId: string, seq: number, data: string): TerminalResumeSnapshot => {
+  const currentSnapshot = terminalResumeSnapshots.get(taskId) ?? loadPersistedResumeSnapshot(taskId) ?? createResumeSnapshot(taskId);
+  if (seq <= currentSnapshot.lastSeq) {
+    return currentSnapshot;
+  }
+
+  const combinedData = `${currentSnapshot.data}${data}`;
+  const combinedByteCount = getChunkByteLength(combinedData);
+  const trimmedData = trimChunkToTailBytes(combinedData, TERMINAL_RESUME_SNAPSHOT_MAX_BYTES);
+  const nextSnapshot: TerminalResumeSnapshot = {
+    taskId,
+    lastSeq: seq,
+    data: trimmedData,
+    bufferedByteCount: getChunkByteLength(trimmedData),
+    truncated: currentSnapshot.truncated || combinedByteCount > TERMINAL_RESUME_SNAPSHOT_MAX_BYTES,
+    updatedAt: new Date().toISOString(),
+  };
+  terminalResumeSnapshots.set(taskId, nextSnapshot);
+  scheduleResumeSnapshotPersist(taskId);
+  return nextSnapshot;
+};
 
 const getOrCreateOutputSnapshot = (taskId: string): TerminalOutputSnapshot => {
   const existing = terminalOutputSnapshots.get(taskId);
   if (existing) {
     return existing;
   }
-  const created = createOutputSnapshot(taskId);
+  const persistedResumeSnapshot = loadPersistedResumeSnapshot(taskId);
+  const created = persistedResumeSnapshot
+    ? createOutputSnapshotFromResumeSnapshot(taskId, persistedResumeSnapshot)
+    : createOutputSnapshot(taskId);
   terminalOutputSnapshots.set(taskId, created);
   return created;
 };
@@ -320,12 +556,14 @@ const appendToOutputSnapshot = (taskId: string, payload: Record<string, unknown>
 
   snapshot.lastSeq = seq;
   snapshot.appendCount += 1;
+  appendToResumeSnapshot(taskId, snapshot.lastSeq, data);
 
   const event = {
     taskId,
     seq,
     data,
     snapshot: cloneOutputSnapshot(snapshot),
+    replace: false,
   };
 
   const listeners = terminalOutputListeners.get(taskId);
@@ -336,6 +574,56 @@ const appendToOutputSnapshot = (taskId: string, payload: Record<string, unknown>
   }
 
   return event;
+};
+
+const flushPendingResumeOutputs = (taskId: string): void => {
+  const pendingOutputs = pendingResumeOutputPayloads.get(taskId) ?? [];
+  pendingResumeOutputPayloads.delete(taskId);
+  for (const pendingPayload of pendingOutputs) {
+    appendToOutputSnapshot(taskId, pendingPayload);
+  }
+};
+
+const clearPendingResumeHydration = (taskId: string): void => {
+  pendingResumeHydrationTaskIds.delete(taskId);
+  clearPendingResumeFallbackTimer(taskId);
+};
+
+const fallbackFreshResumeAttach = (taskId: string): void => {
+  if (!pendingResumeHydrationTaskIds.has(taskId)) {
+    return;
+  }
+  clearPendingResumeHydration(taskId);
+  flushPendingResumeOutputs(taskId);
+};
+
+const replaceOutputSnapshot = (taskId: string, payload: Record<string, unknown>): TerminalOutputEvent | null => {
+  const nextLastSeq = normalizeNonNegativeInteger(payload.last_seq ?? payload.lastSeq) ?? 0;
+  const data = typeof payload.data === 'string' ? payload.data : '';
+  const currentSnapshot = getOrCreateOutputSnapshot(taskId);
+  if (currentSnapshot.lastSeq > nextLastSeq) {
+    return null;
+  }
+
+  const trimmedData = trimChunkToTailBytes(data, MAX_OUTPUT_BUFFER_BYTES);
+  const bufferedByteCount = getChunkByteLength(trimmedData);
+  const nextSnapshot: TerminalOutputSnapshot = {
+    taskId,
+    lastSeq: nextLastSeq,
+    chunks: trimmedData ? [trimmedData] : [],
+    bufferedByteCount,
+    appendCount: currentSnapshot.appendCount + 1,
+  };
+  terminalOutputSnapshots.set(taskId, nextSnapshot);
+  updateResumeSnapshot(taskId, nextLastSeq, trimmedData);
+
+  return {
+    taskId,
+    seq: nextLastSeq,
+    data: trimmedData,
+    snapshot: cloneOutputSnapshot(nextSnapshot),
+    replace: true,
+  };
 };
 
 export const getTerminalOutputSnapshot = (taskId: string): TerminalOutputSnapshot =>
@@ -378,15 +666,44 @@ export const subscribeTerminalTransportSignal = (
 };
 
 export const clearAllTerminalOutputSnapshots = (): void => {
+  for (const taskId of pendingResumePersistTimers.keys()) {
+    clearPendingResumePersistTimer(taskId);
+  }
+  for (const taskId of pendingResumeFallbackTimers.keys()) {
+    clearPendingResumeFallbackTimer(taskId);
+  }
   terminalOutputSnapshots.clear();
+  terminalResumeSnapshots.clear();
   terminalOutputListeners.clear();
   terminalTransportSignalListeners.clear();
+  pendingResumeHydrationTaskIds.clear();
+  pendingResumeOutputPayloads.clear();
+  const storage = getSessionStorage();
+  if (!storage) {
+    return;
+  }
+  const keysToRemove: string[] = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key?.startsWith(TERMINAL_RESUME_SNAPSHOT_STORAGE_PREFIX)) {
+      keysToRemove.push(key);
+    }
+  }
+  for (const key of keysToRemove) {
+    safeStorageRemoveItem(storage, key);
+  }
 };
 
 const clearTerminalOutputSnapshot = (taskId: string): void => {
+  clearPendingResumePersistTimer(taskId);
+  clearPendingResumeFallbackTimer(taskId);
   terminalOutputSnapshots.delete(taskId);
+  terminalResumeSnapshots.delete(taskId);
   terminalOutputListeners.delete(taskId);
   terminalTransportSignalListeners.delete(taskId);
+  pendingResumeHydrationTaskIds.delete(taskId);
+  pendingResumeOutputPayloads.delete(taskId);
+  clearPersistedResumeSnapshot(taskId);
 };
 
 export const useTerminalStore = create<TerminalStoreState>()((set) => ({
@@ -454,6 +771,19 @@ export const useTerminalStore = create<TerminalStoreState>()((set) => ({
     return { byTask: nextByTask };
   }),
 
+  beginFreshResumeAttach: (taskId) => set((state) => {
+    pendingResumeHydrationTaskIds.add(taskId);
+    pendingResumeOutputPayloads.set(taskId, []);
+    clearPendingResumeFallbackTimer(taskId);
+    pendingResumeFallbackTimers.set(
+      taskId,
+      setTimeout(() => {
+        fallbackFreshResumeAttach(taskId);
+      }, TERMINAL_FRESH_RESUME_FALLBACK_MS),
+    );
+    return state;
+  }),
+
   markOpened: (payload) => set((state) => {
     const taskId = normalizeTaskId(payload.task_id ?? payload.taskId);
     if (!taskId) {
@@ -489,6 +819,13 @@ export const useTerminalStore = create<TerminalStoreState>()((set) => ({
       return state;
     }
 
+    if (pendingResumeHydrationTaskIds.has(taskId)) {
+      const pending = pendingResumeOutputPayloads.get(taskId) ?? [];
+      pending.push({ ...payload });
+      pendingResumeOutputPayloads.set(taskId, pending);
+      return state;
+    }
+
     const appended = appendToOutputSnapshot(taskId, payload);
     if (!appended) {
       return state;
@@ -519,11 +856,42 @@ export const useTerminalStore = create<TerminalStoreState>()((set) => ({
     };
   }),
 
+  applySnapshot: (payload) => set((state) => {
+    const taskId = normalizeTaskId(payload.task_id ?? payload.taskId);
+    if (!taskId) {
+      return state;
+    }
+
+    const currentSnapshot = getOrCreateOutputSnapshot(taskId);
+    const shouldApplySnapshot =
+      pendingResumeHydrationTaskIds.has(taskId) || (currentSnapshot.lastSeq === 0 && currentSnapshot.chunks.length === 0);
+    if (!shouldApplySnapshot) {
+      return state;
+    }
+
+    const snapshotEvent = replaceOutputSnapshot(taskId, payload);
+    clearPendingResumeHydration(taskId);
+
+    if (snapshotEvent) {
+      const listeners = terminalOutputListeners.get(taskId);
+      if (listeners && listeners.size > 0) {
+        for (const listener of listeners) {
+          listener(snapshotEvent);
+        }
+      }
+    }
+
+    flushPendingResumeOutputs(taskId);
+
+    return state;
+  }),
+
   markExit: (payload) => set((state) => {
     const taskId = normalizeTaskId(payload.task_id ?? payload.taskId);
     if (!taskId) {
       return state;
     }
+    fallbackFreshResumeAttach(taskId);
     const exitCode = normalizeInteger(payload.exit_code ?? payload.exitCode);
     return {
       byTask: withTask(state.byTask, taskId, (current) => ({
@@ -546,6 +914,7 @@ export const useTerminalStore = create<TerminalStoreState>()((set) => ({
     if (!taskId) {
       return state;
     }
+    fallbackFreshResumeAttach(taskId);
     const message = normalizeOptionalString(payload.message) ?? 'terminal error';
     return {
       byTask: withTask(state.byTask, taskId, (current) => ({
@@ -568,6 +937,8 @@ export const useTerminalStore = create<TerminalStoreState>()((set) => ({
     if (normalizedStatus !== 'completed' && normalizedStatus !== 'killed') {
       return state;
     }
+
+    fallbackFreshResumeAttach(taskId);
 
     return {
       byTask: withTask(state.byTask, taskId, (current) => ({

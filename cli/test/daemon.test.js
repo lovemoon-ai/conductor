@@ -1465,7 +1465,7 @@ describe("Daemon", () => {
     }
   });
 
-  it("creates PTY tasks and replays buffered terminal output on attach", async () => {
+  it("creates PTY tasks and sends a terminal snapshot on fresh attach", async () => {
     let handler;
     let onData = null;
     const writes = [];
@@ -1553,7 +1553,7 @@ describe("Daemon", () => {
     );
 
     assert.ok(typeof handler === "function");
-    assert.strictEqual(webSocketClientOptions.extraHeaders["x-conductor-capabilities"], "pty_task");
+    assert.strictEqual(webSocketClientOptions.extraHeaders["x-conductor-capabilities"], "pty_task,terminal_snapshot");
 
     handler({
       type: "create_pty_task",
@@ -1603,6 +1603,8 @@ describe("Daemon", () => {
       payload: {
         task_id: "task-pty-1",
         last_seq: 0,
+        connection_id: "conn-app-1",
+        resume_strategy: "snapshot",
       },
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1621,14 +1623,14 @@ describe("Daemon", () => {
     assert.ok(openedEvents.length >= 2);
     assert.strictEqual(openedEvents[0].payload.started_at, openedEvents[1].payload.started_at);
     const outputEvents = sentEvents.filter((event) => event.type === "terminal_output");
-    assert.ok(outputEvents.length >= 2);
+    assert.strictEqual(outputEvents.length, 1);
     assert.deepStrictEqual(
       outputEvents.map((event) => event.payload.data),
-      ["hello from pty", "hello from pty"],
+      ["hello from pty"],
     );
     assert.deepStrictEqual(
       outputEvents.map((event) => event.payload.seq),
-      [1, 1],
+      [1],
     );
     assert.deepStrictEqual(outputEvents[0].payload.latency_sample.client_input_seq, 1);
     assert.strictEqual(outputEvents[0].payload.latency_sample.client_sent_at, "2026-03-17T01:00:00.000Z");
@@ -1636,7 +1638,18 @@ describe("Daemon", () => {
     assert.ok(typeof outputEvents[0].payload.latency_sample.daemon_received_at === "string");
     assert.ok(typeof outputEvents[0].payload.latency_sample.first_output_at === "string");
     assert.ok(typeof outputEvents[0].payload.latency_sample.daemon_input_to_first_output_ms === "number");
-    assert.strictEqual(outputEvents[1].payload.latency_sample, undefined);
+    const snapshotEvents = sentEvents.filter((event) => event.type === "terminal_snapshot");
+    assert.deepStrictEqual(snapshotEvents.map((event) => event.payload), [
+      {
+        task_id: "task-pty-1",
+        project_id: "proj-pty-1",
+        pty_session_id: "pty-session-1",
+        connection_id: "conn-app-1",
+        last_seq: 1,
+        data: "hello from pty",
+        truncated: false,
+      },
+    ]);
 
     if (daemonInstance && typeof daemonInstance.close === "function") {
       daemonInstance.close();
@@ -1735,7 +1748,7 @@ describe("Daemon", () => {
       type: "terminal_attach",
       payload: {
         task_id: "task-pty-byte-1",
-        last_seq: 0,
+        last_seq: 1,
       },
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -2866,18 +2879,131 @@ describe("Daemon", () => {
       payload: {
         task_id: "task-pty-byte-2",
         last_seq: 0,
+        connection_id: "conn-app-2",
+        resume_strategy: "snapshot",
       },
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
 
+    const snapshotEvents = sentEvents.filter((event) => event.type === "terminal_snapshot");
+    assert.deepStrictEqual(snapshotEvents.map((event) => event.payload), [
+      {
+        task_id: "task-pty-byte-2",
+        project_id: "proj-pty-byte-2",
+        pty_session_id: "pty-byte-session-2",
+        connection_id: "conn-app-2",
+        last_seq: 1,
+        data: "3456",
+        truncated: false,
+      },
+    ]);
+
+    if (daemonInstance && typeof daemonInstance.close === "function") {
+      daemonInstance.close();
+    }
+  });
+
+  it("falls back to legacy terminal_output replay when fresh snapshot resume is not negotiated", async () => {
+    let handler;
+    let onData = null;
+    const sentEvents = [];
+
+    const mockPty = {
+      pid: 77778,
+      write: () => {},
+      resize: () => {},
+      kill: () => {},
+      onData: (fn) => {
+        onData = fn;
+      },
+      onExit: () => {},
+    };
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-pty-legacy-replay",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "pty-task-daemon-legacy-replay",
+      },
+      {
+        spawn: () => {
+          throw new Error("spawn should not be called for create_pty_task");
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return { ok: true, json: async () => ({ metadata: null }) };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createPty: async () => mockPty,
+        createWebSocketClient: () => ({
+          registerHandler: (h) => {
+            handler = h;
+          },
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
+        }),
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+
+    handler({
+      type: "create_pty_task",
+      payload: {
+        task_id: "task-pty-legacy-replay",
+        project_id: "proj-pty-legacy-replay",
+        pty_session_id: "pty-legacy-replay",
+        request_id: "req-pty-legacy-replay",
+        launch_config: {
+          entrypoint_type: "shell",
+          cwd: "/tmp/test-ws-pty-legacy-replay",
+        },
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.ok(typeof onData === "function");
+    onData("history-1");
+    onData("history-2");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    sentEvents.length = 0;
+    handler({
+      type: "terminal_attach",
+      payload: {
+        task_id: "task-pty-legacy-replay",
+        last_seq: 0,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const snapshotEvents = sentEvents.filter((event) => event.type === "terminal_snapshot");
+    assert.strictEqual(snapshotEvents.length, 0);
     const outputEvents = sentEvents.filter((event) => event.type === "terminal_output");
     assert.deepStrictEqual(
       outputEvents.map((event) => event.payload.data),
-      ["3456"],
-    );
-    assert.deepStrictEqual(
-      outputEvents.map((event) => event.payload.seq),
-      [1],
+      ["history-1", "history-2"],
     );
 
     if (daemonInstance && typeof daemonInstance.close === "function") {

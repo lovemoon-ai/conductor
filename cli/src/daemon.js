@@ -49,6 +49,7 @@ const PLAN_LIMIT_MESSAGES = {
 const DEFAULT_TERMINAL_COLS = 120;
 const DEFAULT_TERMINAL_ROWS = 40;
 const DEFAULT_TERMINAL_RING_BUFFER_MAX_BYTES = 2 * 1024 * 1024;
+const DEFAULT_TERMINAL_RESUME_SNAPSHOT_MAX_BYTES = 128 * 1024;
 const DEFAULT_RTC_MODULE_CANDIDATES = ["@roamhq/wrtc", "wrtc"];
 let nodePtySpawnPromise = null;
 
@@ -280,6 +281,14 @@ function normalizeOptionalString(value) {
   }
   const normalized = value.trim();
   return normalized || null;
+}
+
+function normalizeTerminalResumeStrategy(value) {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) {
+    return null;
+  }
+  return normalized.toLowerCase() === "snapshot" ? "snapshot" : null;
 }
 
 function normalizeStringArray(value) {
@@ -528,6 +537,10 @@ export function startDaemon(config = {}, deps = {}) {
   const TERMINAL_RING_BUFFER_MAX_BYTES = parsePositiveInt(
     config.TERMINAL_RING_BUFFER_MAX_BYTES || process.env.CONDUCTOR_TERMINAL_RING_BUFFER_MAX_BYTES,
     DEFAULT_TERMINAL_RING_BUFFER_MAX_BYTES,
+  );
+  const TERMINAL_RESUME_SNAPSHOT_MAX_BYTES = parsePositiveInt(
+    config.TERMINAL_RESUME_SNAPSHOT_MAX_BYTES || process.env.CONDUCTOR_TERMINAL_RESUME_SNAPSHOT_MAX_BYTES,
+    DEFAULT_TERMINAL_RESUME_SNAPSHOT_MAX_BYTES,
   );
 
   const readLockState = () => {
@@ -814,7 +827,7 @@ export function startDaemon(config = {}, deps = {}) {
     "x-conductor-version": cliVersion,
   };
   if (ptyTaskCapabilityEnabled) {
-    extraHeaders["x-conductor-capabilities"] = "pty_task";
+    extraHeaders["x-conductor-capabilities"] = "pty_task,terminal_snapshot";
   }
   const client = createWebSocketClient(sdkConfig, {
     extraHeaders,
@@ -1914,6 +1927,23 @@ export function startDaemon(config = {}, deps = {}) {
     return record.outputSeq;
   }
 
+  function buildTerminalResumeSnapshot(record) {
+    if (!record || !Array.isArray(record.ringBuffer) || record.ringBuffer.length === 0) {
+      return {
+        lastSeq: normalizeNonNegativeInt(record?.outputSeq, 0),
+        data: "",
+        truncated: false,
+      };
+    }
+    const joinedData = record.ringBuffer.map((chunk) => chunk?.data || "").join("");
+    const trimmedData = trimTerminalChunkToTailBytes(joinedData, TERMINAL_RESUME_SNAPSHOT_MAX_BYTES);
+    return {
+      lastSeq: normalizeNonNegativeInt(record.outputSeq, 0),
+      data: trimmedData,
+      truncated: getTerminalChunkByteLength(trimmedData) < getTerminalChunkByteLength(joinedData),
+    };
+  }
+
   function sendDirectPtyPayload(taskId, payload) {
     const transport = activePtyRtcTransports.get(taskId);
     const channel = transport?.channel;
@@ -2284,6 +2314,23 @@ export function startDaemon(config = {}, deps = {}) {
     });
 
     const lastSeq = normalizePositiveInt(payload?.last_seq ?? payload?.lastSeq, 0);
+    const connectionId = normalizeOptionalString(payload?.connection_id ?? payload?.connectionId);
+    const resumeStrategy = normalizeTerminalResumeStrategy(payload?.resume_strategy ?? payload?.resumeStrategy);
+    if (lastSeq === 0 && resumeStrategy === "snapshot" && connectionId) {
+      const snapshot = buildTerminalResumeSnapshot(record);
+      await sendTerminalEvent("terminal_snapshot", {
+        task_id: taskId,
+        project_id: record.projectId,
+        pty_session_id: record.ptySessionId,
+        connection_id: connectionId,
+        last_seq: snapshot.lastSeq,
+        data: snapshot.data,
+        truncated: snapshot.truncated,
+      }).catch((err) => {
+        logError(`Failed to report terminal_snapshot for ${taskId}: ${err?.message || err}`);
+      });
+      return;
+    }
     for (const chunk of record.ringBuffer) {
       if (chunk.seq <= lastSeq) continue;
       await sendTerminalEvent("terminal_output", {
