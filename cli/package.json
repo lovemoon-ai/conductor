@@ -1,7 +1,7 @@
 {
   "name": "@love-moon/conductor-cli",
-  "version": "0.2.26",
-  "gitCommitId": "fc0cb59",
+  "version": "0.2.27",
+  "gitCommitId": "76b37c9",
   "type": "module",
   "bin": {
     "conductor": "bin/conductor.js"
@@ -17,8 +17,8 @@
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "@love-moon/ai-sdk": "0.2.26",
-    "@love-moon/conductor-sdk": "0.2.26",
+    "@love-moon/ai-sdk": "0.2.27",
+    "@love-moon/conductor-sdk": "0.2.27",
     "dotenv": "^16.4.5",
     "enquirer": "^2.4.1",
     "js-yaml": "^4.1.1",

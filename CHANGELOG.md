@@ -24,6 +24,42 @@ This project follows [Semantic Versioning](https://semver.org/) where practical.
 
 ---
 
+## [0.2.27] - 2026-03-23
+
+### Added
+
+- Added keyboard prompt history in the desktop task chat composer, including automatic focus for split-pane chat and local recall of the five most recent prompts with arrow keys.
+
+### Changed
+
+- Improved desktop task switching with faster detail rendering, animated task-card reordering when active conversations move to the top, and a task list idle surface that better matches the app background.
+- Improved chat composition guidance with rotating prompt suggestions and smoother desktop split-pane input activation.
+- Improved chat history loading so the web app opens long conversations from the latest page first and can continue loading older messages incrementally.
+- Refined agent list freshness so desktop daemon/task surfaces refresh automatically when backend state changes.
+
+### Fixed
+
+- Fixed desktop task switching latency caused by redundant task-detail and message-history loading.
+- Fixed chat history recovery after websocket reconnects so already-opened tasks refresh missed messages instead of staying stale.
+- Fixed `/api/tasks/[taskId]/messages` compatibility so mixed-version web and CLI clients still receive the expected default history payload.
+
+### Removed
+
+- _None._
+
+### Security
+
+- _None._
+
+### Commits
+
+- `761b04f` update
+- `6f635a5` update AGENTS.md
+- `7c8cd58` refresh daemon list automatically
+- `76b37c9` improve desktop task chat flow
+
+---
+
 ## [0.2.26] - 2026-03-23
 
 ### Added
