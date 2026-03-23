@@ -24,6 +24,46 @@ This project follows [Semantic Versioning](https://semver.org/) where practical.
 
 ---
 
+## [0.2.26] - 2026-03-23
+
+### Added
+
+- Added Kimi CLI runtime support so operators can start and resume Kimi-backed Conductor sessions from the CLI and supported app surfaces.
+- Added a desktop split-pane task workspace so larger screens can keep the task list and task detail open side by side.
+
+### Changed
+
+- Improved PTY task reentry to replay terminal state more smoothly after reconnects and session resume.
+- Improved server-side PTY task diagnostics so task logs preserve more useful runtime detail during troubleshooting.
+- Updated `conductor-config` backend suggestions to better guide Opencode setup.
+
+### Fixed
+
+- Fixed desktop task/detail selection sync so navigation and live updates keep the correct task open in the detail pane.
+- Fixed PTY resume and transport edge cases that could leave terminal sessions stale or incomplete after reconnection.
+
+### Removed
+
+- _None._
+
+### Security
+
+- _None._
+
+### Commits
+
+- `9307726` add stays_running issue and update conductor-config for installing opencode as suggestions
+- `e5ca6d4` update pty task log in server
+- `d099365` improve pty reentry resume
+- `b60e2f1` update desktop task split pane
+- `a3783e4` Merge branch 'feat/pty-reentry-snapshot'
+- `e25ac03` add kimi cli support
+- `98d142f` merge kimi cli support
+- `4788f84` update claw/issues
+- `fc0cb59` Merge branch 'main' of github-dang217:lovemoon-ai/conductor
+
+---
+
 ## [0.2.25] - 2026-03-22
 
 ### Added
