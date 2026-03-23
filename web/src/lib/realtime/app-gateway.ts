@@ -47,6 +47,13 @@ const normalizeTerminalMode = (value: unknown): "write" | "view" => {
   return value.trim().toLowerCase() === "view" ? "view" : "write";
 };
 
+const normalizeTerminalResumeStrategy = (value: unknown): "snapshot" | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+  return value.trim().toLowerCase() === "snapshot" ? "snapshot" : null;
+};
+
 const sendTerminalError = (socket: WebSocket, taskId: string | null, message: string) => {
   sendEnvelope(socket, {
     type: "terminal_error",
@@ -118,6 +125,21 @@ export const deliverTerminalAttachEnvelope = (args: {
     }
   }
   return delivered;
+};
+
+const resolveTerminalAttachHost = (args: {
+  taskId: string;
+  agentHost?: string | null;
+  executionHost?: string | null;
+}): string | null => realtimeHub.getTaskAgentHost(args.taskId) ?? args.executionHost ?? args.agentHost ?? null;
+
+const agentSupportsCapability = (userId: string, host: string | null, capability: string): boolean => {
+  if (!host) {
+    return false;
+  }
+  return realtimeHub
+    .getAgentsForUser(userId)
+    .some((agent) => agent.host === host && agent.capabilities.includes(capability));
 };
 
 export const buildForwardTerminalEnvelope = (
@@ -379,15 +401,34 @@ export const setupAppGateway = (): WebSocketServer => {
           } else {
             realtimeHub.releaseTerminalWriter(task.id, connectionId);
           }
+          const lastSeq = normalizePositiveInt(data.payload?.last_seq ?? data.payload?.lastSeq) ?? 0;
+          const requestedResumeStrategy = normalizeTerminalResumeStrategy(
+            data.payload?.resume_strategy ?? data.payload?.resumeStrategy,
+          );
+          const attachHost = resolveTerminalAttachHost({
+            taskId: task.id,
+            agentHost: task.agentHost,
+            executionHost: task.executionHost,
+          });
+          const useSnapshotResume =
+            lastSeq === 0 &&
+            requestedResumeStrategy === "snapshot" &&
+            agentSupportsCapability(user.id, attachHost, "terminal_snapshot");
           const envelope = {
             type: "terminal_attach",
             payload: {
               task_id: task.id,
               project_id: task.projectId,
               pty_session_id: task.ptySession.id,
-              last_seq: normalizePositiveInt(data.payload?.last_seq ?? data.payload?.lastSeq) ?? 0,
+              last_seq: lastSeq,
               cols: normalizePositiveInt(data.payload?.cols),
               rows: normalizePositiveInt(data.payload?.rows),
+              ...(useSnapshotResume
+                ? {
+                    connection_id: connectionId,
+                    resume_strategy: "snapshot",
+                  }
+                : {}),
             },
           };
           const delivered = deliverTerminalAttachEnvelope({

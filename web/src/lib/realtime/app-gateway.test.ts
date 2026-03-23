@@ -4,8 +4,18 @@ vi.mock("./hub", () => ({
   realtimeHub: {
     sendToAgent: vi.fn(),
     hasAgentHost: vi.fn(),
+    getTaskAgentHost: vi.fn(),
+    getAgentsForUser: vi.fn().mockReturnValue([]),
     bindTaskToAgent: vi.fn(),
     sendToAgentHost: vi.fn(),
+  },
+}));
+
+vi.mock("../db", () => ({
+  db: {
+    task: {
+      findFirst: vi.fn(),
+    },
   },
 }));
 

@@ -123,6 +123,7 @@ export function TerminalView({ task }: TerminalViewProps) {
   const directCandidate = useTerminalStore(
     (state) => state.byTask[task.id]?.transportSession?.directCandidate ?? false,
   );
+  const beginFreshResumeAttach = useTerminalStore((state) => state.beginFreshResumeAttach);
   const markAttaching = useTerminalStore((state) => state.markAttaching);
   const markDetached = useTerminalStore((state) => state.markDetached);
   const updateTransportSession = useTerminalStore((state) => state.updateTransportSession);
@@ -198,6 +199,10 @@ export function TerminalView({ task }: TerminalViewProps) {
       reason,
     });
     const snapshot = getTerminalOutputSnapshot(task.id);
+    const shouldRequestResumeSnapshot = snapshot.lastSeq === 0 && snapshot.chunks.length === 0;
+    if (shouldRequestResumeSnapshot) {
+      beginFreshResumeAttach(task.id);
+    }
     send({
       type: 'terminal_attach',
       payload: {
@@ -207,6 +212,7 @@ export function TerminalView({ task }: TerminalViewProps) {
         rows: sizeRef.current.rows,
         mode: 'write',
         force: true,
+        ...(shouldRequestResumeSnapshot ? { resume_strategy: 'snapshot' } : {}),
       },
     });
   };
@@ -375,6 +381,14 @@ export function TerminalView({ task }: TerminalViewProps) {
           pendingOutputEvents.push(event);
           return;
         }
+        if (event.replace) {
+          terminal.clear();
+          if (event.data) {
+            terminal.write(event.data);
+          }
+          renderedSeqRef.current = event.seq;
+          return;
+        }
         if (event.seq <= renderedSeqRef.current) {
           return;
         }
@@ -389,6 +403,14 @@ export function TerminalView({ task }: TerminalViewProps) {
       renderedSeqRef.current = snapshot.lastSeq;
       outputReady = true;
       for (const event of pendingOutputEvents) {
+        if (event.replace) {
+          terminal.clear();
+          if (event.data) {
+            terminal.write(event.data);
+          }
+          renderedSeqRef.current = event.seq;
+          continue;
+        }
         if (event.seq <= renderedSeqRef.current) {
           continue;
         }
