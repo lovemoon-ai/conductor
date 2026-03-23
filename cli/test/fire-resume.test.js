@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { promises as fsp } from "node:fs";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,6 +10,7 @@ import {
   findClaudeSessionPath,
   findCodexSessionPath,
   findCopilotSessionPath,
+  findKimiSessionPath,
   findSessionPath,
   resolveResumeContext,
   resolveSessionRunDirectory,
@@ -22,6 +24,8 @@ describe("fire resume resolver", () => {
     assert.equal(resumeProviderForBackend("claude"), "claude");
     assert.equal(resumeProviderForBackend("claude-code"), "claude");
     assert.equal(resumeProviderForBackend("copilot"), "copilot");
+    assert.equal(resumeProviderForBackend("kimi"), "kimi");
+    assert.equal(resumeProviderForBackend("kimi-cli"), "kimi");
     assert.equal(resumeProviderForBackend("unknown"), null);
   });
 
@@ -79,6 +83,19 @@ describe("fire resume resolver", () => {
 
     assert.equal(await findCopilotSessionPath(fileSessionId, { homeDir: tmpRoot }), filePath);
     assert.equal(await findCopilotSessionPath(dirSessionId, { homeDir: tmpRoot }), sessionDir);
+  });
+
+  it("finds kimi session path from hashed ~/.kimi/sessions directories", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "fire-resume-"));
+    const workspaceDir = path.join(tmpRoot, "workspace-kimi");
+    const sessionId = "kimi-session-42";
+    const workspaceHash = crypto.createHash("md5").update(workspaceDir).digest("hex");
+    const sessionDir = path.join(tmpRoot, ".kimi", "sessions", workspaceHash, sessionId);
+    await fsp.mkdir(sessionDir, { recursive: true });
+    await fsp.writeFile(path.join(sessionDir, "wire.jsonl"), "", "utf8");
+
+    assert.equal(await findKimiSessionPath(sessionId, { homeDir: tmpRoot }), sessionDir);
+    assert.equal(await findSessionPath("kimi", sessionId, { homeDir: tmpRoot }), sessionDir);
   });
 
   it("dispatches provider path lookup via findSessionPath", async () => {
@@ -181,5 +198,72 @@ describe("fire resume resolver", () => {
     assert.equal(resolved.sessionPath, sessionDir);
     assert.equal(resolved.cwd, workspaceDir);
     assert.equal(resolved.debugMetadata?.cwdSource, "session");
+  });
+
+  it("resolves kimi resume context from the current working directory hash", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-resume-"));
+    const workspaceDir = path.join(tempDir, "workspace-kimi");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    const sessionId = "kimi-session-current-cwd";
+    const workspaceHash = crypto.createHash("md5").update(workspaceDir).digest("hex");
+    const sessionDir = path.join(tempDir, ".kimi", "sessions", workspaceHash, sessionId);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, "wire.jsonl"), "", "utf8");
+
+    const resolved = await resolveResumeContext("kimi", sessionId, {
+      homeDir: tempDir,
+      cwd: workspaceDir,
+    });
+    assert.equal(resolved.provider, "kimi");
+    assert.equal(resolved.sessionPath, sessionDir);
+    assert.equal(resolved.cwd, workspaceDir);
+    assert.equal(resolved.debugMetadata?.cwdSource, "session");
+  });
+
+  it("resolves kimi resume context from conductor session bindings", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-resume-"));
+    const workspaceDir = path.join(tempDir, "workspace-kimi-store");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    const sessionId = "kimi-session-from-store";
+    const workspaceHash = crypto.createHash("md5").update(workspaceDir).digest("hex");
+    const sessionDir = path.join(tempDir, ".kimi", "sessions", workspaceHash, sessionId);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, "wire.jsonl"), "", "utf8");
+
+    const conductorSessionsDir = path.join(tempDir, ".conductor", "sessions");
+    fs.mkdirSync(conductorSessionsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(conductorSessionsDir, "backend.yaml"),
+      `sessions:\n  - project_id: project-kimi\n    task_id:\n      - task-kimi-1\n    project_path: ${JSON.stringify(workspaceDir)}\n    session_id: ${sessionId}\n    backend_type: kimi\n`,
+      "utf8",
+    );
+
+    const resolved = await resolveResumeContext("kimi", sessionId, {
+      homeDir: tempDir,
+      cwd: path.join(tempDir, "somewhere-else"),
+    });
+    assert.equal(resolved.provider, "kimi");
+    assert.equal(resolved.sessionPath, sessionDir);
+    assert.equal(resolved.cwd, workspaceDir);
+    assert.equal(resolved.debugMetadata?.cwdSource, "session");
+  });
+
+  it("rejects kimi resume when the original workspace cannot be reconstructed", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-resume-"));
+    const workspaceDir = path.join(tempDir, "workspace-kimi-missing");
+    const sessionId = "kimi-session-missing-workspace";
+    const workspaceHash = crypto.createHash("md5").update(workspaceDir).digest("hex");
+    const sessionDir = path.join(tempDir, ".kimi", "sessions", workspaceHash, sessionId);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, "wire.jsonl"), "", "utf8");
+
+    await assert.rejects(
+      () =>
+        resolveResumeContext("kimi", sessionId, {
+          homeDir: tempDir,
+          cwd: path.join(tempDir, "different-workspace"),
+        }),
+      /Could not resolve workspace for Kimi session/,
+    );
   });
 });

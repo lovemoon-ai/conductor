@@ -18,6 +18,15 @@ const FAKE_OPENCODE_SERVER = path.resolve(
   "fixtures",
   "fake-opencode-server.js",
 );
+const FAKE_KIMI_WIRE = path.resolve(
+  __dirname,
+  "..",
+  "..",
+  "modules",
+  "ai-sdk",
+  "fixtures",
+  "fake-kimi-wire.js",
+);
 
 async function waitFor(predicate, { timeoutMs = 1000, intervalMs = 20 } = {}) {
   const startedAt = Date.now();
@@ -82,6 +91,24 @@ describe("ai-sdk worker boundary", () => {
     await session.close();
   });
 
+  it("creates worker-backed kimi sessions without booting a turn", async () => {
+    const session = createAiSession("kimi", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_KIMI_WIRE}`,
+      logger: { log: () => {} },
+    });
+
+    assert.ok(session instanceof RemoteAiSession);
+    await waitFor(() => session.getSnapshot().workerReady === true);
+    assert.equal(session.getSnapshot().provider, "kimi-cli-wire");
+
+    const sessionInfo = await session.ensureSessionInfo();
+    assert.equal(sessionInfo.sessionId, session.getSnapshot().sessionId);
+    assert.equal(session.threadOptions.model, "kimi");
+
+    await session.close();
+  });
+
   it("rejects unsupported backends at the ai-sdk boundary", async () => {
     assert.throws(
       () =>
@@ -89,7 +116,7 @@ describe("ai-sdk worker boundary", () => {
           cwd: process.cwd(),
           logger: { log: () => {} },
         }),
-      /Only codex app-server, claude agent-sdk, and opencode sdk are supported/,
+      /Only codex app-server, claude agent-sdk, kimi cli wire, and opencode sdk are supported/,
     );
   });
 
@@ -225,6 +252,48 @@ describe("ai-sdk worker boundary", () => {
     assert.ok(statuses.some((payload) => payload.phase === "turn_completed"));
     assert.ok(statuses.some((payload) => payload.reply_in_progress === false));
     assert.ok(statuses.every((payload) => payload.source === "opencode-sdk"));
+
+    await session.close();
+  });
+
+  it("runs kimi turns through wire mode and emits assistant messages", async () => {
+    const session = createAiSession("kimi", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_KIMI_WIRE}`,
+      logger: { log: () => {} },
+    });
+    const chunks = [];
+    const statuses = [];
+
+    session.setSessionMessageHandler(async (payload) => {
+      chunks.push(payload);
+    });
+    session.setWorkingStatusHandler(async (payload) => {
+      statuses.push(payload);
+    });
+    session.setSessionReplyTarget("reply-kimi-worker-1");
+
+    const sessionInfo = await session.ensureSessionInfo();
+    assert.equal(sessionInfo.sessionId, session.getSnapshot().sessionId);
+    assert.equal(session.getSnapshot().provider, "kimi-cli-wire");
+
+    const result = await session.runTurn("Reply with exactly OK");
+    assert.equal(result.text, "OK from fake kimi\n");
+
+    assert.deepEqual(
+      chunks.map((payload) => payload.text),
+      ["OK from fake kimi\n"],
+    );
+    assert.ok(chunks.every((payload) => payload.replyTo === "reply-kimi-worker-1"));
+    assert.ok(statuses.some((payload) => payload.phase === "reasoning"));
+    assert.ok(statuses.some((payload) => payload.phase === "command_execution"));
+    assert.ok(statuses.some((payload) => payload.phase === "message_aggregation"));
+    assert.ok(statuses.some((payload) => payload.phase === "turn_completed"));
+    assert.ok(statuses.every((payload) => payload.source === "kimi-cli-wire"));
+
+    const usage = await session.getSessionUsageSummary();
+    assert.equal(usage.sessionId, sessionInfo.sessionId);
+    assert.equal(usage.contextUsagePercent, 57);
 
     await session.close();
   });

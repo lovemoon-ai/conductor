@@ -3,6 +3,7 @@ import { promises as fsp } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import crypto from "node:crypto";
 
 import yaml from "js-yaml";
 
@@ -36,6 +37,9 @@ export function buildResumeArgsForBackend(backend, sessionId) {
   if (normalizedBackend === "copilot") {
     return [`--resume=${resumeSessionId}`];
   }
+  if (normalizedBackend === "kimi" || normalizedBackend === "kimi-cli" || normalizedBackend === "kimi-code") {
+    return ["--session", resumeSessionId];
+  }
   throw new Error(`--resume is not supported for backend "${backend}"`);
 }
 
@@ -50,6 +54,9 @@ export function resumeProviderForBackend(backend) {
   if (normalizedBackend === "copilot") {
     return "copilot";
   }
+  if (normalizedBackend === "kimi" || normalizedBackend === "kimi-cli" || normalizedBackend === "kimi-code") {
+    return "kimi";
+  }
   return null;
 }
 
@@ -63,6 +70,9 @@ export async function findSessionPath(provider, sessionId, options = {}) {
   }
   if (normalizedProvider === "copilot") {
     return findCopilotSessionPath(sessionId, options);
+  }
+  if (normalizedProvider === "kimi") {
+    return findKimiSessionPath(sessionId, options);
   }
   throw new Error(`Unsupported provider: ${provider}`);
 }
@@ -120,6 +130,17 @@ export async function findCopilotSessionPath(sessionId, options = {}) {
   return findPathByName(sessionStateDir, normalizedSessionId);
 }
 
+export async function findKimiSessionPath(sessionId, options = {}) {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  if (!normalizedSessionId) {
+    return null;
+  }
+
+  const homeDir = resolveHomeDir(options);
+  const sessionsDir = options.kimiSessionsDir || path.join(homeDir, ".kimi", "sessions");
+  return findKimiSessionDirectory(sessionsDir, normalizedSessionId);
+}
+
 export async function resolveSessionRunDirectory(sessionPath) {
   const normalizedPath = typeof sessionPath === "string" ? sessionPath.trim() : "";
   if (!normalizedPath) {
@@ -153,9 +174,23 @@ export async function resolveResumeContext(backend, sessionId, options = {}) {
     throw new Error(`Invalid --resume session id for ${provider}: ${normalizedSessionId}`);
   }
 
-  const cwdFromSession = await extractResumeCwdFromSession(provider, sessionPath, normalizedSessionId);
-  const fallbackCwd = await resolveSessionRunDirectory(sessionPath);
+  const cwdFromSession = await extractResumeCwdFromSession(
+    provider,
+    sessionPath,
+    normalizedSessionId,
+    options,
+  );
+  const fallbackCwd =
+    provider === "kimi" ? null : await resolveSessionRunDirectory(sessionPath);
   const cwd = cwdFromSession || fallbackCwd;
+  if (!cwd) {
+    if (provider === "kimi") {
+      throw new Error(
+        `Could not resolve workspace for Kimi session ${normalizedSessionId}. Re-run from the original workspace or resume a session previously started by conductor fire.`,
+      );
+    }
+    throw new Error(`Could not resolve workspace for ${provider} session ${normalizedSessionId}`);
+  }
   if (!(await isExistingDirectory(cwd))) {
     throw new Error(`Resume workspace path does not exist: ${cwd}`);
   }
@@ -290,7 +325,167 @@ async function extractCopilotResumeCwd(sessionPath) {
   return null;
 }
 
-async function extractResumeCwdFromSession(provider, sessionPath, sessionId) {
+function md5Hex(value) {
+  return crypto.createHash("md5").update(String(value ?? "")).digest("hex");
+}
+
+function listCandidateWorkingDirectories(options = {}) {
+  const candidates = [];
+  const push = (value) => {
+    const normalized = typeof value === "string" ? value.trim() : "";
+    if (!normalized) {
+      return;
+    }
+    if (!candidates.includes(normalized)) {
+      candidates.push(normalized);
+    }
+  };
+
+  push(options.cwd);
+  push(options.currentWorkingDirectory);
+  push(process.env.PWD);
+  push(process.cwd());
+
+  return candidates;
+}
+
+async function loadConductorSessionRecords(options = {}) {
+  const homeDir = resolveHomeDir(options);
+  const defaultPaths = [
+    path.join(homeDir, ".conductor", "session.yaml"),
+    path.join(homeDir, ".conductor", "sessions"),
+  ];
+  const recordFiles = [];
+  const pushFile = (filePath) => {
+    const normalized = typeof filePath === "string" ? filePath.trim() : "";
+    if (!normalized || recordFiles.includes(normalized)) {
+      return;
+    }
+    recordFiles.push(normalized);
+  };
+
+  if (Array.isArray(options.conductorSessionFiles)) {
+    for (const entry of options.conductorSessionFiles) {
+      pushFile(entry);
+    }
+  }
+
+  if (Array.isArray(options.conductorSessionDirs)) {
+    for (const entry of options.conductorSessionDirs) {
+      const normalizedDir = typeof entry === "string" ? entry.trim() : "";
+      if (!normalizedDir) {
+        continue;
+      }
+      let files = [];
+      try {
+        files = await fsp.readdir(normalizedDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        if (!file.isFile() || !file.name.endsWith(".yaml")) {
+          continue;
+        }
+        pushFile(path.join(normalizedDir, file.name));
+      }
+    }
+  } else {
+    pushFile(defaultPaths[0]);
+    let files = [];
+    try {
+      files = await fsp.readdir(defaultPaths[1], { withFileTypes: true });
+    } catch {
+      files = [];
+    }
+    for (const file of files) {
+      if (!file.isFile() || !file.name.endsWith(".yaml")) {
+        continue;
+      }
+      pushFile(path.join(defaultPaths[1], file.name));
+    }
+  }
+
+  const records = [];
+  for (const filePath of recordFiles) {
+    let content = "";
+    try {
+      content = await fsp.readFile(filePath, "utf8");
+    } catch {
+      continue;
+    }
+    let parsed;
+    try {
+      parsed = yaml.load(content);
+    } catch {
+      continue;
+    }
+    const entries = Array.isArray(parsed?.sessions) ? parsed.sessions : Array.isArray(parsed) ? parsed : [];
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") {
+        continue;
+      }
+      records.push(entry);
+    }
+  }
+  return records;
+}
+
+function normalizeProjectPathCandidate(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+async function resolveKimiResumeCwd(sessionPath, sessionId, options = {}) {
+  const sessionDirectory = typeof sessionPath === "string" ? sessionPath.trim() : "";
+  if (!sessionDirectory) {
+    return null;
+  }
+
+  const worktreeHash = path.basename(path.dirname(sessionDirectory));
+  if (!worktreeHash) {
+    return null;
+  }
+
+  for (const candidate of listCandidateWorkingDirectories(options)) {
+    if (md5Hex(candidate) === worktreeHash) {
+      return candidate;
+    }
+  }
+
+  const records = await loadConductorSessionRecords(options);
+  const bySessionId = [];
+  const byHash = [];
+
+  for (const record of records) {
+    const projectPath = normalizeProjectPathCandidate(record?.project_path);
+    if (!projectPath) {
+      continue;
+    }
+    const backendType = normalizeBackend(record?.backend_type);
+    const recordSessionId = normalizeSessionId(record?.session_id);
+    const projectHash = md5Hex(projectPath);
+    if (
+      recordSessionId === sessionId &&
+      (backendType === "kimi" || !backendType) &&
+      projectHash === worktreeHash &&
+      !bySessionId.includes(projectPath)
+    ) {
+      bySessionId.push(projectPath);
+    }
+    if (projectHash === worktreeHash && !byHash.includes(projectPath)) {
+      byHash.push(projectPath);
+    }
+  }
+
+  if (bySessionId.length > 0) {
+    return bySessionId[0];
+  }
+  if (byHash.length === 1) {
+    return byHash[0];
+  }
+  return null;
+}
+
+async function extractResumeCwdFromSession(provider, sessionPath, sessionId, options = {}) {
   if (provider === "codex") {
     return extractCodexResumeCwd(sessionPath);
   }
@@ -299,6 +494,9 @@ async function extractResumeCwdFromSession(provider, sessionPath, sessionId) {
   }
   if (provider === "copilot") {
     return extractCopilotResumeCwd(sessionPath);
+  }
+  if (provider === "kimi") {
+    return resolveKimiResumeCwd(sessionPath, sessionId, options);
   }
   return null;
 }
@@ -399,6 +597,26 @@ async function findPathByName(rootDir, sessionId) {
       if (entry.isDirectory()) {
         queue.push(fullPath);
       }
+    }
+  }
+  return null;
+}
+
+async function findKimiSessionDirectory(rootDir, sessionId) {
+  let hashDirs = [];
+  try {
+    hashDirs = await fsp.readdir(rootDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  for (const hashDir of hashDirs) {
+    if (!hashDir.isDirectory()) {
+      continue;
+    }
+    const candidateDir = path.join(rootDir, hashDir.name, sessionId);
+    if (await pathExists(candidateDir, "directory")) {
+      return candidateDir;
     }
   }
   return null;

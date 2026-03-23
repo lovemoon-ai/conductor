@@ -1,4 +1,4 @@
-export const RUNTIME_SUPPORTED_BACKENDS = ["codex", "claude", "opencode"];
+export const RUNTIME_SUPPORTED_BACKENDS = ["codex", "claude", "kimi", "opencode"];
 
 export function normalizeRuntimeBackendName(backend) {
   return String(backend || "").trim().toLowerCase();

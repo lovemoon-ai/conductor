@@ -43,6 +43,19 @@ describe("ai-sdk client boundary", () => {
     await session.close();
   });
 
+  it("supports kimi cli wire sessions", async () => {
+    const session = createAiSession("kimi-cli", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+    });
+
+    assert.ok(session instanceof RemoteAiSession);
+    assert.equal(session.getSnapshot().backend, "kimi");
+    assert.equal(session.getSnapshot().provider, "kimi-cli-wire");
+
+    await session.close();
+  });
+
   it("rejects unsupported backends", () => {
     assert.throws(
       () =>
@@ -50,7 +63,7 @@ describe("ai-sdk client boundary", () => {
           cwd: process.cwd(),
           logger: { log: () => {} },
         }),
-      /Only codex app-server, claude agent-sdk, and opencode sdk are supported/,
+      /Only codex app-server, claude agent-sdk, kimi cli wire, and opencode sdk are supported/,
     );
   });
 });

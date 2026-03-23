@@ -51,4 +51,18 @@ describe("ai-sdk boundary", () => {
 
     await session.close();
   });
+
+  it("creates a kimi session without exposing provider-specific helpers", async () => {
+    const session = aiSdk.createAiSession("kimi", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+    });
+
+    assert.equal(session.threadOptions.model, "kimi");
+    assert.equal(session.usesSessionFileReplyStream(), true);
+    assert.equal(session.getSnapshot().backend, "kimi");
+    assert.equal(session.getSnapshot().provider, "kimi-cli-wire");
+
+    await session.close();
+  });
 });

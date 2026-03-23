@@ -82,23 +82,11 @@ const writeStoredScrollState = (taskId: string, state: StoredScrollState) => {
   }
 };
 
-const isAiSdkRuntimeSource = (source?: string) => {
-  const normalized = source?.trim().toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-
-  return normalized === 'ai-sdk'
-    || normalized.endsWith('-sdk')
-    || normalized.endsWith('-app-server');
-};
-
 const getAiRuntimeStatusText = (runtime?: {
-  source?: string;
   statusLine?: string;
   statusDoneLine?: string;
 } | null) => {
-  if (!runtime || !isAiSdkRuntimeSource(runtime.source)) {
+  if (!runtime) {
     return null;
   }
 

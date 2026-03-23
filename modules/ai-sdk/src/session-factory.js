@@ -1,9 +1,11 @@
 import { CodexAppServerSession } from "./providers/codex-app-server-session.js";
 import { ClaudeAgentSdkSession } from "./providers/claude-agent-sdk-session.js";
+import { KimiCliSession } from "./providers/kimi-cli-session.js";
 import { OpencodeSdkSession } from "./providers/opencode-sdk-session.js";
 
 export const DEFAULT_PROVIDER_VARIANT = "codex-app-server";
 export const CLAUDE_PROVIDER_VARIANT = "claude-agent-sdk";
+export const KIMI_PROVIDER_VARIANT = "kimi-cli-wire";
 export const OPENCODE_PROVIDER_VARIANT = "opencode-sdk";
 
 export function normalizeBackend(backend) {
@@ -17,18 +19,24 @@ export function normalizeBackend(backend) {
   if (normalized === "open-code" || normalized === "open_code") {
     return "opencode";
   }
+  if (normalized === "kimi-cli" || normalized === "kimi-code") {
+    return "kimi";
+  }
   return normalized;
 }
 
 export function isSupportedBackend(backend) {
   const normalized = normalizeBackend(backend);
-  return normalized === "codex" || normalized === "claude" || normalized === "opencode";
+  return normalized === "codex" || normalized === "claude" || normalized === "kimi" || normalized === "opencode";
 }
 
 export function providerVariantForBackend(backend) {
   const normalized = normalizeBackend(backend);
   if (normalized === "claude") {
     return CLAUDE_PROVIDER_VARIANT;
+  }
+  if (normalized === "kimi") {
+    return KIMI_PROVIDER_VARIANT;
   }
   if (normalized === "opencode") {
     return OPENCODE_PROVIDER_VARIANT;
@@ -38,11 +46,11 @@ export function providerVariantForBackend(backend) {
 
 export function assertSupportedBackend(backend) {
   const normalized = normalizeBackend(backend);
-  if (normalized === "codex" || normalized === "claude" || normalized === "opencode") {
+  if (normalized === "codex" || normalized === "claude" || normalized === "kimi" || normalized === "opencode") {
     return normalized;
   }
   throw new Error(
-    `Unsupported AI SDK backend "${backend}". Only codex app-server, claude agent-sdk, and opencode sdk are supported.`,
+    `Unsupported AI SDK backend "${backend}". Only codex app-server, claude agent-sdk, kimi cli wire, and opencode sdk are supported.`,
   );
 }
 
@@ -50,6 +58,9 @@ export function createLocalAiSession(backend, options = {}) {
   const normalized = assertSupportedBackend(backend);
   if (normalized === "claude") {
     return new ClaudeAgentSdkSession(normalized, options);
+  }
+  if (normalized === "kimi") {
+    return new KimiCliSession(normalized, options);
   }
   if (normalized === "opencode") {
     return new OpencodeSdkSession(normalized, options);
@@ -59,4 +70,5 @@ export function createLocalAiSession(backend, options = {}) {
 
 export { CodexAppServerSession };
 export { ClaudeAgentSdkSession };
+export { KimiCliSession };
 export { OpencodeSdkSession };

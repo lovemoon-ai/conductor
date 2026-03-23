@@ -287,6 +287,11 @@ describe("resume command args", () => {
     assert.deepEqual(args, ["--resume=38395aba-10fe-4a9e-863e-c7ed750e0809"]);
   });
 
+  it("formats kimi resume args as session flags", () => {
+    const args = buildResumeArgsForBackend("kimi", "kimi-session-42");
+    assert.deepEqual(args, ["--session", "kimi-session-42"]);
+  });
+
   it("returns empty args when resume session id is not provided", () => {
     const args = buildResumeArgsForBackend("codex", "");
     assert.deepEqual(args, []);
