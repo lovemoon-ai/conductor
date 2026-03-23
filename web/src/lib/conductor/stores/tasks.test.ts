@@ -117,4 +117,47 @@ describe('tasks store', () => {
       },
     });
   });
+
+  it('moves an updated task to the front when requested', () => {
+    useTasksStore.setState({
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'First task',
+          taskType: 'ai_task',
+          status: 'running',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'task-2',
+          title: 'Second task',
+          taskType: 'ai_task',
+          status: 'running',
+          createdAt: '2024-01-01T00:01:00.000Z',
+          updatedAt: '2024-01-01T00:01:00.000Z',
+        },
+      ],
+    });
+
+    useTasksStore.getState().updateTaskInList(
+      {
+        id: 'task-2',
+        title: 'Second task updated',
+        taskType: 'ai_task',
+        status: 'completed',
+        createdAt: '2024-01-01T00:01:00.000Z',
+        updatedAt: '2024-01-01T00:02:00.000Z',
+      },
+      { moveToFront: true },
+    );
+
+    expect(useTasksStore.getState().tasks.map((task) => task.id)).toEqual(['task-2', 'task-1']);
+    expect(useTasksStore.getState().tasks[0]).toMatchObject({
+      id: 'task-2',
+      title: 'Second task updated',
+      status: 'completed',
+      updatedAt: '2024-01-01T00:02:00.000Z',
+    });
+  });
 });

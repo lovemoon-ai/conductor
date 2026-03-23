@@ -27,7 +27,8 @@ describe('MessageBubble', () => {
     const bubble = wrapper.querySelector('[role="button"]') as HTMLElement;
 
     expect(row).toHaveClass('w-full');
-    expect(column).toHaveClass('mx-auto', 'w-full', 'max-w-5xl');
+    expect(column).toHaveClass('w-full');
+    expect(column).not.toHaveClass('max-w-5xl');
     expect(wrapper).toHaveClass('relative', 'overflow-visible', 'rounded-2xl');
     expect(bubble).toHaveClass(
       'w-full',
@@ -62,7 +63,8 @@ describe('MessageBubble', () => {
     const bubble = wrapper.querySelector('[role="button"]') as HTMLElement;
 
     expect(row).toHaveClass('w-full');
-    expect(column).toHaveClass('mx-auto', 'w-full', 'max-w-5xl');
+    expect(column).toHaveClass('w-full');
+    expect(column).not.toHaveClass('max-w-5xl');
     expect(bubble).toHaveClass('w-full', 'rounded-2xl', 'border', 'bg-paper', 'border-border', 'rounded-bl-md', 'shadow-sm');
     expect(screen.getByTestId('markdown-renderer')).toHaveTextContent('ai message');
     expect(screen.queryByText('Conductor')).not.toBeInTheDocument();

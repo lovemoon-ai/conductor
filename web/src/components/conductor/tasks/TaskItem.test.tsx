@@ -8,6 +8,7 @@ const deleteTaskMock = vi.fn();
 const markTaskReadMock = vi.fn();
 const sendMessageMock = vi.fn();
 const clearRuntimeMock = vi.fn();
+const onOpenTaskMock = vi.fn();
 let runtimeByTask: Record<string, unknown> = {};
 let messagesByTask: Record<string, Array<{ id: string; role: string; content: string }>> = {};
 
@@ -58,6 +59,7 @@ describe('TaskItem', () => {
     markTaskReadMock.mockReset();
     sendMessageMock.mockReset();
     clearRuntimeMock.mockReset();
+    onOpenTaskMock.mockReset();
   });
 
   it('shows backend and daemon labels in task list item', () => {
@@ -352,5 +354,61 @@ describe('TaskItem', () => {
     );
 
     expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('Saved draft content');
+  });
+
+  it('uses inline task opening when provided instead of navigating', () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-9',
+          title: 'Inline Detail Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread
+        isSelected={false}
+        isActive
+        selectionMode={false}
+        onToggleSelect={() => {}}
+        onOpenTask={onOpenTaskMock}
+        desktopListPaneMode
+      />
+    );
+
+    const taskCard = screen.getByRole('button', { name: /inline detail task/i });
+    expect(taskCard).toHaveClass('webapp-card-list-pane-active');
+
+    fireEvent.click(taskCard);
+
+    expect(markTaskReadMock).toHaveBeenCalledWith('task-9');
+    expect(onOpenTaskMock).toHaveBeenCalledWith('task-9');
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('uses the intermediate background for inactive cards in desktop list pane mode', () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-10',
+          title: 'Inactive Pane Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        isActive={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+        desktopListPaneMode
+      />
+    );
+
+    expect(screen.getByRole('button', { name: /inactive pane task/i })).toHaveClass('webapp-card-list-pane-idle');
   });
 });

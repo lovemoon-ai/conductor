@@ -6,6 +6,7 @@ import { ApiRequestError } from '@/lib/conductor/api/client';
 
 const pushMock = vi.fn();
 const createTaskMock = vi.fn();
+const onCreatedTaskMock = vi.fn();
 
 const projectsState = {
   projects: [
@@ -50,6 +51,7 @@ describe('CreateTaskDialog', () => {
   beforeEach(() => {
     createTaskMock.mockReset();
     pushMock.mockReset();
+    onCreatedTaskMock.mockReset();
     vi.restoreAllMocks();
   });
 
@@ -156,5 +158,21 @@ describe('CreateTaskDialog', () => {
     expect(screen.queryByLabelText('Terminal Entrypoint')).toBeNull();
     expect(screen.queryByLabelText('Shell Path')).toBeNull();
     expect(screen.queryByLabelText('Working Directory')).toBeNull();
+  });
+
+  it('uses inline selection callback when provided after task creation', async () => {
+    createTaskMock.mockResolvedValueOnce({ id: 'task-inline-1' });
+
+    render(<CreateTaskDialog open onClose={() => {}} onCreatedTask={onCreatedTaskMock} />);
+
+    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+      target: { value: 'Open inline detail' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+
+    await waitFor(() => {
+      expect(onCreatedTaskMock).toHaveBeenCalledWith('task-inline-1');
+    });
+    expect(pushMock).not.toHaveBeenCalled();
   });
 });

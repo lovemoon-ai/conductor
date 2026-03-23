@@ -112,6 +112,39 @@ describe('ConnectionStatus', () => {
     expect(details!.className).toContain('backdrop-blur-md');
   });
 
+  it('uses the explicit task id override to resolve pty styling outside task routes', () => {
+    useParamsMock.mockReturnValue({});
+    useRuntimeStoreMock.mockImplementation((selector: (state: { byTask: Record<string, unknown> }) => unknown) =>
+      selector({
+        byTask: {
+          'task-pty-9': {
+            taskId: 'task-pty-9',
+            daemon: 'daemon-a',
+            pid: 998,
+            backend: 'codex',
+            sessionId: 'session-pty-9',
+            tokenUsagePercent: 1,
+            contextUsagePercent: 2,
+          },
+        },
+      }),
+    );
+    useTasksStoreMock.mockImplementation((selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
+      selector({
+        tasks: [{ id: 'task-pty-9', executionHost: 'daemon-a', taskType: 'pty_task' }],
+      }),
+    );
+
+    render(<ConnectionStatus detailsEnabled taskId="task-pty-9" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open connection details' }));
+
+    const details = screen.getByText('Runtime Details').parentElement;
+    expect(details).not.toBeNull();
+    expect(details!.className).toContain('bg-zinc-950/70');
+    expect(screen.getByText('task-pty-9')).toBeInTheDocument();
+  });
+
   it('keeps the status indicator visible but does not open details when disabled', () => {
     render(<ConnectionStatus />);
 

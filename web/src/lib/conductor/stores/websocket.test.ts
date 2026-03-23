@@ -200,6 +200,109 @@ describe('websocket runtime status handling', () => {
     expect(messages[0].content).toBe('Done');
   });
 
+  it('moves tasks with new assistant messages to the top and refreshes their preview', () => {
+    useTasksStore.setState({
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Older task',
+          taskType: 'ai_task',
+          status: 'running',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'task-2',
+          title: 'New message task',
+          taskType: 'ai_task',
+          status: 'running',
+          lastAssistantMessage: 'Old reply',
+          createdAt: '2024-01-01T00:01:00.000Z',
+          updatedAt: '2024-01-01T00:01:00.000Z',
+        },
+      ],
+      unreadTaskIds: new Set(),
+    });
+
+    handleWSMessage({
+      type: 'task_sdk_message',
+      payload: {
+        id: 'msg-3',
+        task_id: 'task-2',
+        role: 'sdk',
+        content: 'Fresh reply',
+        created_at: '2024-01-01T00:05:00.000Z',
+      },
+    });
+
+    expect(useTasksStore.getState().tasks.map((task) => task.id)).toEqual(['task-2', 'task-1']);
+    expect(useTasksStore.getState().tasks[0]).toMatchObject({
+      id: 'task-2',
+      lastAssistantMessage: 'Fresh reply',
+      updatedAt: '2024-01-01T00:05:00.000Z',
+    });
+    expect(useTasksStore.getState().unreadTaskIds.has('task-2')).toBe(true);
+    expect(useChatStore.getState().messagesByTask['task-2']).toMatchObject([
+      expect.objectContaining({
+        id: 'msg-3',
+        content: 'Fresh reply',
+      }),
+    ]);
+  });
+
+  it('moves tasks with new user messages to the top and refreshes their preview', () => {
+    useTasksStore.setState({
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Older task',
+          taskType: 'ai_task',
+          status: 'running',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'task-2',
+          title: 'New user message task',
+          taskType: 'ai_task',
+          status: 'running',
+          lastUserMessage: 'Old prompt',
+          lastAssistantMessage: 'Stable reply',
+          createdAt: '2024-01-01T00:01:00.000Z',
+          updatedAt: '2024-01-01T00:01:00.000Z',
+        },
+      ],
+      unreadTaskIds: new Set(),
+    });
+
+    handleWSMessage({
+      type: 'task_user_message',
+      payload: {
+        id: 'msg-4',
+        task_id: 'task-2',
+        role: 'user',
+        content: 'Fresh prompt',
+        created_at: '2024-01-01T00:06:00.000Z',
+      },
+    });
+
+    expect(useTasksStore.getState().tasks.map((task) => task.id)).toEqual(['task-2', 'task-1']);
+    expect(useTasksStore.getState().tasks[0]).toMatchObject({
+      id: 'task-2',
+      lastUserMessage: 'Fresh prompt',
+      lastAssistantMessage: 'Stable reply',
+      updatedAt: '2024-01-01T00:06:00.000Z',
+    });
+    expect(useTasksStore.getState().unreadTaskIds.size).toBe(0);
+    expect(useChatStore.getState().messagesByTask['task-2']).toMatchObject([
+      expect.objectContaining({
+        id: 'msg-4',
+        role: 'user',
+        content: 'Fresh prompt',
+      }),
+    ]);
+  });
+
   it('stores PTY transport session events', () => {
     handleWSMessage({
       type: 'pty_transport_session',

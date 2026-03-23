@@ -52,9 +52,17 @@ export function readStoredTaskListViewMode(): TaskListViewMode {
 
 interface TaskListProps {
   viewMode: TaskListViewMode;
+  activeTaskId?: string | null;
+  onOpenTask?: (taskId: string) => void;
+  desktopListPaneMode?: boolean;
 }
 
-export function TaskList({ viewMode }: TaskListProps) {
+export function TaskList({
+  viewMode,
+  activeTaskId = null,
+  onOpenTask,
+  desktopListPaneMode = false,
+}: TaskListProps) {
   const { tasks, isLoading, unreadTaskIds, currentProjectFilter, deleteTask } = useTasksStore();
   const projects = useProjectsStore((state) => state.projects);
   const { confirm } = useConfirm();
@@ -203,8 +211,11 @@ export function TaskList({ viewMode }: TaskListProps) {
             task={task}
             isUnread={unreadTaskIds.has(task.id)}
             isSelected={selectedTaskIds.has(task.id)}
+            isActive={activeTaskId === task.id}
             selectionMode={selectionMode}
             onToggleSelect={toggleTaskSelection}
+            onOpenTask={onOpenTask}
+            desktopListPaneMode={desktopListPaneMode}
             viewMode={viewMode}
           />
         ))}

@@ -21,6 +21,8 @@
   --surface-default: var(--paper);
   --surface-panel: var(--panel);
   --surface-subtle: color-mix(in srgb, var(--panel) 72%, var(--paper));
+  --surface-task-active: color-mix(in srgb, var(--surface-panel) 50%, var(--surface-default));
+  --surface-task-active-strong: color-mix(in srgb, var(--surface-panel) 38%, var(--surface-default));
   --text-primary: var(--ink);
   --text-secondary: var(--muted);
   --text-inverse: #ffffff;
@@ -31,6 +33,7 @@
   --radius-control: 10px;
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.04);
   --shadow-card-hover: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --shadow-card-active: 0 0 0 1px rgba(148, 163, 184, 0.16);
 }
 
 .dark {
@@ -53,6 +56,8 @@
   --surface-default: var(--paper);
   --surface-panel: var(--panel);
   --surface-subtle: color-mix(in srgb, var(--panel) 72%, var(--paper));
+  --surface-task-active: color-mix(in srgb, var(--surface-panel) 50%, var(--surface-default));
+  --surface-task-active-strong: color-mix(in srgb, var(--surface-panel) 38%, var(--surface-default));
   --text-primary: var(--ink);
   --text-secondary: var(--muted);
   --text-inverse: #101214;
@@ -63,6 +68,7 @@
   --radius-control: 10px;
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.18);
   --shadow-card-hover: 0 10px 28px rgba(0, 0, 0, 0.34);
+  --shadow-card-active: 0 0 0 1px rgba(148, 163, 184, 0.14);
 }
 
 body {
@@ -86,6 +92,30 @@ body {
 .webapp-card:hover {
   box-shadow: var(--shadow-card-hover);
   border-color: var(--accent-default);
+}
+
+.webapp-card.webapp-card-active,
+.webapp-card.webapp-card-active:hover {
+  background: var(--surface-task-active);
+  border-color: var(--border-default);
+  box-shadow: var(--shadow-card-active);
+}
+
+.webapp-card.webapp-card-active-strong,
+.webapp-card.webapp-card-active-strong:hover {
+  background: var(--surface-task-active-strong);
+  border-color: var(--border-default);
+  box-shadow: var(--shadow-card-active);
+}
+
+.webapp-card.webapp-card-list-pane-idle,
+.webapp-card.webapp-card-list-pane-idle:hover {
+  background: var(--surface-task-active);
+}
+
+.webapp-card.webapp-card-list-pane-active,
+.webapp-card.webapp-card-list-pane-active:hover {
+  background: var(--surface-panel);
 }
 
 .webapp-btn-primary {

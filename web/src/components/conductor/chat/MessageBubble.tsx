@@ -131,7 +131,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   return (
     <div className="w-full">
-      <div className="mx-auto w-full max-w-5xl">
+      <div className="w-full">
         <div
           ref={rootRef}
           className={`group/message relative overflow-visible rounded-2xl ${message.createdAt ? 'pt-2' : ''}`}

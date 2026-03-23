@@ -14,6 +14,7 @@ import type { TaskType } from '@/lib/tasks/task-config';
 interface CreateTaskDialogProps {
   open: boolean;
   onClose: () => void;
+  onCreatedTask?: (taskId: string) => void;
 }
 
 const supportsPtyTask = (capabilities: string[] | undefined): boolean =>
@@ -73,7 +74,7 @@ const TASK_TYPE_OPTIONS: Array<{
   },
 ];
 
-export function CreateTaskDialog({ open, onClose }: CreateTaskDialogProps) {
+export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDialogProps) {
   const router = useRouter();
   const [title, setTitle] = useState('');
   const [projectId, setProjectId] = useState<string>('');
@@ -169,6 +170,10 @@ export function CreateTaskDialog({ open, onClose }: CreateTaskDialogProps) {
       });
       onClose();
       resetForm();
+      if (onCreatedTask) {
+        onCreatedTask(task.id);
+        return;
+      }
       router.push(`/app/tasks/${task.id}`);
     } catch (error) {
       setSubmitError(getCreateTaskErrorMessage(error));

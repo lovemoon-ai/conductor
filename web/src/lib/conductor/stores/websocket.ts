@@ -257,10 +257,26 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
       const normalized = normalizeMessagePayload(payload);
       if (!normalized) break;
       useChatStore.getState().addMessage(normalized.taskId, normalized.message);
+      const tasksStore = useTasksStore.getState();
+      const task = tasksStore.tasks.find((item) => item.id === normalized.taskId);
+
+      if (task) {
+        tasksStore.updateTaskInList(
+          {
+            ...task,
+            updatedAt: normalized.message.createdAt ?? task.updatedAt ?? task.createdAt,
+            lastUserMessage:
+              normalized.message.role === 'user' ? normalized.message.content : task.lastUserMessage ?? null,
+            lastAssistantMessage:
+              normalized.message.role === 'user' ? task.lastAssistantMessage ?? null : normalized.message.content,
+          },
+          { moveToFront: true },
+        );
+      }
 
       // Mark as unread if not user message
       if (normalized.message.role !== 'user') {
-        useTasksStore.getState().markTaskUnread(normalized.taskId);
+        tasksStore.markTaskUnread(normalized.taskId);
       }
       break;
     }

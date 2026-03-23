@@ -287,8 +287,8 @@ export function ChatView({ taskId }: ChatViewProps) {
           </div>
         )}
       </div>
-      <div className="border-t border-border bg-paper/40 px-4 py-3">
-        <div className="mx-auto w-full max-w-5xl space-y-3">
+      <div className="border-t border-border bg-paper/40 px-4 py-3 md:px-6">
+        <div className="w-full space-y-3">
           {aiRuntimeStatusText ? (
             <div className="flex flex-wrap gap-2 text-xs text-muted">
               <span className="rounded-full bg-border/50 px-2.5 py-1">

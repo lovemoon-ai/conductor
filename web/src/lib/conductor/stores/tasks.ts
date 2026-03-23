@@ -50,7 +50,7 @@ interface TasksState {
   setProjectFilter: (projectId: string | null) => void;
   markTaskRead: (taskId: string) => void;
   markTaskUnread: (taskId: string) => void;
-  updateTaskInList: (task: Task) => void;
+  updateTaskInList: (task: Task, options?: { moveToFront?: boolean }) => void;
   removeTask: (taskId: string) => void;
   clearError: () => void;
 }
@@ -75,10 +75,14 @@ const normalizeTask = (task: any): Task => ({
   updatedAt: task.updatedAt ?? task.updated_at ?? null,
 });
 
-const upsertTask = (tasks: Task[], task: Task): Task[] => {
+const upsertTask = (tasks: Task[], task: Task, options?: { moveToFront?: boolean }): Task[] => {
   const index = tasks.findIndex((existing) => existing.id === task.id);
   if (index === -1) {
     return [task, ...tasks];
+  }
+
+  if (options?.moveToFront) {
+    return [task, ...tasks.slice(0, index), ...tasks.slice(index + 1)];
   }
 
   const next = [...tasks];
@@ -202,9 +206,9 @@ export const useTasksStore = create<TasksState>()((set, get) => ({
     }));
   },
 
-  updateTaskInList: (task) => {
+  updateTaskInList: (task, options) => {
     set((state) => ({
-      tasks: upsertTask(state.tasks, task),
+      tasks: upsertTask(state.tasks, task, options),
     }));
   },
 

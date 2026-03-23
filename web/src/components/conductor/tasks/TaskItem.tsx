@@ -15,8 +15,11 @@ interface TaskItemProps {
   task: Task;
   isUnread: boolean;
   isSelected: boolean;
+  isActive?: boolean;
   selectionMode: boolean;
   onToggleSelect: (taskId: string) => void;
+  onOpenTask?: (taskId: string) => void;
+  desktopListPaneMode?: boolean;
   viewMode?: TaskListViewMode;
 }
 
@@ -55,8 +58,11 @@ export function TaskItem({
   task,
   isUnread,
   isSelected,
+  isActive = false,
   selectionMode,
   onToggleSelect,
+  onOpenTask,
+  desktopListPaneMode = false,
   viewMode = 'list',
 }: TaskItemProps) {
   const router = useRouter();
@@ -135,6 +141,17 @@ export function TaskItem({
   const latestAssistantText = latestAssistantContent || latestAssistantStatusText || 'No AI response yet.';
   const isMessageableTask = taskType !== 'pty_task';
   const isTaskRunning = task.status === 'running';
+  const useDesktopListPaneSurface = desktopListPaneMode && viewMode === 'list' && !selectionMode;
+  const isHighlighted = isSelected || (!selectionMode && isActive);
+  const highlightedCardClassName = useDesktopListPaneSurface
+    ? isActive
+      ? 'webapp-card-list-pane-active'
+      : 'webapp-card-list-pane-idle'
+    : isSelected
+      ? 'webapp-card-active-strong'
+      : isActive
+        ? 'webapp-card-active'
+        : '';
 
   const setSwipeOffsetValue = useCallback((value: number) => {
     swipeOffsetRef.current = value;
@@ -467,6 +484,10 @@ export function TaskItem({
       return;
     }
     markTaskRead(task.id);
+    if (onOpenTask) {
+      onOpenTask(task.id);
+      return;
+    }
     router.push(`/app/tasks/${task.id}`);
   };
 
@@ -615,7 +636,7 @@ export function TaskItem({
       <div
         ref={gridCardRef}
         className={`webapp-card flex h-full flex-col p-4 transition-colors hover:border-[var(--accent)] ${
-          isSelected ? 'border-[var(--accent)] bg-[var(--accent)]/5' : ''
+          isHighlighted ? highlightedCardClassName : ''
         }`}
         role="button"
         tabIndex={0}
@@ -814,7 +835,7 @@ export function TaskItem({
         onPointerCancel={finalizeSwipe}
         style={cardStyle}
         className={`webapp-card relative z-10 cursor-pointer p-4 transition-colors hover:border-[var(--accent)] ${
-          isSelected ? 'border-[var(--accent)] bg-[var(--accent)]/5' : ''
+          useDesktopListPaneSurface || isHighlighted ? highlightedCardClassName : ''
         }`}
         role="button"
         tabIndex={0}

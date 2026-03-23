@@ -25,10 +25,17 @@ function formatPercent(value?: number): string {
   return `${rounded}%`;
 }
 
-export function ConnectionStatus({ detailsEnabled = false }: { detailsEnabled?: boolean }) {
+export function ConnectionStatus({
+  detailsEnabled = false,
+  taskId: taskIdOverride,
+}: {
+  detailsEnabled?: boolean;
+  taskId?: string | null;
+}) {
   const status = useWebSocketStore((state) => state.status);
   const params = useParams<{ taskId?: string | string[] }>();
-  const taskId = useMemo(() => normalizeTaskId(params?.taskId), [params]);
+  const routeTaskId = useMemo(() => normalizeTaskId(params?.taskId), [params]);
+  const taskId = taskIdOverride ?? routeTaskId;
   const runtime = useRuntimeStore((state) => (taskId ? state.byTask[taskId] : undefined));
   const agents = useAgentsStore((state) => state.agents);
   const currentTask = useTasksStore((state) => {

@@ -1,7 +1,7 @@
 'use client';
 
-import { Suspense, useState, useEffect } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { Suspense, useState, useEffect, useMemo, useRef } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Header } from '@/components/conductor/layout/Header';
 import {
   GridIcon,
@@ -13,23 +13,57 @@ import {
   type TaskListViewMode,
 } from '@/components/conductor/tasks/TaskList';
 import { CreateTaskDialog } from '@/components/conductor/tasks/CreateTaskDialog';
+import { TaskDetailPane } from '@/components/conductor/tasks/TaskDetailPane';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
 import { useProjectsStore } from '@/lib/conductor/stores/projects';
 
+const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
+
 function TasksPageContent() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [viewMode, setViewMode] = useState<TaskListViewMode>(() => readStoredTaskListViewMode());
+  const [isDesktop, setIsDesktop] = useState(false);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const previousRequestedTaskIdRef = useRef<string | null>(null);
+  const shouldHonorIncomingTaskIdRef = useRef(false);
   const setProjectFilter = useTasksStore((state) => state.setProjectFilter);
   const fetchTasks = useTasksStore((state) => state.fetchTasks);
   const isLoading = useTasksStore((state) => state.isLoading);
   const currentProjectFilter = useTasksStore((state) => state.currentProjectFilter);
-  const taskCount = useTasksStore((state) => state.tasks.length);
+  const tasks = useTasksStore((state) => state.tasks);
+  const taskCount = tasks.length;
   const projects = useProjectsStore((state) => state.projects);
   const projectId = searchParams.get('projectId');
+  const requestedTaskId = searchParams.get('taskId');
   const currentProjectName = projectId
     ? projects.find((project) => project.id === projectId)?.name
     : null;
+  const desktopListMode = isDesktop && viewMode === 'list';
+  const inlineDetailEnabled = desktopListMode && taskCount > 0;
+  const visibleTaskIds = useMemo(() => new Set(tasks.map((task) => task.id)), [tasks]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia(DESKTOP_MEDIA_QUERY);
+    const updateViewport = () => {
+      setIsDesktop(mediaQuery.matches);
+    };
+
+    updateViewport();
+
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', updateViewport);
+      return () => mediaQuery.removeEventListener('change', updateViewport);
+    }
+
+    mediaQuery.addListener(updateViewport);
+    return () => mediaQuery.removeListener(updateViewport);
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -42,8 +76,77 @@ function TasksPageContent() {
     setProjectFilter(projectId || null);
   }, [projectId, setProjectFilter]);
 
+  useEffect(() => {
+    if (!inlineDetailEnabled) {
+      previousRequestedTaskIdRef.current = requestedTaskId;
+      shouldHonorIncomingTaskIdRef.current = false;
+      return;
+    }
+
+    const previousRequestedTaskId = previousRequestedTaskIdRef.current;
+    previousRequestedTaskIdRef.current = requestedTaskId;
+    const requestedTaskChanged = previousRequestedTaskId !== requestedTaskId;
+    shouldHonorIncomingTaskIdRef.current = requestedTaskChanged;
+
+    if (requestedTaskChanged && requestedTaskId && visibleTaskIds.has(requestedTaskId)) {
+      setSelectedTaskId((prev) => (prev === requestedTaskId ? prev : requestedTaskId));
+      return;
+    }
+
+    const nextTaskId = selectedTaskId && visibleTaskIds.has(selectedTaskId)
+      ? selectedTaskId
+      : requestedTaskId && visibleTaskIds.has(requestedTaskId)
+        ? requestedTaskId
+        : tasks[0]?.id ?? null;
+
+    setSelectedTaskId((prev) => (prev === nextTaskId ? prev : nextTaskId));
+  }, [inlineDetailEnabled, requestedTaskId, selectedTaskId, tasks, visibleTaskIds]);
+
+  useEffect(() => {
+    if (!inlineDetailEnabled) {
+      return;
+    }
+
+    const currentTaskId = searchParams.get('taskId');
+    if (
+      shouldHonorIncomingTaskIdRef.current
+      && currentTaskId
+      && currentTaskId !== selectedTaskId
+      && visibleTaskIds.has(currentTaskId)
+    ) {
+      shouldHonorIncomingTaskIdRef.current = false;
+      return;
+    }
+    shouldHonorIncomingTaskIdRef.current = false;
+
+    if ((currentTaskId ?? null) === selectedTaskId) {
+      return;
+    }
+
+    const nextSearchParams = new URLSearchParams(searchParams.toString());
+    if (selectedTaskId) {
+      nextSearchParams.set('taskId', selectedTaskId);
+    } else {
+      nextSearchParams.delete('taskId');
+    }
+
+    const nextQuery = nextSearchParams.toString();
+    router.replace(nextQuery ? `/app/tasks?${nextQuery}` : '/app/tasks', { scroll: false });
+  }, [inlineDetailEnabled, router, searchParams, selectedTaskId, visibleTaskIds]);
+
   const handleRefresh = () => {
     fetchTasks(currentProjectFilter ?? undefined, { recoverStale: true });
+  };
+
+  const handleSelectTask = (taskId: string) => {
+    if (!inlineDetailEnabled) {
+      return;
+    }
+    setSelectedTaskId(taskId);
+  };
+
+  const handleTaskCreated = (taskId: string) => {
+    setSelectedTaskId(taskId);
   };
 
   return (
@@ -51,6 +154,8 @@ function TasksPageContent() {
       <Header
         title={currentProjectName ? `Task ${taskCount} · ${currentProjectName}` : `Task ${taskCount}`}
         compact
+        showConnectionStatus={inlineDetailEnabled && Boolean(selectedTaskId)}
+        connectionTaskId={inlineDetailEnabled ? selectedTaskId : null}
         actions={
           <div className="flex items-center gap-2">
             <div className="inline-flex rounded-xl bg-paper/80 p-1">
@@ -108,13 +213,39 @@ function TasksPageContent() {
         }
       />
 
-      <div className="flex-1 overflow-y-auto px-4 pb-4 pt-4 webapp-scrollbar">
-        <TaskList viewMode={viewMode} />
+      <div className="flex-1 overflow-hidden px-4 pb-4 pt-4">
+        {inlineDetailEnabled ? (
+          <div className="flex h-full gap-4">
+            <div className="min-h-0 min-w-0 shrink-0 overflow-y-auto pr-1 webapp-scrollbar md:w-[19.2rem] lg:w-[20.8rem] xl:w-[24rem]">
+              <TaskList
+                viewMode={viewMode}
+                activeTaskId={selectedTaskId}
+                onOpenTask={handleSelectTask}
+                desktopListPaneMode
+              />
+            </div>
+            <div className="hidden min-h-0 min-w-0 flex-1 overflow-hidden rounded-[24px] border border-border bg-paper shadow-sm md:flex md:flex-col">
+              {selectedTaskId ? (
+                <TaskDetailPane
+                  taskId={selectedTaskId}
+                  compactHeader
+                  showConnectionStatus
+                  hideHeader
+                />
+              ) : null}
+            </div>
+          </div>
+        ) : (
+          <div className="h-full overflow-y-auto webapp-scrollbar">
+            <TaskList viewMode={viewMode} />
+          </div>
+        )}
       </div>
 
       <CreateTaskDialog
         open={showCreateDialog}
         onClose={() => setShowCreateDialog(false)}
+        onCreatedTask={desktopListMode ? handleTaskCreated : undefined}
       />
     </>
   );

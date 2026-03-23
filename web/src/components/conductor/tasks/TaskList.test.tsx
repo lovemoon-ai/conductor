@@ -28,9 +28,17 @@ vi.mock('@/lib/conductor/stores/projects', () => ({
 }));
 
 vi.mock('./TaskItem', () => ({
-  TaskItem: (props: { task: { id: string; title: string }; viewMode?: string }) => {
+  TaskItem: (props: {
+    task: { id: string; title: string };
+    viewMode?: string;
+    isActive?: boolean;
+  }) => {
     taskItemMock(props);
-    return <div data-testid={`task-item-${props.task.id}`}>{props.task.title}:{props.viewMode}</div>;
+    return (
+      <div data-testid={`task-item-${props.task.id}`}>
+        {props.task.title}:{props.viewMode}:{props.isActive ? 'active' : 'idle'}
+      </div>
+    );
   },
 }));
 
@@ -56,10 +64,10 @@ describe('TaskList', () => {
   });
 
   it('renders list view badges and items', async () => {
-    render(<TaskList viewMode="list" />);
+    render(<TaskList viewMode="list" activeTaskId="task-2" />);
 
-    expect(await screen.findByText('Task One:list')).toBeInTheDocument();
-    expect(screen.getByText('Task Two:list')).toBeInTheDocument();
+    expect(await screen.findByText('Task One:list:idle')).toBeInTheDocument();
+    expect(screen.getByText('Task Two:list:active')).toBeInTheDocument();
     expect(screen.queryByText('1 unread')).not.toBeInTheDocument();
     expect(screen.getByText('Project One')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'List view' })).toBeNull();
@@ -70,8 +78,8 @@ describe('TaskList', () => {
   it('renders grid view when controlled by parent', async () => {
     render(<TaskList viewMode="grid" />);
 
-    expect(await screen.findByText('Task One:grid')).toBeInTheDocument();
-    expect(screen.getByText('Task Two:grid')).toBeInTheDocument();
+    expect(await screen.findByText('Task One:grid:idle')).toBeInTheDocument();
+    expect(screen.getByText('Task Two:grid:idle')).toBeInTheDocument();
     expect(screen.queryByText('1 unread')).not.toBeInTheDocument();
   });
 

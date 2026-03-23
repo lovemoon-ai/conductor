@@ -9,6 +9,7 @@ interface HeaderProps {
   actions?: React.ReactNode;
   showConnectionStatus?: boolean;
   compact?: boolean;
+  connectionTaskId?: string | null;
 }
 
 const BackIcon = () => (
@@ -24,6 +25,7 @@ export function Header({
   actions,
   showConnectionStatus = false,
   compact = false,
+  connectionTaskId,
 }: HeaderProps) {
   return (
     <header className={`bg-panel border-b border-border flex items-center justify-between px-4 md:px-6 ${compact ? 'h-12' : 'h-16'}`}>
@@ -42,7 +44,7 @@ export function Header({
       </div>
 
       <div className="flex items-center gap-4">
-        <ConnectionStatus detailsEnabled={showConnectionStatus} />
+        <ConnectionStatus detailsEnabled={showConnectionStatus} taskId={connectionTaskId} />
         {actions}
       </div>
     </header>

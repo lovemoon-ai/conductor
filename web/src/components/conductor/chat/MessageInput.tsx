@@ -148,8 +148,8 @@ export function MessageInput({
   };
 
   return (
-    <div className="border-t border-border bg-panel/95 px-4 py-3 backdrop-blur-sm">
-      <div className="mx-auto w-full max-w-5xl">
+    <div className="border-t border-border bg-panel/95 px-4 py-3 backdrop-blur-sm md:px-6">
+      <div className="w-full">
         <div
           ref={composerRef}
           className="w-full min-h-11 rounded-2xl border border-zinc-50 bg-paper px-3 py-3 transition-all dark:border-zinc-700/70 focus-within:border-accent focus-within:shadow-[0_0_0_4px_rgba(228,87,46,0.1)]"
