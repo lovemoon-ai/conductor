@@ -9,30 +9,57 @@ const SEND_BUTTON_SAFETY_GAP_PX = 12;
 const INPUT_SCROLL_THRESHOLD_RATIO = 0.75;
 
 const DRAFT_STORAGE_PREFIX = 'conductor-task-draft:';
+const HISTORY_STORAGE_PREFIX = 'conductor-task-history:';
+const MAX_HISTORY_ITEMS = 5;
+const PLACEHOLDER_ROTATION_MS = 3200;
+const PLACEHOLDER_MESSAGES = [
+  'Type a message...',
+  'Ask Conductor what to do next…',
+  'Paste a concrete task to get started…',
+  'Tip: use ↑ / ↓ to browse recent prompts',
+] as const;
 
 interface MessageInputProps {
   taskId: string;
   onSend: (content: string) => void;
   disabled?: boolean;
   sendDisabled?: boolean;
+  autoFocus?: boolean;
 }
 
 const getDraftStorageKey = (taskId: string) => `${DRAFT_STORAGE_PREFIX}${taskId}`;
+const getHistoryStorageKey = (taskId: string) => `${HISTORY_STORAGE_PREFIX}${taskId}`;
+
+const normalizeHistory = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(-MAX_HISTORY_ITEMS);
+};
 
 export function MessageInput({
   taskId,
   onSend,
   disabled,
   sendDisabled = false,
+  autoFocus = false,
 }: MessageInputProps) {
   const [content, setContent] = useState('');
   const [isSendOnNextLine, setIsSendOnNextLine] = useState(false);
   const [isInputScrollable, setIsInputScrollable] = useState(false);
+  const [sentHistory, setSentHistory] = useState<string[]>([]);
+  const [placeholderIndex, setPlaceholderIndex] = useState(0);
   const composerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const isComposingRef = useRef(false);
   const skipStoreEffectRef = useRef(true);
+  const historyCursorRef = useRef<number | null>(null);
+  const historyDraftRef = useRef('');
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -45,6 +72,50 @@ export function MessageInput({
       // ignore storage errors
     }
   }, [taskId]);
+
+  useEffect(() => {
+    historyCursorRef.current = null;
+    historyDraftRef.current = '';
+    setPlaceholderIndex(0);
+    if (typeof window === 'undefined') return;
+    const key = getHistoryStorageKey(taskId);
+    try {
+      const rawHistory = window.sessionStorage.getItem(key);
+      if (!rawHistory) {
+        setSentHistory([]);
+        return;
+      }
+      setSentHistory(normalizeHistory(JSON.parse(rawHistory)));
+    } catch {
+      setSentHistory([]);
+    }
+  }, [taskId]);
+
+  useEffect(() => {
+    if (content || disabled) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      setPlaceholderIndex((previous) => (previous + 1) % PLACEHOLDER_MESSAGES.length);
+    }, PLACEHOLDER_ROTATION_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [content, disabled]);
+
+  useEffect(() => {
+    if (!autoFocus) {
+      return;
+    }
+    const textarea = textareaRef.current;
+    if (!textarea || disabled) {
+      return;
+    }
+    textarea.focus({ preventScroll: true });
+    const nextPosition = textarea.value.length;
+    textarea.setSelectionRange(nextPosition, nextPosition);
+  }, [autoFocus, disabled, taskId]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -63,6 +134,20 @@ export function MessageInput({
       // ignore storage errors
     }
   }, [content, taskId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const key = getHistoryStorageKey(taskId);
+    try {
+      if (sentHistory.length === 0) {
+        window.sessionStorage.removeItem(key);
+        return;
+      }
+      window.sessionStorage.setItem(key, JSON.stringify(sentHistory.slice(-MAX_HISTORY_ITEMS)));
+    } catch {
+      // ignore storage errors
+    }
+  }, [sentHistory, taskId]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -121,13 +206,73 @@ export function MessageInput({
 
   const canSend = Boolean(content.trim()) && !disabled && !sendDisabled;
 
+  const moveCaretToEnd = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+    const nextPosition = textarea.value.length;
+    requestAnimationFrame(() => {
+      textarea.focus({ preventScroll: true });
+      textarea.setSelectionRange(nextPosition, nextPosition);
+    });
+  };
+
   const handleSubmit = () => {
     if (!content.trim() || disabled || sendDisabled) return;
-    onSend(content.trim());
+    const trimmedContent = content.trim();
+    onSend(trimmedContent);
+    setSentHistory((previous) => {
+      const deduped = previous.filter((item) => item !== trimmedContent);
+      return [...deduped, trimmedContent].slice(-MAX_HISTORY_ITEMS);
+    });
+    historyCursorRef.current = null;
+    historyDraftRef.current = '';
     setContent('');
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowUp') {
+      if (e.nativeEvent.isComposing || isComposingRef.current || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) {
+        return;
+      }
+      const textarea = textareaRef.current;
+      if (!textarea || sentHistory.length === 0) {
+        return;
+      }
+      e.preventDefault();
+      if (historyCursorRef.current === null) {
+        historyDraftRef.current = content;
+        historyCursorRef.current = sentHistory.length - 1;
+      } else if (historyCursorRef.current > 0) {
+        historyCursorRef.current -= 1;
+      }
+      const nextHistory = sentHistory[historyCursorRef.current] ?? sentHistory[sentHistory.length - 1] ?? '';
+      setContent(nextHistory);
+      moveCaretToEnd();
+      return;
+    }
+
+    if (e.key === 'ArrowDown') {
+      if (e.nativeEvent.isComposing || isComposingRef.current || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) {
+        return;
+      }
+      const textarea = textareaRef.current;
+      if (!textarea || historyCursorRef.current === null) {
+        return;
+      }
+      e.preventDefault();
+      if (historyCursorRef.current < sentHistory.length - 1) {
+        historyCursorRef.current += 1;
+        setContent(sentHistory[historyCursorRef.current] ?? '');
+      } else {
+        historyCursorRef.current = null;
+        setContent(historyDraftRef.current);
+      }
+      moveCaretToEnd();
+      return;
+    }
+
     if (e.key !== 'Enter') return;
     if (e.nativeEvent.isComposing || isComposingRef.current) return;
     if (e.ctrlKey || e.metaKey) {
@@ -162,9 +307,10 @@ export function MessageInput({
               onKeyDown={handleKeyDown}
               onCompositionStart={() => { isComposingRef.current = true; }}
               onCompositionEnd={() => { isComposingRef.current = false; }}
-              placeholder="Type a message..."
+              placeholder={PLACEHOLDER_MESSAGES[placeholderIndex]}
               disabled={disabled}
               rows={1}
+              data-testid="message-input-textarea"
               className={`block min-w-0 resize-none border-0 bg-transparent p-0 text-sm leading-relaxed text-ink placeholder:text-muted outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
                 isInputScrollable ? 'overflow-y-auto' : 'overflow-hidden'
               } ${

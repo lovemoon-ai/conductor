@@ -57,6 +57,13 @@ describe('websocket connection lifecycle', () => {
 
   beforeEach(() => {
     vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
+    useChatStore.setState({
+      messagesByTask: {},
+      historyStateByTask: {},
+      hydratedTaskIds: new Set(),
+      loadingTasks: new Set(),
+      error: null,
+    });
     useWebSocketStore.setState({
       status: 'disconnected',
       ws: null,
@@ -113,6 +120,40 @@ describe('websocket connection lifecycle', () => {
       } as Pick<Location, 'protocol' | 'host'>),
     ).toBe('wss://ws.conductor-ai.top/ws/app?token=token-1');
   });
+
+  it('invalidates hydrated chat caches when the websocket reconnects', () => {
+    const location = window.location as Location & { protocol: string; host: string };
+    location.protocol = 'http:';
+    location.host = 'localhost:6152';
+    useChatStore.setState({
+      messagesByTask: {
+        'task-1': [
+          {
+            id: 'msg-1',
+            taskId: 'task-1',
+            role: 'assistant',
+            content: 'cached',
+            createdAt: '2024-01-01T00:00:00.000Z',
+          },
+        ],
+      },
+      historyStateByTask: {
+        'task-1': {
+          hasMoreBefore: false,
+          oldestMessageId: 'msg-1',
+        },
+      },
+      hydratedTaskIds: new Set(['task-1']),
+      loadingTasks: new Set(),
+      error: null,
+    });
+
+    useWebSocketStore.getState().connect('token-a');
+    MockWebSocket.instances[0].triggerOpen();
+
+    expect(useChatStore.getState().hydratedTaskIds.size).toBe(0);
+    expect(useChatStore.getState().messagesByTask['task-1']).toHaveLength(1);
+  });
 });
 
 describe('websocket runtime status handling', () => {
@@ -124,6 +165,8 @@ describe('websocket runtime status handling', () => {
     useRuntimeStore.getState().clearAll();
     useChatStore.setState({
       messagesByTask: {},
+      historyStateByTask: {},
+      hydratedTaskIds: new Set(),
       loadingTasks: new Set(),
       error: null,
     });
@@ -541,6 +584,13 @@ describe('websocket runtime status handling', () => {
           },
         ],
       },
+      historyStateByTask: {
+        'task-delete-1': {
+          hasMoreBefore: false,
+          oldestMessageId: 'msg-delete-1',
+        },
+      },
+      hydratedTaskIds: new Set(['task-delete-1']),
       loadingTasks: new Set(),
       error: null,
     });

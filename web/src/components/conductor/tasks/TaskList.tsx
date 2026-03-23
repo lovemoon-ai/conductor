@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
 import { useProjectsStore } from '@/lib/conductor/stores/projects';
 import { TaskItem } from './TaskItem';
@@ -41,6 +41,15 @@ export const RefreshIcon = ({ spinning = false }: { spinning?: boolean }) => (
   </svg>
 );
 
+const TASK_REORDER_ANIMATION_MS = 260;
+
+const prefersReducedMotion = (): boolean => {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return false;
+  }
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+};
+
 export function readStoredTaskListViewMode(): TaskListViewMode {
   if (typeof window === 'undefined') {
     return 'list';
@@ -69,6 +78,10 @@ export function TaskList({
   const { pushToast } = useToast();
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
   const [isDeletingSelected, setIsDeletingSelected] = useState(false);
+  const itemWrapperRefs = useRef(new Map<string, HTMLDivElement>());
+  const previousRectsRef = useRef(new Map<string, DOMRect>());
+  const previousOrderRef = useRef<string[]>([]);
+  const animationFrameRef = useRef<number | null>(null);
 
   const currentProjectName = currentProjectFilter
     ? projects.find((project) => project.id === currentProjectFilter)?.name
@@ -78,6 +91,14 @@ export function TaskList({
   const hasToolbarContent = selectionMode || Boolean(currentProjectName);
   const allTaskIds = useMemo(() => tasks.map((task) => task.id), [tasks]);
   const allSelected = allTaskIds.length > 0 && selectedCount === allTaskIds.length;
+
+  useEffect(() => (
+    () => {
+      if (animationFrameRef.current !== null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(animationFrameRef.current);
+      }
+    }
+  ), []);
 
   useEffect(() => {
     setSelectedTaskIds((prev) => {
@@ -89,6 +110,72 @@ export function TaskList({
       return new Set(filteredTaskIds);
     });
   }, [allTaskIds]);
+
+  useLayoutEffect(() => {
+    const currentRects = new Map<string, DOMRect>();
+    allTaskIds.forEach((taskId) => {
+      const node = itemWrapperRefs.current.get(taskId);
+      if (node) {
+        currentRects.set(taskId, node.getBoundingClientRect());
+      }
+    });
+
+    const previousOrder = previousOrderRef.current;
+    const shouldAnimate =
+      desktopListPaneMode &&
+      viewMode === 'list' &&
+      previousOrder.length > 0 &&
+      previousOrder.join('|') !== allTaskIds.join('|') &&
+      !prefersReducedMotion();
+
+    if (shouldAnimate) {
+      const animatedNodes: HTMLDivElement[] = [];
+
+      allTaskIds.forEach((taskId) => {
+        const node = itemWrapperRefs.current.get(taskId);
+        const currentRect = currentRects.get(taskId);
+        const previousRect = previousRectsRef.current.get(taskId);
+        if (!node || !currentRect || !previousRect) {
+          return;
+        }
+
+        const deltaX = previousRect.left - currentRect.left;
+        const deltaY = previousRect.top - currentRect.top;
+        if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) {
+          return;
+        }
+
+        node.style.transition = 'none';
+        node.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+        node.style.willChange = 'transform';
+        animatedNodes.push(node);
+      });
+
+      if (animatedNodes.length > 0 && typeof window !== 'undefined') {
+        if (animationFrameRef.current !== null) {
+          window.cancelAnimationFrame(animationFrameRef.current);
+        }
+        animationFrameRef.current = window.requestAnimationFrame(() => {
+          animatedNodes.forEach((node) => {
+            node.style.transition = `transform ${TASK_REORDER_ANIMATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+            node.style.transform = '';
+          });
+          animationFrameRef.current = null;
+        });
+      }
+    }
+
+    previousRectsRef.current = currentRects;
+    previousOrderRef.current = [...allTaskIds];
+  }, [allTaskIds, desktopListPaneMode, viewMode]);
+
+  const setItemWrapperRef = (taskId: string) => (node: HTMLDivElement | null) => {
+    if (node) {
+      itemWrapperRefs.current.set(taskId, node);
+      return;
+    }
+    itemWrapperRefs.current.delete(taskId);
+  };
 
   const toggleTaskSelection = (taskId: string) => {
     setSelectedTaskIds((prev) => {
@@ -206,18 +293,19 @@ export function TaskList({
           : 'space-y-3'}
       >
         {tasks.map((task) => (
-          <TaskItem
-            key={task.id}
-            task={task}
-            isUnread={unreadTaskIds.has(task.id)}
-            isSelected={selectedTaskIds.has(task.id)}
-            isActive={activeTaskId === task.id}
-            selectionMode={selectionMode}
-            onToggleSelect={toggleTaskSelection}
-            onOpenTask={onOpenTask}
-            desktopListPaneMode={desktopListPaneMode}
-            viewMode={viewMode}
-          />
+          <div key={task.id} ref={setItemWrapperRef(task.id)} data-task-item-wrapper={task.id}>
+            <TaskItem
+              task={task}
+              isUnread={unreadTaskIds.has(task.id)}
+              isSelected={selectedTaskIds.has(task.id)}
+              isActive={activeTaskId === task.id}
+              selectionMode={selectionMode}
+              onToggleSelect={toggleTaskSelection}
+              onOpenTask={onOpenTask}
+              desktopListPaneMode={desktopListPaneMode}
+              viewMode={viewMode}
+            />
+          </div>
         ))}
       </div>
     </div>

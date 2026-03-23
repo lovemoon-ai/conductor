@@ -25,24 +25,26 @@ export function TaskDetailPane({
   hideHeader = false,
 }: TaskDetailPaneProps) {
   const { tasks, fetchTask, markTaskRead } = useTasksStore();
-  const [isLoading, setIsLoading] = useState(true);
+  const [blockingLoadTaskId, setBlockingLoadTaskId] = useState<string | null>(null);
   const task = tasks.find((item) => item.id === taskId);
 
   useEffect(() => {
     let cancelled = false;
 
-    const loadTask = async () => {
-      setIsLoading(true);
-      await fetchTask(taskId);
-      if (!cancelled) {
-        setIsLoading(false);
-      }
-    };
-
     if (taskId) {
-      void loadTask();
+      if (!task) {
+        setBlockingLoadTaskId(taskId);
+      } else {
+        setBlockingLoadTaskId((current) => (current === taskId ? null : current));
+      }
+
+      void fetchTask(taskId).finally(() => {
+        if (!cancelled) {
+          setBlockingLoadTaskId((current) => (current === taskId ? null : current));
+        }
+      });
     } else {
-      setIsLoading(false);
+      setBlockingLoadTaskId(null);
     }
 
     return () => {
@@ -51,12 +53,18 @@ export function TaskDetailPane({
   }, [fetchTask, taskId]);
 
   useEffect(() => {
+    if (task) {
+      setBlockingLoadTaskId((current) => (current === taskId ? null : current));
+    }
+  }, [task, taskId]);
+
+  useEffect(() => {
     if (taskId) {
       markTaskRead(taskId);
     }
   }, [markTaskRead, taskId]);
 
-  if (isLoading) {
+  if (!task && blockingLoadTaskId === taskId) {
     return (
       <div className="flex h-full items-center justify-center">
         <LoadingSpinner size="lg" />
@@ -98,7 +106,7 @@ export function TaskDetailPane({
         {task.taskType === 'pty_task' ? (
           <TerminalView task={task} />
         ) : (
-          <ChatView taskId={taskId} />
+          <ChatView taskId={taskId} autoFocusComposer={hideHeader} />
         )}
       </div>
     </>
