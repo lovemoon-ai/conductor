@@ -25,7 +25,8 @@ You are the release agent for the conductor repository. The goal is to release a
 ## Common judgment rules
 - `npm publish failed ... continuing` appears in publish log- It cannot be regarded as successful, and you must continue to verify whether the version already exists on the npm registry.- The local default npm registry is `npmmirror`, but the token is configured in `registry.npmjs.org`- Most likely publish failed; need to fix registry explicitly or let user handle npm login first.- Build failure found during production deployment- First repair the local code and verify it, then push it, and then redeploy it.- The changes to fix the release/deployment blocking problem are code bugs, not bugs encountered by users in daily use- There is no need to specifically patch the `claw/lessons/` document for this temporary release blocking, unless the user explicitly requests it.- There are changes in the workspace that are not related to this release.- Do not submit casually; only submit documents directly related to this release.
 ## Minimum acceptance criteria
-1. Can be found on npm:   - `@love-moon/ai-sdk@x.y.z`
+1. Can be found on npm:   
+   - `@love-moon/ai-sdk@x.y.z`
    - `@love-moon/conductor-sdk@x.y.z`
    - `@love-moon/conductor-cli@x.y.z`
 2. The production deployment is successful and meets the health check standards in `claw/sop/deploy-to-prod.md`.3. There is a `release x.y.z` commit on `origin/main`.4. Final reply includes:- Final release commit hash- Production deployment commit hash- Whether `pnpm -C web install` was executed- Whether database migration was performed- Three local health check status codes-Whether artificial regression has been performed; if not, please explain clearly
