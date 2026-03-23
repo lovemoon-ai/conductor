@@ -24,6 +24,39 @@ This project follows [Semantic Versioning](https://semver.org/) where practical.
 
 ---
 
+## [0.2.28] - 2026-03-23
+
+### Added
+
+- Added a self-host bootstrap login flow so operators can create or reuse the first phone-based account, issue an API token, and open a one-time login URL without configuring SMS first.
+- Added self-hosting docs for the minimal production setup and first-login bootstrap flow.
+
+### Changed
+
+- Improved self-host bootstrap and Prisma tooling so production-oriented commands load the expected app environment files more reliably.
+
+### Fixed
+
+- Fixed Linux installer behavior that could previously target a system npm prefix instead of a safer Conductor-owned local prefix.
+- Fixed `node-pty` verification by restoring execute permission on the bundled `spawn-helper` before validation runs.
+
+### Removed
+
+- _None._
+
+### Security
+
+- _None._
+
+### Commits
+
+- `56ddde9` add self-host bootstrap login
+- `8b9267f` add bootstrap env tests
+- `300ec5e` fix node-pty verify permissions
+- `c690738` fix install script local npm prefix
+
+---
+
 ## [0.2.27] - 2026-03-23
 
 ### Added
