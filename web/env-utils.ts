@@ -12,7 +12,7 @@ export function resolveEnvCandidates(nodeEnv: string | undefined): string[] {
   return [".env.local", ".env.production.local", ".env.development", ".env"];
 }
 
-export function resolveEnvFile(cwd: string, nodeEnv = process.env.NODE_ENV): string | null {
+export function resolveEnvFile(cwd: string, nodeEnv: string | undefined = process.env.NODE_ENV): string | null {
   for (const candidate of resolveEnvCandidates(nodeEnv)) {
     const resolved = path.join(cwd, candidate);
     if (fs.existsSync(resolved)) {
