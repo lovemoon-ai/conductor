@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/lib/conductor/stores/chat';
 import { useRuntimeStore } from '@/lib/conductor/stores/runtime';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
+import { useWebSocketStore } from '@/lib/conductor/stores/websocket';
 import { MessageBubble } from './MessageBubble';
 import { MessageInput } from './MessageInput';
 import { LoadingSpinner } from '../common/LoadingSpinner';
@@ -11,10 +12,12 @@ import { InlineNotice } from '../common/InlineNotice';
 
 interface ChatViewProps {
   taskId: string;
+  autoFocusComposer?: boolean;
 }
 
 const SCROLL_STORAGE_PREFIX = 'conductor-task-scroll:';
 const SCROLL_BOTTOM_THRESHOLD_PX = 40;
+const SCROLL_TOP_LOAD_THRESHOLD_PX = 24;
 
 interface StoredScrollState {
   scrollTop: number;
@@ -93,17 +96,21 @@ const getAiRuntimeStatusText = (runtime?: {
   return runtime.statusLine?.trim() || runtime.statusDoneLine?.trim() || null;
 };
 
-export function ChatView({ taskId }: ChatViewProps) {
+export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const previousMessageCountRef = useRef(0);
   const pendingRestoreScrollStateRef = useRef<StoredScrollState | null>(null);
+  const pendingPrependAnchorRef = useRef<{ previousScrollHeight: number; previousScrollTop: number } | null>(null);
+  const autoLoadUntilFilledRef = useRef(false);
   const shouldRestoreScrollRef = useRef(true);
   const shouldStickToBottomRef = useRef(true);
   const forceScrollToBottomRef = useRef(false);
-  const { messagesByTask, loadingTasks, fetchMessages, sendMessage } = useChatStore();
+  const previousWebSocketStatusRef = useRef<'connected' | 'connecting' | 'disconnected' | null>(null);
+  const { messagesByTask, historyStateByTask, loadingTasks, fetchMessages, sendMessage } = useChatStore();
   const runtime = useRuntimeStore((state) => state.byTask[taskId]);
   const clearRuntime = useRuntimeStore((state) => state.clearTask);
   const tasks = useTasksStore((state) => state.tasks);
+  const websocketStatus = useWebSocketStore((state) => state.status);
   const task = tasks.find((t) => t.id === taskId);
   const isTaskRunning = task?.status === 'running';
   const [composerFeedback, setComposerFeedback] = useState<{
@@ -112,7 +119,10 @@ export function ChatView({ taskId }: ChatViewProps) {
   } | null>(null);
 
   const messages = messagesByTask[taskId] || [];
+  const historyState = historyStateByTask[taskId];
   const isLoading = loadingTasks.has(taskId);
+  const hasMoreBefore = historyState?.hasMoreBefore ?? false;
+  const oldestMessageId = historyState?.oldestMessageId ?? null;
   const aiRuntimeStatusText = getAiRuntimeStatusText(runtime);
 
   const persistScrollPosition = (scrollTop?: number) => {
@@ -148,12 +158,62 @@ export function ChatView({ taskId }: ChatViewProps) {
     });
   };
 
+  const loadOlderMessages = async (options?: { continueUntilFilled?: boolean }) => {
+    if (!oldestMessageId || isLoading) {
+      return;
+    }
+    if (options?.continueUntilFilled) {
+      autoLoadUntilFilledRef.current = true;
+    }
+    const container = scrollContainerRef.current;
+    if (container) {
+      pendingPrependAnchorRef.current = {
+        previousScrollHeight: container.scrollHeight,
+        previousScrollTop: container.scrollTop,
+      };
+    }
+    await fetchMessages(taskId, { beforeId: oldestMessageId });
+  };
+
+  const maybeContinueAutoLoadUntilFilled = () => {
+    const container = scrollContainerRef.current;
+    if (!autoLoadUntilFilledRef.current || !container || isLoading) {
+      return;
+    }
+
+    if (!hasMoreBefore || !oldestMessageId) {
+      autoLoadUntilFilledRef.current = false;
+      return;
+    }
+
+    if (container.scrollHeight > container.clientHeight + SCROLL_TOP_LOAD_THRESHOLD_PX) {
+      autoLoadUntilFilledRef.current = false;
+      return;
+    }
+
+    void loadOlderMessages({ continueUntilFilled: true });
+  };
+
   useEffect(() => {
     fetchMessages(taskId);
   }, [taskId, fetchMessages]);
 
+  useEffect(() => {
+    const previousStatus = previousWebSocketStatusRef.current;
+    previousWebSocketStatusRef.current = websocketStatus;
+
+    if (
+      previousStatus &&
+      previousStatus !== 'connected' &&
+      websocketStatus === 'connected'
+    ) {
+      void fetchMessages(taskId, { force: true });
+    }
+  }, [fetchMessages, taskId, websocketStatus]);
+
   useLayoutEffect(() => {
     pendingRestoreScrollStateRef.current = readStoredScrollState(taskId);
+    autoLoadUntilFilledRef.current = false;
     shouldRestoreScrollRef.current = true;
     forceScrollToBottomRef.current = false;
     previousMessageCountRef.current = messages.length;
@@ -168,6 +228,18 @@ export function ChatView({ taskId }: ChatViewProps) {
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) {
+      return;
+    }
+
+    if (pendingPrependAnchorRef.current) {
+      const { previousScrollHeight, previousScrollTop } = pendingPrependAnchorRef.current;
+      const delta = container.scrollHeight - previousScrollHeight;
+      const nextScrollTop = clampScrollTop(container, previousScrollTop + delta);
+      container.scrollTop = nextScrollTop;
+      persistScrollPosition(nextScrollTop);
+      pendingPrependAnchorRef.current = null;
+      previousMessageCountRef.current = messages.length;
+      maybeContinueAutoLoadUntilFilled();
       return;
     }
 
@@ -190,6 +262,7 @@ export function ChatView({ taskId }: ChatViewProps) {
       shouldRestoreScrollRef.current = false;
       pendingRestoreScrollStateRef.current = null;
       previousMessageCountRef.current = messages.length;
+      maybeContinueAutoLoadUntilFilled();
       return;
     }
 
@@ -203,6 +276,7 @@ export function ChatView({ taskId }: ChatViewProps) {
 
     forceScrollToBottomRef.current = false;
     previousMessageCountRef.current = messages.length;
+    maybeContinueAutoLoadUntilFilled();
   }, [isLoading, messages.length, taskId]);
 
   useEffect(() => {
@@ -242,12 +316,31 @@ export function ChatView({ taskId }: ChatViewProps) {
     }
   };
 
+  const handleScroll = () => {
+    persistScrollPosition();
+
+    const container = scrollContainerRef.current;
+    if (!container || !hasMoreBefore || isLoading || !oldestMessageId) {
+      if (!hasMoreBefore || !oldestMessageId) {
+        autoLoadUntilFilledRef.current = false;
+      }
+      return;
+    }
+
+    if (container.scrollTop <= SCROLL_TOP_LOAD_THRESHOLD_PX) {
+      void loadOlderMessages({ continueUntilFilled: true });
+      return;
+    }
+
+    autoLoadUntilFilledRef.current = false;
+  };
+
   return (
     <div className="flex h-full flex-col bg-paper">
       <div
         ref={scrollContainerRef}
         className="webapp-scrollbar flex-1 overflow-y-auto px-4 py-5 md:px-6"
-        onScroll={() => persistScrollPosition()}
+        onScroll={handleScroll}
       >
         {isLoading && messages.length === 0 ? (
           <div className="flex h-full items-center justify-center">
@@ -269,6 +362,13 @@ export function ChatView({ taskId }: ChatViewProps) {
           </div>
         ) : (
           <div className="space-y-3">
+            {hasMoreBefore ? (
+              <div className="flex justify-center pb-1 text-xs text-muted">
+                <span className="rounded-full border border-border bg-panel/80 px-3 py-1.5">
+                  {isLoading ? 'Loading older messages…' : 'Scroll to top to load older messages'}
+                </span>
+              </div>
+            ) : null}
             {messages.map((message) => (
               <MessageBubble key={message.id} message={message} />
             ))}
@@ -295,6 +395,7 @@ export function ChatView({ taskId }: ChatViewProps) {
         taskId={taskId}
         onSend={handleSend}
         sendDisabled={!isTaskRunning}
+        autoFocus={autoFocusComposer}
       />
     </div>
   );

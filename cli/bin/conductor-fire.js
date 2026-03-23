@@ -1650,6 +1650,16 @@ export class BridgeRunner {
     return role === "user" || role === "action";
   }
 
+  normalizeMessageHistoryPayload(payload) {
+    if (Array.isArray(payload)) {
+      return payload;
+    }
+    if (payload && typeof payload === "object" && Array.isArray(payload.messages)) {
+      return payload.messages;
+    }
+    return [];
+  }
+
   async backfillPendingUserMessages() {
     const backendUrl = process.env.CONDUCTOR_BACKEND_URL;
     const token = process.env.CONDUCTOR_AGENT_TOKEN;
@@ -1673,7 +1683,7 @@ export class BridgeRunner {
         this.copilotLog(`backfill request failed status=${response.status}`);
         return;
       }
-      const history = await response.json();
+      const history = this.normalizeMessageHistoryPayload(await response.json());
       if (!Array.isArray(history) || history.length === 0) {
         this.copilotLog("backfill: no history messages");
         return;

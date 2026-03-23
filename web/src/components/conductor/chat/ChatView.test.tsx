@@ -115,6 +115,7 @@ const mockScrollMetrics = (
 describe('ChatView', () => {
   let chatState: {
     messagesByTask: Record<string, Array<ReturnType<typeof makeMessage>>>;
+    historyStateByTask: Record<string, { hasMoreBefore: boolean; oldestMessageId: string | null }>;
     loadingTasks: Set<string>;
     fetchMessages: typeof fetchMessagesMock;
     sendMessage: typeof sendMessageMock;
@@ -129,6 +130,9 @@ describe('ChatView', () => {
     byTask: Record<string, unknown>;
     clearTask: typeof clearRuntimeMock;
   };
+  let websocketState: {
+    status: 'connected' | 'connecting' | 'disconnected';
+  };
 
   beforeEach(() => {
     sessionStorage.clear();
@@ -138,6 +142,7 @@ describe('ChatView', () => {
 
     chatState = {
       messagesByTask: {},
+      historyStateByTask: {},
       loadingTasks: new Set(),
       fetchMessages: fetchMessagesMock,
       sendMessage: sendMessageMock,
@@ -154,11 +159,14 @@ describe('ChatView', () => {
       byTask: {},
       clearTask: clearRuntimeMock,
     };
+    websocketState = {
+      status: 'connected',
+    };
 
     useChatStoreMock.mockImplementation(() => chatState);
     useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
     useTasksStoreMock.mockImplementation((selector) => selector(tasksState));
-    useWebSocketStoreMock.mockImplementation((selector) => selector({ status: 'connected' }));
+    useWebSocketStoreMock.mockImplementation((selector) => selector(websocketState));
   });
 
   it('restores the saved reading position when reopening a task', () => {
@@ -317,5 +325,119 @@ describe('ChatView', () => {
     render(<ChatView taskId="task-1" />);
 
     expect(screen.getByText('Kimi is thinking')).toBeInTheDocument();
+  });
+
+  it('auto-loads older history when scrolling to the top', async () => {
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [makeMessage('3'), makeMessage('4')] },
+      historyStateByTask: {
+        'task-1': {
+          hasMoreBefore: true,
+          oldestMessageId: '3',
+        },
+      },
+    };
+
+    const view = render(<ChatView taskId="task-1" />);
+    const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+    mockScrollMetrics(scrollContainer, {
+      clientHeight: 200,
+      scrollHeight: 1000,
+      scrollTop: 0,
+    });
+
+    fireEvent.scroll(scrollContainer);
+
+    await waitFor(() => {
+      expect(fetchMessagesMock).toHaveBeenCalledWith('task-1', { beforeId: '3' });
+    });
+    expect(screen.getByText('Scroll to top to load older messages')).toBeInTheDocument();
+  });
+
+  it('keeps auto-loading older history until the viewport is filled', async () => {
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [makeMessage('3'), makeMessage('4')] },
+      historyStateByTask: {
+        'task-1': {
+          hasMoreBefore: true,
+          oldestMessageId: '3',
+        },
+      },
+    };
+
+    const view = render(<ChatView taskId="task-1" />);
+    const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+    const metrics = mockScrollMetrics(scrollContainer, {
+      clientHeight: 400,
+      scrollHeight: 180,
+      scrollTop: 0,
+    });
+
+    fireEvent.scroll(scrollContainer);
+
+    await waitFor(() => {
+      expect(fetchMessagesMock).toHaveBeenNthCalledWith(2, 'task-1', { beforeId: '3' });
+    });
+
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [makeMessage('1'), makeMessage('2'), makeMessage('3'), makeMessage('4')] },
+      historyStateByTask: {
+        'task-1': {
+          hasMoreBefore: true,
+          oldestMessageId: '1',
+        },
+      },
+      loadingTasks: new Set(),
+    };
+    metrics.setScrollHeight(260);
+    view.rerender(<ChatView taskId="task-1" />);
+
+    await waitFor(() => {
+      expect(fetchMessagesMock).toHaveBeenCalledWith('task-1', { beforeId: '1' });
+    });
+
+    chatState = {
+      ...chatState,
+      messagesByTask: {
+        'task-1': [
+          makeMessage('0'),
+          makeMessage('1'),
+          makeMessage('2'),
+          makeMessage('3'),
+          makeMessage('4'),
+        ],
+      },
+      historyStateByTask: {
+        'task-1': {
+          hasMoreBefore: false,
+          oldestMessageId: '0',
+        },
+      },
+      loadingTasks: new Set(),
+    };
+    metrics.setScrollHeight(620);
+    view.rerender(<ChatView taskId="task-1" />);
+
+    expect(fetchMessagesMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('force refreshes history after websocket reconnect', async () => {
+    websocketState = { status: 'disconnected' };
+    useWebSocketStoreMock.mockImplementation((selector) => selector(websocketState));
+
+    const view = render(<ChatView taskId="task-1" />);
+    expect(fetchMessagesMock).toHaveBeenCalledWith('task-1');
+
+    fetchMessagesMock.mockClear();
+    websocketState = { status: 'connected' };
+    useWebSocketStoreMock.mockImplementation((selector) => selector(websocketState));
+    view.rerender(<ChatView taskId="task-1" />);
+
+    await waitFor(() => {
+      expect(fetchMessagesMock).toHaveBeenCalledWith('task-1', { force: true });
+    });
   });
 });

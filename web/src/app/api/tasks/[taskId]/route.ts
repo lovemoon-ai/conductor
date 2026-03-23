@@ -5,7 +5,6 @@ import { db } from "@/lib/db";
 import { buildTaskDiagnosticsPayload } from "@/lib/diagnostics/task-diagnostics";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
-import { buildMessageResponse } from "@/lib/conductor/message-attachments";
 import { deleteTaskAttachmentDirectory } from "@/lib/conductor/task-file-storage";
 import {
   normalizeOptionalString,
@@ -146,24 +145,14 @@ const findTaskDetail = async (userId: string, taskId: string) =>
       db.task.findFirst({
         where: { id: taskId, project: { userId } },
         include: {
-          messages: { orderBy: { createdAt: "asc" } },
           ptySession: true,
         },
       }),
     async () => {
-      const task = await db.task.findFirst({
+      return db.task.findFirst({
         where: { id: taskId, project: { userId } },
         select: legacyTaskSelect,
       });
-      if (!task) return null;
-      const messages = await db.message.findMany({
-        where: { taskId },
-        orderBy: { createdAt: "asc" },
-      });
-      return {
-        ...applyLegacyTaskShape(task),
-        messages,
-      };
     },
   );
 
@@ -372,10 +361,7 @@ export async function GET(
 
   if (!task) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  return NextResponse.json({
-    ...serializeTaskResponse(task),
-    messages: task.messages.map((m) => buildMessageResponse(m)),
-  });
+  return NextResponse.json(serializeTaskResponse(task));
 }
 
 export async function PATCH(

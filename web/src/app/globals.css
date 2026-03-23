@@ -110,7 +110,7 @@ body {
 
 .webapp-card.webapp-card-list-pane-idle,
 .webapp-card.webapp-card-list-pane-idle:hover {
-  background: var(--surface-task-active);
+  background: var(--surface-default);
 }
 
 .webapp-card.webapp-card-list-pane-active,

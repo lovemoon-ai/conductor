@@ -83,6 +83,7 @@ export const useWebSocketStore = create<WebSocketState>()((set, get) => ({
         socket.close();
         return;
       }
+      useChatStore.getState().invalidateHydratedTasks();
       set({ status: 'connected', ws: socket, reconnectAttempts: 0 });
     };
 

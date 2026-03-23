@@ -101,7 +101,7 @@ async function runFallbackDiagnosis(baseUrl, token, taskId, timeoutMs) {
   }
 
   const task = taskResp.body || {};
-  const messages = Array.isArray(msgResp.body) ? msgResp.body : [];
+  const messages = normalizeMessageHistoryPayload(msgResp.body);
   const agents = Array.isArray(agentsResp.body) ? agentsResp.body : [];
 
   const latestUser = messages
@@ -157,6 +157,16 @@ async function runFallbackDiagnosis(baseUrl, token, taskId, timeoutMs) {
     },
     diagnosis,
   };
+}
+
+function normalizeMessageHistoryPayload(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  if (payload && typeof payload === "object" && Array.isArray(payload.messages)) {
+    return payload.messages;
+  }
+  return [];
 }
 
 function classifyFallback(input) {

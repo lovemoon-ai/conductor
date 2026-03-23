@@ -251,17 +251,6 @@ describe("/api/tasks/[taskId]", () => {
         createdAt: new Date("2024-01-01T00:00:00.000Z"),
         updatedAt: new Date("2024-01-01T00:01:00.000Z"),
       } as any);
-    vi.mocked(db.message.findMany).mockResolvedValue([
-      {
-        id: "msg-1",
-        taskId: "task-legacy-1",
-        role: "user",
-        content: "hello",
-        metadata: null,
-        createdAt: new Date("2024-01-01T00:00:00.000Z"),
-      },
-    ] as any);
-
     const response = await GET(createMockRequest({ method: "GET", token }), {
       params: Promise.resolve({ taskId: "task-legacy-1" }),
     });
@@ -287,15 +276,9 @@ describe("/api/tasks/[taskId]", () => {
         task_type: "ai_task",
         launch_config: null,
         pty_session: null,
-        messages: [
-          expect.objectContaining({
-            id: "msg-1",
-            role: "user",
-            content: "hello",
-          }),
-        ],
       }),
     );
+    expect(db.message.findMany).not.toHaveBeenCalled();
   });
 
   it("should send stop_task to agent and delete task", async () => {
