@@ -68,19 +68,23 @@ function loadAllowCliList(configFilePath) {
 
 export function resolveAiSessionCommandLine(backend, allowCliList, env = process.env) {
   const normalizedBackend = normalizeRuntimeBackendName(backend);
-  if (normalizedBackend !== "opencode") {
+  const envKeyByBackend = {
+    opencode: "CONDUCTOR_OPENCODE_COMMAND",
+    kimi: "CONDUCTOR_KIMI_COMMAND",
+  };
+  const envKey = envKeyByBackend[normalizedBackend];
+  if (!envKey) {
     return "";
   }
 
-  const opencodeEnvCommand =
-    typeof env?.CONDUCTOR_OPENCODE_COMMAND === "string" ? env.CONDUCTOR_OPENCODE_COMMAND.trim() : "";
-  if (opencodeEnvCommand) {
-    return opencodeEnvCommand;
+  const preferredEnvCommand = typeof env?.[envKey] === "string" ? env[envKey].trim() : "";
+  if (preferredEnvCommand) {
+    return preferredEnvCommand;
   }
 
   const configuredCommand =
-    allowCliList && typeof allowCliList === "object" && typeof allowCliList.opencode === "string"
-      ? allowCliList.opencode.trim()
+    allowCliList && typeof allowCliList === "object" && typeof allowCliList[normalizedBackend] === "string"
+      ? allowCliList[normalizedBackend].trim()
       : "";
   if (configuredCommand) {
     return configuredCommand;
@@ -410,7 +414,7 @@ async function main() {
 
   if (cliArgs.listBackends) {
     if (supportedBackends.length === 0) {
-      process.stdout.write(`No supported backends configured.\n\nAdd allow_cli_list to your config file (~/.conductor/config.yaml):\n  allow_cli_list:\n    codex: codex --dangerously-bypass-approvals-and-sandbox\n    claude: claude --dangerously-skip-permissions\n    opencode: opencode\n`);
+      process.stdout.write(`No supported backends configured.\n\nAdd allow_cli_list to your config file (~/.conductor/config.yaml):\n  allow_cli_list:\n    codex: codex --dangerously-bypass-approvals-and-sandbox\n    claude: claude --dangerously-skip-permissions\n    kimi: kimi\n    opencode: opencode\n`);
     } else {
       process.stdout.write(`Supported backends (from config):\n`);
       for (const [name, command] of Object.entries(allowCliList)) {
@@ -902,13 +906,16 @@ Config file format (~/.conductor/config.yaml):
   allow_cli_list:
     codex: codex --dangerously-bypass-approvals-and-sandbox
     claude: claude --dangerously-skip-permissions
+    kimi: kimi
     opencode: opencode
 
 Examples:
   ${CLI_NAME} -- "fix the bug"                    # Use default backend
   ${CLI_NAME} --backend claude -- "fix the bug"   # Use Claude CLI backend
+  ${CLI_NAME} --backend kimi -- "fix the bug"     # Use Kimi CLI backend
   ${CLI_NAME} --backend opencode -- "fix the bug" # Use OpenCode backend
   ${CLI_NAME} --backend codex --resume <id>       # Resume Codex session
+  ${CLI_NAME} --backend kimi --resume <id>        # Resume Kimi session
   ${CLI_NAME} --list-backends                     # Show configured backends
   ${CLI_NAME} --config-file ~/.conductor/config.yaml -- "fix the bug"
 
@@ -944,7 +951,7 @@ Environment:
     );
   }
   if (!backend && shouldRequireBackend) {
-    throw new Error("No supported backends configured. Add codex, claude, or opencode to allow_cli_list.");
+    throw new Error("No supported backends configured. Add codex, claude, kimi, or opencode to allow_cli_list.");
   }
 
   const prompt = (backendArgs._ || []).map((part) => String(part)).join(" ").trim();

@@ -27,6 +27,11 @@ const DEFAULT_CLIs = {
     execArgs: "--dangerously-bypass-approvals-and-sandbox --ask-for-approval never",
     description: "OpenAI Codex CLI"
   },
+  kimi: {
+    command: "kimi",
+    execArgs: "",
+    description: "Moonshot Kimi CLI"
+  },
   opencode: {
     command: "opencode",
     execArgs: "",

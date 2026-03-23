@@ -15,7 +15,7 @@ const CONFIG_CLI_PATH = path.resolve(__dirname, "..", "bin", "conductor-config.j
 
 function createFakeCliBinDir() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-bin-"));
-  for (const name of ["codex", "claude", "opencode"]) {
+  for (const name of ["codex", "claude", "kimi", "opencode"]) {
     const filePath = path.join(tempDir, name);
     fs.writeFileSync(filePath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   }
@@ -78,6 +78,7 @@ describe("conductor-config", () => {
     assert.ok(allowCliList && typeof allowCliList === "object", "allow_cli_list should be an object");
     assert.equal(typeof allowCliList.codex, "string");
     assert.equal(typeof allowCliList.claude, "string");
+    assert.equal(typeof allowCliList.kimi, "string");
     assert.equal(typeof allowCliList.opencode, "string");
     assert.equal(typeof allowCliList.copilot, "undefined");
   });

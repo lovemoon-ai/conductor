@@ -300,4 +300,22 @@ describe('ChatView', () => {
     expect(screen.queryByText('Backend: codex')).not.toBeInTheDocument();
     expect(screen.getByText('Thinking through the plan')).toBeInTheDocument();
   });
+
+  it('shows kimi cli wire runtime status in the chat footer', () => {
+    runtimeState = {
+      byTask: {
+        'task-1': {
+          replyInProgress: true,
+          statusLine: 'Kimi is thinking',
+          source: 'kimi-cli-wire',
+        },
+      },
+      clearTask: clearRuntimeMock,
+    };
+    useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+
+    render(<ChatView taskId="task-1" />);
+
+    expect(screen.getByText('Kimi is thinking')).toBeInTheDocument();
+  });
 });

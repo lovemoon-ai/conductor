@@ -164,6 +164,18 @@ describe("conductor-fire backends", () => {
     assert.equal(commandLine, "\"/custom/Open Code/bin/opencode\" --flag=\"a b\"");
   });
 
+  it("resolves the kimi ai-sdk command from allow_cli_list", () => {
+    const commandLine = resolveAiSessionCommandLine(
+      "kimi",
+      {
+        kimi: "\"/custom/Kimi/bin/kimi\" --debug",
+      },
+      {},
+    );
+
+    assert.equal(commandLine, "\"/custom/Kimi/bin/kimi\" --debug");
+  });
+
   it("falls back to the daemon cli command for opencode sessions", () => {
     const commandLine = resolveAiSessionCommandLine(
       "opencode",
@@ -174,6 +186,31 @@ describe("conductor-fire backends", () => {
     );
 
     assert.equal(commandLine, "\"/daemon/Open Code/bin/opencode\" --flag=\"a b\"");
+  });
+
+  it("prefers CONDUCTOR_KIMI_COMMAND for kimi sessions", () => {
+    const commandLine = resolveAiSessionCommandLine(
+      "kimi",
+      {},
+      {
+        CONDUCTOR_KIMI_COMMAND: "\"/env/Kimi/bin/kimi\" --trace",
+        CONDUCTOR_CLI_COMMAND: "\"/daemon/Kimi/bin/kimi\" --debug",
+      },
+    );
+
+    assert.equal(commandLine, "\"/env/Kimi/bin/kimi\" --trace");
+  });
+
+  it("falls back to the daemon cli command for kimi sessions", () => {
+    const commandLine = resolveAiSessionCommandLine(
+      "kimi",
+      {},
+      {
+        CONDUCTOR_CLI_COMMAND: "\"/daemon/Kimi/bin/kimi\" --debug",
+      },
+    );
+
+    assert.equal(commandLine, "\"/daemon/Kimi/bin/kimi\" --debug");
   });
 
   it("switches process cwd before backend/conductor startup when resume is used", async () => {
