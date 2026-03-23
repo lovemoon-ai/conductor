@@ -293,7 +293,12 @@ export function TaskList({
           : 'space-y-3'}
       >
         {tasks.map((task) => (
-          <div key={task.id} ref={setItemWrapperRef(task.id)} data-task-item-wrapper={task.id}>
+          <div
+            key={task.id}
+            ref={setItemWrapperRef(task.id)}
+            data-task-item-wrapper={task.id}
+            className={viewMode === 'grid' ? 'min-w-0' : undefined}
+          >
             <TaskItem
               task={task}
               isUnread={unreadTaskIds.has(task.id)}

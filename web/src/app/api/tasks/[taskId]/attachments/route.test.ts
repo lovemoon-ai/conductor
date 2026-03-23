@@ -11,8 +11,10 @@ vi.mock("@/lib/auth/middleware", () => ({
 
 vi.mock("@/lib/db", () => ({
   db: {
+    $transaction: vi.fn(),
     task: {
       findFirst: vi.fn(),
+      update: vi.fn(),
     },
     message: {
       create: vi.fn(),
@@ -47,6 +49,12 @@ const { writeTaskAttachment, readTaskAttachment } = await import("@/lib/conducto
 describe("/api/tasks/[taskId]/attachments", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.$transaction).mockImplementation(async (operations: any) => {
+      if (Array.isArray(operations)) {
+        return Promise.all(operations);
+      }
+      return operations;
+    });
     vi.mocked(getActiveSubscriptionUser).mockResolvedValue({
       id: "user-1",
       email: "test@example.com",
@@ -57,6 +65,10 @@ describe("/api/tasks/[taskId]/attachments", () => {
       projectId: "proj-1",
       agentHost: null,
       executionHost: null,
+    } as any);
+    vi.mocked(db.task.update).mockResolvedValue({
+      id: "task-1",
+      updatedAt: new Date("2026-03-10T12:00:00.000Z"),
     } as any);
   });
 
@@ -100,6 +112,14 @@ describe("/api/tasks/[taskId]/attachments", () => {
       }),
     );
     expect(data.attachments).toEqual([attachment]);
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "task-1" },
+        data: expect.objectContaining({
+          updatedAt: expect.any(Date),
+        }),
+      }),
+    );
     expect(realtimeHub.broadcast).toHaveBeenCalledWith(
       "user-1",
       "proj-1",

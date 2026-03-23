@@ -635,7 +635,7 @@ export function TaskItem({
     return (
       <div
         ref={gridCardRef}
-        className={`webapp-card flex h-full flex-col p-4 transition-colors hover:border-[var(--accent)] ${
+        className={`webapp-card flex h-full min-w-0 w-full max-w-full flex-col overflow-hidden p-4 transition-colors hover:border-[var(--accent)] ${
           isHighlighted ? highlightedCardClassName : ''
         }`}
         role="button"

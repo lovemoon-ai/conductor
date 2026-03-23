@@ -1043,9 +1043,15 @@ export const setupAgentGateway = (): WebSocketServer => {
               },
             });
             if (event.payload.prefill) {
-              const message = await db.message.create({
-                data: { taskId: task.id, role: "user", content: event.payload.prefill },
-              });
+              const [message] = await db.$transaction([
+                db.message.create({
+                  data: { taskId: task.id, role: "user", content: event.payload.prefill },
+                }),
+                db.task.update({
+                  where: { id: task.id },
+                  data: { updatedAt: new Date() },
+                }),
+              ]);
               realtimeHub.broadcast(user.id, task.projectId, {
                 type: "task_user_message",
                 payload: {

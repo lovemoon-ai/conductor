@@ -73,7 +73,12 @@ describe("/api/agent/events", () => {
     vi.mocked(db.taskStatusEvent.create).mockResolvedValue({
       id: "status-row-1",
     } as any);
-    vi.mocked(db.$transaction).mockResolvedValue([] as any);
+    vi.mocked(db.$transaction).mockImplementation(async (operations: any) => {
+      if (Array.isArray(operations)) {
+        return Promise.all(operations);
+      }
+      return operations;
+    });
     vi.mocked(deliverAgentOutboxForHost).mockResolvedValue({ attempted: 0, delivered: 0 } as any);
     vi.mocked(acknowledgeAgentCommand).mockResolvedValue({ count: 1 } as any);
   });
@@ -206,6 +211,49 @@ describe("/api/agent/events", () => {
     expect(db.message.create).toHaveBeenCalledTimes(1);
     expect(db.taskStatusEvent.create).toHaveBeenCalledTimes(1);
     expect(realtimeHub.broadcast).toHaveBeenCalledTimes(2);
+  });
+
+  it("bumps task activity time when committing a fresh sdk_message", async () => {
+    const token = createTestToken("user-1");
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:6152/api/agent/events",
+        token,
+        body: {
+          agent_host: "daemon-1",
+          events: [
+            {
+              event_type: "sdk_message",
+              task_id: "task-1",
+              content: "hello",
+              metadata: { stream: true },
+              message_id: "msg-touch-1",
+            },
+          ],
+        },
+      }),
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.results).toEqual([
+      expect.objectContaining({
+        event_type: "sdk_message",
+        task_id: "task-1",
+        message_id: "msg-touch-1",
+        duplicate: false,
+      }),
+    ]);
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "task-1" },
+        data: expect.objectContaining({
+          updatedAt: expect.any(Date),
+        }),
+      }),
+    );
   });
 
   it("handles task_stop_ack without draining downstream outbox first", async () => {

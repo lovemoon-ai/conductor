@@ -208,13 +208,19 @@ export async function createTaskForUser(input: {
       ? metadata.initialContent.trim()
       : null;
   if (initialContent) {
-    initialMessage = await db.message.create({
-      data: {
-        taskId: task.id,
-        role: "user",
-        content: initialContent,
-      },
-    });
+    [initialMessage] = await db.$transaction([
+      db.message.create({
+        data: {
+          taskId: task.id,
+          role: "user",
+          content: initialContent,
+        },
+      }),
+      db.task.update({
+        where: { id: task.id },
+        data: { updatedAt: new Date() },
+      }),
+    ]);
     await projectTaskMessage({
       userId: input.userId,
       projectId: task.projectId,
@@ -270,14 +276,20 @@ export async function appendUserMessageToTask(input: {
     });
   }
 
-  const message = await db.message.create({
-    data: {
-      taskId: input.taskId,
-      role: input.role ?? "sdk",
-      content: input.content,
-      metadata: input.metadata ? JSON.stringify(input.metadata) : null,
-    },
-  });
+  const [message] = await db.$transaction([
+    db.message.create({
+      data: {
+        taskId: input.taskId,
+        role: input.role ?? "sdk",
+        content: input.content,
+        metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+      },
+    }),
+    db.task.update({
+      where: { id: input.taskId },
+      data: { updatedAt: new Date() },
+    }),
+  ]);
 
   await projectTaskMessage({
     userId: input.userId,

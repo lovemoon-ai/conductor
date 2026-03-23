@@ -76,11 +76,12 @@ describe('TaskList', () => {
   });
 
   it('renders grid view when controlled by parent', async () => {
-    render(<TaskList viewMode="grid" />);
+    const { container } = render(<TaskList viewMode="grid" />);
 
     expect(await screen.findByText('Task One:grid:idle')).toBeInTheDocument();
     expect(screen.getByText('Task Two:grid:idle')).toBeInTheDocument();
     expect(screen.queryByText('1 unread')).not.toBeInTheDocument();
+    expect(container.querySelector('[data-task-item-wrapper="task-1"]')).toHaveClass('min-w-0');
   });
 
   it('shows loading spinner when loading the initial task set', () => {

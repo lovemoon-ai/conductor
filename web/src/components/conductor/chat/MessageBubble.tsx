@@ -25,8 +25,16 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [isToolbarOpen, setIsToolbarOpen] = useState(false);
+  const [isTimestampVisible, setIsTimestampVisible] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
+
+  const prefersTapTimestamp = () => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return false;
+    }
+    return window.matchMedia('(hover: none), (pointer: coarse)').matches;
+  };
 
   const formatTime = (dateStr?: string) => {
     if (!dateStr) return '';
@@ -100,6 +108,10 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     };
   }, [isToolbarOpen]);
 
+  useEffect(() => {
+    setIsTimestampVisible(false);
+  }, [message.id]);
+
   const actionButtonClassName = 'inline-flex h-9 w-9 items-center justify-center rounded-xl text-ink transition-colors hover:bg-border/35';
 
   const toolbarActions = (
@@ -137,7 +149,11 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           className={`group/message relative overflow-visible rounded-2xl ${message.createdAt ? 'pt-2' : ''}`}
         >
           {message.createdAt ? (
-            <span className="pointer-events-none absolute left-4 -top-1 z-20 flex h-2 items-center text-[10px] leading-none text-muted opacity-0 transition-opacity group-hover/message:opacity-100">
+            <span
+              className={`pointer-events-none absolute left-4 -top-1 z-20 flex h-2 items-center text-[10px] leading-none text-muted transition-opacity ${
+                isTimestampVisible ? 'opacity-100' : 'opacity-0 group-hover/message:opacity-100'
+              }`}
+            >
               {formatTime(message.createdAt)}
             </span>
           ) : null}
@@ -150,6 +166,15 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             role="button"
             tabIndex={0}
             aria-expanded={isToolbarOpen}
+            onClick={(event) => {
+              const target = event.target as HTMLElement | null;
+              if (target?.closest('a, button, audio, video, summary')) {
+                return;
+              }
+              if (prefersTapTimestamp()) {
+                setIsTimestampVisible((current) => !current);
+              }
+            }}
             onDoubleClick={(event) => {
               const target = event.target as HTMLElement | null;
               if (target?.closest('a, button, audio, video, summary')) {

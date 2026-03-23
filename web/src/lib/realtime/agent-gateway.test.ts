@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../db", () => ({
@@ -7,6 +8,13 @@ vi.mock("../db", () => ({
       findFirst: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
+      create: vi.fn(),
+    },
+    message: {
+      create: vi.fn(),
+    },
+    user: {
+      findUnique: vi.fn(),
     },
     taskStatusEvent: {
       create: vi.fn(),
@@ -20,6 +28,8 @@ vi.mock("../db", () => ({
 
 vi.mock("./hub", () => ({
   realtimeHub: {
+    register: vi.fn(),
+    heartbeat: vi.fn(),
     bindTaskToAgent: vi.fn(),
     getTaskAgentHost: vi.fn().mockReturnValue(null),
     recordTerminalLatencySample: vi.fn(),
@@ -33,6 +43,10 @@ vi.mock("./hub", () => ({
   },
 }));
 
+vi.mock("../auth/service", () => ({
+  authenticateToken: vi.fn(),
+}));
+
 vi.mock("./agent-upstream", () => ({
   commitAgentCommandAck: vi.fn(),
   commitSdkMessage: vi.fn(),
@@ -43,6 +57,7 @@ vi.mock("./agent-upstream", () => ({
 
 const { db } = await import("../db");
 const { realtimeHub } = await import("./hub");
+const { authenticateToken } = await import("../auth/service");
 const { drainAgentOutboxForHost } = await import("./agent-upstream");
 const {
   bindActiveTasksFromResume,
@@ -54,6 +69,7 @@ const {
   handleTerminalOutputEvent,
   handleTerminalSnapshotEvent,
   processAgentResume,
+  setupAgentGateway,
 } = await import("./agent-gateway");
 
 const prismaError = (code: string, message: string) =>
@@ -65,12 +81,93 @@ describe("agent-gateway ownership handling", () => {
     vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(null);
     vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
     vi.mocked(realtimeHub.isTerminalAttached).mockReturnValue(true);
+    vi.mocked(authenticateToken).mockResolvedValue({ id: "user-1" } as any);
     vi.mocked(db.task.findFirst).mockResolvedValue(null as any);
     vi.mocked(db.task.updateMany).mockResolvedValue({ count: 0 } as any);
     vi.mocked(db.task.update).mockResolvedValue({} as any);
+    vi.mocked(db.task.create).mockResolvedValue({} as any);
+    vi.mocked(db.message.create).mockResolvedValue({} as any);
+    vi.mocked(db.user.findUnique).mockResolvedValue({ subscriptionTier: "PLUS" } as any);
     vi.mocked(db.taskStatusEvent.create).mockResolvedValue({} as any);
     vi.mocked(db.ptySession.update).mockResolvedValue({} as any);
-    vi.mocked(db.$transaction).mockResolvedValue([] as any);
+    vi.mocked(db.$transaction).mockImplementation(async (operations: any) => {
+      if (Array.isArray(operations)) {
+        return Promise.all(operations);
+      }
+      return operations;
+    });
+  });
+
+  it("bumps task activity when agent create_task includes prefill", async () => {
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+
+    const socket = new FakeSocket();
+    vi.mocked(db.task.create).mockResolvedValue({
+      id: "task-prefill-1",
+      projectId: "proj-1",
+      title: "Prefill Task",
+    } as any);
+    vi.mocked(db.message.create).mockResolvedValue({
+      id: "msg-prefill-1",
+      taskId: "task-prefill-1",
+      role: "user",
+      content: "hello from prefill",
+      createdAt: new Date("2026-03-24T00:00:00.000Z"),
+    } as any);
+    vi.mocked(db.task.update).mockResolvedValue({
+      id: "task-prefill-1",
+      updatedAt: new Date("2026-03-24T00:00:00.000Z"),
+    } as any);
+
+    const wss = setupAgentGateway();
+    const request = {
+      headers: {
+        authorization: "Bearer test-token",
+        "x-conductor-host": "daemon-a",
+        "x-conductor-backends": "codex",
+      },
+      socket: {
+        remoteAddress: "127.0.0.1",
+      },
+    } as any;
+
+    wss.emit("connection", socket as any, request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    socket.emit("message", Buffer.from(JSON.stringify({
+      type: "create_task",
+      payload: {
+        task_id: "task-prefill-1",
+        project_id: "proj-1",
+        title: "Prefill Task",
+        prefill: "hello from prefill",
+      },
+    })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(db.message.create).toHaveBeenCalledWith({
+      data: {
+        taskId: "task-prefill-1",
+        role: "user",
+        content: "hello from prefill",
+      },
+    });
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-prefill-1" },
+      data: { updatedAt: expect.any(Date) },
+    });
+    expect(realtimeHub.broadcast).toHaveBeenCalledWith("user-1", "proj-1", {
+      type: "task_user_message",
+      payload: expect.objectContaining({
+        id: "msg-prefill-1",
+        task_id: "task-prefill-1",
+        content: "hello from prefill",
+      }),
+    });
   });
 
   it("only rebinds resumed tasks that are actively assigned to the reconnecting host", async () => {

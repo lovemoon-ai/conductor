@@ -72,14 +72,20 @@ export async function POST(
   });
   const metadata = { attachments: [attachment] };
 
-  const message = await db.message.create({
-    data: {
-      taskId,
-      role,
-      content: content || `Attached file: ${attachment.name}`,
-      metadata: JSON.stringify(metadata),
-    },
-  });
+  const [message] = await db.$transaction([
+    db.message.create({
+      data: {
+        taskId,
+        role,
+        content: content || `Attached file: ${attachment.name}`,
+        metadata: JSON.stringify(metadata),
+      },
+    }),
+    db.task.update({
+      where: { id: taskId },
+      data: { updatedAt: new Date() },
+    }),
+  ]);
 
   realtimeHub.broadcast(user.id, task.projectId, {
     type: role === "user" ? "task_user_message" : "task_sdk_message",

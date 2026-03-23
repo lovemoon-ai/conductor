@@ -1,10 +1,12 @@
+import { NextRequest } from 'next/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/db', () => ({
   db: {
     project: { findFirst: vi.fn() },
-    task: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn() },
-    message: { create: vi.fn() },
+    task: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
+    message: { create: vi.fn(), findMany: vi.fn() },
+    $transaction: vi.fn(),
     user: { findUnique: vi.fn() },
   },
 }));
@@ -34,6 +36,10 @@ vi.mock('./task-event-projector', () => ({
   projectTaskMessage: vi.fn(),
 }));
 
+vi.mock('@/lib/auth/middleware', () => ({
+  getActiveSubscriptionUser: vi.fn(),
+}));
+
 const { db } = await import('@/lib/db');
 const { realtimeHub } = await import('@/lib/realtime/hub');
 const { enqueueAndAttemptAgentCommand } = await import('@/lib/realtime/agent-outbox');
@@ -44,11 +50,13 @@ const {
   getTaskPlanBucket,
 } = await import('@/lib/subscription/plan-limits');
 const { projectTaskMessage } = await import('./task-event-projector');
+const { getActiveSubscriptionUser } = await import('@/lib/auth/middleware');
 const {
   createTaskForUser,
   appendUserMessageToTask,
   TaskIngressError,
 } = await import('./task-ingress-service');
+const { GET: getTasksRoute } = await import('@/app/api/tasks/route');
 
 describe('task-ingress-service', () => {
   beforeEach(() => {
@@ -56,6 +64,12 @@ describe('task-ingress-service', () => {
     vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'proj-1', userId: 'user-1' } as any);
     vi.mocked(db.user.findUnique).mockResolvedValue({ subscriptionTier: 'PLUS' } as any);
     vi.mocked(db.task.findMany).mockResolvedValue([] as any);
+    vi.mocked(db.$transaction).mockImplementation(async (operations: any) => {
+      if (Array.isArray(operations)) {
+        return Promise.all(operations);
+      }
+      return operations;
+    });
     vi.mocked(countActiveTaskBuckets).mockReturnValue({ app: 0, manual_fire: 0 } as any);
     vi.mocked(getTaskPlanBucket).mockReturnValue('app' as any);
     vi.mocked(exceedsTaskLimit).mockReturnValue(false);
@@ -84,9 +98,18 @@ describe('task-ingress-service', () => {
       content: 'hello',
       createdAt: new Date('2026-03-16T00:00:01.000Z'),
     } as any);
+    vi.mocked(db.task.update).mockResolvedValue({
+      id: 'task-1',
+      updatedAt: new Date('2026-03-16T00:00:01.000Z'),
+    } as any);
     vi.mocked(enqueueAndAttemptAgentCommand).mockResolvedValue({ requestId: 'req-1', delivered: false } as any);
     vi.mocked(realtimeHub.sendToAgentHost).mockReturnValue(true);
     vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue('conductor-fire-runtime');
+    vi.mocked(getActiveSubscriptionUser).mockResolvedValue({
+      id: 'user-1',
+      email: 'test@example.com',
+      phone: null,
+    } as any);
   });
 
   it('creates a task with initial content, projects the initial user message, and enqueues create_task', async () => {
@@ -114,6 +137,14 @@ describe('task-ingress-service', () => {
         content: 'hello',
       }),
     }));
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'task-1' },
+        data: expect.objectContaining({
+          updatedAt: expect.any(Date),
+        }),
+      }),
+    );
     expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith('task-1', 'daemon-a');
     expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -149,6 +180,14 @@ describe('task-ingress-service', () => {
         id: 'msg-1',
       }),
     }));
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'task-1' },
+        data: expect.objectContaining({
+          updatedAt: expect.any(Date),
+        }),
+      }),
+    );
     expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         agentHost: 'conductor-fire-runtime',
@@ -175,6 +214,92 @@ describe('task-ingress-service', () => {
       details: expect.objectContaining({
         error: 'Task limit reached',
       }),
+    });
+  });
+
+  it('keeps a freshly updated task at the top on a fresh /api/tasks read after message activity', async () => {
+    const now = Date.now();
+    const taskRows = [
+      {
+        id: 'task-1',
+        projectId: 'proj-1',
+        title: 'Older task',
+        status: 'running',
+        agentHost: 'conductor-fire-runtime',
+        executionHost: 'conductor-fire-runtime',
+        backendType: null,
+        sessionId: null,
+        sessionFilePath: null,
+        metadata: null,
+        ptySession: null,
+        createdAt: new Date(now - 10 * 60 * 1000),
+        updatedAt: new Date(now - 10 * 60 * 1000),
+      },
+      {
+        id: 'task-2',
+        projectId: 'proj-1',
+        title: 'Newer but idle',
+        status: 'running',
+        agentHost: 'conductor-fire-runtime',
+        executionHost: 'conductor-fire-runtime',
+        backendType: null,
+        sessionId: null,
+        sessionFilePath: null,
+        metadata: null,
+        ptySession: null,
+        createdAt: new Date(now - 5 * 60 * 1000),
+        updatedAt: new Date(now - 5 * 60 * 1000),
+      },
+    ];
+    const messages: any[] = [];
+
+    vi.mocked(db.task.findFirst).mockImplementation(async ({ where }: any) => (
+      taskRows.find((task) => task.id === where.id) ?? null
+    ) as any);
+    vi.mocked(db.task.findMany).mockImplementation(async () => taskRows as any);
+    vi.mocked(db.task.update).mockImplementation(async ({ where, data }: any) => {
+      const task = taskRows.find((item) => item.id === where.id);
+      if (!task) {
+        throw new Error(`task ${where.id} not found`);
+      }
+      task.updatedAt = data.updatedAt;
+      return task as any;
+    });
+    vi.mocked(db.message.create).mockImplementation(async ({ data }: any) => {
+      const message = {
+        id: `msg-${messages.length + 1}`,
+        taskId: data.taskId,
+        role: data.role,
+        content: data.content,
+        metadata: data.metadata ?? null,
+        createdAt: new Date(now),
+      };
+      messages.push(message);
+      return message as any;
+    });
+    vi.mocked(db.message.findMany).mockImplementation(async ({ where }: any) => {
+      const taskIds = new Set(where.taskId.in);
+      const roles = new Set(where.role.in);
+      return messages
+        .filter((message) => taskIds.has(message.taskId) && roles.has(message.role))
+        .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime()) as any;
+    });
+
+    await appendUserMessageToTask({
+      userId: 'user-1',
+      taskId: 'task-1',
+      content: 'fresh prompt',
+      role: 'user',
+    });
+
+    const response = await getTasksRoute(new NextRequest('http://localhost:6152/api/tasks'));
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.map((task: { id: string }) => task.id)).toEqual(['task-1', 'task-2']);
+    expect(data[0]).toMatchObject({
+      id: 'task-1',
+      last_user_message: 'fresh prompt',
     });
   });
 });

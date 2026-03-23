@@ -176,16 +176,22 @@ export async function commitSdkMessage(input: {
       duplicate = true;
     } else {
       try {
-        message = await db.message.create({
-          data: {
-            taskId: task.id,
-            role: "sdk",
-            content: input.content,
-            metadata: input.metadata ? JSON.stringify(input.metadata) : null,
-            clientMessageId,
-          },
-          select: { id: true, createdAt: true },
-        });
+        [message] = await db.$transaction([
+          db.message.create({
+            data: {
+              taskId: task.id,
+              role: "sdk",
+              content: input.content,
+              metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+              clientMessageId,
+            },
+            select: { id: true, createdAt: true },
+          }),
+          db.task.update({
+            where: { id: task.id },
+            data: { updatedAt: new Date() },
+          }),
+        ]);
       } catch (error) {
         if (
           error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -206,15 +212,21 @@ export async function commitSdkMessage(input: {
       }
     }
   } else {
-    message = await db.message.create({
-      data: {
-        taskId: task.id,
-        role: "sdk",
-        content: input.content,
-        metadata: input.metadata ? JSON.stringify(input.metadata) : null,
-      },
-      select: { id: true, createdAt: true },
-    });
+    [message] = await db.$transaction([
+      db.message.create({
+        data: {
+          taskId: task.id,
+          role: "sdk",
+          content: input.content,
+          metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+        },
+        select: { id: true, createdAt: true },
+      }),
+      db.task.update({
+        where: { id: task.id },
+        data: { updatedAt: new Date() },
+      }),
+    ]);
   }
 
   if (!duplicate) {

@@ -70,7 +70,9 @@ describe("/api/tasks", () => {
             task: db.task,
             ptySession: db.ptySession,
           })
-        : callback,
+        : Array.isArray(callback)
+          ? Promise.all(callback)
+          : callback,
     );
     vi.mocked(db.task.findMany).mockResolvedValue([]);
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([]);
@@ -110,6 +112,10 @@ describe("/api/tasks", () => {
       lastPaymentAt: null,
     } as any);
     vi.mocked(db.message.findMany).mockResolvedValue([]);
+    vi.mocked(db.task.update).mockResolvedValue({
+      id: "task-updated",
+      updatedAt: new Date("2024-01-03T00:00:00.000Z"),
+    } as any);
   });
 
   describe("GET", () => {
@@ -202,6 +208,53 @@ describe("/api/tasks", () => {
           last_output_seq: 9,
         }),
       );
+    });
+
+    it("sorts refreshed task lists by latest activity so mobile returns keep new-message tasks on top", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.task.findMany).mockResolvedValue([
+        {
+          id: "task-older-created",
+          projectId: "proj-1",
+          title: "Older but recently active",
+          status: "running",
+          agentHost: null,
+          executionHost: null,
+          backendType: null,
+          sessionId: null,
+          sessionFilePath: null,
+          metadata: null,
+          ptySession: null,
+          createdAt: new Date("2024-01-01T00:00:00.000Z"),
+          updatedAt: new Date("2024-01-01T00:10:00.000Z"),
+        },
+        {
+          id: "task-newer-created",
+          projectId: "proj-1",
+          title: "Newer but idle",
+          status: "running",
+          agentHost: null,
+          executionHost: null,
+          backendType: null,
+          sessionId: null,
+          sessionFilePath: null,
+          metadata: null,
+          ptySession: null,
+          createdAt: new Date("2024-01-01T00:05:00.000Z"),
+          updatedAt: new Date("2024-01-01T00:05:00.000Z"),
+        },
+      ] as any);
+
+      const token = createTestToken("user-1");
+      const response = await GET(createMockRequest({ token }));
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.map((task: { id: string }) => task.id)).toEqual([
+        "task-older-created",
+        "task-newer-created",
+      ]);
     });
 
     it("should filter by project_id when provided", async () => {
@@ -739,6 +792,14 @@ describe("/api/tasks", () => {
       expect(response.status).toBe(200);
       expect(data.id).toBe("task-3");
       expect(data.agent_host).toBe("daemon-1");
+      expect(db.task.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "task-3" },
+          data: expect.objectContaining({
+            updatedAt: expect.any(Date),
+          }),
+        }),
+      );
       expect(db.task.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({

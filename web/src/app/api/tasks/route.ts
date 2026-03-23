@@ -279,6 +279,9 @@ const findTasksForList = async (userId: string, projectId: string | null) =>
       })).map((task) => applyLegacyTaskShape(task)),
   );
 
+const getTaskListSortTime = (task: { updatedAt?: Date | null; createdAt: Date }) =>
+  (task.updatedAt instanceof Date ? task.updatedAt : task.createdAt).getTime();
+
 const createTaskRecord = async (args: {
   requestedId?: string;
   projectId: string;
@@ -464,7 +467,13 @@ export async function GET(request: NextRequest) {
 
   const response = tasks
     .slice()
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .sort((a, b) => {
+      const updatedDelta = getTaskListSortTime(b) - getTaskListSortTime(a);
+      if (updatedDelta !== 0) {
+        return updatedDelta;
+      }
+      return b.createdAt.getTime() - a.createdAt.getTime();
+    })
     .map((task) =>
       serializeTaskResponse({
         ...task,
@@ -691,13 +700,19 @@ export async function POST(request: NextRequest) {
       ? metadata.initialContent.trim()
       : null;
   if (initialMessageContent) {
-    initialMessage = await db.message.create({
-      data: {
-        taskId: task.id,
-        role: "user",
-        content: initialMessageContent,
-      },
-    });
+    [initialMessage] = await db.$transaction([
+      db.message.create({
+        data: {
+          taskId: task.id,
+          role: "user",
+          content: initialMessageContent,
+        },
+      }),
+      db.task.update({
+        where: { id: task.id },
+        data: { updatedAt: new Date() },
+      }),
+    ]);
     realtimeHub.broadcast(user.id, task.projectId, {
       type: "task_user_message",
       payload: {

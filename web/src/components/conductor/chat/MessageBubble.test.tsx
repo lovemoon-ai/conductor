@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MessageBubble } from './MessageBubble';
 
 vi.mock('./MarkdownRenderer', () => ({
@@ -18,6 +18,22 @@ const makeMessage = (overrides: Partial<Parameters<typeof MessageBubble>[0]['mes
 });
 
 describe('MessageBubble', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation(() => ({
+        matches: false,
+        media: '',
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+  });
+
   it('renders user messages in the shared full-width column with distinct color and right-side corner', () => {
     const { container } = render(<MessageBubble message={makeMessage({ role: 'user', content: 'user message' })} />);
 
@@ -70,5 +86,36 @@ describe('MessageBubble', () => {
     expect(screen.queryByText('Conductor')).not.toBeInTheDocument();
     expect(wrapper).toHaveClass('pt-2');
     expect(wrapper.firstElementChild).toHaveClass('left-4', '-top-1', 'h-2', 'items-center', 'leading-none', 'opacity-0', 'group-hover/message:opacity-100');
+  });
+
+  it('shows the timestamp on single tap for mobile-style pointers', () => {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: query === '(hover: none), (pointer: coarse)',
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+
+    const { container } = render(<MessageBubble message={makeMessage({ role: 'assistant', content: 'ai message' })} />);
+    const wrapper = container.querySelector('.group\\/message') as HTMLElement;
+    const bubble = wrapper.querySelector('[role="button"]') as HTMLElement;
+    const timestamp = wrapper.firstElementChild as HTMLElement;
+
+    expect(timestamp).toHaveClass('opacity-0');
+
+    fireEvent.click(bubble);
+
+    expect(timestamp).toHaveClass('opacity-100');
+
+    fireEvent.click(bubble);
+
+    expect(timestamp).toHaveClass('opacity-0');
   });
 });
