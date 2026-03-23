@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { spawn as spawnProcess } from "node:child_process";
@@ -166,6 +167,38 @@ export async function resolveGlobalPackageDirectory({
   return path.join(normalizeRoot(rawRoot), packageName);
 }
 
+export function ensureNodePtySpawnHelperExecutableForPackageDirectory({
+  packageDirectory,
+  platform = process.platform,
+  arch = process.arch,
+  existsSync = fs.existsSync,
+  statSync = fs.statSync,
+  chmodSync = fs.chmodSync,
+} = {}) {
+  if (!packageDirectory || platform === "win32") {
+    return null;
+  }
+
+  const helperCandidates = [
+    path.join(packageDirectory, "node_modules", "node-pty", "build", "Release", "spawn-helper"),
+    path.join(packageDirectory, "node_modules", "node-pty", "build", "Debug", "spawn-helper"),
+    path.join(packageDirectory, "node_modules", "node-pty", "prebuilds", `${platform}-${arch}`, "spawn-helper"),
+  ];
+  const helperPath = helperCandidates.find((candidate) => existsSync(candidate));
+  if (!helperPath) {
+    return null;
+  }
+
+  const currentMode = statSync(helperPath).mode & 0o777;
+  if ((currentMode & 0o111) !== 0) {
+    return { helperPath, updated: false };
+  }
+
+  const nextMode = currentMode | 0o111;
+  chmodSync(helperPath, nextMode);
+  return { helperPath, updated: true };
+}
+
 export function buildNodePtyVerificationScript() {
   return String.raw`
 const fs = require('node:fs');
@@ -252,6 +285,7 @@ export async function verifyNodePtyForPackageDirectory({
   if (!packageDirectory) {
     throw new Error("packageDirectory is required");
   }
+  ensureNodePtySpawnHelperExecutableForPackageDirectory({ packageDirectory });
   const result = await runCommand(nodeExecutable, ["-e", buildNodePtyVerificationScript(), packageDirectory], {
     timeoutMs: 15_000,
   });

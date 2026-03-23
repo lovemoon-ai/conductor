@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   ensurePnpmOnlyBuiltDependencies,
   buildNodePtyVerificationScript,
+  ensureNodePtySpawnHelperExecutableForPackageDirectory,
   mergeBuiltDependencies,
   normalizeBuiltDependencyList,
   shouldIgnoreNodePtyVerificationErrorMessage,
@@ -68,6 +69,44 @@ describe("native deps helpers", () => {
     assert.equal(shouldIgnoreNodePtyVerificationErrorMessage("read EIO"), true);
     assert.equal(shouldIgnoreNodePtyVerificationErrorMessage("Error: read EIO"), true);
     assert.equal(shouldIgnoreNodePtyVerificationErrorMessage("spawn-helper missing"), false);
+  });
+
+  it("repairs missing spawn-helper execute permission before verification", () => {
+    const chmodCalls = [];
+    const helperInfo = ensureNodePtySpawnHelperExecutableForPackageDirectory({
+      packageDirectory: "/tmp/conductor-cli",
+      platform: "darwin",
+      arch: "arm64",
+      existsSync: (candidate) => candidate.endsWith("/prebuilds/darwin-arm64/spawn-helper"),
+      statSync: () => ({ mode: 0o100644 }),
+      chmodSync: (candidate, mode) => chmodCalls.push([candidate, mode]),
+    });
+
+    assert.deepStrictEqual(helperInfo, {
+      helperPath: "/tmp/conductor-cli/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper",
+      updated: true,
+    });
+    assert.deepStrictEqual(chmodCalls, [
+      ["/tmp/conductor-cli/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper", 0o755],
+    ]);
+  });
+
+  it("does not chmod spawn-helper when it is already executable", () => {
+    const helperInfo = ensureNodePtySpawnHelperExecutableForPackageDirectory({
+      packageDirectory: "/tmp/conductor-cli",
+      platform: "darwin",
+      arch: "arm64",
+      existsSync: (candidate) => candidate.endsWith("/prebuilds/darwin-arm64/spawn-helper"),
+      statSync: () => ({ mode: 0o100755 }),
+      chmodSync: () => {
+        throw new Error("chmod should not be called");
+      },
+    });
+
+    assert.deepStrictEqual(helperInfo, {
+      helperPath: "/tmp/conductor-cli/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper",
+      updated: false,
+    });
   });
 
   it("embeds the EIO ignore helper into the verification script", () => {
