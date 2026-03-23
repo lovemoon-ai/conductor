@@ -27,6 +27,8 @@ export default function WebAppLayout({
   const initFromStorage = useAuthStore((state) => state.initFromStorage);
   const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const fetchAgents = useAgentsStore((state) => state.fetchAgents);
+  const startAgentsPolling = useAgentsStore((state) => state.startPolling);
+  const stopAgentsPolling = useAgentsStore((state) => state.stopPolling);
 
   const pathSegments = pathname.split('/').filter(Boolean);
   const isTaskChatPage =
@@ -65,6 +67,7 @@ export default function WebAppLayout({
 
     // Check auth after initialization
     if (!session) {
+      stopAgentsPolling();
       router.replace('/login');
       return;
     }
@@ -72,7 +75,19 @@ export default function WebAppLayout({
     // Fetch initial data
     fetchProjects();
     fetchAgents();
-  }, [isInitializing, session, router, fetchProjects, fetchAgents]);
+  }, [isInitializing, session, router, fetchProjects, fetchAgents, stopAgentsPolling]);
+
+  useEffect(() => {
+    if (isInitializing || !session) {
+      stopAgentsPolling();
+      return;
+    }
+
+    startAgentsPolling();
+    return () => {
+      stopAgentsPolling();
+    };
+  }, [isInitializing, session, startAgentsPolling, stopAgentsPolling]);
 
   // Show loading while initializing or checking auth
   if (isInitializing || !session) {
