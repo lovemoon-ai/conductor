@@ -590,6 +590,72 @@ describe("/api/tasks", () => {
       expect(db.task.create).not.toHaveBeenCalled();
     });
 
+    it("should recover stale manual fire tasks before enforcing the free plan limit", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = { id: "proj-fire", name: "Project Fire", userId: "user-1" };
+      const now = Date.now();
+      const staleTask = {
+        id: "task-fire-stale",
+        projectId: "proj-fire",
+        status: "running",
+        agentHost: "conductor-fire-mac-1",
+        executionHost: "conductor-fire-mac-1",
+        createdAt: new Date(now - 120_000),
+        updatedAt: new Date(now - 120_000),
+      };
+      const mockTask = {
+        id: "task-fire-new",
+        projectId: "proj-fire",
+        title: "Manual Fire Task",
+        status: "running",
+        agentHost: "conductor-fire-mac-2",
+        executionHost: "conductor-fire-mac-2",
+        backendType: null,
+        sessionId: null,
+        sessionFilePath: null,
+        metadata: null,
+        createdAt: new Date("2024-01-07"),
+        updatedAt: new Date("2024-01-07"),
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.user.findUnique).mockResolvedValue({
+        id: "user-1",
+        subscriptionTier: "FREE",
+      } as any);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(db.task.findMany).mockResolvedValue([staleTask] as any);
+      vi.mocked(db.task.update).mockResolvedValue({
+        ...staleTask,
+        status: "killed",
+        executionHost: null,
+      } as any);
+      vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
+      vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+      vi.mocked(realtimeHub.getAgentDisconnectAt).mockReturnValue(now - 120_000);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          project_id: "proj-fire",
+          title: "Manual Fire Task",
+          agentHost: "conductor-fire-mac-2",
+        },
+      });
+      const response = await POST(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.id).toBe("task-fire-new");
+      expect(db.task.update).toHaveBeenCalledWith({
+        where: { id: "task-fire-stale" },
+        data: { status: "killed", executionHost: null },
+      });
+      expect(db.task.create).toHaveBeenCalled();
+    });
+
     it("should reject free user when app task limit is reached", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const mockProject = { id: "proj-app", name: "Project App", userId: "user-1" };

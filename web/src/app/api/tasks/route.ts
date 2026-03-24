@@ -590,8 +590,17 @@ export async function POST(request: NextRequest) {
   // Check task limits for all tiers (Free: 1 per bucket, Plus: 10 per bucket)
   const activeTasks = await db.task.findMany({
     where: { project: { userId: user.id } },
-    select: { status: true, agentHost: true },
+    select: {
+      id: true,
+      projectId: true,
+      status: true,
+      agentHost: true,
+      executionHost: true,
+      createdAt: true,
+      updatedAt: true,
+    },
   });
+  await recoverStaleDisconnectedAgentTasks(user.id, activeTasks);
   const activeTaskCounts = countActiveTaskBuckets(activeTasks);
   const taskBucket = getTaskPlanBucket(agentHost);
   if (exceedsTaskLimit(planUser.subscriptionTier, taskBucket, activeTaskCounts)) {
