@@ -46,6 +46,8 @@ describe('tasks store', () => {
 
     await useTasksStore.getState().fetchTasks();
 
+    expect(mockGet).toHaveBeenCalledWith('/tasks?recover_stale=1');
+
     expect(useTasksStore.getState().tasks[0]).toMatchObject({
       id: 'task-pty-1',
       taskType: 'pty_task',
@@ -96,7 +98,7 @@ describe('tasks store', () => {
 
     const task = await useTasksStore.getState().fetchTask('task-pty-2');
 
-    expect(mockGet).toHaveBeenCalledWith('/tasks/task-pty-2');
+    expect(mockGet).toHaveBeenCalledWith('/tasks/task-pty-2?recover_stale=1');
     expect(task).toMatchObject({
       id: 'task-pty-2',
       status: 'completed',

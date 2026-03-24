@@ -102,10 +102,11 @@ export const useTasksStore = create<TasksState>()((set, get) => ({
     try {
       const api = getApiClient();
       const query = new URLSearchParams();
+      const recoverStale = options?.recoverStale ?? true;
       if (projectId) {
         query.set('project_id', projectId);
       }
-      if (options?.recoverStale) {
+      if (recoverStale) {
         query.set('recover_stale', '1');
       }
       const suffix = query.toString() ? `?${query.toString()}` : '';
@@ -122,7 +123,7 @@ export const useTasksStore = create<TasksState>()((set, get) => ({
   fetchTask: async (taskId) => {
     try {
       const api = getApiClient();
-      const task = normalizeTask(await api.get<Task>(`/tasks/${taskId}`));
+      const task = normalizeTask(await api.get<Task>(`/tasks/${taskId}?recover_stale=1`));
       set((state) => ({
         tasks: upsertTask(state.tasks, task),
         error: null,

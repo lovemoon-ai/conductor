@@ -30,6 +30,7 @@ import {
   validatePtyLaunchConfig,
   type ConnectedAgent,
 } from "@/lib/tasks/pty-runtime";
+import { recoverStaleDisconnectedAgentTasks } from "@/lib/tasks/stale-recovery";
 
 const DELETE_SNAPSHOT_TRIGGER = "task_delete";
 const STOP_TASK_ACK_TIMEOUT_MS = 2500;
@@ -360,6 +361,11 @@ export async function GET(
   const task = await findTaskDetail(user.id, taskId);
 
   if (!task) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  const { searchParams } = new URL(request.url);
+  if (searchParams.get("recover_stale") === "1") {
+    await recoverStaleDisconnectedAgentTasks(user.id, [task] as any);
+  }
 
   return NextResponse.json(serializeTaskResponse(task));
 }

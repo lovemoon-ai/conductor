@@ -231,6 +231,63 @@ describe("/api/tasks/[taskId]", () => {
     );
   });
 
+  it("recovers stale disconnected fire tasks when detail is fetched with recover_stale=1", async () => {
+    const token = createTestToken("user-1");
+    const now = Date.now();
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-fire-1",
+      projectId: "proj-1",
+      title: "Manual Fire Task",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "conductor-fire-mac-123",
+      executionHost: "conductor-fire-mac-123",
+      backendType: null,
+      sessionId: null,
+      sessionFilePath: null,
+      launchConfig: null,
+      metadata: null,
+      createdAt: new Date(now - 120_000),
+      updatedAt: new Date(now - 120_000),
+      ptySession: null,
+    } as any);
+    vi.mocked(db.task.update).mockResolvedValue({
+      id: "task-fire-1",
+      status: "killed",
+      executionHost: null,
+      updatedAt: new Date(now),
+    } as any);
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+    vi.mocked(realtimeHub.getAgentDisconnectAt).mockReturnValue(now - 120_000);
+
+    const request = createMockRequest({
+      method: "GET",
+      token,
+      url: "http://localhost:6152/api/tasks/task-fire-1?recover_stale=1",
+    });
+    const response = await GET(request, { params: Promise.resolve({ taskId: "task-fire-1" }) });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-fire-1" },
+      data: { status: "killed", executionHost: null },
+    });
+    expect(realtimeHub.broadcast).toHaveBeenCalledWith(
+      "user-1",
+      "proj-1",
+      expect.objectContaining({
+        type: "task_status_update",
+        payload: expect.objectContaining({
+          task_id: "task-fire-1",
+          status: "killed",
+        }),
+      }),
+    );
+    expect(data.status).toBe("killed");
+    expect(data.execution_host).toBeNull();
+  });
+
   it("falls back to legacy task detail reads when PTY schema columns are missing", async () => {
     const token = createTestToken("user-1");
     vi.mocked(db.task.findFirst)
