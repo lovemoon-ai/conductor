@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGet = vi.fn();
+const mockPost = vi.fn();
 
 vi.mock('../api/client', () => ({
   getApiClient: () => ({
     get: mockGet,
+    post: mockPost,
   }),
 }));
 
@@ -20,6 +22,56 @@ describe('tasks store', () => {
       currentProjectFilter: null,
       unreadTaskIds: new Set(),
     });
+  });
+
+  it('restarts a task and moves the returned task to the front', async () => {
+    useTasksStore.setState({
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Old task',
+          taskType: 'ai_task',
+          status: 'killed',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'task-2',
+          title: 'Another task',
+          taskType: 'ai_task',
+          status: 'running',
+          createdAt: '2024-01-01T00:01:00.000Z',
+          updatedAt: '2024-01-01T00:01:00.000Z',
+        },
+      ],
+    });
+    mockPost.mockResolvedValueOnce({
+      mode: 'backend_switch_new_task',
+      source_task_id: 'task-1',
+      task: {
+        id: 'task-3',
+        title: 'Old task [claude]',
+        task_type: 'ai_task',
+        status: 'unknown',
+        backend_type: 'claude',
+        created_at: '2024-01-01T00:02:00.000Z',
+        updated_at: '2024-01-01T00:02:00.000Z',
+      },
+    });
+
+    const result = await useTasksStore.getState().restartTask('task-1', 'claude');
+
+    expect(mockPost).toHaveBeenCalledWith('/tasks/task-1/restart', { backend_type: 'claude' });
+    expect(result).toMatchObject({
+      mode: 'backend_switch_new_task',
+      sourceTaskId: 'task-1',
+      task: {
+        id: 'task-3',
+        title: 'Old task [claude]',
+        backendType: 'claude',
+      },
+    });
+    expect(useTasksStore.getState().tasks.map((task) => task.id)).toEqual(['task-3', 'task-1', 'task-2']);
   });
 
   it('hydrates pty_session data from task list responses', async () => {

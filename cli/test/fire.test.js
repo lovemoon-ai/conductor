@@ -11,6 +11,7 @@ import { filterRuntimeSupportedAllowCliList } from "../src/runtime-backends.js";
 
 import {
   applyWorkingDirectory,
+  bootstrapResumeContextForFire,
   buildConductorConnectHeaders,
   BridgeRunner,
   FireWatchdog,
@@ -230,6 +231,38 @@ describe("conductor-fire backends", () => {
         process.env.PWD = originalPwd;
       }
     }
+  });
+
+  it("uses CONDUCTOR_RESUME_CWD to skip provider-specific resume context lookup", async () => {
+    let resolveCalls = 0;
+    let applyCalls = 0;
+    const messages = [];
+
+    const result = await bootstrapResumeContextForFire({
+      backend: "opencode",
+      resumeSessionId: "session-opencode-1",
+      env: {
+        CONDUCTOR_RESUME_CWD: "/tmp/opencode-resume-cwd",
+      },
+      resolveResumeContextFn: async () => {
+        resolveCalls += 1;
+        throw new Error("resolveResumeContext should be skipped");
+      },
+      applyWorkingDirectoryFn: async (targetPath) => {
+        applyCalls += 1;
+        assert.equal(targetPath, "/tmp/opencode-resume-cwd");
+        return targetPath;
+      },
+      logger: (message) => {
+        messages.push(message);
+      },
+    });
+
+    assert.equal(resolveCalls, 0);
+    assert.equal(applyCalls, 1);
+    assert.equal(result.resumeContext, null);
+    assert.equal(result.runtimeProjectPath, "/tmp/opencode-resume-cwd");
+    assert.ok(messages.some((message) => message.includes("CONDUCTOR_RESUME_CWD")));
   });
 
   it("uses resume runtime path basename as default task title", () => {

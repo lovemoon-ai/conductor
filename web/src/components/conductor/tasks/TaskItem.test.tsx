@@ -48,6 +48,10 @@ vi.mock('@/lib/conductor/stores/runtime', () => ({
     selector({ byTask: runtimeByTask, clearTask: clearRuntimeMock }),
 }));
 
+vi.mock('./RestartTaskControls', () => ({
+  RestartTaskControls: () => <div data-testid="restart-controls" />,
+}));
+
 describe('TaskItem', () => {
   beforeEach(() => {
     runtimeByTask = {};

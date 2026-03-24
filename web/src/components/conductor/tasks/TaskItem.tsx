@@ -5,6 +5,7 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Task } from '@/lib/conductor/types';
 import { TaskStatusBadge } from './TaskStatusBadge';
+import { RestartTaskControls } from './RestartTaskControls';
 import type { TaskListViewMode } from './TaskList';
 import { useChatStore } from '@/lib/conductor/stores/chat';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
@@ -666,6 +667,7 @@ export function TaskItem({
         <div className="mt-4 flex flex-wrap gap-2 text-sm text-muted">
           {metadataChips}
         </div>
+        <RestartTaskControls task={task} compact />
 
         <div className="mt-4 flex flex-1 flex-col rounded-2xl border border-border/60 bg-paper/55">
           <div
@@ -883,6 +885,7 @@ export function TaskItem({
                 {runtimeText}
               </p>
             ) : null}
+            <RestartTaskControls task={task} compact />
           </div>
           <TaskStatusBadge status={task.status} />
         </div>

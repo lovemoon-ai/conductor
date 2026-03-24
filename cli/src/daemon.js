@@ -3,13 +3,14 @@ import path from "node:path";
 import os from "node:os";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import dotenv from "dotenv";
 import yaml from "js-yaml";
 
 import { ConductorWebSocketClient, ConductorConfig, loadConfig, ConfigFileNotFound } from "@love-moon/conductor-sdk";
 import { DaemonLogCollector } from "./log-collector.js";
+import { resolveResumeContext } from "./fire/resume.js";
 import { filterRuntimeSupportedAllowCliList, normalizeRuntimeBackendName } from "./runtime-backends.js";
 import {
   PACKAGE_NAME,
@@ -30,6 +31,7 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PACKAGE_ROOT = path.join(__dirname, "..");
+const DEFAULT_AI_BRIDGE_API_PATH = "/Users/duino/ws/ai-session/ai-bridge/dist/api.js";
 const moduleRequire = createRequire(import.meta.url);
 const CLI_PATH = path.resolve(PACKAGE_ROOT, "bin", "conductor-fire.js");
 const DAEMON_LOG_DIR = path.join(os.homedir(), ".conductor", "logs");
@@ -2518,6 +2520,16 @@ export function startDaemon(config = {}, deps = {}) {
         rejectCreateTaskDuringShutdown(event.payload);
         return;
       }
+      if (event.type === "restart_task") {
+        reportRestartFailure({
+          taskId: event?.payload?.target_task_id ? String(event.payload.target_task_id) : "",
+          projectId: event?.payload?.project_id ? String(event.payload.project_id) : "",
+          requestId: event?.payload?.request_id ? String(event.payload.request_id) : "",
+          mode: event?.payload?.mode ? String(event.payload.mode) : "",
+          error: new Error("daemon shutting down"),
+        });
+        return;
+      }
       if (event.type === "create_pty_task") {
         rejectCreatePtyTaskDuringShutdown(event.payload);
         return;
@@ -2526,6 +2538,10 @@ export function startDaemon(config = {}, deps = {}) {
 
     if (event.type === "create_task") {
       handleCreateTask(event.payload);
+      return;
+    }
+    if (event.type === "restart_task") {
+      void handleRestartTask(event.payload);
       return;
     }
     if (event.type === "create_pty_task") {
@@ -2790,6 +2806,109 @@ export function startDaemon(config = {}, deps = {}) {
         clearTimeout(timeoutId);
       }
     }
+  }
+
+  let bridgeSessionHelperPromise = null;
+  async function getBridgeSessionHelper() {
+    if (typeof deps.bridgeSessionBetweenBackends === "function") {
+      return deps.bridgeSessionBetweenBackends;
+    }
+    if (!bridgeSessionHelperPromise) {
+      bridgeSessionHelperPromise = (async () => {
+        try {
+          const bridgeApiPath =
+            (typeof process.env.CONDUCTOR_AI_BRIDGE_API_PATH === "string" &&
+              process.env.CONDUCTOR_AI_BRIDGE_API_PATH.trim()) ||
+            DEFAULT_AI_BRIDGE_API_PATH;
+          const bridgeModule = await import(pathToFileURL(bridgeApiPath).href);
+          if (typeof bridgeModule.bridgeSessionBetweenBackends !== "function") {
+            throw new Error("bridgeSessionBetweenBackends is not available");
+          }
+          return bridgeModule.bridgeSessionBetweenBackends;
+        } catch (error) {
+          bridgeSessionHelperPromise = null;
+          throw error;
+        }
+      })();
+    }
+    return bridgeSessionHelperPromise;
+  }
+
+  function reportRestartFailure({ taskId, projectId, requestId, mode, error, sendAck = true }) {
+    const prefix = mode === "bridge_to_new_task" ? "backend switch failed" : "restart failed";
+    const summary = `${prefix}: ${error?.message || error}`;
+    if (sendAck) {
+      sendAgentCommandAck({
+        requestId,
+        taskId,
+        eventType: "restart_task",
+        accepted: false,
+      }).catch(() => {});
+    }
+    client
+      .sendJson({
+        type: "task_status_update",
+        payload: {
+          task_id: taskId,
+          project_id: projectId,
+          status: "KILLED",
+          summary,
+        },
+      })
+      .catch((err) => {
+        logError(`Failed to report restart_task failure for ${taskId}: ${err?.message || err}`);
+      });
+  }
+
+  async function resolveRestartCwd({
+    projectId,
+    preferredCwd = "",
+    backendType,
+    sessionId,
+    sourceSessionFilePath = "",
+  }) {
+    const normalizedPreferredCwd = typeof preferredCwd === "string" ? preferredCwd.trim() : "";
+    if (normalizedPreferredCwd) {
+      return normalizedPreferredCwd;
+    }
+
+    const boundPath = await getProjectLocalPath(projectId);
+    if (boundPath) {
+      return boundPath;
+    }
+
+    const normalizedBackend = normalizeRuntimeBackendName(backendType);
+    const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (normalizedSessionId && normalizedBackend && normalizedBackend !== "opencode") {
+      try {
+        const resumeContext = await (deps.resolveResumeContext || resolveResumeContext)(
+          normalizedBackend,
+          normalizedSessionId,
+          { cwd: process.cwd() },
+        );
+        if (typeof resumeContext?.cwd === "string" && resumeContext.cwd.trim()) {
+          return resumeContext.cwd.trim();
+        }
+      } catch {
+        // ignore provider-specific fallback failure here; we'll try the remaining fallbacks
+      }
+    }
+
+    const normalizedSessionPath =
+      typeof sourceSessionFilePath === "string" ? sourceSessionFilePath.trim() : "";
+    if (normalizedSessionPath) {
+      try {
+        const stats = fs.statSync(normalizedSessionPath);
+        if (stats.isDirectory()) {
+          return normalizedSessionPath;
+        }
+        return path.dirname(normalizedSessionPath);
+      } catch {
+        // ignore missing local path
+      }
+    }
+
+    return "";
   }
 
   async function handleCreateTask(payload) {
@@ -3080,6 +3199,350 @@ export function startDaemon(config = {}, deps = {}) {
           })
           .catch((err) => {
             logError(`Failed to report task status (${status}) for ${taskId}: ${err?.message || err}`);
+          });
+      }
+    });
+  }
+
+  async function handleRestartTask(payload) {
+    const {
+      mode,
+      source_task_id: sourceTaskId,
+      target_task_id: targetTaskId,
+      project_id: projectId,
+      title,
+      source_backend_type: sourceBackendType,
+      source_session_id: sourceSessionId,
+      source_session_file_path: sourceSessionFilePath,
+      target_backend_type: targetBackendType,
+      request_id: requestIdRaw,
+    } = payload || {};
+
+    const requestId = requestIdRaw ? String(requestIdRaw) : "";
+    const normalizedMode = typeof mode === "string" ? mode.trim() : "";
+    const normalizedSourceTaskId = sourceTaskId ? String(sourceTaskId) : "";
+    const normalizedTargetTaskId = targetTaskId ? String(targetTaskId) : "";
+    const normalizedProjectId = projectId ? String(projectId) : "";
+    const normalizedSourceSessionId = sourceSessionId ? String(sourceSessionId).trim() : "";
+
+    if (
+      !normalizedMode ||
+      !normalizedSourceTaskId ||
+      !normalizedTargetTaskId ||
+      !normalizedProjectId ||
+      !normalizedSourceSessionId
+    ) {
+      logError(`Invalid restart_task payload: ${JSON.stringify(payload)}`);
+      sendAgentCommandAck({
+        requestId,
+        taskId: normalizedTargetTaskId || normalizedSourceTaskId,
+        eventType: "restart_task",
+        accepted: false,
+      }).catch(() => {});
+      return;
+    }
+
+    if (requestId && !markRequestSeen(requestId)) {
+      log(
+        `Duplicate restart_task ignored for ${normalizedTargetTaskId} (request_id=${requestId})`,
+      );
+      sendAgentCommandAck({
+        requestId,
+        taskId: normalizedTargetTaskId,
+        eventType: "restart_task",
+        accepted: true,
+      }).catch(() => {});
+      return;
+    }
+
+    if (daemonShuttingDown) {
+      reportRestartFailure({
+        taskId: normalizedTargetTaskId,
+        projectId: normalizedProjectId,
+        requestId,
+        mode: normalizedMode,
+        error: new Error("daemon shutting down"),
+      });
+      return;
+    }
+
+    const activeTarget = activeTaskProcesses.get(normalizedTargetTaskId);
+    if (activeTarget?.child) {
+      reportRestartFailure({
+        taskId: normalizedTargetTaskId,
+        projectId: normalizedProjectId,
+        requestId,
+        mode: normalizedMode,
+        error: new Error(`task already active (pid=${activeTarget.child.pid ?? "unknown"})`),
+      });
+      return;
+    }
+
+    const effectiveBackend = normalizeRuntimeBackendName(targetBackendType || sourceBackendType || SUPPORTED_BACKENDS[0]);
+    if (!SUPPORTED_BACKENDS.includes(effectiveBackend)) {
+      reportRestartFailure({
+        taskId: normalizedTargetTaskId,
+        projectId: normalizedProjectId,
+        requestId,
+        mode: normalizedMode,
+        error: new Error(`Unsupported backend: ${effectiveBackend}`),
+      });
+      return;
+    }
+
+    sendAgentCommandAck({
+      requestId,
+      taskId: normalizedTargetTaskId,
+      eventType: "restart_task",
+      accepted: true,
+    }).catch((err) => {
+      logError(`Failed to report agent_command_ack(restart_task) for ${normalizedTargetTaskId}: ${err?.message || err}`);
+    });
+
+    let resolvedResumeSessionId = normalizedSourceSessionId;
+    let resolvedResumeCwd = "";
+    try {
+      if (normalizedMode === "bridge_to_new_task") {
+        const sourceResumeCwd = await resolveRestartCwd({
+          projectId: normalizedProjectId,
+          backendType: sourceBackendType,
+          sessionId: normalizedSourceSessionId,
+          sourceSessionFilePath: sourceSessionFilePath ? String(sourceSessionFilePath) : "",
+        });
+        const bridgeSession = await getBridgeSessionHelper();
+        const bridgeResult = await bridgeSession({
+          sourceTool: sourceBackendType,
+          sourceSessionId: normalizedSourceSessionId,
+          sourceSessionPath: sourceSessionFilePath ? String(sourceSessionFilePath) : undefined,
+          sourceSessionInfo: {
+            tool: sourceBackendType,
+            sessionId: normalizedSourceSessionId,
+            path: sourceSessionFilePath ? String(sourceSessionFilePath) : undefined,
+            cwd: sourceResumeCwd || undefined,
+          },
+          targetTool: effectiveBackend,
+          targetCwdFallback: sourceResumeCwd || undefined,
+        });
+        resolvedResumeSessionId = bridgeResult.sessionId;
+        resolvedResumeCwd = await resolveRestartCwd({
+          projectId: normalizedProjectId,
+          preferredCwd: bridgeResult.cwd,
+          backendType: effectiveBackend,
+          sessionId: bridgeResult.sessionId,
+          sourceSessionFilePath: sourceSessionFilePath ? String(sourceSessionFilePath) : "",
+        });
+      } else if (normalizedMode === "resume_inplace") {
+        resolvedResumeCwd = await resolveRestartCwd({
+          projectId: normalizedProjectId,
+          backendType: effectiveBackend,
+          sessionId: normalizedSourceSessionId,
+          sourceSessionFilePath: sourceSessionFilePath ? String(sourceSessionFilePath) : "",
+        });
+      } else {
+        throw new Error(`Unsupported restart mode: ${normalizedMode}`);
+      }
+    } catch (error) {
+      reportRestartFailure({
+        taskId: normalizedTargetTaskId,
+        projectId: normalizedProjectId,
+        requestId,
+        mode: normalizedMode,
+        error,
+        sendAck: false,
+      });
+      return;
+    }
+
+    if (!resolvedResumeCwd) {
+      reportRestartFailure({
+        taskId: normalizedTargetTaskId,
+        projectId: normalizedProjectId,
+        requestId,
+        mode: normalizedMode,
+        error: new Error("Could not resolve resume cwd"),
+        sendAck: false,
+      });
+      return;
+    }
+
+    const cliCommand = ALLOW_CLI_LIST[effectiveBackend];
+
+    log("");
+    log(
+      `Restarting task ${normalizedTargetTaskId} from ${normalizedSourceTaskId} (${normalizedMode} -> ${effectiveBackend})`,
+    );
+    log(`CLI command: ${cliCommand}`);
+
+    client
+      .sendJson({
+        type: "task_status_update",
+        payload: {
+          task_id: normalizedTargetTaskId,
+          project_id: normalizedProjectId,
+          status: "UNKNOWN",
+        },
+      })
+      .catch((err) => {
+        logError(`Failed to report task status (UNKNOWN) for ${normalizedTargetTaskId}: ${err?.message || err}`);
+      });
+
+    if (daemonShuttingDown) {
+      reportRestartFailure({
+        taskId: normalizedTargetTaskId,
+        projectId: normalizedProjectId,
+        requestId,
+        mode: normalizedMode,
+        error: new Error("daemon shutting down"),
+        sendAck: false,
+      });
+      return;
+    }
+
+    let taskDir = resolvedResumeCwd;
+    let logPath = path.join(taskDir, "conductor.log");
+
+    try {
+      mkdirSyncFn(taskDir, { recursive: true });
+    } catch (err) {
+      reportRestartFailure({
+        taskId: normalizedTargetTaskId,
+        projectId: normalizedProjectId,
+        requestId,
+        mode: normalizedMode,
+        error: new Error(`Failed to ensure task workspace ${taskDir}: ${err?.message || err}`),
+        sendAck: false,
+      });
+      return;
+    }
+
+    const args = [];
+    if (effectiveBackend) {
+      args.push("--backend", effectiveBackend);
+    }
+    args.push("--resume", resolvedResumeSessionId);
+    args.push("--");
+
+    const env = {
+      ...process.env,
+      CONDUCTOR_PROJECT_ID: normalizedProjectId,
+      CONDUCTOR_TASK_ID: normalizedTargetTaskId,
+      CONDUCTOR_CLI_COMMAND: cliCommand,
+      CONDUCTOR_RESUME_CWD: resolvedResumeCwd,
+    };
+    if (config.CONFIG_FILE) {
+      env.CONDUCTOR_CONFIG = config.CONFIG_FILE;
+    }
+    if (AGENT_TOKEN) {
+      env.CONDUCTOR_AGENT_TOKEN = AGENT_TOKEN;
+    }
+    if (BACKEND_HTTP) {
+      env.CONDUCTOR_BACKEND_URL = BACKEND_HTTP;
+    }
+
+    const child = spawnFn(process.execPath, [CLI_PATH_VAL, ...args], {
+      cwd: taskDir,
+      env,
+      stdio: ["inherit", "pipe", "pipe"],
+    });
+
+    let logStream;
+    try {
+      logStream = createWriteStreamFn(logPath, { flags: "a" });
+      if (logStream && typeof logStream.on === "function") {
+        const logPathSnapshot = logPath;
+        logStream.on("error", (err) => {
+          logError(`Log stream error (${logPathSnapshot}): ${err?.message || err}`);
+        });
+      }
+    } catch (err) {
+      logError(`Failed to open log file ${logPath}: ${err?.message || err}`);
+    }
+
+    log(`Task title: ${title || normalizedTargetTaskId}`);
+    log(`Resume session: ${resolvedResumeSessionId}`);
+    log(`Resume cwd: ${resolvedResumeCwd}`);
+    log(`Logs: ${logPath}`);
+
+    activeTaskProcesses.set(normalizedTargetTaskId, {
+      child,
+      projectId: normalizedProjectId,
+      logPath,
+      stopForceKillTimer: null,
+    });
+
+    client
+      .sendJson({
+        type: "task_status_update",
+        payload: {
+          task_id: normalizedTargetTaskId,
+          project_id: normalizedProjectId,
+          status: "RUNNING",
+        },
+      })
+      .catch((err) => {
+        logError(`Failed to report task status (RUNNING) for ${normalizedTargetTaskId}: ${err?.message || err}`);
+      });
+
+    if (child.stdout && typeof child.stdout.pipe === "function" && logStream) {
+      child.stdout.pipe(logStream, { end: false });
+    } else if (child.stdout && typeof child.stdout.on === "function" && logStream) {
+      child.stdout.on("data", (chunk) => logStream.write(chunk));
+    }
+    if (child.stderr && typeof child.stderr.pipe === "function" && logStream) {
+      child.stderr.pipe(logStream, { end: false });
+    } else if (child.stderr && typeof child.stderr.on === "function" && logStream) {
+      child.stderr.on("data", (chunk) => logStream.write(chunk));
+    }
+
+    child.on("error", (err) => {
+      logError(`Failed to spawn restart CLI for ${normalizedTargetTaskId}: ${err.message}`);
+      if (logStream) {
+        const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).replace(" ", "T");
+        logStream.write(`[daemon ${ts}] spawn error: ${err.message}\n`);
+      }
+    });
+
+    child.on("exit", (code, signal) => {
+      const active = activeTaskProcesses.get(normalizedTargetTaskId);
+      if (active?.stopForceKillTimer) {
+        clearTimeout(active.stopForceKillTimer);
+      }
+      activeTaskProcesses.delete(normalizedTargetTaskId);
+      const suppressExitStatusReport = suppressedExitStatusReports.has(normalizedTargetTaskId);
+      suppressedExitStatusReports.delete(normalizedTargetTaskId);
+      if (logStream) {
+        const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).replace(" ", "T");
+        if (signal) {
+          logStream.write(`[daemon ${ts}] process killed by signal ${signal}\n`);
+        } else {
+          logStream.write(`[daemon ${ts}] process exited with code ${code}\n`);
+        }
+        logStream.end();
+      }
+
+      const isKilledBySignal = Boolean(signal);
+      const isKilledByExitCode = code === 130 || code === 143;
+      const isKilled = isKilledBySignal || isKilledByExitCode;
+      const status = isKilled ? "KILLED" : code === 0 ? "COMPLETED" : "KILLED";
+      const summary = isKilled
+        ? (signal ? `killed by signal ${signal}` : `terminated (exit code ${code})`)
+        : code === 0
+          ? "completed"
+          : `exited with code ${code}`;
+
+      if (!suppressExitStatusReport) {
+        client
+          .sendJson({
+            type: "task_status_update",
+            payload: {
+              task_id: normalizedTargetTaskId,
+              project_id: normalizedProjectId,
+              status,
+              summary,
+            },
+          })
+          .catch((err) => {
+            logError(`Failed to report task status (${status}) for ${normalizedTargetTaskId}: ${err?.message || err}`);
           });
       }
     });

@@ -194,6 +194,16 @@ export interface UpdateTaskInput {
   sessionFilePath?: string | null;
 }
 
+export interface RestartTaskInput {
+  backendType?: string;
+}
+
+export interface RestartTaskResponse {
+  mode: 'inplace_restart' | 'backend_switch_new_task';
+  sourceTaskId: string;
+  task: Task;
+}
+
 export interface CreateProjectInput {
   name: string;
   description?: string;

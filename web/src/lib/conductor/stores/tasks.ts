@@ -1,5 +1,10 @@
 import { create } from 'zustand';
-import type { Task, CreateTaskInput, UpdateTaskInput } from '../types';
+import type {
+  Task,
+  CreateTaskInput,
+  RestartTaskResponse,
+  UpdateTaskInput,
+} from '../types';
 import { getApiClient } from '../api/client';
 
 const normalizeObject = (value: unknown): Record<string, unknown> | null => {
@@ -46,6 +51,7 @@ interface TasksState {
   fetchTask: (taskId: string) => Promise<Task | null>;
   createTask: (input: CreateTaskInput) => Promise<Task>;
   updateTask: (taskId: string, input: UpdateTaskInput) => Promise<Task>;
+  restartTask: (taskId: string, backendType?: string) => Promise<RestartTaskResponse>;
   deleteTask: (taskId: string) => Promise<void>;
   setProjectFilter: (projectId: string | null) => void;
   markTaskRead: (taskId: string) => void;
@@ -167,6 +173,31 @@ export const useTasksStore = create<TasksState>()((set, get) => ({
     } catch (error) {
       set({
         error: error instanceof Error ? error.message : 'Failed to update task',
+      });
+      throw error;
+    }
+  },
+
+  restartTask: async (taskId, backendType) => {
+    try {
+      const api = getApiClient();
+      const response = await api.post<{
+        mode: 'inplace_restart' | 'backend_switch_new_task';
+        source_task_id: string;
+        task: Task;
+      }>(`/tasks/${taskId}/restart`, backendType ? { backend_type: backendType } : {});
+      const task = normalizeTask(response.task);
+      set((state) => ({
+        tasks: upsertTask(state.tasks, task, { moveToFront: true }),
+      }));
+      return {
+        mode: response.mode,
+        sourceTaskId: response.source_task_id,
+        task,
+      };
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : 'Failed to restart task',
       });
       throw error;
     }

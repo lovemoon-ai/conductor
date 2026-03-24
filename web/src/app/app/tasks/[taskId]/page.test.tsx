@@ -38,6 +38,10 @@ vi.mock('@/components/conductor/common/LoadingSpinner', () => ({
   LoadingSpinner: ({ children }: { children?: ReactNode }) => <div>{children ?? 'loading'}</div>,
 }));
 
+vi.mock('@/components/conductor/tasks/RestartTaskControls', () => ({
+  RestartTaskControls: () => null,
+}));
+
 vi.mock('@/lib/conductor/stores/tasks', () => ({
   useTasksStore: (selector?: (state: {
     tasks: Array<{

@@ -427,13 +427,12 @@ async function main() {
 
   let resumeContext = null;
   if (cliArgs.resumeSessionId) {
-    resumeContext = await resolveResumeContext(cliArgs.backend, cliArgs.resumeSessionId);
-    log(
-      `Validated --resume ${resumeContext.sessionId} (${resumeContext.provider}) at ${resumeContext.sessionPath}`,
-    );
-    log(`Resume will run backend from ${resumeContext.cwd}`);
-    runtimeProjectPath = await applyWorkingDirectory(resumeContext.cwd);
-    log(`Switched working directory to ${runtimeProjectPath} before Conductor connect`);
+    const bootstrap = await bootstrapResumeContextForFire({
+      backend: cliArgs.backend,
+      resumeSessionId: cliArgs.resumeSessionId,
+    });
+    resumeContext = bootstrap.resumeContext;
+    runtimeProjectPath = bootstrap.runtimeProjectPath;
   }
 
   const env = buildEnv();
@@ -1222,6 +1221,40 @@ async function isExistingDirectory(targetPath) {
 
 export async function resolveResumeContext(backend, sessionId, options = {}) {
   return resolveCliResumeContext(backend, sessionId, options);
+}
+
+export async function bootstrapResumeContextForFire({
+  backend,
+  resumeSessionId,
+  env = process.env,
+  resolveResumeContextFn = resolveResumeContext,
+  applyWorkingDirectoryFn = applyWorkingDirectory,
+  logger = log,
+}) {
+  let runtimeProjectPath = process.cwd();
+  let resumeContext = null;
+
+  if (!resumeSessionId) {
+    return { resumeContext, runtimeProjectPath };
+  }
+
+  const overrideResumeCwd =
+    typeof env?.CONDUCTOR_RESUME_CWD === "string" ? env.CONDUCTOR_RESUME_CWD.trim() : "";
+  if (overrideResumeCwd) {
+    logger(`Using CONDUCTOR_RESUME_CWD override for --resume ${resumeSessionId}: ${overrideResumeCwd}`);
+    runtimeProjectPath = await applyWorkingDirectoryFn(overrideResumeCwd);
+    logger(`Switched working directory to ${runtimeProjectPath} before Conductor connect`);
+    return { resumeContext, runtimeProjectPath };
+  }
+
+  resumeContext = await resolveResumeContextFn(backend, resumeSessionId);
+  logger(
+    `Validated --resume ${resumeContext.sessionId} (${resumeContext.provider}) at ${resumeContext.sessionPath}`,
+  );
+  logger(`Resume will run backend from ${resumeContext.cwd}`);
+  runtimeProjectPath = await applyWorkingDirectoryFn(resumeContext.cwd);
+  logger(`Switched working directory to ${runtimeProjectPath} before Conductor connect`);
+  return { resumeContext, runtimeProjectPath };
 }
 
 export async function applyWorkingDirectory(targetPath) {

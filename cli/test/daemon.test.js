@@ -1,6 +1,7 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import path from "node:path";
 
 import { WebSocketServer } from "ws";
@@ -1463,6 +1464,579 @@ describe("Daemon", () => {
     if (daemonInstance && typeof daemonInstance.close === "function") {
       daemonInstance.close();
     }
+  });
+
+  it("restarts same-backend tasks without calling bridge and resumes the source session", async () => {
+    let handler;
+    const spawnCalls = [];
+    const sentEvents = [];
+    let bridgeCalls = 0;
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-restart-same",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "restart-same-daemon",
+      },
+      {
+        spawn: (_cmd, args, opts) => {
+          spawnCalls.push({ args, opts });
+          return {
+            pid: 61234,
+            kill: () => {},
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        bridgeSessionBetweenBackends: async () => {
+          bridgeCalls += 1;
+          throw new Error("bridge should not be called");
+        },
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return {
+              ok: true,
+              json: async () => ({ metadata: { localPaths: { default: "/tmp/restart-same-cwd" } } }),
+            };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
+        }),
+      },
+    );
+
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "resume_inplace",
+        source_task_id: "task-restart-1",
+        target_task_id: "task-restart-1",
+        project_id: "proj-restart-1",
+        title: "Restart same backend",
+        source_backend_type: "codex",
+        source_session_id: "sess-restart-1",
+        target_backend_type: "codex",
+        request_id: "req-restart-1",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.strictEqual(bridgeCalls, 0);
+    assert.strictEqual(spawnCalls.length, 1);
+    assert.deepStrictEqual(spawnCalls[0].args, [
+      "/tmp/cli.js",
+      "--backend",
+      "codex",
+      "--resume",
+      "sess-restart-1",
+      "--",
+    ]);
+    assert.strictEqual(spawnCalls[0].opts.cwd, "/tmp/restart-same-cwd");
+    assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_TASK_ID, "task-restart-1");
+    assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_RESUME_CWD, "/tmp/restart-same-cwd");
+    expectEvent(sentEvents, "agent_command_ack", (payload) => {
+      assert.strictEqual(payload.request_id, "req-restart-1");
+      assert.strictEqual(payload.event_type, "restart_task");
+      assert.strictEqual(payload.accepted, true);
+    });
+    expectEvent(sentEvents, "task_status_update", (payload) => {
+      assert.strictEqual(payload.task_id, "task-restart-1");
+      assert.strictEqual(payload.status, "UNKNOWN");
+    });
+
+    daemonInstance.close();
+  });
+
+  it("bridges cross-backend restarts and launches the successor task", async () => {
+    let handler;
+    const spawnCalls = [];
+    const bridgeCalls = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-restart-bridge",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "restart-bridge-daemon",
+      },
+      {
+        spawn: (_cmd, args, opts) => {
+          spawnCalls.push({ args, opts });
+          return {
+            pid: 62345,
+            kill: () => {},
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        bridgeSessionBetweenBackends: async (params) => {
+          bridgeCalls.push(params);
+          return {
+            sessionId: "sess-bridged-1",
+            cwd: "/tmp/bridged-cwd",
+          };
+        },
+        resolveResumeContext: async () => ({ cwd: "" }),
+        fetch: async (url) => {
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async () => {},
+        }),
+      },
+    );
+
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "bridge_to_new_task",
+        source_task_id: "task-source-1",
+        target_task_id: "task-successor-1",
+        project_id: "proj-bridge-1",
+        title: "Fix login bug [claude]",
+        source_backend_type: "codex",
+        source_session_id: "sess-codex-1",
+        source_session_file_path: "/tmp/sess-codex-1.jsonl",
+        target_backend_type: "claude",
+        request_id: "req-bridge-1",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.deepStrictEqual(bridgeCalls, [
+      {
+        sourceTool: "codex",
+        sourceSessionId: "sess-codex-1",
+        sourceSessionPath: "/tmp/sess-codex-1.jsonl",
+        sourceSessionInfo: {
+          tool: "codex",
+          sessionId: "sess-codex-1",
+          path: "/tmp/sess-codex-1.jsonl",
+          cwd: undefined,
+        },
+        targetTool: "claude",
+        targetCwdFallback: undefined,
+      },
+    ]);
+    assert.strictEqual(spawnCalls.length, 1);
+    assert.deepStrictEqual(spawnCalls[0].args, [
+      "/tmp/cli.js",
+      "--backend",
+      "claude",
+      "--resume",
+      "sess-bridged-1",
+      "--",
+    ]);
+    assert.strictEqual(spawnCalls[0].opts.cwd, "/tmp/bridged-cwd");
+    assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_TASK_ID, "task-successor-1");
+    assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_RESUME_CWD, "/tmp/bridged-cwd");
+
+    daemonInstance.close();
+  });
+
+  it("loads the local ai-bridge helper from CONDUCTOR_AI_BRIDGE_API_PATH when no injected bridge is provided", async () => {
+    let handler;
+    const spawnCalls = [];
+    const previousBridgeApiPath = process.env.CONDUCTOR_AI_BRIDGE_API_PATH;
+    const tempDir = `/tmp/conductor-bridge-api-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const bridgeApiPath = path.join(tempDir, "bridge-api.mjs");
+
+    fs.mkdirSync(tempDir, { recursive: true });
+    fs.writeFileSync(
+      bridgeApiPath,
+      `export async function bridgeSessionBetweenBackends(params) {
+        if (
+          params.sourceTool !== "codex" ||
+          params.sourceSessionId !== "sess-codex-local-1" ||
+          params.targetTool !== "claude" ||
+          params.targetCwdFallback !== "/tmp/project-fallback-cwd"
+        ) {
+          throw new Error("unexpected bridge params: " + JSON.stringify(params));
+        }
+        return {
+          sessionId: "sess-local-fallback",
+          cwd: "/tmp/local-bridge-cwd",
+          irPath: "/tmp/bridge-ir.jsonl",
+          entryCount: 1,
+        };
+      }\n`,
+      "utf8",
+    );
+    process.env.CONDUCTOR_AI_BRIDGE_API_PATH = bridgeApiPath;
+
+    try {
+      const daemonInstance = startDaemon(
+        {
+          BACKEND_URL: "ws://localhost:0",
+          BACKEND_HTTP: "http://localhost:6152",
+          WORKSPACE_ROOT: "/tmp/test-ws-restart-local-bridge",
+          CLI_PATH: "/tmp/cli.js",
+          NAME: "restart-local-bridge-daemon",
+        },
+        {
+          spawn: (_cmd, args, opts) => {
+            spawnCalls.push({ args, opts });
+            return {
+              pid: 63456,
+              kill: () => {},
+              on: () => {},
+              stdout: { on: () => {} },
+              stderr: { on: () => {} },
+            };
+          },
+          mkdirSync: () => {},
+          writeFileSync: () => {},
+          existsSync: () => false,
+          readFileSync: () => "",
+          unlinkSync: () => {},
+          renameSync: () => {},
+          createWriteStream: () => ({
+            on: () => {},
+            write: () => {},
+            end: () => {},
+          }),
+          fetch: async (url) => {
+            if (String(url).includes("/api/projects/")) {
+              return {
+                ok: true,
+                json: async () => ({ metadata: { localPaths: { default: "/tmp/project-fallback-cwd" } } }),
+              };
+            }
+            if (String(url).endsWith("/api/tasks")) {
+              return { ok: true, json: async () => [] };
+            }
+            return { ok: true, json: async () => ({}) };
+          },
+          createWebSocketClient: () => ({
+            registerHandler: (nextHandler) => {
+              handler = nextHandler;
+            },
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async () => {},
+          }),
+        },
+      );
+
+      handler({
+        type: "restart_task",
+        payload: {
+          mode: "bridge_to_new_task",
+          source_task_id: "task-source-local-1",
+          target_task_id: "task-successor-local-1",
+          project_id: "proj-bridge-local-1",
+          title: "Fix login bug [claude]",
+          source_backend_type: "codex",
+          source_session_id: "sess-codex-local-1",
+          target_backend_type: "claude",
+          request_id: "req-bridge-local-1",
+        },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      assert.strictEqual(spawnCalls.length, 1);
+      assert.deepStrictEqual(spawnCalls[0].args, [
+        "/tmp/cli.js",
+        "--backend",
+        "claude",
+        "--resume",
+        "sess-local-fallback",
+        "--",
+      ]);
+      assert.strictEqual(spawnCalls[0].opts.cwd, "/tmp/local-bridge-cwd");
+      assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_TASK_ID, "task-successor-local-1");
+      assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_RESUME_CWD, "/tmp/local-bridge-cwd");
+
+      daemonInstance.close();
+    } finally {
+      restoreEnv("CONDUCTOR_AI_BRIDGE_API_PATH", previousBridgeApiPath);
+    }
+  });
+
+  it("retries loading the local ai-bridge helper after an initial import failure", async () => {
+    let handler;
+    const sentEvents = [];
+    const spawnCalls = [];
+    const previousBridgeApiPath = process.env.CONDUCTOR_AI_BRIDGE_API_PATH;
+    const tempDir = `/tmp/conductor-bridge-api-retry-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const missingBridgeApiPath = path.join(tempDir, "missing-bridge-api.mjs");
+    const workingBridgeApiPath = path.join(tempDir, "working-bridge-api.mjs");
+
+    fs.mkdirSync(tempDir, { recursive: true });
+    fs.writeFileSync(
+      workingBridgeApiPath,
+      `export async function bridgeSessionBetweenBackends(params) {
+        if (
+          params.sourceTool !== "codex" ||
+          params.sourceSessionId !== "sess-codex-retry-2" ||
+          params.targetTool !== "claude" ||
+          params.targetCwdFallback !== "/tmp/project-fallback-cwd" ||
+          params.sourceSessionInfo?.cwd !== "/tmp/project-fallback-cwd"
+        ) {
+          throw new Error("unexpected bridge params: " + JSON.stringify(params));
+        }
+        return {
+          sessionId: "sess-local-retry",
+          cwd: "/tmp/local-bridge-retry-cwd",
+          irPath: "/tmp/bridge-ir-retry.jsonl",
+          entryCount: 1,
+        };
+      }\n`,
+      "utf8",
+    );
+
+    process.env.CONDUCTOR_AI_BRIDGE_API_PATH = missingBridgeApiPath;
+
+    try {
+      const daemonInstance = startDaemon(
+        {
+          BACKEND_URL: "ws://localhost:0",
+          BACKEND_HTTP: "http://localhost:6152",
+          WORKSPACE_ROOT: "/tmp/test-ws-restart-local-bridge-retry",
+          CLI_PATH: "/tmp/cli.js",
+          NAME: "restart-local-bridge-retry-daemon",
+        },
+        {
+          spawn: (_cmd, args, opts) => {
+            spawnCalls.push({ args, opts });
+            return {
+              pid: 63457,
+              kill: () => {},
+              on: () => {},
+              stdout: { on: () => {} },
+              stderr: { on: () => {} },
+            };
+          },
+          mkdirSync: () => {},
+          writeFileSync: () => {},
+          existsSync: () => false,
+          readFileSync: () => "",
+          unlinkSync: () => {},
+          renameSync: () => {},
+          createWriteStream: () => ({
+            on: () => {},
+            write: () => {},
+            end: () => {},
+          }),
+          fetch: async (url) => {
+            if (String(url).includes("/api/projects/")) {
+              return {
+                ok: true,
+                json: async () => ({ metadata: { localPaths: { default: "/tmp/project-fallback-cwd" } } }),
+              };
+            }
+            if (String(url).endsWith("/api/tasks")) {
+              return { ok: true, json: async () => [] };
+            }
+            return { ok: true, json: async () => ({}) };
+          },
+          createWebSocketClient: () => ({
+            registerHandler: (nextHandler) => {
+              handler = nextHandler;
+            },
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async (payload) => {
+              sentEvents.push(payload);
+            },
+          }),
+        },
+      );
+
+      handler({
+        type: "restart_task",
+        payload: {
+          mode: "bridge_to_new_task",
+          source_task_id: "task-source-retry-1",
+          target_task_id: "task-successor-retry-1",
+          project_id: "proj-bridge-retry-1",
+          title: "Fix login bug [claude]",
+          source_backend_type: "codex",
+          source_session_id: "sess-codex-retry-1",
+          target_backend_type: "claude",
+          request_id: "req-bridge-retry-1",
+        },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expectEvent(sentEvents, "task_status_update", (payload) => {
+        assert.strictEqual(payload.task_id, "task-successor-retry-1");
+        assert.strictEqual(payload.status, "KILLED");
+        assert.match(payload.summary, /backend switch failed/i);
+      });
+      assert.strictEqual(spawnCalls.length, 0);
+
+      process.env.CONDUCTOR_AI_BRIDGE_API_PATH = workingBridgeApiPath;
+
+      handler({
+        type: "restart_task",
+        payload: {
+          mode: "bridge_to_new_task",
+          source_task_id: "task-source-retry-2",
+          target_task_id: "task-successor-retry-2",
+          project_id: "proj-bridge-retry-2",
+          title: "Fix login bug [claude]",
+          source_backend_type: "codex",
+          source_session_id: "sess-codex-retry-2",
+          target_backend_type: "claude",
+          request_id: "req-bridge-retry-2",
+        },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      assert.strictEqual(spawnCalls.length, 1);
+      assert.deepStrictEqual(spawnCalls[0].args, [
+        "/tmp/cli.js",
+        "--backend",
+        "claude",
+        "--resume",
+        "sess-local-retry",
+        "--",
+      ]);
+      assert.strictEqual(spawnCalls[0].opts.cwd, "/tmp/local-bridge-retry-cwd");
+      assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_TASK_ID, "task-successor-retry-2");
+      assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_RESUME_CWD, "/tmp/local-bridge-retry-cwd");
+
+      daemonInstance.close();
+    } finally {
+      restoreEnv("CONDUCTOR_AI_BRIDGE_API_PATH", previousBridgeApiPath);
+    }
+  });
+
+  it("reports killed summary when backend bridge fails", async () => {
+    let handler;
+    const sentEvents = [];
+    let spawnCount = 0;
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-restart-bridge-fail",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "restart-bridge-fail-daemon",
+      },
+      {
+        spawn: () => {
+          spawnCount += 1;
+          throw new Error("spawn should not be called");
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        bridgeSessionBetweenBackends: async () => {
+          throw new Error("bridge exploded");
+        },
+        resolveResumeContext: async () => ({ cwd: "" }),
+        fetch: async (url) => {
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
+        }),
+      },
+    );
+
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "bridge_to_new_task",
+        source_task_id: "task-source-fail-1",
+        target_task_id: "task-successor-fail-1",
+        project_id: "proj-bridge-fail-1",
+        title: "Fix login bug [claude]",
+        source_backend_type: "codex",
+        source_session_id: "sess-codex-fail-1",
+        target_backend_type: "claude",
+        request_id: "req-bridge-fail-1",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.strictEqual(spawnCount, 0);
+    expectEvent(sentEvents, "agent_command_ack", (payload) => {
+      assert.strictEqual(payload.request_id, "req-bridge-fail-1");
+      assert.strictEqual(payload.event_type, "restart_task");
+      assert.strictEqual(payload.accepted, true);
+    });
+    expectEvent(sentEvents, "task_status_update", (payload) => {
+      assert.strictEqual(payload.task_id, "task-successor-fail-1");
+      assert.strictEqual(payload.status, "KILLED");
+      assert.match(payload.summary, /backend switch failed: bridge exploded/);
+    });
+
+    daemonInstance.close();
   });
 
   it("creates PTY tasks and sends a terminal snapshot on fresh attach", async () => {

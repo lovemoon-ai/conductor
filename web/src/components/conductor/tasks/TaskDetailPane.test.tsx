@@ -30,6 +30,10 @@ vi.mock('@/components/conductor/common/LoadingSpinner', () => ({
   LoadingSpinner: () => <div data-testid="loading-spinner" />,
 }));
 
+vi.mock('./RestartTaskControls', () => ({
+  RestartTaskControls: () => <div data-testid="restart-controls" />,
+}));
+
 describe('TaskDetailPane', () => {
   const fetchTaskMock = vi.fn();
   const markTaskReadMock = vi.fn();
