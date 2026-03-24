@@ -388,6 +388,35 @@ describe('TaskItem', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
+  it('navigates to the full task page on desktop list double click', () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-11',
+          title: 'Desktop Full Page Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread
+        isSelected={false}
+        isActive
+        selectionMode={false}
+        onToggleSelect={() => {}}
+        onOpenTask={onOpenTaskMock}
+        desktopListPaneMode
+      />
+    );
+
+    fireEvent.doubleClick(screen.getByRole('button', { name: /desktop full page task/i }));
+
+    expect(markTaskReadMock).toHaveBeenCalledWith('task-11');
+    expect(pushMock).toHaveBeenCalledWith('/app/tasks/task-11');
+    expect(onOpenTaskMock).not.toHaveBeenCalled();
+  });
+
   it('uses the intermediate background for inactive cards in desktop list pane mode', () => {
     render(
       <TaskItem

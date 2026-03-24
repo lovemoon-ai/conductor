@@ -9,6 +9,10 @@ import {
 } from '@/lib/conductor/stores/terminal';
 import { useWebSocketStore } from '@/lib/conductor/stores/websocket';
 
+const deleteTaskMock = vi.fn();
+const confirmMock = vi.fn();
+const pushToastMock = vi.fn();
+
 const { terminalWriteMock, terminalClearMock, MockTerminal, MockFitAddon } = vi.hoisted(() => {
   const terminalWriteMock = vi.fn();
   const terminalClearMock = vi.fn();
@@ -57,6 +61,20 @@ vi.mock('./xterm-loader', () => ({
   }),
 }));
 
+vi.mock('@/lib/conductor/stores/tasks', () => ({
+  useTasksStore: (selector: (state: { deleteTask: typeof deleteTaskMock }) => unknown) =>
+    selector({ deleteTask: deleteTaskMock }),
+}));
+
+vi.mock('@/components/conductor/common/FeedbackProvider', () => ({
+  useConfirm: () => ({
+    confirm: confirmMock,
+  }),
+  useToast: () => ({
+    pushToast: pushToastMock,
+  }),
+}));
+
 const sendMock = vi.fn();
 
 const flushMicrotasks = async () => {
@@ -84,6 +102,10 @@ describe('TerminalView', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     sendMock.mockReset();
+    deleteTaskMock.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    pushToastMock.mockReset();
     terminalWriteMock.mockReset();
     terminalClearMock.mockReset();
     useWebSocketStore.setState({
@@ -569,6 +591,145 @@ describe('TerminalView', () => {
         }),
       );
     }
+  });
+
+  it('uses the yellow traffic-light button for refresh without terminal title', async () => {
+    const task = {
+      id: 'task-pty-header-actions',
+      title: 'PTY Header Actions',
+      taskType: 'pty_task',
+      status: 'running',
+      agentHost: 'debug',
+      executionHost: 'debug',
+      launchConfig: null,
+      ptySession: {
+        cols: 80,
+        rows: 24,
+      },
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: null,
+    } as any;
+
+    render(<TerminalView task={task} />);
+    await flushMicrotasks();
+
+    expect(screen.getByRole('button', { name: /refresh terminal/i })).toBeInTheDocument();
+    const refreshButton = screen.getByRole('button', { name: /refresh terminal/i });
+    const fullscreenButton = screen.getByRole('button', { name: /enter fullscreen/i });
+    const deleteButton = screen.getByRole('button', { name: /delete current task/i });
+    expect(refreshButton).toBeInTheDocument();
+    expect(fullscreenButton).toBeInTheDocument();
+    expect(deleteButton).toBeInTheDocument();
+    expect(refreshButton.querySelector('svg')).not.toBeNull();
+    expect(fullscreenButton.querySelector('svg')).not.toBeNull();
+    expect(deleteButton.querySelector('svg')).not.toBeNull();
+    expect(screen.queryByText(/^terminal$/i)).toBeNull();
+
+    sendMock.mockClear();
+    fireEvent.click(refreshButton);
+
+    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'terminal_attach',
+      payload: expect.objectContaining({
+        task_id: 'task-pty-header-actions',
+        mode: 'write',
+        force: true,
+      }),
+    }));
+  });
+
+  it('deletes the current task from the red traffic-light button', async () => {
+    const task = {
+      id: 'task-pty-delete',
+      title: 'PTY Delete',
+      taskType: 'pty_task',
+      status: 'running',
+      agentHost: 'debug',
+      executionHost: 'debug',
+      launchConfig: null,
+      ptySession: {
+        cols: 80,
+        rows: 24,
+      },
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: null,
+    } as any;
+
+    deleteTaskMock.mockResolvedValue(undefined);
+
+    render(<TerminalView task={task} />);
+    await flushMicrotasks();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /delete current task/i }));
+      await Promise.resolve();
+    });
+
+    expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Delete this task?',
+      tone: 'danger',
+    }));
+    expect(deleteTaskMock).toHaveBeenCalledWith('task-pty-delete');
+  });
+
+  it('toggles fullscreen from the terminal header button', async () => {
+    const task = {
+      id: 'task-pty-fullscreen',
+      title: 'PTY Fullscreen',
+      taskType: 'pty_task',
+      status: 'running',
+      agentHost: 'debug',
+      executionHost: 'debug',
+      launchConfig: null,
+      ptySession: {
+        cols: 80,
+        rows: 24,
+      },
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: null,
+    } as any;
+
+    let fullscreenElement: Element | null = null;
+    const requestFullscreenMock = vi.fn(async function requestFullscreen(this: Element) {
+      fullscreenElement = this;
+      document.dispatchEvent(new Event('fullscreenchange'));
+    });
+    const exitFullscreenMock = vi.fn(async () => {
+      fullscreenElement = null;
+      document.dispatchEvent(new Event('fullscreenchange'));
+    });
+
+    Object.defineProperty(document, 'fullscreenElement', {
+      configurable: true,
+      get: () => fullscreenElement,
+    });
+    Object.defineProperty(document, 'exitFullscreen', {
+      configurable: true,
+      value: exitFullscreenMock,
+    });
+    Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', {
+      configurable: true,
+      value: requestFullscreenMock,
+    });
+
+    render(<TerminalView task={task} />);
+    await flushMicrotasks();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /enter fullscreen/i }));
+      await Promise.resolve();
+    });
+
+    expect(requestFullscreenMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: /exit fullscreen/i })).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /exit fullscreen/i }));
+      await Promise.resolve();
+    });
+
+    expect(exitFullscreenMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: /enter fullscreen/i })).toBeInTheDocument();
   });
 
   it('renders shortcut dropdown as mobile-only UI', async () => {

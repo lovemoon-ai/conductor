@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, type ChangeEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import type { Task } from '@/lib/conductor/types';
 import type { TerminalLatencySample, TerminalOutputEvent, TerminalTransportState } from '@/lib/conductor/stores/terminal';
 import {
@@ -9,7 +9,9 @@ import {
   subscribeTerminalTransportSignal,
   useTerminalStore,
 } from '@/lib/conductor/stores/terminal';
+import { useTasksStore } from '@/lib/conductor/stores/tasks';
 import { useWebSocketStore } from '@/lib/conductor/stores/websocket';
+import { useConfirm, useToast } from '@/components/conductor/common/FeedbackProvider';
 import { loadXtermModules } from './xterm-loader';
 
 interface TerminalViewProps {
@@ -109,9 +111,30 @@ const clearPendingTerminalDetach = (taskId: string) => {
   pendingTerminalDetachTimers.delete(taskId);
 };
 
+const RefreshIcon = () => (
+  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+  </svg>
+);
+
+const CloseIcon = () => (
+  <svg className="h-2 w-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M6 6l12 12M18 6L6 18" />
+  </svg>
+);
+
+const FullscreenIcon = () => (
+  <svg className="h-2 w-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M8 4H4v4M16 4h4v4M8 20H4v-4M20 20h-4v-4" />
+  </svg>
+);
+
 export function TerminalView({ task }: TerminalViewProps) {
   const websocketStatus = useWebSocketStore((state) => state.status);
   const send = useWebSocketStore((state) => state.send);
+  const deleteTask = useTasksStore((state) => state.deleteTask);
+  const { confirm } = useConfirm();
+  const { pushToast } = useToast();
   const connectionState = useTerminalStore((state) => state.byTask[task.id]?.connectionState ?? 'idle');
   const hasWriteAccess = useTerminalStore((state) => state.byTask[task.id]?.hasWriteAccess ?? false);
   const lastLatencySample = useTerminalStore((state) => state.byTask[task.id]?.lastLatencySample ?? null);
@@ -145,13 +168,18 @@ export function TerminalView({ task }: TerminalViewProps) {
   const attemptedDirectSessionIdRef = useRef<string | null>(null);
   const rtcPeerRef = useRef<RTCPeerConnection | null>(null);
   const rtcChannelRef = useRef<RTCDataChannel | null>(null);
+  const syncSizeRef = useRef<() => void>(() => {});
   const sizeRef = useRef({ cols: task.ptySession?.cols ?? 120, rows: task.ptySession?.rows ?? 40 });
+  const shellRef = useRef<HTMLDivElement>(null);
   const [isTerminalReady, setIsTerminalReady] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isDeletingTask, setIsDeletingTask] = useState(false);
   const [shortcutValue, setShortcutValue] = useState('');
 
   const shouldAutoAttach = task.status === 'running' || task.status === 'unknown';
   const canSendInput =
     websocketStatus === 'connected' && isTerminalReady && connectionState === 'open' && hasWriteAccess;
+  const canRefreshTerminal = shouldAutoAttach && websocketStatus === 'connected' && isTerminalReady;
   const latencyBadge = buildLatencyBadge(lastLatencySample);
   const transportBadge = buildTransportBadge(transportState);
 
@@ -217,6 +245,61 @@ export function TerminalView({ task }: TerminalViewProps) {
     });
   };
 
+  const handleRefresh = useCallback(() => {
+    if (!canRefreshTerminal) {
+      return;
+    }
+    sendAttach('manual');
+    syncSizeRef.current();
+    terminalRef.current?.focus();
+  }, [canRefreshTerminal, sendAttach]);
+
+  const handleToggleFullscreen = useCallback(async () => {
+    const shell = shellRef.current;
+    if (!shell || typeof document === 'undefined') {
+      return;
+    }
+
+    try {
+      if (document.fullscreenElement === shell) {
+        await document.exitFullscreen?.();
+      } else {
+        await shell.requestFullscreen?.();
+      }
+    } catch {
+    }
+  }, []);
+
+  const handleDeleteTask = useCallback(async () => {
+    if (isDeletingTask) {
+      return;
+    }
+
+    const accepted = await confirm({
+      title: 'Delete this task?',
+      description: 'This action cannot be undone.',
+      confirmLabel: 'Delete',
+      tone: 'danger',
+    });
+    if (!accepted) {
+      return;
+    }
+
+    setIsDeletingTask(true);
+    try {
+      await deleteTask(task.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete task';
+      pushToast({
+        title: 'Failed to delete task',
+        description: message,
+        variant: 'error',
+      });
+    } finally {
+      setIsDeletingTask(false);
+    }
+  }, [confirm, deleteTask, isDeletingTask, pushToast, task.id]);
+
   const sendTerminalInput = (data: string): boolean => {
     if (!data || latestSocketStatusRef.current !== 'connected' || latestConnectionStateRef.current !== 'open' || !latestWriteAccessRef.current) {
       return false;
@@ -256,6 +339,29 @@ export function TerminalView({ task }: TerminalViewProps) {
       pendingTerminalAutoAttach.delete(task.id);
     }
   }, [connectionState, task.id]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+
+    const handleFullscreenChange = () => {
+      const isShellFullscreen = document.fullscreenElement === shellRef.current;
+      setIsFullscreen(isShellFullscreen);
+      if (typeof window !== 'undefined') {
+        window.requestAnimationFrame(() => {
+          syncSizeRef.current();
+          terminalRef.current?.focus();
+        });
+      }
+    };
+
+    handleFullscreenChange();
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
 
   useEffect(() => {
     transportSignalSubscriptionRef.current = subscribeTerminalTransportSignal(task.id, (signal) => {
@@ -460,6 +566,7 @@ export function TerminalView({ task }: TerminalViewProps) {
           });
         }
       };
+      syncSizeRef.current = syncSize;
 
       if (typeof ResizeObserver !== 'undefined') {
         const observer = new ResizeObserver(() => {
@@ -505,6 +612,7 @@ export function TerminalView({ task }: TerminalViewProps) {
       terminalRef.current?.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
+      syncSizeRef.current = () => {};
       renderedSeqRef.current = 0;
     };
   }, [markDetached, send, task.id]);
@@ -745,14 +853,50 @@ export function TerminalView({ task }: TerminalViewProps) {
 
   return (
     <div className="relative h-full overflow-hidden bg-paper p-3 md:p-4">
-      <div className="absolute inset-3 overflow-hidden rounded-[20px] border border-[#1f2730] bg-[#10151c] shadow-[0_18px_48px_rgba(16,21,28,0.24)] md:inset-4">
+      <div
+        ref={shellRef}
+        className="absolute inset-3 overflow-hidden rounded-[20px] border border-[#1f2730] bg-[#10151c] shadow-[0_18px_48px_rgba(16,21,28,0.24)] md:inset-4"
+      >
         <div className="flex h-10 items-center gap-2 border-b border-white/8 bg-[linear-gradient(90deg,rgba(240,101,67,0.12),rgba(34,211,238,0.08))] px-4">
-          <span className="h-3 w-3 rounded-full bg-[#f87171]" />
-          <span className="h-3 w-3 rounded-full bg-[#fbbf24]" />
-          <span className="h-3 w-3 rounded-full bg-[#34d399]" />
-          <span className="ml-3 text-xs font-medium tracking-[0.14em] text-white/65 uppercase">
-            terminal
-          </span>
+          <button
+            type="button"
+            onClick={() => {
+              void handleDeleteTask();
+            }}
+            disabled={isDeletingTask}
+            aria-label="Delete current task"
+            title="Delete current task"
+            className="group relative inline-flex h-3 w-3 items-center justify-center rounded-full bg-[#f87171] text-[#7f1d1d] transition-transform hover:scale-110 focus-visible:scale-110 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <span className="pointer-events-none opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+              <CloseIcon />
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={!canRefreshTerminal}
+            aria-label="Refresh terminal"
+            title="Refresh terminal"
+            className="group relative inline-flex h-3 w-3 items-center justify-center rounded-full bg-[#fbbf24] text-[#78350f] transition-transform hover:scale-110 focus-visible:scale-110 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <span className="pointer-events-none opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+              <RefreshIcon />
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void handleToggleFullscreen();
+            }}
+            aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            className="group relative inline-flex h-3 w-3 items-center justify-center rounded-full bg-[#34d399] text-[#14532d] transition-transform hover:scale-110 focus-visible:scale-110"
+          >
+            <span className="pointer-events-none opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+              <FullscreenIcon />
+            </span>
+          </button>
           {transportBadge ? (
             <div
               className={`rounded-full px-2.5 py-1 text-[10px] font-medium tracking-[0.08em] ${
@@ -780,7 +924,7 @@ export function TerminalView({ task }: TerminalViewProps) {
               {latencyBadge.label}
             </div>
           ) : null}
-          <div className="ml-auto flex items-center">
+          <div className="ml-auto flex items-center gap-2">
             <label className="sr-only" htmlFor={`terminal-shortcuts-${task.id}`}>
               Terminal shortcuts
             </label>

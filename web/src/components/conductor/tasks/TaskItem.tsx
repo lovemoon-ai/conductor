@@ -478,6 +478,11 @@ export function TaskItem({
     return false;
   }, [closeSwipeActions, viewMode]);
 
+  const openTaskPage = useCallback(() => {
+    markTaskRead(task.id);
+    router.push(`/app/tasks/${task.id}`);
+  }, [markTaskRead, router, task.id]);
+
   const openTaskDetail = () => {
     if (selectionMode) {
       onToggleSelect(task.id);
@@ -488,7 +493,7 @@ export function TaskItem({
       onOpenTask(task.id);
       return;
     }
-    router.push(`/app/tasks/${task.id}`);
+    openTaskPage();
   };
 
   const handleRename = async () => {
@@ -828,6 +833,16 @@ export function TaskItem({
             return;
           }
           openTaskDetail();
+        }}
+        onDoubleClick={(e) => {
+          e.preventDefault();
+          if (consumeTap()) {
+            return;
+          }
+          if (selectionMode || !desktopListPaneMode) {
+            return;
+          }
+          openTaskPage();
         }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
