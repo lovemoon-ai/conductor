@@ -31,7 +31,7 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PACKAGE_ROOT = path.join(__dirname, "..");
-const DEFAULT_AI_BRIDGE_API_PATH = "/Users/duino/ws/ai-session/ai-bridge/dist/api.js";
+const DEFAULT_AI_BRIDGE_API_SPECIFIER = "@love-moon/ai-bridge/dist/api.js";
 const moduleRequire = createRequire(import.meta.url);
 const CLI_PATH = path.resolve(PACKAGE_ROOT, "bin", "conductor-fire.js");
 const DAEMON_LOG_DIR = path.join(os.homedir(), ".conductor", "logs");
@@ -283,6 +283,24 @@ function normalizeOptionalString(value) {
   }
   const normalized = value.trim();
   return normalized || null;
+}
+
+function resolveImportTarget(specifierOrPath) {
+  const normalized = normalizeOptionalString(specifierOrPath);
+  if (!normalized) {
+    return null;
+  }
+  if (
+    normalized.startsWith("file:") ||
+    normalized.startsWith("node:") ||
+    normalized.startsWith("data:")
+  ) {
+    return normalized;
+  }
+  if (path.isAbsolute(normalized) || normalized.startsWith("./") || normalized.startsWith("../")) {
+    return pathToFileURL(path.resolve(normalized)).href;
+  }
+  return normalized;
 }
 
 function normalizeTerminalResumeStrategy(value) {
@@ -2816,11 +2834,10 @@ export function startDaemon(config = {}, deps = {}) {
     if (!bridgeSessionHelperPromise) {
       bridgeSessionHelperPromise = (async () => {
         try {
-          const bridgeApiPath =
-            (typeof process.env.CONDUCTOR_AI_BRIDGE_API_PATH === "string" &&
-              process.env.CONDUCTOR_AI_BRIDGE_API_PATH.trim()) ||
-            DEFAULT_AI_BRIDGE_API_PATH;
-          const bridgeModule = await import(pathToFileURL(bridgeApiPath).href);
+          const bridgeImportTarget =
+            resolveImportTarget(process.env.CONDUCTOR_AI_BRIDGE_API_PATH) ||
+            DEFAULT_AI_BRIDGE_API_SPECIFIER;
+          const bridgeModule = await importOptionalModule(bridgeImportTarget);
           if (typeof bridgeModule.bridgeSessionBetweenBackends !== "function") {
             throw new Error("bridgeSessionBetweenBackends is not available");
           }
