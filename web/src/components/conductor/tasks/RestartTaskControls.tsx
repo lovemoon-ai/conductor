@@ -5,13 +5,10 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { Task } from '@/lib/conductor/types';
 import { useAgentsStore } from '@/lib/conductor/stores/agents';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
-import { useRuntimeStore } from '@/lib/conductor/stores/runtime';
 import {
   canCreateSuccessorTask,
-  canInplaceRestart,
   getCompatibleRestartBackends,
   STOPPED_TASK_STATUSES,
-  type RestartStrategy,
 } from '@/lib/tasks/restart';
 import { Dialog } from '../common/Dialog';
 import { useToast } from '../common/FeedbackProvider';
@@ -26,7 +23,7 @@ const isConductorFireHost = (host: string | null | undefined): boolean =>
   typeof host === 'string' && host.startsWith('conductor-fire-');
 
 const isRestartableStatus = (status: Task['status']): boolean =>
-  status === 'running' || status === 'completed' || status === 'killed';
+  status === 'running' || status === 'completed' || status === 'killed' || status === 'unknown';
 
 export function RestartTaskControls({ task, open, onClose }: RestartTaskControlsProps) {
   const router = useRouter();
@@ -34,20 +31,23 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
   const searchParams = useSearchParams();
   const agents = useAgentsStore((state) => state.agents);
   const restartTask = useTasksStore((state) => state.restartTask);
-  const clearRuntime = useRuntimeStore((state) => state.clearTask);
   const { pushToast } = useToast();
   const [selectedBackend, setSelectedBackend] = useState(task.backendType ?? '');
-  const [selectedStrategy, setSelectedStrategy] = useState<RestartStrategy>('new_task');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const previousTaskIdRef = useRef(task.id);
 
   const sourceAgentHost = typeof task.agentHost === 'string' ? task.agentHost.trim() : '';
   const sourceExecutionHost = typeof task.executionHost === 'string' ? task.executionHost.trim() : '';
+  const sourceMetadataDaemonHost =
+    task.metadata && typeof task.metadata.daemonName === 'string' ? task.metadata.daemonName.trim() : '';
   const currentBackend = typeof task.backendType === 'string' ? task.backendType.trim() : '';
   const isManualFireTask = isConductorFireHost(sourceAgentHost);
   const sourceExecutionDaemonHost =
-    isManualFireTask && sourceExecutionHost && !isConductorFireHost(sourceExecutionHost)
-      ? sourceExecutionHost
+    isManualFireTask
+      ? (
+          (!isConductorFireHost(sourceMetadataDaemonHost) ? sourceMetadataDaemonHost : '') ||
+          (sourceExecutionHost && !isConductorFireHost(sourceExecutionHost) ? sourceExecutionHost : '')
+        )
       : '';
   const restartSourceHost = isManualFireTask ? sourceExecutionDaemonHost : sourceAgentHost;
   const sourceAgent = useMemo(
@@ -96,19 +96,6 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
     });
   }, [backendOptions, currentBackend, currentBackendSupported, getDefaultBackend, open, task.id]);
 
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    setSelectedStrategy((previousStrategy) => {
-      if (previousStrategy === 'inplace' && canInplaceRestart(task.status, currentBackend, selectedBackend)) {
-        return previousStrategy;
-      }
-      return canInplaceRestart(task.status, currentBackend, selectedBackend) ? 'inplace' : 'new_task';
-    });
-  }, [currentBackend, open, selectedBackend, task.status]);
-
   const disabledReason = useMemo(() => {
     if ((task.taskType ?? 'ai_task') !== 'ai_task') {
       return 'Only AI tasks support restart';
@@ -142,10 +129,7 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
     if (!selectedBackend) {
       return 'Select a backend first';
     }
-    if (selectedStrategy === 'inplace' && !canInplaceRestart(task.status, currentBackend, selectedBackend)) {
-      return 'In-place restart is only available for stopped tasks on the current backend';
-    }
-    if (selectedStrategy === 'new_task' && !canCreateSuccessorTask(currentBackend, selectedBackend)) {
+    if (!canCreateSuccessorTask(currentBackend, selectedBackend)) {
       return `Creating a new task from ${currentBackend} to ${selectedBackend} is not supported`;
     }
     return null;
@@ -154,7 +138,6 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
     currentBackend,
     isManualFireTask,
     selectedBackend,
-    selectedStrategy,
     sourceAgent,
     sourceAgentHost,
     sourceExecutionDaemonHost,
@@ -183,13 +166,9 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
       setIsSubmitting(true);
       const result = await restartTask(task.id, {
         backendType: selectedBackend,
-        strategy: selectedStrategy,
+        strategy: 'new_task',
       });
-      if (result.mode === 'inplace_restart') {
-        clearRuntime(task.id);
-      } else {
-        navigateToTask(result.task.id);
-      }
+      navigateToTask(result.task.id);
       onClose();
     } catch (error) {
       pushToast({
@@ -202,54 +181,20 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
     }
   };
 
-  const submitLabel = selectedStrategy === 'inplace' ? 'Restart in place' : 'Create new task';
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title="Restart task"
+      title="New task from this"
       maxWidthClassName="max-w-lg"
     >
       <div className="space-y-5">
-        <fieldset className="space-y-3">
-          <legend className="text-sm font-medium text-ink">Continue as</legend>
-          <div className="grid grid-cols-2 gap-3">
-            <label className={`flex items-center gap-3 rounded-xl border px-3 py-3 ${selectedStrategy === 'inplace' ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-border bg-paper'}`}>
-              <input
-                id={`restart-strategy-inplace-${task.id}`}
-                type="radio"
-                name={`restart-strategy-${task.id}`}
-                value="inplace"
-                aria-label="In place"
-                checked={selectedStrategy === 'inplace'}
-                disabled={!canInplaceRestart(task.status, currentBackend, selectedBackend) || isSubmitting}
-                onChange={() => setSelectedStrategy('inplace')}
-              />
-              <span className="min-w-0 text-sm font-medium text-ink">In place</span>
-            </label>
-            <label className={`flex items-center gap-3 rounded-xl border px-3 py-3 ${selectedStrategy === 'new_task' ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-border bg-paper'}`}>
-              <input
-                id={`restart-strategy-new-task-${task.id}`}
-                type="radio"
-                name={`restart-strategy-${task.id}`}
-                value="new_task"
-                aria-label="New task"
-                checked={selectedStrategy === 'new_task'}
-                disabled={!canCreateSuccessorTask(currentBackend, selectedBackend) || isSubmitting}
-                onChange={() => setSelectedStrategy('new_task')}
-              />
-              <span className="min-w-0 text-sm font-medium text-ink">New task</span>
-            </label>
-          </div>
-        </fieldset>
-
         <div className="space-y-2">
           <label htmlFor={`restart-backend-${task.id}`} className="text-sm font-medium text-ink">
             Backend
           </label>
           <select
             id={`restart-backend-${task.id}`}
-            aria-label="Restart backend"
             value={selectedBackend}
             onChange={(event) => setSelectedBackend(event.target.value)}
             disabled={Boolean(disabledReason) || isSubmitting}
@@ -279,7 +224,7 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
             title={disabledReason ?? undefined}
             className="webapp-btn-primary rounded-xl px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isSubmitting ? 'Working...' : submitLabel}
+            {isSubmitting ? 'Working...' : 'New task'}
           </button>
         </div>
       </div>

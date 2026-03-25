@@ -58,7 +58,7 @@ vi.mock("./agent-upstream", () => ({
 const { db } = await import("../db");
 const { realtimeHub } = await import("./hub");
 const { authenticateToken } = await import("../auth/service");
-const { drainAgentOutboxForHost } = await import("./agent-upstream");
+const { commitTaskStatusUpdate, drainAgentOutboxForHost } = await import("./agent-upstream");
 const {
   bindActiveTasksFromResume,
   ensureAgentOwnsTask,
@@ -192,7 +192,10 @@ describe("agent-gateway ownership handling", () => {
       where: {
         id: { in: ["task-daemon-owned", "task-pending-owned"] },
         project: { userId: "user-1" },
-        executionHost: { not: "daemon-a" },
+        OR: [
+          { executionHost: null },
+          { executionHost: { not: "daemon-a" } },
+        ],
       },
       data: { executionHost: "daemon-a" },
     });
@@ -277,7 +280,10 @@ describe("agent-gateway ownership handling", () => {
       where: {
         id: { in: ["task-ai-1"] },
         project: { userId: "user-1" },
-        executionHost: { not: "conductor-fire-mac-1" },
+        OR: [
+          { executionHost: null },
+          { executionHost: { not: "conductor-fire-mac-1" } },
+        ],
       },
       data: { executionHost: "conductor-fire-mac-1" },
     });
@@ -319,10 +325,73 @@ describe("agent-gateway ownership handling", () => {
       where: {
         id: "task-ai-1",
         project: { userId: "user-1" },
-        executionHost: { not: "conductor-fire-mac-1" },
+        OR: [
+          { executionHost: null },
+          { executionHost: { not: "conductor-fire-mac-1" } },
+        ],
       },
       data: { executionHost: "conductor-fire-mac-1" },
     });
+  });
+
+  it("promotes init tasks to running when runtime status arrives from a fire host", async () => {
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+
+    const socket = new FakeSocket();
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-init-1",
+      projectId: "proj-1",
+      taskType: "ai_task",
+      status: "init",
+      agentHost: "debug",
+      executionHost: null,
+    } as any);
+
+    const wss = setupAgentGateway();
+    const request = {
+      headers: {
+        authorization: "Bearer test-token",
+        "x-conductor-host": "conductor-fire-debug-123",
+      },
+      socket: {
+        remoteAddress: "127.0.0.1",
+      },
+    } as any;
+
+    wss.emit("connection", socket as any, request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    socket.emit("message", Buffer.from(JSON.stringify({
+      type: "task_runtime_status",
+      payload: {
+        task_id: "task-init-1",
+        phase: "session_started",
+        session_id: "session-1",
+      },
+    })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(commitTaskStatusUpdate).toHaveBeenCalledWith({
+      userId: "user-1",
+      agentHost: "conductor-fire-debug-123",
+      taskId: "task-init-1",
+      status: "running",
+    });
+    expect(realtimeHub.broadcast).toHaveBeenCalledWith(
+      "user-1",
+      "proj-1",
+      expect.objectContaining({
+        type: "task_runtime_status",
+        payload: expect.objectContaining({
+          task_id: "task-init-1",
+          session_id: "session-1",
+        }),
+      }),
+    );
   });
 
   it("drops terminal output from stale daemons when another host owns the binding", async () => {

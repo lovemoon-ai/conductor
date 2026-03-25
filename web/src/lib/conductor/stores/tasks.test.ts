@@ -52,7 +52,7 @@ describe('tasks store', () => {
         id: 'task-3',
         title: 'Old task [claude]',
         task_type: 'ai_task',
-        status: 'unknown',
+        status: 'init',
         backend_type: 'claude',
         created_at: '2024-01-01T00:02:00.000Z',
         updated_at: '2024-01-01T00:02:00.000Z',
@@ -78,6 +78,111 @@ describe('tasks store', () => {
       },
     });
     expect(useTasksStore.getState().tasks.map((task) => task.id)).toEqual(['task-3', 'task-1', 'task-2']);
+  });
+
+  it('does not downgrade a newer running task back to init when restart response arrives late', async () => {
+    useTasksStore.setState({
+      tasks: [
+        {
+          id: 'task-3',
+          title: 'Old task [claude]',
+          taskType: 'ai_task',
+          status: 'running',
+          backendType: 'claude',
+          sessionId: 'sess-3',
+          createdAt: '2024-01-01T00:02:00.000Z',
+          updatedAt: '2024-01-01T00:03:00.000Z',
+        },
+      ],
+    });
+    mockPost.mockResolvedValueOnce({
+      mode: 'backend_switch_new_task',
+      source_task_id: 'task-1',
+      task: {
+        id: 'task-3',
+        title: 'Old task [claude]',
+        task_type: 'ai_task',
+        status: 'init',
+        backend_type: 'claude',
+        session_id: null,
+        created_at: '2024-01-01T00:02:00.000Z',
+        updated_at: '2024-01-01T00:02:30.000Z',
+      },
+    });
+
+    const result = await useTasksStore.getState().restartTask('task-1', {
+      backendType: 'claude',
+      strategy: 'new_task',
+    });
+
+    expect(result.task).toMatchObject({
+      id: 'task-3',
+      status: 'running',
+      sessionId: 'sess-3',
+    });
+    expect(useTasksStore.getState().tasks[0]).toMatchObject({
+      id: 'task-3',
+      status: 'running',
+      sessionId: 'sess-3',
+    });
+  });
+
+  it('updates the same task to running for in-place restart', async () => {
+    useTasksStore.setState({
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Restartable task',
+          taskType: 'ai_task',
+          status: 'completed',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'task-2',
+          title: 'Another task',
+          taskType: 'ai_task',
+          status: 'running',
+          createdAt: '2024-01-01T00:01:00.000Z',
+          updatedAt: '2024-01-01T00:01:00.000Z',
+        },
+      ],
+    });
+    mockPost.mockResolvedValueOnce({
+      mode: 'inplace_restart',
+      source_task_id: 'task-1',
+      task: {
+        id: 'task-1',
+        title: 'Restartable task',
+        task_type: 'ai_task',
+        status: 'running',
+        backend_type: 'codex',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:02:00.000Z',
+      },
+    });
+
+    const result = await useTasksStore.getState().restartTask('task-1', {
+      strategy: 'inplace',
+    });
+
+    expect(mockPost).toHaveBeenCalledWith('/tasks/task-1/restart', {
+      strategy: 'inplace',
+    });
+    expect(result).toMatchObject({
+      mode: 'inplace_restart',
+      sourceTaskId: 'task-1',
+      task: {
+        id: 'task-1',
+        status: 'running',
+      },
+    });
+    expect(useTasksStore.getState().tasks.map((task) => task.id)).toEqual(['task-1', 'task-2']);
+    expect(useTasksStore.getState().tasks[0]).toMatchObject({
+      id: 'task-1',
+      status: 'running',
+      updatedAt: '2024-01-01T00:02:00.000Z',
+    });
   });
 
   it('hydrates pty_session data from task list responses', async () => {

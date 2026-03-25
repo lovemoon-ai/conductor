@@ -99,7 +99,7 @@ describe("/api/tasks/[taskId]/restart", () => {
     ] as any);
   });
 
-  it("dispatches restart_task for same-backend restart and returns updated source task", async () => {
+  it("dispatches restart_task for same-backend restart and returns the source task as running", async () => {
     const response = await POST(
       createMockRequest({
         method: "POST",
@@ -114,7 +114,7 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(data.mode).toBe("inplace_restart");
     expect(data.source_task_id).toBe("task-1");
     expect(data.task.id).toBe("task-1");
-    expect(data.task.status).toBe("unknown");
+    expect(data.task.status).toBe("running");
     expect(data.task.backend_type).toBe("codex");
     expect(db.agentOutbox.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -129,6 +129,31 @@ describe("/api/tasks/[taskId]/restart", () => {
       expect.objectContaining({
         userId: "user-1",
         agentHost: "daemon-1",
+      }),
+    );
+  });
+
+  it("allows in-place restart for tasks in unknown status", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ status: "unknown" }) as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "inplace" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("inplace_restart");
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          taskId: "task-1",
+          payloadJson: expect.stringContaining('"mode":"resume_inplace"'),
+        }),
       }),
     );
   });
@@ -228,8 +253,9 @@ describe("/api/tasks/[taskId]/restart", () => {
       expect.objectContaining({
         where: { id: "task-1" },
         data: expect.objectContaining({
+          status: "running",
           agentHost: "daemon-2",
-          executionHost: null,
+          executionHost: "daemon-2",
         }),
       }),
     );
@@ -262,7 +288,41 @@ describe("/api/tasks/[taskId]/restart", () => {
     const data = await extractJson(response);
 
     expect(response.status).toBe(409);
-    expect(data.error).toContain("Original execution daemon daemon-2 is offline");
+    expect(data.error).toContain("Original daemon daemon-2 is offline");
+  });
+
+  it("restarts a stopped conductor-fire task using metadata daemonName when executionHost is unavailable", async () => {
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex", "claude"], capabilities: [] },
+    ] as any);
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        agentHost: "conductor-fire-debug-1",
+        executionHost: null,
+        metadata: JSON.stringify({ daemonName: "daemon-1" }),
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: {},
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("inplace_restart");
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentHost: "daemon-1",
+          payloadJson: expect.stringContaining('"mode":"resume_inplace"'),
+        }),
+      }),
+    );
   });
 
   it("returns 409 when a conductor-fire task is still running", async () => {
@@ -337,6 +397,7 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(data.mode).toBe("backend_switch_new_task");
     expect(data.source_task_id).toBe("task-1");
     expect(data.task.id).not.toBe("task-1");
+    expect(data.task.status).toBe("init");
     expect(data.task.title).toBe("Fix login bug [claude]");
     expect(data.task.backend_type).toBe("claude");
     expect(data.task.session_id).toBeNull();
@@ -383,6 +444,7 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(data.mode).toBe("successor_new_task");
     expect(data.source_task_id).toBe("task-1");
     expect(data.task.id).not.toBe("task-1");
+    expect(data.task.status).toBe("init");
     expect(data.task.backend_type).toBe("codex");
     expect(data.task.metadata).toEqual({
       continuedFromTaskId: "task-1",

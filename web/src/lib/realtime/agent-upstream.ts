@@ -23,6 +23,7 @@ const normalizeTaskStatus = (value: unknown): string => {
   if (typeof value !== "string") return "unknown";
   const normalized = value.trim().toLowerCase();
   if (normalized === "completed") return "completed";
+  if (normalized === "init") return "init";
   if (normalized === "running") return "running";
   if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
   return "unknown";
@@ -76,7 +77,10 @@ async function persistTaskExecutionHost(
     where: {
       id: taskId,
       project: { userId },
-      executionHost: { not: normalizedHost },
+      OR: [
+        { executionHost: null },
+        { executionHost: { not: normalizedHost } },
+      ],
     },
     data: { executionHost: normalizedHost },
   });
@@ -161,6 +165,8 @@ export async function commitSdkMessage(input: {
 }): Promise<{ taskId: string; projectId: string; messageId: string | null; duplicate: boolean }> {
   const task = await getOwnedTask(input.userId, input.taskId, input.agentHost);
   await drainAgentOutboxForHost(input.userId, input.agentHost);
+  const normalizedAgentHost = normalizeOptionalString(input.agentHost);
+  const shouldPromoteInitTask = normalizeTaskStatus(task.status) === "init";
 
   const clientMessageId = normalizeOptionalString(input.messageId);
   let message: { id: string; createdAt: Date };
@@ -189,7 +195,13 @@ export async function commitSdkMessage(input: {
           }),
           db.task.update({
             where: { id: task.id },
-            data: { updatedAt: new Date() },
+            data: {
+              updatedAt: new Date(),
+              ...(shouldPromoteInitTask ? { status: "running" } : {}),
+              ...(shouldPromoteInitTask && normalizedAgentHost
+                ? { executionHost: normalizedAgentHost }
+                : {}),
+            },
           }),
         ]);
       } catch (error) {
@@ -224,12 +236,26 @@ export async function commitSdkMessage(input: {
       }),
       db.task.update({
         where: { id: task.id },
-        data: { updatedAt: new Date() },
+        data: {
+          updatedAt: new Date(),
+          ...(shouldPromoteInitTask ? { status: "running" } : {}),
+          ...(shouldPromoteInitTask && normalizedAgentHost
+            ? { executionHost: normalizedAgentHost }
+            : {}),
+        },
       }),
     ]);
   }
 
   if (!duplicate) {
+    if (shouldPromoteInitTask) {
+      await projectTaskStatusUpdate({
+        userId: input.userId,
+        projectId: task.projectId,
+        taskId: task.id,
+        status: "running",
+      });
+    }
     await projectTaskMessage({
       userId: input.userId,
       projectId: task.projectId,

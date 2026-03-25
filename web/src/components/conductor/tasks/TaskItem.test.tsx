@@ -4,6 +4,7 @@ import { TaskItem } from './TaskItem';
 
 const pushMock = vi.fn();
 const updateTaskMock = vi.fn();
+const restartTaskMock = vi.fn();
 const deleteTaskMock = vi.fn();
 const markTaskReadMock = vi.fn();
 const sendMessageMock = vi.fn();
@@ -21,6 +22,7 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/conductor/stores/tasks', () => ({
   useTasksStore: () => ({
     updateTask: updateTaskMock,
+    restartTask: restartTaskMock,
     deleteTask: deleteTaskMock,
     markTaskRead: markTaskReadMock,
   }),
@@ -59,6 +61,7 @@ describe('TaskItem', () => {
     window.sessionStorage.clear();
     pushMock.mockReset();
     updateTaskMock.mockReset();
+    restartTaskMock.mockReset();
     deleteTaskMock.mockReset();
     markTaskReadMock.mockReset();
     sendMessageMock.mockReset();
@@ -89,6 +92,177 @@ describe('TaskItem', () => {
     expect(screen.getByText('claude')).toBeInTheDocument();
     expect(screen.getByText('daemon-a')).toBeInTheDocument();
     expect(screen.getByText('AI')).toBeInTheDocument();
+  });
+
+  it('requires a second click on the running badge before killing the task', async () => {
+    updateTaskMock.mockResolvedValue({
+      id: 'task-kill-1',
+      title: 'Killable Task',
+      status: 'killed',
+      createdAt: new Date().toISOString(),
+    });
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-kill-1',
+          title: 'Killable Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'running' }));
+
+    expect(screen.getByRole('button', { name: 'killing?' })).toBeInTheDocument();
+    expect(updateTaskMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'killing?' }));
+
+    await waitFor(() => {
+      expect(updateTaskMock).toHaveBeenCalledWith('task-kill-1', { status: 'killed' });
+      expect(clearRuntimeMock).toHaveBeenCalledWith('task-kill-1');
+    });
+  });
+
+  it('cancels killing confirmation when clicking elsewhere', () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-kill-2',
+          title: 'Cancel Kill Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'running' }));
+    expect(screen.getByRole('button', { name: 'killing?' })).toBeInTheDocument();
+
+    fireEvent.pointerDown(screen.getByText('Cancel Kill Task'));
+    fireEvent.click(screen.getByText('Cancel Kill Task'));
+
+    expect(screen.getByRole('button', { name: 'running' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'killing?' })).not.toBeInTheDocument();
+    expect(updateTaskMock).not.toHaveBeenCalled();
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('requires a second click on the completed badge before restarting the task in place', async () => {
+    restartTaskMock.mockResolvedValue({
+      mode: 'inplace_restart',
+      sourceTaskId: 'task-restart-1',
+      task: {
+        id: 'task-restart-1',
+      },
+    });
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-restart-1',
+          title: 'Restartable Task',
+          taskType: 'ai_task',
+          status: 'completed',
+          projectId: null,
+          agentHost: 'daemon-a',
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'completed' }));
+
+    expect(screen.getByRole('button', { name: 'restart?' })).toBeInTheDocument();
+    expect(restartTaskMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'restart?' }));
+
+    await waitFor(() => {
+      expect(restartTaskMock).toHaveBeenCalledWith('task-restart-1', {
+        strategy: 'inplace',
+      });
+      expect(clearRuntimeMock).toHaveBeenCalledWith('task-restart-1');
+    });
+  });
+
+  it('cancels restart confirmation when clicking elsewhere', () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-restart-2',
+          title: 'Cancel Restart Task',
+          taskType: 'ai_task',
+          status: 'unknown',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'unknown' }));
+    expect(screen.getByRole('button', { name: 'restart?' })).toBeInTheDocument();
+
+    fireEvent.pointerDown(screen.getByText('Cancel Restart Task'));
+    fireEvent.click(screen.getByText('Cancel Restart Task'));
+
+    expect(screen.getByRole('button', { name: 'unknown' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'restart?' })).not.toBeInTheDocument();
+    expect(restartTaskMock).not.toHaveBeenCalled();
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('does not allow quick restart from init status', () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-init-1',
+          title: 'Init Task',
+          taskType: 'ai_task',
+          status: 'init',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    expect(screen.getByText('init')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'init' })).not.toBeInTheDocument();
   });
 
   it('shows daemon name for direct conductor-fire tasks', () => {
@@ -310,7 +484,7 @@ describe('TaskItem', () => {
     });
   });
 
-  it('opens restart from the swipe-left action menu', async () => {
+  it('opens new task from the swipe-left action menu', async () => {
     render(
       <TaskItem
         task={{
@@ -336,7 +510,7 @@ describe('TaskItem', () => {
     fireEvent.pointerMove(card!, { pointerId: 1, clientX: 80, pointerType: 'touch' });
     fireEvent.pointerUp(card!, { pointerId: 1, clientX: 80, pointerType: 'touch' });
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Restart task' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'New task' }));
 
     expect(screen.getByTestId('restart-controls')).toBeInTheDocument();
   });
@@ -369,7 +543,7 @@ describe('TaskItem', () => {
     fireEvent.pointerUp(card!, { pointerId: 1, clientX: 120, pointerType: 'touch' });
 
     await waitFor(() => {
-      expect(screen.queryByRole('button', { name: 'Restart task' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'New task' })).not.toBeInTheDocument();
     });
     expect(screen.getByRole('button', { name: 'Rename task' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete task' })).toBeInTheDocument();

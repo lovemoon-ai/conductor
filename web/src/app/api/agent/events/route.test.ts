@@ -291,14 +291,15 @@ describe("/api/agent/events", () => {
     expect(deliverAgentOutboxForHost).not.toHaveBeenCalled();
   });
 
-  it("allows conductor-fire hosts to commit sdk messages for daemon-owned ai tasks", async () => {
+  it("allows conductor-fire hosts to commit sdk messages and promote init daemon-owned ai tasks", async () => {
     const token = createTestToken("user-1");
     vi.mocked(db.task.findFirst).mockResolvedValueOnce({
       id: "task-1",
       projectId: "proj-1",
+      status: "init",
       taskType: "ai_task",
       agentHost: "debug",
-      executionHost: "debug",
+      executionHost: null,
     } as any);
 
     const response = await POST(
@@ -335,9 +336,31 @@ describe("/api/agent/events", () => {
       where: {
         id: "task-1",
         project: { userId: "user-1" },
-        executionHost: { not: "conductor-fire-debug-123" },
+        OR: [
+          { executionHost: null },
+          { executionHost: { not: "conductor-fire-debug-123" } },
+        ],
       },
       data: { executionHost: "conductor-fire-debug-123" },
     });
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-1" },
+      data: expect.objectContaining({
+        status: "running",
+        executionHost: "conductor-fire-debug-123",
+        updatedAt: expect.any(Date),
+      }),
+    });
+    expect(realtimeHub.broadcast).toHaveBeenCalledWith(
+      "user-1",
+      "proj-1",
+      expect.objectContaining({
+        type: "task_status_update",
+        payload: expect.objectContaining({
+          task_id: "task-1",
+          status: "running",
+        }),
+      }),
+    );
   });
 });

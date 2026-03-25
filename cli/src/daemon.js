@@ -3027,11 +3027,11 @@ export function startDaemon(config = {}, deps = {}) {
         payload: {
           task_id: taskId,
           project_id: projectId,
-          status: "UNKNOWN",
+          status: "INIT",
         },
       })
       .catch((err) => {
-        logError(`Failed to report task status (UNKNOWN) for ${taskId}: ${err?.message || err}`);
+        logError(`Failed to report task status (INIT) for ${taskId}: ${err?.message || err}`);
       });
 
     // Check if project has a bound local path for this daemon
@@ -3416,18 +3416,20 @@ export function startDaemon(config = {}, deps = {}) {
     );
     log(`CLI command: ${cliCommand}`);
 
-    client
-      .sendJson({
-        type: "task_status_update",
-        payload: {
-          task_id: normalizedTargetTaskId,
-          project_id: normalizedProjectId,
-          status: "UNKNOWN",
-        },
-      })
-      .catch((err) => {
-        logError(`Failed to report task status (UNKNOWN) for ${normalizedTargetTaskId}: ${err?.message || err}`);
-      });
+    if (normalizedMode !== "resume_inplace") {
+      client
+        .sendJson({
+          type: "task_status_update",
+          payload: {
+            task_id: normalizedTargetTaskId,
+            project_id: normalizedProjectId,
+            status: "INIT",
+          },
+        })
+        .catch((err) => {
+          logError(`Failed to report task status (INIT) for ${normalizedTargetTaskId}: ${err?.message || err}`);
+        });
+    }
 
     if (daemonShuttingDown) {
       reportRestartFailure({

@@ -37,6 +37,8 @@ const AI_POPUP_LINE_THRESHOLD = 5;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const getGridDraftStorageKey = (taskId: string) => `${GRID_DRAFT_STORAGE_PREFIX}${taskId}`;
+const isInteractiveTarget = (target: EventTarget | null): boolean =>
+  target instanceof Element && Boolean(target.closest('button, input, textarea, select, a, summary'));
 
 const EditIcon = () => (
   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -50,10 +52,11 @@ const TrashIcon = () => (
   </svg>
 );
 
-const RestartIcon = () => (
+const NewTaskIcon = () => (
   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v6h6M20 20v-6h-6" />
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 9a7 7 0 00-12-4L4 10M4 15a7 7 0 0012 4l4-5" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5h6a2 2 0 012 2v4" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 9h8a2 2 0 012 2v6a2 2 0 01-2 2H7a2 2 0 01-2-2v-6a2 2 0 012-2z" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 12v4M9 14h4" />
   </svg>
 );
 
@@ -77,6 +80,10 @@ export function TaskItem({
   const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
   const [isRestartDialogOpen, setIsRestartDialogOpen] = useState(false);
+  const [isKillConfirming, setIsKillConfirming] = useState(false);
+  const [isKillingTask, setIsKillingTask] = useState(false);
+  const [isRestartConfirming, setIsRestartConfirming] = useState(false);
+  const [isRestartingTask, setIsRestartingTask] = useState(false);
   const [editTitle, setEditTitle] = useState(task.title);
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
@@ -97,14 +104,17 @@ export function TaskItem({
   const startXRef = useRef(0);
   const startOffsetRef = useRef(0);
   const didSwipeRef = useRef(false);
+  const dismissedStatusConfirmationRef = useRef(false);
+  const dismissedStatusConfirmationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevIsSelectedRef = useRef(isSelected);
   const skipGridDraftStoreEffectRef = useRef(true);
   const aiPreviewRef = useRef<HTMLDivElement | null>(null);
   const aiPopupRef = useRef<HTMLDivElement | null>(null);
   const gridCardRef = useRef<HTMLDivElement | null>(null);
+  const statusBadgeRef = useRef<HTMLDivElement | null>(null);
   const aiPopupHideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const { updateTask, deleteTask, markTaskRead } = useTasksStore();
+  const { updateTask, restartTask, deleteTask, markTaskRead } = useTasksStore();
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
   const sendMessage = useChatStore((state) => state.sendMessage);
@@ -153,6 +163,9 @@ export function TaskItem({
   const latestAssistantText = latestAssistantContent || latestAssistantStatusText || 'No AI response yet.';
   const isMessageableTask = taskType !== 'pty_task';
   const isTaskRunning = task.status === 'running';
+  const canQuickRestart =
+    taskType === 'ai_task' &&
+    (task.status === 'completed' || task.status === 'killed' || task.status === 'unknown');
   const useDesktopListPaneSurface = desktopListPaneMode && viewMode === 'list' && !selectionMode;
   const isHighlighted = isSelected || (!selectionMode && isActive);
   const highlightedCardClassName = useDesktopListPaneSurface
@@ -193,6 +206,48 @@ export function TaskItem({
   }, [gridComposerFeedback, isTaskRunning]);
 
   useEffect(() => {
+    if (task.status === 'running') {
+      setIsRestartConfirming(false);
+      setIsRestartingTask(false);
+    } else {
+      setIsKillConfirming(false);
+      setIsKillingTask(false);
+    }
+    if (!canQuickRestart) {
+      setIsRestartConfirming(false);
+      setIsRestartingTask(false);
+    }
+  }, [canQuickRestart, task.status]);
+
+  useEffect(() => {
+    if ((!isKillConfirming && !isRestartConfirming) || typeof document === 'undefined') {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const badgeElement = statusBadgeRef.current;
+      if (badgeElement?.contains(event.target as Node | null)) {
+        return;
+      }
+      dismissedStatusConfirmationRef.current = true;
+      if (dismissedStatusConfirmationTimeoutRef.current) {
+        clearTimeout(dismissedStatusConfirmationTimeoutRef.current);
+      }
+      dismissedStatusConfirmationTimeoutRef.current = setTimeout(() => {
+        dismissedStatusConfirmationRef.current = false;
+        dismissedStatusConfirmationTimeoutRef.current = null;
+      }, 0);
+      setIsKillConfirming(false);
+      setIsRestartConfirming(false);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+    };
+  }, [isKillConfirming, isRestartConfirming]);
+
+  useEffect(() => {
     setOptimisticLatestInputText(latestInputText);
   }, [latestInputText]);
 
@@ -209,6 +264,9 @@ export function TaskItem({
 
   useEffect(() => (
     () => {
+      if (dismissedStatusConfirmationTimeoutRef.current) {
+        clearTimeout(dismissedStatusConfirmationTimeoutRef.current);
+      }
       if (aiPopupHideTimeoutRef.current) {
         clearTimeout(aiPopupHideTimeoutRef.current);
       }
@@ -414,6 +472,9 @@ export function TaskItem({
     if (viewMode !== 'list') {
       return;
     }
+    if (isInteractiveTarget(event.target)) {
+      return;
+    }
     if (event.pointerType === 'mouse' && event.button !== 0) {
       return;
     }
@@ -479,6 +540,10 @@ export function TaskItem({
     if (viewMode !== 'list') {
       return false;
     }
+    if (dismissedStatusConfirmationRef.current) {
+      dismissedStatusConfirmationRef.current = false;
+      return true;
+    }
     if (didSwipeRef.current) {
       didSwipeRef.current = false;
       return true;
@@ -496,6 +561,10 @@ export function TaskItem({
   }, [markTaskRead, router, task.id]);
 
   const openTaskDetail = () => {
+    if (dismissedStatusConfirmationRef.current) {
+      dismissedStatusConfirmationRef.current = false;
+      return;
+    }
     if (selectionMode) {
       onToggleSelect(task.id);
       return;
@@ -538,6 +607,68 @@ export function TaskItem({
       });
     } finally {
       closeSwipeActions();
+    }
+  };
+
+  const handleRunningStatusClick = async () => {
+    if (!isTaskRunning || isKillingTask || isRestartingTask) {
+      return;
+    }
+
+    if (!isKillConfirming) {
+      setIsRestartConfirming(false);
+      setIsKillConfirming(true);
+      return;
+    }
+
+    try {
+      setIsKillingTask(true);
+      await updateTask(task.id, { status: 'killed' });
+      clearRuntime(task.id);
+      setIsKillConfirming(false);
+      closeSwipeActions();
+    } catch (error) {
+      setIsKillConfirming(false);
+      pushToast({
+        title: 'Failed to kill task',
+        description: error instanceof Error ? error.message : 'Please try again in a moment.',
+        variant: 'error',
+      });
+    } finally {
+      setIsKillingTask(false);
+    }
+  };
+
+  const handleStoppedStatusClick = async () => {
+    if (!canQuickRestart || isRestartingTask || isKillingTask) {
+      return;
+    }
+
+    if (!isRestartConfirming) {
+      setIsKillConfirming(false);
+      setIsRestartConfirming(true);
+      return;
+    }
+
+    try {
+      setIsRestartingTask(true);
+      const result = await restartTask(task.id, {
+        strategy: 'inplace',
+      });
+      if (result.mode === 'inplace_restart') {
+        clearRuntime(task.id);
+      }
+      setIsRestartConfirming(false);
+      closeSwipeActions();
+    } catch (error) {
+      setIsRestartConfirming(false);
+      pushToast({
+        title: 'Failed to restart task',
+        description: error instanceof Error ? error.message : 'Please try again in a moment.',
+        variant: 'error',
+      });
+    } finally {
+      setIsRestartingTask(false);
     }
   };
 
@@ -618,6 +749,41 @@ export function TaskItem({
       ) : null}
     </>
   );
+  const statusBadgeLabel = isKillingTask
+    ? 'killing...'
+    : isKillConfirming
+      ? 'killing?'
+      : isRestartingTask
+        ? 'restarting...'
+        : isRestartConfirming
+          ? 'restart?'
+          : undefined;
+  const statusBadgeTitle = isTaskRunning
+    ? isKillConfirming
+      ? 'Click again to kill task'
+      : 'Click to confirm kill'
+    : canQuickRestart
+      ? isRestartConfirming
+        ? 'Click again to restart task'
+        : 'Click to confirm restart'
+      : undefined;
+  const statusBadgeProps = isTaskRunning
+    ? {
+        onClick: handleRunningStatusClick,
+        disabled: isKillingTask,
+        labelOverride: statusBadgeLabel,
+        title: statusBadgeTitle,
+        tone: isKillConfirming || isKillingTask ? 'danger' : 'default',
+      }
+    : canQuickRestart
+      ? {
+          onClick: handleStoppedStatusClick,
+          disabled: isRestartingTask,
+          labelOverride: statusBadgeLabel,
+          title: statusBadgeTitle,
+          tone: isRestartConfirming ? 'warning' : 'default',
+        }
+      : {};
 
   if (isEditing) {
     return (
@@ -672,7 +838,9 @@ export function TaskItem({
               <h3 className="truncate text-base font-semibold text-ink">{task.title}</h3>
             </div>
           </div>
-          <TaskStatusBadge status={task.status} />
+          <div ref={statusBadgeRef}>
+            <TaskStatusBadge status={task.status} {...statusBadgeProps} />
+          </div>
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2 text-sm text-muted">
@@ -811,8 +979,8 @@ export function TaskItem({
           <button
             type="button"
             tabIndex={isRightActionsOpen ? 0 : -1}
-            aria-label="Restart task"
-            title="Restart"
+            aria-label="New task"
+            title="New task"
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -821,7 +989,7 @@ export function TaskItem({
             }}
             className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
           >
-            <RestartIcon />
+            <NewTaskIcon />
           </button>
         ) : null}
         <button
@@ -912,7 +1080,9 @@ export function TaskItem({
               </p>
             ) : null}
           </div>
-          <TaskStatusBadge status={task.status} />
+          <div ref={statusBadgeRef}>
+            <TaskStatusBadge status={task.status} {...statusBadgeProps} />
+          </div>
         </div>
       </div>
       {showRestartAction ? (

@@ -366,6 +366,7 @@ function normalizeRole(role) {
 function normalizeTaskStatus(status) {
   const normalized = cleanText(status).toLowerCase();
   if (normalized === "completed") return "completed";
+  if (normalized === "init") return "init";
   if (normalized === "running") return "running";
   if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
   return normalized || "unknown";

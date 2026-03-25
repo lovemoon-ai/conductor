@@ -243,6 +243,20 @@ describe('websocket runtime status handling', () => {
     expect(messages[0].content).toBe('Done');
   });
 
+  it('fetches task detail when a task status arrives before the task exists in the store', () => {
+    const fetchTaskSpy = vi.spyOn(useTasksStore.getState(), 'fetchTask').mockResolvedValue(null);
+
+    handleWSMessage({
+      type: 'task_status_update',
+      payload: {
+        task_id: 'task-init-1',
+        status: 'running',
+      },
+    });
+
+    expect(fetchTaskSpy).toHaveBeenCalledWith('task-init-1');
+  });
+
   it('moves tasks with new assistant messages to the top and refreshes their preview', () => {
     useTasksStore.setState({
       tasks: [
@@ -692,6 +706,33 @@ describe('websocket runtime status handling', () => {
         tone: 'warning',
         message: 'Task was killed. Terminal session is no longer active.',
       },
+    });
+  });
+
+  it('keeps completed task_status_update events as completed in the task list', () => {
+    useTasksStore.setState({
+      tasks: [
+        {
+          id: 'task-ai-1',
+          title: 'Stopped By App',
+          taskType: 'ai_task',
+          status: 'running',
+          createdAt: '2024-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+
+    handleWSMessage({
+      type: 'task_status_update',
+      payload: {
+        task_id: 'task-ai-1',
+        status: 'completed',
+      },
+    });
+
+    expect(useTasksStore.getState().tasks[0]).toMatchObject({
+      id: 'task-ai-1',
+      status: 'completed',
     });
   });
 });

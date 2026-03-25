@@ -40,6 +40,7 @@ const normalizeTaskStatus = (value: unknown): string => {
   if (typeof value !== "string") return "unknown";
   const normalized = value.trim().toLowerCase();
   if (normalized === "completed") return "completed";
+  if (normalized === "init") return "init";
   if (normalized === "running") return "running";
   if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
   return "unknown";
@@ -294,6 +295,8 @@ const stopTaskBeforeRelaunch = async (args: {
   projectId: string;
   stopTargetHost: string;
   reason: string;
+  taskLabel?: string;
+  requireActiveHost?: boolean;
 }): Promise<{ ok: boolean; error?: string }> => {
   const requestId = randomUUID();
   const ackPromise = realtimeHub.waitForTaskStopAck(
@@ -332,9 +335,13 @@ const stopTaskBeforeRelaunch = async (args: {
   );
 
   const hostActive = realtimeHub.hasAgentHost(args.stopTargetHost, args.userId);
+  const taskLabel = args.taskLabel ?? "task";
+  if (args.requireActiveHost && !hostActive) {
+    return { ok: false, error: `${taskLabel} daemon ${args.stopTargetHost} is offline` };
+  }
   if (!delivered) {
     return hostActive
-      ? { ok: false, error: `Failed to stop running PTY task on ${args.stopTargetHost}` }
+      ? { ok: false, error: `Failed to stop running ${taskLabel} on ${args.stopTargetHost}` }
       : { ok: true };
   }
 
@@ -345,7 +352,7 @@ const stopTaskBeforeRelaunch = async (args: {
   }
 
   return hostActive
-    ? { ok: false, error: `Timed out waiting for PTY task ${args.taskId} to stop on ${args.stopTargetHost}` }
+    ? { ok: false, error: `Timed out waiting for ${taskLabel} ${args.taskId} to stop on ${args.stopTargetHost}` }
     : { ok: true };
 };
 
@@ -446,6 +453,7 @@ export async function PATCH(
     (existingTaskType !== "pty_task" ||
       hasLaunchConfigField ||
       agentHostInput !== undefined);
+  const normalizedExistingStatus = normalizeTaskStatus(existing.status);
 
   if (nextTaskType === "pty_task") {
     const launchConfigError = validatePtyLaunchConfig(nextLaunchConfig);
@@ -468,24 +476,26 @@ export async function PATCH(
     nextAgentHost = resolvedPtyAgent.agentHost;
   }
 
-  const stopTargetHost = shouldDispatchPtyTask
-    ? normalizeHost(realtimeHub.getTaskAgentHost(taskId)) ||
-      normalizeHost(existing.executionHost) ||
-      normalizeHost(existing.agentHost)
-    : "";
-  const shouldStopBeforeRelaunch =
-    Boolean(stopTargetHost) &&
-    shouldDispatchPtyTask &&
-    (() => {
-      const normalizedExistingStatus = normalizeTaskStatus(existing.status);
-      return normalizedExistingStatus === "running" || normalizedExistingStatus === "unknown";
-    })();
-
   const nextStatus = shouldDispatchPtyTask
     ? "unknown"
     : hasStatusField
       ? normalizeTaskStatus(normalizedBody.status)
       : existing.status;
+  const shouldStopTask =
+    nextStatus === "killed" &&
+    (normalizedExistingStatus === "running" || normalizedExistingStatus === "unknown");
+  const stopTargetHost = shouldDispatchPtyTask || shouldStopTask
+    ? normalizeHost(realtimeHub.getTaskAgentHost(taskId)) ||
+      normalizeHost(existing.executionHost) ||
+      normalizeHost(existing.agentHost)
+    : "";
+  if (shouldStopTask && !stopTargetHost) {
+    return NextResponse.json({ error: "Task missing active daemon binding" }, { status: 409 });
+  }
+  const shouldStopBeforeRelaunch =
+    Boolean(stopTargetHost) &&
+    shouldDispatchPtyTask &&
+    (normalizedExistingStatus === "running" || normalizedExistingStatus === "unknown");
   const executionHostInput = readPatchField(normalizedBody, "execution_host", "executionHost");
   const nextExecutionHost =
     shouldDispatchPtyTask || nextStatus === "completed" || nextStatus === "killed"
@@ -558,6 +568,7 @@ export async function PATCH(
         projectId: existing.projectId,
         stopTargetHost,
         reason: "restart_pty_task",
+        taskLabel: "PTY task",
       });
       if (!stopResult.ok) {
         await rollbackFailedPtyPatchRelaunch({
@@ -628,6 +639,24 @@ export async function PATCH(
           select: legacyTaskSelect,
         }),
       );
+    }
+  }
+
+  if (shouldStopTask && stopTargetHost) {
+    const stopResult = await stopTaskBeforeRelaunch({
+      userId: user.id,
+      taskId,
+      projectId: existing.projectId,
+      stopTargetHost,
+      reason: "stopped_from_app",
+      requireActiveHost: true,
+    });
+    if (!stopResult.ok) {
+      await db.task.update({
+        where: { id: taskId },
+        data: buildTaskRollbackData(existing),
+      });
+      return NextResponse.json({ error: stopResult.error }, { status: 409 });
     }
   }
 

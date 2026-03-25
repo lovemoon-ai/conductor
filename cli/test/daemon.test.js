@@ -1466,7 +1466,7 @@ describe("Daemon", () => {
     }
   });
 
-  it("restarts same-backend tasks without calling bridge and resumes the source session", async () => {
+  it("restarts same-backend tasks without calling bridge and skips UNKNOWN before running", async () => {
     let handler;
     const spawnCalls = [];
     const sentEvents = [];
@@ -1568,8 +1568,17 @@ describe("Daemon", () => {
     });
     expectEvent(sentEvents, "task_status_update", (payload) => {
       assert.strictEqual(payload.task_id, "task-restart-1");
-      assert.strictEqual(payload.status, "UNKNOWN");
+      assert.strictEqual(payload.status, "RUNNING");
     });
+    assert.ok(
+      !sentEvents.some(
+        (entry) =>
+          entry.type === "task_status_update"
+          && entry.payload?.task_id === "task-restart-1"
+          && entry.payload?.status === "UNKNOWN",
+      ),
+      "did not expect UNKNOWN status during in-place restart",
+    );
 
     daemonInstance.close();
   });
@@ -1578,6 +1587,7 @@ describe("Daemon", () => {
     let handler;
     const spawnCalls = [];
     const bridgeCalls = [];
+    const sentEvents = [];
 
     const daemonInstance = startDaemon(
       {
@@ -1629,7 +1639,9 @@ describe("Daemon", () => {
           },
           connect: async () => {},
           disconnect: async () => {},
-          sendJson: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
         }),
       },
     );
@@ -1652,6 +1664,10 @@ describe("Daemon", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 20));
 
+    expectEvent(sentEvents, "task_status_update", (payload) => {
+      assert.strictEqual(payload.task_id, "task-successor-1");
+      assert.strictEqual(payload.status, "INIT");
+    });
     assert.deepStrictEqual(bridgeCalls, [
       {
         sourceTool: "codex",

@@ -186,6 +186,7 @@ function normalizeTaskId(payload: Record<string, unknown>): string | null {
 
 function normalizeTaskStatus(value: unknown): TaskStatus {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (normalized === 'init') return 'init';
   if (normalized === 'completed') return 'completed';
   if (normalized === 'running') return 'running';
   if (normalized === 'killed' || normalized === 'failed' || normalized === 'cancelled') return 'killed';
@@ -273,6 +274,8 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
           },
           { moveToFront: true },
         );
+      } else {
+        void tasksStore.fetchTask(normalized.taskId);
       }
 
       // Mark as unread if not user message
@@ -286,10 +289,12 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
       const taskId = normalizeTaskId(payload);
       if (!taskId) break;
       const status = normalizeTaskStatus(payload.status);
-      const tasks = useTasksStore.getState().tasks;
-      const task = tasks.find((t) => t.id === taskId);
+      const tasksStore = useTasksStore.getState();
+      const task = tasksStore.tasks.find((t) => t.id === taskId);
       if (task) {
-        useTasksStore.getState().updateTaskInList({ ...task, status });
+        tasksStore.updateTaskInList({ ...task, status });
+      } else {
+        void tasksStore.fetchTask(taskId);
       }
       if (status === 'completed' || status === 'killed' || status === 'unknown') {
         useRuntimeStore.getState().clearTask(taskId);

@@ -40,6 +40,23 @@ const normalizePtySession = (value: any) => {
   };
 };
 
+const normalizeTaskStatus = (value: unknown): Task['status'] => {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (normalized === 'init') {
+    return 'init';
+  }
+  if (normalized === 'running') {
+    return 'running';
+  }
+  if (normalized === 'completed') {
+    return 'completed';
+  }
+  if (normalized === 'killed' || normalized === 'failed' || normalized === 'cancelled') {
+    return 'killed';
+  }
+  return 'unknown';
+};
+
 interface TasksState {
   tasks: Task[];
   isLoading: boolean;
@@ -67,7 +84,7 @@ const normalizeTask = (task: any): Task => ({
   projectId: task.projectId ?? task.project_id ?? null,
   title: task.title,
   taskType: task.taskType ?? task.task_type ?? 'ai_task',
-  status: task.status,
+  status: normalizeTaskStatus(task.status),
   agentHost: task.agentHost ?? task.agent_host ?? null,
   executionHost: task.executionHost ?? task.execution_host ?? null,
   backendType: task.backendType ?? task.backend_type ?? null,
@@ -81,6 +98,24 @@ const normalizeTask = (task: any): Task => ({
   createdAt: task.createdAt ?? task.created_at ?? new Date().toISOString(),
   updatedAt: task.updatedAt ?? task.updated_at ?? null,
 });
+
+const mergeMutationTask = (existing: Task | undefined, incoming: Task): Task => {
+  if (!existing || incoming.status !== 'init' || existing.status === 'init') {
+    return incoming;
+  }
+
+  return {
+    ...incoming,
+    status: existing.status,
+    agentHost: existing.agentHost ?? incoming.agentHost,
+    executionHost: existing.executionHost ?? incoming.executionHost,
+    sessionId: existing.sessionId ?? incoming.sessionId,
+    sessionFilePath: existing.sessionFilePath ?? incoming.sessionFilePath,
+    lastUserMessage: existing.lastUserMessage ?? incoming.lastUserMessage,
+    lastAssistantMessage: existing.lastAssistantMessage ?? incoming.lastAssistantMessage,
+    updatedAt: existing.updatedAt ?? incoming.updatedAt,
+  };
+};
 
 const upsertTask = (tasks: Task[], task: Task, options?: { moveToFront?: boolean }): Task[] => {
   const index = tasks.findIndex((existing) => existing.id === task.id);
@@ -148,11 +183,15 @@ export const useTasksStore = create<TasksState>()((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const api = getApiClient();
-      const task = normalizeTask(await api.post<Task>('/tasks', input));
+      const incomingTask = normalizeTask(await api.post<Task>('/tasks', input));
+      const task = mergeMutationTask(get().tasks.find((current) => current.id === incomingTask.id), incomingTask);
       set((state) => ({
         tasks: upsertTask(state.tasks, task),
         isLoading: false,
       }));
+      if (incomingTask.status === 'init') {
+        void get().fetchTask(incomingTask.id);
+      }
       return task;
     } catch (error) {
       set({
@@ -194,10 +233,14 @@ export const useTasksStore = create<TasksState>()((set, get) => ({
         source_task_id: string;
         task: Task;
       }>(`/tasks/${taskId}/restart`, body);
-      const task = normalizeTask(response.task);
+      const incomingTask = normalizeTask(response.task);
+      const task = mergeMutationTask(get().tasks.find((current) => current.id === incomingTask.id), incomingTask);
       set((state) => ({
         tasks: upsertTask(state.tasks, task, { moveToFront: true }),
       }));
+      if (incomingTask.status === 'init') {
+        void get().fetchTask(incomingTask.id);
+      }
       return {
         mode: response.mode,
         sourceTaskId: response.source_task_id,
@@ -248,7 +291,7 @@ export const useTasksStore = create<TasksState>()((set, get) => ({
 
   updateTaskInList: (task, options) => {
     set((state) => ({
-      tasks: upsertTask(state.tasks, task, options),
+      tasks: upsertTask(state.tasks, normalizeTask(task), options),
     }));
   },
 

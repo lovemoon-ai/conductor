@@ -30,7 +30,7 @@ export interface ProjectWithBoundDaemons extends Project {
 }
 
 // Task Types
-export type TaskStatus = 'running' | 'killed' | 'unknown' | 'completed';
+export type TaskStatus = 'init' | 'running' | 'killed' | 'unknown' | 'completed';
 
 export interface PtySession {
   id: string;

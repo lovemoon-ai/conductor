@@ -41,6 +41,7 @@ const normalizeTaskStatus = (value: unknown): string => {
   if (typeof value !== "string") return "unknown";
   const normalized = value.trim().toLowerCase();
   if (normalized === "completed") return "completed";
+  if (normalized === "init") return "init";
   if (normalized === "running") return "running";
   if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
   return "unknown";
@@ -534,7 +535,7 @@ export async function POST(request: NextRequest) {
   const defaultTaskStatus =
     taskType === "ai_task" && typeof agentHost === "string" && isConductorFireHost(agentHost)
       ? "running"
-      : "unknown";
+      : "init";
 
   let ptySession:
     | {

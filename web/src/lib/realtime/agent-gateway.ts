@@ -199,7 +199,10 @@ const persistTaskExecutionHost = async (
       where: {
         id: taskId,
         project: { userId },
-        executionHost: { not: normalizedHost },
+        OR: [
+          { executionHost: null },
+          { executionHost: { not: normalizedHost } },
+        ],
       },
       data: { executionHost: normalizedHost },
     });
@@ -263,7 +266,7 @@ export const bindActiveTasksFromResume = async (
     const assignedHost = normalizeOptionalString(task.executionHost) || normalizeOptionalString(task.agentHost);
     const status = normalizeTaskStatus(task.status);
     const allowFireHostClaim = assignedHost !== agentHost && canFireHostClaimTask(task, agentHost);
-    return (assignedHost === agentHost || allowFireHostClaim) && (status === "running" || status === "unknown");
+    return (assignedHost === agentHost || allowFireHostClaim) && (status === "init" || status === "running" || status === "unknown");
   });
   for (const task of tasksToBind) {
     realtimeHub.bindTaskToAgent(task.id, agentHost);
@@ -274,7 +277,10 @@ export const bindActiveTasksFromResume = async (
       where: {
         id: { in: taskIds },
         project: { userId },
-        executionHost: { not: agentHost },
+        OR: [
+          { executionHost: null },
+          { executionHost: { not: agentHost } },
+        ],
       },
       data: { executionHost: agentHost },
     });
@@ -345,6 +351,7 @@ const normalizeTaskStatus = (value: unknown): string => {
   if (typeof value !== "string") return "unknown";
   const normalized = value.trim().toLowerCase();
   if (normalized === "completed") return "completed";
+  if (normalized === "init") return "init";
   if (normalized === "running") return "running";
   if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
   return "unknown";
@@ -790,7 +797,7 @@ export const handleTerminalErrorEvent = async (args: {
   const message = normalizeOptionalString(args.payload.message) || "terminal error";
   const closedAt = new Date().toISOString();
   const currentTaskStatus = normalizeTaskStatus(task.status);
-  const taskWasActive = currentTaskStatus === "running" || currentTaskStatus === "unknown";
+  const taskWasActive = currentTaskStatus === "init" || currentTaskStatus === "running" || currentTaskStatus === "unknown";
   const latestStatusSummary = normalizeOptionalString(task.taskStatusEvents?.[0]?.summary);
   const shouldCreateStatusEvent = taskWasActive && latestStatusSummary !== message;
 
@@ -1280,7 +1287,24 @@ export const setupAgentGateway = (): WebSocketServer => {
               sendEnvelope(socket, { type: "error", payload: { message } });
               break;
             }
-            void drainAgentOutboxForHost(user.id, agentHost);
+            if (normalizeTaskStatus(task.status) === "init") {
+              try {
+                await commitTaskStatusUpdate({
+                  userId: user.id,
+                  agentHost,
+                  taskId: task.id,
+                  status: "running",
+                });
+              } catch (error) {
+                console.warn(
+                  `[agent-gateway] failed to promote init task ${task.id} to running from ${agentHost}: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                );
+              }
+            } else {
+              void drainAgentOutboxForHost(user.id, agentHost);
+            }
             realtimeHub.broadcast(user.id, task.projectId, {
               type: "task_runtime_status",
               payload: {

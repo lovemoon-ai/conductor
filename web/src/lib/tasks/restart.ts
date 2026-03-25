@@ -6,11 +6,12 @@ export type RestartResultMode =
   | "backend_switch_new_task"
   | "successor_new_task";
 
-export const STOPPED_TASK_STATUSES = new Set<TaskStatus>(["completed", "killed"]);
+export const STOPPED_TASK_STATUSES = new Set<TaskStatus>(["completed", "killed", "unknown"]);
 export const RESTARTABLE_SOURCE_STATUSES = new Set<TaskStatus>([
   "running",
   "completed",
   "killed",
+  "unknown",
 ]);
 export const BRIDGEABLE_BACKENDS = new Set(["codex", "claude", "kimi"]);
 export const VALID_RESTART_BACKENDS = new Set(["codex", "claude", "kimi", "opencode"]);

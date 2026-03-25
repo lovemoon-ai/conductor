@@ -567,6 +567,181 @@ describe("/api/tasks/[taskId]", () => {
     expect(data.task_type).toBe("ai_task");
   });
 
+  it("sends stop_task when PATCH marks a running task as killed", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-stop-1",
+      projectId: "proj-1",
+      title: "Stop Me",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: "session-stop-1",
+      sessionFilePath: "/tmp/session-stop-1.jsonl",
+      launchConfig: null,
+      metadata: null,
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+      ptySession: null,
+    } as any);
+    vi.mocked(db.task.update).mockResolvedValue({
+      id: "task-stop-1",
+      projectId: "proj-1",
+      title: "Stop Me",
+      taskType: "ai_task",
+      status: "killed",
+      agentHost: "daemon-a",
+      executionHost: null,
+      backendType: "codex",
+      sessionId: "session-stop-1",
+      sessionFilePath: "/tmp/session-stop-1.jsonl",
+      launchConfig: null,
+      metadata: null,
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:02:00.000Z"),
+    } as any);
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(true);
+
+    const request = createMockRequest({
+      method: "PATCH",
+      token,
+      body: {
+        status: "killed",
+      },
+    });
+    const response = await PATCH(request, { params: Promise.resolve({ taskId: "task-stop-1" }) });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "task-stop-1" },
+        data: expect.objectContaining({
+          status: "killed",
+          executionHost: null,
+        }),
+      }),
+    );
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "task-stop-1",
+        agentHost: "daemon-a",
+        eventType: "stop_task",
+        envelope: expect.objectContaining({
+          type: "stop_task",
+          payload: expect.objectContaining({
+            task_id: "task-stop-1",
+            reason: "stopped_from_app",
+          }),
+        }),
+      }),
+      expect.any(Object),
+    );
+    expect(data.status).toBe("killed");
+  });
+
+  it("returns 409 when PATCH tries to kill a running task without any active daemon binding", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-stop-missing-host",
+      projectId: "proj-1",
+      title: "Stop Me",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: null,
+      executionHost: null,
+      backendType: "codex",
+      sessionId: "session-stop-2",
+      sessionFilePath: "/tmp/session-stop-2.jsonl",
+      launchConfig: null,
+      metadata: null,
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+      ptySession: null,
+    } as any);
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(null);
+
+    const request = createMockRequest({
+      method: "PATCH",
+      token,
+      body: {
+        status: "killed",
+      },
+    });
+    const response = await PATCH(request, { params: Promise.resolve({ taskId: "task-stop-missing-host" }) });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toBe("Task missing active daemon binding");
+    expect(db.task.update).not.toHaveBeenCalled();
+    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when PATCH tries to kill a running task whose bound daemon is offline", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-stop-offline-host",
+      projectId: "proj-1",
+      title: "Stop Me",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: "session-stop-3",
+      sessionFilePath: "/tmp/session-stop-3.jsonl",
+      launchConfig: null,
+      metadata: null,
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+      ptySession: null,
+    } as any);
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("daemon-a");
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+
+    const request = createMockRequest({
+      method: "PATCH",
+      token,
+      body: {
+        status: "killed",
+      },
+    });
+    const response = await PATCH(request, { params: Promise.resolve({ taskId: "task-stop-offline-host" }) });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toBe("task daemon daemon-a is offline");
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "task-stop-offline-host",
+        agentHost: "daemon-a",
+        eventType: "stop_task",
+      }),
+      expect.any(Object),
+    );
+    expect(db.task.update).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: { id: "task-stop-offline-host" },
+        data: expect.objectContaining({
+          status: "killed",
+        }),
+      }),
+    );
+    expect(db.task.update).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: { id: "task-stop-offline-host" },
+        data: expect.objectContaining({
+          status: "running",
+          executionHost: "daemon-a",
+        }),
+      }),
+    );
+  });
+
   it("should promote a task to pty_task and upsert pty_session via PATCH", async () => {
     const token = createTestToken("user-1");
     vi.mocked(db.task.findFirst).mockResolvedValue({

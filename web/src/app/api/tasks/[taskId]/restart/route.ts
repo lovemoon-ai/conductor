@@ -29,6 +29,7 @@ const normalizeTaskStatus = (value: unknown): string => {
   if (typeof value !== "string") return "unknown";
   const normalized = value.trim().toLowerCase();
   if (normalized === "completed") return "completed";
+  if (normalized === "init") return "init";
   if (normalized === "running") return "running";
   if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
   return "unknown";
@@ -116,11 +117,18 @@ export async function POST(
 
   const connectedAgents = realtimeHub.getAgentsForUser(user.id);
   const isManualFireTask = isConductorFireHost(sourceAgentHost);
+  const sourceTaskMetadata = parseJsonObject(sourceTask.metadata);
+  const sourceMetadataDaemonHost = normalizeOptionalString(sourceTaskMetadata?.daemonName);
   const sourceExecutionHost = normalizeOptionalString(sourceTask.executionHost);
-  const sourceExecutionDaemonHost =
+  const manualFireDaemonHostCandidates = [
+    sourceMetadataDaemonHost && !isConductorFireHost(sourceMetadataDaemonHost)
+      ? sourceMetadataDaemonHost
+      : null,
     sourceExecutionHost && !isConductorFireHost(sourceExecutionHost)
       ? sourceExecutionHost
-      : null;
+      : null,
+  ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
+  const sourceExecutionDaemonHost = manualFireDaemonHostCandidates[0] ?? null;
 
   const hasExplicitBackendTarget =
     Object.prototype.hasOwnProperty.call(normalizedBody, "backend_type") ||
@@ -147,13 +155,15 @@ export async function POST(
   }
 
   const restartAgentHost = isManualFireTask
-    ? sourceExecutionDaemonHost
+    ? manualFireDaemonHostCandidates.find((host) =>
+        connectedAgents.some((agent) => agent.host === host),
+      ) ?? sourceExecutionDaemonHost
     : sourceAgentHost;
   if (!restartAgentHost) {
     return NextResponse.json(
       {
         error: isManualFireTask
-          ? "Task missing original execution daemon binding"
+          ? "Task missing original daemon binding"
           : `No compatible daemon online for backend ${targetBackend}`,
       },
       { status: 409 },
@@ -164,7 +174,7 @@ export async function POST(
     return NextResponse.json(
       {
         error: isManualFireTask
-          ? `Original execution daemon ${restartAgentHost} is offline`
+          ? `Original daemon ${restartAgentHost} is offline`
           : `Source daemon ${sourceAgentHost} is offline`,
       },
       { status: 409 },
@@ -268,8 +278,8 @@ export async function POST(
       return tx.task.update({
         where: { id: sourceTask.id },
         data: {
-          status: "unknown",
-          executionHost: null,
+          status: "running",
+          executionHost: restartAgentHost,
           agentHost: restartAgentHost,
           updatedAt: now,
         },
@@ -308,7 +318,7 @@ export async function POST(
         projectId: sourceTask.projectId,
         title: successorTitle,
         taskType: "ai_task",
-        status: "unknown",
+        status: "init",
         agentHost: restartAgentHost,
         executionHost: null,
         backendType: targetBackend,
