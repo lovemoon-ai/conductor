@@ -212,4 +212,50 @@ describe('RestartTaskControls', () => {
     });
     expect(screen.getByRole('button', { name: 'Create new task' })).toBeInTheDocument();
   });
+
+  it('allows a stopped conductor-fire task to restart on an online daemon', () => {
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-fire-1',
+          title: 'Stopped Fire Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'conductor-fire-mac-1',
+          executionHost: 'daemon-1',
+          backendType: 'codex',
+          sessionId: 'sess-fire-1',
+          createdAt: new Date().toISOString(),
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText('Restart backend')).toHaveValue('codex');
+    expect(screen.getByLabelText('In place')).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Restart in place' })).toBeEnabled();
+  });
+
+  it('disables restart when a conductor-fire task is missing its original daemon binding', () => {
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-fire-2',
+          title: 'Stopped Fire Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'conductor-fire-mac-1',
+          executionHost: 'conductor-fire-mac-1',
+          backendType: 'codex',
+          sessionId: 'sess-fire-2',
+          createdAt: new Date().toISOString(),
+        }}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Restart in place' })).toBeDisabled();
+  });
 });

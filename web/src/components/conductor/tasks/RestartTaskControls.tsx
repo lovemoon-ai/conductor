@@ -10,6 +10,7 @@ import {
   canCreateSuccessorTask,
   canInplaceRestart,
   getCompatibleRestartBackends,
+  STOPPED_TASK_STATUSES,
   type RestartStrategy,
 } from '@/lib/tasks/restart';
 import { Dialog } from '../common/Dialog';
@@ -41,12 +42,21 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
   const previousTaskIdRef = useRef(task.id);
 
   const sourceAgentHost = typeof task.agentHost === 'string' ? task.agentHost.trim() : '';
+  const sourceExecutionHost = typeof task.executionHost === 'string' ? task.executionHost.trim() : '';
   const currentBackend = typeof task.backendType === 'string' ? task.backendType.trim() : '';
+  const isManualFireTask = isConductorFireHost(sourceAgentHost);
+  const sourceExecutionDaemonHost =
+    isManualFireTask && sourceExecutionHost && !isConductorFireHost(sourceExecutionHost)
+      ? sourceExecutionHost
+      : '';
+  const restartSourceHost = isManualFireTask ? sourceExecutionDaemonHost : sourceAgentHost;
   const sourceAgent = useMemo(
-    () => agents.find((agent) => agent.host === sourceAgentHost) ?? null,
-    [agents, sourceAgentHost],
+    () => agents.find((agent) => agent.host === restartSourceHost) ?? null,
+    [agents, restartSourceHost],
   );
-  const supportedBackends = Array.isArray(sourceAgent?.supportedBackends) ? sourceAgent.supportedBackends : [];
+  const supportedBackends = Array.isArray(sourceAgent?.supportedBackends)
+    ? sourceAgent.supportedBackends
+    : [];
   const backendOptions = useMemo(
     () => getCompatibleRestartBackends(currentBackend, supportedBackends),
     [currentBackend, supportedBackends],
@@ -112,17 +122,22 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
     if (!sourceAgentHost) {
       return 'Missing source daemon binding';
     }
-    if (isConductorFireHost(sourceAgentHost)) {
-      return 'Manual fire task does not support in-app restart yet';
+    if (isManualFireTask && !sourceExecutionDaemonHost) {
+      return 'Missing original daemon binding';
     }
     if (!isRestartableStatus(task.status)) {
       return 'Only running or stopped tasks can restart';
     }
+    if (isManualFireTask && !STOPPED_TASK_STATUSES.has(task.status)) {
+      return 'Manual fire tasks can only restart after they stop';
+    }
     if (!sourceAgent) {
-      return 'Source daemon is offline';
+      return isManualFireTask ? 'Original daemon is offline' : 'Source daemon is offline';
     }
     if (backendOptions.length === 0) {
-      return 'No compatible backend available on the source daemon';
+      return isManualFireTask
+        ? 'No compatible backend available on the original daemon'
+        : 'No compatible backend available on the source daemon';
     }
     if (!selectedBackend) {
       return 'Select a backend first';
@@ -137,10 +152,12 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
   }, [
     backendOptions.length,
     currentBackend,
+    isManualFireTask,
     selectedBackend,
     selectedStrategy,
     sourceAgent,
     sourceAgentHost,
+    sourceExecutionDaemonHost,
     task.sessionId,
     task.status,
     task.taskType,

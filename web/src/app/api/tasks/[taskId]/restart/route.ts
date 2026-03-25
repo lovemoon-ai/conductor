@@ -21,6 +21,7 @@ import {
   canInplaceRestart,
   normalizeRestartStrategy,
   RESTARTABLE_SOURCE_STATUSES,
+  STOPPED_TASK_STATUSES,
   VALID_RESTART_BACKENDS,
 } from "@/lib/tasks/restart";
 
@@ -112,15 +113,14 @@ export async function POST(
   if (!sourceAgentHost) {
     return NextResponse.json({ error: "Task missing source daemon binding" }, { status: 409 });
   }
-  if (isConductorFireHost(sourceAgentHost)) {
-    return NextResponse.json({ error: "manual fire task does not support in-app restart yet" }, { status: 409 });
-  }
 
   const connectedAgents = realtimeHub.getAgentsForUser(user.id);
-  const sourceAgent = connectedAgents.find((agent) => agent.host === sourceAgentHost) ?? null;
-  if (!sourceAgent) {
-    return NextResponse.json({ error: `Source daemon ${sourceAgentHost} is offline` }, { status: 409 });
-  }
+  const isManualFireTask = isConductorFireHost(sourceAgentHost);
+  const sourceExecutionHost = normalizeOptionalString(sourceTask.executionHost);
+  const sourceExecutionDaemonHost =
+    sourceExecutionHost && !isConductorFireHost(sourceExecutionHost)
+      ? sourceExecutionHost
+      : null;
 
   const hasExplicitBackendTarget =
     Object.prototype.hasOwnProperty.call(normalizedBody, "backend_type") ||
@@ -138,10 +138,42 @@ export async function POST(
   if (hasExplicitStrategy && !requestedStrategy) {
     return NextResponse.json({ error: "invalid strategy" }, { status: 400 });
   }
-  const supportedBackends = Array.isArray(sourceAgent.supportedBackends) ? sourceAgent.supportedBackends : [];
+
+  if (isManualFireTask && !STOPPED_TASK_STATUSES.has(sourceStatus as any)) {
+    return NextResponse.json(
+      { error: "manual fire task can only restart after it has stopped" },
+      { status: 409 },
+    );
+  }
+
+  const restartAgentHost = isManualFireTask
+    ? sourceExecutionDaemonHost
+    : sourceAgentHost;
+  if (!restartAgentHost) {
+    return NextResponse.json(
+      {
+        error: isManualFireTask
+          ? "Task missing original execution daemon binding"
+          : `No compatible daemon online for backend ${targetBackend}`,
+      },
+      { status: 409 },
+    );
+  }
+  const restartAgent = connectedAgents.find((agent) => agent.host === restartAgentHost) ?? null;
+  if (!restartAgent) {
+    return NextResponse.json(
+      {
+        error: isManualFireTask
+          ? `Original execution daemon ${restartAgentHost} is offline`
+          : `Source daemon ${sourceAgentHost} is offline`,
+      },
+      { status: 409 },
+    );
+  }
+  const supportedBackends = Array.isArray(restartAgent.supportedBackends) ? restartAgent.supportedBackends : [];
   if (!supportedBackends.includes(targetBackend)) {
     return NextResponse.json(
-      { error: `Daemon ${sourceAgentHost} does not support backend ${targetBackend}` },
+      { error: `Daemon ${restartAgentHost} does not support backend ${targetBackend}` },
       { status: 409 },
     );
   }
@@ -187,7 +219,7 @@ export async function POST(
       },
     });
     const activeTaskCounts = countActiveTaskBuckets(activeTasks);
-    const taskBucket = getTaskPlanBucket(sourceAgentHost);
+    const taskBucket = getTaskPlanBucket(restartAgentHost);
     if (exceedsTaskLimit(planUser.subscriptionTier, taskBucket, activeTaskCounts)) {
       return NextResponse.json(
         {
@@ -208,7 +240,7 @@ export async function POST(
       await tx.agentOutbox.create({
         data: {
           userId: user.id,
-          agentHost: sourceAgentHost,
+          agentHost: restartAgentHost,
           taskId: sourceTask.id,
           eventType: "restart_task",
           requestId,
@@ -238,16 +270,16 @@ export async function POST(
         data: {
           status: "unknown",
           executionHost: null,
-          agentHost: sourceAgentHost,
+          agentHost: restartAgentHost,
           updatedAt: now,
         },
       });
     });
 
-    realtimeHub.bindTaskToAgent(sourceTask.id, sourceAgentHost);
+    realtimeHub.bindTaskToAgent(sourceTask.id, restartAgentHost);
     await deliverAgentOutboxForHost({
       userId: user.id,
-      agentHost: sourceAgentHost,
+      agentHost: restartAgentHost,
       sendToAgentHost: ({ userId: targetUserId, agentHost, envelope }) =>
         realtimeHub.sendToAgentHost(targetUserId, agentHost, envelope),
       resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),
@@ -277,7 +309,7 @@ export async function POST(
         title: successorTitle,
         taskType: "ai_task",
         status: "unknown",
-        agentHost: sourceAgentHost,
+        agentHost: restartAgentHost,
         executionHost: null,
         backendType: targetBackend,
         sessionId: null,
@@ -302,7 +334,7 @@ export async function POST(
     await tx.agentOutbox.create({
       data: {
         userId: user.id,
-        agentHost: sourceAgentHost,
+        agentHost: restartAgentHost,
         taskId: successorTaskId,
         eventType: "restart_task",
         requestId,
@@ -330,10 +362,10 @@ export async function POST(
     return task;
   });
 
-  realtimeHub.bindTaskToAgent(successorTaskId, sourceAgentHost);
+  realtimeHub.bindTaskToAgent(successorTaskId, restartAgentHost);
   await deliverAgentOutboxForHost({
     userId: user.id,
-    agentHost: sourceAgentHost,
+    agentHost: restartAgentHost,
     sendToAgentHost: ({ userId: targetUserId, agentHost, envelope }) =>
       realtimeHub.sendToAgentHost(targetUserId, agentHost, envelope),
     resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),

@@ -203,9 +203,52 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(data.error).toContain("invalid backend_type");
   });
 
-  it("returns 409 for conductor-fire tasks", async () => {
+  it("restarts a stopped conductor-fire task in place on an online daemon", async () => {
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      { id: "agent-2", host: "daemon-2", supportedBackends: ["codex", "claude"], capabilities: [] },
+    ] as any);
     vi.mocked(db.task.findFirst).mockResolvedValue(
-      buildTask({ agentHost: "conductor-fire-debug-1", executionHost: "conductor-fire-debug-1" }) as any,
+      buildTask({ agentHost: "conductor-fire-debug-1", executionHost: "daemon-2" }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: {},
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("inplace_restart");
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "task-1" },
+        data: expect.objectContaining({
+          agentHost: "daemon-2",
+          executionHost: null,
+        }),
+      }),
+    );
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentHost: "daemon-2",
+          payloadJson: expect.stringContaining('"mode":"resume_inplace"'),
+        }),
+      }),
+    );
+  });
+
+  it("returns 409 when a conductor-fire task's original execution daemon is offline", async () => {
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex", "claude"], capabilities: [] },
+    ] as any);
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({ agentHost: "conductor-fire-debug-1", executionHost: "daemon-2" }) as any,
     );
 
     const response = await POST(
@@ -219,7 +262,30 @@ describe("/api/tasks/[taskId]/restart", () => {
     const data = await extractJson(response);
 
     expect(response.status).toBe(409);
-    expect(data.error).toContain("manual fire task");
+    expect(data.error).toContain("Original execution daemon daemon-2 is offline");
+  });
+
+  it("returns 409 when a conductor-fire task is still running", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        status: "running",
+        agentHost: "conductor-fire-debug-1",
+        executionHost: "conductor-fire-debug-1",
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toContain("only restart after it has stopped");
   });
 
   it("returns 409 when source task is still running", async () => {
