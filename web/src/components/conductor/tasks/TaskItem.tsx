@@ -54,9 +54,12 @@ const TrashIcon = () => (
 
 const NewTaskIcon = () => (
   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5h6a2 2 0 012 2v4" />
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 9h8a2 2 0 012 2v6a2 2 0 01-2 2H7a2 2 0 01-2-2v-6a2 2 0 012-2z" />
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 12v4M9 14h4" />
+    <circle cx="6" cy="6" r="2" strokeWidth={2} />
+    <circle cx="18" cy="6" r="2" strokeWidth={2} />
+    <circle cx="18" cy="18" r="2" strokeWidth={2} />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 6h6" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 8v6" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 7.5l6 8" />
   </svg>
 );
 

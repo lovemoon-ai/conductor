@@ -713,14 +713,7 @@ describe("/api/tasks/[taskId]", () => {
 
     expect(response.status).toBe(409);
     expect(data.error).toBe("task daemon daemon-a is offline");
-    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
-      expect.objectContaining({
-        taskId: "task-stop-offline-host",
-        agentHost: "daemon-a",
-        eventType: "stop_task",
-      }),
-      expect.any(Object),
-    );
+    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
     expect(db.task.update).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({

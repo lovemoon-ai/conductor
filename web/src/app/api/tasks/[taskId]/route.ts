@@ -298,6 +298,12 @@ const stopTaskBeforeRelaunch = async (args: {
   taskLabel?: string;
   requireActiveHost?: boolean;
 }): Promise<{ ok: boolean; error?: string }> => {
+  const hostActive = realtimeHub.hasAgentHost(args.stopTargetHost, args.userId);
+  const taskLabel = args.taskLabel ?? "task";
+  if (args.requireActiveHost && !hostActive) {
+    return { ok: false, error: `${taskLabel} daemon ${args.stopTargetHost} is offline` };
+  }
+
   const requestId = randomUUID();
   const ackPromise = realtimeHub.waitForTaskStopAck(
     args.taskId,
@@ -334,11 +340,6 @@ const stopTaskBeforeRelaunch = async (args: {
     },
   );
 
-  const hostActive = realtimeHub.hasAgentHost(args.stopTargetHost, args.userId);
-  const taskLabel = args.taskLabel ?? "task";
-  if (args.requireActiveHost && !hostActive) {
-    return { ok: false, error: `${taskLabel} daemon ${args.stopTargetHost} is offline` };
-  }
   if (!delivered) {
     return hostActive
       ? { ok: false, error: `Failed to stop running ${taskLabel} on ${args.stopTargetHost}` }
