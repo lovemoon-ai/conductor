@@ -5,7 +5,6 @@ import { Header } from '@/components/conductor/layout/Header';
 import { ChatView } from '@/components/conductor/chat/ChatView';
 import { TerminalView } from '@/components/conductor/terminal/TerminalView';
 import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';
-import { RestartTaskControls } from './RestartTaskControls';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
 
 interface TaskDetailPaneProps {
@@ -103,7 +102,6 @@ export function TaskDetailPane({
           connectionTaskId={taskId}
         />
       ) : null}
-      <RestartTaskControls task={task} />
       <div className="min-h-0 flex-1 overflow-hidden">
         {task.taskType === 'pty_task' ? (
           <TerminalView task={task} />

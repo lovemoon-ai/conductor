@@ -49,7 +49,7 @@ vi.mock('@/lib/conductor/stores/runtime', () => ({
 }));
 
 vi.mock('./RestartTaskControls', () => ({
-  RestartTaskControls: () => <div data-testid="restart-controls" />,
+  RestartTaskControls: ({ open }: { open?: boolean }) => (open ? <div data-testid="restart-controls" /> : null),
 }));
 
 describe('TaskItem', () => {
@@ -308,6 +308,37 @@ describe('TaskItem', () => {
         role: 'user',
       });
     });
+  });
+
+  it('opens restart from the swipe-left action menu', async () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-9',
+          title: 'Swipe Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />,
+    );
+
+    const card = screen.getByText('Swipe Task').closest('[role="button"]');
+    expect(card).not.toBeNull();
+
+    fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
+    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 80, pointerType: 'touch' });
+    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 80, pointerType: 'touch' });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Restart task' }));
+
+    expect(screen.getByTestId('restart-controls')).toBeInTheDocument();
   });
 
   it('persists grid draft in session storage', () => {

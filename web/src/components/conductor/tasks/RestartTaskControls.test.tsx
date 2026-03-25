@@ -47,7 +47,7 @@ describe('RestartTaskControls', () => {
       agents: [
         {
           host: 'daemon-1',
-          supportedBackends: ['codex', 'claude'],
+          supportedBackends: ['codex', 'claude', 'opencode'],
         },
       ],
     };
@@ -58,9 +58,11 @@ describe('RestartTaskControls', () => {
     pushToastMock.mockReset();
   });
 
-  it('shows restart UI for stopped ai tasks and limits backend options to the source daemon', () => {
+  it('opens as a dialog and defaults stopped tasks to in-place restart on the current backend', () => {
     render(
       <RestartTaskControls
+        open
+        onClose={() => {}}
         task={{
           id: 'task-1',
           title: 'Stopped Task',
@@ -74,25 +76,90 @@ describe('RestartTaskControls', () => {
       />,
     );
 
-    expect(screen.getByRole('button', { name: 'Restart' })).toBeInTheDocument();
-    const select = screen.getByLabelText('Restart backend');
-    expect(select).toHaveValue('codex');
-    expect(screen.getByRole('option', { name: 'codex' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'claude' })).toBeInTheDocument();
-    expect(screen.queryByRole('option', { name: 'kimi' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Restart task' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Restart backend')).toHaveValue('codex');
+    expect(screen.getByLabelText('In place')).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Restart in place' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'opencode' })).not.toBeInTheDocument();
   });
 
-  it('navigates to the successor task after backend switch', async () => {
+  it('forces running tasks into create-new-task strategy and keeps same-backend available', () => {
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-1',
+          title: 'Running Task',
+          taskType: 'ai_task',
+          status: 'running',
+          agentHost: 'daemon-1',
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          createdAt: new Date().toISOString(),
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText('Restart backend')).toHaveValue('codex');
+    expect(screen.getByLabelText('In place')).toBeDisabled();
+    expect(screen.getByLabelText('Create new task')).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Create new task' })).toBeInTheDocument();
+  });
+
+  it('navigates to the successor task after creating a new task', async () => {
     restartTaskMock.mockResolvedValue({
-      mode: 'backend_switch_new_task',
+      mode: 'successor_new_task',
       sourceTaskId: 'task-1',
       task: {
         id: 'task-2',
       },
     });
+    const onClose = vi.fn();
 
     render(
       <RestartTaskControls
+        open
+        onClose={onClose}
+        task={{
+          id: 'task-1',
+          title: 'Running Task',
+          taskType: 'ai_task',
+          status: 'running',
+          agentHost: 'daemon-1',
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          createdAt: new Date().toISOString(),
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create new task' }));
+
+    await waitFor(() => {
+      expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+        backendType: 'codex',
+        strategy: 'new_task',
+      });
+      expect(replaceMock).toHaveBeenCalledWith('/app/tasks?projectId=proj-1&taskId=task-2', { scroll: false });
+      expect(onClose).toHaveBeenCalled();
+    });
+  });
+
+  it('runs stopped same-backend in-place restart and clears runtime state', async () => {
+    restartTaskMock.mockResolvedValue({
+      mode: 'inplace_restart',
+      sourceTaskId: 'task-1',
+      task: {
+        id: 'task-1',
+      },
+    });
+    const onClose = vi.fn();
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={onClose}
         task={{
           id: 'task-1',
           title: 'Stopped Task',
@@ -106,118 +173,43 @@ describe('RestartTaskControls', () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText('Restart backend'), {
-      target: { value: 'claude' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Switch Backend' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Restart in place' }));
 
     await waitFor(() => {
-      expect(restartTaskMock).toHaveBeenCalledWith('task-1', 'claude');
-      expect(replaceMock).toHaveBeenCalledWith('/app/tasks?projectId=proj-1&taskId=task-2', { scroll: false });
+      expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+        backendType: 'codex',
+        strategy: 'inplace',
+      });
+      expect(clearRuntimeMock).toHaveBeenCalledWith('task-1');
+      expect(onClose).toHaveBeenCalled();
     });
   });
 
-  it('stops click propagation and switches to a supported backend when the current backend is no longer available', async () => {
-    agentsState = {
-      agents: [
-        {
-          host: 'daemon-1',
-          supportedBackends: ['claude', 'kimi'],
-        },
-      ],
-    };
-
-    const parentClick = vi.fn();
+  it('switches stopped tasks to create-new-task mode when backend changes', async () => {
     render(
-      <div onClick={parentClick}>
-        <RestartTaskControls
-          task={{
-            id: 'task-1',
-            title: 'Stopped Task',
-            taskType: 'ai_task',
-            status: 'killed',
-            agentHost: 'daemon-1',
-            backendType: 'codex',
-            sessionId: 'sess-1',
-            createdAt: new Date().toISOString(),
-          }}
-        />
-      </div>,
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-1',
+          title: 'Stopped Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'daemon-1',
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          createdAt: new Date().toISOString(),
+        }}
+      />,
     );
-
-    await waitFor(() => {
-      expect(screen.getByLabelText('Restart backend')).toHaveValue('claude');
-    });
-    expect(
-      screen.getByText('Current backend is no longer supported on the source daemon. Switch to claude to continue.'),
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Switch Backend' }));
-
-    await waitFor(() => {
-      expect(restartTaskMock).toHaveBeenCalledWith('task-1', 'claude');
-    });
-    expect(parentClick).not.toHaveBeenCalled();
-  });
-
-  it('stops keyboard propagation from restart controls', () => {
-    const parentKeyDown = vi.fn();
-
-    render(
-      <div onKeyDown={parentKeyDown}>
-        <RestartTaskControls
-          task={{
-            id: 'task-1',
-            title: 'Stopped Task',
-            taskType: 'ai_task',
-            status: 'killed',
-            agentHost: 'daemon-1',
-            backendType: 'codex',
-            sessionId: 'sess-1',
-            createdAt: new Date().toISOString(),
-          }}
-        />
-      </div>,
-    );
-
-    fireEvent.keyDown(screen.getByRole('button', { name: 'Restart' }), { key: 'Enter' });
-
-    expect(parentKeyDown).not.toHaveBeenCalled();
-  });
-
-  it('preserves a user-selected backend when the agent list refreshes for the same task', async () => {
-    const task = {
-      id: 'task-1',
-      title: 'Stopped Task',
-      taskType: 'ai_task' as const,
-      status: 'killed' as const,
-      agentHost: 'daemon-1',
-      backendType: 'codex',
-      sessionId: 'sess-1',
-      createdAt: new Date().toISOString(),
-    };
-
-    const { rerender } = render(<RestartTaskControls task={task} />);
 
     fireEvent.change(screen.getByLabelText('Restart backend'), {
       target: { value: 'claude' },
     });
-    expect(screen.getByLabelText('Restart backend')).toHaveValue('claude');
-
-    agentsState = {
-      agents: [
-        {
-          host: 'daemon-1',
-          supportedBackends: ['codex', 'claude'],
-        },
-      ],
-    };
-
-    rerender(<RestartTaskControls task={task} />);
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Restart backend')).toHaveValue('claude');
+      expect(screen.getByLabelText('Create new task')).toBeChecked();
     });
-    expect(screen.getByRole('button', { name: 'Switch Backend' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create new task' })).toBeInTheDocument();
   });
 });

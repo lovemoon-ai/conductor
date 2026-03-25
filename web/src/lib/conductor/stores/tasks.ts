@@ -3,6 +3,7 @@ import type {
   Task,
   CreateTaskInput,
   RestartTaskResponse,
+  RestartTaskInput,
   UpdateTaskInput,
 } from '../types';
 import { getApiClient } from '../api/client';
@@ -51,7 +52,7 @@ interface TasksState {
   fetchTask: (taskId: string) => Promise<Task | null>;
   createTask: (input: CreateTaskInput) => Promise<Task>;
   updateTask: (taskId: string, input: UpdateTaskInput) => Promise<Task>;
-  restartTask: (taskId: string, backendType?: string) => Promise<RestartTaskResponse>;
+  restartTask: (taskId: string, input?: RestartTaskInput) => Promise<RestartTaskResponse>;
   deleteTask: (taskId: string) => Promise<void>;
   setProjectFilter: (projectId: string | null) => void;
   markTaskRead: (taskId: string) => void;
@@ -178,14 +179,21 @@ export const useTasksStore = create<TasksState>()((set, get) => ({
     }
   },
 
-  restartTask: async (taskId, backendType) => {
+  restartTask: async (taskId, input) => {
     try {
       const api = getApiClient();
+      const body: Record<string, unknown> = {};
+      if (typeof input?.backendType === 'string' && input.backendType.trim()) {
+        body.backend_type = input.backendType.trim();
+      }
+      if (typeof input?.strategy === 'string' && input.strategy.trim()) {
+        body.strategy = input.strategy.trim();
+      }
       const response = await api.post<{
-        mode: 'inplace_restart' | 'backend_switch_new_task';
+        mode: RestartTaskResponse['mode'];
         source_task_id: string;
         task: Task;
-      }>(`/tasks/${taskId}/restart`, backendType ? { backend_type: backendType } : {});
+      }>(`/tasks/${taskId}/restart`, body);
       const task = normalizeTask(response.task);
       set((state) => ({
         tasks: upsertTask(state.tasks, task, { moveToFront: true }),

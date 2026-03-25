@@ -1637,7 +1637,7 @@ describe("Daemon", () => {
     handler({
       type: "restart_task",
       payload: {
-        mode: "bridge_to_new_task",
+        mode: "fork_to_new_task",
         source_task_id: "task-source-1",
         target_task_id: "task-successor-1",
         project_id: "proj-bridge-1",
@@ -1679,6 +1679,115 @@ describe("Daemon", () => {
     assert.strictEqual(spawnCalls[0].opts.cwd, "/tmp/bridged-cwd");
     assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_TASK_ID, "task-successor-1");
     assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_RESUME_CWD, "/tmp/bridged-cwd");
+
+    daemonInstance.close();
+  });
+
+  it("bridges same-backend successor tasks and launches the new task", async () => {
+    let handler;
+    const spawnCalls = [];
+    const bridgeCalls = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-restart-fork-same-backend",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "restart-fork-same-backend-daemon",
+      },
+      {
+        spawn: (_cmd, args, opts) => {
+          spawnCalls.push({ args, opts });
+          return {
+            pid: 61234,
+            kill: () => {},
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        bridgeSessionBetweenBackends: async (params) => {
+          bridgeCalls.push(params);
+          return {
+            sessionId: "sess-codex-fork-1",
+            cwd: "/tmp/codex-fork-cwd",
+          };
+        },
+        resolveResumeContext: async () => ({ cwd: "" }),
+        fetch: async (url) => {
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async () => {},
+        }),
+      },
+    );
+
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "fork_to_new_task",
+        source_task_id: "task-source-same-1",
+        target_task_id: "task-successor-same-1",
+        project_id: "proj-fork-same-1",
+        title: "Fix login bug [codex]",
+        source_backend_type: "codex",
+        source_session_id: "sess-codex-source-1",
+        source_session_file_path: "/tmp/sess-codex-source-1.jsonl",
+        target_backend_type: "codex",
+        request_id: "req-fork-same-1",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.deepStrictEqual(bridgeCalls, [
+      {
+        sourceTool: "codex",
+        sourceSessionId: "sess-codex-source-1",
+        sourceSessionPath: "/tmp/sess-codex-source-1.jsonl",
+        sourceSessionInfo: {
+          tool: "codex",
+          sessionId: "sess-codex-source-1",
+          path: "/tmp/sess-codex-source-1.jsonl",
+          cwd: undefined,
+        },
+        targetTool: "codex",
+        targetCwdFallback: undefined,
+      },
+    ]);
+    assert.strictEqual(spawnCalls.length, 1);
+    assert.deepStrictEqual(spawnCalls[0].args, [
+      "/tmp/cli.js",
+      "--backend",
+      "codex",
+      "--resume",
+      "sess-codex-fork-1",
+      "--",
+    ]);
+    assert.strictEqual(spawnCalls[0].opts.cwd, "/tmp/codex-fork-cwd");
+    assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_TASK_ID, "task-successor-same-1");
+    assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_RESUME_CWD, "/tmp/codex-fork-cwd");
 
     daemonInstance.close();
   });
@@ -1913,7 +2022,7 @@ describe("Daemon", () => {
       expectEvent(sentEvents, "task_status_update", (payload) => {
         assert.strictEqual(payload.task_id, "task-successor-retry-1");
         assert.strictEqual(payload.status, "KILLED");
-        assert.match(payload.summary, /backend switch failed/i);
+        assert.match(payload.summary, /new task failed/i);
       });
       assert.strictEqual(spawnCalls.length, 0);
 
@@ -2033,7 +2142,7 @@ describe("Daemon", () => {
     expectEvent(sentEvents, "task_status_update", (payload) => {
       assert.strictEqual(payload.task_id, "task-successor-fail-1");
       assert.strictEqual(payload.status, "KILLED");
-      assert.match(payload.summary, /backend switch failed: bridge exploded/);
+      assert.match(payload.summary, /new task failed: bridge exploded/);
     });
 
     daemonInstance.close();

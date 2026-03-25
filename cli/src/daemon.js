@@ -2835,7 +2835,10 @@ export function startDaemon(config = {}, deps = {}) {
   }
 
   function reportRestartFailure({ taskId, projectId, requestId, mode, error, sendAck = true }) {
-    const prefix = mode === "bridge_to_new_task" ? "backend switch failed" : "restart failed";
+    const prefix =
+      mode === "bridge_to_new_task" || mode === "fork_to_new_task"
+        ? "new task failed"
+        : "restart failed";
     const summary = `${prefix}: ${error?.message || error}`;
     if (sendAck) {
       sendAgentCommandAck({
@@ -3290,6 +3293,29 @@ export function startDaemon(config = {}, deps = {}) {
       return;
     }
 
+    if (normalizedMode === "resume_inplace") {
+      if (normalizedTargetTaskId !== normalizedSourceTaskId) {
+        reportRestartFailure({
+          taskId: normalizedTargetTaskId,
+          projectId: normalizedProjectId,
+          requestId,
+          mode: normalizedMode,
+          error: new Error("In-place restart must reuse the same task"),
+        });
+        return;
+      }
+      if (effectiveBackend !== sourceBackendType) {
+        reportRestartFailure({
+          taskId: normalizedTargetTaskId,
+          projectId: normalizedProjectId,
+          requestId,
+          mode: normalizedMode,
+          error: new Error("In-place restart must reuse the same backend"),
+        });
+        return;
+      }
+    }
+
     sendAgentCommandAck({
       requestId,
       taskId: normalizedTargetTaskId,
@@ -3302,7 +3328,7 @@ export function startDaemon(config = {}, deps = {}) {
     let resolvedResumeSessionId = normalizedSourceSessionId;
     let resolvedResumeCwd = "";
     try {
-      if (normalizedMode === "bridge_to_new_task") {
+      if (normalizedMode === "bridge_to_new_task" || normalizedMode === "fork_to_new_task") {
         const sourceResumeCwd = await resolveRestartCwd({
           projectId: normalizedProjectId,
           backendType: sourceBackendType,

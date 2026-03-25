@@ -59,9 +59,15 @@ describe('tasks store', () => {
       },
     });
 
-    const result = await useTasksStore.getState().restartTask('task-1', 'claude');
+    const result = await useTasksStore.getState().restartTask('task-1', {
+      backendType: 'claude',
+      strategy: 'new_task',
+    });
 
-    expect(mockPost).toHaveBeenCalledWith('/tasks/task-1/restart', { backend_type: 'claude' });
+    expect(mockPost).toHaveBeenCalledWith('/tasks/task-1/restart', {
+      backend_type: 'claude',
+      strategy: 'new_task',
+    });
     expect(result).toMatchObject({
       mode: 'backend_switch_new_task',
       sourceTaskId: 'task-1',

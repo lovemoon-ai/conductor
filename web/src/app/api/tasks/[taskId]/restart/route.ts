@@ -16,10 +16,13 @@ import {
   getTaskPlanBucket,
   isConductorFireHost,
 } from "@/lib/subscription/plan-limits";
-
-const STOPPED_TASK_STATUSES = new Set(["completed", "killed"]);
-const BRIDGEABLE_BACKENDS = new Set(["codex", "claude", "kimi"]);
-const VALID_RESTART_BACKENDS = new Set(["codex", "claude", "kimi", "opencode"]);
+import {
+  canCreateSuccessorTask,
+  canInplaceRestart,
+  normalizeRestartStrategy,
+  RESTARTABLE_SOURCE_STATUSES,
+  VALID_RESTART_BACKENDS,
+} from "@/lib/tasks/restart";
 
 const normalizeTaskStatus = (value: unknown): string => {
   if (typeof value !== "string") return "unknown";
@@ -63,9 +66,6 @@ const serializeTaskResponse = (task: {
   updated_at: task.updatedAt.toISOString(),
 });
 
-const canBridgeBackends = (sourceBackend: string, targetBackend: string): boolean =>
-  BRIDGEABLE_BACKENDS.has(sourceBackend) && BRIDGEABLE_BACKENDS.has(targetBackend);
-
 const appendBackendSuffix = (title: string, backend: string): string => `${title} [${backend}]`;
 
 export async function POST(
@@ -104,8 +104,8 @@ export async function POST(
   }
 
   const sourceStatus = normalizeTaskStatus(sourceTask.status);
-  if (!STOPPED_TASK_STATUSES.has(sourceStatus)) {
-    return NextResponse.json({ error: "Only stopped ai_task can restart" }, { status: 409 });
+  if (!RESTARTABLE_SOURCE_STATUSES.has(sourceStatus as any)) {
+    return NextResponse.json({ error: "Only running or stopped ai_task can restart" }, { status: 409 });
   }
 
   const sourceAgentHost = normalizeOptionalString(sourceTask.agentHost);
@@ -131,6 +131,13 @@ export async function POST(
     return NextResponse.json({ error: "invalid backend_type" }, { status: 400 });
   }
   const targetBackend = requestedBackend ?? sourceBackend;
+  const requestedStrategy = normalizeRestartStrategy(normalizedBody.strategy ?? normalizedBody.restart_strategy);
+  const hasExplicitStrategy =
+    Object.prototype.hasOwnProperty.call(normalizedBody, "strategy") ||
+    Object.prototype.hasOwnProperty.call(normalizedBody, "restart_strategy");
+  if (hasExplicitStrategy && !requestedStrategy) {
+    return NextResponse.json({ error: "invalid strategy" }, { status: 400 });
+  }
   const supportedBackends = Array.isArray(sourceAgent.supportedBackends) ? sourceAgent.supportedBackends : [];
   if (!supportedBackends.includes(targetBackend)) {
     return NextResponse.json(
@@ -139,15 +146,27 @@ export async function POST(
     );
   }
 
+  const strategy =
+    requestedStrategy ??
+    (canInplaceRestart(sourceStatus, sourceBackend, targetBackend) ? "inplace" : "new_task");
   const isBackendSwitch = targetBackend !== sourceBackend;
-  if (isBackendSwitch && !canBridgeBackends(sourceBackend, targetBackend)) {
+  const isInplaceRestart = strategy === "inplace";
+
+  if (isInplaceRestart && !canInplaceRestart(sourceStatus, sourceBackend, targetBackend)) {
+    return NextResponse.json(
+      { error: "In-place restart requires a stopped task on the current backend" },
+      { status: 409 },
+    );
+  }
+
+  if (!isInplaceRestart && !canCreateSuccessorTask(sourceBackend, targetBackend)) {
     return NextResponse.json(
       { error: `Backend switch ${sourceBackend} -> ${targetBackend} is not supported` },
       { status: 409 },
     );
   }
 
-  if (isBackendSwitch) {
+  if (!isInplaceRestart) {
     const planUser = await db.user.findUnique({
       where: { id: user.id },
       select: { subscriptionTier: true },
@@ -184,7 +203,7 @@ export async function POST(
   const requestId = randomUUID();
   const now = new Date();
 
-  if (!isBackendSwitch) {
+  if (isInplaceRestart) {
     const updatedTask = await db.$transaction(async (tx) => {
       await tx.agentOutbox.create({
         data: {
@@ -247,6 +266,7 @@ export async function POST(
   const successorMetadata = {
     continuedFromTaskId: sourceTask.id,
     restartSourceBackendType: sourceBackend,
+    restartStrategy: "new_task",
   };
 
   const createdTask = await db.$transaction(async (tx) => {
@@ -273,7 +293,8 @@ export async function POST(
         metadata: JSON.stringify({
           ...sourceMetadata,
           successorTaskId,
-          backendSwitchRequestId: requestId,
+          restartRequestId: requestId,
+          ...(isBackendSwitch ? { backendSwitchRequestId: requestId } : {}),
         }),
       },
     });
@@ -285,13 +306,13 @@ export async function POST(
         taskId: successorTaskId,
         eventType: "restart_task",
         requestId,
-        payloadJson: JSON.stringify({
-          type: "restart_task",
-          payload: {
-            mode: "bridge_to_new_task",
-            source_task_id: sourceTask.id,
-            target_task_id: successorTaskId,
-            project_id: sourceTask.projectId,
+          payloadJson: JSON.stringify({
+            type: "restart_task",
+            payload: {
+              mode: "fork_to_new_task",
+              source_task_id: sourceTask.id,
+              target_task_id: successorTaskId,
+              project_id: sourceTask.projectId,
             title: successorTitle,
             source_backend_type: sourceBackend,
             source_session_id: sourceSessionId,
@@ -319,7 +340,7 @@ export async function POST(
   }).catch(() => {});
 
   return NextResponse.json({
-    mode: "backend_switch_new_task",
+    mode: isBackendSwitch ? "backend_switch_new_task" : "successor_new_task",
     source_task_id: sourceTask.id,
     task: serializeTaskResponse(createdTask),
   });

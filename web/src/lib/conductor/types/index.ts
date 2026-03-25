@@ -1,4 +1,5 @@
 import type { TaskType } from "@/lib/tasks/task-config";
+import type { RestartResultMode, RestartStrategy } from "@/lib/tasks/restart";
 
 // User and Authentication Types
 export interface AuthUser {
@@ -196,10 +197,11 @@ export interface UpdateTaskInput {
 
 export interface RestartTaskInput {
   backendType?: string;
+  strategy?: RestartStrategy;
 }
 
 export interface RestartTaskResponse {
-  mode: 'inplace_restart' | 'backend_switch_new_task';
+  mode: RestartResultMode;
   sourceTaskId: string;
   task: Task;
 }

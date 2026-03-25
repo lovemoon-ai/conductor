@@ -25,7 +25,7 @@ interface TaskItemProps {
 }
 
 const LEFT_ACTION_WIDTH = 52;
-const RIGHT_ACTION_WIDTH = 144;
+const RIGHT_ACTION_WIDTH = 216;
 const SWIPE_OPEN_THRESHOLD = 0.45;
 const SWIPE_START_THRESHOLD = 8;
 const GRID_DRAFT_STORAGE_PREFIX = 'conductor-grid-task-draft:';
@@ -49,6 +49,13 @@ const TrashIcon = () => (
   </svg>
 );
 
+const RestartIcon = () => (
+  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v6h6M20 20v-6h-6" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 9a7 7 0 00-12-4L4 10M4 15a7 7 0 0012 4l4-5" />
+  </svg>
+);
+
 const SelectIcon = ({ selected }: { selected: boolean }) => (
   <svg className="h-3.5 w-3.5" fill={selected ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -68,6 +75,7 @@ export function TaskItem({
 }: TaskItemProps) {
   const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
+  const [isRestartDialogOpen, setIsRestartDialogOpen] = useState(false);
   const [editTitle, setEditTitle] = useState(task.title);
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
@@ -667,8 +675,6 @@ export function TaskItem({
         <div className="mt-4 flex flex-wrap gap-2 text-sm text-muted">
           {metadataChips}
         </div>
-        <RestartTaskControls task={task} compact />
-
         <div className="mt-4 flex flex-1 flex-col rounded-2xl border border-border/60 bg-paper/55">
           <div
             className="flex min-h-[112px] flex-1 flex-col px-4 pb-1 pt-2.5"
@@ -801,6 +807,21 @@ export function TaskItem({
         <button
           type="button"
           tabIndex={isRightActionsOpen ? 0 : -1}
+          aria-label="Restart task"
+          title="Restart"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setIsRestartDialogOpen(true);
+            closeSwipeActions();
+          }}
+          className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
+        >
+          <RestartIcon />
+        </button>
+        <button
+          type="button"
+          tabIndex={isRightActionsOpen ? 0 : -1}
           aria-label="Rename task"
           title="Rename"
           onClick={(e) => {
@@ -885,11 +906,15 @@ export function TaskItem({
                 {runtimeText}
               </p>
             ) : null}
-            <RestartTaskControls task={task} compact />
           </div>
           <TaskStatusBadge status={task.status} />
         </div>
       </div>
+      <RestartTaskControls
+        task={task}
+        open={isRestartDialogOpen}
+        onClose={() => setIsRestartDialogOpen(false)}
+      />
     </div>
   );
 }

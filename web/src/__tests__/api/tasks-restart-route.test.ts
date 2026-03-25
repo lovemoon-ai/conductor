@@ -229,14 +229,14 @@ describe("/api/tasks/[taskId]/restart", () => {
       createMockRequest({
         method: "POST",
         token: createTestToken("user-1"),
-        body: {},
+        body: { strategy: "inplace" },
       }),
       { params: Promise.resolve({ taskId: "task-1" }) },
     );
     const data = await extractJson(response);
 
     expect(response.status).toBe(409);
-    expect(data.error).toContain("stopped");
+    expect(data.error).toContain("In-place");
   });
 
   it("returns 409 when source daemon is missing or offline", async () => {
@@ -277,6 +277,7 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(data.task.metadata).toEqual({
       continuedFromTaskId: "task-1",
       restartSourceBackendType: "codex",
+      restartStrategy: "new_task",
     });
     expect(db.task.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -290,9 +291,48 @@ describe("/api/tasks/[taskId]/restart", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           taskId: expect.any(String),
-          payloadJson: expect.stringContaining('"mode":"bridge_to_new_task"'),
+          payloadJson: expect.stringContaining('"mode":"fork_to_new_task"'),
         }),
       }),
+    );
+  });
+
+  it("creates a successor task for a running task on the same backend", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ status: "running" }) as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: {
+          backend_type: "codex",
+          strategy: "new_task",
+        },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+    expect(data.source_task_id).toBe("task-1");
+    expect(data.task.id).not.toBe("task-1");
+    expect(data.task.backend_type).toBe("codex");
+    expect(data.task.metadata).toEqual({
+      continuedFromTaskId: "task-1",
+      restartSourceBackendType: "codex",
+      restartStrategy: "new_task",
+    });
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          taskId: expect.any(String),
+          payloadJson: expect.stringContaining('"mode":"fork_to_new_task"'),
+        }),
+      }),
+    );
+    expect(vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson).toContain(
+      '"target_backend_type":"codex"',
     );
   });
 });
