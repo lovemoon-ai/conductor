@@ -341,6 +341,40 @@ describe('TaskItem', () => {
     expect(screen.getByTestId('restart-controls')).toBeInTheDocument();
   });
 
+  it('does not show restart in the swipe action menu for pty tasks', async () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-pty-restart-1',
+          title: 'PTY Swipe Task',
+          taskType: 'pty_task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />,
+    );
+
+    const card = screen.getByText('PTY Swipe Task').closest('[role="button"]');
+    expect(card).not.toBeNull();
+
+    fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
+    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 120, pointerType: 'touch' });
+    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 120, pointerType: 'touch' });
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Restart task' })).not.toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Rename task' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete task' })).toBeInTheDocument();
+  });
+
   it('persists grid draft in session storage', () => {
     const { unmount } = render(
       <TaskItem

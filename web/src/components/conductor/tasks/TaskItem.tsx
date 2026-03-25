@@ -25,7 +25,8 @@ interface TaskItemProps {
 }
 
 const LEFT_ACTION_WIDTH = 52;
-const RIGHT_ACTION_WIDTH = 216;
+const RIGHT_ACTION_WIDTH_WITH_RESTART = 216;
+const RIGHT_ACTION_WIDTH_WITHOUT_RESTART = 144;
 const SWIPE_OPEN_THRESHOLD = 0.45;
 const SWIPE_START_THRESHOLD = 8;
 const GRID_DRAFT_STORAGE_PREFIX = 'conductor-grid-task-draft:';
@@ -113,6 +114,8 @@ export function TaskItem({
   const taskMetadata = task.metadata as Record<string, unknown> | null;
   const launchConfig = task.launchConfig as Record<string, unknown> | null;
   const taskType = task.taskType ?? 'ai_task';
+  const showRestartAction = taskType === 'ai_task';
+  const rightActionWidth = showRestartAction ? RIGHT_ACTION_WIDTH_WITH_RESTART : RIGHT_ACTION_WIDTH_WITHOUT_RESTART;
   const backend = task.backendType
     || (typeof taskMetadata?.backendType === 'string' ? taskMetadata.backendType : undefined)
     || (typeof launchConfig?.toolPreset === 'string' ? launchConfig.toolPreset : undefined)
@@ -439,7 +442,7 @@ export function TaskItem({
       return;
     }
     const delta = event.clientX - startXRef.current;
-    const nextOffset = clamp(startOffsetRef.current + delta, -RIGHT_ACTION_WIDTH, LEFT_ACTION_WIDTH);
+    const nextOffset = clamp(startOffsetRef.current + delta, -rightActionWidth, LEFT_ACTION_WIDTH);
     if (Math.abs(nextOffset - startOffsetRef.current) > SWIPE_START_THRESHOLD) {
       didSwipeRef.current = true;
     }
@@ -460,8 +463,8 @@ export function TaskItem({
     let targetOffset = 0;
     if (currentOffset >= LEFT_ACTION_WIDTH * SWIPE_OPEN_THRESHOLD) {
       targetOffset = LEFT_ACTION_WIDTH;
-    } else if (currentOffset <= -RIGHT_ACTION_WIDTH * SWIPE_OPEN_THRESHOLD) {
-      targetOffset = -RIGHT_ACTION_WIDTH;
+    } else if (currentOffset <= -rightActionWidth * SWIPE_OPEN_THRESHOLD) {
+      targetOffset = -rightActionWidth;
     }
     setSwipeOffsetValue(targetOffset);
     pointerIdRef.current = null;
@@ -804,21 +807,23 @@ export function TaskItem({
       </div>
 
       <div className="absolute inset-y-0 right-0 z-0 flex" aria-hidden={!isRightActionsOpen}>
-        <button
-          type="button"
-          tabIndex={isRightActionsOpen ? 0 : -1}
-          aria-label="Restart task"
-          title="Restart"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setIsRestartDialogOpen(true);
-            closeSwipeActions();
-          }}
-          className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
-        >
-          <RestartIcon />
-        </button>
+        {showRestartAction ? (
+          <button
+            type="button"
+            tabIndex={isRightActionsOpen ? 0 : -1}
+            aria-label="Restart task"
+            title="Restart"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsRestartDialogOpen(true);
+              closeSwipeActions();
+            }}
+            className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
+          >
+            <RestartIcon />
+          </button>
+        ) : null}
         <button
           type="button"
           tabIndex={isRightActionsOpen ? 0 : -1}
@@ -910,11 +915,13 @@ export function TaskItem({
           <TaskStatusBadge status={task.status} />
         </div>
       </div>
-      <RestartTaskControls
-        task={task}
-        open={isRestartDialogOpen}
-        onClose={() => setIsRestartDialogOpen(false)}
-      />
+      {showRestartAction ? (
+        <RestartTaskControls
+          task={task}
+          open={isRestartDialogOpen}
+          onClose={() => setIsRestartDialogOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

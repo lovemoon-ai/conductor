@@ -103,7 +103,7 @@ describe('RestartTaskControls', () => {
 
     expect(screen.getByLabelText('Restart backend')).toHaveValue('codex');
     expect(screen.getByLabelText('In place')).toBeDisabled();
-    expect(screen.getByLabelText('Create new task')).toBeChecked();
+    expect(screen.getByLabelText('New task')).toBeChecked();
     expect(screen.getByRole('button', { name: 'Create new task' })).toBeInTheDocument();
   });
 
@@ -208,7 +208,7 @@ describe('RestartTaskControls', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Create new task')).toBeChecked();
+      expect(screen.getByLabelText('New task')).toBeChecked();
     });
     expect(screen.getByRole('button', { name: 'Create new task' })).toBeInTheDocument();
   });

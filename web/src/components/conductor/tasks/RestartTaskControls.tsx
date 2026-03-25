@@ -186,27 +186,46 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
   };
 
   const submitLabel = selectedStrategy === 'inplace' ? 'Restart in place' : 'Create new task';
-  const helperText = disabledReason
-    ? disabledReason
-    : selectedStrategy === 'inplace'
-      ? 'Continue on the existing task using its current backend session.'
-      : selectedBackend === currentBackend
-        ? 'Create a successor task and clone the current backend context on the daemon.'
-        : `Create a successor task on ${selectedBackend} using ai-bridge on the daemon.`;
-
   return (
     <Dialog
       open={open}
       onClose={onClose}
       title="Restart task"
-      description={
-        task.status === 'running'
-          ? 'This task is still running. A new successor task will be created from the current context.'
-          : 'Choose whether to continue on the same task or create a successor task.'
-      }
       maxWidthClassName="max-w-lg"
     >
       <div className="space-y-5">
+        <fieldset className="space-y-3">
+          <legend className="text-sm font-medium text-ink">Continue as</legend>
+          <div className="grid grid-cols-2 gap-3">
+            <label className={`flex items-center gap-3 rounded-xl border px-3 py-3 ${selectedStrategy === 'inplace' ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-border bg-paper'}`}>
+              <input
+                id={`restart-strategy-inplace-${task.id}`}
+                type="radio"
+                name={`restart-strategy-${task.id}`}
+                value="inplace"
+                aria-label="In place"
+                checked={selectedStrategy === 'inplace'}
+                disabled={!canInplaceRestart(task.status, currentBackend, selectedBackend) || isSubmitting}
+                onChange={() => setSelectedStrategy('inplace')}
+              />
+              <span className="min-w-0 text-sm font-medium text-ink">In place</span>
+            </label>
+            <label className={`flex items-center gap-3 rounded-xl border px-3 py-3 ${selectedStrategy === 'new_task' ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-border bg-paper'}`}>
+              <input
+                id={`restart-strategy-new-task-${task.id}`}
+                type="radio"
+                name={`restart-strategy-${task.id}`}
+                value="new_task"
+                aria-label="New task"
+                checked={selectedStrategy === 'new_task'}
+                disabled={!canCreateSuccessorTask(currentBackend, selectedBackend) || isSubmitting}
+                onChange={() => setSelectedStrategy('new_task')}
+              />
+              <span className="min-w-0 text-sm font-medium text-ink">New task</span>
+            </label>
+          </div>
+        </fieldset>
+
         <div className="space-y-2">
           <label htmlFor={`restart-backend-${task.id}`} className="text-sm font-medium text-ink">
             Backend
@@ -228,50 +247,6 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
           </select>
         </div>
 
-        <fieldset className="space-y-3">
-          <legend className="text-sm font-medium text-ink">Continue as</legend>
-          <label className={`flex items-start gap-3 rounded-xl border px-3 py-3 ${selectedStrategy === 'inplace' ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-border bg-paper'}`}>
-            <input
-              id={`restart-strategy-inplace-${task.id}`}
-              type="radio"
-              name={`restart-strategy-${task.id}`}
-              value="inplace"
-              aria-label="In place"
-              checked={selectedStrategy === 'inplace'}
-              disabled={!canInplaceRestart(task.status, currentBackend, selectedBackend) || isSubmitting}
-              onChange={() => setSelectedStrategy('inplace')}
-              className="mt-0.5"
-            />
-            <span className="min-w-0">
-              <span className="block text-sm font-medium text-ink">In place</span>
-              <span className="block text-xs text-muted">
-                Available only when the task is stopped and you keep the current backend.
-              </span>
-            </span>
-          </label>
-          <label className={`flex items-start gap-3 rounded-xl border px-3 py-3 ${selectedStrategy === 'new_task' ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-border bg-paper'}`}>
-            <input
-              id={`restart-strategy-new-task-${task.id}`}
-              type="radio"
-              name={`restart-strategy-${task.id}`}
-              value="new_task"
-              aria-label="Create new task"
-              checked={selectedStrategy === 'new_task'}
-              disabled={!canCreateSuccessorTask(currentBackend, selectedBackend) || isSubmitting}
-              onChange={() => setSelectedStrategy('new_task')}
-              className="mt-0.5"
-            />
-            <span className="min-w-0">
-              <span className="block text-sm font-medium text-ink">Create new task</span>
-              <span className="block text-xs text-muted">
-                Create a successor task and reuse the current context on the source daemon.
-              </span>
-            </span>
-          </label>
-        </fieldset>
-
-        <p className="text-xs text-muted">{helperText}</p>
-
         <div className="flex justify-end gap-3">
           <button
             type="button"
@@ -284,6 +259,7 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
             type="button"
             onClick={() => void handleRestart()}
             disabled={Boolean(disabledReason) || isSubmitting}
+            title={disabledReason ?? undefined}
             className="webapp-btn-primary rounded-xl px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isSubmitting ? 'Working...' : submitLabel}
