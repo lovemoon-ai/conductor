@@ -152,9 +152,13 @@ export async function POST(
     return NextResponse.json({ error: "invalid strategy" }, { status: 400 });
   }
 
-  if (isManualFireTask && !STOPPED_TASK_STATUSES.has(sourceStatus as any)) {
+  // Fire tasks can create new tasks from running state; in-place restart requires stopped state
+  const canDoInplaceRestart = STOPPED_TASK_STATUSES.has(sourceStatus as any);
+  const isExplicitInplaceRequest = requestedStrategy === "inplace" ||
+    (!requestedStrategy && canDoInplaceRestart && targetBackend === sourceBackend);
+  if (isManualFireTask && isExplicitInplaceRequest && !canDoInplaceRestart) {
     return NextResponse.json(
-      { error: "manual fire task can only restart after it has stopped" },
+      { error: "manual fire task can only in-place restart after it has stopped" },
       { status: 409 },
     );
   }

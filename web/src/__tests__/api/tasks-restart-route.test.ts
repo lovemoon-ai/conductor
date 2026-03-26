@@ -325,12 +325,12 @@ describe("/api/tasks/[taskId]/restart", () => {
     );
   });
 
-  it("returns 409 when a conductor-fire task is still running", async () => {
+  it("allows running conductor-fire task to create new task", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(
       buildTask({
         status: "running",
         agentHost: "conductor-fire-debug-1",
-        executionHost: "conductor-fire-debug-1",
+        executionHost: "daemon-1",
       }) as any,
     );
 
@@ -344,8 +344,31 @@ describe("/api/tasks/[taskId]/restart", () => {
     );
     const data = await extractJson(response);
 
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+  });
+
+  it("returns 409 when a running conductor-fire task tries inplace restart", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        status: "running",
+        agentHost: "conductor-fire-debug-1",
+        executionHost: "daemon-1",
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "inplace" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
     expect(response.status).toBe(409);
-    expect(data.error).toContain("only restart after it has stopped");
+    expect(data.error).toContain("only in-place restart after it has stopped");
   });
 
   it("returns 409 when source task is still running", async () => {
