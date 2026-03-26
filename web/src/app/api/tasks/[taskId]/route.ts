@@ -35,6 +35,20 @@ import { recoverStaleDisconnectedAgentTasks } from "@/lib/tasks/stale-recovery";
 const DELETE_SNAPSHOT_TRIGGER = "task_delete";
 const STOP_TASK_ACK_TIMEOUT_MS = 2500;
 const STOP_TASK_FINAL_STATUS_TIMEOUT_MS = 5000;
+const STOP_TASK_POLL_TIMEOUT_MS = parsePositiveInt(
+  process.env.CONDUCTOR_STOP_TASK_POLL_TIMEOUT_MS,
+  30_000,
+);
+const STOP_TASK_POLL_INTERVAL_MS = parsePositiveInt(
+  process.env.CONDUCTOR_STOP_TASK_POLL_INTERVAL_MS,
+  process.env.NODE_ENV === "test" ? 1 : 1000,
+);
+
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  if (!raw) return fallback;
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
 
 const normalizeTaskStatus = (value: unknown): string => {
   if (typeof value !== "string") return "unknown";
@@ -289,6 +303,76 @@ const rollbackFailedPtyPatchRelaunch = async (args: {
   });
 };
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const findTaskForStopConvergence = async (userId: string, taskId: string) =>
+  db.task.findFirst({
+    where: { id: taskId, project: { userId } },
+    select: {
+      id: true,
+      projectId: true,
+      status: true,
+      agentHost: true,
+      executionHost: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+
+const waitForTaskStopConvergence = async (args: {
+  userId: string;
+  taskId: string;
+  stopTargetHost: string;
+}): Promise<{ ok: boolean; status?: string; error?: string }> => {
+  const deadline = Date.now() + STOP_TASK_POLL_TIMEOUT_MS;
+  let recoveryTriggered = false;
+
+  while (true) {
+    const latestTask = await findTaskForStopConvergence(args.userId, args.taskId);
+    if (!latestTask) {
+      return { ok: false, error: `Task ${args.taskId} not found while waiting for stop` };
+    }
+
+    const latestStatus = normalizeTaskStatus(latestTask.status);
+    if (latestStatus === "completed" || latestStatus === "killed") {
+      return { ok: true, status: latestStatus };
+    }
+
+    const latestHost =
+      normalizeHost(realtimeHub.getTaskAgentHost(args.taskId)) ||
+      normalizeHost(latestTask.executionHost) ||
+      normalizeHost(latestTask.agentHost) ||
+      args.stopTargetHost;
+    const hostActive = latestHost
+      ? realtimeHub.hasAgentHost(latestHost, args.userId)
+      : false;
+
+    if (!hostActive && !recoveryTriggered) {
+      recoveryTriggered = true;
+      await recoverStaleDisconnectedAgentTasks(args.userId, [latestTask] as any);
+      const recoveredTask = await findTaskForStopConvergence(args.userId, args.taskId);
+      const recoveredStatus = normalizeTaskStatus(recoveredTask?.status);
+      if (recoveredStatus === "completed" || recoveredStatus === "killed") {
+        return { ok: true, status: recoveredStatus };
+      }
+    }
+
+    if (Date.now() >= deadline) {
+      return hostActive
+        ? {
+            ok: false,
+            error: `Timed out waiting for task ${args.taskId} to stop on ${args.stopTargetHost}`,
+          }
+        : {
+            ok: false,
+            error: `task daemon ${latestHost || args.stopTargetHost} is offline`,
+          };
+    }
+
+    await sleep(STOP_TASK_POLL_INTERVAL_MS);
+  }
+};
+
 const stopTaskBeforeRelaunch = async (args: {
   userId: string;
   taskId: string;
@@ -352,9 +436,23 @@ const stopTaskBeforeRelaunch = async (args: {
     return { ok: true };
   }
 
-  return hostActive
-    ? { ok: false, error: `Timed out waiting for ${taskLabel} ${args.taskId} to stop on ${args.stopTargetHost}` }
-    : { ok: true };
+  const convergenceResult = await waitForTaskStopConvergence({
+    userId: args.userId,
+    taskId: args.taskId,
+    stopTargetHost: args.stopTargetHost,
+  });
+  if (convergenceResult.ok) {
+    return { ok: true };
+  }
+
+  return {
+    ok: false,
+    error:
+      convergenceResult.error ??
+      (hostActive
+        ? `Timed out waiting for ${taskLabel} ${args.taskId} to stop on ${args.stopTargetHost}`
+        : `${taskLabel} daemon ${args.stopTargetHost} is offline`),
+  };
 };
 
 export async function GET(
@@ -608,6 +706,20 @@ export async function PATCH(
       where: { taskId },
     });
   } else {
+    if (shouldStopTask && stopTargetHost) {
+      const stopResult = await stopTaskBeforeRelaunch({
+        userId: user.id,
+        taskId,
+        projectId: existing.projectId,
+        stopTargetHost,
+        reason: "stopped_from_app",
+        requireActiveHost: true,
+      });
+      if (!stopResult.ok) {
+        return NextResponse.json({ error: stopResult.error }, { status: 409 });
+      }
+    }
+
     try {
       task = await db.task.update({
         where: { id: taskId },
@@ -642,25 +754,6 @@ export async function PATCH(
       );
     }
   }
-
-  if (shouldStopTask && stopTargetHost) {
-    const stopResult = await stopTaskBeforeRelaunch({
-      userId: user.id,
-      taskId,
-      projectId: existing.projectId,
-      stopTargetHost,
-      reason: "stopped_from_app",
-      requireActiveHost: true,
-    });
-    if (!stopResult.ok) {
-      await db.task.update({
-        where: { id: taskId },
-        data: buildTaskRollbackData(existing),
-      });
-      return NextResponse.json({ error: stopResult.error }, { status: 409 });
-    }
-  }
-
   return NextResponse.json(serializeTaskResponse({ ...task, ptySession }));
 }
 
