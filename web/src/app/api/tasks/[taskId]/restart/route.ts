@@ -120,14 +120,19 @@ export async function POST(
   const sourceTaskMetadata = parseJsonObject(sourceTask.metadata);
   const sourceMetadataDaemonHost = normalizeOptionalString(sourceTaskMetadata?.daemonName);
   const sourceExecutionHost = normalizeOptionalString(sourceTask.executionHost);
-  const manualFireDaemonHostCandidates = [
+  const manualFireDaemonHostCandidates: string[] = [];
+  for (const candidate of [
     sourceMetadataDaemonHost && !isConductorFireHost(sourceMetadataDaemonHost)
       ? sourceMetadataDaemonHost
       : null,
     sourceExecutionHost && !isConductorFireHost(sourceExecutionHost)
       ? sourceExecutionHost
       : null,
-  ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
+  ]) {
+    if (candidate && !manualFireDaemonHostCandidates.includes(candidate)) {
+      manualFireDaemonHostCandidates.push(candidate);
+    }
+  }
   const sourceExecutionDaemonHost = manualFireDaemonHostCandidates[0] ?? null;
 
   const hasExplicitBackendTarget =

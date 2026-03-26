@@ -769,7 +769,13 @@ export function TaskItem({
         ? 'Click again to restart task'
         : 'Click to confirm restart'
       : undefined;
-  const statusBadgeProps = isTaskRunning
+  const statusBadgeProps: {
+    onClick?: () => void;
+    disabled?: boolean;
+    labelOverride?: string;
+    title?: string;
+    tone?: 'default' | 'danger' | 'warning';
+  } = isTaskRunning
     ? {
         onClick: handleRunningStatusClick,
         disabled: isKillingTask,
