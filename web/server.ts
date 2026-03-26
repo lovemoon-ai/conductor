@@ -13,6 +13,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import { setupAppGateway, APP_WS_PATH } from "./src/lib/realtime/app-gateway";
 import { setupAgentGateway, AGENT_WS_PATH } from "./src/lib/realtime/agent-gateway";
 import { startTaskAttachmentJanitor } from "./src/lib/conductor/task-file-storage";
+import { realtimeHub } from "./src/lib/realtime/hub";
+import { db } from "./src/lib/db";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOST || "0.0.0.0";
@@ -47,8 +49,20 @@ function setCorsHeaders(req: IncomingMessage, res: ServerResponse) {
   res.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
-app.prepare().then(() => {
+app.prepare().then(async () => {
   startTaskAttachmentJanitor();
+
+  // Restore task bindings from database to prevent tasks stuck in 'init' state after restart
+  await realtimeHub.restoreTaskBindingsFromDb(async () => {
+    const tasks = await db.task.findMany({
+      where: {
+        status: { in: ["init", "running"] },
+        agentHost: { not: null },
+      },
+      select: { id: true, agentHost: true },
+    });
+    return tasks;
+  });
   const handleUpgrade = app.getUpgradeHandler();
   const server = createServer(async (req, res) => {
     // Set CORS headers for all requests

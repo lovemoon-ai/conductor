@@ -446,6 +446,30 @@ export class RealtimeHub {
     }
     return null;
   }
+
+  /**
+   * Restore task-to-agent bindings from database on server startup.
+   * This prevents tasks from getting stuck in 'init' state after server restart.
+   */
+  async restoreTaskBindingsFromDb(
+    fetchActiveTasks: () => Promise<Array<{ id: string; agentHost: string | null }>>,
+  ): Promise<number> {
+    try {
+      const tasks = await fetchActiveTasks();
+      let restoredCount = 0;
+      for (const task of tasks) {
+        if (task.agentHost) {
+          this.taskToAgent.set(task.id, task.agentHost);
+          restoredCount++;
+        }
+      }
+      console.log(`[realtimeHub] Restored ${restoredCount} task bindings from database`);
+      return restoredCount;
+    } catch (error) {
+      console.error("[realtimeHub] Failed to restore task bindings:", error);
+      return 0;
+    }
+  }
 }
 
 export const realtimeHub = globalForHub.realtimeHub ?? new RealtimeHub();
