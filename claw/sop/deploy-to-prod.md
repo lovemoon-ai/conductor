@@ -25,6 +25,7 @@ First establish the following deployment contexts before starting deployment:
 - Status code of `http://127.0.0.1:6152/api/health` / `http://127.0.0.1/` / `https://127.0.0.1/` after deployment
 - `tail -f /opt/conductor/conductor.log` and `tail -f /var/log/nginx/error.log` when necessary
 4. Recommended deployment workflow
+- Check local git diff and commit and push.
 - Execute `make info-volc` first to confirm the SSH command and remote path.
 - Confirm locally that the code to be deployed has been submitted and pushed to `origin/main`.
 - First determine whether this deployment involves database changes or dependency changes.
