@@ -315,8 +315,16 @@ export async function repairAndVerifyGlobalNodePty({
     await ensurePnpmOnlyBuiltDependencies({ runCommand, dependencies, global: true });
   }
 
+  const packageDirectory = await resolveGlobalPackageDirectory({
+    packageManager,
+    packageName,
+    runCommand,
+  });
+
   if (packageManager === "pnpm") {
-    const rebuildResult = await runCommand("pnpm", ["rebuild", "-g", ...dependencies]);
+    const rebuildResult = await runCommand("pnpm", ["rebuild", ...dependencies], {
+      cwd: packageDirectory,
+    });
     if (!rebuildResult.success) {
       throw new Error(
         `pnpm rebuild failed: ${String(rebuildResult.stderr || rebuildResult.stdout || "unknown error").trim()}`,
@@ -336,12 +344,6 @@ export async function repairAndVerifyGlobalNodePty({
       );
     }
   }
-
-  const packageDirectory = await resolveGlobalPackageDirectory({
-    packageManager,
-    packageName,
-    runCommand,
-  });
   await verifyNodePtyForPackageDirectory({
     packageDirectory,
     runCommand,

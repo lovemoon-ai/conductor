@@ -7,6 +7,7 @@ import {
   ensureNodePtySpawnHelperExecutableForPackageDirectory,
   mergeBuiltDependencies,
   normalizeBuiltDependencyList,
+  repairAndVerifyGlobalNodePty,
   shouldIgnoreNodePtyVerificationErrorMessage,
 } from "../src/native-deps.js";
 
@@ -113,5 +114,35 @@ describe("native deps helpers", () => {
     const script = buildNodePtyVerificationScript();
     assert.match(script, /shouldIgnoreNodePtyVerificationErrorMessage/);
     assert.match(script, /read eio/i);
+  });
+
+  it("rebuilds pnpm native deps from the installed global package directory", async () => {
+    const calls = [];
+    const packageRoot = "/tmp/global/node_modules";
+    const packageDirectory = `${packageRoot}/@love-moon/conductor-cli`;
+
+    const result = await repairAndVerifyGlobalNodePty({
+      packageManager: "pnpm",
+      packageName: "@love-moon/conductor-cli",
+      nodeExecutable: "/usr/bin/node",
+      runCommand: async (command, args, options = {}) => {
+        calls.push([command, args, options]);
+        if (command === "pnpm" && args[0] === "config" && args[1] === "get") {
+          return { success: true, code: 0, stdout: '"node-pty"', stderr: "" };
+        }
+        if (command === "pnpm" && args[0] === "root") {
+          return { success: true, code: 0, stdout: `${packageRoot}\n`, stderr: "" };
+        }
+        return { success: true, code: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    assert.strictEqual(result, packageDirectory);
+    assert.deepStrictEqual(calls, [
+      ["pnpm", ["config", "get", "--global", "onlyBuiltDependencies", "--json"], {}],
+      ["pnpm", ["root", "-g"], {}],
+      ["pnpm", ["rebuild", "node-pty"], { cwd: packageDirectory }],
+      ["/usr/bin/node", ["-e", buildNodePtyVerificationScript(), packageDirectory], { timeoutMs: 15_000 }],
+    ]);
   });
 });

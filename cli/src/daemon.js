@@ -1174,13 +1174,18 @@ export function startDaemon(config = {}, deps = {}) {
     });
   }
 
-  function runCommand(command, args, timeoutMs = 120_000) {
+  function runCommand(command, args, options = 120_000) {
     return new Promise((resolve) => {
       let stdout = "";
       let stderr = "";
+      const normalizedOptions =
+        typeof options === "number"
+          ? { timeoutMs: options }
+          : (options || {});
       const child = spawnFn(command, args, {
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env },
+        env: normalizedOptions.env || { ...process.env },
+        cwd: normalizedOptions.cwd || process.cwd(),
       });
       const timer = setTimeout(() => {
         try {
@@ -1188,7 +1193,7 @@ export function startDaemon(config = {}, deps = {}) {
         } catch {
           /* ignore */
         }
-      }, timeoutMs);
+      }, normalizedOptions.timeoutMs ?? 120_000);
       child.stdout?.on("data", (chunk) => {
         if (stdout.length < 4000) stdout += chunk.toString().slice(0, 2000);
       });
@@ -1207,11 +1212,7 @@ export function startDaemon(config = {}, deps = {}) {
   }
 
   function runBufferedCommand(command, args, options = {}) {
-    return runCommand(
-      command,
-      args,
-      typeof options === "number" ? options : options?.timeoutMs ?? 120_000,
-    );
+    return runCommand(command, args, options);
   }
 
   async function readInstalledCliVersion() {

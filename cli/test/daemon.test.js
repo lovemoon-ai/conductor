@@ -469,8 +469,8 @@ describe("Daemon", () => {
         VERSION_CHECK_ARGS: ["--version"],
       },
       {
-        spawn: (cmd, args) => {
-          calls.push([cmd, args]);
+        spawn: (cmd, args, options = {}) => {
+          calls.push([cmd, args, options]);
           if (cmd === "pnpm" && args[0] === "config" && args[1] === "get") {
             const child = new EventEmitter();
             child.stdout = new EventEmitter();
@@ -585,21 +585,25 @@ describe("Daemon", () => {
 
     restoreEnv("CONDUCTOR_DAEMON_WATCHDOG_INTERVAL_MS", previousWatchdogInterval);
     assert.deepStrictEqual(
-      calls.filter(([cmd]) => cmd === "pnpm").slice(0, 5),
+      calls
+        .filter(([cmd]) => cmd === "pnpm")
+        .slice(0, 5)
+        .map(([cmd, args]) => [cmd, args]),
       [
-      ["pnpm", ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
-      ["pnpm", ["config", "set", "--global", "onlyBuiltDependencies", '["foo","node-pty"]']],
-      ["pnpm", ["add", "-g", "@love-moon/conductor-cli@0.2.21"]],
-      ["pnpm", ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
-      ["pnpm", ["rebuild", "-g", "node-pty"]],
+        ["pnpm", ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
+        ["pnpm", ["config", "set", "--global", "onlyBuiltDependencies", '["foo","node-pty"]']],
+        ["pnpm", ["add", "-g", "@love-moon/conductor-cli@0.2.21"]],
+        ["pnpm", ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
+        ["pnpm", ["root", "-g"]],
       ],
     );
-    assert.ok(
-      calls.some(
-        ([cmd, args]) =>
-          cmd === "pnpm" && Array.isArray(args) && args[0] === "root" && args[1] === "-g",
-      ),
+    const rebuildCall = calls.find(
+      ([cmd, args]) => cmd === "pnpm" && Array.isArray(args) && args[0] === "rebuild",
     );
+    assert.ok(rebuildCall);
+    assert.deepStrictEqual(rebuildCall[0], "pnpm");
+    assert.deepStrictEqual(rebuildCall[1], ["rebuild", "node-pty"]);
+    assert.strictEqual(rebuildCall[2]?.cwd, "/mock/pnpm/global/node_modules/@love-moon/conductor-cli");
     assert.strictEqual(restartAttempts, 1);
     assert.strictEqual(exitCode, 0);
   });
