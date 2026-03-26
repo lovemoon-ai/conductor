@@ -24,6 +24,38 @@ This project follows [Semantic Versioning](https://semver.org/) where practical.
 
 ---
 
+## [0.2.30] - 2026-03-26
+
+### Added
+
+- _None._
+
+### Changed
+
+- Improved CLI dependency repair during `pnpm`-based updates so native `node-pty` rebuilds and daemon setup recover more reliably when operators upgrade Conductor in place.
+- Tightened the operator release and production deployment SOPs so the documented ship path better matches the current npm and Volc workflows.
+
+### Fixed
+
+- Fixed a CLI update regression that could leave `node-pty` partially repaired after install, causing daemon startup or native dependency validation to fail on upgraded machines.
+- Fixed task kill convergence in the API so the app stops polling decisively once a task is confirmed dead, reducing stuck "stopping" states after termination.
+
+### Removed
+
+- _None._
+
+### Security
+
+- _None._
+
+### Commits
+
+- `13a61ad` fix pnpm node-pty update repair
+- `3888d69` improve task kill convergence
+- `e6a71ad` update 06_release.md
+
+---
+
 ## [0.2.29] - 2026-03-26
 
 ### Added
