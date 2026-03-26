@@ -24,6 +24,45 @@ This project follows [Semantic Versioning](https://semver.org/) where practical.
 
 ---
 
+## [0.2.29] - 2026-03-26
+
+### Added
+
+- Added task restart controls so operators can restart an existing task from the task view and choose whether to continue in place or branch from it.
+
+### Changed
+
+- Refined restart, branch, and kill actions in the task list with clearer confirmation flows and more recognizable branch icon treatment.
+- Updated the CLI daemon packaging to use the `ai-bridge` package path expected by the current runtime setup.
+
+### Fixed
+
+- Fixed `conductor fire` task restarts so they reconnect through the original execution daemon instead of a stale daemon binding.
+- Fixed task kill handling so the app no longer reports a false success when the target daemon is offline or cannot accept the request.
+
+### Removed
+
+- _None._
+
+### Security
+
+- _None._
+
+### Commits
+
+- `8be52df` update claw/rfc
+- `b4af3f2` add task restart flow
+- `2c38953` update task restart flow
+- `df3c40e` use ai-bridge package
+- `9dccc71` refine restart popup
+- `60c0a09` fix fire task restart daemon binding
+- `0fb4f2d` update task restart and kill flow
+- `5e9a8ad` refine task kill and branch action
+- `5bd1e5e` adjust task branch icon
+- `56ce873` tune task branch icon
+
+---
+
 ## [0.2.28] - 2026-03-23
 
 ### Added
