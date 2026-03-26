@@ -115,12 +115,7 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
     if (!isRestartableStatus(task.status)) {
       return 'Only running or stopped tasks can restart';
     }
-    // Fire tasks can create new tasks from running state; in-place restart requires stopped state
-    const canDoInplaceRestart =
-      task.status === 'completed' || task.status === 'killed' || task.status === 'unknown';
-    if (isManualFireTask && !canDoInplaceRestart && currentBackend === selectedBackend) {
-      return 'Manual fire tasks can only in-place restart after they stop; switch backend to create a new task';
-    }
+    // Note: Fire tasks can always create new tasks; in-place restart is handled by the backend based on strategy
     if (!sourceAgent) {
       return isManualFireTask ? 'Original daemon is offline' : 'Source daemon is offline';
     }
