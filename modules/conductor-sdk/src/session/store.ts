@@ -251,6 +251,7 @@ export class SessionDiskStore {
 
   private acquireLock(): () => void {
     const startedAt = Date.now();
+    fs.mkdirSync(path.dirname(this.lockPath), { recursive: true });
     while (true) {
       try {
         const fd = fs.openSync(this.lockPath, 'wx');
