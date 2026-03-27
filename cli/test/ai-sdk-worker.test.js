@@ -140,7 +140,12 @@ describe("ai-sdk worker boundary", () => {
     const sessionInfo = await session.ensureSessionInfo();
     assert.equal(sessionInfo.sessionId, "thread-fake-1");
     assert.equal(sessionInfo.sessionFilePath, "/tmp/thread-fake-1.jsonl");
+    assert.equal(sessionInfo.model, "gpt-fake-codex");
+    assert.equal(sessionInfo.modelProvider, "fake-provider");
+    assert.equal(sessionInfo.reasoningEffort, "high");
     assert.equal(session.getSnapshot().provider, "codex-app-server");
+    assert.equal(session.threadOptions.model, "gpt-fake-codex");
+    assert.equal(session.threadOptions.modelProvider, "fake-provider");
 
     const result = await session.runTurn("Reply with exactly OK");
     assert.equal(result.text, "OK from fake codex\n");
@@ -171,6 +176,10 @@ describe("ai-sdk worker boundary", () => {
     assert.ok(statuses.some((payload) => payload.status_line === "codex updating plan"));
     assert.ok(statuses.some((payload) => payload.status_line === "codex composing reply"));
     assert.ok(statuses.every((payload) => payload.status_line !== "codex item"));
+    assert.deepEqual(session.threadOptions, {
+      model: "gpt-fake-codex",
+      modelProvider: "fake-provider",
+    });
 
     await session.close();
   });

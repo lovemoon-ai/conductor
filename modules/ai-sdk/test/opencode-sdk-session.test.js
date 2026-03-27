@@ -214,6 +214,10 @@ describe("opencode sdk session", () => {
     assert.equal(session.getSnapshot().provider, "opencode-sdk");
 
     const result = await session.runTurn("Reply with exactly OK");
+    assert.equal(session.getSessionInfo()?.model, "gpt-4.1");
+    assert.equal(session.getSessionInfo()?.modelProvider, "openai");
+    assert.equal(session.threadOptions.model, "gpt-4.1");
+    assert.equal(session.threadOptions.modelProvider, "openai");
     assert.equal(result.text, "OK from fake opencode\n");
     assert.deepEqual(
       messages.map((payload) => payload.text),

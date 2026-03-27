@@ -44,7 +44,11 @@ function startThread(id, params = {}) {
       processCwd: process.cwd(),
       pwdEnv: process.env.PWD || "",
       source: "fake-codex-app-server",
+      modelProvider: "fake-provider",
     },
+    model: "gpt-fake-codex",
+    modelProvider: "fake-provider",
+    reasoningEffort: "high",
   });
   notification("thread/started", {
     thread: {

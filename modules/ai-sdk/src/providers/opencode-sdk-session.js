@@ -238,10 +238,14 @@ export class OpencodeSdkSession extends EventEmitter {
 
   get threadOptions() {
     const model =
-      typeof this.options.model === "string" && this.options.model.trim()
+      this.sessionInfo?.model ||
+      (typeof this.options.model === "string" && this.options.model.trim()
         ? this.options.model.trim()
-        : this.backend;
-    return { model };
+        : this.backend);
+    return {
+      model,
+      modelProvider: this.sessionInfo?.modelProvider || undefined,
+    };
   }
 
   getSnapshot() {
@@ -615,9 +619,22 @@ export class OpencodeSdkSession extends EventEmitter {
     }
     const changed = this.sessionId !== normalizedSessionId;
     this.sessionId = normalizedSessionId;
+    const resolvedModel =
+      typeof this.lastAssistantInfo?.model?.modelID === "string" && this.lastAssistantInfo.model.modelID.trim()
+        ? this.lastAssistantInfo.model.modelID.trim()
+        : typeof this.options.model === "string" && this.options.model.trim()
+          ? this.options.model.trim()
+          : undefined;
+    const resolvedModelProvider =
+      typeof this.lastAssistantInfo?.model?.providerID === "string" && this.lastAssistantInfo.model.providerID.trim()
+        ? this.lastAssistantInfo.model.providerID.trim()
+        : undefined;
     this.sessionInfo = {
+      ...(this.sessionInfo || {}),
       backend: this.backend,
       sessionId: normalizedSessionId,
+      model: resolvedModel,
+      modelProvider: resolvedModelProvider,
     };
     if (changed) {
       this.trace(`session ready id=${normalizedSessionId}`);
@@ -1013,6 +1030,9 @@ export class OpencodeSdkSession extends EventEmitter {
         this.activeReplyTarget = "";
         this.lastUsage = this.buildUsageFromAssistantInfo(currentTurn.lastAssistantInfo);
         this.lastAssistantInfo = currentTurn.lastAssistantInfo || null;
+        this.applySessionInfo({
+          id: this.sessionId,
+        });
         await this.emitTerminalWorkingStatus(
           currentTurn,
           {

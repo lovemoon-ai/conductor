@@ -279,7 +279,10 @@ export class CodexAppServerSession extends EventEmitter {
   }
 
   get threadOptions() {
-    return { model: this.backend };
+    return {
+      model: this.sessionInfo?.model || this.backend,
+      modelProvider: this.sessionInfo?.modelProvider || undefined,
+    };
   }
 
   getSnapshot() {
@@ -391,10 +394,11 @@ export class CodexAppServerSession extends EventEmitter {
     } else {
       result = await this.transport.request("thread/start", params);
     }
-    this.applyThreadInfo(result?.thread, { resumeReady: Boolean(this.resumeSessionId) });
+    this.applyThreadInfo(result, { resumeReady: Boolean(this.resumeSessionId) });
   }
 
-  applyThreadInfo(thread, { resumeReady = false } = {}) {
+  applyThreadInfo(payload, { resumeReady = false } = {}) {
+    const thread = payload?.thread && typeof payload.thread === "object" ? payload.thread : payload;
     const threadId = typeof thread?.id === "string" ? thread.id.trim() : "";
     const threadPath = typeof thread?.path === "string" ? thread.path.trim() : "";
     if (!threadId) {
@@ -402,15 +406,35 @@ export class CodexAppServerSession extends EventEmitter {
     }
     this.sessionId = threadId;
     this.threadPath = threadPath;
+    const resolvedModel =
+      typeof payload?.model === "string" && payload.model.trim()
+        ? payload.model.trim()
+        : this.sessionInfo?.model || undefined;
+    const resolvedModelProvider =
+      typeof payload?.modelProvider === "string" && payload.modelProvider.trim()
+        ? payload.modelProvider.trim()
+        : typeof thread?.modelProvider === "string" && thread.modelProvider.trim()
+          ? thread.modelProvider.trim()
+          : this.sessionInfo?.modelProvider || undefined;
+    const reasoningEffort =
+      typeof payload?.reasoningEffort === "string" && payload.reasoningEffort.trim()
+        ? payload.reasoningEffort.trim()
+        : this.sessionInfo?.reasoningEffort || undefined;
     this.sessionInfo = {
+      ...(this.sessionInfo || {}),
       backend: this.backend,
       sessionId: threadId,
       sessionFilePath: threadPath || undefined,
+      model: resolvedModel,
+      modelProvider: resolvedModelProvider,
+      reasoningEffort,
     };
     if (resumeReady) {
       this.manualResumeReady = true;
     }
-    this.trace(`thread ready id=${threadId} path="${sanitizeForLog(threadPath, 180)}"`);
+    this.trace(
+      `thread ready id=${threadId} path="${sanitizeForLog(threadPath, 180)}" model="${sanitizeForLog(resolvedModel || this.backend, 80)}" provider="${sanitizeForLog(resolvedModelProvider || this.backend, 80)}"`,
+    );
     this.emit("session", this.getSessionInfo());
   }
 
@@ -657,7 +681,7 @@ export class CodexAppServerSession extends EventEmitter {
     }
     switch (method) {
       case "thread/started":
-        this.applyThreadInfo(params?.thread, { resumeReady: Boolean(this.resumeSessionId) });
+        this.applyThreadInfo(params, { resumeReady: Boolean(this.resumeSessionId) });
         return;
       case "sessionConfigured":
       case "session_configured":

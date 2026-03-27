@@ -1459,10 +1459,24 @@ export class BridgeRunner {
     const fallbackSessionId = this.resumeSessionId;
     const sessionId = discoveredSessionId || fallbackSessionId;
     const sessionFilePath = sessionInfo?.sessionFilePath ? String(sessionInfo.sessionFilePath).trim() : "";
+    const sessionModel =
+      sessionInfo?.model && String(sessionInfo.model).trim()
+        ? String(sessionInfo.model).trim()
+        : this.backendSession.threadOptions?.model || this.backendName;
+    const sessionModelProvider =
+      sessionInfo?.modelProvider && String(sessionInfo.modelProvider).trim()
+        ? String(sessionInfo.modelProvider).trim()
+        : this.backendSession.threadOptions?.modelProvider || undefined;
     const hasRealSessionId = Boolean(sessionId);
+    const messageSuffix = [
+      sessionModel ? `model=${sessionModel}` : "",
+      sessionModelProvider ? `provider=${sessionModelProvider}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
     const message = hasRealSessionId
-      ? `${this.backendName} session started: ${sessionId}`
-      : `${this.backendName} session started`;
+      ? `${this.backendName} session started: ${sessionId}${messageSuffix ? ` (${messageSuffix})` : ""}`
+      : `${this.backendName} session started${messageSuffix ? ` (${messageSuffix})` : ""}`;
     if (hasRealSessionId) {
       await this.persistTaskSessionBinding({
         sessionId,
@@ -1472,6 +1486,8 @@ export class BridgeRunner {
     try {
       await this.conductor.sendMessage(this.taskId, message, {
         backend: this.backendName,
+        model: sessionModel || undefined,
+        model_provider: sessionModelProvider || undefined,
         thread_id: hasRealSessionId ? sessionId : undefined,
         session_id: hasRealSessionId ? sessionId : undefined,
         session_file_path: sessionFilePath || undefined,
@@ -1897,7 +1913,7 @@ export class BridgeRunner {
     this.copilotLog(
       `runtime replyTo=${replyTo || "latest"} state=${runtime.state || ""} phase=${runtime.phase || ""} inProgress=${Boolean(
         runtime.reply_in_progress,
-      )} status="${sanitizeForLog(runtime.status_line || "", 120)}" done="${sanitizeForLog(runtime.status_done_line || "", 120)}" preview="${sanitizeForLog(runtime.reply_preview || "", 120)}"`,
+      )} status="${sanitizeForLog(runtime.status_line || "", 120)}" done="${sanitizeForLog(runtime.status_done_line || "", 120)}" preview="${sanitizeForLog(runtime.reply_preview || "", 120)}" model="${sanitizeForLog(this.backendSession.threadOptions?.model || this.backendName, 80)}" provider="${sanitizeForLog(this.backendSession.threadOptions?.modelProvider || this.backendName, 80)}"`,
     );
 
     try {

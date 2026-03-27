@@ -216,10 +216,14 @@ export class ClaudeAgentSdkSession extends EventEmitter {
 
   get threadOptions() {
     const model =
-      typeof this.options.model === "string" && this.options.model.trim()
+      this.sessionInfo?.model ||
+      (typeof this.options.model === "string" && this.options.model.trim()
         ? this.options.model.trim()
-        : this.backend;
-    return { model };
+        : this.backend);
+    return {
+      model,
+      modelProvider: this.sessionInfo?.modelProvider || undefined,
+    };
   }
 
   getSnapshot() {
@@ -473,10 +477,20 @@ export class ClaudeAgentSdkSession extends EventEmitter {
     const changed = this.sessionId !== normalizedSessionId;
     this.sessionId = normalizedSessionId;
     this.manualResumeReady = true;
+    const modelUsage = this.lastResult?.modelUsage && typeof this.lastResult.modelUsage === "object"
+      ? this.lastResult.modelUsage
+      : null;
+    const resolvedModel =
+      typeof modelUsage?.model === "string" && modelUsage.model.trim()
+        ? modelUsage.model.trim()
+        : typeof this.options.model === "string" && this.options.model.trim()
+          ? this.options.model.trim()
+          : undefined;
     this.sessionInfo = {
       ...(this.sessionInfo || {}),
       backend: this.backend,
       sessionId: normalizedSessionId,
+      model: resolvedModel,
     };
     if (changed) {
       this.trace(`session ready id=${normalizedSessionId}`);

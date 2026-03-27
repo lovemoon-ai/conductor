@@ -124,7 +124,12 @@ export class RemoteAiSession extends EventEmitter {
   }
 
   get threadOptions() {
-    return { ...this.threadOptionsValue };
+    const sessionInfo = this.sessionInfo && typeof this.sessionInfo === "object" ? this.sessionInfo : null;
+    return {
+      ...this.threadOptionsValue,
+      ...(sessionInfo?.model ? { model: sessionInfo.model } : {}),
+      ...(sessionInfo?.modelProvider ? { modelProvider: sessionInfo.modelProvider } : {}),
+    };
   }
 
   getSnapshot() {

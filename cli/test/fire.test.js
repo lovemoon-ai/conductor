@@ -601,7 +601,9 @@ describe("conductor-fire backends", () => {
     await runner.announceBackendSession();
 
     assert.equal(sentMessages.length, 1);
-    assert.equal(sentMessages[0].content, "codex session started");
+    assert.equal(sentMessages[0].content, "codex session started (model=codex)");
+    assert.equal(sentMessages[0].metadata?.model, "codex");
+    assert.equal(sentMessages[0].metadata?.model_provider, undefined);
     assert.equal(sentMessages[0].metadata?.session_id, undefined);
     assert.equal(sentMessages[0].metadata?.thread_id, undefined);
     assert.equal(sentRuntimeStatuses.length, 1);
@@ -648,7 +650,9 @@ describe("conductor-fire backends", () => {
     await runner.announceBackendSession();
 
     assert.equal(sentMessages.length, 1);
-    assert.equal(sentMessages[0].content, `codex session started: ${resumedSessionId}`);
+    assert.equal(sentMessages[0].content, `codex session started: ${resumedSessionId} (model=codex)`);
+    assert.equal(sentMessages[0].metadata?.model, "codex");
+    assert.equal(sentMessages[0].metadata?.model_provider, undefined);
     assert.equal(sentMessages[0].metadata?.session_id, resumedSessionId);
     assert.equal(sentMessages[0].metadata?.thread_id, resumedSessionId);
     assert.equal(sentRuntimeStatuses.length, 1);
@@ -694,7 +698,12 @@ describe("conductor-fire backends", () => {
     await runner.announceBackendSession();
 
     assert.equal(sentMessages.length, 1);
-    assert.equal(sentMessages[0].content, `codex session started: ${realSessionId}`);
+    assert.equal(
+      sentMessages[0].content,
+      `codex session started: ${realSessionId} (model=codex)`,
+    );
+    assert.equal(sentMessages[0].metadata?.model, "codex");
+    assert.equal(sentMessages[0].metadata?.model_provider, undefined);
     assert.equal(sentMessages[0].metadata?.session_id, realSessionId);
     assert.equal(sentMessages[0].metadata?.thread_id, realSessionId);
     assert.equal(sentRuntimeStatuses.length, 1);
@@ -821,7 +830,9 @@ describe("conductor-fire backends", () => {
 
     await runner.announceBackendSession();
     assert.equal(bindCalls.length, 0);
-    assert.equal(sentMessages[0]?.content, "claude session started");
+    assert.equal(sentMessages[0]?.content, "claude session started (model=claude)");
+    assert.equal(sentMessages[0]?.metadata?.model, "claude");
+    assert.equal(sentMessages[0]?.metadata?.model_provider, undefined);
 
     await runner.respondToMessage({ message_id: "msg-claude-late-bind", role: "user", content: "hello" });
 
