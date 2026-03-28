@@ -14,7 +14,6 @@ export const RESTARTABLE_SOURCE_STATUSES = new Set<TaskStatus>([
   "unknown",
 ]);
 export const BRIDGEABLE_BACKENDS = new Set(["codex", "claude", "kimi"]);
-export const VALID_RESTART_BACKENDS = new Set(["codex", "claude", "kimi", "opencode"]);
 
 export const normalizeRestartStrategy = (value: unknown): RestartStrategy | null => {
   if (typeof value !== "string") {
@@ -48,6 +47,4 @@ export const getCompatibleRestartBackends = (
   sourceBackend: string,
   supportedBackends: string[],
 ): string[] =>
-  supportedBackends.filter(
-    (backend) => VALID_RESTART_BACKENDS.has(backend) && canCreateSuccessorTask(sourceBackend, backend),
-  );
+  supportedBackends.filter((backend) => canCreateSuccessorTask(sourceBackend, backend));

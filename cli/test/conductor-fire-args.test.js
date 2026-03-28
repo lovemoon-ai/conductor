@@ -1,13 +1,53 @@
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { buildResumeArgsForBackend, parseCliArgs } from "../bin/conductor-fire.js";
+import { listRuntimeSupportedBackends, resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const FIXTURE_EXTERNAL_PROVIDER = path.resolve(__dirname, "..", "..", "modules", "ai-sdk", "fixtures", "fake-external-provider.js");
+const INVALID_EXTERNAL_PROVIDER = path.resolve(__dirname, "..", "..", "modules", "ai-sdk", "fixtures", "invalid-external-provider.js");
+const DEFAULT_PROVIDER_PATH = process.env.AISDK_PROVIDER_PATH;
+
+async function withProviderEnv(providerPath, fn) {
+  const previousValue = process.env.AISDK_PROVIDER_PATH;
+  if (providerPath) {
+    process.env.AISDK_PROVIDER_PATH = providerPath;
+  } else {
+    delete process.env.AISDK_PROVIDER_PATH;
+  }
+  try {
+    return await fn();
+  } finally {
+    if (previousValue === undefined) {
+      delete process.env.AISDK_PROVIDER_PATH;
+    } else {
+      process.env.AISDK_PROVIDER_PATH = previousValue;
+    }
+  }
+}
+
+beforeEach(() => {
+  delete process.env.AISDK_PROVIDER_PATH;
+  resetRuntimeBackendCacheForTests();
+});
+
+afterEach(() => {
+  if (DEFAULT_PROVIDER_PATH === undefined) {
+    delete process.env.AISDK_PROVIDER_PATH;
+  } else {
+    process.env.AISDK_PROVIDER_PATH = DEFAULT_PROVIDER_PATH;
+  }
+  resetRuntimeBackendCacheForTests();
+});
 
 describe("conductor-fire defaults", () => {
-  it("uses the first ai-sdk-supported allow_cli_list entry when --backend is omitted", () => {
+  it("uses the first ai-sdk-supported allow_cli_list entry when --backend is omitted", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
     const configPath = path.join(tempDir, "config.yaml");
     fs.writeFileSync(
@@ -16,7 +56,7 @@ describe("conductor-fire defaults", () => {
       "utf8",
     );
 
-    const args = parseCliArgs([
+    const args = await parseCliArgs([
       "node",
       "conductor-fire",
       "--config-file",
@@ -29,7 +69,7 @@ describe("conductor-fire defaults", () => {
     assert.equal(args.backend, "codex");
   });
 
-  it("respects explicit --backend even when not first", () => {
+  it("respects explicit --backend even when not first", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
     const configPath = path.join(tempDir, "config.yaml");
     fs.writeFileSync(
@@ -38,7 +78,7 @@ describe("conductor-fire defaults", () => {
       "utf8",
     );
 
-    const args = parseCliArgs([
+    const args = await parseCliArgs([
       "node",
       "conductor-fire",
       "--config-file",
@@ -53,7 +93,7 @@ describe("conductor-fire defaults", () => {
     assert.equal(args.backend, "codex");
   });
 
-  it("rejects legacy backend aliases", () => {
+  it("rejects legacy backend aliases", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
     const configPath = path.join(tempDir, "config.yaml");
     fs.writeFileSync(
@@ -62,7 +102,7 @@ describe("conductor-fire defaults", () => {
       "utf8",
     );
 
-    assert.throws(
+    await assert.rejects(
       () =>
         parseCliArgs([
           "node",
@@ -77,7 +117,7 @@ describe("conductor-fire defaults", () => {
         ]),
       /Unsupported backend "code"/,
     );
-    assert.throws(
+    await assert.rejects(
       () =>
         parseCliArgs([
           "node",
@@ -92,7 +132,7 @@ describe("conductor-fire defaults", () => {
         ]),
       /Unsupported backend "claude-code"/,
     );
-    assert.throws(
+    await assert.rejects(
       () =>
         parseCliArgs([
           "node",
@@ -109,7 +149,7 @@ describe("conductor-fire defaults", () => {
     );
   });
 
-  it("rejects unsupported backends even when they appear in allow_cli_list", () => {
+  it("rejects unsupported backends even when they appear in allow_cli_list", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
     const configPath = path.join(tempDir, "config.yaml");
     fs.writeFileSync(
@@ -118,7 +158,7 @@ describe("conductor-fire defaults", () => {
       "utf8",
     );
 
-    assert.throws(
+    await assert.rejects(
       () =>
         parseCliArgs([
           "node",
@@ -135,31 +175,144 @@ describe("conductor-fire defaults", () => {
     );
   });
 
-  it("rejects configs that only contain unsupported backends", () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
-    const configPath = path.join(tempDir, "config.yaml");
-    fs.writeFileSync(
-      configPath,
-      "allow_cli_list:\n  copilot: copilot --allow-all-paths --allow-all-tools\n",
-      "utf8",
-    );
+  it("falls back to discovered external backends when allow_cli_list has no supported entries", async () => {
+    await withProviderEnv(null, async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+      const configPath = path.join(tempDir, "config.yaml");
+      fs.writeFileSync(
+        configPath,
+        [
+          "allow_cli_list:",
+          "  copilot: copilot --allow-all-paths --allow-all-tools",
+          "envs:",
+          `  AISDK_PROVIDER_PATH: ${FIXTURE_EXTERNAL_PROVIDER}`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
 
-    assert.throws(
-      () =>
-        parseCliArgs([
-          "node",
-          "conductor-fire",
-          "--config-file",
-          configPath,
-          "--",
-          "fix",
-          "bug",
-        ]),
-      /No supported backends configured/,
-    );
+      const args = await parseCliArgs([
+        "node",
+        "conductor-fire",
+        "--config-file",
+        configPath,
+        "--",
+        "fix",
+        "bug",
+      ]);
+
+      assert.equal(args.backend, "test-external");
+    });
   });
 
-  it("parses --resume and keeps default backend from first allow_cli_list entry", () => {
+  it("accepts external backend aliases declared by the provider", async () => {
+    await withProviderEnv(null, async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+      const configPath = path.join(tempDir, "config.yaml");
+      fs.writeFileSync(
+        configPath,
+        [
+          "envs:",
+          `  AISDK_PROVIDER_PATH: ${FIXTURE_EXTERNAL_PROVIDER}`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const args = await parseCliArgs([
+        "node",
+        "conductor-fire",
+        "--config-file",
+        configPath,
+        "--backend",
+        "test-external-alias",
+        "--",
+        "fix",
+        "bug",
+      ]);
+
+      assert.equal(args.backend, "test-external");
+    });
+  });
+
+  it("rejects invalid external providers before choosing them as defaults", async () => {
+    await withProviderEnv(null, async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+      const configPath = path.join(tempDir, "config.yaml");
+      fs.writeFileSync(
+        configPath,
+        [
+          "envs:",
+          `  AISDK_PROVIDER_PATH: ${INVALID_EXTERNAL_PROVIDER}`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      await assert.rejects(
+        () =>
+          parseCliArgs([
+            "node",
+            "conductor-fire",
+            "--config-file",
+            configPath,
+            "--",
+            "fix",
+            "bug",
+          ]),
+        /missing provider\.createSession/,
+      );
+    });
+  });
+
+  it("reloads an external provider after an initial descriptor failure", async () => {
+    await withProviderEnv(null, async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+      const providerPath = path.join(tempDir, "retryable-provider.js");
+      const configPath = path.join(tempDir, "config.yaml");
+      fs.writeFileSync(
+        configPath,
+        [
+          "envs:",
+          `  AISDK_PROVIDER_PATH: ${providerPath}`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      fs.writeFileSync(
+        providerPath,
+        'export const providers = [{ backend: "retryable-external", variant: "retryable-external-provider" }];\n',
+        "utf8",
+      );
+
+      await assert.rejects(
+        () => listRuntimeSupportedBackends({ configFilePath: configPath }),
+        /missing provider\.createSession/,
+      );
+
+      fs.writeFileSync(
+        providerPath,
+        [
+          "export const providers = [",
+          "  {",
+          '    backend: "retryable-external",',
+          '    variant: "retryable-external-provider",',
+          "    async createSession() {",
+          "      return null;",
+          "    },",
+          "  },",
+          "];",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const supportedBackends = await listRuntimeSupportedBackends({ configFilePath: configPath });
+      assert.ok(supportedBackends.includes("retryable-external"));
+    });
+  });
+
+  it("parses --resume and keeps default backend from first allow_cli_list entry", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
     const configPath = path.join(tempDir, "config.yaml");
     fs.writeFileSync(
@@ -168,7 +321,7 @@ describe("conductor-fire defaults", () => {
       "utf8",
     );
 
-    const args = parseCliArgs([
+    const args = await parseCliArgs([
       "node",
       "conductor-fire",
       "--config-file",
@@ -181,8 +334,8 @@ describe("conductor-fire defaults", () => {
     assert.equal(args.resumeSessionId, "019cb2a4-de18-70b0-816b-a9b0d99400bb");
   });
 
-  it("rejects legacy --from flags", () => {
-    assert.throws(
+  it("rejects legacy --from flags", async () => {
+    await assert.rejects(
       () =>
         parseCliArgs([
           "node",
@@ -194,7 +347,7 @@ describe("conductor-fire defaults", () => {
     );
   });
 
-  it("does not treat --resume as prompt when no -- separator is used", () => {
+  it("does not treat --resume as prompt when no -- separator is used", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
     const configPath = path.join(tempDir, "config.yaml");
     fs.writeFileSync(
@@ -203,7 +356,7 @@ describe("conductor-fire defaults", () => {
       "utf8",
     );
 
-    const args = parseCliArgs([
+    const args = await parseCliArgs([
       "node",
       "conductor-fire",
       "--config-file",
@@ -219,7 +372,7 @@ describe("conductor-fire defaults", () => {
     assert.deepEqual(args.rawBackendArgs, []);
   });
 
-  it("marks task title as non-explicit when --title is not provided", () => {
+  it("marks task title as non-explicit when --title is not provided", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
     const configPath = path.join(tempDir, "config.yaml");
     fs.writeFileSync(
@@ -228,7 +381,7 @@ describe("conductor-fire defaults", () => {
       "utf8",
     );
 
-    const args = parseCliArgs([
+    const args = await parseCliArgs([
       "node",
       "conductor-fire",
       "--config-file",
@@ -241,7 +394,7 @@ describe("conductor-fire defaults", () => {
     assert.equal(args.hasExplicitTaskTitle, false);
   });
 
-  it("marks task title as explicit when --title is provided", () => {
+  it("marks task title as explicit when --title is provided", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
     const configPath = path.join(tempDir, "config.yaml");
     fs.writeFileSync(
@@ -250,7 +403,7 @@ describe("conductor-fire defaults", () => {
       "utf8",
     );
 
-    const args = parseCliArgs([
+    const args = await parseCliArgs([
       "node",
       "conductor-fire",
       "--config-file",

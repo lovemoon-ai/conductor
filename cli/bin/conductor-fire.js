@@ -26,7 +26,13 @@ import {
   resolveSessionRunDirectory as resolveCliSessionRunDirectory,
   resumeProviderForBackend as resumeProviderForCliBackend,
 } from "../src/fire/resume.js";
-import { filterRuntimeSupportedAllowCliList, normalizeRuntimeBackendName } from "../src/runtime-backends.js";
+import {
+  filterRuntimeSupportedAllowCliList,
+  RUNTIME_SUPPORTED_BACKENDS,
+  listRuntimeSupportedBackends,
+  normalizeRuntimeBackendAlias,
+  normalizeRuntimeBackendName,
+} from "../src/runtime-backends.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,7 +40,19 @@ const PKG_ROOT = path.join(__dirname, "..");
 const INITIAL_CLI_PROJECT_PATH = process.cwd();
 const FIRE_LOG_PATH = path.join(INITIAL_CLI_PROJECT_PATH, "conductor.log");
 const FIRE_TASK_MARKER_PREFIX = "active-fire";
-const ENABLE_FIRE_LOCAL_LOG = !process.env.CONDUCTOR_CLI_COMMAND;
+
+export function isLaunchedByDaemon(env = process.env) {
+  const daemonHostedValue =
+    typeof env?.CONDUCTOR_LAUNCHED_BY_DAEMON === "string" ? env.CONDUCTOR_LAUNCHED_BY_DAEMON.trim().toLowerCase() : "";
+  if (daemonHostedValue && daemonHostedValue !== "0" && daemonHostedValue !== "false" && daemonHostedValue !== "no") {
+    return true;
+  }
+  return Boolean(
+    typeof env?.CONDUCTOR_CLI_COMMAND === "string" && env.CONDUCTOR_CLI_COMMAND.trim(),
+  );
+}
+
+const ENABLE_FIRE_LOCAL_LOG = !isLaunchedByDaemon(process.env);
 
 const pkgJson = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf-8"));
 const CLI_NAME = (process.env.CONDUCTOR_CLI_NAME || path.basename(process.argv[1] || "conductor-fire")).replace(
@@ -49,19 +67,20 @@ export function buildConductorConnectHeaders(version = pkgJson.version) {
 }
 
 // Load allow_cli_list from config file (no defaults - must be configured)
-function loadAllowCliList(configFilePath) {
+async function loadAllowCliList(configFilePath) {
+  const home = os.homedir();
+  const configPath = configFilePath || process.env.CONDUCTOR_CONFIG || path.join(home, ".conductor", "config.yaml");
+  let parsed = null;
   try {
-    const home = os.homedir();
-    const configPath = configFilePath || process.env.CONDUCTOR_CONFIG || path.join(home, ".conductor", "config.yaml");
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, "utf8");
-      const parsed = yaml.load(content);
-      if (parsed && typeof parsed === "object" && parsed.allow_cli_list) {
-        return filterRuntimeSupportedAllowCliList(parsed.allow_cli_list);
-      }
+      parsed = yaml.load(content);
     }
   } catch (error) {
     // ignore error
+  }
+  if (parsed && typeof parsed === "object" && parsed.allow_cli_list) {
+    return await filterRuntimeSupportedAllowCliList(parsed.allow_cli_list, { configFilePath: configPath });
   }
   return {};
 }
@@ -396,7 +415,7 @@ export class FireWatchdog {
 }
 
 async function main() {
-  const cliArgs = parseCliArgs();
+  const cliArgs = await parseCliArgs();
   let runtimeProjectPath = process.cwd();
   let backendSession = null;
 
@@ -409,18 +428,28 @@ async function main() {
     return;
   }
 
-  const allowCliList = loadAllowCliList(cliArgs.configFile);
+  const allowCliList = await loadAllowCliList(cliArgs.configFile);
   const supportedBackends = Object.keys(allowCliList);
+  const discoveredBackends = await listRuntimeSupportedBackends({ configFilePath: cliArgs.configFile });
+  const externalBackends = discoveredBackends.filter((backend) => !RUNTIME_SUPPORTED_BACKENDS.includes(backend));
 
   if (cliArgs.listBackends) {
-    if (supportedBackends.length === 0) {
+    if (supportedBackends.length === 0 && externalBackends.length === 0) {
       process.stdout.write(`No supported backends configured.\n\nAdd allow_cli_list to your config file (~/.conductor/config.yaml):\n  allow_cli_list:\n    codex: codex --dangerously-bypass-approvals-and-sandbox\n    claude: claude --dangerously-skip-permissions\n    kimi: kimi\n    opencode: opencode\n`);
     } else {
-      process.stdout.write(`Supported backends (from config):\n`);
-      for (const [name, command] of Object.entries(allowCliList)) {
-        process.stdout.write(`  ${name}: ${command}\n`);
+      if (supportedBackends.length > 0) {
+        process.stdout.write(`Supported backends (from config):\n`);
+        for (const [name, command] of Object.entries(allowCliList)) {
+          process.stdout.write(`  ${name}: ${command}\n`);
+        }
       }
-      process.stdout.write(`\nDefault: ${supportedBackends[0]}\n`);
+      if (externalBackends.length > 0) {
+        process.stdout.write(`${supportedBackends.length > 0 ? "\n" : ""}External backends (from AISDK_PROVIDER_PATH):\n`);
+        for (const name of externalBackends) {
+          process.stdout.write(`  ${name}\n`);
+        }
+      }
+      process.stdout.write(`\nDefault: ${supportedBackends[0] || externalBackends[0]}\n`);
     }
     return;
   }
@@ -429,6 +458,7 @@ async function main() {
   if (cliArgs.resumeSessionId) {
     const bootstrap = await bootstrapResumeContextForFire({
       backend: cliArgs.backend,
+      configFile: cliArgs.configFile,
       resumeSessionId: cliArgs.resumeSessionId,
     });
     resumeContext = bootstrap.resumeContext;
@@ -436,7 +466,7 @@ async function main() {
   }
 
   const env = buildEnv();
-  const launchedByDaemon = Boolean(process.env.CONDUCTOR_CLI_COMMAND);
+  const launchedByDaemon = isLaunchedByDaemon(process.env);
   let reconnectRunner = null;
   let reconnectTaskId = null;
   let pendingRemoteStopEvent = null;
@@ -815,7 +845,7 @@ function stripConductorArgsFromArgv(argv = []) {
   return backendArgs;
 }
 
-export function parseCliArgs(argvInput = process.argv) {
+export async function parseCliArgs(argvInput = process.argv) {
   const rawArgv = Array.isArray(argvInput) ? argvInput : process.argv;
   const argv = hideBin(rawArgv);
   const separatorIndex = argv.indexOf("--");
@@ -833,8 +863,10 @@ export function parseCliArgs(argvInput = process.argv) {
   }
 
   const configFileFromArgs = extractConfigFileFromArgv(argv);
-  const allowCliList = loadAllowCliList(configFileFromArgs);
+  const allowCliList = await loadAllowCliList(configFileFromArgs);
   const supportedBackends = Object.keys(allowCliList);
+  const discoveredBackends = await listRuntimeSupportedBackends({ configFilePath: configFileFromArgs });
+  const externalBackends = discoveredBackends.filter((backend) => !RUNTIME_SUPPORTED_BACKENDS.includes(backend));
 
   const conductorArgs = yargs(conductorArgv)
     .scriptName(CLI_NAME)
@@ -886,14 +918,14 @@ export function parseCliArgs(argvInput = process.argv) {
 
   // Handle help early
   if (helpWithoutSeparator) {
-    const defaultBackend = supportedBackends[0] || "none";
+    const defaultBackend = supportedBackends[0] || externalBackends[0] || "none";
     process.stdout.write(`${CLI_NAME} - Conductor-aware AI coding agent runner
 
 Usage: ${CLI_NAME} [options] -- [backend options and prompt]
 
 Options:
-  -b, --backend <name>  Backend to use (from config: ${supportedBackends.join(", ") || "none configured"}) [default: ${defaultBackend}]
-  --list-backends       List available backends from config and exit
+  -b, --backend <name>  Backend to use (from config or external providers: ${supportedBackends.join(", ") || externalBackends.join(", ") || "none configured"}) [default: ${defaultBackend}]
+  --list-backends       List available configured and external backends
   --config-file <path>  Path to Conductor config file
   --poll-interval <ms>  Polling interval when waiting for Conductor messages
   -t, --title <text>    Optional task title shown in the app task list
@@ -937,20 +969,21 @@ Environment:
     .parse();
   
   const backend = conductorArgs.backend
-    ? normalizeRuntimeBackendName(conductorArgs.backend)
-    : supportedBackends[0];
+    ? await normalizeRuntimeBackendAlias(conductorArgs.backend, { configFilePath: configFileFromArgs })
+    : supportedBackends[0] || externalBackends[0];
   const shouldRequireBackend =
     !Boolean(conductorArgs.listBackends) &&
     !listBackendsWithoutSeparator &&
     !Boolean(conductorArgs.version) &&
     !versionWithoutSeparator;
-  if (backend && !supportedBackends.includes(backend) && shouldRequireBackend) {
+  const runtimeSupportedBackends = new Set(discoveredBackends);
+  if (backend && !runtimeSupportedBackends.has(backend) && shouldRequireBackend) {
     throw new Error(
-      `Unsupported backend "${backend}". Supported backends: ${supportedBackends.join(", ") || "none configured"}.`,
+      `Unsupported backend "${backend}". Supported backends: ${[...runtimeSupportedBackends].join(", ") || "none configured"}.`,
     );
   }
   if (!backend && shouldRequireBackend) {
-    throw new Error("No supported backends configured. Add codex, claude, kimi, or opencode to allow_cli_list.");
+    throw new Error("No supported backends configured. Add allow_cli_list entries or set AISDK_PROVIDER_PATH for external providers.");
   }
 
   const prompt = (backendArgs._ || []).map((part) => String(part)).join(" ").trim();
@@ -1225,6 +1258,7 @@ export async function resolveResumeContext(backend, sessionId, options = {}) {
 
 export async function bootstrapResumeContextForFire({
   backend,
+  configFile,
   resumeSessionId,
   env = process.env,
   resolveResumeContextFn = resolveResumeContext,
@@ -1247,10 +1281,11 @@ export async function bootstrapResumeContextForFire({
     return { resumeContext, runtimeProjectPath };
   }
 
-  resumeContext = await resolveResumeContextFn(backend, resumeSessionId);
-  logger(
-    `Validated --resume ${resumeContext.sessionId} (${resumeContext.provider}) at ${resumeContext.sessionPath}`,
-  );
+  resumeContext = await resolveResumeContextFn(backend, resumeSessionId, {
+    configFilePath: configFile,
+  });
+  const sessionLocation = resumeContext.sessionPath ? ` at ${resumeContext.sessionPath}` : "";
+  logger(`Validated --resume ${resumeContext.sessionId} (${resumeContext.provider})${sessionLocation}`);
   logger(`Resume will run backend from ${resumeContext.cwd}`);
   runtimeProjectPath = await applyWorkingDirectoryFn(resumeContext.cwd);
   logger(`Switched working directory to ${runtimeProjectPath} before Conductor connect`);

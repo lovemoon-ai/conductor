@@ -22,7 +22,6 @@ import {
   normalizeRestartStrategy,
   RESTARTABLE_SOURCE_STATUSES,
   STOPPED_TASK_STATUSES,
-  VALID_RESTART_BACKENDS,
 } from "@/lib/tasks/restart";
 
 const normalizeTaskStatus = (value: unknown): string => {
@@ -140,7 +139,7 @@ export async function POST(
     Object.prototype.hasOwnProperty.call(normalizedBody, "backendType");
   const requestedBackend =
     normalizeBackendType(normalizedBody.backend_type ?? normalizedBody.backendType);
-  if (hasExplicitBackendTarget && (!requestedBackend || !VALID_RESTART_BACKENDS.has(requestedBackend))) {
+  if (hasExplicitBackendTarget && !requestedBackend) {
     return NextResponse.json({ error: "invalid backend_type" }, { status: 400 });
   }
   const targetBackend = requestedBackend ?? sourceBackend;

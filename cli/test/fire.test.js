@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import yaml from "js-yaml";
-import { filterRuntimeSupportedAllowCliList } from "../src/runtime-backends.js";
+import { filterRuntimeSupportedAllowCliList, resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
 
 import {
   applyWorkingDirectory,
@@ -17,6 +17,7 @@ import {
   FireWatchdog,
   formatFatalError,
   injectResolvedTaskId,
+  isLaunchedByDaemon,
   parseCliArgs,
   resolveAiSessionCommandLine,
   resolveFreshSessionBootstrapLockPath,
@@ -28,21 +29,66 @@ import { detectTaskId } from "../bin/conductor-send-file.js";
 
 const CONFIG_PATH = os.homedir() + "/.conductor/config-dev.yaml";
 
-function loadAllowCliList() {
+function createIsolatedConfigPath() {
   assert.ok(fs.existsSync(CONFIG_PATH), `Config file not found: ${CONFIG_PATH}`);
   const content = fs.readFileSync(CONFIG_PATH, "utf8");
   const parsed = yaml.load(content);
   assert.ok(parsed && typeof parsed === "object", "Config file is invalid");
   assert.ok(parsed.allow_cli_list && typeof parsed.allow_cli_list === "object", "allow_cli_list missing");
-  return filterRuntimeSupportedAllowCliList(parsed.allow_cli_list);
+  if (parsed.envs && typeof parsed.envs === "object") {
+    delete parsed.envs.AISDK_PROVIDER_PATH;
+  }
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-config-"));
+  const isolatedConfigPath = path.join(tempDir, "config.yaml");
+  fs.writeFileSync(isolatedConfigPath, yaml.dump(parsed), "utf8");
+  return isolatedConfigPath;
+}
+
+async function loadAllowCliList(configPath = CONFIG_PATH) {
+  assert.ok(fs.existsSync(configPath), `Config file not found: ${configPath}`);
+  const content = fs.readFileSync(configPath, "utf8");
+  const parsed = yaml.load(content);
+  assert.ok(parsed && typeof parsed === "object", "Config file is invalid");
+  assert.ok(parsed.allow_cli_list && typeof parsed.allow_cli_list === "object", "allow_cli_list missing");
+  const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+  delete process.env.AISDK_PROVIDER_PATH;
+  resetRuntimeBackendCacheForTests();
+  try {
+    return await filterRuntimeSupportedAllowCliList(parsed.allow_cli_list, { configFilePath: configPath });
+  } finally {
+    if (previousProviderPath === undefined) {
+      delete process.env.AISDK_PROVIDER_PATH;
+    } else {
+      process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+    }
+    resetRuntimeBackendCacheForTests();
+  }
+}
+
+async function withClearedProviderEnv(fn) {
+  const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+  delete process.env.AISDK_PROVIDER_PATH;
+  resetRuntimeBackendCacheForTests();
+  try {
+    return await fn();
+  } finally {
+    if (previousProviderPath === undefined) {
+      delete process.env.AISDK_PROVIDER_PATH;
+    } else {
+      process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+    }
+    resetRuntimeBackendCacheForTests();
+  }
 }
 
 function runCli(args) {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   const cliPath = path.resolve(__dirname, "..", "bin", "conductor-fire.js");
+  const env = { ...process.env };
+  delete env.AISDK_PROVIDER_PATH;
   return new Promise((resolve, reject) => {
-    execFile(process.execPath, [cliPath, ...args], { env: process.env }, (err, stdout, stderr) => {
+    execFile(process.execPath, [cliPath, ...args], { env }, (err, stdout, stderr) => {
       if (err) {
         const message = stderr ? `${err.message}\n${stderr}` : err.message;
         reject(new Error(message));
@@ -122,30 +168,47 @@ async function assertStartupProcessesOnlyLiveQueue({
 }
 
 describe("conductor-fire backends", () => {
-  it("uses allow_cli_list from config-dev.yaml", () => {
-    const allowCliList = loadAllowCliList();
+  it("uses allow_cli_list from config-dev.yaml", async (t) => {
+    const configPath = createIsolatedConfigPath();
+    t.after(() => {
+      fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
+      resetRuntimeBackendCacheForTests();
+    });
+    const allowCliList = await loadAllowCliList(configPath);
     const backends = Object.keys(allowCliList);
     assert.ok(backends.length > 0, "allow_cli_list is empty");
   });
 
-  it("defaults to first allow_cli_list entry when --backend is omitted", () => {
-    const allowCliList = loadAllowCliList();
+  it("defaults to first allow_cli_list entry when --backend is omitted", async (t) => {
+    const configPath = createIsolatedConfigPath();
+    t.after(() => {
+      fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
+      resetRuntimeBackendCacheForTests();
+    });
+    const allowCliList = await loadAllowCliList(configPath);
     const defaultBackend = Object.keys(allowCliList)[0];
-    const args = parseCliArgs([
-      "node",
-      "conductor-fire",
-      "--config-file",
-      CONFIG_PATH,
-      "--",
-      "ping",
-    ]);
+    const args = await withClearedProviderEnv(() =>
+      parseCliArgs([
+        "node",
+        "conductor-fire",
+        "--config-file",
+        configPath,
+        "--",
+        "ping",
+      ]),
+    );
     assert.equal(args.backend, defaultBackend);
   });
 
-  it("lists backends from config-dev.yaml", async () => {
-    const allowCliList = loadAllowCliList();
+  it("lists backends from config-dev.yaml", async (t) => {
+    const configPath = createIsolatedConfigPath();
+    t.after(() => {
+      fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
+      resetRuntimeBackendCacheForTests();
+    });
+    const allowCliList = await loadAllowCliList(configPath);
     const defaultBackend = Object.keys(allowCliList)[0];
-    const output = await runCli(["--config-file", CONFIG_PATH, "--list-backends"]);
+    const output = await runCli(["--config-file", configPath, "--list-backends"]);
     assert.ok(output.includes("Supported backends (from config):"));
     for (const [name, command] of Object.entries(allowCliList)) {
       assert.ok(output.includes(`  ${name}: ${command}`));
@@ -212,6 +275,22 @@ describe("conductor-fire backends", () => {
     );
 
     assert.equal(commandLine, "\"/daemon/Kimi/bin/kimi\" --debug");
+  });
+
+  it("treats CONDUCTOR_LAUNCHED_BY_DAEMON as daemon-hosted even without a cli command", () => {
+    assert.equal(
+      isLaunchedByDaemon({
+        CONDUCTOR_LAUNCHED_BY_DAEMON: "1",
+      }),
+      true,
+    );
+    assert.equal(
+      isLaunchedByDaemon({
+        CONDUCTOR_LAUNCHED_BY_DAEMON: "false",
+        CONDUCTOR_CLI_COMMAND: "",
+      }),
+      false,
+    );
   });
 
   it("switches process cwd before backend/conductor startup when resume is used", async () => {

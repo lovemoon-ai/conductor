@@ -36,10 +36,8 @@ function toSerializablePayload(payload) {
 export class RemoteAiSession extends EventEmitter {
   constructor(backend, options = {}) {
     super();
-    this.backend = assertSupportedBackend(backend);
     this.options = options;
     this.logger = normalizeLogger(options.logger);
-    this.variant = providerVariantForBackend(this.backend);
     this.threadIdValue =
       typeof options.resumeSessionId === "string" && options.resumeSessionId.trim()
         ? options.resumeSessionId.trim()
@@ -48,13 +46,13 @@ export class RemoteAiSession extends EventEmitter {
       model:
         typeof options.model === "string" && options.model.trim()
           ? options.model.trim()
-          : this.backend || "unknown",
+          : String(backend || "unknown").trim() || "unknown",
     };
     this.useSessionFileReplyStreamValue = true;
     this.sessionInfo = null;
     this.snapshot = {
-      backend: this.backend,
-      provider: this.variant,
+      backend: undefined,
+      provider: undefined,
       sessionId: this.threadIdValue || undefined,
       useSessionFileReplyStream: this.useSessionFileReplyStreamValue,
       workerReady: false,
@@ -110,13 +108,35 @@ export class RemoteAiSession extends EventEmitter {
       this.rejectPendingRequests(error);
     });
 
-    this.child.stdin.write(
-      toSerializablePayload({
-        type: "create",
-        backend: this.backend,
-        options: sanitizeOptionsForWorker(options),
-      }),
-    );
+    void this.initializeSession(backend, options);
+  }
+
+  async initializeSession(backend, options) {
+    try {
+      this.backend = await assertSupportedBackend(backend, options);
+      this.variant = await providerVariantForBackend(backend, options);
+      this.snapshot.backend = this.backend;
+      this.snapshot.provider = this.variant;
+      this.threadOptionsValue.model =
+        typeof options.model === "string" && options.model.trim() ? options.model.trim() : this.backend || "unknown";
+      this.child.stdin.write(
+        toSerializablePayload({
+          type: "create",
+          backend: this.backend,
+          options: sanitizeOptionsForWorker(options),
+        }),
+      );
+    } catch (error) {
+      this.rejectReady?.(error);
+      this.resolveReady = null;
+      this.rejectReady = null;
+      this.rejectPendingRequests(error);
+      try {
+        this.child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+    }
   }
 
   get threadId() {
@@ -391,10 +411,203 @@ export class RemoteAiSession extends EventEmitter {
   }
 }
 
-export function createAiSession(backend, options = {}) {
-  const normalizedBackend = assertSupportedBackend(backend);
-  if (process.env.CONDUCTOR_AI_SDK_DISABLE_WORKER === "1") {
-    return createLocalAiSession(normalizedBackend, options);
+const LOCAL_SESSION_EVENT_NAMES = ["session", "assistant_message", "working_status", "auth_required", "process.exited"];
+
+class LocalAiSessionProxy extends EventEmitter {
+  constructor(backend, options = {}) {
+    super();
+    this.backend = undefined;
+    this.options = options;
+    this.threadIdValue =
+      typeof options.resumeSessionId === "string" && options.resumeSessionId.trim()
+        ? options.resumeSessionId.trim()
+        : "";
+    this.threadOptionsValue = {
+      model:
+        typeof options.model === "string" && options.model.trim()
+          ? options.model.trim()
+          : String(backend || "unknown").trim() || "unknown",
+    };
+    this.useSessionFileReplyStreamValue = true;
+    this.sessionInfo = null;
+    this.session = null;
+    this.closed = false;
+    this.sessionMessageHandler = null;
+    this.workingStatusHandler = null;
+    this.replyTarget = undefined;
+    this.snapshot = {
+      backend: undefined,
+      provider: undefined,
+      sessionId: this.threadIdValue || undefined,
+      useSessionFileReplyStream: this.useSessionFileReplyStreamValue,
+      workerReady: false,
+    };
+    this.readyPromise = this.initializeSession(backend, options);
+    this.readyPromise.catch(() => {
+      // keep parity with RemoteAiSession and avoid unhandled rejections
+    });
   }
-  return new RemoteAiSession(normalizedBackend, options);
+
+  async initializeSession(backend, options) {
+    const session = await createLocalAiSession(backend, options);
+    if (this.closed) {
+      await session.close?.();
+      return session;
+    }
+
+    this.session = session;
+    for (const eventName of LOCAL_SESSION_EVENT_NAMES) {
+      if (typeof session.on === "function") {
+        session.on(eventName, async (payload) => {
+          if (eventName === "session" && payload && typeof payload === "object") {
+            this.sessionInfo = { ...payload };
+            if (payload.sessionId) {
+              this.threadIdValue = String(payload.sessionId);
+            }
+          }
+          this.emit(eventName, payload);
+        });
+      }
+    }
+
+    if (this.sessionMessageHandler && typeof session.setSessionMessageHandler === "function") {
+      session.setSessionMessageHandler(this.sessionMessageHandler);
+    }
+    if (this.workingStatusHandler && typeof session.setWorkingStatusHandler === "function") {
+      session.setWorkingStatusHandler(this.workingStatusHandler);
+    }
+    if (this.replyTarget !== undefined && typeof session.setSessionReplyTarget === "function") {
+      session.setSessionReplyTarget(this.replyTarget);
+    }
+
+    const snapshot = typeof session.getSnapshot === "function" ? session.getSnapshot() : {};
+    this.backend = snapshot.backend || session.backend || this.backend;
+    this.threadIdValue = session.threadId || snapshot.sessionId || this.threadIdValue;
+    this.threadOptionsValue = session.threadOptions ? { ...session.threadOptions } : this.threadOptionsValue;
+    this.useSessionFileReplyStreamValue =
+      typeof session.usesSessionFileReplyStream === "function"
+        ? Boolean(session.usesSessionFileReplyStream())
+        : snapshot.useSessionFileReplyStream !== undefined
+          ? Boolean(snapshot.useSessionFileReplyStream)
+          : this.useSessionFileReplyStreamValue;
+    this.sessionInfo =
+      typeof session.getSessionInfo === "function"
+        ? session.getSessionInfo()
+        : snapshot.sessionInfo && typeof snapshot.sessionInfo === "object"
+          ? { ...snapshot.sessionInfo }
+          : this.sessionInfo;
+    this.snapshot = {
+      ...this.snapshot,
+      ...snapshot,
+      backend: this.backend,
+      sessionId: this.threadIdValue || undefined,
+      sessionInfo: this.sessionInfo,
+      useSessionFileReplyStream: this.useSessionFileReplyStreamValue,
+      workerReady: true,
+    };
+    return session;
+  }
+
+  get threadId() {
+    return this.session?.threadId || this.threadIdValue;
+  }
+
+  get threadOptions() {
+    return this.session?.threadOptions ? { ...this.session.threadOptions } : { ...this.threadOptionsValue };
+  }
+
+  getSnapshot() {
+    const sessionSnapshot = typeof this.session?.getSnapshot === "function" ? this.session.getSnapshot() : null;
+    if (sessionSnapshot) {
+      return {
+        ...this.snapshot,
+        ...sessionSnapshot,
+        backend: sessionSnapshot.backend || this.snapshot.backend,
+        sessionId: sessionSnapshot.sessionId || this.threadIdValue || undefined,
+        sessionInfo:
+          typeof this.session?.getSessionInfo === "function"
+            ? this.session.getSessionInfo()
+            : sessionSnapshot.sessionInfo || this.sessionInfo || null,
+      };
+    }
+    return {
+      ...this.snapshot,
+      sessionInfo: this.sessionInfo ? { ...this.sessionInfo } : null,
+    };
+  }
+
+  usesSessionFileReplyStream() {
+    if (typeof this.session?.usesSessionFileReplyStream === "function") {
+      return Boolean(this.session.usesSessionFileReplyStream());
+    }
+    return Boolean(this.useSessionFileReplyStreamValue);
+  }
+
+  getSessionInfo() {
+    if (typeof this.session?.getSessionInfo === "function") {
+      return this.session.getSessionInfo();
+    }
+    return this.sessionInfo ? { ...this.sessionInfo } : null;
+  }
+
+  setSessionMessageHandler(handler) {
+    this.sessionMessageHandler = typeof handler === "function" ? handler : null;
+    if (typeof this.session?.setSessionMessageHandler === "function") {
+      this.session.setSessionMessageHandler(this.sessionMessageHandler);
+    }
+  }
+
+  setWorkingStatusHandler(handler) {
+    this.workingStatusHandler = typeof handler === "function" ? handler : null;
+    if (typeof this.session?.setWorkingStatusHandler === "function") {
+      this.session.setWorkingStatusHandler(this.workingStatusHandler);
+    }
+  }
+
+  setSessionReplyTarget(replyTarget) {
+    this.replyTarget = replyTarget;
+    if (typeof this.session?.setSessionReplyTarget === "function") {
+      this.session.setSessionReplyTarget(replyTarget);
+    }
+  }
+
+  async ensureSessionInfo() {
+    const session = await this.readyPromise;
+    const sessionInfo = await session.ensureSessionInfo();
+    this.sessionInfo = sessionInfo && typeof sessionInfo === "object" ? { ...sessionInfo } : sessionInfo;
+    if (sessionInfo?.sessionId) {
+      this.threadIdValue = String(sessionInfo.sessionId);
+    }
+    return sessionInfo;
+  }
+
+  async getSessionUsageSummary() {
+    const session = await this.readyPromise;
+    return await session.getSessionUsageSummary();
+  }
+
+  async runTurn(promptText, options = {}) {
+    const session = await this.readyPromise;
+    return await session.runTurn(promptText, options);
+  }
+
+  async close() {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    try {
+      const session = await this.readyPromise;
+      await session.close?.();
+    } catch {
+      // best effort
+    }
+  }
+}
+
+export function createAiSession(backend, options = {}) {
+  if (process.env.CONDUCTOR_AI_SDK_DISABLE_WORKER === "1") {
+    return new LocalAiSessionProxy(backend, options);
+  }
+  return new RemoteAiSession(backend, options);
 }

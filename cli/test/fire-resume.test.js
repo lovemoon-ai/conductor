@@ -5,6 +5,7 @@ import { promises as fsp } from "node:fs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   findClaudeSessionPath,
@@ -16,6 +17,32 @@ import {
   resolveSessionRunDirectory,
   resumeProviderForBackend,
 } from "../src/fire/resume.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const FIXTURE_EXTERNAL_PROVIDER = path.resolve(
+  __dirname,
+  "..",
+  "..",
+  "modules",
+  "ai-sdk",
+  "fixtures",
+  "fake-external-provider.js",
+);
+
+async function withClearedProviderEnv(fn) {
+  const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+  delete process.env.AISDK_PROVIDER_PATH;
+  try {
+    return await fn();
+  } finally {
+    if (previousProviderPath === undefined) {
+      delete process.env.AISDK_PROVIDER_PATH;
+    } else {
+      process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+    }
+  }
+}
 
 describe("fire resume resolver", () => {
   it("maps backend name to resume provider", () => {
@@ -265,5 +292,61 @@ describe("fire resume resolver", () => {
         }),
       /Could not resolve workspace for Kimi session/,
     );
+  });
+
+  it("resolves external resume context from conductor session bindings", async () => {
+    await withClearedProviderEnv(async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-resume-"));
+      const workspaceDir = path.join(tempDir, "workspace-external");
+      fs.mkdirSync(workspaceDir, { recursive: true });
+
+      const conductorSessionsDir = path.join(tempDir, ".conductor", "sessions");
+      fs.mkdirSync(conductorSessionsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(conductorSessionsDir, "external.yaml"),
+        `sessions:\n  - project_id: project-external\n    task_id:\n      - task-external-1\n    project_path: ${JSON.stringify(workspaceDir)}\n    session_id: ext-123\n    backend_type: test-external\n`,
+        "utf8",
+      );
+
+      const configPath = path.join(tempDir, "config.yaml");
+      fs.writeFileSync(
+        configPath,
+        `envs:\n  AISDK_PROVIDER_PATH: ${FIXTURE_EXTERNAL_PROVIDER}\n`,
+        "utf8",
+      );
+
+      const resolved = await resolveResumeContext("test-external-alias", "ext-123", {
+        homeDir: tempDir,
+        configFilePath: configPath,
+      });
+      assert.equal(resolved.provider, "test-external");
+      assert.equal(resolved.cwd, workspaceDir);
+      assert.equal(resolved.debugMetadata?.cwdSource, "conductor_session_record");
+    });
+  });
+
+  it("falls back to the current working directory for external resume when no session record exists", async () => {
+    await withClearedProviderEnv(async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-resume-"));
+      const workspaceDir = path.join(tempDir, "workspace-external-fallback");
+      fs.mkdirSync(workspaceDir, { recursive: true });
+
+      const configPath = path.join(tempDir, "config.yaml");
+      fs.writeFileSync(
+        configPath,
+        `envs:\n  AISDK_PROVIDER_PATH: ${FIXTURE_EXTERNAL_PROVIDER}\n`,
+        "utf8",
+      );
+
+      const resolved = await resolveResumeContext("test-external", "ext-fallback-1", {
+        homeDir: tempDir,
+        cwd: workspaceDir,
+        configFilePath: configPath,
+      });
+      assert.equal(resolved.provider, "test-external");
+      assert.equal(resolved.cwd, workspaceDir);
+      assert.equal(resolved.sessionPath, null);
+      assert.equal(resolved.debugMetadata?.cwdSource, "current_working_directory");
+    });
   });
 });

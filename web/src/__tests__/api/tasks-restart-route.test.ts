@@ -213,7 +213,7 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(data.error).toContain("does not support backend codex");
   });
 
-  it("returns 400 when backend_type is explicitly provided but invalid", async () => {
+  it("returns 409 when backend_type is explicitly provided but unsupported by the daemon", async () => {
     const response = await POST(
       createMockRequest({
         method: "POST",
@@ -224,8 +224,46 @@ describe("/api/tasks/[taskId]/restart", () => {
     );
     const data = await extractJson(response);
 
-    expect(response.status).toBe(400);
-    expect(data.error).toContain("invalid backend_type");
+    expect(response.status).toBe(409);
+    expect(data.error).toContain("does not support backend not-a-backend");
+  });
+
+  it("allows same-backend restart for external providers supported by the daemon", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        title: "External task",
+        status: "running",
+        backendType: "test-external",
+        sessionId: "ext-session-1",
+        sessionFilePath: null,
+      }) as any,
+    );
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["test-external"], capabilities: [] },
+    ] as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { backend_type: "test-external", strategy: "new_task" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+    expect(data.task.backend_type).toBe("test-external");
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          taskId: expect.any(String),
+          eventType: "restart_task",
+          payloadJson: expect.stringContaining('"target_backend_type":"test-external"'),
+        }),
+      }),
+    );
   });
 
   it("restarts a stopped conductor-fire task in place on an online daemon", async () => {

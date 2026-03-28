@@ -3,6 +3,7 @@ import assert from "node:assert";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { WebSocketServer } from "ws";
 
@@ -12,6 +13,11 @@ import {
   resolveDefaultPtyShell,
   startDaemon,
 } from "../src/daemon.js";
+import { resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const FIXTURE_EXTERNAL_PROVIDER = path.resolve(__dirname, "..", "..", "modules", "ai-sdk", "fixtures", "fake-external-provider.js");
 
 function restoreEnv(key, value) {
   if (typeof value === "undefined") {
@@ -868,6 +874,116 @@ describe("Daemon", () => {
     }, 300);
   });
 
+  it("advertises and launches external backends on daemon hosts", async (t) => {
+    const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    process.env.AISDK_PROVIDER_PATH = FIXTURE_EXTERNAL_PROVIDER;
+    resetRuntimeBackendCacheForTests();
+
+    let handler;
+    let webSocketClientOptions;
+    const spawnCalls = [];
+    const sentEvents = [];
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-external-backend",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-external-backend",
+      },
+      {
+        spawn: (cmd, args, options) => {
+          spawnCalls.push({ cmd, args, options });
+          return {
+            pid: 24682,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: fs.existsSync,
+        readFileSync: fs.readFileSync,
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).endsWith("/api/projects/proj-external-1")) {
+            return { ok: true, json: async () => ({ metadata: null }) };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: (_config, options) => {
+          webSocketClientOptions = options;
+          return {
+            registerHandler: (registeredHandler) => {
+              handler = registeredHandler;
+            },
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async (payload) => {
+              sentEvents.push(payload);
+            },
+          };
+        },
+      },
+    );
+
+    t.after(() => {
+      if (previousProviderPath === undefined) {
+        delete process.env.AISDK_PROVIDER_PATH;
+      } else {
+        process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      resetRuntimeBackendCacheForTests();
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    assert.ok(typeof handler === "function");
+    assert.ok(String(webSocketClientOptions.extraHeaders["x-conductor-backends"]).includes("test-external"));
+
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "task-external-1",
+        project_id: "proj-external-1",
+        backend_type: "test-external-alias",
+        request_id: "req-external-1",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.strictEqual(spawnCalls.length, 1);
+    assert.deepStrictEqual(spawnCalls[0].args.slice(0, 4), [
+      "/tmp/cli.js",
+      "--backend",
+      "test-external",
+      "--",
+    ]);
+    assert.strictEqual(spawnCalls[0].options.env.CONDUCTOR_LAUNCHED_BY_DAEMON, "1");
+    assert.strictEqual(spawnCalls[0].options.env.CONDUCTOR_CLI_COMMAND, undefined);
+    assert.equal(
+      sentEvents.some(
+        (entry) =>
+          entry?.type === "task_status_update" &&
+          entry?.payload?.task_id === "task-external-1" &&
+          entry?.payload?.status === "RUNNING",
+      ),
+      true,
+    );
+  });
+
   it("should not spawn duplicate fire processes for the same task_id", (t, done) => {
     const taskPayload = {
       task_id: "task-dup",
@@ -932,6 +1048,121 @@ describe("Daemon", () => {
       }
       done();
     }, 500);
+  });
+
+  it("clears pending create_task state after a pre-spawn failure", async (t) => {
+    const sentEvents = [];
+    const unhandledRejections = [];
+    let handler;
+    let spawnCount = 0;
+    let failWorkspaceCreate = true;
+    const onUnhandledRejection = (error) => {
+      unhandledRejections.push(error);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-create-failure",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-create-failure",
+      },
+      {
+        spawn: () => {
+          spawnCount += 1;
+          return {
+            pid: 24683,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: (targetPath) => {
+          if (String(targetPath).startsWith("/tmp/test-ws-create-failure/") && failWorkspaceCreate) {
+            failWorkspaceCreate = false;
+            throw new Error("workspace mkdir failed");
+          }
+        },
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).endsWith("/api/projects/proj-create-failure-1")) {
+            return { ok: true, json: async () => ({ metadata: null }) };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (registeredHandler) => {
+            handler = registeredHandler;
+          },
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
+        }),
+      },
+    );
+
+    t.after(() => {
+      process.off("unhandledRejection", onUnhandledRejection);
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(typeof handler === "function");
+
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "task-create-failure-1",
+        project_id: "proj-create-failure-1",
+        backend_type: "codex",
+        request_id: "req-create-failure-1",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.strictEqual(spawnCount, 0);
+    assert.deepStrictEqual(unhandledRejections, []);
+    assert.equal(
+      sentEvents.some(
+        (entry) =>
+          entry?.type === "task_status_update" &&
+          entry?.payload?.task_id === "task-create-failure-1" &&
+          entry?.payload?.status === "KILLED" &&
+          String(entry?.payload?.summary || "").includes("workspace mkdir failed"),
+      ),
+      true,
+    );
+
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "task-create-failure-1",
+        project_id: "proj-create-failure-1",
+        backend_type: "codex",
+        request_id: "req-create-failure-2",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.strictEqual(spawnCount, 1);
   });
 
   it("falls back to default workspace when project path lookup times out", (t, done) => {

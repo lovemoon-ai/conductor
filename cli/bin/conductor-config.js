@@ -257,7 +257,8 @@ async function main() {
     "# envs:",
     "#   http_proxy: http://127.0.0.1:7890",
     "#   https_proxy: http://127.0.0.1:7890",
-    "#   all_proxy: socks5://127.0.0.1:7890"
+    "#   all_proxy: socks5://127.0.0.1:7890",
+    "#   AISDK_PROVIDER_PATH: path-to-private-aisdk-provider.js"
   );
 
   fs.writeFileSync(CONFIG_FILE, lines.join("\n"), "utf-8");

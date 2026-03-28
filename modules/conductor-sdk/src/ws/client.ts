@@ -98,7 +98,7 @@ export class ConductorWebSocketClient {
   private readonly onPong?: (event: WebSocketPongEvent) => void;
   private readonly onReconnected?: () => void;
   private readonly handlers: WebSocketHandler[] = [];
-  private readonly extraHeaders: Record<string, string>;
+  private extraHeaders: Record<string, string>;
   private conn: WebSocketLike | null = null;
   private runtime: ConnectionRuntime | null = null;
   private stop = false;
@@ -129,6 +129,13 @@ export class ConductorWebSocketClient {
 
   registerHandler(handler: WebSocketHandler): void {
     this.handlers.push(handler);
+  }
+
+  setExtraHeaders(extraHeaders: Record<string, string> = {}): void {
+    this.extraHeaders = {
+      'x-conductor-host': this.extraHeaders['x-conductor-host'] || defaultHostName(),
+      ...extraHeaders,
+    };
   }
 
   async connect(): Promise<void> {

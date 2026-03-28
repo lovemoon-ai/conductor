@@ -294,4 +294,37 @@ describe('RestartTaskControls', () => {
 
     expect(screen.getByRole('button', { name: 'New task' })).toBeDisabled();
   });
+
+  it('keeps same-backend external providers available for new-task restart', () => {
+    agentsState = {
+      agents: [
+        {
+          host: 'daemon-1',
+          supportedBackends: ['codex', 'test-external'],
+        },
+      ],
+    };
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-external-1',
+          title: 'External Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'daemon-1',
+          backendType: 'test-external',
+          sessionId: 'sess-external-1',
+          createdAt: new Date().toISOString(),
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText('Backend')).toHaveValue('test-external');
+    expect(screen.getByRole('option', { name: 'test-external' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'codex' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New task' })).toBeEnabled();
+  });
 });
