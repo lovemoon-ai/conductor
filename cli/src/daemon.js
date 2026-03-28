@@ -11,7 +11,13 @@ import yaml from "js-yaml";
 import { ConductorWebSocketClient, ConductorConfig, loadConfig, ConfigFileNotFound } from "@love-moon/conductor-sdk";
 import { DaemonLogCollector } from "./log-collector.js";
 import { resolveResumeContext } from "./fire/resume.js";
-import { filterRuntimeSupportedAllowCliList, normalizeRuntimeBackendName } from "./runtime-backends.js";
+import {
+  RUNTIME_SUPPORTED_BACKENDS,
+  isRuntimeSupportedBackend,
+  listRuntimeSupportedBackends,
+  normalizeRuntimeBackendAlias,
+  normalizeRuntimeBackendName,
+} from "./runtime-backends.js";
 import {
   PACKAGE_NAME,
   fetchLatestVersion,
@@ -180,12 +186,44 @@ const DEFAULT_CLI_LIST = {
   opencode: "opencode",
 };
 
+const LEGACY_RUNTIME_BACKEND_ALIASES = new Set(["code", "claude-code", "open-code", "open_code", "kimi-cli", "kimi-code"]);
+
+function filterConfiguredAllowCliList(allowCliList) {
+  if (!allowCliList || typeof allowCliList !== "object") {
+    return {};
+  }
+  const builtInBackends = new Set(RUNTIME_SUPPORTED_BACKENDS);
+  const filtered = {};
+  for (const [backend, command] of Object.entries(allowCliList)) {
+    const normalizedBackend = normalizeRuntimeBackendName(backend);
+    if (
+      !normalizedBackend ||
+      LEGACY_RUNTIME_BACKEND_ALIASES.has(normalizedBackend) ||
+      !builtInBackends.has(normalizedBackend)
+    ) {
+      continue;
+    }
+    if (typeof command !== "string" || !command.trim()) {
+      continue;
+    }
+    if (filtered[normalizedBackend] !== undefined) {
+      continue;
+    }
+    filtered[normalizedBackend] = command.trim();
+  }
+  return filtered;
+}
+
 function getAllowCliList(userConfig) {
   // If user has configured allow_cli_list, use it; otherwise use defaults
   if (userConfig.allow_cli_list && typeof userConfig.allow_cli_list === "object") {
-    return filterRuntimeSupportedAllowCliList(userConfig.allow_cli_list);
+    return filterConfiguredAllowCliList(userConfig.allow_cli_list);
   }
   return DEFAULT_CLI_LIST;
+}
+
+function formatBackendLaunchCommand(cliCommand) {
+  return typeof cliCommand === "string" && cliCommand.trim() ? cliCommand.trim() : "ai-sdk-managed";
 }
 
 async function defaultCreatePty(command, args, options) {
@@ -458,7 +496,7 @@ export function startDaemon(config = {}, deps = {}) {
 
   // Get allow_cli_list from config
   const ALLOW_CLI_LIST = getAllowCliList(userConfig);
-  const SUPPORTED_BACKENDS = Object.keys(ALLOW_CLI_LIST);
+  let SUPPORTED_BACKENDS = Object.keys(ALLOW_CLI_LIST);
   const fetchLatestVersionFn = deps.fetchLatestVersion || fetchLatestVersion;
   const isNewerVersionFn = deps.isNewerVersion || isNewerVersion;
   const detectPackageManagerFn = deps.detectPackageManager || detectPackageManager;
@@ -770,13 +808,6 @@ export function startDaemon(config = {}, deps = {}) {
     return { close: detachProcessHandlers };
   }
 
-  log("Daemon starting...");
-  log(`Backend: ${BACKEND_URL}`);
-  log(`Workspace: ${WORKSPACE_ROOT}`);
-  log(`CLI Path: ${CLI_PATH_VAL}`);
-  log(`Daemon Name: ${AGENT_NAME}`);
-  log(`Supported Backends: ${SUPPORTED_BACKENDS.join(", ")}`);
-
   const sdkConfig = new ConductorConfig({
     agentToken: AGENT_TOKEN,
     backendUrl: BACKEND_HTTP,
@@ -787,6 +818,7 @@ export function startDaemon(config = {}, deps = {}) {
   let didRecoverStaleTasks = false;
   let daemonShuttingDown = false;
   const activeTaskProcesses = new Map();
+  const pendingTaskStarts = new Set();
   const activePtySessions = new Map();
   const activePtyRtcTransports = new Map();
   const suppressedExitStatusReports = new Set();
@@ -903,23 +935,48 @@ export function startDaemon(config = {}, deps = {}) {
     handleEvent(payload);
   });
 
-  client.connect().catch((err) => {
-    logError(`Failed to connect: ${err}`);
-  });
+  void (async () => {
+    try {
+      const runtimeBackends = await listRuntimeSupportedBackends({ configFilePath: config.CONFIG_FILE });
+      const externalBackends = runtimeBackends.filter((backend) => !RUNTIME_SUPPORTED_BACKENDS.includes(backend));
+      SUPPORTED_BACKENDS = [...new Set([...Object.keys(ALLOW_CLI_LIST), ...externalBackends])];
+    } catch (error) {
+      logError(`Failed to discover external backends: ${error?.message || error}`);
+    }
 
-  if (!AUTO_UPDATE_ENABLED && autoUpdateSupportedInstall === false) {
-    log("[auto-update] Disabled for local/dev install; set CONDUCTOR_AUTO_UPDATE_FORCE_LOCAL=true to override");
-  }
+    extraHeaders["x-conductor-backends"] = SUPPORTED_BACKENDS.join(",");
+    if (typeof client?.setExtraHeaders === "function") {
+      client.setExtraHeaders(extraHeaders);
+    }
+    if (daemonShuttingDown) {
+      return;
+    }
 
-  watchdogTimer = setInterval(() => {
-    void runDaemonWatchdog();
-    // Auto-update checks (internally throttled)
-    void checkForUpdate().catch(() => {});
-    void tryAutoUpdate().catch(() => {});
-  }, DAEMON_WATCHDOG_INTERVAL_MS);
-  if (typeof watchdogTimer?.unref === "function") {
-    watchdogTimer.unref();
-  }
+    log("Daemon starting...");
+    log(`Backend: ${BACKEND_URL}`);
+    log(`Workspace: ${WORKSPACE_ROOT}`);
+    log(`CLI Path: ${CLI_PATH_VAL}`);
+    log(`Daemon Name: ${AGENT_NAME}`);
+    log(`Supported Backends: ${SUPPORTED_BACKENDS.join(", ")}`);
+
+    client.connect().catch((err) => {
+      logError(`Failed to connect: ${err}`);
+    });
+
+    if (!AUTO_UPDATE_ENABLED && autoUpdateSupportedInstall === false) {
+      log("[auto-update] Disabled for local/dev install; set CONDUCTOR_AUTO_UPDATE_FORCE_LOCAL=true to override");
+    }
+
+    watchdogTimer = setInterval(() => {
+      void runDaemonWatchdog();
+      // Auto-update checks (internally throttled)
+      void checkForUpdate().catch(() => {});
+      void tryAutoUpdate().catch(() => {});
+    }, DAEMON_WATCHDOG_INTERVAL_MS);
+    if (typeof watchdogTimer?.unref === "function") {
+      watchdogTimer.unref();
+    }
+  })();
 
   function markBackendHttpSuccess(at = Date.now()) {
     lastSuccessfulHttpAt = at;
@@ -2556,7 +2613,9 @@ export function startDaemon(config = {}, deps = {}) {
     }
 
     if (event.type === "create_task") {
-      handleCreateTask(event.payload);
+      void handleCreateTask(event.payload).catch((error) => {
+        logError(`Unhandled create_task failure: ${error?.message || error}`);
+      });
       return;
     }
     if (event.type === "restart_task") {
@@ -2881,6 +2940,39 @@ export function startDaemon(config = {}, deps = {}) {
       });
   }
 
+  function reportCreateTaskFailure({ taskId, projectId, requestId, error, sendAck = true }) {
+    const normalizedTaskId = taskId ? String(taskId) : "";
+    const normalizedProjectId = projectId ? String(projectId) : "";
+    const message = error instanceof Error ? error.message : String(error);
+    logError(`Failed to create task ${normalizedTaskId || "unknown"}: ${message}`);
+    if (sendAck) {
+      sendAgentCommandAck({
+        requestId,
+        taskId: normalizedTaskId,
+        eventType: "create_task",
+        accepted: false,
+      }).catch((err) => {
+        logError(`Failed to report agent_command_ack(create_task) for ${normalizedTaskId}: ${err?.message || err}`);
+      });
+    }
+    if (!normalizedTaskId || !normalizedProjectId) {
+      return;
+    }
+    client
+      .sendJson({
+        type: "task_status_update",
+        payload: {
+          task_id: normalizedTaskId,
+          project_id: normalizedProjectId,
+          status: "KILLED",
+          summary: message,
+        },
+      })
+      .catch((err) => {
+        logError(`Failed to report task status (KILLED) for ${normalizedTaskId}: ${err?.message || err}`);
+      });
+  }
+
   async function resolveRestartCwd({
     projectId,
     preferredCwd = "",
@@ -2905,7 +2997,10 @@ export function startDaemon(config = {}, deps = {}) {
         const resumeContext = await (deps.resolveResumeContext || resolveResumeContext)(
           normalizedBackend,
           normalizedSessionId,
-          { cwd: process.cwd() },
+          {
+            cwd: process.cwd(),
+            configFilePath: config.CONFIG_FILE,
+          },
         );
         if (typeof resumeContext?.cwd === "string" && resumeContext.cwd.trim()) {
           return resumeContext.cwd.trim();
@@ -2971,9 +3066,9 @@ export function startDaemon(config = {}, deps = {}) {
     }
 
     const existingTaskRecord = activeTaskProcesses.get(taskId);
-    if (existingTaskRecord?.child) {
+    if (existingTaskRecord?.child || pendingTaskStarts.has(taskId)) {
       log(
-        `Duplicate create_task ignored for ${taskId}: task already active (pid=${existingTaskRecord.child.pid ?? "unknown"})`,
+        `Duplicate create_task ignored for ${taskId}: task already active (pid=${existingTaskRecord?.child?.pid ?? "unknown"})`,
       );
       sendAgentCommandAck({
         requestId,
@@ -2984,245 +3079,256 @@ export function startDaemon(config = {}, deps = {}) {
       return;
     }
 
-    // Validate and get CLI command for the backend
-    const effectiveBackend = normalizeRuntimeBackendName(backendType || SUPPORTED_BACKENDS[0]);
-    if (!SUPPORTED_BACKENDS.includes(effectiveBackend)) {
-      logError(`Unsupported backend: ${effectiveBackend}. Supported: ${SUPPORTED_BACKENDS.join(", ")}`);
-      sendAgentCommandAck({
-        requestId,
-        taskId,
-        eventType: "create_task",
-        accepted: false,
-      }).catch(() => {});
-      client
-        .sendJson({
-          type: "task_status_update",
-          payload: {
-            task_id: taskId,
-            project_id: projectId,
-            status: "KILLED",
-            summary: `Unsupported backend: ${effectiveBackend}`,
-          },
-        })
-        .catch(() => {});
-      return;
-    }
-
-    sendAgentCommandAck({
-      requestId,
-      taskId,
-      eventType: "create_task",
-      accepted: true,
-    }).catch((err) => {
-      logError(`Failed to report agent_command_ack(create_task) for ${taskId}: ${err?.message || err}`);
-    });
-
-    const cliCommand = ALLOW_CLI_LIST[effectiveBackend];
-
-    log("");
-    log(`Creating task ${taskId} for project ${projectId} (${effectiveBackend})`);
-    log(`CLI command: ${cliCommand}`);
-    client
-      .sendJson({
-        type: "task_status_update",
-        payload: {
-          task_id: taskId,
-          project_id: projectId,
-          status: "INIT",
-        },
-      })
-      .catch((err) => {
-        logError(`Failed to report task status (INIT) for ${taskId}: ${err?.message || err}`);
-      });
-
-    // Check if project has a bound local path for this daemon
-    const boundPath = await getProjectLocalPath(projectId);
-    if (daemonShuttingDown) {
-      rejectCreateTaskDuringShutdown(payload, { sendAck: false });
-      return;
-    }
-    let taskDir;
-    let logPath;
-    let runTimestampPart = null;
-
-    if (boundPath) {
-      // Use the bound path directly (don't create subdirectory)
-      taskDir = boundPath;
-      log(`Using project bound path: ${taskDir}`);
-      // Create log file in the bound path
-      logPath = path.join(taskDir, "conductor.log");
-    } else {
-      // Use Beijing timestamp + process id workspace structure:
-      //   YYYY-MM-DD/HH-mm-ss_pid_<fire-pid>/
-      // Child pid is only known after spawn; start with daemon pid and rename after spawn.
-      const now = new Date();
-      const dayDir = path.join(WORKSPACE_ROOT, formatWorkspaceDate(now));
-      runTimestampPart = formatWorkspaceRunTimestamp(now);
-      const pendingRunDir = `${runTimestampPart}_pid_${process.pid}`;
-      taskDir = path.join(dayDir, pendingRunDir);
-      mkdirSyncFn(taskDir, { recursive: true });
-      logPath = path.join(taskDir, "conductor.log");
-    }
-
-    const args = [];
-    if (effectiveBackend) {
-      args.push("--backend", effectiveBackend);
-    }
-    if (initialContent) {
-      args.push("--prefill", initialContent);
-    }
-    // Explicitly separate conductor flags from backend args so they don't leak into messages
-    args.push("--");
-
-    const env = {
-      ...process.env,
-      CONDUCTOR_PROJECT_ID: projectId,
-      CONDUCTOR_TASK_ID: taskId,
-      CONDUCTOR_CLI_COMMAND: cliCommand,
-    };
-    if (config.CONFIG_FILE) {
-      env.CONDUCTOR_CONFIG = config.CONFIG_FILE;
-    }
-    if (AGENT_TOKEN) {
-      env.CONDUCTOR_AGENT_TOKEN = AGENT_TOKEN;
-    }
-    if (BACKEND_HTTP) {
-      env.CONDUCTOR_BACKEND_URL = BACKEND_HTTP;
-    }
-
-    const child = spawnFn(process.execPath, [CLI_PATH_VAL, ...args], {
-      cwd: taskDir,
-      env,
-      stdio: ["inherit", "pipe", "pipe"],
-    });
-
-    if (!boundPath && runTimestampPart && Number.isInteger(child?.pid) && child.pid > 0) {
-      const desiredTaskDir = path.join(path.dirname(taskDir), `${runTimestampPart}_pid_${child.pid}`);
-      if (desiredTaskDir !== taskDir) {
-        try {
-          renameSyncFn(taskDir, desiredTaskDir);
-          taskDir = desiredTaskDir;
-          logPath = path.join(taskDir, "conductor.log");
-        } catch (err) {
-          logError(
-            `Failed to rename workspace dir from ${taskDir} to ${desiredTaskDir}: ${err?.message || err}`,
-          );
-        }
-      }
-    }
-
+    pendingTaskStarts.add(taskId);
+    let acceptedAckSent = false;
     try {
-      mkdirSyncFn(taskDir, { recursive: true });
-    } catch (err) {
-      logError(`Failed to ensure task workspace ${taskDir}: ${err?.message || err}`);
-    }
-
-    let logStream;
-    try {
-      logStream = createWriteStreamFn(logPath, { flags: "a" });
-      if (logStream && typeof logStream.on === "function") {
-        const logPathSnapshot = logPath;
-        logStream.on("error", (err) => {
-          logError(`Log stream error (${logPathSnapshot}): ${err?.message || err}`);
-        });
-      }
-    } catch (err) {
-      logError(`Failed to open log file ${logPath}: ${err?.message || err}`);
-    }
-
-    log(`New task workspace: ${taskDir}`);
-    log(`Logs: ${logPath}`);
-
-    activeTaskProcesses.set(taskId, {
-      child,
-      projectId,
-      logPath,
-      stopForceKillTimer: null,
-    });
-
-    client
-      .sendJson({
-        type: "task_status_update",
-        payload: {
-          task_id: taskId,
-          project_id: projectId,
-          status: "RUNNING",
-        },
-      })
-      .catch((err) => {
-        logError(`Failed to report task status (RUNNING) for ${taskId}: ${err?.message || err}`);
+      const effectiveBackend = await normalizeRuntimeBackendAlias(backendType || SUPPORTED_BACKENDS[0], {
+        configFilePath: config.CONFIG_FILE,
       });
-
-    if (child.stdout && typeof child.stdout.pipe === "function" && logStream) {
-      child.stdout.pipe(logStream, { end: false });
-    } else if (child.stdout && typeof child.stdout.on === "function" && logStream) {
-      child.stdout.on("data", (chunk) => logStream.write(chunk));
-    }
-    if (child.stderr && typeof child.stderr.pipe === "function" && logStream) {
-      child.stderr.pipe(logStream, { end: false });
-    } else if (child.stderr && typeof child.stderr.on === "function" && logStream) {
-      child.stderr.on("data", (chunk) => logStream.write(chunk));
-    }
-
-    child.on("error", (err) => {
-      logError(`Failed to spawn CLI: ${err.message}`);
-      if (logStream) {
-        const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).replace(" ", "T");
-        logStream.write(`[daemon ${ts}] spawn error: ${err.message}\n`);
-      }
-    });
-
-    child.on("exit", (code, signal) => {
-      const active = activeTaskProcesses.get(taskId);
-      if (active?.stopForceKillTimer) {
-        clearTimeout(active.stopForceKillTimer);
-      }
-      activeTaskProcesses.delete(taskId);
-      const suppressExitStatusReport = suppressedExitStatusReports.has(taskId);
-      suppressedExitStatusReports.delete(taskId);
-      if (logStream) {
-        const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).replace(" ", "T");
-        if (signal) {
-          logStream.write(`[daemon ${ts}] process killed by signal ${signal}\n`);
-        } else {
-          logStream.write(`[daemon ${ts}] process exited with code ${code}\n`);
-        }
-        logStream.end();
-      }
-      if (signal) {
-        log(`Task ${taskId} killed by signal ${signal}`);
-      } else {
-        log(`Task ${taskId} finished with code ${code}`);
-      }
-      log(`Logs: ${logPath}`);
-
-      const isKilledBySignal = Boolean(signal);
-      const isKilledByExitCode = code === 130 || code === 143;
-      const isKilled = isKilledBySignal || isKilledByExitCode;
-
-      const status = isKilled ? "KILLED" : code === 0 ? "COMPLETED" : "KILLED";
-      const summary = isKilled
-        ? (signal ? `killed by signal ${signal}` : `terminated (exit code ${code})`)
-        : code === 0
-          ? "completed"
-          : `exited with code ${code}`;
-
-      if (!suppressExitStatusReport) {
+      if (!(await isRuntimeSupportedBackend(effectiveBackend, { configFilePath: config.CONFIG_FILE }))) {
+        logError(`Unsupported backend: ${effectiveBackend}. Supported: ${SUPPORTED_BACKENDS.join(", ")}`);
+        sendAgentCommandAck({
+          requestId,
+          taskId,
+          eventType: "create_task",
+          accepted: false,
+        }).catch(() => {});
         client
           .sendJson({
             type: "task_status_update",
             payload: {
               task_id: taskId,
               project_id: projectId,
-              status,
-              summary,
+              status: "KILLED",
+              summary: `Unsupported backend: ${effectiveBackend}`,
             },
           })
-          .catch((err) => {
-            logError(`Failed to report task status (${status}) for ${taskId}: ${err?.message || err}`);
-          });
+          .catch(() => {});
+        return;
       }
-    });
+
+      sendAgentCommandAck({
+        requestId,
+        taskId,
+        eventType: "create_task",
+        accepted: true,
+      }).catch((err) => {
+        logError(`Failed to report agent_command_ack(create_task) for ${taskId}: ${err?.message || err}`);
+      });
+      acceptedAckSent = true;
+
+      const cliCommand = ALLOW_CLI_LIST[effectiveBackend] || "";
+
+      log("");
+      log(`Creating task ${taskId} for project ${projectId} (${effectiveBackend})`);
+      log(`CLI command: ${formatBackendLaunchCommand(cliCommand)}`);
+      client
+        .sendJson({
+          type: "task_status_update",
+          payload: {
+            task_id: taskId,
+            project_id: projectId,
+            status: "INIT",
+          },
+        })
+        .catch((err) => {
+          logError(`Failed to report task status (INIT) for ${taskId}: ${err?.message || err}`);
+        });
+
+      const boundPath = await getProjectLocalPath(projectId);
+      if (daemonShuttingDown) {
+        rejectCreateTaskDuringShutdown(payload, { sendAck: false });
+        return;
+      }
+
+      let taskDir;
+      let logPath;
+      let runTimestampPart = null;
+
+      if (boundPath) {
+        taskDir = boundPath;
+        log(`Using project bound path: ${taskDir}`);
+        logPath = path.join(taskDir, "conductor.log");
+      } else {
+        const now = new Date();
+        const dayDir = path.join(WORKSPACE_ROOT, formatWorkspaceDate(now));
+        runTimestampPart = formatWorkspaceRunTimestamp(now);
+        const pendingRunDir = `${runTimestampPart}_pid_${process.pid}`;
+        taskDir = path.join(dayDir, pendingRunDir);
+        mkdirSyncFn(taskDir, { recursive: true });
+        logPath = path.join(taskDir, "conductor.log");
+      }
+
+      const args = [];
+      if (effectiveBackend) {
+        args.push("--backend", effectiveBackend);
+      }
+      if (initialContent) {
+        args.push("--prefill", initialContent);
+      }
+      args.push("--");
+
+      const env = {
+        ...process.env,
+        CONDUCTOR_PROJECT_ID: projectId,
+        CONDUCTOR_TASK_ID: taskId,
+        CONDUCTOR_LAUNCHED_BY_DAEMON: "1",
+        ...(cliCommand ? { CONDUCTOR_CLI_COMMAND: cliCommand } : {}),
+      };
+      if (config.CONFIG_FILE) {
+        env.CONDUCTOR_CONFIG = config.CONFIG_FILE;
+      }
+      if (AGENT_TOKEN) {
+        env.CONDUCTOR_AGENT_TOKEN = AGENT_TOKEN;
+      }
+      if (BACKEND_HTTP) {
+        env.CONDUCTOR_BACKEND_URL = BACKEND_HTTP;
+      }
+
+      const child = spawnFn(process.execPath, [CLI_PATH_VAL, ...args], {
+        cwd: taskDir,
+        env,
+        stdio: ["inherit", "pipe", "pipe"],
+      });
+
+      if (!boundPath && runTimestampPart && Number.isInteger(child?.pid) && child.pid > 0) {
+        const desiredTaskDir = path.join(path.dirname(taskDir), `${runTimestampPart}_pid_${child.pid}`);
+        if (desiredTaskDir !== taskDir) {
+          try {
+            renameSyncFn(taskDir, desiredTaskDir);
+            taskDir = desiredTaskDir;
+            logPath = path.join(taskDir, "conductor.log");
+          } catch (err) {
+            logError(
+              `Failed to rename workspace dir from ${taskDir} to ${desiredTaskDir}: ${err?.message || err}`,
+            );
+          }
+        }
+      }
+
+      try {
+        mkdirSyncFn(taskDir, { recursive: true });
+      } catch (err) {
+        logError(`Failed to ensure task workspace ${taskDir}: ${err?.message || err}`);
+      }
+
+      let logStream;
+      try {
+        logStream = createWriteStreamFn(logPath, { flags: "a" });
+        if (logStream && typeof logStream.on === "function") {
+          const logPathSnapshot = logPath;
+          logStream.on("error", (err) => {
+            logError(`Log stream error (${logPathSnapshot}): ${err?.message || err}`);
+          });
+        }
+      } catch (err) {
+        logError(`Failed to open log file ${logPath}: ${err?.message || err}`);
+      }
+
+      log(`New task workspace: ${taskDir}`);
+      log(`Logs: ${logPath}`);
+
+      activeTaskProcesses.set(taskId, {
+        child,
+        projectId,
+        logPath,
+        stopForceKillTimer: null,
+      });
+
+      client
+        .sendJson({
+          type: "task_status_update",
+          payload: {
+            task_id: taskId,
+            project_id: projectId,
+            status: "RUNNING",
+          },
+        })
+        .catch((err) => {
+          logError(`Failed to report task status (RUNNING) for ${taskId}: ${err?.message || err}`);
+        });
+
+      if (child.stdout && typeof child.stdout.pipe === "function" && logStream) {
+        child.stdout.pipe(logStream, { end: false });
+      } else if (child.stdout && typeof child.stdout.on === "function" && logStream) {
+        child.stdout.on("data", (chunk) => logStream.write(chunk));
+      }
+      if (child.stderr && typeof child.stderr.pipe === "function" && logStream) {
+        child.stderr.pipe(logStream, { end: false });
+      } else if (child.stderr && typeof child.stderr.on === "function" && logStream) {
+        child.stderr.on("data", (chunk) => logStream.write(chunk));
+      }
+
+      child.on("error", (err) => {
+        logError(`Failed to spawn CLI: ${err.message}`);
+        if (logStream) {
+          const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).replace(" ", "T");
+          logStream.write(`[daemon ${ts}] spawn error: ${err.message}\n`);
+        }
+      });
+
+      child.on("exit", (code, signal) => {
+        const active = activeTaskProcesses.get(taskId);
+        if (active?.stopForceKillTimer) {
+          clearTimeout(active.stopForceKillTimer);
+        }
+        activeTaskProcesses.delete(taskId);
+        const suppressExitStatusReport = suppressedExitStatusReports.has(taskId);
+        suppressedExitStatusReports.delete(taskId);
+        if (logStream) {
+          const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).replace(" ", "T");
+          if (signal) {
+            logStream.write(`[daemon ${ts}] process killed by signal ${signal}\n`);
+          } else {
+            logStream.write(`[daemon ${ts}] process exited with code ${code}\n`);
+          }
+          logStream.end();
+        }
+        if (signal) {
+          log(`Task ${taskId} killed by signal ${signal}`);
+        } else {
+          log(`Task ${taskId} finished with code ${code}`);
+        }
+        log(`Logs: ${logPath}`);
+
+        const isKilledBySignal = Boolean(signal);
+        const isKilledByExitCode = code === 130 || code === 143;
+        const isKilled = isKilledBySignal || isKilledByExitCode;
+
+        const status = isKilled ? "KILLED" : code === 0 ? "COMPLETED" : "KILLED";
+        const summary = isKilled
+          ? (signal ? `killed by signal ${signal}` : `terminated (exit code ${code})`)
+          : code === 0
+            ? "completed"
+            : `exited with code ${code}`;
+
+        if (!suppressExitStatusReport) {
+          client
+            .sendJson({
+              type: "task_status_update",
+              payload: {
+                task_id: taskId,
+                project_id: projectId,
+                status,
+                summary,
+              },
+            })
+            .catch((err) => {
+              logError(`Failed to report task status (${status}) for ${taskId}: ${err?.message || err}`);
+            });
+        }
+      });
+    } catch (error) {
+      reportCreateTaskFailure({
+        taskId,
+        projectId,
+        requestId,
+        error,
+        sendAck: !acceptedAckSent,
+      });
+    } finally {
+      pendingTaskStarts.delete(taskId);
+    }
   }
 
   async function handleRestartTask(payload) {
@@ -3299,8 +3405,10 @@ export function startDaemon(config = {}, deps = {}) {
       return;
     }
 
-    const effectiveBackend = normalizeRuntimeBackendName(targetBackendType || sourceBackendType || SUPPORTED_BACKENDS[0]);
-    if (!SUPPORTED_BACKENDS.includes(effectiveBackend)) {
+    const effectiveBackend = await normalizeRuntimeBackendAlias(targetBackendType || sourceBackendType || SUPPORTED_BACKENDS[0], {
+      configFilePath: config.CONFIG_FILE,
+    });
+    if (!(await isRuntimeSupportedBackend(effectiveBackend, { configFilePath: config.CONFIG_FILE }))) {
       reportRestartFailure({
         taskId: normalizedTargetTaskId,
         projectId: normalizedProjectId,
@@ -3409,13 +3517,13 @@ export function startDaemon(config = {}, deps = {}) {
       return;
     }
 
-    const cliCommand = ALLOW_CLI_LIST[effectiveBackend];
+    const cliCommand = ALLOW_CLI_LIST[effectiveBackend] || "";
 
     log("");
     log(
       `Restarting task ${normalizedTargetTaskId} from ${normalizedSourceTaskId} (${normalizedMode} -> ${effectiveBackend})`,
     );
-    log(`CLI command: ${cliCommand}`);
+    log(`CLI command: ${formatBackendLaunchCommand(cliCommand)}`);
 
     if (normalizedMode !== "resume_inplace") {
       client
@@ -3472,7 +3580,8 @@ export function startDaemon(config = {}, deps = {}) {
       ...process.env,
       CONDUCTOR_PROJECT_ID: normalizedProjectId,
       CONDUCTOR_TASK_ID: normalizedTargetTaskId,
-      CONDUCTOR_CLI_COMMAND: cliCommand,
+      CONDUCTOR_LAUNCHED_BY_DAEMON: "1",
+      ...(cliCommand ? { CONDUCTOR_CLI_COMMAND: cliCommand } : {}),
       CONDUCTOR_RESUME_CWD: resolvedResumeCwd,
     };
     if (config.CONFIG_FILE) {

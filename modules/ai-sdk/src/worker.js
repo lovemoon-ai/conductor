@@ -39,7 +39,7 @@ async function handleCreate(message) {
     throw new Error("AI worker session already created");
   }
   sessionCreated = true;
-  session = createLocalAiSession(message.backend, {
+  session = await createLocalAiSession(message.backend, {
     ...(message.options && typeof message.options === "object" ? message.options : {}),
     logger: {
       log: (line) => {

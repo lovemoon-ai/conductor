@@ -46,7 +46,7 @@ if ! grep -Fq "$EXPECTED_MARKER" "$CONDUCTOR_BIN"; then
 fi
 
 echo "==> Verifying Claude ai-sdk provider"
-pnpm -C "$ROOT_DIR/cli" exec node --input-type=module -e "import { createAiSession } from '@love-moon/ai-sdk'; const session = createAiSession('claude'); const snapshot = session.getSnapshot(); if (snapshot.provider !== 'claude-agent-sdk') { throw new Error(\`Unexpected Claude provider: \${snapshot.provider}\`); } await session.close(); console.log('Verified provider:', snapshot.provider);"
+pnpm -C "$ROOT_DIR/cli" exec node --input-type=module -e "import { createAiSession } from '@love-moon/ai-sdk'; const session = createAiSession('claude'); await session.readyPromise; const snapshot = session.getSnapshot(); if (snapshot.provider !== 'claude-agent-sdk') { throw new Error(\`Unexpected Claude provider: \${snapshot.provider}\`); } await session.close(); console.log('Verified provider:', snapshot.provider);"
 
 echo "==> Verifying node-pty native binding"
 pnpm -C "$ROOT_DIR/cli" exec node "$ROOT_DIR/cli/bin/conductor-verify-node-pty.js" "$ROOT_DIR/cli"

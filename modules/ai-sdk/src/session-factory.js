@@ -2,13 +2,17 @@ import { CodexAppServerSession } from "./providers/codex-app-server-session.js";
 import { ClaudeAgentSdkSession } from "./providers/claude-agent-sdk-session.js";
 import { KimiCliSession } from "./providers/kimi-cli-session.js";
 import { OpencodeSdkSession } from "./providers/opencode-sdk-session.js";
+import {
+  getExternalProviderDescriptor,
+  resolveExternalBackend,
+} from "./external-provider-registry.js";
 
 export const DEFAULT_PROVIDER_VARIANT = "codex-app-server";
 export const CLAUDE_PROVIDER_VARIANT = "claude-agent-sdk";
 export const KIMI_PROVIDER_VARIANT = "kimi-cli-wire";
 export const OPENCODE_PROVIDER_VARIANT = "opencode-sdk";
 
-export function normalizeBackend(backend) {
+function normalizeBuiltInBackendName(backend) {
   const normalized = String(backend || "").trim().toLowerCase();
   if (normalized === "code") {
     return "codex";
@@ -25,13 +29,25 @@ export function normalizeBackend(backend) {
   return normalized;
 }
 
-export function isSupportedBackend(backend) {
-  const normalized = normalizeBackend(backend);
-  return normalized === "codex" || normalized === "claude" || normalized === "kimi" || normalized === "opencode";
+export async function normalizeBackend(backend, options = {}) {
+  const normalized = normalizeBuiltInBackendName(backend);
+  if (normalized === "codex" || normalized === "claude" || normalized === "kimi" || normalized === "opencode") {
+    return normalized;
+  }
+  return await resolveExternalBackend(normalized, options);
 }
 
-export function providerVariantForBackend(backend) {
-  const normalized = normalizeBackend(backend);
+export async function isSupportedBackend(backend, options = {}) {
+  const normalized = await normalizeBackend(backend, options);
+  if (normalized === "codex" || normalized === "claude" || normalized === "kimi" || normalized === "opencode") {
+    return true;
+  }
+  const descriptor = await getExternalProviderDescriptor(normalized, options);
+  return Boolean(descriptor);
+}
+
+export async function providerVariantForBackend(backend, options = {}) {
+  const normalized = await normalizeBackend(backend, options);
   if (normalized === "claude") {
     return CLAUDE_PROVIDER_VARIANT;
   }
@@ -41,21 +57,32 @@ export function providerVariantForBackend(backend) {
   if (normalized === "opencode") {
     return OPENCODE_PROVIDER_VARIANT;
   }
+  if (normalized === "codex") {
+    return DEFAULT_PROVIDER_VARIANT;
+  }
+  const descriptor = await getExternalProviderDescriptor(normalized, options);
+  if (descriptor?.variant) {
+    return descriptor.variant;
+  }
   return DEFAULT_PROVIDER_VARIANT;
 }
 
-export function assertSupportedBackend(backend) {
-  const normalized = normalizeBackend(backend);
+export async function assertSupportedBackend(backend, options = {}) {
+  const normalized = await normalizeBackend(backend, options);
   if (normalized === "codex" || normalized === "claude" || normalized === "kimi" || normalized === "opencode") {
     return normalized;
   }
+  const descriptor = await getExternalProviderDescriptor(normalized, options);
+  if (descriptor) {
+    return normalized;
+  }
   throw new Error(
-    `Unsupported AI SDK backend "${backend}". Only codex app-server, claude agent-sdk, kimi cli wire, and opencode sdk are supported.`,
+    `Unsupported AI SDK backend "${backend}". Built-in backends are codex app-server, claude agent-sdk, kimi cli wire, and opencode sdk. Set AISDK_PROVIDER_PATH to load external providers.`,
   );
 }
 
-export function createLocalAiSession(backend, options = {}) {
-  const normalized = assertSupportedBackend(backend);
+export async function createLocalAiSession(backend, options = {}) {
+  const normalized = await assertSupportedBackend(backend, options);
   if (normalized === "claude") {
     return new ClaudeAgentSdkSession(normalized, options);
   }
@@ -65,7 +92,14 @@ export function createLocalAiSession(backend, options = {}) {
   if (normalized === "opencode") {
     return new OpencodeSdkSession(normalized, options);
   }
-  return new CodexAppServerSession(normalized, options);
+  if (normalized === "codex") {
+    return new CodexAppServerSession(normalized, options);
+  }
+  const descriptor = await getExternalProviderDescriptor(normalized, options);
+  if (!descriptor) {
+    throw new Error(`External AI SDK provider "${normalized}" is unavailable.`);
+  }
+  return await descriptor.createSession(normalized, options);
 }
 
 export { CodexAppServerSession };

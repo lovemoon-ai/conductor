@@ -1,5 +1,7 @@
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -27,6 +29,9 @@ const FAKE_KIMI_WIRE = path.resolve(
   "fixtures",
   "fake-kimi-wire.js",
 );
+const DEFAULT_CONDUCTOR_CONFIG = process.env.CONDUCTOR_CONFIG;
+
+let isolatedConfigPath = null;
 
 async function waitFor(predicate, { timeoutMs = 1000, intervalMs = 20 } = {}) {
   const startedAt = Date.now();
@@ -38,6 +43,27 @@ async function waitFor(predicate, { timeoutMs = 1000, intervalMs = 20 } = {}) {
   }
   throw new Error("Timed out waiting for condition");
 }
+
+beforeEach(() => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-sdk-worker-config-"));
+  isolatedConfigPath = path.join(tempDir, "config.yaml");
+  fs.writeFileSync(isolatedConfigPath, "allow_cli_list: {}\n", "utf8");
+  process.env.CONDUCTOR_CONFIG = isolatedConfigPath;
+  delete process.env.AISDK_PROVIDER_PATH;
+});
+
+afterEach(() => {
+  delete process.env.AISDK_PROVIDER_PATH;
+  if (DEFAULT_CONDUCTOR_CONFIG === undefined) {
+    delete process.env.CONDUCTOR_CONFIG;
+  } else {
+    process.env.CONDUCTOR_CONFIG = DEFAULT_CONDUCTOR_CONFIG;
+  }
+  if (isolatedConfigPath) {
+    fs.rmSync(path.dirname(isolatedConfigPath), { recursive: true, force: true });
+    isolatedConfigPath = null;
+  }
+});
 
 describe("ai-sdk worker boundary", () => {
   it("creates worker-backed sessions by default", async () => {
@@ -110,13 +136,14 @@ describe("ai-sdk worker boundary", () => {
   });
 
   it("rejects unsupported backends at the ai-sdk boundary", async () => {
-    assert.throws(
-      () =>
-        createAiSession("gemini", {
-          cwd: process.cwd(),
-          logger: { log: () => {} },
-        }),
-      /Only codex app-server, claude agent-sdk, kimi cli wire, and opencode sdk are supported/,
+    const session = createAiSession("gemini", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+    });
+
+    await assert.rejects(
+      () => session.readyPromise,
+      /Set AISDK_PROVIDER_PATH to load external providers/,
     );
   });
 

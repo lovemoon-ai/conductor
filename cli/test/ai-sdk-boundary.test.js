@@ -17,6 +17,7 @@ describe("ai-sdk boundary", () => {
       logger: { log: () => {} },
     });
 
+    await session.readyPromise;
     assert.equal(session.threadOptions.model, "codex");
     assert.equal(session.usesSessionFileReplyStream(), true);
     assert.equal(session.getSnapshot().backend, "codex");
@@ -30,6 +31,7 @@ describe("ai-sdk boundary", () => {
       logger: { log: () => {} },
     });
 
+    await session.readyPromise;
     assert.equal(session.threadOptions.model, "claude");
     assert.equal(session.usesSessionFileReplyStream(), true);
     assert.equal(session.getSnapshot().backend, "claude");
@@ -44,6 +46,7 @@ describe("ai-sdk boundary", () => {
       logger: { log: () => {} },
     });
 
+    await session.readyPromise;
     assert.equal(session.threadOptions.model, "opencode");
     assert.equal(session.usesSessionFileReplyStream(), true);
     assert.equal(session.getSnapshot().backend, "opencode");
@@ -58,6 +61,7 @@ describe("ai-sdk boundary", () => {
       logger: { log: () => {} },
     });
 
+    await session.readyPromise;
     assert.equal(session.threadOptions.model, "kimi");
     assert.equal(session.usesSessionFileReplyStream(), true);
     assert.equal(session.getSnapshot().backend, "kimi");

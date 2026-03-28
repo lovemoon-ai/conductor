@@ -6,6 +6,11 @@ import readline from "node:readline";
 import crypto from "node:crypto";
 
 import yaml from "js-yaml";
+import {
+  getExternalRuntimeBackendDescriptor,
+  isRuntimeSupportedBackend,
+  normalizeRuntimeBackendAlias,
+} from "../runtime-backends.js";
 
 function normalizeBackend(backend) {
   return String(backend || "").trim().toLowerCase();
@@ -166,6 +171,10 @@ export async function resolveResumeContext(backend, sessionId, options = {}) {
   }
   const provider = resumeProviderForBackend(backend);
   if (!provider) {
+    const externalContext = await resolveExternalResumeContext(backend, normalizedSessionId, options);
+    if (externalContext) {
+      return externalContext;
+    }
     throw new Error(`--resume is not supported for backend "${backend}"`);
   }
 
@@ -424,7 +433,10 @@ async function loadConductorSessionRecords(options = {}) {
       if (!entry || typeof entry !== "object") {
         continue;
       }
-      records.push(entry);
+      records.push({
+        ...entry,
+        __conductorSourcePath: filePath,
+      });
     }
   }
   return records;
@@ -432,6 +444,94 @@ async function loadConductorSessionRecords(options = {}) {
 
 function normalizeProjectPathCandidate(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function normalizeConductorRecordSourcePath(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+async function resolveExternalResumeContext(backend, sessionId, options = {}) {
+  const configFilePath =
+    typeof options?.configFilePath === "string" && options.configFilePath.trim()
+      ? options.configFilePath.trim()
+      : undefined;
+  const normalizedBackend = await normalizeRuntimeBackendAlias(backend, { configFilePath });
+  if (!normalizedBackend || resumeProviderForBackend(normalizedBackend)) {
+    return null;
+  }
+  if (!(await isRuntimeSupportedBackend(normalizedBackend, { configFilePath }))) {
+    return null;
+  }
+
+  const descriptor = await getExternalRuntimeBackendDescriptor(normalizedBackend, { configFilePath });
+  if (typeof descriptor?.resolveResumeContext === "function") {
+    const resolvedContext = await descriptor.resolveResumeContext(sessionId, options);
+    const cwd = normalizeProjectPathCandidate(resolvedContext?.cwd);
+    if (!cwd) {
+      throw new Error(`Could not resolve workspace for backend "${normalizedBackend}" session ${sessionId}`);
+    }
+    if (!(await isExistingDirectory(cwd))) {
+      throw new Error(`Resume workspace path does not exist: ${cwd}`);
+    }
+    const sessionPath = normalizeProjectPathCandidate(resolvedContext?.sessionPath);
+    return {
+      provider: normalizedBackend,
+      sessionId,
+      sessionPath,
+      cwd,
+      debugMetadata: {
+        cwdSource:
+          typeof resolvedContext?.debugMetadata?.cwdSource === "string" && resolvedContext.debugMetadata.cwdSource.trim()
+            ? resolvedContext.debugMetadata.cwdSource.trim()
+            : "provider",
+        sessionPath,
+        ...(resolvedContext?.debugMetadata && typeof resolvedContext.debugMetadata === "object"
+          ? resolvedContext.debugMetadata
+          : {}),
+      },
+    };
+  }
+
+  const records = await loadConductorSessionRecords(options);
+  for (const record of records) {
+    const recordSessionId = normalizeSessionId(record?.session_id);
+    const recordBackend = normalizeBackend(record?.backend_type);
+    const projectPath = normalizeProjectPathCandidate(record?.project_path);
+    if (recordSessionId !== sessionId || recordBackend !== normalizedBackend || !projectPath) {
+      continue;
+    }
+    if (!(await isExistingDirectory(projectPath))) {
+      continue;
+    }
+    const sessionPath = normalizeConductorRecordSourcePath(record?.__conductorSourcePath);
+    return {
+      provider: normalizedBackend,
+      sessionId,
+      sessionPath,
+      cwd: projectPath,
+      debugMetadata: {
+        cwdSource: "conductor_session_record",
+        sessionPath,
+      },
+    };
+  }
+
+  for (const candidate of listCandidateWorkingDirectories(options)) {
+    if (await isExistingDirectory(candidate)) {
+      return {
+        provider: normalizedBackend,
+        sessionId,
+        sessionPath: null,
+        cwd: candidate,
+        debugMetadata: {
+          cwdSource: "current_working_directory",
+          sessionPath: null,
+        },
+      };
+    }
+  }
+
+  throw new Error(`Could not resolve workspace for backend "${normalizedBackend}" session ${sessionId}`);
 }
 
 async function resolveKimiResumeCwd(sessionPath, sessionId, options = {}) {
