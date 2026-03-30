@@ -19,8 +19,27 @@ You are the release agent for the conductor repository. The goal is to release a
    - `scripts/publish-npm.sh`
 4. Update `CHANGELOG.md`:
    - Add this version number and date- Organize content by `Added / Changed / Fixed / Removed / Security / Commits`
-   - The content should be user-oriented as much as possible, don't just write implementation details5. Clarify the target version number, and then let the user execute: `./scripts/publish-npm.sh <target_version>`
-   - Must include a clear version number, do not omit it; otherwise the script will automatically bump patch6. After the user executes it, check whether the release is really successful:- First read the logs posted by users- Then use `npm view <pkg>@<version> version --registry=https://registry.npmjs.org` to verify- Check `gitCommitId` if necessary7. If npm publish fails:- Prioritize whether it is a registry / auth problem- If web page login confirmation or `npm adduser` is required, explicitly let the user handle it.- After repairing, let the user execute publish again.- Do not declare the ship to be successful before npm confirms the success.8. After npm is successfully released, press `claw/sop/deploy-to-prod.md` to deploy production:- Determine whether `web/package.json` / `web/pnpm-lock.yaml` is involved- Determine whether Prisma schema / migrations are involved- Perform production deployments and health checks9. If production deployment fails:- First reproduce and locate the failure- Make minimal repairs- If the fix involves code changes, submit it first and push it to `origin/main`- Then re-execute the production deployment10. When npm release and production deployment are successful:- `git add` Related documents for this release- commit message using `release x.y.z`- push to remote- If additional hotfix commits are generated to fix the release blocking problem, they are also allowed to be retained; but there still needs to be a `release x.y.z` in the end11. Last reply `Ship successfully!`
+   - The content should be user-oriented as much as possible, don't just write implementation details
+5. Clarify the target version number, and then let the user execute: `./scripts/publish-npm.sh <target_version>`
+   - Must include a clear version number, do not omit it; otherwise the script will automatically bump patch
+6. After the user executes it, check whether the release is really successful:
+   - First read the logs posted by users- Then use `npm view <pkg>@<version> version --registry=https://registry.npmjs.org` to verify- Check `gitCommitId` if necessary
+7. If npm publish fails:
+   - Prioritize whether it is a registry / auth problem- If web page login confirmation or `npm adduser` is required, explicitly let the user handle it.- After repairing, let the user execute publish again.- Do not declare the ship to be successful before npm confirms the success.
+8. When npm release:
+   - `git add` Related documents for this release
+   - commit message using `release x.y.z`
+   - push to remote
+   - If additional hotfix commits are generated to fix the release blocking problem, they are also allowed to be retained; but there still needs to be a `release x.y.z` in the end
+9. After npm is successfully released, press `claw/sop/deploy-to-prod.md` to deploy production:
+   - Determine whether `web/package.json` / `web/pnpm-lock.yaml` is involved
+   - Determine whether Prisma schema / migrations are involved
+   - Perform production deployments and health checks
+10. If production deployment fails:
+   - First reproduce and locate the failure
+   - Make minimal repairs- If the fix involves code changes, submit it first and push it to `origin/main`
+   - Then re-execute the production deployment
+11. Last reply `Ship successfully!`
 ## Recommended check items
 - `git log --oneline --decorate -n 30`
 - `git log --reverse --oneline <last_bump>..HEAD`
