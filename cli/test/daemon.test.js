@@ -2,6 +2,7 @@ import { after, before, describe, it } from "node:test";
 import assert from "node:assert";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -4585,6 +4586,88 @@ describe("Daemon", () => {
     if (daemonInstance && typeof daemonInstance.close === "function") {
       daemonInstance.close();
     }
+  });
+
+  it("logs a pnpm install hint when external provider discovery fails", async (t) => {
+    const stderrChunks = [];
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk, ...args) => {
+      stderrChunks.push(String(chunk));
+      if (typeof args.at(-1) === "function") {
+        args.at(-1)();
+      }
+      return true;
+    };
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-daemon-provider-"));
+    const missingImportProviderPath = path.join(tempDir, "missing-import-provider.js");
+    fs.writeFileSync(
+      missingImportProviderPath,
+      'import "__conductor_missing_provider_dependency__";\nexport const providers = [];\n',
+      "utf8",
+    );
+
+    const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    process.env.AISDK_PROVIDER_PATH = missingImportProviderPath;
+    resetRuntimeBackendCacheForTests();
+
+    let daemonInstance;
+    t.after(() => {
+      process.stderr.write = originalStderrWrite;
+      if (previousProviderPath === undefined) {
+        delete process.env.AISDK_PROVIDER_PATH;
+      } else {
+        process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      resetRuntimeBackendCacheForTests();
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+    });
+
+    daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-provider-load-hint",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "provider-load-hint",
+      },
+      {
+        spawn: () => ({
+          on: () => {},
+          stdout: { on: () => {} },
+          stderr: { on: () => {} },
+        }),
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+        createWebSocketClient: () => ({
+          registerHandler: () => {},
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async () => {},
+        }),
+      },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    assert.ok(
+      stderrChunks.some((line) => line.includes("Failed to discover external backends")),
+      `expected discovery failure log, got:\n${stderrChunks.join("")}`,
+    );
+    assert.ok(
+      stderrChunks.some((line) => line.includes("did you forget to run pnpm install")),
+      `expected pnpm install hint, got:\n${stderrChunks.join("")}`,
+    );
   });
 
   it("watchdog force-reconnects on stale ws health even when presence probe misses the daemon", async (t) => {

@@ -126,6 +126,14 @@ function registerExternalAlias(catalog, alias, backend, sourcePath) {
   catalog.aliasToBackend.set(alias, backend);
 }
 
+function formatExternalProviderLoadError(modulePath, error) {
+  const message = error?.message || String(error);
+  return [
+    `Failed to load external AI SDK provider module ${modulePath}: ${message}`,
+    "Help: if this provider comes from a local repo or workspace, did you forget to run pnpm install?",
+  ].join(" ");
+}
+
 async function loadExternalRuntimeCatalog(providerPathEnv) {
   const catalog = createEmptyExternalCatalog();
   for (const modulePath of listProviderModulePaths(providerPathEnv)) {
@@ -133,7 +141,7 @@ async function loadExternalRuntimeCatalog(providerPathEnv) {
     try {
       importedModule = await importExternalProviderModule(modulePath);
     } catch (error) {
-      throw new Error(`Failed to load external AI SDK provider module ${modulePath}: ${error?.message || error}`);
+      throw new Error(formatExternalProviderLoadError(modulePath, error));
     }
     const providers = Array.isArray(importedModule?.providers) ? importedModule.providers : [];
     if (providers.length === 0) {
