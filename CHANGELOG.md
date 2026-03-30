@@ -24,6 +24,43 @@ This project follows [Semantic Versioning](https://semver.org/) where practical.
 
 ---
 
+## [0.2.31] - 2026-03-30
+
+### Added
+
+- Added support for loading external AI SDK providers through `AISDK_PROVIDER_PATH`, so teams can plug private runtimes into Conductor without forking the built-in CLI or AI SDK.
+- Added support for creating a new task from a running manual `conductor fire` task through the restart flow when switching backends, instead of waiting for the original task to stop first.
+
+### Changed
+
+- Improved backend discovery and validation for custom AI SDK providers, including alias resolution from CLI config and clearer provider compatibility checks.
+- Improved disk-backed session store initialization in `@love-moon/conductor-sdk` so the lock directory is created automatically before session state is persisted.
+
+### Fixed
+
+- Fixed task recovery after web server restarts by restoring task-to-agent bindings from the database, preventing active tasks from remaining stuck in `init`.
+- Fixed AI SDK session metadata propagation so remote and resumed sessions report the correct model and model-provider information.
+- Fixed restart controls for manual fire tasks so creating a new task is no longer incorrectly blocked while the source task is still running.
+
+### Removed
+
+- _None._
+
+### Security
+
+- _None._
+
+### Commits
+
+- `edc7d25` allow running fire task to create new task via restart
+- `8b3abbf` fix: remove fire task running state restriction for new task
+- `4c9b43c` fix: restore task bindings from db on server startup to prevent stuck init tasks
+- `9a83106` fix ai sdk model metadata
+- `30be88b` update
+- `7e0bd83` support external ai sdk providers
+
+---
+
 ## [0.2.30] - 2026-03-26
 
 ### Added
