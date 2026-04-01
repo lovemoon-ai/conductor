@@ -980,9 +980,10 @@ export const setupAgentGateway = (): WebSocketServer => {
     const version = extractVersion(request);
 
     if (realtimeHub.hasAgentHost(agentHost, user.id)) {
-      sendEnvelope(socket, { type: "error", payload: { message: `Agent host ${agentHost} already connected` } });
-      socket.close(4002, "duplicate-host");
-      return;
+      const replacedCount = realtimeHub.takeOverAgentHost(agentHost, user.id);
+      console.warn(
+        `[agent-gateway] taking over existing agent host connection: userId=${user.id}, agentHost=${agentHost}, replaced=${replacedCount}`,
+      );
     }
 
     const planUser = await db.user.findUnique({

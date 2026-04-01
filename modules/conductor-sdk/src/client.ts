@@ -90,6 +90,11 @@ export interface StopTaskEvent {
   reason?: string;
 }
 
+export interface FlushPendingUpstreamEventsOptions {
+  timeoutMs?: number;
+  retryIntervalMs?: number;
+}
+
 export class ConductorClient {
   private readonly config: ConductorConfig;
   private readonly env: Record<string, string | undefined>;
@@ -181,9 +186,33 @@ export class ConductorClient {
     if (this.closed) {
       return;
     }
-    this.closed = true;
     this.clearDurableOutboxTimer();
+    await this.flushPendingUpstreamEvents({
+      timeoutMs: 2_000,
+      retryIntervalMs: 100,
+    });
+    this.closed = true;
     await this.wsClient.disconnect();
+  }
+
+  async flushPendingUpstreamEvents(
+    options: FlushPendingUpstreamEventsOptions = {},
+  ): Promise<{ flushed: boolean; remaining: number }> {
+    const timeoutMs = Math.max(0, options.timeoutMs ?? 5_000);
+    const retryIntervalMs = Math.max(10, options.retryIntervalMs ?? 250);
+    const startedAt = Date.now();
+
+    while (true) {
+      await this.requestDurableOutboxFlush(true);
+      const remaining = this.upstreamOutbox.load().length;
+      if (remaining === 0) {
+        return { flushed: true, remaining: 0 };
+      }
+      if (Date.now() - startedAt >= timeoutMs) {
+        return { flushed: false, remaining };
+      }
+      await sleep(retryIntervalMs);
+    }
   }
 
   async forceReconnect(reason = 'manual_reconnect'): Promise<void> {

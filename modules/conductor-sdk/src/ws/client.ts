@@ -50,6 +50,7 @@ export interface WebSocketDisconnectEvent {
 
 export interface WebSocketClientOptions {
   reconnectDelay?: number;
+  duplicateHostReconnectDelay?: number;
   heartbeatInterval?: number;
   extraHeaders?: Record<string, string>;
   connectImpl?: ConnectImpl;
@@ -91,6 +92,7 @@ export class ConductorWebSocketClient {
   private readonly url: string;
   private readonly token: string;
   private readonly reconnectDelay: number;
+  private readonly duplicateHostReconnectDelay: number;
   private readonly heartbeatInterval: number;
   private readonly connectImpl: ConnectImpl;
   private readonly onConnected?: (event: WebSocketConnectedEvent) => void;
@@ -115,6 +117,7 @@ export class ConductorWebSocketClient {
     this.url = config.resolvedWebsocketUrl;
     this.token = config.agentToken;
     this.reconnectDelay = options.reconnectDelay ?? 10_000;
+    this.duplicateHostReconnectDelay = options.duplicateHostReconnectDelay ?? Math.max(this.reconnectDelay, 2_000);
     this.heartbeatInterval = options.heartbeatInterval ?? 20_000;
     this.extraHeaders = {
       'x-conductor-host': options.hostName ?? defaultHostName(),
@@ -274,7 +277,18 @@ export class ConductorWebSocketClient {
     this.conn = null;
     this.runtime = null;
     this.notifyDisconnected(this.buildDisconnectEvent(runtime));
+    await wait(this.getReconnectDelay(runtime), this.waitController.signal);
     await this.openConnection(true);
+  }
+
+  private getReconnectDelay(runtime: ConnectionRuntime | null): number {
+    if (
+      runtime?.closeCode === 4002 &&
+      String(runtime?.closeReason || '').trim().toLowerCase() === 'duplicate-host'
+    ) {
+      return this.duplicateHostReconnectDelay;
+    }
+    return this.reconnectDelay;
   }
 
   private async dispatch(message: string): Promise<void> {

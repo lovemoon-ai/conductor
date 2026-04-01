@@ -66,6 +66,20 @@ export function buildConductorConnectHeaders(version = pkgJson.version) {
   };
 }
 
+export function shouldRunReconnectRecovery({
+  isReconnect,
+  fireShuttingDown = false,
+  runner = null,
+} = {}) {
+  if (!isReconnect || fireShuttingDown) {
+    return false;
+  }
+  if (!runner || typeof runner.shouldSuppressReconnectRecovery !== "function") {
+    return true;
+  }
+  return !runner.shouldSuppressReconnectRecovery();
+}
+
 // Load allow_cli_list from config file (no defaults - must be configured)
 async function loadAllowCliList(configFilePath) {
   const home = os.homedir();
@@ -485,7 +499,13 @@ async function main() {
   fireWatchdog.start();
 
   const scheduleReconnectRecovery = ({ isReconnect }) => {
-    if (!isReconnect) {
+    if (
+      !shouldRunReconnectRecovery({
+        isReconnect,
+        fireShuttingDown,
+        runner: reconnectRunner,
+      })
+    ) {
       return;
     }
     log("Conductor connection restored");
@@ -742,7 +762,13 @@ async function main() {
                 summary: "conductor fire exited",
               };
         try {
-          await conductor.sendTaskStatus(taskContext.taskId, finalStatus);
+          const statusResult = await conductor.sendTaskStatus(taskContext.taskId, finalStatus);
+          if (statusResult?.pending && typeof conductor.flushPendingUpstreamEvents === "function") {
+            await conductor.flushPendingUpstreamEvents({
+              timeoutMs: 5_000,
+              retryIntervalMs: 250,
+            });
+          }
         } catch (error) {
           log(`Failed to report task status (${finalStatus.status}): ${error?.message || error}`);
         }
@@ -1642,6 +1668,10 @@ export class BridgeRunner {
 
   noteReconnect() {
     this.needsReconnectRecovery = true;
+  }
+
+  shouldSuppressReconnectRecovery() {
+    return this.stopped || Boolean(this.remoteStopInfo);
   }
 
   getRemoteStopSummary() {

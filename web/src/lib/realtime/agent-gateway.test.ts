@@ -29,6 +29,7 @@ vi.mock("../db", () => ({
 vi.mock("./hub", () => ({
   realtimeHub: {
     register: vi.fn(),
+    takeOverAgentHost: vi.fn().mockReturnValue(0),
     heartbeat: vi.fn(),
     bindTaskToAgent: vi.fn(),
     getTaskAgentHost: vi.fn().mockReturnValue(null),
@@ -80,6 +81,7 @@ describe("agent-gateway ownership handling", () => {
     vi.clearAllMocks();
     vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(null);
     vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+    vi.mocked(realtimeHub.takeOverAgentHost).mockReturnValue(0);
     vi.mocked(realtimeHub.isTerminalAttached).mockReturnValue(true);
     vi.mocked(authenticateToken).mockResolvedValue({ id: "user-1" } as any);
     vi.mocked(db.task.findFirst).mockResolvedValue(null as any);
@@ -168,6 +170,43 @@ describe("agent-gateway ownership handling", () => {
         content: "hello from prefill",
       }),
     });
+  });
+
+  it("takes over an existing same-host connection instead of rejecting duplicate-host", async () => {
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+
+    const socket = new FakeSocket();
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(true);
+    vi.mocked(realtimeHub.takeOverAgentHost).mockReturnValue(1);
+
+    const wss = setupAgentGateway();
+    const request = {
+      headers: {
+        authorization: "Bearer test-token",
+        "x-conductor-host": "daemon-a",
+        "x-conductor-backends": "codex",
+      },
+      socket: {
+        remoteAddress: "127.0.0.1",
+      },
+    } as any;
+
+    wss.emit("connection", socket as any, request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(realtimeHub.takeOverAgentHost).toHaveBeenCalledWith("daemon-a", "user-1");
+    expect(realtimeHub.register).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "agent",
+        userId: "user-1",
+        host: "daemon-a",
+      }),
+    );
+    expect(socket.close).not.toHaveBeenCalledWith(4002, "duplicate-host");
   });
 
   it("only rebinds resumed tasks that are actively assigned to the reconnecting host", async () => {

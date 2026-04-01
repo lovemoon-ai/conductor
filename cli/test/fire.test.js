@@ -22,6 +22,7 @@ import {
   resolveAiSessionCommandLine,
   resolveFreshSessionBootstrapLockPath,
   resolveRequestedTaskTitle,
+  shouldRunReconnectRecovery,
   withFreshSessionBootstrapLock,
   writeFireTaskMarker,
 } from "../bin/conductor-fire.js";
@@ -504,6 +505,24 @@ describe("conductor-fire backends", () => {
     assert.deepEqual(reconnectReasons, ["watchdog:stale_ws_health"]);
     assert.equal(watchdog.getDebugState().healAttempts, 0);
     assert.ok(logs.some((line) => line.includes("healthy again after self-heal via pong")));
+  });
+
+  it("skips reconnect recovery after remote stop or during shutdown", () => {
+    const activeRunner = { shouldSuppressReconnectRecovery: () => false };
+    const stoppedRunner = { shouldSuppressReconnectRecovery: () => true };
+
+    assert.equal(
+      shouldRunReconnectRecovery({ isReconnect: true, fireShuttingDown: false, runner: activeRunner }),
+      true,
+    );
+    assert.equal(
+      shouldRunReconnectRecovery({ isReconnect: true, fireShuttingDown: false, runner: stoppedRunner }),
+      false,
+    );
+    assert.equal(
+      shouldRunReconnectRecovery({ isReconnect: true, fireShuttingDown: true, runner: activeRunner }),
+      false,
+    );
   });
 
   it("stops bridge runner when stop_task is requested remotely", async () => {

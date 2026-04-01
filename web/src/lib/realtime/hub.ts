@@ -134,6 +134,27 @@ export class RealtimeHub {
     return false;
   }
 
+  takeOverAgentHost(host: string, userId: string): number {
+    const matchingIds: string[] = [];
+    for (const conn of this.connections.values()) {
+      if (conn.kind === "agent" && conn.host === host && conn.userId === userId) {
+        matchingIds.push(conn.id);
+      }
+    }
+
+    for (const connectionId of matchingIds) {
+      const conn = this.connections.get(connectionId);
+      this.connections.delete(connectionId);
+      try {
+        conn?.close();
+      } catch {
+        // best effort
+      }
+    }
+
+    return matchingIds.length;
+  }
+
   getAgentDisconnectAt(host: string, userId: string): number | null {
     return this.agentDisconnectAt.get(this.agentKey(userId, host)) ?? null;
   }

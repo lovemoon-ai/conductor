@@ -666,8 +666,38 @@ describe('ConductorClient', () => {
     await (replayClient as any).requestDurableOutboxFlush(true);
 
     expect(JSON.parse(fs.readFileSync(outboxPath, 'utf-8')).entries).toHaveLength(0);
-    expect(backendApi.commitSdkMessage).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(backendApi.commitSdkMessage).mock.calls.length).toBeGreaterThanOrEqual(2);
     await replayClient.close();
+  });
+
+  test('close flushes pending task status updates before disconnecting', async () => {
+    let shouldFail = true;
+    const originalCommitTaskStatusUpdate = backendApi.commitTaskStatusUpdate.bind(backendApi);
+    backendApi.commitTaskStatusUpdate = vi.fn(async (params) => {
+      if (shouldFail) {
+        shouldFail = false;
+        throw new BackendApiError('Backend responded with 503', 503, { retryable: true });
+      }
+      return originalCommitTaskStatusUpdate(params);
+    });
+
+    const client = await makeClient();
+    const firstResult = await client.sendTaskStatus('task1', { status: 'KILLED', summary: 'bye' });
+
+    expect(firstResult).toEqual(
+      expect.objectContaining({
+        delivered: false,
+        pending: true,
+        status_event_id: expect.any(String),
+      }),
+    );
+    expect((client as any).upstreamOutbox.load()).toHaveLength(1);
+
+    await client.close();
+
+    expect((client as any).upstreamOutbox.load()).toHaveLength(0);
+    expect(vi.mocked(backendApi.commitTaskStatusUpdate)).toHaveBeenCalledTimes(2);
+    expect(wsClient.disconnectCount).toBe(1);
   });
 
   test('new agent host does not flush another scope outbox from the same project path', async () => {

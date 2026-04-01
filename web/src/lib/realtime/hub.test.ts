@@ -110,4 +110,27 @@ describe('RealtimeHub connected agents metadata', () => {
       },
     ]);
   });
+
+  it('allows a new agent connection to take over the same host without dropping bindings', () => {
+    const hub = new RealtimeHub();
+    const close = vi.fn();
+    hub.register({
+      id: 'agent-1',
+      kind: 'agent',
+      userId: 'user-1',
+      projectIds: ['*'],
+      host: 'daemon-a',
+      supportedBackends: ['codex'],
+      capabilities: ['pty_task'],
+      send: vi.fn(),
+      close,
+    });
+    hub.bindTaskToAgent('task-1', 'daemon-a');
+
+    expect(hub.takeOverAgentHost('daemon-a', 'user-1')).toBe(1);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(hub.hasAgentHost('daemon-a', 'user-1')).toBe(false);
+    expect(hub.getTaskAgentHost('task-1')).toBe('daemon-a');
+    expect(hub.getAgentDisconnectAt('daemon-a', 'user-1')).toBeNull();
+  });
 });

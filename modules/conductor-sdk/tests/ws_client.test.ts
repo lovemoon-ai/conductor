@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { ConductorWebSocketClient } from '../src/ws/index.js';
 import { ConductorConfig } from '../src/config/index.js';
@@ -16,6 +16,7 @@ class FakeSocket {
   private queue: (string | null)[] = [];
   private waiters: Array<(value: string | null) => void> = [];
   private pongHandlers: Array<() => void> = [];
+  private closeInfoHandlers: Array<(info: { code?: number | null; reason?: string | null }) => void> = [];
 
   feed(payload: Record<string, any>): void {
     const message = JSON.stringify(payload);
@@ -44,6 +45,9 @@ class FakeSocket {
 
   async close(): Promise<void> {
     this.closed = true;
+    for (const handler of this.closeInfoHandlers) {
+      handler({ code: 1000, reason: null });
+    }
     this.enqueue(null);
   }
 
@@ -51,8 +55,20 @@ class FakeSocket {
     await this.close();
   }
 
+  async closeWithInfo(code: number, reason: string): Promise<void> {
+    this.closed = true;
+    for (const handler of this.closeInfoHandlers) {
+      handler({ code, reason });
+    }
+    this.enqueue(null);
+  }
+
   onPong(handler: () => void): void {
     this.pongHandlers.push(handler);
+  }
+
+  onCloseInfo(handler: (info: { code?: number | null; reason?: string | null }) => void): void {
+    this.closeInfoHandlers.push(handler);
   }
 
   private enqueue(value: string | null): void {
@@ -84,6 +100,10 @@ class FakeSocket {
 }
 
 describe('ConductorWebSocketClient', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   test('dispatches backend events to handlers', async () => {
     const connections: FakeSocket[] = [];
     const client = new ConductorWebSocketClient(makeConfig(), {
@@ -214,6 +234,32 @@ describe('ConductorWebSocketClient', () => {
     expect(disconnectReasons).toEqual([]);
     expect(connections).toHaveLength(1);
     expect(JSON.parse(connections[0].sent.at(-1)!)).toEqual({ type: 'ping' });
+    await client.disconnect();
+  });
+
+  test('backs off reconnect attempts after duplicate-host disconnects', async () => {
+    vi.useFakeTimers();
+    const connections: FakeSocket[] = [];
+    const client = new ConductorWebSocketClient(makeConfig(), {
+      reconnectDelay: 10,
+      duplicateHostReconnectDelay: 200,
+      heartbeatInterval: 10,
+      connectImpl: async () => {
+        const socket = new FakeSocket();
+        connections.push(socket);
+        return socket as any;
+      },
+    });
+
+    await client.connect();
+    await connections[0].closeWithInfo(4002, 'duplicate-host');
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(connections).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(connections.length).toBeGreaterThanOrEqual(2);
     await client.disconnect();
   });
 });
