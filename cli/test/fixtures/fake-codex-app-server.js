@@ -70,6 +70,8 @@ function startTurn(id, params = {}) {
   const turnId = `turn-fake-${nextTurnId++}`;
   const promptText = extractPromptText(params);
   const useMultiMessageScenario = promptText.includes("[multi-message]");
+  const useSlowProgressScenario = promptText.includes("[slow-progress]");
+  const useSlowStallScenario = promptText.includes("[slow-stall]");
   const primaryMessageId = `msg-${turnId}-1`;
   const secondaryMessageId = `msg-${turnId}-2`;
   response(id, {
@@ -78,6 +80,83 @@ function startTurn(id, params = {}) {
       status: "started",
     },
   });
+  if (useSlowProgressScenario) {
+    setTimeout(() => {
+      notification("turn/started", {
+        threadId: params.threadId,
+        turn: {
+          id: turnId,
+          status: "inProgress",
+        },
+      });
+    }, 5);
+    const chunks = ["still ", "making ", "steady ", "progress ", "from ", "fake ", "codex", "\n"];
+    chunks.forEach((chunk, index) => {
+      setTimeout(() => {
+        notification("item/agentMessage/delta", {
+          threadId: params.threadId,
+          turnId,
+          itemId: primaryMessageId,
+          delta: chunk,
+        });
+      }, 25 + index * 25);
+    });
+    setTimeout(() => {
+      notification("item/completed", {
+        threadId: params.threadId,
+        turnId,
+        item: {
+          type: "message",
+          role: "assistant",
+          id: primaryMessageId,
+        },
+      });
+    }, 235);
+    setTimeout(() => {
+      notification("turn/completed", {
+        threadId: params.threadId,
+        turn: {
+          id: turnId,
+          status: "completed",
+          error: null,
+        },
+      });
+    }, 245);
+    return;
+  }
+  if (useSlowStallScenario) {
+    setTimeout(() => {
+      notification("turn/started", {
+        threadId: params.threadId,
+        turn: {
+          id: turnId,
+          status: "inProgress",
+        },
+      });
+    }, 5);
+    setTimeout(() => {
+      notification("item/started", {
+        threadId: params.threadId,
+        turnId,
+        item: {
+          reasoning: {
+            type: "summary",
+          },
+        },
+      });
+    }, 10);
+    setTimeout(() => {
+      notification("turn/completed", {
+        threadId: params.threadId,
+        turn: {
+          id: turnId,
+          status: "completed",
+          error: null,
+        },
+      });
+    }, 180);
+    return;
+  }
   setTimeout(() => {
     notification("turn/started", {
       threadId: params.threadId,

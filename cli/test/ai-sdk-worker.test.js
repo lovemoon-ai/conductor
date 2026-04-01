@@ -211,6 +211,37 @@ describe("ai-sdk worker boundary", () => {
     await session.close();
   });
 
+  it("surfaces current turn status while a worker-backed turn is still running", async () => {
+    const session = createAiSession("codex", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_CODEX_APP_SERVER}`,
+      logger: { log: () => {} },
+    });
+
+    await session.ensureSessionInfo();
+    const turnPromise = session.runTurn("Reply with steady output [slow-progress]");
+
+    await waitFor(() => {
+      const status = session.getSnapshot().currentTurnStatus;
+      return status?.reply_in_progress === true && typeof status?.phase === "string";
+    }, { timeoutMs: 1000 });
+
+    const midTurnStatus = session.getSnapshot().currentTurnStatus;
+    assert.equal(midTurnStatus.reply_in_progress, true);
+    assert.equal(typeof midTurnStatus.phase, "string");
+    assert.equal(typeof midTurnStatus.updated_at, "string");
+
+    const result = await turnPromise;
+    assert.equal(result.text, "still making steady progress from fake codex\n");
+
+    const finalStatus = session.getSnapshot().currentTurnStatus;
+    assert.equal(finalStatus.reply_in_progress, false);
+    assert.equal(finalStatus.phase, "turn_completed");
+    assert.equal(typeof finalStatus.updated_at, "string");
+
+    await session.close();
+  });
+
   it("keeps multiple codex assistant messages separated within one turn", async () => {
     const session = createAiSession("codex", {
       cwd: process.cwd(),
