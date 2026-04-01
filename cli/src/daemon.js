@@ -59,6 +59,7 @@ const DEFAULT_TERMINAL_ROWS = 40;
 const DEFAULT_TERMINAL_RING_BUFFER_MAX_BYTES = 2 * 1024 * 1024;
 const DEFAULT_TERMINAL_RESUME_SNAPSHOT_MAX_BYTES = 128 * 1024;
 const DEFAULT_RTC_MODULE_CANDIDATES = ["@roamhq/wrtc", "wrtc"];
+const BLOCKING_SLEEP_BUFFER = new Int32Array(new SharedArrayBuffer(4));
 let nodePtySpawnPromise = null;
 
 function resolveNodePtySpawnExport(mod) {
@@ -115,6 +116,20 @@ function logError(message) {
   const line = `[conductor-daemon ${ts}] ${message}\n`;
   process.stderr.write(line);
   appendDaemonLog(line);
+}
+
+function sleepSync(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return;
+  }
+  try {
+    Atomics.wait(BLOCKING_SLEEP_BUFFER, 0, 0, ms);
+  } catch {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      // best-effort fallback for runtimes that disallow Atomics.wait
+    }
+  }
 }
 
 function getUserConfig(configFilePath) {
@@ -560,6 +575,18 @@ export function startDaemon(config = {}, deps = {}) {
     process.env.CONDUCTOR_STOP_FORCE_KILL_TIMEOUT_MS,
     5000,
   );
+  const DAEMON_FORCE_STOP_GRACE_MS = parsePositiveInt(
+    process.env.CONDUCTOR_DAEMON_FORCE_STOP_GRACE_MS,
+    15_000,
+  );
+  const DAEMON_FORCE_STOP_POLL_INTERVAL_MS = parsePositiveInt(
+    process.env.CONDUCTOR_DAEMON_FORCE_STOP_POLL_INTERVAL_MS,
+    100,
+  );
+  const DAEMON_FORCE_KILL_WAIT_MS = parsePositiveInt(
+    process.env.CONDUCTOR_DAEMON_FORCE_KILL_WAIT_MS,
+    2_000,
+  );
   const SHUTDOWN_STATUS_REPORT_TIMEOUT_MS = parsePositiveInt(
     process.env.CONDUCTOR_SHUTDOWN_STATUS_REPORT_TIMEOUT_MS,
     1000,
@@ -648,6 +675,20 @@ export function startDaemon(config = {}, deps = {}) {
     return true;
   };
 
+  const waitForProcessExitSync = (pid, timeoutMs) => {
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      if (!isProcessAlive(pid)) {
+        return true;
+      }
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        return false;
+      }
+      sleepSync(Math.min(DAEMON_FORCE_STOP_POLL_INTERVAL_MS, remainingMs));
+    }
+  };
+
   try {
     mkdirSyncFn(WORKSPACE_ROOT, { recursive: true });
   } catch (err) {
@@ -670,17 +711,35 @@ export function startDaemon(config = {}, deps = {}) {
             if (alive) {
               if (config.FORCE) {
                 log(`Force enabled: stopping existing daemon PID ${pid}`);
+                let alreadyExited = false;
                 try {
                   killFn(pid, "SIGTERM");
                 } catch (killErr) {
-                  if (!killErr || killErr.code !== "ESRCH") {
+                  if (killErr?.code === "ESRCH") {
+                    alreadyExited = true;
+                  } else {
                     logError(`Failed to stop existing daemon PID ${pid}: ${killErr.message}`);
                     return exitAndReturn(1);
                   }
                 }
                 try {
-                  if (isProcessAlive(pid)) {
-                    logError(`Existing daemon PID ${pid} is still running; please stop it manually.`);
+                  let exited = alreadyExited || waitForProcessExitSync(pid, DAEMON_FORCE_STOP_GRACE_MS);
+                  if (!exited) {
+                    log(
+                      `Existing daemon PID ${pid} did not exit within ${DAEMON_FORCE_STOP_GRACE_MS}ms; sending SIGKILL`,
+                    );
+                    try {
+                      killFn(pid, "SIGKILL");
+                    } catch (killErr) {
+                      if (killErr?.code !== "ESRCH") {
+                        logError(`Failed to force kill existing daemon PID ${pid}: ${killErr.message}`);
+                        return exitAndReturn(1);
+                      }
+                    }
+                    exited = waitForProcessExitSync(pid, DAEMON_FORCE_KILL_WAIT_MS);
+                  }
+                  if (!exited) {
+                    logError(`Existing daemon PID ${pid} is still running after force restart; please stop it manually.`);
                     return exitAndReturn(1);
                   }
                 } catch (checkErr) {
@@ -688,7 +747,9 @@ export function startDaemon(config = {}, deps = {}) {
                   return exitAndReturn(1);
                 }
                 log("Removing lock file after force stop");
-                unlinkSyncFn(LOCK_FILE);
+                if (existsSyncFn(LOCK_FILE)) {
+                  unlinkSyncFn(LOCK_FILE);
+                }
               } else {
                 logError(`Daemon already running with PID ${pid}`);
                 return exitAndReturn(1);

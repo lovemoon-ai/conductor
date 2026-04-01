@@ -1611,6 +1611,165 @@ describe("Daemon", () => {
     assert.deepStrictEqual(killCalls, [0, "SIGTERM", 0]);
   });
 
+  it("waits for graceful daemon shutdown on --force before continuing startup", () => {
+    const previousPollInterval = process.env.CONDUCTOR_DAEMON_FORCE_STOP_POLL_INTERVAL_MS;
+    let exitCode = null;
+    let writeCalled = false;
+    let unlinkCalled = false;
+    let shutdownCompletesAt = null;
+    const killCalls = [];
+
+    try {
+      process.env.CONDUCTOR_DAEMON_FORCE_STOP_POLL_INTERVAL_MS = "10";
+
+      const daemonInstance = startDaemon(
+        {
+          BACKEND_URL: "ws://localhost:0",
+          WORKSPACE_ROOT: "/tmp/test-ws-lock-force-wait",
+          CLI_PATH: "/tmp/cli.js",
+          NAME: "lock-force-wait",
+          FORCE: true,
+        },
+        {
+          spawn: () => ({
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          }),
+          mkdirSync: () => {},
+          writeFileSync: (_filePath, contents) => {
+            if (String(contents) === String(process.pid)) {
+              writeCalled = true;
+            }
+          },
+          existsSync: (filePath) => {
+            if (!filePath.endsWith("daemon.pid")) {
+              return false;
+            }
+            return shutdownCompletesAt === null || Date.now() < shutdownCompletesAt;
+          },
+          readFileSync: () => "456",
+          unlinkSync: () => {
+            unlinkCalled = true;
+          },
+          createWriteStream: () => ({
+            write: () => {},
+            end: () => {},
+          }),
+          fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+          exit: (code) => {
+            exitCode = code;
+          },
+          kill: (_pid, signal) => {
+            killCalls.push(signal);
+            if (signal === 0) {
+              if (shutdownCompletesAt !== null && Date.now() >= shutdownCompletesAt) {
+                const err = new Error("process not found");
+                err.code = "ESRCH";
+                throw err;
+              }
+              return;
+            }
+            if (signal === "SIGTERM") {
+              shutdownCompletesAt = Date.now() + 35;
+            }
+          },
+        },
+      );
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+    } finally {
+      restoreEnv("CONDUCTOR_DAEMON_FORCE_STOP_POLL_INTERVAL_MS", previousPollInterval);
+    }
+
+    assert.strictEqual(exitCode, null);
+    assert.strictEqual(writeCalled, true);
+    assert.strictEqual(unlinkCalled, false);
+    assert.ok(killCalls.filter((signal) => signal === 0).length >= 3);
+    assert.ok(killCalls.includes("SIGTERM"));
+  });
+
+  it("escalates --force to SIGKILL when the existing daemon ignores SIGTERM", () => {
+    const previousGraceMs = process.env.CONDUCTOR_DAEMON_FORCE_STOP_GRACE_MS;
+    const previousPollInterval = process.env.CONDUCTOR_DAEMON_FORCE_STOP_POLL_INTERVAL_MS;
+    const previousKillWaitMs = process.env.CONDUCTOR_DAEMON_FORCE_KILL_WAIT_MS;
+    let exitCode = null;
+    let writeCalled = false;
+    let unlinkCalled = false;
+    let killed = false;
+    const killCalls = [];
+
+    try {
+      process.env.CONDUCTOR_DAEMON_FORCE_STOP_GRACE_MS = "20";
+      process.env.CONDUCTOR_DAEMON_FORCE_STOP_POLL_INTERVAL_MS = "5";
+      process.env.CONDUCTOR_DAEMON_FORCE_KILL_WAIT_MS = "20";
+
+      const daemonInstance = startDaemon(
+        {
+          BACKEND_URL: "ws://localhost:0",
+          WORKSPACE_ROOT: "/tmp/test-ws-lock-force-sigkill",
+          CLI_PATH: "/tmp/cli.js",
+          NAME: "lock-force-sigkill",
+          FORCE: true,
+        },
+        {
+          spawn: () => ({
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          }),
+          mkdirSync: () => {},
+          writeFileSync: (_filePath, contents) => {
+            if (String(contents) === String(process.pid)) {
+              writeCalled = true;
+            }
+          },
+          existsSync: (filePath) => filePath.endsWith("daemon.pid"),
+          readFileSync: () => "789",
+          unlinkSync: () => {
+            unlinkCalled = true;
+          },
+          createWriteStream: () => ({
+            write: () => {},
+            end: () => {},
+          }),
+          fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+          exit: (code) => {
+            exitCode = code;
+          },
+          kill: (_pid, signal) => {
+            killCalls.push(signal);
+            if (signal === 0) {
+              if (killed) {
+                const err = new Error("process not found");
+                err.code = "ESRCH";
+                throw err;
+              }
+              return;
+            }
+            if (signal === "SIGKILL") {
+              killed = true;
+            }
+          },
+        },
+      );
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+    } finally {
+      restoreEnv("CONDUCTOR_DAEMON_FORCE_STOP_GRACE_MS", previousGraceMs);
+      restoreEnv("CONDUCTOR_DAEMON_FORCE_STOP_POLL_INTERVAL_MS", previousPollInterval);
+      restoreEnv("CONDUCTOR_DAEMON_FORCE_KILL_WAIT_MS", previousKillWaitMs);
+    }
+
+    assert.strictEqual(exitCode, null);
+    assert.strictEqual(writeCalled, true);
+    assert.strictEqual(unlinkCalled, true);
+    assert.ok(killCalls.includes("SIGTERM"));
+    assert.ok(killCalls.includes("SIGKILL"));
+  });
+
   it("stops running child process when stop_task is received", async () => {
     let handler;
     let childExitHandler = null;
