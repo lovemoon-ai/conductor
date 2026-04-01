@@ -103,6 +103,7 @@ model Task {
   taskStatusEvents TaskStatusEvent[]
   channelConversations ChannelConversation[]
   channelOutboxEntries ChannelOutbox[]
+  sharedTasks SharedTask[]
 
   @@index([projectId])
   @@index([executionHost])
@@ -219,6 +220,21 @@ model TaskDiagnosticsSnapshot {
   @@index([userId, taskId, createdAt])
   @@index([projectId, createdAt])
   @@map("task_diagnostics_snapshots")
+}
+
+model SharedTask {
+  id        String    @id @default(uuid())
+  taskId    String    @map("task_id")
+  userId    String    @map("user_id")
+  token     String    @unique
+  expiresAt DateTime? @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, userId])
+  @@index([taskId])
+  @@map("shared_tasks")
 }
 
 model Verification {
