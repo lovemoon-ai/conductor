@@ -50,6 +50,7 @@ export class RemoteAiSession extends EventEmitter {
     };
     this.useSessionFileReplyStreamValue = true;
     this.sessionInfo = null;
+    this.currentTurnStatus = null;
     this.snapshot = {
       backend: undefined,
       provider: undefined,
@@ -155,6 +156,7 @@ export class RemoteAiSession extends EventEmitter {
   getSnapshot() {
     return {
       ...this.snapshot,
+      currentTurnStatus: this.getCurrentTurnStatus(),
       sessionInfo: this.sessionInfo ? { ...this.sessionInfo } : null,
     };
   }
@@ -165,6 +167,10 @@ export class RemoteAiSession extends EventEmitter {
 
   getSessionInfo() {
     return this.sessionInfo ? { ...this.sessionInfo } : null;
+  }
+
+  getCurrentTurnStatus() {
+    return this.currentTurnStatus ? { ...this.currentTurnStatus } : null;
   }
 
   setSessionMessageHandler(handler) {
@@ -333,6 +339,9 @@ export class RemoteAiSession extends EventEmitter {
     if (snapshot?.useSessionFileReplyStream !== undefined) {
       this.useSessionFileReplyStreamValue = Boolean(snapshot.useSessionFileReplyStream);
     }
+    if (snapshot?.currentTurnStatus && typeof snapshot.currentTurnStatus === "object") {
+      this.currentTurnStatus = { ...snapshot.currentTurnStatus };
+    }
   }
 
   handleWorkerResponse(payload) {
@@ -362,6 +371,9 @@ export class RemoteAiSession extends EventEmitter {
 
   handleWorkerProgress(payload) {
     const pending = this.pendingRequests.get(payload.requestId);
+    if (payload?.payload && typeof payload.payload === "object") {
+      this.currentTurnStatus = { ...payload.payload };
+    }
     if (!pending || typeof pending.progressHandler !== "function") {
       return;
     }
@@ -396,6 +408,12 @@ export class RemoteAiSession extends EventEmitter {
 
     if (name === "assistant_message" && typeof this.sessionMessageHandler === "function") {
       await this.sessionMessageHandler(eventPayload);
+    }
+
+    if (name === "working_status") {
+      if (eventPayload && typeof eventPayload === "object") {
+        this.currentTurnStatus = { ...eventPayload };
+      }
     }
 
     if (name === "working_status" && typeof this.workingStatusHandler === "function") {
@@ -435,6 +453,7 @@ class LocalAiSessionProxy extends EventEmitter {
     };
     this.useSessionFileReplyStreamValue = true;
     this.sessionInfo = null;
+    this.currentTurnStatus = null;
     this.session = null;
     this.closed = false;
     this.sessionMessageHandler = null;
@@ -469,6 +488,9 @@ class LocalAiSessionProxy extends EventEmitter {
             if (payload.sessionId) {
               this.threadIdValue = String(payload.sessionId);
             }
+          }
+          if (eventName === "working_status" && payload && typeof payload === "object") {
+            this.currentTurnStatus = { ...payload };
           }
           this.emit(eventName, payload);
         });
@@ -507,6 +529,8 @@ class LocalAiSessionProxy extends EventEmitter {
       backend: this.backend,
       sessionId: this.threadIdValue || undefined,
       sessionInfo: this.sessionInfo,
+      currentTurnStatus:
+        typeof session.getCurrentTurnStatus === "function" ? session.getCurrentTurnStatus() : this.currentTurnStatus,
       useSessionFileReplyStream: this.useSessionFileReplyStreamValue,
       workerReady: true,
     };
@@ -528,6 +552,10 @@ class LocalAiSessionProxy extends EventEmitter {
         ...this.snapshot,
         ...sessionSnapshot,
         backend: sessionSnapshot.backend || this.snapshot.backend,
+        currentTurnStatus:
+          typeof this.session?.getCurrentTurnStatus === "function"
+            ? this.session.getCurrentTurnStatus()
+            : sessionSnapshot.currentTurnStatus || this.currentTurnStatus || null,
         sessionId: sessionSnapshot.sessionId || this.threadIdValue || undefined,
         sessionInfo:
           typeof this.session?.getSessionInfo === "function"
@@ -537,6 +565,7 @@ class LocalAiSessionProxy extends EventEmitter {
     }
     return {
       ...this.snapshot,
+      currentTurnStatus: this.getCurrentTurnStatus(),
       sessionInfo: this.sessionInfo ? { ...this.sessionInfo } : null,
     };
   }
@@ -553,6 +582,13 @@ class LocalAiSessionProxy extends EventEmitter {
       return this.session.getSessionInfo();
     }
     return this.sessionInfo ? { ...this.sessionInfo } : null;
+  }
+
+  getCurrentTurnStatus() {
+    if (typeof this.session?.getCurrentTurnStatus === "function") {
+      return this.session.getCurrentTurnStatus();
+    }
+    return this.currentTurnStatus ? { ...this.currentTurnStatus } : null;
   }
 
   setSessionMessageHandler(handler) {

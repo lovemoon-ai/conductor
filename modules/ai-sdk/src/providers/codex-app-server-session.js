@@ -231,6 +231,9 @@ export class CodexAppServerSession extends EventEmitter {
     this.nativeSessionId = "";
     this.rateLimits = null;
     this.tokenUsage = null;
+    this.currentTurnStatus = null;
+    this.currentTurnActivityAt = 0;
+    this.now = typeof options.now === "function" ? options.now : () => Date.now();
     this.turnDeadlineMs = getBoundedEnvInt(
       "CONDUCTOR_TURN_DEADLINE_MS",
       DEFAULT_TURN_DEADLINE_MS,
@@ -300,12 +303,17 @@ export class CodexAppServerSession extends EventEmitter {
             command: `codex resume ${this.sessionId}`,
           }
         : null,
+      currentTurnStatus: this.getCurrentTurnStatus(),
       pid: this.transport.pid || undefined,
     };
   }
 
   getSessionInfo() {
     return this.sessionInfo ? { ...this.sessionInfo } : null;
+  }
+
+  getCurrentTurnStatus() {
+    return this.currentTurnStatus ? { ...this.currentTurnStatus } : null;
   }
 
   async ensureSessionInfo() {
@@ -354,6 +362,41 @@ export class CodexAppServerSession extends EventEmitter {
 
   getCurrentReplyTarget() {
     return this.activeReplyTarget || this.lastReplyTarget || undefined;
+  }
+
+  touchTurnActivity() {
+    this.currentTurnActivityAt = this.now();
+  }
+
+  updateCurrentTurnStatus(payload) {
+    const updatedAtMs = this.now();
+    this.currentTurnActivityAt = updatedAtMs;
+    this.currentTurnStatus = {
+      ...payload,
+      updated_at: new Date(updatedAtMs).toISOString(),
+    };
+  }
+
+  markTurnStartedStatus() {
+    this.updateCurrentTurnStatus({
+      source: "codex-app-server",
+      reply_in_progress: true,
+      replyTo: this.getCurrentReplyTarget(),
+      phase: "turn_started",
+      status_line: "codex is working",
+      thread_id: this.sessionId || undefined,
+    });
+  }
+
+  async failPendingTurnStart(error) {
+    if (this.closeRequested || error?.reason === "session_closed") {
+      return;
+    }
+    await this.emitWorkingStatus({
+      phase: "turn_failed",
+      reply_in_progress: false,
+      status_done_line: error instanceof Error ? error.message : String(error),
+    });
   }
 
   async boot() {
@@ -481,13 +524,16 @@ export class CodexAppServerSession extends EventEmitter {
 
   async emitWorkingStatus(payload) {
     const normalized = this.normalizeWorkingStatusPayload(payload);
+    this.updateCurrentTurnStatus(normalized);
+    const snapshot = this.getCurrentTurnStatus();
     if (typeof this.workingStatusHandler === "function") {
-      await this.workingStatusHandler(normalized);
+      await this.workingStatusHandler(snapshot);
     }
-    this.emit("working_status", normalized);
+    this.emit("working_status", snapshot);
   }
 
   async emitAssistantMessage(text) {
+    this.touchTurnActivity();
     const payload = {
       text,
       preserveWhitespace: true,
@@ -570,17 +616,42 @@ export class CodexAppServerSession extends EventEmitter {
       };
     }
     let timer = null;
-    const promise = new Promise((_, reject) => {
+    let settled = false;
+    const schedule = (reject) => {
+      const now = this.now();
+      const lastActivityAt =
+        Number.isFinite(this.currentTurnActivityAt) && this.currentTurnActivityAt > 0
+          ? this.currentTurnActivityAt
+          : now;
+      const elapsedMs = Math.max(0, now - lastActivityAt);
+      const waitMs = Math.max(1, this.turnDeadlineMs - elapsedMs);
       timer = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        const activityNow = this.now();
+        const latestActivityAt =
+          Number.isFinite(this.currentTurnActivityAt) && this.currentTurnActivityAt > 0
+            ? this.currentTurnActivityAt
+            : activityNow;
+        if (activityNow - latestActivityAt < this.turnDeadlineMs) {
+          schedule(reject);
+          return;
+        }
+        settled = true;
         reject(this.createTurnTimeoutError(this.turnDeadlineMs));
-      }, this.turnDeadlineMs);
-      if (typeof timer.unref === "function") {
+      }, waitMs);
+      if (typeof timer?.unref === "function") {
         timer.unref();
       }
+    };
+    const promise = new Promise((_, reject) => {
+      schedule(reject);
     });
     return {
       promise,
       cleanup: () => {
+        settled = true;
         if (timer) {
           clearTimeout(timer);
         }
@@ -902,7 +973,6 @@ export class CodexAppServerSession extends EventEmitter {
       throw this.createSessionClosedError();
     }
 
-    await this.boot();
     const effectivePrompt = this.buildPrompt(promptText, { useInitialImages });
     if (!effectivePrompt) {
       return {
@@ -917,6 +987,14 @@ export class CodexAppServerSession extends EventEmitter {
       throw createTurnError("Codex app-server turn already running", {
         reason: "turn_already_running",
       });
+    }
+
+    this.markTurnStartedStatus();
+    try {
+      await this.boot();
+    } catch (error) {
+      await this.failPendingTurnStart(error);
+      throw error;
     }
 
     this.history.push({ role: "user", content: promptText });
@@ -983,6 +1061,13 @@ export class CodexAppServerSession extends EventEmitter {
     } catch (error) {
       if (error?.reason === "turn_timeout") {
         await this.interruptCurrentTurn();
+      }
+      if (!this.closeRequested && error?.reason !== "session_closed") {
+        await this.emitWorkingStatus({
+          phase: "turn_failed",
+          reply_in_progress: false,
+          status_done_line: error instanceof Error ? error.message : String(error),
+        });
       }
       this.maybeEmitAuthRequired(error);
       throw error;

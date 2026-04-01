@@ -180,6 +180,9 @@ export class OpencodeSdkSession extends EventEmitter {
     this.currentTurn = null;
     this.lastUsage = null;
     this.lastAssistantInfo = null;
+    this.currentTurnStatus = null;
+    this.currentTurnActivityAt = 0;
+    this.now = typeof options.now === "function" ? options.now : () => Date.now();
     this.turnDeadlineMs = getBoundedEnvInt(
       "CONDUCTOR_TURN_DEADLINE_MS",
       DEFAULT_TURN_DEADLINE_MS,
@@ -258,12 +261,17 @@ export class OpencodeSdkSession extends EventEmitter {
       useSessionFileReplyStream: this.usesSessionFileReplyStream(),
       resumeReady: Boolean(this.sessionId),
       manualResume: null,
+      currentTurnStatus: this.getCurrentTurnStatus(),
       pid: this.transport.pid || undefined,
     };
   }
 
   getSessionInfo() {
     return this.sessionInfo ? { ...this.sessionInfo } : null;
+  }
+
+  getCurrentTurnStatus() {
+    return this.currentTurnStatus ? { ...this.currentTurnStatus } : null;
   }
 
   async ensureSessionInfo() {
@@ -308,6 +316,46 @@ export class OpencodeSdkSession extends EventEmitter {
     return this.activeReplyTarget || this.lastReplyTarget || undefined;
   }
 
+  touchTurnActivity() {
+    this.currentTurnActivityAt = this.now();
+  }
+
+  updateCurrentTurnStatus(payload) {
+    const updatedAtMs = this.now();
+    this.currentTurnActivityAt = updatedAtMs;
+    this.currentTurnStatus = {
+      ...payload,
+      updated_at: new Date(updatedAtMs).toISOString(),
+    };
+  }
+
+  markTurnStartedStatus() {
+    this.updateCurrentTurnStatus({
+      source: OPENCODE_PROVIDER_VARIANT,
+      reply_in_progress: true,
+      replyTo: this.getCurrentReplyTarget(),
+      phase: "turn_started",
+      status_line: "opencode is working",
+      thread_id: this.sessionId || undefined,
+      session_id: this.sessionId || undefined,
+      session_file_path: undefined,
+    });
+  }
+
+  async failPendingTurnStart(error, onProgress = null) {
+    if (this.closeRequested || error?.reason === "session_closed") {
+      return;
+    }
+    await this.emitWorkingStatus(
+      {
+        phase: "turn_failed",
+        reply_in_progress: false,
+        status_done_line: error instanceof Error ? error.message : String(error),
+      },
+      onProgress,
+    );
+  }
+
   async emitWorkingStatus(payload, onProgress = null) {
     const normalized = {
       source: OPENCODE_PROVIDER_VARIANT,
@@ -322,16 +370,19 @@ export class OpencodeSdkSession extends EventEmitter {
       session_id: this.sessionId || undefined,
       session_file_path: undefined,
     };
+    this.updateCurrentTurnStatus(normalized);
+    const snapshot = this.getCurrentTurnStatus();
     if (typeof onProgress === "function") {
-      onProgress(normalized);
+      onProgress(snapshot);
     }
     if (typeof this.workingStatusHandler === "function") {
-      await this.workingStatusHandler(normalized);
+      await this.workingStatusHandler(snapshot);
     }
-    this.emit("working_status", normalized);
+    this.emit("working_status", snapshot);
   }
 
   async emitAssistantMessage(text) {
+    this.touchTurnActivity();
     const payload = {
       text,
       preserveWhitespace: true,
@@ -412,22 +463,47 @@ export class OpencodeSdkSession extends EventEmitter {
       };
     }
     let timer = null;
-    const promise = new Promise((_, reject) => {
+    let settled = false;
+    const schedule = (reject) => {
+      const now = this.now();
+      const lastActivityAt =
+        Number.isFinite(this.currentTurnActivityAt) && this.currentTurnActivityAt > 0
+          ? this.currentTurnActivityAt
+          : now;
+      const elapsedMs = Math.max(0, now - lastActivityAt);
+      const waitMs = Math.max(1, this.turnDeadlineMs - elapsedMs);
       timer = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        const activityNow = this.now();
+        const latestActivityAt =
+          Number.isFinite(this.currentTurnActivityAt) && this.currentTurnActivityAt > 0
+            ? this.currentTurnActivityAt
+            : activityNow;
+        if (activityNow - latestActivityAt < this.turnDeadlineMs) {
+          schedule(reject);
+          return;
+        }
+        settled = true;
         try {
           onTimeout?.();
         } catch {
           // best effort
         }
         reject(this.createTurnTimeoutError(this.turnDeadlineMs));
-      }, this.turnDeadlineMs);
-      if (typeof timer.unref === "function") {
+      }, waitMs);
+      if (typeof timer?.unref === "function") {
         timer.unref();
       }
+    };
+    const promise = new Promise((_, reject) => {
+      schedule(reject);
     });
     return {
       promise,
       cleanup: () => {
+        settled = true;
         if (timer) {
           clearTimeout(timer);
         }
@@ -1238,16 +1314,21 @@ export class OpencodeSdkSession extends EventEmitter {
       return buildEmptyTurnResult();
     }
 
-    await this.boot();
-
     if (this.currentTurn) {
       throw createTurnError("Opencode turn already running", {
         reason: "turn_already_running",
       });
     }
 
-    if (!this.client?.session || typeof this.client.session.promptAsync !== "function") {
-      throw new Error("Opencode session client is unavailable");
+    this.markTurnStartedStatus();
+    try {
+      await this.boot();
+      if (!this.client?.session || typeof this.client.session.promptAsync !== "function") {
+        throw new Error("Opencode session client is unavailable");
+      }
+    } catch (error) {
+      await this.failPendingTurnStart(error, onProgress);
+      throw error;
     }
 
     this.history.push({ role: "user", content: promptText });
