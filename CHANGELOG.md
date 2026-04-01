@@ -6,21 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with an additional `Commits` section for each released version.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
-## [Unreleased]
+## [0.2.32] - 2026-04-02
 
 ### Added
 
+- Added shareable conversation links — swipe left on a task and tap Share to generate a public, read-only link that anyone can view without logging in.
+- Share links can be revoked by the task owner at any time.
+- Share links support optional expiration dates for time-limited access.
+
 ### Changed
+
+- Improved AI turn status handling in the AI SDK for more reliable session state transitions.
+- Improved help message display when using external AI SDK providers.
 
 ### Fixed
 
+- Fixed `conductor daemon --force` flag not working correctly when reclaiming an existing daemon host.
+- Fixed fire task kill convergence issue where a reconnecting daemon could overwrite a pending kill request.
+
 ### Removed
+
+- _None._
 
 ### Security
 
+- _None._
+
 ### Commits
 
-- _None yet_
+- `5e303e6` add share conversation
+- `560eabc` improve ai turn status handling
+- `90ec97d` fix fire kill convergence
+- `1251cbd` fix bug in conductor daemon --force
+- `4ae7ff5` update help message when using extern provider
+- `ac0c938` update claw/sop/06_release.md
 
 ---
 
