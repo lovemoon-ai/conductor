@@ -18,7 +18,18 @@ function makeConfig(): ConductorConfig {
 }
 
 class FakeBackendApi {
-  projects: Array<{ id: string; name?: string; description?: string | null; metadata?: Record<string, unknown> }> = [];
+  projects: Array<{
+    id: string;
+    name?: string;
+    description?: string | null;
+    metadata?: Record<string, unknown>;
+    daemonHost?: string;
+    workspacePath?: string;
+    repoRoot?: string;
+    worktreeBranch?: string;
+    lastCommit?: string;
+    fileCount?: number;
+  }> = [];
   tasks: Array<{
     id: string;
     project_id: string;
@@ -87,12 +98,28 @@ class FakeBackendApi {
     }));
   }
 
-  async createProject(params: { name: string; description?: string; metadata?: Record<string, unknown> }) {
+  async createProject(params: {
+    name?: string;
+    description?: string;
+    metadata?: Record<string, unknown>;
+    daemonHost?: string;
+    workspacePath?: string;
+    repoRoot?: string;
+    worktreeBranch?: string;
+    lastCommit?: string;
+    fileCount?: number;
+  }) {
     const project = {
       id: `p-${this.projects.length + 1}`,
       name: params.name,
       description: params.description ?? null,
       metadata: params.metadata,
+      daemonHost: params.daemonHost,
+      workspacePath: params.workspacePath,
+      repoRoot: params.repoRoot,
+      worktreeBranch: params.worktreeBranch,
+      lastCommit: params.lastCommit,
+      fileCount: params.fileCount,
       asObject() {
         return {
           id: project.id,
@@ -189,7 +216,7 @@ class FakeBackendApi {
     };
   }
 
-  async matchProjectByPath(params: { hostname: string; path: string }) {
+  async matchProjectByPath(params: { hostname?: string; daemonHost?: string; daemon_host?: string; path: string }) {
     const project = this.projects[0] || null;
     return {
       project: project
@@ -210,12 +237,26 @@ class FakeBackendApi {
     return project;
   }
 
-  async updateProject(projectId: string, params: { metadata?: Record<string, unknown> }) {
+  async updateProject(projectId: string, params: {
+    metadata?: Record<string, unknown>;
+    daemonHost?: string;
+    workspacePath?: string;
+    repoRoot?: string;
+    worktreeBranch?: string;
+    lastCommit?: string;
+    fileCount?: number;
+  }) {
     const project = this.projects.find((item) => item.id === projectId);
     if (!project) {
       throw new Error(`project not found: ${projectId}`);
     }
     project.metadata = params.metadata;
+    if (params.daemonHost) project.daemonHost = params.daemonHost;
+    if (params.workspacePath) project.workspacePath = params.workspacePath;
+    if (params.repoRoot) project.repoRoot = params.repoRoot;
+    if (params.worktreeBranch) project.worktreeBranch = params.worktreeBranch;
+    if (params.lastCommit) project.lastCommit = params.lastCommit;
+    if (typeof params.fileCount === 'number') project.fileCount = params.fileCount;
     return {
       id: project.id,
       name: project.name,
@@ -333,11 +374,13 @@ describe('ConductorClient', () => {
   let wsClient: FakeWsClient;
   let sessionStore: SessionDiskStore;
   let projectPath: string;
+  let resolvedProjectPath: string;
 
   beforeEach(() => {
     backendApi = new FakeBackendApi();
     wsClient = new FakeWsClient();
     projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'conductor-client-project-'));
+    resolvedProjectPath = fs.realpathSync(projectPath);
     const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'conductor-client-store-'));
     sessionStore = new SessionDiskStore(path.join(storeDir, 'session.yaml'));
   });
@@ -880,10 +923,12 @@ describe('ConductorClient', () => {
 
     const matched = await client.matchProjectByPath();
     expect(matched.project_id).toBe('p1');
-    expect(matched.matched_path).toBe(projectPath);
+    expect(matched.matched_path).toBe(resolvedProjectPath);
 
     const bound = await client.bindProjectPath('p1');
     expect(bound.success).toBe(true);
+    expect(bound.project_id).toBe('p1');
+    expect(bound.path).toBe(resolvedProjectPath);
     const local = await client.getLocalProjectRecord();
     expect(local.project_id).toBe('p1');
     expect(Array.isArray(local.task_id)).toBe(true);

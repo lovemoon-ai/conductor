@@ -7,6 +7,14 @@ export interface GuessResult {
   repoRoot?: string;
 }
 
+export interface WorkspaceSnapshot {
+  projectRoot: string;
+  repoRoot?: string;
+  worktreeBranch?: string;
+  lastCommit?: string;
+  fileCount?: number;
+}
+
 export class ProjectContext {
   private readonly root: string;
 
@@ -20,6 +28,22 @@ export class ProjectContext {
     return {
       projectRoot: this.root,
       repoRoot: repoRoot ?? undefined,
+    };
+  }
+
+  snapshot(): WorkspaceSnapshot {
+    const guess = this.guess();
+    if (!guess.repoRoot) {
+      return {
+        projectRoot: guess.projectRoot,
+      };
+    }
+    return {
+      projectRoot: guess.projectRoot,
+      repoRoot: guess.repoRoot,
+      worktreeBranch: this.gitBranch(guess.repoRoot) ?? undefined,
+      lastCommit: this.gitHead(guess.repoRoot) ?? undefined,
+      fileCount: this.gitFileCount(guess.repoRoot) ?? undefined,
     };
   }
 
@@ -62,6 +86,35 @@ export class ProjectContext {
     try {
       const repoPath = runGit(['rev-parse', '--show-toplevel'], start).trim();
       return fs.realpathSync(repoPath);
+    } catch {
+      return null;
+    }
+  }
+
+  private gitBranch(repoRoot: string): string | null {
+    try {
+      const branch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot).trim();
+      if (!branch || branch === 'HEAD') {
+        return null;
+      }
+      return branch;
+    } catch {
+      return null;
+    }
+  }
+
+  private gitHead(repoRoot: string): string | null {
+    try {
+      const head = runGit(['rev-parse', 'HEAD'], repoRoot).trim();
+      return head || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private gitFileCount(repoRoot: string): number | null {
+    try {
+      return this.gitListFiles(repoRoot).length;
     } catch {
       return null;
     }

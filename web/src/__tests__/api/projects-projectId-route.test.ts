@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { PATCH, DELETE } from "@/app/api/projects/[projectId]/route";
+import { GET, PATCH, DELETE } from "@/app/api/projects/[projectId]/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
 import * as authService from "@/lib/auth/service";
 
@@ -15,6 +15,7 @@ vi.mock("@/lib/db", () => ({
   db: {
     project: {
       findFirst: vi.fn(),
+      findMany: vi.fn(),
       updateMany: vi.fn(),
       findUnique: vi.fn(),
       delete: vi.fn(),
@@ -25,6 +26,10 @@ vi.mock("@/lib/db", () => ({
     },
     message: {
       deleteMany: vi.fn(),
+    },
+    defaultProject: {
+      findUnique: vi.fn(),
+      create: vi.fn(),
     },
     user: {
       findUnique: vi.fn(),
@@ -42,6 +47,8 @@ const { deleteTaskAttachmentDirectory } = await import("@/lib/conductor/task-fil
 describe("/api/projects/[projectId]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.defaultProject.findUnique).mockResolvedValue(null);
+    vi.mocked(db.project.findMany).mockResolvedValue([]);
     vi.mocked(db.user.findUnique).mockResolvedValue({
       id: "user-1",
       email: "test@example.com",
@@ -53,6 +60,40 @@ describe("/api/projects/[projectId]", () => {
       lastPaymentAt: null,
     } as any);
     vi.mocked(db.task.findMany).mockResolvedValue([]);
+  });
+
+  describe("GET", () => {
+    it("should return null metadata when the stored JSON is invalid", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-1",
+        name: "Broken Metadata",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/repo/project",
+        repoRoot: "/repo/project",
+        worktreeBranch: "main",
+        lastCommit: "abc",
+        fileCount: 10,
+        metadata: "not-json",
+        createdAt: new Date("2024-01-01"),
+        updatedAt: new Date("2024-01-01"),
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "GET",
+        token,
+        url: "http://localhost:6152/api/projects/proj-1",
+      });
+      const response = await GET(request, { params: Promise.resolve({ projectId: "proj-1" }) });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.metadata).toBeNull();
+      expect(data.is_default).toBe(false);
+    });
   });
 
   describe("PATCH", () => {
@@ -70,26 +111,98 @@ describe("/api/projects/[projectId]", () => {
       expect(data.error).toBe("Unauthorized");
     });
 
-    it("should return 409 when name already exists", async () => {
+    it("should reject changing a bound project without confirmed binding", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
       vi.mocked(db.project.findFirst).mockResolvedValue({
-        id: "proj-2",
-        name: "Dup",
+        id: "proj-1",
+        name: "Bound Project",
         userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/bound",
       } as any);
 
       const token = createTestToken("user-1");
       const request = createMockRequest({
         method: "PATCH",
         token,
-        body: { name: "Dup" },
+        body: {
+          daemonHost: "daemon-b",
+          workspacePath: "/repo/other",
+        },
       });
       const response = await PATCH(request, { params: Promise.resolve({ projectId: "proj-1" }) });
       const data = await extractJson(response);
 
       expect(response.status).toBe(409);
-      expect(data.error).toBe("Project name already exists");
+      expect(data.error).toBe("Binding fields require confirmed binding from daemon/CLI");
+    });
+
+    it("should reject invalid metadata payloads", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-1",
+        name: "Bound Project",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/bound",
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        body: {
+          metadata: "oops",
+        },
+      });
+      const response = await PATCH(request, { params: Promise.resolve({ projectId: "proj-1" }) });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(400);
+      expect(data.error).toBe("metadata must be an object or null");
+    });
+
+    it("should reject binding to a workspace that already belongs to another project", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-pending",
+        name: "Pending Project",
+        userId: "user-1",
+        daemonHost: null,
+        workspacePath: null,
+      } as any);
+      vi.mocked(db.project.findMany).mockResolvedValue([
+        {
+          id: "proj-existing",
+          name: "Existing Project",
+          userId: "user-1",
+          daemonHost: "daemon-a",
+          workspacePath: "/repo/existing",
+          metadata: null,
+          createdAt: new Date("2024-01-01"),
+          updatedAt: new Date("2024-01-01"),
+        },
+      ] as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        body: {
+          daemonHost: "daemon-a",
+          workspacePath: "/repo/existing",
+          bindingConfirmed: true,
+        },
+      });
+      const response = await PATCH(request, { params: Promise.resolve({ projectId: "proj-pending" }) });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toBe("Project binding already exists");
+      expect(db.project.updateMany).not.toHaveBeenCalled();
     });
   });
 
@@ -114,7 +227,12 @@ describe("/api/projects/[projectId]", () => {
       const token = createTestToken("user-1");
       vi.mocked(db.project.findFirst).mockResolvedValue({
         id: "proj-default",
-        name: "Default",
+        name: "Default Project",
+      } as any);
+      vi.mocked(db.defaultProject.findUnique).mockResolvedValue({
+        id: "default-map-1",
+        userId: "user-1",
+        projectId: "proj-default",
       } as any);
 
       const request = createMockRequest({

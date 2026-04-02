@@ -402,10 +402,31 @@ export async function POST(request: NextRequest) {
     where: { id: projectId, userId: user.id },
   });
   if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  const defaultProject = await db.defaultProject.findUnique({
+    where: { userId: user.id },
+    select: { projectId: true },
+  });
+  const isDefaultProject = defaultProject?.projectId === project.id;
+  const projectDaemonHost = normalizeOptionalString((project as { daemonHost?: string | null }).daemonHost);
+  const projectWorkspacePath = normalizeOptionalString((project as { workspacePath?: string | null }).workspacePath);
+  const projectWorktreeBranch = normalizeOptionalString((project as { worktreeBranch?: string | null }).worktreeBranch);
+  if (
+    (!isDefaultProject && (!projectDaemonHost || !projectWorkspacePath)) ||
+    (projectDaemonHost && !projectWorkspacePath) ||
+    (!projectDaemonHost && projectWorkspacePath)
+  ) {
+    return NextResponse.json({ error: "Project binding incomplete" }, { status: 409 });
+  }
 
   const connectedAgents = realtimeHub.getAgentsForUser(
     user.id
   ) as ConnectedAgent[];
+  if (projectDaemonHost && !connectedAgents.some((agent) => agent.host === projectDaemonHost)) {
+    return NextResponse.json(
+      { error: `Project daemon ${projectDaemonHost} is offline` },
+      { status: 409 },
+    );
+  }
   const hasTaskTypeField = hasBodyField(normalizedBody, "task_type", "taskType");
   const rawTaskType = readBodyField(normalizedBody, "task_type", "taskType");
   if (hasTaskTypeField && parseTaskType(rawTaskType) === null) {
@@ -449,7 +470,16 @@ export async function POST(request: NextRequest) {
         ? { sessionFilePath: requestedSessionFilePath }
         : {}),
     };
+    if (projectWorkspacePath) {
+      aiLaunchConfig.cwd = projectWorkspacePath;
+    }
+    if (projectWorktreeBranch) {
+      aiLaunchConfig.worktreeBranch = projectWorktreeBranch;
+    }
     launchConfig = Object.keys(aiLaunchConfig).length > 0 ? aiLaunchConfig : null;
+  }
+  if (projectWorkspacePath && launchConfig?.cwd === undefined) {
+    launchConfig = { ...(launchConfig ?? {}), cwd: projectWorkspacePath };
   }
   if (taskType === "pty_task") {
     const launchConfigError = validatePtyLaunchConfig(launchConfig);
@@ -457,9 +487,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: launchConfigError }, { status: 400 });
     }
   }
+  const hasAgentHostField = hasBodyField(normalizedBody, "agent_host", "agentHost");
   let agentHost = normalizeOptionalString(
     readBodyField(normalizedBody, "agent_host", "agentHost")
   );
+  if (projectDaemonHost) {
+    if (hasAgentHostField && agentHost && agentHost !== projectDaemonHost) {
+      return NextResponse.json(
+        { error: `Project daemon ${projectDaemonHost} must be used for this task` },
+        { status: 409 },
+      );
+    }
+    agentHost = projectDaemonHost;
+  }
   if (taskType === "pty_task") {
     const resolvedPtyAgent = resolvePtyAgentHost({
       connectedAgents,

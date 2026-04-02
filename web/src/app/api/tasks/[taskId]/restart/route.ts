@@ -90,6 +90,27 @@ export async function POST(
   if (!sourceTask) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
+  const project = await db.project.findFirst({
+    where: { id: sourceTask.projectId, userId: user.id },
+  });
+  if (!project) {
+    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  }
+  const defaultProject = await db.defaultProject.findUnique({
+    where: { userId: user.id },
+    select: { projectId: true },
+  });
+  const isDefaultProject = defaultProject?.projectId === project.id;
+  const projectDaemonHost = normalizeOptionalString((project as { daemonHost?: string | null }).daemonHost);
+  const projectWorkspacePath = normalizeOptionalString((project as { workspacePath?: string | null }).workspacePath);
+  const projectWorktreeBranch = normalizeOptionalString((project as { worktreeBranch?: string | null }).worktreeBranch);
+  if (
+    (!isDefaultProject && (!projectDaemonHost || !projectWorkspacePath)) ||
+    (projectDaemonHost && !projectWorkspacePath) ||
+    (!projectDaemonHost && projectWorkspacePath)
+  ) {
+    return NextResponse.json({ error: "Project binding incomplete" }, { status: 409 });
+  }
   if ((sourceTask.taskType ?? "ai_task") !== "ai_task") {
     return NextResponse.json({ error: "Only ai_task supports restart" }, { status: 409 });
   }
@@ -162,11 +183,24 @@ export async function POST(
     );
   }
 
-  const restartAgentHost = isManualFireTask
+  let restartAgentHost = isManualFireTask
     ? manualFireDaemonHostCandidates.find((host) =>
         connectedAgents.some((agent) => agent.host === host),
       ) ?? sourceExecutionDaemonHost
     : sourceAgentHost;
+  if (projectDaemonHost) {
+    if (
+      sourceAgentHost &&
+      !isConductorFireHost(sourceAgentHost) &&
+      sourceAgentHost !== projectDaemonHost
+    ) {
+      return NextResponse.json(
+        { error: `Task daemon ${sourceAgentHost} does not match project binding ${projectDaemonHost}` },
+        { status: 409 },
+      );
+    }
+    restartAgentHost = projectDaemonHost;
+  }
   if (!restartAgentHost) {
     return NextResponse.json(
       {
@@ -181,9 +215,11 @@ export async function POST(
   if (!restartAgent) {
     return NextResponse.json(
       {
-        error: isManualFireTask
-          ? `Original daemon ${restartAgentHost} is offline`
-          : `Source daemon ${sourceAgentHost} is offline`,
+        error: projectDaemonHost
+          ? `Project daemon ${restartAgentHost} is offline`
+          : isManualFireTask
+            ? `Original daemon ${restartAgentHost} is offline`
+            : `Source daemon ${sourceAgentHost} is offline`,
       },
       { status: 409 },
     );
@@ -318,6 +354,10 @@ export async function POST(
     restartSourceBackendType: sourceBackend,
     restartStrategy: "new_task",
   };
+  const successorLaunchConfig = {
+    ...(projectWorkspacePath ? { cwd: projectWorkspacePath } : {}),
+    ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
+  };
 
   const createdTask = await db.$transaction(async (tx) => {
     const task = await tx.task.create({
@@ -332,7 +372,7 @@ export async function POST(
         backendType: targetBackend,
         sessionId: null,
         sessionFilePath: null,
-        launchConfig: null,
+        launchConfig: Object.keys(successorLaunchConfig).length > 0 ? successorLaunchConfig : null,
         metadata: JSON.stringify(successorMetadata),
       },
     });

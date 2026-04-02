@@ -2913,6 +2913,20 @@ export function startDaemon(config = {}, deps = {}) {
         return null;
       }
       const project = await response.json();
+      const daemonHost =
+        (typeof project.daemon_host === "string" && project.daemon_host.trim()) ||
+        (typeof project.daemonHost === "string" && project.daemonHost.trim()) ||
+        "";
+      const workspacePath =
+        (typeof project.workspace_path === "string" && project.workspace_path.trim()) ||
+        (typeof project.workspacePath === "string" && project.workspacePath.trim()) ||
+        "";
+      if (workspacePath) {
+        if (daemonHost && daemonHost !== AGENT_NAME) {
+          return null;
+        }
+        return workspacePath;
+      }
       if (!project.metadata) {
         return null;
       }

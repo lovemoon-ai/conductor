@@ -37,3 +37,4 @@ web/.conductor-data/
 
 Makefile
 web/next-env.d.ts
+.claude/worktrees

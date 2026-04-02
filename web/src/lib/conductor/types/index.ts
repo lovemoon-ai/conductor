@@ -21,6 +21,13 @@ export interface Project {
   name: string;
   description?: string | null;
   metadata?: Record<string, unknown> | null;
+  daemonHost?: string | null;
+  workspacePath?: string | null;
+  repoRoot?: string | null;
+  worktreeBranch?: string | null;
+  lastCommit?: string | null;
+  fileCount?: number | null;
+  isDefault?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -210,12 +217,28 @@ export interface CreateProjectInput {
   name: string;
   description?: string;
   metadata?: Record<string, unknown>;
+  isDefault?: boolean;
+  daemonHost?: string;
+  workspacePath?: string;
+  repoRoot?: string;
+  worktreeBranch?: string;
+  lastCommit?: string;
+  fileCount?: number;
+  bindingConfirmed?: boolean;
 }
 
 export interface UpdateProjectInput {
   name?: string;
   description?: string;
   metadata?: Record<string, unknown>;
+  isDefault?: boolean;
+  daemonHost?: string;
+  workspacePath?: string;
+  repoRoot?: string;
+  worktreeBranch?: string;
+  lastCommit?: string;
+  fileCount?: number;
+  bindingConfirmed?: boolean;
 }
 
 export interface SendMessageInput {

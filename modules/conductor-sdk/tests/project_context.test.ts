@@ -57,4 +57,28 @@ describe('ProjectContext', () => {
     const diff = ctx.getDiff();
     expect(diff).toContain('Demo');
   });
+
+  test('snapshot includes git metadata when available', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'project-context-'));
+    initRepo(dir);
+    const ctx = new ProjectContext(dir);
+    const snapshot = ctx.snapshot();
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, env: gitEnv() }).toString().trim();
+    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, env: gitEnv() })
+      .toString()
+      .trim();
+    const files = execFileSync('git', ['ls-files'], { cwd: dir, env: gitEnv() })
+      .toString()
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean);
+    expect(snapshot.repoRoot).toBe(fs.realpathSync(dir));
+    expect(snapshot.lastCommit).toBe(head);
+    if (branch === 'HEAD') {
+      expect(snapshot.worktreeBranch).toBeUndefined();
+    } else {
+      expect(snapshot.worktreeBranch).toBe(branch);
+    }
+    expect(snapshot.fileCount).toBe(files.length);
+  });
 });

@@ -10,6 +10,7 @@ import { useAgentsStore } from '@/lib/conductor/stores/agents';
 import { ApiRequestError } from '@/lib/conductor/api/client';
 import { useRouter } from 'next/navigation';
 import type { TaskType } from '@/lib/tasks/task-config';
+import type { Project } from '@/lib/conductor/types';
 
 interface CreateTaskDialogProps {
   open: boolean;
@@ -65,12 +66,12 @@ const TASK_TYPE_OPTIONS: Array<{
   {
     value: 'ai_task',
     label: 'AI Task',
-    description: 'Conversation-first task routed through the AI runner. Pick a daemon, then choose one of its available backends.',
+    description: 'Conversation-first task routed through the AI runner. The project sets the daemon; backend choices come from that daemon.',
   },
   {
     value: 'pty_task',
     label: 'PTY Task',
-    description: 'Persistent terminal session on a PTY-capable daemon. Best for shell workflows or AI CLI tools.',
+    description: 'Persistent terminal session on a PTY-capable daemon. The project daemon must support PTY sessions.',
   },
 ];
 
@@ -88,27 +89,64 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
   const projects = useProjectsStore((state) => state.projects);
   const agents = useAgentsStore((state) => state.agents);
   const daemons = agents.filter((agent) => !agent.host.startsWith('conductor-fire-'));
-  const eligibleDaemons = taskType === 'pty_task'
-    ? daemons.filter((agent) => supportsPtyTask(agent.capabilities))
+  const selectableProjects = projects.filter((project) => Boolean(project.isDefault) || Boolean(project.daemonHost));
+  const selectedProject = selectableProjects.find((project) => project.id === projectId) ?? null;
+  const projectRecord = selectedProject as (Project & Record<string, unknown>) | null;
+  const isDefaultProject = Boolean(projectRecord?.isDefault);
+  const boundDaemonHost = projectRecord && typeof projectRecord.daemonHost === 'string'
+    ? projectRecord.daemonHost
+    : null;
+  const boundWorkspacePath = projectRecord && typeof projectRecord.workspacePath === 'string'
+    ? projectRecord.workspacePath
+    : null;
+  const isBoundProject = Boolean(boundDaemonHost) && !isDefaultProject;
+  const hasReadyProjectBinding = isDefaultProject || Boolean(boundDaemonHost);
+  const boundDaemonAgent = isBoundProject
+    ? daemons.find((agent) => agent.host === boundDaemonHost) ?? null
+    : null;
+  const boundDaemonOnline = isBoundProject ? Boolean(boundDaemonAgent) : true;
+  const boundDaemonSupportsPty = isBoundProject
+    ? Boolean(boundDaemonAgent && supportsPtyTask(boundDaemonAgent.capabilities))
+    : true;
+  const daemonScope = isBoundProject
+    ? (boundDaemonAgent ? [boundDaemonAgent] : [])
     : daemons;
-  const selectedAgent = eligibleDaemons.find((agent) => agent.host === agentHost);
+  const eligibleDaemons = taskType === 'pty_task'
+    ? daemonScope.filter((agent) => supportsPtyTask(agent.capabilities))
+    : daemonScope;
+  const selectedAgent = isBoundProject ? boundDaemonAgent : eligibleDaemons.find((agent) => agent.host === agentHost);
   const availableBackends = selectedAgent?.supportedBackends || [];
-  const hasProjects = projects.length > 0;
-  const canCreatePtyTask = daemons.some((agent) => supportsPtyTask(agent.capabilities));
+  const canCreatePtyTask = isBoundProject
+    ? boundDaemonSupportsPty
+    : daemons.some((agent) => supportsPtyTask(agent.capabilities));
   const hasEligibleDaemon = eligibleDaemons.length > 0;
-  const canSubmit = Boolean(title.trim()) && hasProjects && !isSubmitting && (taskType === 'pty_task' ? hasEligibleDaemon : true);
+  const canSubmit = Boolean(title.trim())
+    && selectableProjects.length > 0
+    && !isSubmitting
+    && hasReadyProjectBinding
+    && (!isBoundProject || boundDaemonOnline)
+    && (taskType === 'pty_task' ? hasEligibleDaemon : true);
+  const daemonSelectOptions = isBoundProject && boundDaemonHost
+    ? [{ host: boundDaemonHost, label: boundDaemonOnline ? boundDaemonHost : `${boundDaemonHost} (offline)` }]
+    : eligibleDaemons.map((daemon) => ({ host: daemon.host, label: daemon.host }));
 
   useEffect(() => {
-    if (!hasProjects) {
+    if (selectableProjects.length === 0) {
       setProjectId('');
       return;
     }
-    if (!projectId || !projects.some((project) => project.id === projectId)) {
-      setProjectId(projects[0].id);
+    if (!projectId || !selectableProjects.some((project) => project.id === projectId)) {
+      setProjectId(selectableProjects[0].id);
     }
-  }, [hasProjects, projectId, projects]);
+  }, [projectId, selectableProjects]);
 
   useEffect(() => {
+    if (isBoundProject) {
+      if (boundDaemonHost && agentHost !== boundDaemonHost) {
+        setAgentHost(boundDaemonHost);
+      }
+      return;
+    }
     if (eligibleDaemons.length === 0) {
       setAgentHost('');
       return;
@@ -116,7 +154,7 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
     if (!agentHost || !eligibleDaemons.some((daemon) => daemon.host === agentHost)) {
       setAgentHost(eligibleDaemons[0].host);
     }
-  }, [agentHost, eligibleDaemons]);
+  }, [agentHost, boundDaemonHost, eligibleDaemons, isBoundProject]);
 
   useEffect(() => {
     if (availableBackends.length === 0) {
@@ -218,9 +256,9 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
             <div className="mb-2 flex items-center gap-2">
               <label htmlFor="create-task-project" className="block text-sm font-medium">Project</label>
               <HelpTip label="project selection">
-                {!hasProjects
+                {selectableProjects.length === 0
                   ? 'Create a project first to organize the new task.'
-                  : 'Tasks inherit project context and stay grouped in the same workspace.'}
+                  : 'Tasks inherit the project daemon and workspace context.'}
               </HelpTip>
             </div>
             <select
@@ -233,9 +271,9 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
                 }
               }}
               className="webapp-input w-full"
-              disabled={!hasProjects}
+              disabled={selectableProjects.length === 0}
             >
-              {projects.map((project) => (
+              {selectableProjects.map((project) => (
                 <option key={project.id} value={project.id}>
                   {project.name}
                 </option>
@@ -309,9 +347,15 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
           </div>
         </div>
 
-        {!hasProjects ? (
+        {selectableProjects.length === 0 ? (
           <InlineNotice variant="warning" title="No project available">
             Create a project first, then come back to launch the task from the right workspace.
+          </InlineNotice>
+        ) : null}
+
+        {selectedProject && !hasReadyProjectBinding ? (
+          <InlineNotice variant="warning" title="Project binding pending">
+            This project has not been confirmed by its daemon yet. Bind it from the daemon/CLI before creating tasks.
           </InlineNotice>
         ) : null}
 
@@ -322,13 +366,25 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
                 <h3 className="text-sm font-semibold text-ink">Execution</h3>
                 <HelpTip label="execution setup">
                   {taskType === 'ai_task'
-                    ? 'Pick the connected daemon that should run this AI task. Backend choices come from the selected daemon.'
+                    ? (isBoundProject
+                      ? 'This project is bound to a daemon. Backend choices come from that daemon.'
+                      : 'Pick the connected daemon that should run this AI task. Backend choices come from the selected daemon.')
                     : 'Choose the PTY-capable daemon that should host the terminal session.'}
                 </HelpTip>
               </div>
+              {isBoundProject ? (
+                <p className="mt-1 text-xs text-muted">
+                  Bound to {boundDaemonHost}
+                  {boundWorkspacePath ? ` / ${boundWorkspacePath}` : ''}
+                </p>
+              ) : null}
             </div>
             <span className="rounded-full bg-border/50 px-2.5 py-1 text-xs font-medium text-muted">
-              {hasEligibleDaemon ? `${eligibleDaemons.length} daemon${eligibleDaemons.length > 1 ? 's' : ''} online` : 'No daemon online'}
+              {hasEligibleDaemon
+                ? `${eligibleDaemons.length} daemon${eligibleDaemons.length > 1 ? 's' : ''} online`
+                : isBoundProject && boundDaemonHost
+                  ? 'Bound daemon offline'
+                  : 'No daemon online'}
             </span>
           </div>
 
@@ -338,9 +394,11 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
                 <div className="mb-2 flex items-center gap-2">
                   <label htmlFor="create-task-daemon" className="block text-sm font-medium">Daemon</label>
                   <HelpTip label="daemon">
-                    {taskType === 'ai_task'
-                      ? 'The selected daemon defines which AI backends are available below.'
-                      : 'PTY tasks will open a shell session on this daemon.'}
+                    {isBoundProject
+                      ? 'This project locks the daemon selection.'
+                      : taskType === 'ai_task'
+                        ? 'The selected daemon defines which AI backends are available below.'
+                        : 'PTY tasks will open a shell session on this daemon.'}
                   </HelpTip>
                 </div>
                 <select
@@ -352,10 +410,11 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
                     setSubmitError(null);
                   }}
                   className="webapp-input w-full"
+                  disabled={isBoundProject}
                 >
-                  {eligibleDaemons.map((daemon) => (
-                    <option key={daemon.id} value={daemon.host}>
-                      {daemon.host}
+                  {daemonSelectOptions.map((daemon) => (
+                    <option key={daemon.host} value={daemon.host}>
+                      {daemon.label}
                     </option>
                   ))}
                 </select>
@@ -406,9 +465,13 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
             </div>
           ) : (
             <InlineNotice variant="warning" className="mt-4">
-              {taskType === 'pty_task'
-                ? 'No PTY-capable daemon is online. Reconnect conductor daemon with PTY support before creating this task.'
-                : 'No daemon is online right now. You can still create an AI task, but reconnecting a daemon unlocks explicit backend selection.'}
+              {isBoundProject && boundDaemonHost && !boundDaemonOnline
+                ? `The project daemon ${boundDaemonHost} is offline. Reconnect it before creating this task.`
+                : isBoundProject && boundDaemonHost && taskType === 'pty_task' && !boundDaemonSupportsPty
+                  ? `The project daemon ${boundDaemonHost} does not support PTY tasks.`
+                : taskType === 'pty_task'
+                  ? 'No PTY-capable daemon is online. Reconnect conductor daemon with PTY support before creating this task.'
+                  : 'No daemon is online right now. You can still create an AI task, but reconnecting a daemon unlocks explicit backend selection.'}
             </InlineNotice>
           )}
         </div>

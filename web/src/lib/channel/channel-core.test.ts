@@ -6,6 +6,8 @@ const {
   mockVerificationUpdate,
   mockProjectFindFirst,
   mockProjectFindMany,
+  mockDefaultProjectFindUnique,
+  mockDefaultProjectUpsert,
   mockExternalAccountUpsert,
   mockExternalAccountFindFirst,
   mockChannelConversationFindFirst,
@@ -29,6 +31,8 @@ const {
   mockVerificationUpdate: vi.fn(),
   mockProjectFindFirst: vi.fn(),
   mockProjectFindMany: vi.fn(),
+  mockDefaultProjectFindUnique: vi.fn(),
+  mockDefaultProjectUpsert: vi.fn(),
   mockExternalAccountUpsert: vi.fn(),
   mockExternalAccountFindFirst: vi.fn(),
   mockChannelConversationFindFirst: vi.fn(),
@@ -58,6 +62,11 @@ vi.mock('@/lib/db', () => ({
     project: {
       findFirst: mockProjectFindFirst,
       findMany: mockProjectFindMany,
+    },
+    defaultProject: {
+      findUnique: mockDefaultProjectFindUnique,
+      create: vi.fn(),
+      upsert: mockDefaultProjectUpsert,
     },
     externalAccount: {
       upsert: mockExternalAccountUpsert,
@@ -115,6 +124,12 @@ describe('channel core service', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockVerificationCreate.mockResolvedValue({ code: 'ABC123' });
+    mockDefaultProjectFindUnique.mockResolvedValue({
+      id: 'default-map-1',
+      userId: 'user-1',
+      projectId: 'proj-1',
+      project: { id: 'proj-1', userId: 'user-1', name: 'Default Project', metadata: JSON.stringify({ isDefault: true }) },
+    });
     mockProjectFindFirst.mockResolvedValue({ id: 'proj-1', userId: 'user-1', name: 'Default Project', metadata: JSON.stringify({ isDefault: true }) });
     mockProjectFindMany.mockResolvedValue([]);
     mockExternalAccountUpsert.mockResolvedValue({ id: 'ext-1', userId: 'user-1' });
@@ -129,6 +144,11 @@ describe('channel core service', () => {
     mockTaskFindFirst.mockResolvedValue({ id: 'task-1', projectId: 'proj-1' });
     mockMessageFindMany.mockResolvedValue([]);
     mockTaskUpdate.mockResolvedValue({ id: 'task-1', status: 'killed' });
+    mockDefaultProjectUpsert.mockResolvedValue({
+      id: 'default-map-1',
+      userId: 'user-1',
+      projectId: 'proj-1',
+    });
     mockEnqueueAndAttemptAgentCommand.mockResolvedValue({ requestId: 'req-1', delivered: false });
     mockCreateTaskForUser.mockResolvedValue({
       task: {

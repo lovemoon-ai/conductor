@@ -21,6 +21,7 @@ import {
   parseCliArgs,
   resolveAiSessionCommandLine,
   resolveFreshSessionBootstrapLockPath,
+  resolveProjectId,
   resolveRequestedTaskTitle,
   shouldRunReconnectRecovery,
   withFreshSessionBootstrapLock,
@@ -417,6 +418,45 @@ describe("conductor-fire backends", () => {
     assert.ok(samePath);
     assert.equal(samePath, samePathAgain);
     assert.equal(otherBackendPath, null);
+  });
+
+  it("returns the resolved project id from daemon confirmation", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-project-"));
+    const calls = [];
+    const conductor = {
+      matchProjectByPath: async (payload) => {
+        calls.push({ method: "match", payload });
+        if (calls.length === 1) {
+          return {
+            project_id: "pending-project",
+            project_name: "Pending Project",
+            matched_path: tempDir,
+          };
+        }
+        return {
+          project_id: "confirmed-project",
+          project_name: "Confirmed Project",
+          matched_path: tempDir,
+        };
+      },
+      bindProjectPath: async (projectId, payload) => {
+        calls.push({ method: "bind", projectId, payload });
+        return {
+          success: true,
+          project_id: "confirmed-project",
+          path: tempDir,
+        };
+      },
+    };
+
+    const resolved = await resolveProjectId(conductor, null, {
+      daemonName: "daemon-a",
+      projectPath: tempDir,
+    });
+
+    assert.equal(resolved, "confirmed-project");
+    assert.equal(calls[0].method, "match");
+    assert.equal(calls[1].method, "bind");
   });
 
   it("releases fresh-session lock after bootstrap finishes", async () => {

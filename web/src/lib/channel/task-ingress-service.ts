@@ -131,6 +131,12 @@ export async function createTaskForUser(input: {
       error: "Project not found",
     });
   }
+  const projectWorkspacePath = normalizeOptionalString(
+    (project as { workspacePath?: string | null }).workspacePath,
+  );
+  const projectWorktreeBranch = normalizeOptionalString(
+    (project as { worktreeBranch?: string | null }).worktreeBranch,
+  );
 
   const connectedAgents = realtimeHub.getAgentsForUser(input.userId) as ConnectedAgent[];
   const requestedBackendType = normalizeBackendType(input.backendType);
@@ -183,6 +189,15 @@ export async function createTaskForUser(input: {
     };
   }
 
+  const launchConfig = {
+    ...(requestedBackendType ? { backendType: requestedBackendType } : {}),
+    ...(input.initialContent ? { initialContent: input.initialContent } : {}),
+    ...(requestedSessionId ? { resumeSessionId: requestedSessionId } : {}),
+    ...(requestedSessionFilePath ? { sessionFilePath: requestedSessionFilePath } : {}),
+    ...(projectWorkspacePath ? { cwd: projectWorkspacePath } : {}),
+    ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
+  };
+
   const task = await db.task.create({
     data: {
       id: input.id,
@@ -199,6 +214,7 @@ export async function createTaskForUser(input: {
       backendType: requestedBackendType,
       sessionId: requestedSessionId,
       sessionFilePath: requestedSessionFilePath,
+      launchConfig: Object.keys(launchConfig).length > 0 ? JSON.stringify(launchConfig) : null,
       metadata: metadata ? JSON.stringify(metadata) : null,
     },
   });

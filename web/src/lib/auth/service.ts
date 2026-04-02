@@ -18,6 +18,26 @@ const DIGEST = "sha256";
 const DEFAULT_PROJECT_NAME = "Default Project";
 const DEFAULT_PROJECT_METADATA = JSON.stringify({ autoCreated: true, isDefault: true });
 
+const parseProjectMetadata = (value: string | null): Record<string, unknown> | null => {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+};
+
+const isLegacyDefaultProject = (project: { metadata: string | null }): boolean => {
+  const metadata = parseProjectMetadata(project.metadata);
+  return Boolean(metadata?.autoCreated === true && metadata?.isDefault === true);
+};
+
 type DbClient = Prisma.TransactionClient;
 
 export type AuthUser = { id: string; email: string | null; phone: string | null };
@@ -50,30 +70,68 @@ export function normalizeSelfHostBootstrapPhone(rawPhone: string): string {
   return normalized;
 }
 
-async function ensureDefaultProject(userId: string, client?: DbClient): Promise<Project> {
+export async function ensureDefaultProject(userId: string, client?: DbClient): Promise<Project> {
   const prisma = client ?? db;
-  const existing = await prisma.project.findFirst({
-    where: { userId, name: DEFAULT_PROJECT_NAME },
+  const existingDefault = await prisma.defaultProject.findUnique({
+    where: { userId },
+    include: { project: true },
   });
-  if (existing) {
-    return existing;
+  if (existingDefault?.project) {
+    return existingDefault.project;
+  }
+
+  const legacyCandidates = await prisma.project.findMany({
+    where: {
+      userId,
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  const legacyDefault = legacyCandidates.find(isLegacyDefaultProject) ?? null;
+  if (legacyDefault) {
+    await prisma.defaultProject.upsert({
+      where: { userId },
+      update: { projectId: legacyDefault.id },
+      create: { userId, projectId: legacyDefault.id },
+    });
+    return legacyDefault;
   }
 
   try {
-    return await prisma.project.create({
+    const project = await prisma.project.create({
       data: {
         userId,
         name: DEFAULT_PROJECT_NAME,
         metadata: DEFAULT_PROJECT_METADATA,
       },
     });
-  } catch {
-    const created = await prisma.project.findFirst({
-      where: { userId, name: DEFAULT_PROJECT_NAME },
+    await prisma.defaultProject.create({
+      data: {
+        userId,
+        projectId: project.id,
+      },
     });
+    return project;
+  } catch {
+    const createdDefault = await prisma.defaultProject.findUnique({
+      where: { userId },
+      include: { project: true },
+    });
+    if (createdDefault?.project) {
+      return createdDefault.project;
+    }
+    const createdCandidates = await prisma.project.findMany({
+      where: { userId },
+      orderBy: { createdAt: "asc" },
+    });
+    const created = createdCandidates.find(isLegacyDefaultProject) ?? null;
     if (!created) {
       throw new Error("Failed to ensure default project");
     }
+    await prisma.defaultProject.upsert({
+      where: { userId },
+      update: { projectId: created.id },
+      create: { userId, projectId: created.id },
+    });
     return created;
   }
 }

@@ -8,9 +8,9 @@ const pushMock = vi.fn();
 const createTaskMock = vi.fn();
 const onCreatedTaskMock = vi.fn();
 
-const projectsState = {
+let projectsState: any = {
   projects: [
-    { id: 'project-1', name: 'Project One' },
+    { id: 'project-1', name: 'Project One', isDefault: true },
     { id: 'project-2', name: 'Project Two' },
   ],
 };
@@ -53,6 +53,12 @@ describe('CreateTaskDialog', () => {
     pushMock.mockReset();
     onCreatedTaskMock.mockReset();
     vi.restoreAllMocks();
+    projectsState = {
+      projects: [
+        { id: 'project-1', name: 'Project One', isDefault: true },
+        { id: 'project-2', name: 'Project Two' },
+      ],
+    };
   });
 
   it('uses first option as default and reveals guidance only after clicking help', async () => {
@@ -77,9 +83,9 @@ describe('CreateTaskDialog', () => {
     expect(within(projectSelect).queryByRole('option', { name: 'No project' })).toBeNull();
     expect(within(daemonSelect).queryByRole('option', { name: 'Auto-select daemon' })).toBeNull();
     expect(within(backendSelect).queryByRole('option', { name: 'Default' })).toBeNull();
-    expect(screen.queryByText('Conversation-first task routed through the AI runner. Pick a daemon, then choose one of its available backends.')).toBeNull();
+    expect(screen.queryByText('Conversation-first task routed through the AI runner. The project sets the daemon; backend choices come from that daemon.')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Show help for AI Task' }));
-    expect(screen.getByText('Conversation-first task routed through the AI runner. Pick a daemon, then choose one of its available backends.')).toBeInTheDocument();
+    expect(screen.getByText('Conversation-first task routed through the AI runner. The project sets the daemon; backend choices come from that daemon.')).toBeInTheDocument();
   });
 
   it('shows inline error when create task hits free plan limit', async () => {
@@ -174,5 +180,40 @@ describe('CreateTaskDialog', () => {
       expect(onCreatedTaskMock).toHaveBeenCalledWith('task-inline-1');
     });
     expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('locks the daemon to a bound project', async () => {
+    projectsState = {
+      projects: [
+        {
+          id: 'project-bound',
+          name: 'Bound Project',
+          daemonHost: 'daemon-b',
+          workspacePath: '/repo/bound',
+        },
+      ],
+    };
+    createTaskMock.mockResolvedValueOnce({ id: 'task-bound-1' });
+
+    render(<CreateTaskDialog open onClose={() => {}} />);
+
+    const daemonSelect = await screen.findByLabelText('Daemon');
+    await waitFor(() => {
+      expect(daemonSelect).toHaveValue('daemon-b');
+    });
+    expect(daemonSelect).toBeDisabled();
+
+    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+      target: { value: 'Use bound daemon' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Use bound daemon',
+        projectId: 'project-bound',
+        agentHost: 'daemon-b',
+      }));
+    });
   });
 });
