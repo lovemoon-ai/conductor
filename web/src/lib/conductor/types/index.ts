@@ -103,6 +103,7 @@ export interface Agent {
   id: string;
   host: string;
   supportedBackends?: string[];
+  runtimeBackendMap?: Record<string, string>;
   capabilities?: string[];
 }
 

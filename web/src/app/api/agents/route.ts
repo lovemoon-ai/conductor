@@ -11,6 +11,7 @@ export async function GET(request: NextRequest) {
     id: agent.id,
     host: agent.host,
     supportedBackends: agent.supportedBackends,
+    runtimeBackendMap: agent.runtimeBackendMap,
     capabilities: agent.capabilities,
     version: agent.version,
   }));

@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import yaml from "js-yaml";
-import { filterRuntimeSupportedAllowCliList, resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
+import { filterRuntimeSupportedAllowCliList, listAdvertisedBackends, resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
 
 import {
   applyWorkingDirectory,
@@ -29,6 +29,26 @@ import {
 import { detectTaskId } from "../bin/conductor-send-file.js";
 
 const CONFIG_PATH = os.homedir() + "/.conductor/config-dev.yaml";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const FIXTURE_EXTERNAL_PROVIDER = path.resolve(
+  __dirname,
+  "..",
+  "..",
+  "modules",
+  "ai-sdk",
+  "fixtures",
+  "fake-external-provider.js",
+);
+const INVALID_EXTERNAL_PROVIDER = path.resolve(
+  __dirname,
+  "..",
+  "..",
+  "modules",
+  "ai-sdk",
+  "fixtures",
+  "invalid-external-provider.js",
+);
 
 function createIsolatedConfigPath() {
   assert.ok(fs.existsSync(CONFIG_PATH), `Config file not found: ${CONFIG_PATH}`);
@@ -83,8 +103,6 @@ async function withClearedProviderEnv(fn) {
 }
 
 function runCli(args) {
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = path.dirname(__filename);
   const cliPath = path.resolve(__dirname, "..", "bin", "conductor-fire.js");
   const env = { ...process.env };
   delete env.AISDK_PROVIDER_PATH;
@@ -180,6 +198,149 @@ describe("conductor-fire backends", () => {
     assert.ok(backends.length > 0, "allow_cli_list is empty");
   });
 
+  it("keeps configured codex aliases in the filtered allow_cli_list", async () => {
+    const allowCliList = await filterRuntimeSupportedAllowCliList({
+      "codex-gamma": "codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'",
+    });
+
+    assert.deepEqual(allowCliList, {
+      "codex-gamma": "codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'",
+    });
+  });
+
+  it("keeps configured codex aliases when the command is wrapped by env", async () => {
+    const allowCliList = await filterRuntimeSupportedAllowCliList({
+      "codex-gamma": "env MODEL=fast codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'",
+    });
+
+    assert.deepEqual(allowCliList, {
+      "codex-gamma": "env MODEL=fast codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'",
+    });
+  });
+
+  it("keeps configured codex aliases when the command is wrapped by env and pnpm exec", async () => {
+    const allowCliList = await filterRuntimeSupportedAllowCliList({
+      "codex-gamma": "env MODEL=fast pnpm exec codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'",
+    });
+
+    assert.deepEqual(allowCliList, {
+      "codex-gamma": "env MODEL=fast pnpm exec codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'",
+    });
+  });
+
+  it("keeps configured codex aliases when external provider discovery fails", async () => {
+    const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    process.env.AISDK_PROVIDER_PATH = INVALID_EXTERNAL_PROVIDER;
+    resetRuntimeBackendCacheForTests();
+    try {
+      const allowCliList = await filterRuntimeSupportedAllowCliList({
+        "codex-gamma": "codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'",
+      });
+
+      assert.deepEqual(allowCliList, {
+        "codex-gamma": "codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'",
+      });
+    } finally {
+      if (previousProviderPath === undefined) {
+        delete process.env.AISDK_PROVIDER_PATH;
+      } else {
+        process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      resetRuntimeBackendCacheForTests();
+    }
+  });
+
+  it("keeps configured external aliases in the filtered allow_cli_list", async () => {
+    const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    process.env.AISDK_PROVIDER_PATH = FIXTURE_EXTERNAL_PROVIDER;
+    resetRuntimeBackendCacheForTests();
+    try {
+      const allowCliList = await filterRuntimeSupportedAllowCliList({
+        "my-external": "test-external --profile fast",
+      });
+
+      assert.deepEqual(allowCliList, {
+        "my-external": "test-external --profile fast",
+      });
+    } finally {
+      if (previousProviderPath === undefined) {
+        delete process.env.AISDK_PROVIDER_PATH;
+      } else {
+        process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      resetRuntimeBackendCacheForTests();
+    }
+  });
+
+  it("keeps configured external aliases when the command is wrapped by pnpm exec", async () => {
+    const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    process.env.AISDK_PROVIDER_PATH = FIXTURE_EXTERNAL_PROVIDER;
+    resetRuntimeBackendCacheForTests();
+    try {
+      const allowCliList = await filterRuntimeSupportedAllowCliList({
+        "my-external": "pnpm exec test-external --profile fast",
+      });
+
+      assert.deepEqual(allowCliList, {
+        "my-external": "pnpm exec test-external --profile fast",
+      });
+    } finally {
+      if (previousProviderPath === undefined) {
+        delete process.env.AISDK_PROVIDER_PATH;
+      } else {
+        process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      resetRuntimeBackendCacheForTests();
+    }
+  });
+
+  it("keeps configured external aliases when the command is wrapped by env and pnpm exec", async () => {
+    const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    process.env.AISDK_PROVIDER_PATH = FIXTURE_EXTERNAL_PROVIDER;
+    resetRuntimeBackendCacheForTests();
+    try {
+      const allowCliList = await filterRuntimeSupportedAllowCliList({
+        "my-external": "env FOO=1 pnpm exec test-external --profile fast",
+      });
+
+      assert.deepEqual(allowCliList, {
+        "my-external": "env FOO=1 pnpm exec test-external --profile fast",
+      });
+    } finally {
+      if (previousProviderPath === undefined) {
+        delete process.env.AISDK_PROVIDER_PATH;
+      } else {
+        process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      resetRuntimeBackendCacheForTests();
+    }
+  });
+
+  it("hides raw external backends that are shadowed by configured aliases", async () => {
+    const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    process.env.AISDK_PROVIDER_PATH = FIXTURE_EXTERNAL_PROVIDER;
+    resetRuntimeBackendCacheForTests();
+    try {
+      const allowCliList = await filterRuntimeSupportedAllowCliList({
+        "my-external": "test-external --profile fast",
+      });
+      const advertisedBackends = await listAdvertisedBackends(allowCliList);
+
+      assert.deepEqual(advertisedBackends.supportedBackends, ["my-external"]);
+      assert.deepEqual(advertisedBackends.externalBackends, []);
+      assert.deepEqual(advertisedBackends.runtimeBackendMap, {
+        "my-external": "test-external",
+      });
+    } finally {
+      if (previousProviderPath === undefined) {
+        delete process.env.AISDK_PROVIDER_PATH;
+      } else {
+        process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      resetRuntimeBackendCacheForTests();
+    }
+  });
+
   it("defaults to first allow_cli_list entry when --backend is omitted", async (t) => {
     const configPath = createIsolatedConfigPath();
     t.after(() => {
@@ -217,6 +378,30 @@ describe("conductor-fire backends", () => {
     assert.ok(output.includes(`Default: ${defaultBackend}`));
   });
 
+  it("surfaces provider discovery failures from --list-backends", async (t) => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-list-backends-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(
+      configPath,
+      [
+        "envs:",
+        `  AISDK_PROVIDER_PATH: ${INVALID_EXTERNAL_PROVIDER}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    t.after(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      resetRuntimeBackendCacheForTests();
+    });
+
+    await assert.rejects(
+      () => runCli(["--config-file", configPath, "--list-backends"]),
+      /missing provider\.createSession/,
+    );
+  });
+
   it("resolves the opencode ai-sdk command from allow_cli_list", () => {
     const commandLine = resolveAiSessionCommandLine(
       "opencode",
@@ -239,6 +424,22 @@ describe("conductor-fire backends", () => {
     );
 
     assert.equal(commandLine, "\"/custom/Kimi/bin/kimi\" --debug");
+  });
+
+  it("converts configured codex aliases into app-server commands", () => {
+    const commandLine = resolveAiSessionCommandLine(
+      "codex-gamma",
+      {
+        "codex-gamma": "codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'",
+      },
+      {},
+      "codex",
+    );
+
+    assert.equal(
+      commandLine,
+      "codex -c 'model_provider=ollama' -c 'model=gemma4:e4b' app-server --listen stdio://",
+    );
   });
 
   it("falls back to the daemon cli command for opencode sessions", () => {

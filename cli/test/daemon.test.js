@@ -19,6 +19,7 @@ import { resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FIXTURE_EXTERNAL_PROVIDER = path.resolve(__dirname, "..", "..", "modules", "ai-sdk", "fixtures", "fake-external-provider.js");
+const INVALID_EXTERNAL_PROVIDER = path.resolve(__dirname, "..", "..", "modules", "ai-sdk", "fixtures", "invalid-external-provider.js");
 
 function restoreEnv(key, value) {
   if (typeof value === "undefined") {
@@ -875,6 +876,456 @@ describe("Daemon", () => {
     }, 300);
   });
 
+  it("rejects built-in backends that are not present in allow_cli_list", async (t) => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-daemon-missing-built-in-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(
+      configPath,
+      [
+        "agent_token: test-token",
+        "backend_url: https://api.example.com",
+        "allow_cli_list:",
+        "  claude: claude",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    let handler;
+    let webSocketClientOptions;
+    let spawned = false;
+    const sentEvents = [];
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-missing-built-in",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-missing-built-in",
+        CONFIG_FILE: configPath,
+      },
+      {
+        spawn: () => {
+          spawned = true;
+          return {
+            pid: 24684,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: fs.existsSync,
+        readFileSync: fs.readFileSync,
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: true, json: async () => ({}) }),
+        createWebSocketClient: (_config, options) => {
+          webSocketClientOptions = options;
+          return {
+            registerHandler: (registeredHandler) => {
+              handler = registeredHandler;
+            },
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async (payload) => {
+              sentEvents.push(payload);
+            },
+          };
+        },
+      },
+    );
+
+    t.after(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    assert.ok(typeof handler === "function");
+    assert.ok(!String(webSocketClientOptions.extraHeaders["x-conductor-backends"]).includes("codex"));
+
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "task-missing-built-in-1",
+        project_id: "proj-missing-built-in-1",
+        backend_type: "codex",
+        request_id: "req-missing-built-in-1",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.equal(spawned, false);
+    assert.equal(
+      sentEvents.some(
+        (entry) =>
+          entry?.type === "task_status_update" &&
+          entry?.payload?.task_id === "task-missing-built-in-1" &&
+          entry?.payload?.summary === "Unsupported backend: codex",
+      ),
+      true,
+    );
+  });
+
+  it("does not advertise unsupported configured backends on daemon hosts", async (t) => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-daemon-unsupported-configured-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(
+      configPath,
+      [
+        "agent_token: test-token",
+        "backend_url: https://api.example.com",
+        "allow_cli_list:",
+        "  bad-external: definitely-not-a-real-backend --flag",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    let webSocketClientOptions;
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-unsupported-configured",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-unsupported-configured",
+        CONFIG_FILE: configPath,
+      },
+      {
+        spawn: () => ({
+          pid: 24686,
+          on: () => {},
+          stdout: { on: () => {} },
+          stderr: { on: () => {} },
+        }),
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: fs.existsSync,
+        readFileSync: fs.readFileSync,
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: true, json: async () => ({}) }),
+        createWebSocketClient: (_config, options) => {
+          webSocketClientOptions = options;
+          return {
+            registerHandler: () => {},
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async () => {},
+          };
+        },
+      },
+    );
+
+    t.after(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    assert.ok(webSocketClientOptions);
+    assert.ok(!String(webSocketClientOptions.extraHeaders["x-conductor-backends"]).includes("bad-external"));
+  });
+
+  it("does not advertise configured external backends when provider discovery fails", async (t) => {
+    const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    delete process.env.AISDK_PROVIDER_PATH;
+    resetRuntimeBackendCacheForTests();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-daemon-broken-provider-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(
+      configPath,
+      [
+        "agent_token: test-token",
+        "backend_url: https://api.example.com",
+        "allow_cli_list:",
+        "  bad-external: test-external --profile fast",
+        "envs:",
+        `  AISDK_PROVIDER_PATH: ${INVALID_EXTERNAL_PROVIDER}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    let webSocketClientOptions;
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-broken-provider",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-broken-provider",
+        CONFIG_FILE: configPath,
+      },
+      {
+        spawn: () => ({
+          pid: 24687,
+          on: () => {},
+          stdout: { on: () => {} },
+          stderr: { on: () => {} },
+        }),
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: fs.existsSync,
+        readFileSync: fs.readFileSync,
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: true, json: async () => ({}) }),
+        createWebSocketClient: (_config, options) => {
+          webSocketClientOptions = options;
+          return {
+            registerHandler: () => {},
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async () => {},
+          };
+        },
+      },
+    );
+
+    t.after(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+      if (previousProviderPath === undefined) {
+        delete process.env.AISDK_PROVIDER_PATH;
+      } else {
+        process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      resetRuntimeBackendCacheForTests();
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    assert.ok(webSocketClientOptions);
+    assert.equal(String(webSocketClientOptions.extraHeaders["x-conductor-backends"] || ""), "");
+  });
+
+  it("advertises and launches configured codex aliases on daemon hosts", async (t) => {
+    const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    delete process.env.AISDK_PROVIDER_PATH;
+    resetRuntimeBackendCacheForTests();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-daemon-codex-alias-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(
+      configPath,
+      [
+        "agent_token: test-token",
+        "backend_url: https://api.example.com",
+        "allow_cli_list:",
+        "  codex-gamma: codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    let handler;
+    let webSocketClientOptions;
+    const spawnCalls = [];
+    const sentEvents = [];
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-codex-alias",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-codex-alias",
+        CONFIG_FILE: configPath,
+      },
+      {
+        spawn: (cmd, args, options) => {
+          spawnCalls.push({ cmd, args, options });
+          return {
+            pid: 24683,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: fs.existsSync,
+        readFileSync: fs.readFileSync,
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).endsWith("/api/projects/proj-codex-alias-1")) {
+            return { ok: true, json: async () => ({ metadata: null }) };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: (_config, options) => {
+          webSocketClientOptions = options;
+          return {
+            registerHandler: (registeredHandler) => {
+              handler = registeredHandler;
+            },
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async (payload) => {
+              sentEvents.push(payload);
+            },
+          };
+        },
+      },
+    );
+
+    t.after(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+      if (previousProviderPath === undefined) {
+        delete process.env.AISDK_PROVIDER_PATH;
+      } else {
+        process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      resetRuntimeBackendCacheForTests();
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    assert.ok(typeof handler === "function");
+    assert.ok(String(webSocketClientOptions.extraHeaders["x-conductor-backends"]).includes("codex-gamma"));
+
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "task-codex-alias-1",
+        project_id: "proj-codex-alias-1",
+        backend_type: "codex-gamma",
+        request_id: "req-codex-alias-1",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.strictEqual(spawnCalls.length, 1);
+    assert.deepStrictEqual(spawnCalls[0].args.slice(0, 4), [
+      "/tmp/cli.js",
+      "--backend",
+      "codex-gamma",
+      "--",
+    ]);
+    assert.strictEqual(
+      spawnCalls[0].options.env.CONDUCTOR_CLI_COMMAND,
+      "codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'",
+    );
+    assert.equal(
+      sentEvents.some(
+        (entry) =>
+          entry?.type === "task_status_update" &&
+          entry?.payload?.task_id === "task-codex-alias-1" &&
+          entry?.payload?.status === "RUNNING",
+      ),
+      true,
+    );
+  });
+
+  it("advertises configured codex aliases even when external provider discovery fails", async (t) => {
+    const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    delete process.env.AISDK_PROVIDER_PATH;
+    resetRuntimeBackendCacheForTests();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-daemon-codex-alias-broken-provider-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(
+      configPath,
+      [
+        "agent_token: test-token",
+        "backend_url: https://api.example.com",
+        "allow_cli_list:",
+        "  codex-gamma: codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'",
+        "envs:",
+        `  AISDK_PROVIDER_PATH: ${INVALID_EXTERNAL_PROVIDER}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    let webSocketClientOptions;
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-codex-alias-broken-provider",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-codex-alias-broken-provider",
+        CONFIG_FILE: configPath,
+      },
+      {
+        spawn: () => ({
+          pid: 24688,
+          on: () => {},
+          stdout: { on: () => {} },
+          stderr: { on: () => {} },
+        }),
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: fs.existsSync,
+        readFileSync: fs.readFileSync,
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: true, json: async () => ({}) }),
+        createWebSocketClient: (_config, options) => {
+          webSocketClientOptions = options;
+          return {
+            registerHandler: () => {},
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async () => {},
+          };
+        },
+      },
+    );
+
+    t.after(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+      if (previousProviderPath === undefined) {
+        delete process.env.AISDK_PROVIDER_PATH;
+      } else {
+        process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      resetRuntimeBackendCacheForTests();
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    assert.ok(webSocketClientOptions);
+    assert.ok(String(webSocketClientOptions.extraHeaders["x-conductor-backends"]).includes("codex-gamma"));
+  });
+
   it("advertises and launches external backends on daemon hosts", async (t) => {
     const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
     process.env.AISDK_PROVIDER_PATH = FIXTURE_EXTERNAL_PROVIDER;
@@ -948,7 +1399,7 @@ describe("Daemon", () => {
       }
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await new Promise((resolve) => setTimeout(resolve, 80));
 
     assert.ok(typeof handler === "function");
     assert.ok(String(webSocketClientOptions.extraHeaders["x-conductor-backends"]).includes("test-external"));
@@ -979,6 +1430,136 @@ describe("Daemon", () => {
         (entry) =>
           entry?.type === "task_status_update" &&
           entry?.payload?.task_id === "task-external-1" &&
+          entry?.payload?.status === "RUNNING",
+      ),
+      true,
+    );
+  });
+
+  it("advertises and launches configured external aliases on daemon hosts", async (t) => {
+    const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    delete process.env.AISDK_PROVIDER_PATH;
+    resetRuntimeBackendCacheForTests();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-daemon-external-alias-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(
+      configPath,
+      [
+        "agent_token: test-token",
+        "backend_url: https://api.example.com",
+        "allow_cli_list:",
+        "  my-external: test-external --profile fast",
+        "envs:",
+        `  AISDK_PROVIDER_PATH: ${FIXTURE_EXTERNAL_PROVIDER}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    let handler;
+    let webSocketClientOptions;
+    const spawnCalls = [];
+    const sentEvents = [];
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-external-alias",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-external-alias",
+        CONFIG_FILE: configPath,
+      },
+      {
+        spawn: (cmd, args, options) => {
+          spawnCalls.push({ cmd, args, options });
+          return {
+            pid: 24685,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: fs.existsSync,
+        readFileSync: fs.readFileSync,
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).endsWith("/api/projects/proj-external-alias-1")) {
+            return { ok: true, json: async () => ({ metadata: null }) };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: (_config, options) => {
+          webSocketClientOptions = options;
+          return {
+            registerHandler: (registeredHandler) => {
+              handler = registeredHandler;
+            },
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async (payload) => {
+              sentEvents.push(payload);
+            },
+          };
+        },
+      },
+    );
+
+    t.after(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+      if (previousProviderPath === undefined) {
+        delete process.env.AISDK_PROVIDER_PATH;
+      } else {
+        process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      resetRuntimeBackendCacheForTests();
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    assert.ok(typeof handler === "function");
+    assert.ok(String(webSocketClientOptions.extraHeaders["x-conductor-backends"]).includes("my-external"));
+    assert.ok(!String(webSocketClientOptions.extraHeaders["x-conductor-backends"]).includes("test-external"));
+
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "task-external-alias-1",
+        project_id: "proj-external-alias-1",
+        backend_type: "my-external",
+        request_id: "req-external-alias-1",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.strictEqual(spawnCalls.length, 1);
+    assert.deepStrictEqual(spawnCalls[0].args.slice(0, 4), [
+      "/tmp/cli.js",
+      "--backend",
+      "my-external",
+      "--",
+    ]);
+    assert.strictEqual(
+      spawnCalls[0].options.env.CONDUCTOR_CLI_COMMAND,
+      "test-external --profile fast",
+    );
+    assert.equal(
+      sentEvents.some(
+        (entry) =>
+          entry?.type === "task_status_update" &&
+          entry?.payload?.task_id === "task-external-alias-1" &&
           entry?.payload?.status === "RUNNING",
       ),
       true,

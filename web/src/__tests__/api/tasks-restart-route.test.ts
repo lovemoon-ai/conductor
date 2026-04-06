@@ -485,6 +485,120 @@ describe("/api/tasks/[taskId]/restart", () => {
     );
   });
 
+  it("creates a successor task when the source task uses a configured codex alias and switches to claude", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        backendType: "codex-gamma",
+        sessionId: "sess-codex-gamma-1",
+      }) as any,
+    );
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      {
+        id: "agent-1",
+        host: "daemon-1",
+        supportedBackends: ["codex-gamma", "claude"],
+        runtimeBackendMap: {
+          "codex-gamma": "codex",
+          claude: "claude",
+        },
+        capabilities: [],
+      },
+    ] as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { backend_type: "claude" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("backend_switch_new_task");
+    expect(data.task.backend_type).toBe("claude");
+    expect(data.task.metadata).toEqual({
+      continuedFromTaskId: "task-1",
+      restartSourceBackendType: "codex-gamma",
+      restartStrategy: "new_task",
+    });
+  });
+
+  it("creates a successor task when switching between configured codex aliases", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        backendType: "codex-gamma",
+        sessionId: "sess-codex-gamma-2",
+      }) as any,
+    );
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      {
+        id: "agent-1",
+        host: "daemon-1",
+        supportedBackends: ["codex-gamma", "codex-beta"],
+        runtimeBackendMap: {
+          "codex-gamma": "codex",
+          "codex-beta": "codex",
+        },
+        capabilities: [],
+      },
+    ] as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { backend_type: "codex-beta" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("backend_switch_new_task");
+    expect(data.task.backend_type).toBe("codex-beta");
+    expect(data.task.metadata).toEqual({
+      continuedFromTaskId: "task-1",
+      restartSourceBackendType: "codex-gamma",
+      restartStrategy: "new_task",
+    });
+  });
+
+  it("rejects backend switches for external backends that only share a built-in-looking prefix", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        backendType: "codex-enterprise",
+        sessionId: "sess-codex-enterprise-1",
+      }) as any,
+    );
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      {
+        id: "agent-1",
+        host: "daemon-1",
+        supportedBackends: ["codex-enterprise", "claude"],
+        runtimeBackendMap: {
+          "codex-enterprise": "codex-enterprise",
+          claude: "claude",
+        },
+        capabilities: [],
+      },
+    ] as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { backend_type: "claude" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toContain("Backend switch codex-enterprise -> claude is not supported");
+  });
+
   it("creates a successor task for a running task on the same backend", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ status: "running" }) as any);
 

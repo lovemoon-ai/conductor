@@ -28,8 +28,9 @@ import {
 } from "../src/fire/resume.js";
 import {
   filterRuntimeSupportedAllowCliList,
-  RUNTIME_SUPPORTED_BACKENDS,
-  listRuntimeSupportedBackends,
+  isBuiltInRuntimeBackend,
+  listAdvertisedBackends,
+  resolveConfiguredRuntimeBackend,
   normalizeRuntimeBackendAlias,
   normalizeRuntimeBackendName,
 } from "../src/runtime-backends.js";
@@ -99,37 +100,46 @@ async function loadAllowCliList(configFilePath) {
   return {};
 }
 
-export function resolveAiSessionCommandLine(backend, allowCliList, env = process.env) {
+export function resolveAiSessionCommandLine(backend, allowCliList, env = process.env, sessionBackend = backend) {
   const normalizedBackend = normalizeRuntimeBackendName(backend);
+  const normalizedSessionBackend = normalizeRuntimeBackendName(sessionBackend);
   const envKeyByBackend = {
+    codex: "CONDUCTOR_CODEX_APP_SERVER_COMMAND",
     opencode: "CONDUCTOR_OPENCODE_COMMAND",
     kimi: "CONDUCTOR_KIMI_COMMAND",
   };
-  const envKey = envKeyByBackend[normalizedBackend];
-  if (!envKey) {
-    return "";
-  }
+  const envKey = envKeyByBackend[normalizedSessionBackend];
 
-  const preferredEnvCommand = typeof env?.[envKey] === "string" ? env[envKey].trim() : "";
+  const preferredEnvCommand = envKey && typeof env?.[envKey] === "string" ? env[envKey].trim() : "";
   if (preferredEnvCommand) {
     return preferredEnvCommand;
   }
 
   const configuredCommand =
-    allowCliList && typeof allowCliList === "object" && typeof allowCliList[normalizedBackend] === "string"
-      ? allowCliList[normalizedBackend].trim()
+    allowCliList && typeof allowCliList === "object"
+      ? typeof allowCliList[normalizedBackend] === "string"
+        ? allowCliList[normalizedBackend].trim()
+        : typeof allowCliList[normalizedSessionBackend] === "string"
+          ? allowCliList[normalizedSessionBackend].trim()
+          : ""
       : "";
-  if (configuredCommand) {
-    return configuredCommand;
-  }
 
   const daemonCommand =
     typeof env?.CONDUCTOR_CLI_COMMAND === "string" ? env.CONDUCTOR_CLI_COMMAND.trim() : "";
-  if (daemonCommand) {
-    return daemonCommand;
+
+  const resolvedCommand = configuredCommand || daemonCommand;
+  if (!resolvedCommand) {
+    return "";
   }
 
-  return "";
+  if (normalizedSessionBackend === "codex") {
+    if (/\bapp-server\b/.test(resolvedCommand)) {
+      return resolvedCommand;
+    }
+    return `${resolvedCommand} app-server --listen stdio://`;
+  }
+
+  return resolvedCommand;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = parseInt(
@@ -443,12 +453,15 @@ async function main() {
   }
 
   const allowCliList = await loadAllowCliList(cliArgs.configFile);
-  const supportedBackends = Object.keys(allowCliList);
-  const discoveredBackends = await listRuntimeSupportedBackends({ configFilePath: cliArgs.configFile });
-  const externalBackends = discoveredBackends.filter((backend) => !RUNTIME_SUPPORTED_BACKENDS.includes(backend));
+  const { supportedBackends, externalBackends, discoveryError } = await listAdvertisedBackends(allowCliList, {
+    configFilePath: cliArgs.configFile,
+  });
 
   if (cliArgs.listBackends) {
     if (supportedBackends.length === 0 && externalBackends.length === 0) {
+      if (discoveryError) {
+        throw discoveryError;
+      }
       process.stdout.write(`No supported backends configured.\n\nAdd allow_cli_list to your config file (~/.conductor/config.yaml):\n  allow_cli_list:\n    codex: codex --dangerously-bypass-approvals-and-sandbox\n    claude: claude --dangerously-skip-permissions\n    kimi: kimi\n    opencode: opencode\n`);
     } else {
       if (supportedBackends.length > 0) {
@@ -471,7 +484,7 @@ async function main() {
   let resumeContext = null;
   if (cliArgs.resumeSessionId) {
     const bootstrap = await bootstrapResumeContextForFire({
-      backend: cliArgs.backend,
+      backend: cliArgs.sessionBackend || cliArgs.backend,
       configFile: cliArgs.configFile,
       resumeSessionId: cliArgs.resumeSessionId,
     });
@@ -641,9 +654,14 @@ async function main() {
 
     const resolvedResumeSessionId = cliArgs.resumeSessionId;
 
-    const sessionCommandLine = resolveAiSessionCommandLine(cliArgs.backend, allowCliList, process.env);
+    const sessionCommandLine = resolveAiSessionCommandLine(
+      cliArgs.backend,
+      allowCliList,
+      process.env,
+      cliArgs.sessionBackend,
+    );
 
-    backendSession = createAiSession(cliArgs.backend, {
+    backendSession = createAiSession(cliArgs.sessionBackend || cliArgs.backend, {
       initialImages: cliArgs.initialImages,
       cwd: runtimeProjectPath,
       resumeSessionId: resolvedResumeSessionId,
@@ -728,8 +746,8 @@ async function main() {
 
     let runnerError = null;
     try {
-      if (!resolvedResumeSessionId && String(cliArgs.backend).trim().toLowerCase() === "codex") {
-        await withFreshSessionBootstrapLock(cliArgs.backend, runtimeProjectPath, async () => {
+      if (!resolvedResumeSessionId && String(cliArgs.sessionBackend || cliArgs.backend).trim().toLowerCase() === "codex") {
+        await withFreshSessionBootstrapLock(cliArgs.sessionBackend || cliArgs.backend, runtimeProjectPath, async () => {
           await runner.announceBackendSession();
         });
       }
@@ -890,9 +908,9 @@ export async function parseCliArgs(argvInput = process.argv) {
 
   const configFileFromArgs = extractConfigFileFromArgv(argv);
   const allowCliList = await loadAllowCliList(configFileFromArgs);
-  const supportedBackends = Object.keys(allowCliList);
-  const discoveredBackends = await listRuntimeSupportedBackends({ configFilePath: configFileFromArgs });
-  const externalBackends = discoveredBackends.filter((backend) => !RUNTIME_SUPPORTED_BACKENDS.includes(backend));
+  const { supportedBackends, externalBackends, discoveryError } = await listAdvertisedBackends(allowCliList, {
+    configFilePath: configFileFromArgs,
+  });
 
   const conductorArgs = yargs(conductorArgv)
     .scriptName(CLI_NAME)
@@ -994,21 +1012,36 @@ Environment:
     })
     .parse();
   
-  const backend = conductorArgs.backend
-    ? await normalizeRuntimeBackendAlias(conductorArgs.backend, { configFilePath: configFileFromArgs })
+  const requestedBackend = conductorArgs.backend
+    ? normalizeRuntimeBackendName(conductorArgs.backend)
     : supportedBackends[0] || externalBackends[0];
+  const configuredBackend = await resolveConfiguredRuntimeBackend(requestedBackend, allowCliList, {
+    configFilePath: configFileFromArgs,
+  });
+  const backend = configuredBackend?.requestedBackend || requestedBackend;
+  const sessionBackend =
+    configuredBackend?.runtimeBackend ||
+    (backend ? await normalizeRuntimeBackendAlias(backend, { configFilePath: configFileFromArgs }) : "");
   const shouldRequireBackend =
     !Boolean(conductorArgs.listBackends) &&
     !listBackendsWithoutSeparator &&
     !Boolean(conductorArgs.version) &&
     !versionWithoutSeparator;
-  const runtimeSupportedBackends = new Set(discoveredBackends);
-  if (backend && !runtimeSupportedBackends.has(backend) && shouldRequireBackend) {
+  const runtimeSupportedBackends = new Set(supportedBackends);
+  const advertisedExternalBackends = new Set(externalBackends);
+  const hasConfiguredEntry = Boolean(configuredBackend?.commandLine);
+  const isAllowedExternalBackend =
+    !isBuiltInRuntimeBackend(sessionBackend) &&
+    advertisedExternalBackends.has(sessionBackend);
+  if (backend && shouldRequireBackend && !hasConfiguredEntry && !isAllowedExternalBackend) {
     throw new Error(
       `Unsupported backend "${backend}". Supported backends: ${[...runtimeSupportedBackends].join(", ") || "none configured"}.`,
     );
   }
   if (!backend && shouldRequireBackend) {
+    if (discoveryError) {
+      throw discoveryError;
+    }
     throw new Error("No supported backends configured. Add allow_cli_list entries or set AISDK_PROVIDER_PATH for external providers.");
   }
 
@@ -1036,6 +1069,7 @@ Environment:
     taskTitle: typeof conductorArgs.title === "string" ? conductorArgs.title.trim() : "",
     hasExplicitTaskTitle: typeof conductorArgs.title === "string" && Boolean(conductorArgs.title.trim()),
     configFile: conductorArgs.configFile,
+    sessionBackend,
     resumeSessionId,
     showVersion: Boolean(conductorArgs.version) || versionWithoutSeparator,
     listBackends: Boolean(conductorArgs.listBackends) || listBackendsWithoutSeparator,

@@ -7,9 +7,11 @@ import crypto from "node:crypto";
 
 import yaml from "js-yaml";
 import {
+  filterRuntimeSupportedAllowCliList,
   getExternalRuntimeBackendDescriptor,
   isRuntimeSupportedBackend,
   normalizeRuntimeBackendAlias,
+  resolveConfiguredRuntimeBackend,
 } from "../runtime-backends.js";
 
 function normalizeBackend(backend) {
@@ -25,6 +27,18 @@ function resolveHomeDir(options) {
 
 function normalizeSessionId(sessionId) {
   return typeof sessionId === "string" ? sessionId.trim() : "";
+}
+
+function resolveConfigFilePath(options = {}) {
+  const configuredPath =
+    typeof options?.configFilePath === "string" && options.configFilePath.trim()
+      ? options.configFilePath.trim()
+      : typeof process.env.CONDUCTOR_CONFIG === "string" && process.env.CONDUCTOR_CONFIG.trim()
+        ? process.env.CONDUCTOR_CONFIG.trim()
+        : "";
+  return configuredPath
+    ? path.resolve(configuredPath)
+    : path.join(resolveHomeDir(options), ".conductor", "config.yaml");
 }
 
 export function buildResumeArgsForBackend(backend, sessionId) {
@@ -442,6 +456,40 @@ async function loadConductorSessionRecords(options = {}) {
   return records;
 }
 
+async function loadConfiguredAllowCliList(options = {}) {
+  const configFilePath = resolveConfigFilePath(options);
+  let parsed = null;
+  try {
+    const content = await fsp.readFile(configFilePath, "utf8");
+    parsed = yaml.load(content);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || !parsed.allow_cli_list || typeof parsed.allow_cli_list !== "object") {
+    return {};
+  }
+  return filterRuntimeSupportedAllowCliList(parsed.allow_cli_list, { configFilePath });
+}
+
+async function resolveResumeLookupBackend(backend, options = {}) {
+  const normalizedBackend = normalizeBackend(backend);
+  if (!normalizedBackend) {
+    return "";
+  }
+  const configFilePath = resolveConfigFilePath(options);
+  const allowCliList =
+    options.allowCliList && typeof options.allowCliList === "object"
+      ? options.allowCliList
+      : await loadConfiguredAllowCliList({ ...options, configFilePath });
+  const configuredBackend = await resolveConfiguredRuntimeBackend(normalizedBackend, allowCliList, {
+    configFilePath,
+  });
+  if (configuredBackend?.runtimeBackend) {
+    return configuredBackend.runtimeBackend;
+  }
+  return normalizeRuntimeBackendAlias(normalizedBackend, { configFilePath });
+}
+
 function normalizeProjectPathCandidate(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
@@ -451,11 +499,13 @@ function normalizeConductorRecordSourcePath(value) {
 }
 
 async function resolveExternalResumeContext(backend, sessionId, options = {}) {
-  const configFilePath =
-    typeof options?.configFilePath === "string" && options.configFilePath.trim()
-      ? options.configFilePath.trim()
-      : undefined;
-  const normalizedBackend = await normalizeRuntimeBackendAlias(backend, { configFilePath });
+  const configFilePath = resolveConfigFilePath(options);
+  const allowCliList = await loadConfiguredAllowCliList({ ...options, configFilePath });
+  const normalizedBackend = await resolveResumeLookupBackend(backend, {
+    ...options,
+    configFilePath,
+    allowCliList,
+  });
   if (!normalizedBackend || resumeProviderForBackend(normalizedBackend)) {
     return null;
   }
@@ -495,7 +545,11 @@ async function resolveExternalResumeContext(backend, sessionId, options = {}) {
   const records = await loadConductorSessionRecords(options);
   for (const record of records) {
     const recordSessionId = normalizeSessionId(record?.session_id);
-    const recordBackend = normalizeBackend(record?.backend_type);
+    const recordBackend = await resolveResumeLookupBackend(record?.backend_type, {
+      ...options,
+      configFilePath,
+      allowCliList,
+    });
     const projectPath = normalizeProjectPathCandidate(record?.project_path);
     if (recordSessionId !== sessionId || recordBackend !== normalizedBackend || !projectPath) {
       continue;
@@ -552,6 +606,8 @@ async function resolveKimiResumeCwd(sessionPath, sessionId, options = {}) {
   }
 
   const records = await loadConductorSessionRecords(options);
+  const configFilePath = resolveConfigFilePath(options);
+  const allowCliList = await loadConfiguredAllowCliList({ ...options, configFilePath });
   const bySessionId = [];
   const byHash = [];
 
@@ -560,7 +616,11 @@ async function resolveKimiResumeCwd(sessionPath, sessionId, options = {}) {
     if (!projectPath) {
       continue;
     }
-    const backendType = normalizeBackend(record?.backend_type);
+    const backendType = await resolveResumeLookupBackend(record?.backend_type, {
+      ...options,
+      configFilePath,
+      allowCliList,
+    });
     const recordSessionId = normalizeSessionId(record?.session_id);
     const projectHash = md5Hex(projectPath);
     if (

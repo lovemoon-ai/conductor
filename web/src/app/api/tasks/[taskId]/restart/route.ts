@@ -189,6 +189,10 @@ export async function POST(
     );
   }
   const supportedBackends = Array.isArray(restartAgent.supportedBackends) ? restartAgent.supportedBackends : [];
+  const runtimeBackendMap =
+    restartAgent.runtimeBackendMap && typeof restartAgent.runtimeBackendMap === "object"
+      ? restartAgent.runtimeBackendMap
+      : undefined;
   if (!supportedBackends.includes(targetBackend)) {
     return NextResponse.json(
       { error: `Daemon ${restartAgentHost} does not support backend ${targetBackend}` },
@@ -209,7 +213,10 @@ export async function POST(
     );
   }
 
-  if (!isInplaceRestart && !canCreateSuccessorTask(sourceBackend, targetBackend)) {
+  if (!isInplaceRestart && !canCreateSuccessorTask(sourceBackend, targetBackend, {
+    sourceRuntimeBackendMap: runtimeBackendMap,
+    targetRuntimeBackendMap: runtimeBackendMap,
+  })) {
     return NextResponse.json(
       { error: `Backend switch ${sourceBackend} -> ${targetBackend} is not supported` },
       { status: 409 },

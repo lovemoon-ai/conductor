@@ -506,6 +506,32 @@ const extractSupportedBackends = (req: IncomingMessage): string[] => {
   return value.split(",").map((s) => s.trim()).filter(Boolean);
 };
 
+const extractRuntimeBackendMap = (req: IncomingMessage): Record<string, string> => {
+  const header = req.headers["x-conductor-backend-runtime-map"];
+  const value = Array.isArray(header) ? header[0] : (header as string | undefined);
+  if (!value) {
+    return {};
+  }
+  const runtimeBackendMap: Record<string, string> = {};
+  for (const entry of value.split(",")) {
+    const trimmedEntry = entry.trim();
+    if (!trimmedEntry) {
+      continue;
+    }
+    const separatorIndex = trimmedEntry.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+    const backend = trimmedEntry.slice(0, separatorIndex).trim().toLowerCase();
+    const runtimeBackend = trimmedEntry.slice(separatorIndex + 1).trim().toLowerCase();
+    if (!backend || !runtimeBackend) {
+      continue;
+    }
+    runtimeBackendMap[backend] = runtimeBackend;
+  }
+  return runtimeBackendMap;
+};
+
 const extractCapabilities = (req: IncomingMessage): string[] => {
   const header = req.headers["x-conductor-capabilities"];
   const value = Array.isArray(header) ? header[0] : (header as string | undefined);
@@ -976,6 +1002,7 @@ export const setupAgentGateway = (): WebSocketServer => {
     const connectionId = randomUUID();
     const agentHost = extractHost(request) || request.socket.remoteAddress || "unknown-host";
     const supportedBackends = extractSupportedBackends(request);
+    const runtimeBackendMap = extractRuntimeBackendMap(request);
     const capabilities = extractCapabilities(request);
     const version = extractVersion(request);
 
@@ -1024,6 +1051,7 @@ export const setupAgentGateway = (): WebSocketServer => {
       projectIds: ["*"],
       host: agentHost,
       supportedBackends,
+      runtimeBackendMap,
       capabilities,
       version,
       send: (payload) => sendEnvelope(socket, payload as Record<string, unknown>),

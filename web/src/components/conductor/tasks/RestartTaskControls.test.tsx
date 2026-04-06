@@ -8,7 +8,7 @@ const restartTaskMock = vi.fn();
 const pushToastMock = vi.fn();
 
 let agentsState = {
-  agents: [] as Array<{ host: string; supportedBackends: string[] }>,
+  agents: [] as Array<{ host: string; supportedBackends: string[]; runtimeBackendMap?: Record<string, string> }>,
 };
 
 vi.mock('next/navigation', () => ({
@@ -326,5 +326,75 @@ describe('RestartTaskControls', () => {
     expect(screen.getByRole('option', { name: 'test-external' })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: 'codex' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'New task' })).toBeEnabled();
+  });
+
+  it('offers bridged built-in aliases only when the daemon provides a runtime backend map', () => {
+    agentsState = {
+      agents: [
+        {
+          host: 'daemon-1',
+          supportedBackends: ['codex-gamma', 'claude'],
+          runtimeBackendMap: {
+            'codex-gamma': 'codex',
+            claude: 'claude',
+          },
+        },
+      ],
+    };
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-codex-gamma-1',
+          title: 'Codex Alias Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'daemon-1',
+          backendType: 'codex-gamma',
+          sessionId: 'sess-codex-gamma-1',
+          createdAt: new Date().toISOString(),
+        }}
+      />,
+    );
+
+    expect(screen.getByRole('option', { name: 'codex-gamma' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'claude' })).toBeInTheDocument();
+  });
+
+  it('does not offer built-in-looking external prefixes without a runtime backend map entry', () => {
+    agentsState = {
+      agents: [
+        {
+          host: 'daemon-1',
+          supportedBackends: ['codex-enterprise', 'claude'],
+          runtimeBackendMap: {
+            'codex-enterprise': 'codex-enterprise',
+            claude: 'claude',
+          },
+        },
+      ],
+    };
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-codex-enterprise-1',
+          title: 'External Prefix Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'daemon-1',
+          backendType: 'codex-enterprise',
+          sessionId: 'sess-codex-enterprise-1',
+          createdAt: new Date().toISOString(),
+        }}
+      />,
+    );
+
+    expect(screen.getByRole('option', { name: 'codex-enterprise' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'claude' })).not.toBeInTheDocument();
   });
 });

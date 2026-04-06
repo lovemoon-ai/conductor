@@ -131,6 +131,7 @@ describe("agent-gateway ownership handling", () => {
         authorization: "Bearer test-token",
         "x-conductor-host": "daemon-a",
         "x-conductor-backends": "codex",
+        "x-conductor-backend-runtime-map": "codex-gamma=codex,codex=codex",
       },
       socket: {
         remoteAddress: "127.0.0.1",
@@ -189,6 +190,7 @@ describe("agent-gateway ownership handling", () => {
         authorization: "Bearer test-token",
         "x-conductor-host": "daemon-a",
         "x-conductor-backends": "codex",
+        "x-conductor-backend-runtime-map": "codex-gamma=codex,codex=codex",
       },
       socket: {
         remoteAddress: "127.0.0.1",
@@ -204,6 +206,10 @@ describe("agent-gateway ownership handling", () => {
         kind: "agent",
         userId: "user-1",
         host: "daemon-a",
+        runtimeBackendMap: {
+          "codex-gamma": "codex",
+          codex: "codex",
+        },
       }),
     );
     expect(socket.close).not.toHaveBeenCalledWith(4002, "duplicate-host");
