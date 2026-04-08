@@ -3140,13 +3140,23 @@ describe("Daemon", () => {
     daemonInstance.close();
   });
 
-  it("creates PTY tasks and sends a terminal snapshot on fresh attach", async () => {
+  it("creates PTY tasks, strips task-scoped env, and sends a terminal snapshot on fresh attach", async () => {
     let handler;
     let onData = null;
     const writes = [];
     const resizes = [];
     const sentEvents = [];
     let webSocketClientOptions = null;
+    let daemonInstance = null;
+    const previousEnv = {
+      PTY_PARENT_KEEP: process.env.PTY_PARENT_KEEP,
+      CONDUCTOR_BACKEND_URL: process.env.CONDUCTOR_BACKEND_URL,
+      CONDUCTOR_PROJECT_ID: process.env.CONDUCTOR_PROJECT_ID,
+      CONDUCTOR_TASK_ID: process.env.CONDUCTOR_TASK_ID,
+      CONDUCTOR_PTY_SESSION_ID: process.env.CONDUCTOR_PTY_SESSION_ID,
+      CONDUCTOR_LAUNCHED_BY_DAEMON: process.env.CONDUCTOR_LAUNCHED_BY_DAEMON,
+      CONDUCTOR_RESUME_CWD: process.env.CONDUCTOR_RESUME_CWD,
+    };
 
     const mockPty = {
       pid: 88888,
@@ -3163,171 +3173,204 @@ describe("Daemon", () => {
       onExit: () => {},
     };
 
-    const daemonInstance = startDaemon(
-      {
-        BACKEND_URL: "ws://localhost:0",
-        BACKEND_HTTP: "http://localhost:6152",
-        WORKSPACE_ROOT: "/tmp/test-ws-pty-task",
-        CLI_PATH: "/tmp/cli.js",
-        NAME: "pty-task-daemon",
-      },
-      {
-        spawn: () => {
-          throw new Error("spawn should not be called for create_pty_task");
+    try {
+      process.env.PTY_PARENT_KEEP = "keep-from-parent";
+      process.env.CONDUCTOR_BACKEND_URL = "http://parent-backend.example";
+      process.env.CONDUCTOR_PROJECT_ID = "proj-from-parent-env";
+      process.env.CONDUCTOR_TASK_ID = "task-from-parent-env";
+      process.env.CONDUCTOR_PTY_SESSION_ID = "pty-from-parent-env";
+      process.env.CONDUCTOR_LAUNCHED_BY_DAEMON = "1";
+      process.env.CONDUCTOR_RESUME_CWD = "/tmp/resume-from-parent-env";
+
+      daemonInstance = startDaemon(
+        {
+          BACKEND_URL: "ws://localhost:0",
+          BACKEND_HTTP: "http://localhost:6152",
+          WORKSPACE_ROOT: "/tmp/test-ws-pty-task",
+          CLI_PATH: "/tmp/cli.js",
+          NAME: "pty-task-daemon",
         },
-        mkdirSync: () => {},
-        writeFileSync: () => {},
-        existsSync: () => false,
-        readFileSync: () => "",
-        unlinkSync: () => {},
-        renameSync: () => {},
-        createWriteStream: () => ({
-          on: () => {},
-          write: () => {},
-          end: () => {},
-        }),
-        fetch: async (url) => {
-          if (String(url).includes("/api/projects/")) {
-            return { ok: true, json: async () => ({ metadata: null }) };
-          }
-          if (String(url).endsWith("/api/tasks")) {
-            return { ok: true, json: async () => [] };
-          }
-          return { ok: true, json: async () => ({}) };
+        {
+          spawn: () => {
+            throw new Error("spawn should not be called for create_pty_task");
+          },
+          mkdirSync: () => {},
+          writeFileSync: () => {},
+          existsSync: () => false,
+          readFileSync: () => "",
+          unlinkSync: () => {},
+          renameSync: () => {},
+          createWriteStream: () => ({
+            on: () => {},
+            write: () => {},
+            end: () => {},
+          }),
+          fetch: async (url) => {
+            if (String(url).includes("/api/projects/")) {
+              return { ok: true, json: async () => ({ metadata: null }) };
+            }
+            if (String(url).endsWith("/api/tasks")) {
+              return { ok: true, json: async () => [] };
+            }
+            return { ok: true, json: async () => ({}) };
+          },
+          createPty: async (command, args, options) => {
+            assert.strictEqual(
+              command,
+              resolveDefaultPtyShell({
+                envShell: process.env.SHELL,
+                comspec: process.env.COMSPEC,
+                platform: process.platform,
+                existsSync: () => false,
+              }),
+            );
+            assert.deepStrictEqual(args, ["-l"]);
+            assert.strictEqual(options.cwd, "/tmp/test-ws-pty-bound");
+            assert.strictEqual(options.cols, 120);
+            assert.strictEqual(options.rows, 40);
+            assert.strictEqual(options.env.PTY_PARENT_KEEP, "keep-from-parent");
+            assert.strictEqual(options.env.PTY_LAUNCH_KEEP, "keep-from-launch");
+            assert.strictEqual(options.env.CONDUCTOR_BACKEND_URL, "http://parent-backend.example");
+            assert.strictEqual(options.env.CONDUCTOR_PROJECT_ID, undefined);
+            assert.strictEqual(options.env.CONDUCTOR_TASK_ID, undefined);
+            assert.strictEqual(options.env.CONDUCTOR_PTY_SESSION_ID, undefined);
+            assert.strictEqual(options.env.CONDUCTOR_LAUNCHED_BY_DAEMON, undefined);
+            assert.strictEqual(options.env.CONDUCTOR_RESUME_CWD, undefined);
+            return mockPty;
+          },
+          createWebSocketClient: (_sdkConfig, options) => {
+            webSocketClientOptions = options;
+            return {
+              registerHandler: (h) => {
+                handler = h;
+              },
+              connect: async () => {},
+              disconnect: async () => {},
+              sendJson: async (payload) => {
+                sentEvents.push(payload);
+              },
+            };
+          },
         },
-        createPty: async (command, args, options) => {
-          assert.strictEqual(
-            command,
-            resolveDefaultPtyShell({
-              envShell: process.env.SHELL,
-              comspec: process.env.COMSPEC,
-              platform: process.platform,
-              existsSync: () => false,
-            }),
-          );
-          assert.deepStrictEqual(args, ["-l"]);
-          assert.strictEqual(options.cwd, "/tmp/test-ws-pty-bound");
-          assert.strictEqual(options.cols, 120);
-          assert.strictEqual(options.rows, 40);
-          return mockPty;
-        },
-        createWebSocketClient: (_sdkConfig, options) => {
-          webSocketClientOptions = options;
-          return {
-            registerHandler: (h) => {
-              handler = h;
+      );
+
+      assert.ok(typeof handler === "function");
+      assert.strictEqual(webSocketClientOptions.extraHeaders["x-conductor-capabilities"], "pty_task,terminal_snapshot");
+
+      handler({
+        type: "create_pty_task",
+        payload: {
+          task_id: "task-pty-1",
+          project_id: "proj-pty-1",
+          pty_session_id: "pty-session-1",
+          request_id: "req-pty-1",
+          launch_config: {
+            entrypoint_type: "shell",
+            cwd: "/tmp/test-ws-pty-bound",
+            cols: 120,
+            rows: 40,
+            env: {
+              PTY_LAUNCH_KEEP: "keep-from-launch",
+              CONDUCTOR_TASK_ID: "task-from-launch-env",
+              CONDUCTOR_PROJECT_ID: "proj-from-launch-env",
+              CONDUCTOR_PTY_SESSION_ID: "pty-from-launch-env",
+              CONDUCTOR_LAUNCHED_BY_DAEMON: "1",
+              CONDUCTOR_RESUME_CWD: "/tmp/resume-from-launch-env",
             },
-            connect: async () => {},
-            disconnect: async () => {},
-            sendJson: async (payload) => {
-              sentEvents.push(payload);
-            },
-          };
+          },
         },
-      },
-    );
+      });
 
-    assert.ok(typeof handler === "function");
-    assert.strictEqual(webSocketClientOptions.extraHeaders["x-conductor-capabilities"], "pty_task,terminal_snapshot");
+      await new Promise((resolve) => setTimeout(resolve, 30));
 
-    handler({
-      type: "create_pty_task",
-      payload: {
-        task_id: "task-pty-1",
-        project_id: "proj-pty-1",
-        pty_session_id: "pty-session-1",
-        request_id: "req-pty-1",
-        launch_config: {
-          entrypoint_type: "shell",
-          cwd: "/tmp/test-ws-pty-bound",
-          cols: 120,
-          rows: 40,
+      handler({
+        type: "terminal_input",
+        payload: {
+          task_id: "task-pty-1",
+          data: "ls\r",
+          client_input_seq: 1,
+          client_sent_at: "2026-03-17T01:00:00.000Z",
+          server_received_at: "2026-03-17T01:00:00.010Z",
         },
-      },
-    });
+      });
+      handler({
+        type: "terminal_resize",
+        payload: {
+          task_id: "task-pty-1",
+          cols: 100,
+          rows: 32,
+        },
+      });
+      assert.deepStrictEqual(writes, ["ls\r"]);
+      assert.deepStrictEqual(resizes, [[100, 32]]);
 
-    await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.ok(typeof onData === "function");
+      onData("hello from pty");
+      await new Promise((resolve) => setTimeout(resolve, 20));
 
-    handler({
-      type: "terminal_input",
-      payload: {
-        task_id: "task-pty-1",
-        data: "ls\r",
-        client_input_seq: 1,
-        client_sent_at: "2026-03-17T01:00:00.000Z",
-        server_received_at: "2026-03-17T01:00:00.010Z",
-      },
-    });
-    handler({
-      type: "terminal_resize",
-      payload: {
-        task_id: "task-pty-1",
-        cols: 100,
-        rows: 32,
-      },
-    });
-    assert.deepStrictEqual(writes, ["ls\r"]);
-    assert.deepStrictEqual(resizes, [[100, 32]]);
+      handler({
+        type: "terminal_attach",
+        payload: {
+          task_id: "task-pty-1",
+          last_seq: 0,
+          connection_id: "conn-app-1",
+          resume_strategy: "snapshot",
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
 
-    assert.ok(typeof onData === "function");
-    onData("hello from pty");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    handler({
-      type: "terminal_attach",
-      payload: {
-        task_id: "task-pty-1",
-        last_seq: 0,
-        connection_id: "conn-app-1",
-        resume_strategy: "snapshot",
-      },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    expectEvent(sentEvents, "agent_command_ack", (payload) => {
-      assert.strictEqual(payload.task_id, "task-pty-1");
-      assert.strictEqual(payload.event_type, "create_pty_task");
-      assert.strictEqual(payload.accepted, true);
-    });
-    expectEvent(sentEvents, "terminal_opened", (payload) => {
-      assert.strictEqual(payload.task_id, "task-pty-1");
-      assert.strictEqual(payload.pty_session_id, "pty-session-1");
-      assert.strictEqual(payload.cwd, "/tmp/test-ws-pty-bound");
-    });
-    const openedEvents = sentEvents.filter((event) => event.type === "terminal_opened");
-    assert.ok(openedEvents.length >= 2);
-    assert.strictEqual(openedEvents[0].payload.started_at, openedEvents[1].payload.started_at);
-    const outputEvents = sentEvents.filter((event) => event.type === "terminal_output");
-    assert.strictEqual(outputEvents.length, 1);
-    assert.deepStrictEqual(
-      outputEvents.map((event) => event.payload.data),
-      ["hello from pty"],
-    );
-    assert.deepStrictEqual(
-      outputEvents.map((event) => event.payload.seq),
-      [1],
-    );
-    assert.deepStrictEqual(outputEvents[0].payload.latency_sample.client_input_seq, 1);
-    assert.strictEqual(outputEvents[0].payload.latency_sample.client_sent_at, "2026-03-17T01:00:00.000Z");
-    assert.strictEqual(outputEvents[0].payload.latency_sample.server_received_at, "2026-03-17T01:00:00.010Z");
-    assert.ok(typeof outputEvents[0].payload.latency_sample.daemon_received_at === "string");
-    assert.ok(typeof outputEvents[0].payload.latency_sample.first_output_at === "string");
-    assert.ok(typeof outputEvents[0].payload.latency_sample.daemon_input_to_first_output_ms === "number");
-    const snapshotEvents = sentEvents.filter((event) => event.type === "terminal_snapshot");
-    assert.deepStrictEqual(snapshotEvents.map((event) => event.payload), [
-      {
-        task_id: "task-pty-1",
-        project_id: "proj-pty-1",
-        pty_session_id: "pty-session-1",
-        connection_id: "conn-app-1",
-        last_seq: 1,
-        data: "hello from pty",
-        truncated: false,
-      },
-    ]);
-
-    if (daemonInstance && typeof daemonInstance.close === "function") {
-      daemonInstance.close();
+      expectEvent(sentEvents, "agent_command_ack", (payload) => {
+        assert.strictEqual(payload.task_id, "task-pty-1");
+        assert.strictEqual(payload.event_type, "create_pty_task");
+        assert.strictEqual(payload.accepted, true);
+      });
+      expectEvent(sentEvents, "terminal_opened", (payload) => {
+        assert.strictEqual(payload.task_id, "task-pty-1");
+        assert.strictEqual(payload.pty_session_id, "pty-session-1");
+        assert.strictEqual(payload.cwd, "/tmp/test-ws-pty-bound");
+      });
+      const openedEvents = sentEvents.filter((event) => event.type === "terminal_opened");
+      assert.ok(openedEvents.length >= 2);
+      assert.strictEqual(openedEvents[0].payload.started_at, openedEvents[1].payload.started_at);
+      const outputEvents = sentEvents.filter((event) => event.type === "terminal_output");
+      assert.strictEqual(outputEvents.length, 1);
+      assert.deepStrictEqual(
+        outputEvents.map((event) => event.payload.data),
+        ["hello from pty"],
+      );
+      assert.deepStrictEqual(
+        outputEvents.map((event) => event.payload.seq),
+        [1],
+      );
+      assert.deepStrictEqual(outputEvents[0].payload.latency_sample.client_input_seq, 1);
+      assert.strictEqual(outputEvents[0].payload.latency_sample.client_sent_at, "2026-03-17T01:00:00.000Z");
+      assert.strictEqual(outputEvents[0].payload.latency_sample.server_received_at, "2026-03-17T01:00:00.010Z");
+      assert.ok(typeof outputEvents[0].payload.latency_sample.daemon_received_at === "string");
+      assert.ok(typeof outputEvents[0].payload.latency_sample.first_output_at === "string");
+      assert.ok(typeof outputEvents[0].payload.latency_sample.daemon_input_to_first_output_ms === "number");
+      const snapshotEvents = sentEvents.filter((event) => event.type === "terminal_snapshot");
+      assert.deepStrictEqual(snapshotEvents.map((event) => event.payload), [
+        {
+          task_id: "task-pty-1",
+          project_id: "proj-pty-1",
+          pty_session_id: "pty-session-1",
+          connection_id: "conn-app-1",
+          last_seq: 1,
+          data: "hello from pty",
+          truncated: false,
+        },
+      ]);
+    } finally {
+      restoreEnv("PTY_PARENT_KEEP", previousEnv.PTY_PARENT_KEEP);
+      restoreEnv("CONDUCTOR_BACKEND_URL", previousEnv.CONDUCTOR_BACKEND_URL);
+      restoreEnv("CONDUCTOR_PROJECT_ID", previousEnv.CONDUCTOR_PROJECT_ID);
+      restoreEnv("CONDUCTOR_TASK_ID", previousEnv.CONDUCTOR_TASK_ID);
+      restoreEnv("CONDUCTOR_PTY_SESSION_ID", previousEnv.CONDUCTOR_PTY_SESSION_ID);
+      restoreEnv("CONDUCTOR_LAUNCHED_BY_DAEMON", previousEnv.CONDUCTOR_LAUNCHED_BY_DAEMON);
+      restoreEnv("CONDUCTOR_RESUME_CWD", previousEnv.CONDUCTOR_RESUME_CWD);
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
     }
   });
 

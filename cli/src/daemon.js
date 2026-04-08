@@ -443,6 +443,36 @@ function normalizeTerminalEnv(value) {
   return env;
 }
 
+const PTY_TASK_SCOPED_ENV_KEYS = [
+  "CONDUCTOR_PROJECT_ID",
+  "CONDUCTOR_TASK_ID",
+  "CONDUCTOR_PTY_SESSION_ID",
+  "CONDUCTOR_LAUNCHED_BY_DAEMON",
+  "CONDUCTOR_RESUME_CWD",
+];
+
+function stripPtyTaskScopedEnv(source) {
+  const env = {
+    ...(source && typeof source === "object" ? source : {}),
+  };
+  for (const key of PTY_TASK_SCOPED_ENV_KEYS) {
+    delete env[key];
+  }
+  return env;
+}
+
+function buildPtyTaskEnv(baseEnv = process.env, launchEnv = {}) {
+  const parentEnv = stripPtyTaskScopedEnv(baseEnv);
+  const taskLaunchEnv = stripPtyTaskScopedEnv(launchEnv);
+  const env = {
+    ...parentEnv,
+  };
+  return {
+    ...env,
+    ...taskLaunchEnv,
+  };
+}
+
 export function startDaemon(config = {}, deps = {}) {
   const exitFn = deps.exit || process.exit;
   const killFn = deps.kill || process.kill;
@@ -2353,22 +2383,7 @@ export function startDaemon(config = {}, deps = {}) {
       logError(`Failed to report agent_command_ack(create_pty_task) for ${taskId}: ${err?.message || err}`);
     });
 
-    const env = {
-      ...process.env,
-      ...launchSpec.env,
-      CONDUCTOR_PROJECT_ID: projectId,
-      CONDUCTOR_TASK_ID: taskId,
-      CONDUCTOR_PTY_SESSION_ID: ptySessionId,
-    };
-    if (config.CONFIG_FILE) {
-      env.CONDUCTOR_CONFIG = config.CONFIG_FILE;
-    }
-    if (AGENT_TOKEN) {
-      env.CONDUCTOR_AGENT_TOKEN = AGENT_TOKEN;
-    }
-    if (BACKEND_HTTP) {
-      env.CONDUCTOR_BACKEND_URL = BACKEND_HTTP;
-    }
+    const env = buildPtyTaskEnv(process.env, launchSpec.env);
 
     const logPath = path.join(launchSpec.cwd, "conductor-terminal.log");
     let logStream;
