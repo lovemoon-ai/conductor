@@ -51,7 +51,6 @@ export class ProjectSummary {
   constructor(
     public readonly id: string,
     public readonly name?: string,
-    public readonly description?: string | null,
     public readonly daemonHost?: string | null,
     public readonly workspacePath?: string | null,
     public readonly repoRoot?: string | null,
@@ -69,7 +68,6 @@ export class ProjectSummary {
     return new ProjectSummary(
       id,
       payload.name ?? undefined,
-      payload.description ?? undefined,
       payload.daemonHost ?? payload.daemon_host ?? null,
       payload.workspacePath ?? payload.workspace_path ?? null,
       payload.repoRoot ?? payload.repo_root ?? null,
@@ -84,7 +82,6 @@ export class ProjectSummary {
     return {
       id: this.id,
       name: this.name,
-      description: this.description,
       daemonHost: this.daemonHost,
       workspacePath: this.workspacePath,
       repoRoot: this.repoRoot,
@@ -166,7 +163,6 @@ export class BackendApiClient {
 
   async createProject(params: {
     name?: string;
-    description?: string;
     metadata?: Record<string, unknown>;
     isDefault?: boolean;
     bindingConfirmed?: boolean;
@@ -416,7 +412,6 @@ export class BackendApiClient {
   async getProject(projectId: string): Promise<{
     id: string;
     name?: string;
-    description?: string | null;
     metadata?: Record<string, unknown>;
     daemonHost?: string | null;
     workspacePath?: string | null;
@@ -431,7 +426,6 @@ export class BackendApiClient {
     return {
       id: payload.id,
       name: payload.name,
-      description: payload.description,
       metadata: payload.metadata ?? undefined,
       daemonHost: payload.daemonHost ?? payload.daemon_host ?? undefined,
       workspacePath: payload.workspacePath ?? payload.workspace_path ?? undefined,

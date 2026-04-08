@@ -13,6 +13,7 @@ vi.mock("@/lib/subscription/service", async (importOriginal) => {
 
 vi.mock("@/lib/db", () => ({
   db: {
+    $transaction: vi.fn(),
     project: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
@@ -29,6 +30,9 @@ vi.mock("@/lib/db", () => ({
     message: {
       deleteMany: vi.fn(),
     },
+    agentOutbox: {
+      create: vi.fn(),
+    },
     defaultProject: {
       findMany: vi.fn(),
       findUnique: vi.fn(),
@@ -44,8 +48,40 @@ vi.mock("@/lib/conductor/task-file-storage", () => ({
   deleteTaskAttachmentDirectory: vi.fn(),
 }));
 
+vi.mock("@/lib/realtime/hub", () => ({
+  realtimeHub: {
+    getTaskAgentHost: vi.fn().mockReturnValue(null),
+    unbindTask: vi.fn(),
+  },
+}));
+
+vi.mock("@/lib/projects/daemon-binding", () => ({
+  validateProjectBindingWithDaemon: vi.fn(),
+  ProjectBindingValidationError: class ProjectBindingValidationError extends Error {
+    status: number;
+    code?: string;
+
+    constructor(message: string, status: number, code?: string) {
+      super(message);
+      this.name = "ProjectBindingValidationError";
+      this.status = status;
+      this.code = code;
+    }
+    },
+  }));
+
+vi.mock("@/lib/tasks/task-stop", () => ({
+  stopTaskBeforeRelaunch: vi.fn(),
+}));
+
 const { db } = await import("@/lib/db");
 const { deleteTaskAttachmentDirectory } = await import("@/lib/conductor/task-file-storage");
+const { realtimeHub } = await import("@/lib/realtime/hub");
+const { stopTaskBeforeRelaunch } = await import("@/lib/tasks/task-stop");
+const {
+  validateProjectBindingWithDaemon,
+  ProjectBindingValidationError,
+} = await import("@/lib/projects/daemon-binding");
 
 describe("/api/projects", () => {
   beforeEach(() => {
@@ -60,6 +96,20 @@ describe("/api/projects", () => {
     vi.mocked(db.defaultProject.findUnique).mockResolvedValue(null);
     vi.mocked(db.project.findFirst).mockResolvedValue(null);
     vi.mocked(db.project.findUnique).mockResolvedValue(null);
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(null);
+    vi.mocked(realtimeHub.unbindTask).mockImplementation(() => undefined);
+    vi.mocked(stopTaskBeforeRelaunch).mockResolvedValue({ ok: true } as any);
+    vi.mocked(db.$transaction).mockImplementation(async (callback: any) =>
+      typeof callback === "function"
+        ? callback({
+            message: db.message,
+            task: db.task,
+            project: db.project,
+            agentOutbox: db.agentOutbox,
+          })
+        : callback,
+    );
+    vi.mocked(validateProjectBindingWithDaemon).mockReset();
     vi.mocked(db.user.findUnique).mockResolvedValue({
       id: "user-1",
       email: "test@example.com",
@@ -70,6 +120,7 @@ describe("/api/projects", () => {
       trialEndsAt: null,
       lastPaymentAt: null,
     } as any);
+    vi.mocked(db.agentOutbox.create).mockResolvedValue({ id: "outbox-1" } as any);
   });
 
   describe("GET", () => {
@@ -176,6 +227,98 @@ describe("/api/projects", () => {
       expect(response.status).toBe(200);
       expect(data.id).toBe("proj-2");
       expect(data.name).toBe("New Project");
+    });
+
+    it("should validate daemonHost and workspacePath before creating a bound project", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = {
+        id: "proj-validated",
+        name: "Validated Project",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/Users/duo/ws/conductor-real",
+        repoRoot: "/Users/duo/ws/conductor-real",
+        worktreeBranch: "main",
+        lastCommit: "abc123",
+        fileCount: 42,
+        metadata: null,
+        createdAt: new Date("2024-01-02"),
+        updatedAt: new Date("2024-01-02"),
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(validateProjectBindingWithDaemon).mockResolvedValue({
+        daemonHost: "daemon-1",
+        workspacePath: "/Users/duo/ws/conductor-real",
+        repoRoot: "/Users/duo/ws/conductor-real",
+        worktreeBranch: "main",
+        lastCommit: "abc123",
+        fileCount: 42,
+      });
+      vi.mocked(db.project.create).mockResolvedValue(mockProject);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          name: "Validated Project",
+          daemonHost: "daemon-1",
+          workspacePath: "/Users/duo/ws/conductor",
+        },
+      });
+      const response = await POST(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.id).toBe("proj-validated");
+      expect(validateProjectBindingWithDaemon).toHaveBeenCalledWith({
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/Users/duo/ws/conductor",
+      });
+      expect(db.project.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          name: "Validated Project",
+          daemonHost: "daemon-1",
+          workspacePath: "/Users/duo/ws/conductor-real",
+          repoRoot: "/Users/duo/ws/conductor-real",
+          worktreeBranch: "main",
+          lastCommit: "abc123",
+          fileCount: 42,
+          metadata: undefined,
+        }),
+      });
+    });
+
+    it("should return validation errors from the daemon binding check", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(validateProjectBindingWithDaemon).mockRejectedValue(
+        new ProjectBindingValidationError(
+          "Workspace path does not exist on daemon daemon-1: /Users/duo/missing",
+          400,
+          "workspace_not_found",
+        ),
+      );
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          name: "Broken Project",
+          daemonHost: "daemon-1",
+          workspacePath: "/Users/duo/missing",
+        },
+      });
+      const response = await POST(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(400);
+      expect(data.error).toBe("Workspace path does not exist on daemon daemon-1: /Users/duo/missing");
+      expect(db.project.create).not.toHaveBeenCalled();
     });
 
     it("should create a pending project when given a binding candidate metadata", async () => {
@@ -288,7 +431,7 @@ describe("/api/projects", () => {
       expect(db.project.create).not.toHaveBeenCalled();
     });
 
-    it("should reject bound project creation without confirmed binding", async () => {
+    it("should reject unconfirmed snapshot fields before daemon validation", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
@@ -301,13 +444,14 @@ describe("/api/projects", () => {
           name: "Pending Project",
           daemonHost: "daemon-1",
           workspacePath: "/Users/duo/ws/conductor",
+          repoRoot: "/Users/duo/ws/conductor",
         },
       });
       const response = await POST(request);
       const data = await extractJson(response);
 
       expect(response.status).toBe(409);
-      expect(data.error).toBe("Binding fields require confirmed binding from daemon/CLI");
+      expect(data.error).toBe("Snapshot fields require confirmed binding from daemon/CLI");
       expect(db.project.create).not.toHaveBeenCalled();
     });
 
@@ -406,7 +550,14 @@ describe("/api/projects", () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
       vi.mocked(db.project.findFirst).mockResolvedValue({ id: "proj-1", name: "Demo" } as any);
-      vi.mocked(db.task.findMany).mockResolvedValue([{ id: "task-1" }] as any);
+      vi.mocked(db.task.findMany).mockResolvedValue([
+        {
+          id: "task-1",
+          taskType: "ai_task",
+          launchConfig: null,
+          status: "completed",
+        },
+      ] as any);
       vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 1 } as any);
       vi.mocked(db.task.deleteMany).mockResolvedValue({ count: 1 } as any);
       vi.mocked(db.project.delete).mockResolvedValue({ id: "proj-1" } as any);
@@ -422,7 +573,15 @@ describe("/api/projects", () => {
       expect(response.status).toBe(204);
       expect(db.task.findMany).toHaveBeenCalledWith({
         where: { projectId: "proj-1" },
-        select: { id: true },
+        select: {
+          id: true,
+          taskType: true,
+          launchConfig: true,
+          metadata: true,
+          agentHost: true,
+          executionHost: true,
+          status: true,
+        },
       });
       expect(db.message.deleteMany).toHaveBeenCalledWith({
         where: {
@@ -438,6 +597,184 @@ describe("/api/projects", () => {
         where: { id: "proj-1" },
       });
       expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-1");
+      expect(db.agentOutbox.create).not.toHaveBeenCalled();
+    });
+
+    it("should queue worktree cleanup before deleting a project with isolated worktree tasks", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({ id: "proj-1", name: "Demo" } as any);
+      vi.mocked(db.task.findMany).mockResolvedValue([
+        {
+          id: "task-worktree-1",
+          launchConfig: JSON.stringify({
+            worktree: true,
+            worktreeId: "task-worktree-1",
+            worktreeBranch: "abc123",
+            worktreeBaseRef: "main",
+            projectRepoRoot: "/repo",
+            projectWorkspacePath: "/repo/app",
+            projectRelativePath: "app",
+          }),
+          metadata: null,
+          agentHost: "daemon-offline",
+          executionHost: "daemon-offline",
+          status: "completed",
+        },
+      ] as any);
+      vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.task.deleteMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.project.delete).mockResolvedValue({ id: "proj-1" } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "DELETE",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-1",
+      });
+      const response = await DELETE(request);
+
+      expect(response.status).toBe(204);
+      expect(db.agentOutbox.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            userId: "user-1",
+            agentHost: "daemon-offline",
+            taskId: "task-worktree-1",
+            eventType: "cleanup_task_worktree",
+          }),
+        }),
+      );
+      expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-worktree-1");
+      expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-worktree-1");
+    });
+
+    it("should stop active plain tasks before deleting a project", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-plain",
+        name: "Plain Project",
+        daemonHost: "daemon-a",
+      } as any);
+      vi.mocked(db.task.findMany).mockResolvedValue([
+        {
+          id: "task-plain-running",
+          taskType: "ai_task",
+          launchConfig: null,
+          metadata: null,
+          agentHost: "daemon-a",
+          executionHost: "daemon-a",
+          status: "running",
+        },
+      ] as any);
+      vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.task.deleteMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.project.delete).mockResolvedValue({ id: "proj-plain" } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "DELETE",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-plain",
+      });
+      const response = await DELETE(request);
+
+      expect(response.status).toBe(204);
+      expect(stopTaskBeforeRelaunch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: "user-1",
+          taskId: "task-plain-running",
+          projectId: "proj-plain",
+          stopTargetHost: "daemon-a",
+          reason: "project_deleted",
+          taskLabel: "task",
+        }),
+      );
+      expect(db.agentOutbox.create).not.toHaveBeenCalled();
+      expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-plain-running");
+      expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-plain-running");
+    });
+
+    it("should stop active worktree tasks and queue one cleanup per shared root before deleting a project", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-1",
+        name: "Demo",
+        daemonHost: "daemon-a",
+      } as any);
+      vi.mocked(db.task.findMany).mockResolvedValue([
+        {
+          id: "task-worktree-source",
+          launchConfig: JSON.stringify({
+            worktree: true,
+            worktreeId: "task-worktree-source",
+            worktreeBranch: "abc123",
+            worktreeBaseRef: "main",
+            projectRepoRoot: "/repo",
+            projectWorkspacePath: "/repo/app",
+            projectRelativePath: "app",
+          }),
+          metadata: JSON.stringify({ daemonName: "daemon-a" }),
+          agentHost: "conductor-fire-debug-1",
+          executionHost: null,
+          status: "running",
+        },
+        {
+          id: "task-worktree-successor",
+          launchConfig: JSON.stringify({
+            worktree: true,
+            worktree_id: "task-worktree-source",
+            worktree_branch: "abc123",
+            worktree_base_ref: "main",
+            project_repo_root: "/repo",
+            project_workspace_path: "/repo/app",
+            project_relative_path: "app",
+          }),
+          metadata: null,
+          agentHost: "daemon-a",
+          executionHost: "daemon-a",
+          status: "completed",
+        },
+      ] as any);
+      vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.task.deleteMany).mockResolvedValue({ count: 2 } as any);
+      vi.mocked(db.project.delete).mockResolvedValue({ id: "proj-1" } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "DELETE",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-1",
+      });
+      const response = await DELETE(request);
+
+      expect(response.status).toBe(204);
+      expect(stopTaskBeforeRelaunch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: "user-1",
+          taskId: "task-worktree-source",
+          projectId: "proj-1",
+          stopTargetHost: "daemon-a",
+          reason: "project_deleted",
+          taskLabel: "task",
+        }),
+      );
+      expect(db.agentOutbox.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            userId: "user-1",
+            agentHost: "daemon-a",
+            taskId: "task-worktree-source",
+            eventType: "cleanup_task_worktree",
+          }),
+        }),
+      );
+      expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-worktree-source");
+      expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-worktree-successor");
+      expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-worktree-source");
+      expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-worktree-successor");
     });
   });
 

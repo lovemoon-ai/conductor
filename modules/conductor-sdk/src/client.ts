@@ -478,22 +478,20 @@ export class ConductorClient {
           : {
               id: project.id,
               name: project.name ?? null,
-              description: project.description ?? null,
             },
       ),
     };
   }
 
-  async createProject(name: string, description?: string, metadata?: Record<string, unknown>): Promise<Record<string, any>>;
+  async createProject(name: string, metadata?: Record<string, unknown>): Promise<Record<string, any>>;
   async createProject(payload: Record<string, any>): Promise<Record<string, any>>;
   async createProject(
     nameOrPayload: string | Record<string, any>,
-    description?: string,
     metadata?: Record<string, unknown>,
   ): Promise<Record<string, any>> {
     const payload =
       typeof nameOrPayload === 'string'
-        ? { name: nameOrPayload, description, metadata }
+        ? { name: nameOrPayload, metadata }
         : { ...nameOrPayload };
     const project = await this.backendApi.createProject(payload);
     return typeof (project as any).asObject === 'function' ? (project as any).asObject() : (project as any);

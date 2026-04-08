@@ -15,7 +15,7 @@ export function useWebSocket() {
       connect(session.userToken);
 
       // Fetch tasks on connect
-      fetchTasks();
+      fetchTasks(useTasksStore.getState().currentProjectFilter ?? undefined);
     }
 
     return () => {

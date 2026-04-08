@@ -31,24 +31,16 @@ import {
   type ConnectedAgent,
 } from "@/lib/tasks/pty-runtime";
 import { recoverStaleDisconnectedAgentTasks } from "@/lib/tasks/stale-recovery";
+import {
+  acquireTaskWorktreeMutationLock,
+  buildTaskWorktreeCleanupOutboxData,
+  hasSameTaskWorktreeRoot,
+  resolveTaskWorktreeCleanupHost,
+  parseTaskWorktreeLaunchConfig,
+} from "@/lib/tasks/worktree";
+import { stopTaskBeforeRelaunch } from "@/lib/tasks/task-stop";
 
 const DELETE_SNAPSHOT_TRIGGER = "task_delete";
-const STOP_TASK_ACK_TIMEOUT_MS = 2500;
-const STOP_TASK_FINAL_STATUS_TIMEOUT_MS = 5000;
-const STOP_TASK_POLL_TIMEOUT_MS = parsePositiveInt(
-  process.env.CONDUCTOR_STOP_TASK_POLL_TIMEOUT_MS,
-  30_000,
-);
-const STOP_TASK_POLL_INTERVAL_MS = parsePositiveInt(
-  process.env.CONDUCTOR_STOP_TASK_POLL_INTERVAL_MS,
-  process.env.NODE_ENV === "test" ? 1 : 1000,
-);
-
-function parsePositiveInt(raw: string | undefined, fallback: number): number {
-  if (!raw) return fallback;
-  const value = Number.parseInt(raw, 10);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
 
 const normalizeTaskStatus = (value: unknown): string => {
   if (typeof value !== "string") return "unknown";
@@ -301,158 +293,6 @@ const rollbackFailedPtyPatchRelaunch = async (args: {
       where: { taskId: args.taskId },
     });
   });
-};
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const findTaskForStopConvergence = async (userId: string, taskId: string) =>
-  db.task.findFirst({
-    where: { id: taskId, project: { userId } },
-    select: {
-      id: true,
-      projectId: true,
-      status: true,
-      agentHost: true,
-      executionHost: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-  });
-
-const waitForTaskStopConvergence = async (args: {
-  userId: string;
-  taskId: string;
-  stopTargetHost: string;
-}): Promise<{ ok: boolean; status?: string; error?: string }> => {
-  const deadline = Date.now() + STOP_TASK_POLL_TIMEOUT_MS;
-  let recoveryTriggered = false;
-
-  while (true) {
-    const latestTask = await findTaskForStopConvergence(args.userId, args.taskId);
-    if (!latestTask) {
-      return { ok: false, error: `Task ${args.taskId} not found while waiting for stop` };
-    }
-
-    const latestStatus = normalizeTaskStatus(latestTask.status);
-    if (latestStatus === "completed" || latestStatus === "killed") {
-      return { ok: true, status: latestStatus };
-    }
-
-    const latestHost =
-      normalizeHost(realtimeHub.getTaskAgentHost(args.taskId)) ||
-      normalizeHost(latestTask.executionHost) ||
-      normalizeHost(latestTask.agentHost) ||
-      args.stopTargetHost;
-    const hostActive = latestHost
-      ? realtimeHub.hasAgentHost(latestHost, args.userId)
-      : false;
-
-    if (!hostActive && !recoveryTriggered) {
-      recoveryTriggered = true;
-      await recoverStaleDisconnectedAgentTasks(args.userId, [latestTask] as any);
-      const recoveredTask = await findTaskForStopConvergence(args.userId, args.taskId);
-      const recoveredStatus = normalizeTaskStatus(recoveredTask?.status);
-      if (recoveredStatus === "completed" || recoveredStatus === "killed") {
-        return { ok: true, status: recoveredStatus };
-      }
-    }
-
-    if (Date.now() >= deadline) {
-      return hostActive
-        ? {
-            ok: false,
-            error: `Timed out waiting for task ${args.taskId} to stop on ${args.stopTargetHost}`,
-          }
-        : {
-            ok: false,
-            error: `task daemon ${latestHost || args.stopTargetHost} is offline`,
-          };
-    }
-
-    await sleep(STOP_TASK_POLL_INTERVAL_MS);
-  }
-};
-
-const stopTaskBeforeRelaunch = async (args: {
-  userId: string;
-  taskId: string;
-  projectId: string;
-  stopTargetHost: string;
-  reason: string;
-  taskLabel?: string;
-  requireActiveHost?: boolean;
-}): Promise<{ ok: boolean; error?: string }> => {
-  const hostActive = realtimeHub.hasAgentHost(args.stopTargetHost, args.userId);
-  const taskLabel = args.taskLabel ?? "task";
-  if (args.requireActiveHost && !hostActive) {
-    return { ok: false, error: `${taskLabel} daemon ${args.stopTargetHost} is offline` };
-  }
-
-  const requestId = randomUUID();
-  const ackPromise = realtimeHub.waitForTaskStopAck(
-    args.taskId,
-    requestId,
-    STOP_TASK_ACK_TIMEOUT_MS,
-  );
-  const finalStatusPromise = realtimeHub.waitForTaskFinalStatus(
-    args.taskId,
-    STOP_TASK_FINAL_STATUS_TIMEOUT_MS,
-  );
-  realtimeHub.bindTaskToAgent(args.taskId, args.stopTargetHost);
-  const { delivered } = await enqueueAndAttemptAgentCommand(
-    {
-      userId: args.userId,
-      agentHost: args.stopTargetHost,
-      taskId: args.taskId,
-      eventType: "stop_task",
-      requestId,
-      envelope: {
-        type: "stop_task",
-        payload: {
-          task_id: args.taskId,
-          project_id: args.projectId,
-          request_id: requestId,
-          reason: args.reason,
-        },
-      },
-    },
-    {
-      agentHost: args.stopTargetHost,
-      sendToAgentHost: ({ userId: targetUserId, agentHost: targetHost, envelope }) =>
-        realtimeHub.sendToAgentHost(targetUserId, targetHost, envelope),
-      resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),
-    },
-  );
-
-  if (!delivered) {
-    return hostActive
-      ? { ok: false, error: `Failed to stop running ${taskLabel} on ${args.stopTargetHost}` }
-      : { ok: true };
-  }
-
-  await ackPromise;
-  const finalStatus = await finalStatusPromise;
-  if (finalStatus === "completed" || finalStatus === "killed") {
-    return { ok: true };
-  }
-
-  const convergenceResult = await waitForTaskStopConvergence({
-    userId: args.userId,
-    taskId: args.taskId,
-    stopTargetHost: args.stopTargetHost,
-  });
-  if (convergenceResult.ok) {
-    return { ok: true };
-  }
-
-  return {
-    ok: false,
-    error:
-      convergenceResult.error ??
-      (hostActive
-        ? `Timed out waiting for ${taskLabel} ${args.taskId} to stop on ${args.stopTargetHost}`
-        : `${taskLabel} daemon ${args.stopTargetHost} is offline`),
-  };
 };
 
 export async function GET(
@@ -768,7 +608,21 @@ export async function DELETE(
   const { taskId } = await params;
   const existing = await db.task.findFirst({
     where: { id: taskId, project: { userId: user.id } },
-    select: { id: true, projectId: true, agentHost: true, executionHost: true, status: true },
+    select: {
+      id: true,
+      projectId: true,
+      taskType: true,
+      agentHost: true,
+      executionHost: true,
+      status: true,
+      launchConfig: true,
+      metadata: true,
+      project: {
+        select: {
+          daemonHost: true,
+        },
+      },
+    },
   });
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -800,47 +654,154 @@ export async function DELETE(
   const normalizedStatus = normalizeTaskStatus(existing.status);
   const needsStop = normalizedStatus === "running" || normalizedStatus === "unknown";
   const boundHost = normalizeHost(realtimeHub.getTaskAgentHost(taskId));
+  const worktreeConfig =
+    (existing.taskType ?? "ai_task") === "ai_task"
+      ? parseTaskWorktreeLaunchConfig(existing.launchConfig)
+      : null;
+  const worktreeCleanupHost = resolveTaskWorktreeCleanupHost({
+    boundHost,
+    agentHost: existing.agentHost,
+    executionHost: existing.executionHost,
+    metadata: existing.metadata,
+    projectDaemonHost: existing.project?.daemonHost,
+  });
   const stopTargetHost =
-    boundHost ||
-    normalizeHost(existing.executionHost) ||
-    normalizeHost(existing.agentHost);
+    worktreeConfig && worktreeCleanupHost
+      ? worktreeCleanupHost
+      : boundHost ||
+        worktreeCleanupHost ||
+        normalizeHost(existing.executionHost) ||
+        normalizeHost(existing.agentHost) ||
+        normalizeHost(existing.project?.daemonHost);
+
+  if (worktreeConfig && !stopTargetHost) {
+    return NextResponse.json({ error: "Task missing daemon binding" }, { status: 409 });
+  }
 
   if (needsStop) {
     if (stopTargetHost) {
-      const requestId = randomUUID();
-      const ackPromise = realtimeHub.waitForTaskStopAck(taskId, requestId, 2500);
-      realtimeHub.bindTaskToAgent(taskId, stopTargetHost);
-      const { delivered } = await enqueueAndAttemptAgentCommand(
-        {
+      if (worktreeConfig) {
+        const stopResult = await stopTaskBeforeRelaunch({
           userId: user.id,
-          agentHost: stopTargetHost,
           taskId,
-          eventType: "stop_task",
-          requestId,
-          envelope: {
-            type: "stop_task",
-            payload: {
-              task_id: taskId,
-              project_id: existing.projectId,
-              request_id: requestId,
-              reason: "deleted_by_user",
+          projectId: existing.projectId,
+          stopTargetHost,
+          reason: "deleted_by_user",
+          taskLabel: "task",
+        });
+        if (!stopResult.ok) {
+          return NextResponse.json(
+            { error: stopResult.error ?? `Failed to stop task ${taskId}` },
+            { status: 409 },
+          );
+        }
+      } else {
+        const requestId = randomUUID();
+        const ackPromise = realtimeHub.waitForTaskStopAck(taskId, requestId, 2500);
+        realtimeHub.bindTaskToAgent(taskId, stopTargetHost);
+        let delivered = false;
+        try {
+          ({ delivered } = await enqueueAndAttemptAgentCommand(
+            {
+              userId: user.id,
+              agentHost: stopTargetHost,
+              taskId,
+              eventType: "stop_task",
+              requestId,
+              envelope: {
+                type: "stop_task",
+                payload: {
+                  task_id: taskId,
+                  project_id: existing.projectId,
+                  request_id: requestId,
+                  reason: "deleted_by_user",
+                },
+              },
             },
-          },
-        },
-        {
-          agentHost: stopTargetHost,
-          sendToAgentHost: ({ userId: targetUserId, agentHost: targetHost, envelope }) =>
-            realtimeHub.sendToAgentHost(targetUserId, targetHost, envelope),
-          resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),
-        },
-      );
+            {
+              agentHost: stopTargetHost,
+              sendToAgentHost: ({ userId: targetUserId, agentHost: targetHost, envelope }) =>
+                realtimeHub.sendToAgentHost(targetUserId, targetHost, envelope),
+              resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),
+            },
+          ));
+        } catch {
+          delivered = false;
+        }
 
-      if (delivered) {
-        // Best effort stop: don't block deletion on daemon ack/status,
-        // to keep delete responsive across daemon versions and stale bindings.
-        await ackPromise;
+        if (delivered) {
+          // Best effort stop: don't block deletion on daemon ack/status,
+          // to keep delete responsive across daemon versions and stale bindings.
+          await ackPromise;
+        } else {
+          realtimeHub.cancelTaskStopAck(taskId, requestId);
+        }
       }
     }
+  }
+
+  if (worktreeConfig) {
+    await db.$transaction(async (tx) => {
+      await acquireTaskWorktreeMutationLock(
+        tx as any,
+        taskId,
+        existing.launchConfig as string | null,
+      );
+      const sharedWorktreeTask =
+        (
+          await tx.task.findMany({
+            where: {
+              projectId: existing.projectId,
+              id: { not: taskId },
+            },
+            select: {
+              id: true,
+              launchConfig: true,
+            },
+          })
+        ).find((candidate) =>
+          hasSameTaskWorktreeRoot(existing.launchConfig, candidate.launchConfig),
+        ) ?? null;
+      if (!sharedWorktreeTask?.id || sharedWorktreeTask.id === taskId) {
+        await tx.agentOutbox.create({
+          data: buildTaskWorktreeCleanupOutboxData({
+            userId: user.id,
+            agentHost: stopTargetHost,
+            taskId,
+            projectId: existing.projectId,
+            launchConfig: existing.launchConfig,
+            requestId: randomUUID(),
+            force: true,
+          }),
+        });
+      }
+
+      await tx.message.deleteMany({
+        where: { taskId },
+      });
+      try {
+        await tx.ptySession.deleteMany({
+          where: { taskId },
+        });
+      } catch (error) {
+        if (!isMissingPtySchemaError(error)) {
+          throw error;
+        }
+      }
+      await tx.task.delete({ where: { id: taskId } });
+    });
+
+    try {
+      await deleteTaskAttachmentDirectory(taskId);
+    } catch (error) {
+      console.error(
+        `[tasks] failed to delete attachment directory after task delete: taskId=${taskId}, error=${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    realtimeHub.unbindTask(taskId);
+    return new NextResponse(null, { status: 204 });
   }
 
   // Keep delete behavior robust across DB engines/migrations by removing children first.

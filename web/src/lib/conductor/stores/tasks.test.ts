@@ -325,4 +325,121 @@ describe('tasks store', () => {
       updatedAt: '2024-01-01T00:02:00.000Z',
     });
   });
+
+  it('removes a task worktree and keeps the normalized task in the store', async () => {
+    useTasksStore.setState({
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Worktree task',
+          taskType: 'ai_task',
+          status: 'completed',
+          launchConfig: {
+            worktree: true,
+            worktreeBranch: 'conductor/task/task-1',
+          },
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    mockPost.mockResolvedValueOnce({
+      task: {
+        id: 'task-1',
+        title: 'Worktree task',
+        task_type: 'ai_task',
+        status: 'completed',
+        launch_config: {
+          worktree: true,
+          worktreeBranch: 'conductor/task/task-1',
+        },
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:01:00.000Z',
+      },
+      cleaned_at: '2024-01-01T00:05:00.000Z',
+      removed_path: '/tmp/worktrees/task-1',
+      worktree_branch: 'conductor/task/task-1',
+    });
+
+    const result = await useTasksStore.getState().cleanupTaskWorktree('task-1');
+
+    expect(mockPost).toHaveBeenCalledWith('/tasks/task-1/worktree');
+    expect(result).toMatchObject({
+      cleanedAt: '2024-01-01T00:05:00.000Z',
+      removedPath: '/tmp/worktrees/task-1',
+      worktreeBranch: 'conductor/task/task-1',
+      task: {
+        id: 'task-1',
+        updatedAt: '2024-01-01T00:01:00.000Z',
+      },
+    });
+    expect(useTasksStore.getState().tasks[0]).toMatchObject({
+      id: 'task-1',
+      updatedAt: '2024-01-01T00:01:00.000Z',
+    });
+  });
+
+  it('ignores stale unfiltered fetch results after switching to a project filter', async () => {
+    let resolveUnfiltered: ((value: unknown) => void) | null = null;
+    let resolveFiltered: ((value: unknown) => void) | null = null;
+
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/tasks?recover_stale=1') {
+        return new Promise((resolve) => {
+          resolveUnfiltered = resolve;
+        });
+      }
+      if (url === '/tasks?project_id=proj-1&recover_stale=1') {
+        return new Promise((resolve) => {
+          resolveFiltered = resolve;
+        });
+      }
+      throw new Error(`Unexpected url: ${url}`);
+    });
+
+    const initialFetch = useTasksStore.getState().fetchTasks();
+    useTasksStore.getState().setProjectFilter('proj-1');
+
+    resolveFiltered?.([
+      {
+        id: 'task-proj-1',
+        project_id: 'proj-1',
+        title: 'Filtered task',
+        task_type: 'ai_task',
+        status: 'running',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:01:00.000Z',
+      },
+    ]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useTasksStore.getState().tasks).toMatchObject([
+      {
+        id: 'task-proj-1',
+        projectId: 'proj-1',
+      },
+    ]);
+
+    resolveUnfiltered?.([
+      {
+        id: 'task-all-1',
+        project_id: 'proj-2',
+        title: 'Unfiltered task',
+        task_type: 'ai_task',
+        status: 'running',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:01:00.000Z',
+      },
+    ]);
+    await initialFetch;
+
+    expect(useTasksStore.getState().tasks).toMatchObject([
+      {
+        id: 'task-proj-1',
+        projectId: 'proj-1',
+      },
+    ]);
+    expect(useTasksStore.getState().currentProjectFilter).toBe('proj-1');
+  });
 });

@@ -188,6 +188,46 @@ describe("/api/projects/match-path", () => {
     expect(data.matched_path).toBe("/Users/duo/ws/pending");
   });
 
+  it("should ignore pending binding candidates for a different daemon host", async () => {
+    const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+    vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+
+    vi.mocked(db.project.findMany).mockResolvedValue([
+      {
+        id: "proj-pending-other-daemon",
+        name: "Pending Project",
+        userId: "user-1",
+        daemonHost: null,
+        workspacePath: null,
+        repoRoot: null,
+        worktreeBranch: null,
+        lastCommit: null,
+        fileCount: null,
+        metadata: JSON.stringify({
+          bindingCandidate: {
+            daemonHost: "otherbox",
+            workspacePath: "/Users/duo/ws/pending",
+          },
+        }),
+        createdAt: new Date("2024-01-01"),
+        updatedAt: new Date("2024-01-01"),
+      },
+    ]);
+
+    const token = createTestToken("user-1");
+    const request = createMockRequest({
+      method: "POST",
+      token,
+      body: { daemonHost: "devbox", path: "/Users/duo/ws/pending/web" },
+    });
+    const response = await POST(request);
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.project).toBeNull();
+    expect(data.matched_path).toBeNull();
+  });
+
   it("should prefer confirmed bindings over newer pending candidates for the same path", async () => {
     const mockUser = { id: "user-1", email: "test@example.com", phone: null };
     vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);

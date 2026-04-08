@@ -16,6 +16,7 @@ import { CreateTaskDialog } from '@/components/conductor/tasks/CreateTaskDialog'
 import { TaskDetailPane } from '@/components/conductor/tasks/TaskDetailPane';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
 import { useProjectsStore } from '@/lib/conductor/stores/projects';
+import { filterTasksByProject } from '@/lib/conductor/task-filter';
 
 const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
 
@@ -31,18 +32,18 @@ function TasksPageContent() {
   const setProjectFilter = useTasksStore((state) => state.setProjectFilter);
   const fetchTasks = useTasksStore((state) => state.fetchTasks);
   const isLoading = useTasksStore((state) => state.isLoading);
-  const currentProjectFilter = useTasksStore((state) => state.currentProjectFilter);
   const tasks = useTasksStore((state) => state.tasks);
-  const taskCount = tasks.length;
   const projects = useProjectsStore((state) => state.projects);
   const projectId = searchParams.get('projectId');
   const requestedTaskId = searchParams.get('taskId');
+  const visibleTasks = useMemo(() => filterTasksByProject(tasks, projectId), [tasks, projectId]);
+  const taskCount = visibleTasks.length;
   const currentProjectName = projectId
     ? projects.find((project) => project.id === projectId)?.name
     : null;
   const desktopListMode = isDesktop && viewMode === 'list';
   const inlineDetailEnabled = desktopListMode && taskCount > 0;
-  const visibleTaskIds = useMemo(() => new Set(tasks.map((task) => task.id)), [tasks]);
+  const visibleTaskIds = useMemo(() => new Set(visibleTasks.map((task) => task.id)), [visibleTasks]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -97,10 +98,10 @@ function TasksPageContent() {
       ? selectedTaskId
       : requestedTaskId && visibleTaskIds.has(requestedTaskId)
         ? requestedTaskId
-        : tasks[0]?.id ?? null;
+        : visibleTasks[0]?.id ?? null;
 
     setSelectedTaskId((prev) => (prev === nextTaskId ? prev : nextTaskId));
-  }, [inlineDetailEnabled, requestedTaskId, selectedTaskId, tasks, visibleTaskIds]);
+  }, [inlineDetailEnabled, requestedTaskId, selectedTaskId, visibleTaskIds, visibleTasks]);
 
   useEffect(() => {
     if (!inlineDetailEnabled) {
@@ -135,7 +136,7 @@ function TasksPageContent() {
   }, [inlineDetailEnabled, router, searchParams, selectedTaskId, visibleTaskIds]);
 
   const handleRefresh = () => {
-    fetchTasks(currentProjectFilter ?? undefined, { recoverStale: true });
+    fetchTasks(projectId ?? undefined, { recoverStale: true });
   };
 
   const handleSelectTask = (taskId: string) => {
@@ -222,6 +223,7 @@ function TasksPageContent() {
                 activeTaskId={selectedTaskId}
                 onOpenTask={handleSelectTask}
                 desktopListPaneMode
+                projectFilter={projectId}
               />
             </div>
             <div className="hidden min-h-0 min-w-0 flex-1 overflow-hidden rounded-[24px] border border-border bg-paper shadow-sm md:flex md:flex-col">
@@ -237,7 +239,7 @@ function TasksPageContent() {
           </div>
         ) : (
           <div className="h-full overflow-y-auto webapp-scrollbar">
-            <TaskList viewMode={viewMode} />
+            <TaskList viewMode={viewMode} projectFilter={projectId} />
           </div>
         )}
       </div>
@@ -246,6 +248,7 @@ function TasksPageContent() {
         open={showCreateDialog}
         onClose={() => setShowCreateDialog(false)}
         onCreatedTask={desktopListMode ? handleTaskCreated : undefined}
+        defaultProjectId={projectId}
       />
     </>
   );

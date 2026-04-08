@@ -331,6 +331,7 @@ export async function registerWithCode(input: {
     : null;
 
   if (existing) {
+    await ensureDefaultProject(existing.id);
     return { token: signJwt(existing.id), user: { id: existing.id, email: existing.email, phone: existing.phone }, registered: false };
   }
 
@@ -358,13 +359,7 @@ export async function registerWithCode(input: {
       await applyInviteRegisterRewardPolicy(inviter.id, created.id, inviteCode!, tx);
     }
 
-      await tx.project.create({
-        data: {
-          userId: created.id,
-          name: DEFAULT_PROJECT_NAME,
-          metadata: DEFAULT_PROJECT_METADATA,
-        },
-      });
+      await ensureDefaultProject(created.id, tx);
 
     return created;
   });
@@ -386,6 +381,7 @@ export async function loginWithCode(input: { identifier: string; code: string })
     : await db.user.findUnique({ where: { phone: identifier } });
 
   if (!user) throw new Error("Account not found");
+  await ensureDefaultProject(user.id);
 
   return { token: signJwt(user.id), user: { id: user.id, email: user.email, phone: user.phone } };
 }

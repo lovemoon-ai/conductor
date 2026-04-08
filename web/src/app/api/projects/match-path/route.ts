@@ -1,98 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
+import {
+  parseProjectMetadata,
+  readProjectBindingPath,
+} from "../shared";
 
 const normalizePath = (value: string): string => value.replace(/\/+$/, "");
-
-const parseProjectMetadata = (value: string | null): Record<string, unknown> | null => {
-  if (!value) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(value);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return null;
-    }
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-};
-
-const readLegacyLocalPath = (metadata: string | null, daemonHost: string): string | null => {
-  const parsed = parseProjectMetadata(metadata);
-  if (!parsed) {
-    return null;
-  }
-
-  const localPaths = parsed.localPaths;
-  if (!localPaths) {
-    return null;
-  }
-
-  if (typeof localPaths === "string") {
-    const normalized = localPaths.trim();
-    return normalized || null;
-  }
-
-  if (Array.isArray(localPaths)) {
-    for (const candidate of localPaths) {
-      if (typeof candidate === "string") {
-        const normalized = candidate.trim();
-        if (normalized) {
-          return normalized;
-        }
-      }
-    }
-    return null;
-  }
-
-  if (typeof localPaths === "object") {
-    const candidate = (localPaths as Record<string, unknown>)[daemonHost];
-    if (typeof candidate === "string") {
-      const normalized = candidate.trim();
-      return normalized || null;
-    }
-  }
-
-  return null;
-};
-
-const readBindingCandidatePath = (metadata: string | null, daemonHost: string): string | null => {
-  const parsed = parseProjectMetadata(metadata);
-  if (!parsed) {
-    return null;
-  }
-
-  const rawCandidate =
-    Object.prototype.hasOwnProperty.call(parsed, "bindingCandidate")
-      ? parsed.bindingCandidate
-      : Object.prototype.hasOwnProperty.call(parsed, "binding_candidate")
-        ? parsed.binding_candidate
-        : null;
-  if (!rawCandidate || typeof rawCandidate !== "object" || Array.isArray(rawCandidate)) {
-    return null;
-  }
-
-  const candidate = rawCandidate as Record<string, unknown>;
-  const candidateDaemonHost =
-    typeof candidate.daemonHost === "string"
-      ? candidate.daemonHost.trim()
-      : typeof candidate.daemon_host === "string"
-        ? candidate.daemon_host.trim()
-        : "";
-  if (!candidateDaemonHost || candidateDaemonHost !== daemonHost) {
-    return null;
-  }
-
-  const candidatePath =
-    typeof candidate.workspacePath === "string"
-      ? candidate.workspacePath.trim()
-      : typeof candidate.workspace_path === "string"
-        ? candidate.workspace_path.trim()
-        : "";
-  return candidatePath || null;
-};
 
 const serializeProject = (project: {
   id: string;
@@ -186,10 +100,14 @@ export async function POST(request: NextRequest) {
       typeof project.daemonHost === "string" &&
       project.daemonHost.trim() === daemonHost &&
       boundWorkspacePath !== null;
-    const workspacePath =
-      boundWorkspacePath ||
-      readBindingCandidatePath(project.metadata, daemonHost) ||
-      readLegacyLocalPath(project.metadata, daemonHost);
+    const workspacePath = readProjectBindingPath(
+      {
+        daemonHost: project.daemonHost,
+        workspacePath: project.workspacePath,
+        metadata: project.metadata,
+      },
+      daemonHost,
+    );
     if (!workspacePath) continue;
 
     const normalizedBoundPath = normalizePath(workspacePath);

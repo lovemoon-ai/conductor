@@ -6,7 +6,7 @@ const deleteTaskMock = vi.fn();
 const taskItemMock = vi.fn();
 
 let tasksState: {
-  tasks: Array<{ id: string; title: string }>;
+  tasks: Array<{ id: string; title: string; projectId: string | null }>;
   isLoading: boolean;
   unreadTaskIds: Set<string>;
   currentProjectFilter: string | null;
@@ -29,7 +29,7 @@ vi.mock('@/lib/conductor/stores/projects', () => ({
 
 vi.mock('./TaskItem', () => ({
   TaskItem: (props: {
-    task: { id: string; title: string };
+    task: { id: string; title: string; projectId: string | null };
     viewMode?: string;
     isActive?: boolean;
   }) => {
@@ -53,8 +53,8 @@ describe('TaskList', () => {
 
     tasksState = {
       tasks: [
-        { id: 'task-1', title: 'Task One' },
-        { id: 'task-2', title: 'Task Two' },
+        { id: 'task-1', title: 'Task One', projectId: 'project-1' },
+        { id: 'task-2', title: 'Task Two', projectId: 'project-2' },
       ],
       isLoading: false,
       unreadTaskIds: new Set(['task-2']),
@@ -67,9 +67,9 @@ describe('TaskList', () => {
     render(<TaskList viewMode="list" activeTaskId="task-2" />);
 
     expect(await screen.findByText('Task One:list:idle')).toBeInTheDocument();
-    expect(screen.getByText('Task Two:list:active')).toBeInTheDocument();
+    expect(screen.queryByText('Task Two:list:active')).not.toBeInTheDocument();
     expect(screen.queryByText('1 unread')).not.toBeInTheDocument();
-    expect(screen.getByText('Project One')).toBeInTheDocument();
+    expect(screen.queryByText('Project One')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'List view' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Grid view' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Refresh tasks' })).toBeNull();
@@ -79,7 +79,7 @@ describe('TaskList', () => {
     const { container } = render(<TaskList viewMode="grid" />);
 
     expect(await screen.findByText('Task One:grid:idle')).toBeInTheDocument();
-    expect(screen.getByText('Task Two:grid:idle')).toBeInTheDocument();
+    expect(screen.queryByText('Task Two:grid:idle')).not.toBeInTheDocument();
     expect(screen.queryByText('1 unread')).not.toBeInTheDocument();
     expect(container.querySelector('[data-task-item-wrapper="task-1"]')).toHaveClass('min-w-0');
   });

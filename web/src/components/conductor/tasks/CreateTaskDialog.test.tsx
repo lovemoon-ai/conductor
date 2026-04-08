@@ -83,9 +83,26 @@ describe('CreateTaskDialog', () => {
     expect(within(projectSelect).queryByRole('option', { name: 'No project' })).toBeNull();
     expect(within(daemonSelect).queryByRole('option', { name: 'Auto-select daemon' })).toBeNull();
     expect(within(backendSelect).queryByRole('option', { name: 'Default' })).toBeNull();
-    expect(screen.queryByText('Conversation-first task routed through the AI runner. The project sets the daemon; backend choices come from that daemon.')).toBeNull();
+    expect(screen.queryByLabelText('worktree')).toBeNull();
+    expect(screen.queryByText('Conversation-first task routed through the AI runner. The selected project fixes the daemon, and backend choices come from that daemon.')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Show help for AI Task' }));
-    expect(screen.getByText('Conversation-first task routed through the AI runner. The project sets the daemon; backend choices come from that daemon.')).toBeInTheDocument();
+    expect(screen.getByText('Conversation-first task routed through the AI runner. The selected project fixes the daemon, and backend choices come from that daemon.')).toBeInTheDocument();
+  });
+
+  it('defaults to the current project when provided', async () => {
+    projectsState = {
+      projects: [
+        { id: 'project-1', name: 'Project One', isDefault: true },
+        { id: 'project-bound', name: 'Bound Project', daemonHost: 'daemon-b', workspacePath: '/repo/bound' },
+      ],
+    };
+
+    render(<CreateTaskDialog open onClose={() => {}} defaultProjectId="project-bound" />);
+
+    const projectSelect = await screen.findByLabelText('Project');
+    await waitFor(() => {
+      expect(projectSelect).toHaveValue('project-bound');
+    });
   });
 
   it('shows inline error when create task hits free plan limit', async () => {
@@ -164,6 +181,7 @@ describe('CreateTaskDialog', () => {
     expect(screen.queryByLabelText('Terminal Entrypoint')).toBeNull();
     expect(screen.queryByLabelText('Shell Path')).toBeNull();
     expect(screen.queryByLabelText('Working Directory')).toBeNull();
+    expect(screen.queryByLabelText('worktree')).toBeNull();
   });
 
   it('uses inline selection callback when provided after task creation', async () => {
@@ -180,6 +198,65 @@ describe('CreateTaskDialog', () => {
       expect(onCreatedTaskMock).toHaveBeenCalledWith('task-inline-1');
     });
     expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('shows worktree for git projects and submits the checkbox state', async () => {
+    projectsState = {
+      projects: [
+        {
+          id: 'project-git',
+          name: 'Git Project',
+          daemonHost: 'daemon-a',
+          workspacePath: '/repo/app',
+          repoRoot: '/repo',
+        },
+      ],
+    };
+    createTaskMock.mockResolvedValueOnce({ id: 'task-git-1' });
+
+    render(<CreateTaskDialog open onClose={() => {}} />);
+
+    expect(await screen.findByText('worktree')).toBeInTheDocument();
+    const worktreeCheckbox = await screen.findByRole('checkbox');
+    fireEvent.click(worktreeCheckbox);
+    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+      target: { value: 'Use isolated branch' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Use isolated branch',
+        projectId: 'project-git',
+        launchConfig: {
+          worktree: true,
+        },
+      }));
+    });
+  });
+
+  it('hides worktree when PTY task is selected even for git projects', async () => {
+    projectsState = {
+      projects: [
+        {
+          id: 'project-git',
+          name: 'Git Project',
+          daemonHost: 'daemon-a',
+          workspacePath: '/repo/app',
+          repoRoot: '/repo',
+        },
+      ],
+    };
+
+    render(<CreateTaskDialog open onClose={() => {}} />);
+
+    expect(await screen.findByRole('checkbox')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('radio', { name: /PTY Task/ }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('checkbox')).toBeNull();
+    });
   });
 
   it('locks the daemon to a bound project', async () => {
@@ -202,6 +279,7 @@ describe('CreateTaskDialog', () => {
       expect(daemonSelect).toHaveValue('daemon-b');
     });
     expect(daemonSelect).toBeDisabled();
+    expect(screen.getByText('Bound to daemon-b : /repo/bound')).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
       target: { value: 'Use bound daemon' },

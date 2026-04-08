@@ -21,7 +21,6 @@ class FakeBackendApi {
   projects: Array<{
     id: string;
     name?: string;
-    description?: string | null;
     metadata?: Record<string, unknown>;
     daemonHost?: string;
     workspacePath?: string;
@@ -92,7 +91,6 @@ class FakeBackendApi {
         return {
           id: project.id,
           name: project.name,
-          description: project.description,
         };
       },
     }));
@@ -100,7 +98,6 @@ class FakeBackendApi {
 
   async createProject(params: {
     name?: string;
-    description?: string;
     metadata?: Record<string, unknown>;
     daemonHost?: string;
     workspacePath?: string;
@@ -112,7 +109,6 @@ class FakeBackendApi {
     const project = {
       id: `p-${this.projects.length + 1}`,
       name: params.name,
-      description: params.description ?? null,
       metadata: params.metadata,
       daemonHost: params.daemonHost,
       workspacePath: params.workspacePath,
@@ -124,7 +120,6 @@ class FakeBackendApi {
         return {
           id: project.id,
           name: project.name,
-          description: project.description,
         };
       },
     };
@@ -260,12 +255,10 @@ class FakeBackendApi {
     return {
       id: project.id,
       name: project.name,
-      description: project.description,
       asObject() {
         return {
           id: project.id,
           name: project.name,
-          description: project.description,
         };
       },
     };

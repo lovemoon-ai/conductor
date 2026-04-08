@@ -13,6 +13,10 @@ import {
   type JsonObject,
 } from "@/lib/tasks/task-config";
 import {
+  buildTaskWorktreeLaunchConfig,
+  isTaskWorktreeRequested,
+} from "@/lib/tasks/worktree";
+import {
   applyLegacyTaskShape,
   isMissingPtySchemaError,
   legacyTaskSelect,
@@ -409,7 +413,9 @@ export async function POST(request: NextRequest) {
   const isDefaultProject = defaultProject?.projectId === project.id;
   const projectDaemonHost = normalizeOptionalString((project as { daemonHost?: string | null }).daemonHost);
   const projectWorkspacePath = normalizeOptionalString((project as { workspacePath?: string | null }).workspacePath);
+  const projectRepoRoot = normalizeOptionalString((project as { repoRoot?: string | null }).repoRoot);
   const projectWorktreeBranch = normalizeOptionalString((project as { worktreeBranch?: string | null }).worktreeBranch);
+  const projectLastCommit = normalizeOptionalString((project as { lastCommit?: string | null }).lastCommit);
   if (
     (!isDefaultProject && (!projectDaemonHost || !projectWorkspacePath)) ||
     (projectDaemonHost && !projectWorkspacePath) ||
@@ -454,8 +460,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "launch_config must be an object" }, { status: 400 });
   }
   let launchConfig = launchConfigField.value;
+  const worktreeRequested = isTaskWorktreeRequested(launchConfig);
+  if (taskType === "pty_task" && worktreeRequested) {
+    return NextResponse.json({ error: "PTY task does not support worktree" }, { status: 400 });
+  }
+  const requestedId =
+    typeof normalizedBody.id === "string" && normalizedBody.id.trim()
+      ? normalizedBody.id
+      : worktreeRequested
+        ? randomUUID()
+        : undefined;
+  if (worktreeRequested && (!projectDaemonHost || !projectWorkspacePath || !projectRepoRoot)) {
+    return NextResponse.json(
+      { error: "Worktree requires a git-backed bound project" },
+      { status: 409 },
+    );
+  }
   if (taskType === "ai_task") {
-    const aiLaunchConfig = {
+    const aiLaunchConfig: JsonObject = {
       ...(launchConfig ?? {}),
       ...(requestedBackendType && launchConfig?.backendType === undefined
         ? { backendType: requestedBackendType }
@@ -470,15 +492,33 @@ export async function POST(request: NextRequest) {
         ? { sessionFilePath: requestedSessionFilePath }
         : {}),
     };
-    if (projectWorkspacePath) {
-      aiLaunchConfig.cwd = projectWorkspacePath;
+    if (worktreeRequested) {
+      try {
+        launchConfig = buildTaskWorktreeLaunchConfig({
+          launchConfig: aiLaunchConfig,
+          worktreeId: requestedId!,
+          projectRepoRoot: projectRepoRoot!,
+          projectWorkspacePath: projectWorkspacePath!,
+          projectWorktreeBranch,
+          projectLastCommit,
+        });
+      } catch (error) {
+        return NextResponse.json(
+          { error: error instanceof Error ? error.message : "Invalid worktree request" },
+          { status: 409 },
+        );
+      }
+    } else {
+      if (projectWorkspacePath) {
+        aiLaunchConfig.cwd = projectWorkspacePath;
+      }
+      if (projectWorktreeBranch) {
+        aiLaunchConfig.worktreeBranch = projectWorktreeBranch;
+      }
+      launchConfig = Object.keys(aiLaunchConfig).length > 0 ? aiLaunchConfig : null;
     }
-    if (projectWorktreeBranch) {
-      aiLaunchConfig.worktreeBranch = projectWorktreeBranch;
-    }
-    launchConfig = Object.keys(aiLaunchConfig).length > 0 ? aiLaunchConfig : null;
   }
-  if (projectWorkspacePath && launchConfig?.cwd === undefined) {
+  if (!worktreeRequested && projectWorkspacePath && launchConfig?.cwd === undefined) {
     launchConfig = { ...(launchConfig ?? {}), cwd: projectWorkspacePath };
   }
   if (taskType === "pty_task") {
@@ -567,10 +607,6 @@ export async function POST(request: NextRequest) {
       ...(initialContent ? { initialContent } : {}),
     };
   }
-  const requestedId =
-    typeof normalizedBody.id === "string" && normalizedBody.id.trim()
-      ? normalizedBody.id
-      : undefined;
   const title = normalizeOptionalString(normalizedBody.title) ?? "New Task";
   const defaultTaskStatus =
     taskType === "ai_task" && typeof agentHost === "string" && isConductorFireHost(agentHost)
@@ -689,6 +725,7 @@ export async function POST(request: NextRequest) {
             title: task.title,
             backend_type: task.backendType ?? metadata?.backendType,
             initial_content: initialMessageContent ?? undefined,
+            launch_config: launchConfig ?? undefined,
             request_id: requestId,
           },
         },

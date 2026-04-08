@@ -40,6 +40,52 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 const getGridDraftStorageKey = (taskId: string) => `${GRID_DRAFT_STORAGE_PREFIX}${taskId}`;
 const isInteractiveTarget = (target: EventTarget | null): boolean =>
   target instanceof Element && Boolean(target.closest('button, input, textarea, select, a, summary'));
+const normalizeOptionalString = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized || null;
+};
+const normalizeBoolean = (value: unknown): boolean => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return value === 1;
+  }
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+};
+const parseTaskWorktreeBranch = (
+  task: Pick<Task, 'taskType' | 'launchConfig'>,
+): string | null => {
+  if (task.taskType === 'pty_task') {
+    return null;
+  }
+  const launchConfig =
+    task.launchConfig && typeof task.launchConfig === 'object' && !Array.isArray(task.launchConfig)
+      ? task.launchConfig
+      : null;
+  if (!launchConfig) {
+    return null;
+  }
+  const requested = normalizeBoolean(
+    launchConfig.worktree ??
+      launchConfig.createWorktree ??
+      launchConfig.create_worktree,
+  );
+  if (!requested) {
+    return null;
+  }
+  return (
+    normalizeOptionalString(launchConfig.worktreeBranch) ??
+    normalizeOptionalString(launchConfig.worktree_branch)
+  );
+};
 
 const EditIcon = () => (
   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -65,7 +111,12 @@ const NewTaskIcon = () => (
 
 const ShareIcon = () => (
   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={2}
+      d="M12 16V5m0 0l-4 4m4-4l4 4M5 13v3a3 3 0 003 3h8a3 3 0 003-3v-3"
+    />
   </svg>
 );
 
@@ -133,6 +184,7 @@ export function TaskItem({
   const taskMetadata = task.metadata as Record<string, unknown> | null;
   const launchConfig = task.launchConfig as Record<string, unknown> | null;
   const taskType = task.taskType ?? 'ai_task';
+  const worktreeBranch = parseTaskWorktreeBranch(task);
   const showRestartAction = taskType === 'ai_task';
   const rightActionWidth = showRestartAction ? RIGHT_ACTION_WIDTH_WITH_RESTART : RIGHT_ACTION_WIDTH_WITHOUT_RESTART;
   const backend = task.backendType
@@ -783,6 +835,14 @@ export function TaskItem({
       {daemon ? (
         <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted">
           {daemon}
+        </span>
+      ) : null}
+      {worktreeBranch ? (
+        <span
+          title={worktreeBranch}
+          className="max-w-[11rem] truncate rounded bg-[var(--paper)] px-1.5 py-0.5 font-mono text-xs font-medium text-ink"
+        >
+          {worktreeBranch}
         </span>
       ) : null}
     </>

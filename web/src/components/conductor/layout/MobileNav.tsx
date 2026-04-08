@@ -48,14 +48,14 @@ export function MobileNav() {
 
   const navItems = [
     {
-      href: '/app/tasks',
-      label: 'Tasks',
-      Icon: TasksIcon,
-    },
-    {
       href: '/app/projects',
       label: 'Projects',
       Icon: ProjectsIcon,
+    },
+    {
+      href: '/app/tasks',
+      label: 'Tasks',
+      Icon: TasksIcon,
     },
     {
       href: '/app/settings',

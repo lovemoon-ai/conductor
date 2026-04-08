@@ -89,8 +89,8 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
   const iconRailClassName = 'flex h-10 w-[52px] shrink-0 items-center justify-center';
 
   const navItems = [
-    { href: '/app/tasks', label: 'Tasks', Icon: TasksIcon, badge: unreadCount > 0 ? unreadCount : null },
     { href: '/app/projects', label: 'Projects', Icon: ProjectsIcon, badge: null },
+    { href: '/app/tasks', label: 'Tasks', Icon: TasksIcon, badge: unreadCount > 0 ? unreadCount : null },
     { href: '/app/settings', label: 'Settings', Icon: SettingsIcon, badge: null },
   ];
 

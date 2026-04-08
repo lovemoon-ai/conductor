@@ -1238,7 +1238,6 @@ export async function resolveProjectId(conductor, explicit, opts = {}) {
   try {
     const created = await conductor.createProject({
       name: projectName,
-      description: `Bound to ${daemonHost}:${snapshot.projectRoot}`,
       bindingConfirmed: true,
       daemonHost,
       workspacePath: snapshot.projectRoot,
@@ -1319,7 +1318,6 @@ async function resolveDefaultProjectId(conductor) {
   try {
     const created = await conductor.createProject({
       name: "Default Project",
-      description: "Auto-created by conductor-fire",
       isDefault: true,
     });
     if (created?.id) {

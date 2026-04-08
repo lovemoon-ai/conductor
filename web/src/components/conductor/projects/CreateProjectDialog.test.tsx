@@ -34,22 +34,19 @@ describe('CreateProjectDialog', () => {
     };
   });
 
-  it('submits a binding candidate for later daemon confirmation', async () => {
+  it('submits daemonHost and workspacePath for immediate validation', async () => {
     createProjectMock.mockResolvedValueOnce({ id: 'project-1' });
     const onClose = vi.fn();
 
     render(<CreateProjectDialog open onClose={onClose} />);
 
-    expect(screen.getByText('Choose an online daemon or type another host. The daemon or CLI confirms the workspace binding later.')).toBeInTheDocument();
+    expect(screen.getByText('Choose an online daemon. Conductor validates the workspace path immediately before creating the project.')).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText('Project name'), {
       target: { value: 'Alpha Project' },
     });
-    fireEvent.change(screen.getByPlaceholderText('Select or enter daemon host'), {
+    fireEvent.change(screen.getByPlaceholderText('Select an online daemon'), {
       target: { value: 'daemon-a' },
-    });
-    fireEvent.change(screen.getByPlaceholderText('Optional description'), {
-      target: { value: 'Demo description' },
     });
     fireEvent.change(screen.getByPlaceholderText('Local path, e.g. /Users/you/ws/project'), {
       target: { value: '/repo/alpha' },
@@ -60,51 +57,30 @@ describe('CreateProjectDialog', () => {
     await waitFor(() => {
       expect(createProjectMock).toHaveBeenCalledWith({
         name: 'Alpha Project',
-        description: 'Demo description',
-        metadata: {
-          bindingCandidate: {
-            daemonHost: 'daemon-a',
-            workspacePath: '/repo/alpha',
-          },
-        },
+        daemonHost: 'daemon-a',
+        workspacePath: '/repo/alpha',
       });
     });
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('allows staging a pending project when no daemon is online', async () => {
+  it('disables project creation when no daemon is online', async () => {
     agentsState = { agents: [] };
-    createProjectMock.mockResolvedValueOnce({ id: 'project-offline' });
     const onClose = vi.fn();
 
     render(<CreateProjectDialog open onClose={onClose} />);
 
-    expect(screen.getByText('No daemon is online. Enter the daemon host manually; the daemon or CLI confirms the workspace binding later.')).toBeInTheDocument();
+    expect(screen.getByText('No daemon is online. Reconnect conductor daemon before creating a bound project.')).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText('Project name'), {
       target: { value: 'Offline Project' },
-    });
-    fireEvent.change(screen.getByPlaceholderText('Enter daemon host manually'), {
-      target: { value: 'daemon-offline' },
     });
     fireEvent.change(screen.getByPlaceholderText('Local path, e.g. /Users/you/ws/project'), {
       target: { value: '/repo/offline' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create Project' }));
-
-    await waitFor(() => {
-      expect(createProjectMock).toHaveBeenCalledWith({
-        name: 'Offline Project',
-        description: undefined,
-        metadata: {
-          bindingCandidate: {
-            daemonHost: 'daemon-offline',
-            workspacePath: '/repo/offline',
-          },
-        },
-      });
-    });
-    expect(onClose).toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Create Project' })).toBeDisabled();
+    expect(createProjectMock).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

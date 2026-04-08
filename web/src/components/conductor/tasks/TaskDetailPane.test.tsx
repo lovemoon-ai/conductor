@@ -30,10 +30,6 @@ vi.mock('@/components/conductor/common/LoadingSpinner', () => ({
   LoadingSpinner: () => <div data-testid="loading-spinner" />,
 }));
 
-vi.mock('./RestartTaskControls', () => ({
-  RestartTaskControls: () => <div data-testid="restart-controls" />,
-}));
-
 describe('TaskDetailPane', () => {
   const fetchTaskMock = vi.fn();
   const markTaskReadMock = vi.fn();
@@ -101,5 +97,32 @@ describe('TaskDetailPane', () => {
 
     expect(screen.getByTestId('loading-spinner')).toBeInTheDocument();
     expect(screen.queryByTestId('chat-view')).not.toBeInTheDocument();
+  });
+
+  it('renders terminal view for pty tasks without extra worktree details', () => {
+    fetchTaskMock.mockReturnValue(new Promise(() => {}));
+    useTasksStoreMock.mockReturnValue({
+      tasks: [
+        {
+          id: 'task-pty',
+          title: 'Terminal task',
+          taskType: 'pty_task',
+          status: 'running',
+          launchConfig: {
+            worktree: true,
+            worktreeBranch: 'abc123',
+          },
+          createdAt: '2026-03-23T00:00:00.000Z',
+        },
+      ],
+      fetchTask: fetchTaskMock,
+      markTaskRead: markTaskReadMock,
+    });
+
+    render(<TaskDetailPane taskId="task-pty" />);
+
+    expect(screen.getByTestId('terminal-view')).toHaveTextContent('terminal:task-pty');
+    expect(screen.queryByText('worktree')).not.toBeInTheDocument();
+    expect(screen.queryByText('abc123')).not.toBeInTheDocument();
   });
 });

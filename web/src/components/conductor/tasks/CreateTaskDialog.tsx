@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Dialog } from '../common/Dialog';
 import { HelpTip } from '../common/HelpTip';
 import { InlineNotice } from '../common/InlineNotice';
@@ -8,6 +8,7 @@ import { useTasksStore } from '@/lib/conductor/stores/tasks';
 import { useProjectsStore } from '@/lib/conductor/stores/projects';
 import { useAgentsStore } from '@/lib/conductor/stores/agents';
 import { ApiRequestError } from '@/lib/conductor/api/client';
+import { formatBindingLabel } from '@/lib/projects/format-binding-label';
 import { useRouter } from 'next/navigation';
 import type { TaskType } from '@/lib/tasks/task-config';
 import type { Project } from '@/lib/conductor/types';
@@ -16,6 +17,7 @@ interface CreateTaskDialogProps {
   open: boolean;
   onClose: () => void;
   onCreatedTask?: (taskId: string) => void;
+  defaultProjectId?: string | null;
 }
 
 const supportsPtyTask = (capabilities: string[] | undefined): boolean =>
@@ -66,20 +68,26 @@ const TASK_TYPE_OPTIONS: Array<{
   {
     value: 'ai_task',
     label: 'AI Task',
-    description: 'Conversation-first task routed through the AI runner. The project sets the daemon; backend choices come from that daemon.',
+    description: 'Conversation-first task routed through the AI runner. The selected project fixes the daemon, and backend choices come from that daemon.',
   },
   {
     value: 'pty_task',
     label: 'PTY Task',
-    description: 'Persistent terminal session on a PTY-capable daemon. The project daemon must support PTY sessions.',
+    description: 'Persistent terminal session on a PTY-capable daemon. A bound project must use a PTY-capable daemon.',
   },
 ];
 
-export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDialogProps) {
+export function CreateTaskDialog({
+  open,
+  onClose,
+  onCreatedTask,
+  defaultProjectId = null,
+}: CreateTaskDialogProps) {
   const router = useRouter();
   const [title, setTitle] = useState('');
   const [projectId, setProjectId] = useState<string>('');
   const [taskType, setTaskType] = useState<TaskType>('ai_task');
+  const [createWorktree, setCreateWorktree] = useState(false);
   const [agentHost, setAgentHost] = useState<string>('');
   const [backendType, setBackendType] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -88,8 +96,20 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
   const createTask = useTasksStore((state) => state.createTask);
   const projects = useProjectsStore((state) => state.projects);
   const agents = useAgentsStore((state) => state.agents);
+  const wasOpenRef = useRef(false);
   const daemons = agents.filter((agent) => !agent.host.startsWith('conductor-fire-'));
   const selectableProjects = projects.filter((project) => Boolean(project.isDefault) || Boolean(project.daemonHost));
+  const resolvedDefaultProjectId = useMemo(() => {
+    if (selectableProjects.length === 0) {
+      return '';
+    }
+
+    if (defaultProjectId && selectableProjects.some((project) => project.id === defaultProjectId)) {
+      return defaultProjectId;
+    }
+
+    return selectableProjects[0].id;
+  }, [defaultProjectId, selectableProjects]);
   const selectedProject = selectableProjects.find((project) => project.id === projectId) ?? null;
   const projectRecord = selectedProject as (Project & Record<string, unknown>) | null;
   const isDefaultProject = Boolean(projectRecord?.isDefault);
@@ -99,7 +119,12 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
   const boundWorkspacePath = projectRecord && typeof projectRecord.workspacePath === 'string'
     ? projectRecord.workspacePath
     : null;
+  const projectRepoRoot = projectRecord && typeof projectRecord.repoRoot === 'string'
+    ? projectRecord.repoRoot
+    : null;
   const isBoundProject = Boolean(boundDaemonHost) && !isDefaultProject;
+  const selectedProjectSupportsWorktree = Boolean(projectRepoRoot);
+  const canCreateTaskWorktree = taskType === 'ai_task' && selectedProjectSupportsWorktree;
   const hasReadyProjectBinding = isDefaultProject || Boolean(boundDaemonHost);
   const boundDaemonAgent = isBoundProject
     ? daemons.find((agent) => agent.host === boundDaemonHost) ?? null
@@ -108,6 +133,7 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
   const boundDaemonSupportsPty = isBoundProject
     ? Boolean(boundDaemonAgent && supportsPtyTask(boundDaemonAgent.capabilities))
     : true;
+  const boundBindingLabel = boundDaemonHost ? formatBindingLabel(boundDaemonHost, boundWorkspacePath) : null;
   const daemonScope = isBoundProject
     ? (boundDaemonAgent ? [boundDaemonAgent] : [])
     : daemons;
@@ -133,12 +159,22 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
   useEffect(() => {
     if (selectableProjects.length === 0) {
       setProjectId('');
+      wasOpenRef.current = open;
       return;
     }
-    if (!projectId || !selectableProjects.some((project) => project.id === projectId)) {
-      setProjectId(selectableProjects[0].id);
+
+    const justOpened = open && !wasOpenRef.current;
+    wasOpenRef.current = open;
+    if (justOpened) {
+      setProjectId(resolvedDefaultProjectId);
+      setCreateWorktree(false);
+      return;
     }
-  }, [projectId, selectableProjects]);
+
+    if (!projectId || !selectableProjects.some((project) => project.id === projectId)) {
+      setProjectId(resolvedDefaultProjectId);
+    }
+  }, [open, projectId, resolvedDefaultProjectId, selectableProjects]);
 
   useEffect(() => {
     if (isBoundProject) {
@@ -167,6 +203,12 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
   }, [availableBackends, backendType]);
 
   useEffect(() => {
+    if (!canCreateTaskWorktree && createWorktree) {
+      setCreateWorktree(false);
+    }
+  }, [canCreateTaskWorktree, createWorktree]);
+
+  useEffect(() => {
     if (!open) {
       setSubmitError(null);
     }
@@ -176,6 +218,7 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
     setTitle('');
     setProjectId('');
     setTaskType('ai_task');
+    setCreateWorktree(false);
     setAgentHost('');
     setBackendType('');
     setSubmitError(null);
@@ -204,7 +247,7 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
             ? {
                 entrypointType: 'shell',
               }
-            : null,
+            : (createWorktree ? { worktree: true } : null),
       });
       onClose();
       resetForm();
@@ -258,7 +301,7 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
               <HelpTip label="project selection">
                 {selectableProjects.length === 0
                   ? 'Create a project first to organize the new task.'
-                  : 'Tasks inherit the project daemon and workspace context.'}
+                  : 'Tasks inherit the selected project daemon and workspace context.'}
               </HelpTip>
             </div>
             <select
@@ -266,6 +309,7 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
               value={projectId}
               onChange={(e) => {
                 setProjectId(e.target.value);
+                setCreateWorktree(false);
                 if (submitError) {
                   setSubmitError(null);
                 }
@@ -354,9 +398,37 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
         ) : null}
 
         {selectedProject && !hasReadyProjectBinding ? (
-          <InlineNotice variant="warning" title="Project binding pending">
-            This project has not been confirmed by its daemon yet. Bind it from the daemon/CLI before creating tasks.
+          <InlineNotice variant="warning" title="Binding pending">
+            This project is waiting for daemon confirmation. Confirm the binding from the daemon or CLI before creating tasks.
           </InlineNotice>
+        ) : null}
+
+        {canCreateTaskWorktree ? (
+          <div className="rounded-2xl border border-border bg-paper/50 p-4">
+            <label htmlFor="create-task-worktree" className="flex cursor-pointer items-start gap-3">
+              <input
+                id="create-task-worktree"
+                type="checkbox"
+                checked={createWorktree}
+                onChange={(e) => {
+                  setCreateWorktree(e.target.checked);
+                  setSubmitError(null);
+                }}
+                className="mt-0.5 h-4 w-4 rounded border-border text-[var(--accent)] focus:ring-[var(--accent)]"
+              />
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-ink">worktree</span>
+                  <HelpTip label="worktree" align="right">
+                    Create this task in an isolated git worktree and branch for the selected project.
+                  </HelpTip>
+                </div>
+                <p className="mt-1 text-xs text-muted">
+                  Each new task from the project gets its own branch. Tasks continued from an existing worktree reuse that same branch.
+                </p>
+              </div>
+            </label>
+          </div>
         ) : null}
 
         <div className="rounded-2xl border border-border bg-paper/50 p-4">
@@ -367,15 +439,14 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
                 <HelpTip label="execution setup">
                   {taskType === 'ai_task'
                     ? (isBoundProject
-                      ? 'This project is bound to a daemon. Backend choices come from that daemon.'
+                      ? 'This project is bound to a daemon, so backend choices come from that daemon.'
                       : 'Pick the connected daemon that should run this AI task. Backend choices come from the selected daemon.')
                     : 'Choose the PTY-capable daemon that should host the terminal session.'}
                 </HelpTip>
               </div>
               {isBoundProject ? (
                 <p className="mt-1 text-xs text-muted">
-                  Bound to {boundDaemonHost}
-                  {boundWorkspacePath ? ` / ${boundWorkspacePath}` : ''}
+                  Bound to {boundBindingLabel}
                 </p>
               ) : null}
             </div>
@@ -383,7 +454,7 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
               {hasEligibleDaemon
                 ? `${eligibleDaemons.length} daemon${eligibleDaemons.length > 1 ? 's' : ''} online`
                 : isBoundProject && boundDaemonHost
-                  ? 'Bound daemon offline'
+                  ? 'Daemon offline'
                   : 'No daemon online'}
             </span>
           </div>
@@ -395,7 +466,7 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
                   <label htmlFor="create-task-daemon" className="block text-sm font-medium">Daemon</label>
                   <HelpTip label="daemon">
                     {isBoundProject
-                      ? 'This project locks the daemon selection.'
+                      ? 'The daemon is fixed for this project.'
                       : taskType === 'ai_task'
                         ? 'The selected daemon defines which AI backends are available below.'
                         : 'PTY tasks will open a shell session on this daemon.'}
@@ -466,12 +537,12 @@ export function CreateTaskDialog({ open, onClose, onCreatedTask }: CreateTaskDia
           ) : (
             <InlineNotice variant="warning" className="mt-4">
               {isBoundProject && boundDaemonHost && !boundDaemonOnline
-                ? `The project daemon ${boundDaemonHost} is offline. Reconnect it before creating this task.`
+                ? `This project is bound to ${boundDaemonHost}, but the daemon is offline. Reconnect it before creating this task.`
                 : isBoundProject && boundDaemonHost && taskType === 'pty_task' && !boundDaemonSupportsPty
-                  ? `The project daemon ${boundDaemonHost} does not support PTY tasks.`
-                : taskType === 'pty_task'
-                  ? 'No PTY-capable daemon is online. Reconnect conductor daemon with PTY support before creating this task.'
-                  : 'No daemon is online right now. You can still create an AI task, but reconnecting a daemon unlocks explicit backend selection.'}
+                  ? `This project is bound to ${boundDaemonHost}, but it does not support PTY tasks.`
+                  : taskType === 'pty_task'
+                    ? 'No PTY-capable daemon is online. Reconnect conductor daemon with PTY support before creating this task.'
+                    : 'No daemon is online right now. You can still create an AI task, but reconnecting a daemon unlocks explicit backend selection.'}
             </InlineNotice>
           )}
         </div>

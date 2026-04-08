@@ -19,7 +19,6 @@ export interface AuthSession {
 export interface Project {
   id: string;
   name: string;
-  description?: string | null;
   metadata?: Record<string, unknown> | null;
   daemonHost?: string | null;
   workspacePath?: string | null;
@@ -213,9 +212,15 @@ export interface RestartTaskResponse {
   task: Task;
 }
 
+export interface CleanupTaskWorktreeResponse {
+  task: Task;
+  cleanedAt: string;
+  removedPath?: string | null;
+  worktreeBranch?: string | null;
+}
+
 export interface CreateProjectInput {
   name: string;
-  description?: string;
   metadata?: Record<string, unknown>;
   isDefault?: boolean;
   daemonHost?: string;
@@ -229,7 +234,6 @@ export interface CreateProjectInput {
 
 export interface UpdateProjectInput {
   name?: string;
-  description?: string;
   metadata?: Record<string, unknown>;
   isDefault?: boolean;
   daemonHost?: string;

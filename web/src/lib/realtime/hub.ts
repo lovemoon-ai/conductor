@@ -40,6 +40,30 @@ export type AgentLogCollectionResult = {
   collected_at: string;
 };
 
+export type ProjectPathValidationResult = {
+  request_id: string;
+  daemon_host: string | null;
+  workspace_path: string | null;
+  repo_root: string | null;
+  worktree_branch: string | null;
+  last_commit: string | null;
+  file_count: number | null;
+  error: string | null;
+  error_code: string | null;
+  validated_at: string;
+};
+
+export type TaskWorktreeCleanupResult = {
+  request_id: string;
+  task_id: string;
+  daemon_host: string | null;
+  worktree_branch: string | null;
+  removed_path: string | null;
+  cleaned: boolean;
+  error: string | null;
+  cleaned_at: string;
+};
+
 export type TerminalLatencySample = {
   task_id: string;
   client_input_seq?: number;
@@ -53,6 +77,16 @@ export type TerminalLatencySample = {
 
 type AgentLogWaiter = {
   resolve: (result: AgentLogCollectionResult | null) => void;
+  timeout: NodeJS.Timeout;
+};
+
+type ProjectPathValidationWaiter = {
+  resolve: (result: ProjectPathValidationResult | null) => void;
+  timeout: NodeJS.Timeout;
+};
+
+type TaskWorktreeCleanupWaiter = {
+  resolve: (result: TaskWorktreeCleanupResult | null) => void;
   timeout: NodeJS.Timeout;
 };
 
@@ -74,6 +108,8 @@ export class RealtimeHub {
   private stopAckWaiters = new Map<string, StopAckWaiter>();
   private finalStatusWaiters = new Map<string, Set<FinalStatusWaiter>>();
   private agentLogWaiters = new Map<string, AgentLogWaiter>();
+  private projectPathValidationWaiters = new Map<string, ProjectPathValidationWaiter>();
+  private taskWorktreeCleanupWaiters = new Map<string, TaskWorktreeCleanupWaiter>();
   private terminalSubscriptions = new Map<string, Set<string>>();
   private appTerminalTasks = new Map<string, Set<string>>();
   private terminalWriters = new Map<string, string>();
@@ -376,6 +412,17 @@ export class RealtimeHub {
     });
   }
 
+  cancelTaskStopAck(taskId: string, requestId: string): boolean {
+    const key = `${taskId}:${requestId}`;
+    const waiter = this.stopAckWaiters.get(key);
+    if (!waiter) return false;
+
+    clearTimeout(waiter.timeout);
+    this.stopAckWaiters.delete(key);
+    waiter.resolve(null);
+    return true;
+  }
+
   acknowledgeTaskStop(taskId: string, requestId: string, accepted = true) {
     const key = `${taskId}:${requestId}`;
     const waiter = this.stopAckWaiters.get(key);
@@ -384,6 +431,20 @@ export class RealtimeHub {
     clearTimeout(waiter.timeout);
     this.stopAckWaiters.delete(key);
     waiter.resolve(Boolean(accepted));
+  }
+
+  cancelTaskFinalStatus(taskId: string): number {
+    const waiters = this.finalStatusWaiters.get(taskId);
+    if (!waiters) return 0;
+
+    let cancelledCount = 0;
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timeout);
+      waiter.resolve(null);
+      cancelledCount += 1;
+    }
+    this.finalStatusWaiters.delete(taskId);
+    return cancelledCount;
   }
 
   waitForTaskFinalStatus(taskId: string, timeoutMs: number): Promise<string | null> {
@@ -455,6 +516,62 @@ export class RealtimeHub {
 
     clearTimeout(waiter.timeout);
     this.agentLogWaiters.delete(requestId);
+    waiter.resolve(null);
+  }
+
+  waitForProjectPathValidation(requestId: string, timeoutMs: number): Promise<ProjectPathValidationResult | null> {
+    return new Promise<ProjectPathValidationResult | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.projectPathValidationWaiters.delete(requestId);
+        resolve(null);
+      }, timeoutMs);
+      this.projectPathValidationWaiters.set(requestId, { resolve, timeout });
+    });
+  }
+
+  resolveProjectPathValidation(result: ProjectPathValidationResult) {
+    const waiter = this.projectPathValidationWaiters.get(result.request_id);
+    if (!waiter) return;
+
+    clearTimeout(waiter.timeout);
+    this.projectPathValidationWaiters.delete(result.request_id);
+    waiter.resolve(result);
+  }
+
+  cancelProjectPathValidation(requestId: string) {
+    const waiter = this.projectPathValidationWaiters.get(requestId);
+    if (!waiter) return;
+
+    clearTimeout(waiter.timeout);
+    this.projectPathValidationWaiters.delete(requestId);
+    waiter.resolve(null);
+  }
+
+  waitForTaskWorktreeCleanup(requestId: string, timeoutMs: number): Promise<TaskWorktreeCleanupResult | null> {
+    return new Promise<TaskWorktreeCleanupResult | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.taskWorktreeCleanupWaiters.delete(requestId);
+        resolve(null);
+      }, timeoutMs);
+      this.taskWorktreeCleanupWaiters.set(requestId, { resolve, timeout });
+    });
+  }
+
+  resolveTaskWorktreeCleanup(result: TaskWorktreeCleanupResult) {
+    const waiter = this.taskWorktreeCleanupWaiters.get(result.request_id);
+    if (!waiter) return;
+
+    clearTimeout(waiter.timeout);
+    this.taskWorktreeCleanupWaiters.delete(result.request_id);
+    waiter.resolve(result);
+  }
+
+  cancelTaskWorktreeCleanup(requestId: string) {
+    const waiter = this.taskWorktreeCleanupWaiters.get(requestId);
+    if (!waiter) return;
+
+    clearTimeout(waiter.timeout);
+    this.taskWorktreeCleanupWaiters.delete(requestId);
     waiter.resolve(null);
   }
 

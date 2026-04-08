@@ -94,6 +94,33 @@ describe('TaskItem', () => {
     expect(screen.getByText('AI')).toBeInTheDocument();
   });
 
+  it('shows the worktree branch on the task card metadata row', () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-worktree-1',
+          title: 'Worktree Task',
+          taskType: 'ai_task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          launchConfig: {
+            worktree: true,
+            worktreeBranch: 'abc123',
+          },
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    expect(screen.getByText('abc123')).toBeInTheDocument();
+  });
+
   it('requires a second click on the running badge before killing the task', async () => {
     updateTaskMock.mockResolvedValue({
       id: 'task-kill-1',
@@ -510,6 +537,7 @@ describe('TaskItem', () => {
     fireEvent.pointerMove(card!, { pointerId: 1, clientX: 80, pointerType: 'touch' });
     fireEvent.pointerUp(card!, { pointerId: 1, clientX: 80, pointerType: 'touch' });
 
+    expect(await screen.findByRole('button', { name: 'Share task' })).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: 'New task' }));
 
     expect(screen.getByTestId('restart-controls')).toBeInTheDocument();

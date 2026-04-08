@@ -171,6 +171,38 @@ describe("/api/tasks/[taskId]/restart", () => {
     );
   });
 
+  it("includes the source worktree launch config for in-place restart", async () => {
+    const worktreeLaunchConfig = {
+      worktree: true,
+      worktreeId: "task-1",
+      worktreeBranch: "conductor/task/task-1",
+      worktreeBaseRef: "main",
+      projectRepoRoot: "/repo/project",
+      projectWorkspacePath: "/repo/project/packages/app",
+      projectRelativePath: "packages/app",
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        launchConfig: JSON.stringify(worktreeLaunchConfig),
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "inplace" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+    const payloadJson = vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson as string;
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("inplace_restart");
+    expect(JSON.parse(payloadJson).payload.target_launch_config).toEqual(worktreeLaunchConfig);
+  });
+
   it("returns 409 when session binding is missing", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ sessionId: null }) as any);
 
@@ -525,9 +557,9 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(db.task.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          launchConfig: {
+          launchConfig: JSON.stringify({
             cwd: "/repo/project",
-          },
+          }),
         }),
       }),
     );
@@ -587,5 +619,54 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson).toContain(
       '"target_backend_type":"codex"',
     );
+  });
+
+  it("inherits the same worktree launch config for successor tasks", async () => {
+    const worktreeLaunchConfig = {
+      worktree: true,
+      worktreeId: "task-1",
+      worktreeBranch: "conductor/task/task-1",
+      worktreeBaseRef: "main",
+      projectRepoRoot: "/repo/project",
+      projectWorkspacePath: "/repo/project/packages/app",
+      projectRelativePath: "packages/app",
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        status: "running",
+        launchConfig: JSON.stringify(worktreeLaunchConfig),
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+    const payloadJson = vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson as string;
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+    expect(data.task.launch_config).toEqual(worktreeLaunchConfig);
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "task-1" },
+        data: {
+          launchConfig: JSON.stringify(worktreeLaunchConfig),
+        },
+      }),
+    );
+    expect(db.task.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          launchConfig: JSON.stringify(worktreeLaunchConfig),
+        }),
+      }),
+    );
+    expect(JSON.parse(payloadJson).payload.target_launch_config).toEqual(worktreeLaunchConfig);
   });
 });

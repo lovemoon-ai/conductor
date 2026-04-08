@@ -65,12 +65,13 @@ describe('ProjectItem', () => {
           name: 'Bound Project',
           daemonHost: 'daemon-offline',
           workspacePath: '/repo/bound',
+          repoRoot: '/repo',
         } as any}
       />,
     );
 
+    expect(screen.getByText('git')).toBeInTheDocument();
     expect(screen.getByText('Daemon offline')).toBeInTheDocument();
-    expect(screen.getByText('daemon-offline / /repo/bound')).toBeInTheDocument();
   });
 
   it('shows candidate binding details for pending projects', () => {
@@ -90,6 +91,6 @@ describe('ProjectItem', () => {
     );
 
     expect(screen.getByText('Binding pending')).toBeInTheDocument();
-    expect(screen.getByText('Awaiting daemon confirmation for daemon-a / /repo/pending')).toBeInTheDocument();
+    expect(screen.queryByText('git')).toBeNull();
   });
 });

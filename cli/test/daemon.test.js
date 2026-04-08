@@ -801,6 +801,598 @@ describe("Daemon", () => {
     }, 500);
   });
 
+  it("creates and uses an isolated git worktree when launch_config requests it", (t, done) => {
+    const taskPayload = {
+      task_id: "task-worktree",
+      project_id: "proj-git",
+      backend_type: "codex",
+      launch_config: {
+        worktree: true,
+        worktreeId: "task-worktree",
+        worktreeBranch: "conductor/task/task-worktree",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/tmp/repo",
+        projectWorkspacePath: "/tmp/repo/packages/app",
+        projectRelativePath: "packages/app",
+      },
+    };
+
+    const spawnCalls = [];
+    let renameCalled = false;
+
+    const mockSpawn = (cmd, args, opts) => {
+      spawnCalls.push({ cmd, args, opts });
+      if (cmd === "git") {
+        assert.deepStrictEqual(args, [
+          "-C",
+          "/tmp/repo",
+          "worktree",
+          "add",
+          "-b",
+          "conductor/task/task-worktree",
+          "/tmp/repo/packages/app/.conductor/worktrees/task-worktree",
+          "main",
+        ]);
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.kill = () => {};
+        setImmediate(() => child.emit("close", 0));
+        return child;
+      }
+
+      assert.strictEqual(cmd, process.execPath);
+      assert.strictEqual(opts.cwd, "/tmp/repo/packages/app/.conductor/worktrees/task-worktree/packages/app");
+      return {
+        pid: 24684,
+        on: () => {},
+        stdout: { on: () => {} },
+        stderr: { on: () => {} },
+      };
+    };
+
+    wss.once("connection", (ws) => {
+      ws.send(
+        JSON.stringify({
+          type: "create_task",
+          payload: taskPayload,
+        }),
+      );
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree",
+      },
+      {
+        spawn: mockSpawn,
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => filePath.endsWith("daemon.pid") ? false : false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {
+          renameCalled = true;
+        },
+        createWriteStream: (filePath) => {
+          assert.strictEqual(
+            filePath,
+            "/tmp/repo/packages/app/.conductor/worktrees/task-worktree/packages/app/conductor.log",
+          );
+          return {
+            write: () => {},
+            end: () => {},
+          };
+        },
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.strictEqual(spawnCalls.length, 2);
+      assert.strictEqual(spawnCalls[0].cmd, "git");
+      assert.strictEqual(renameCalled, false);
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 500);
+  });
+
+  it("removes an isolated git worktree when cleanup_task_worktree is requested", async () => {
+    let handler;
+    const events = [];
+    const spawnCalls = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:65535",
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree-cleanup",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree-cleanup",
+      },
+      {
+        spawn: (cmd, args) => {
+          spawnCalls.push({ cmd, args });
+          const child = new EventEmitter();
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          child.kill = () => {};
+          setImmediate(() => {
+            if (args.includes("status")) {
+              child.stdout.emit("data", "");
+            }
+            child.emit("close", 0);
+          });
+          return child;
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (targetPath) =>
+          targetPath === "/tmp/repo/packages/app/.conductor/worktrees/task-worktree" ||
+          targetPath === "/tmp/repo/packages/app/.conductor/worktrees/task-worktree/packages/app",
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: true, json: async () => ({}) }),
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            events.push(payload);
+          },
+        }),
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+
+    handler({
+      type: "cleanup_task_worktree",
+      payload: {
+        request_id: "req-cleanup-1",
+        task_id: "task-worktree",
+        project_id: "proj-git",
+        launch_config: {
+          worktree: true,
+          worktreeId: "task-worktree",
+          worktreeBranch: "conductor/task/task-worktree",
+          worktreeBaseRef: "main",
+          projectRepoRoot: "/tmp/repo",
+          projectWorkspacePath: "/tmp/repo/packages/app",
+          projectRelativePath: "packages/app",
+        },
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.deepStrictEqual(spawnCalls, [
+      {
+        cmd: "git",
+        args: [
+          "-C",
+          "/tmp/repo/packages/app/.conductor/worktrees/task-worktree/packages/app",
+          "status",
+          "--porcelain",
+        ],
+      },
+      {
+        cmd: "git",
+        args: [
+          "-C",
+          "/tmp/repo",
+          "worktree",
+          "remove",
+          "/tmp/repo/packages/app/.conductor/worktrees/task-worktree",
+        ],
+      },
+    ]);
+    assert.deepStrictEqual(events, [
+      {
+        type: "agent_command_ack",
+        payload: {
+          request_id: "req-cleanup-1",
+          task_id: "task-worktree",
+          event_type: "cleanup_task_worktree",
+          accepted: true,
+        },
+      },
+      {
+        type: "task_worktree_cleanup_result",
+        payload: {
+          request_id: "req-cleanup-1",
+          task_id: "task-worktree",
+          daemon_host: "daemon-worktree-cleanup",
+          worktree_branch: "conductor/task/task-worktree",
+          removed_path: "/tmp/repo/packages/app/.conductor/worktrees/task-worktree",
+          cleaned: true,
+          error: null,
+          cleaned_at: events[1]?.payload?.cleaned_at,
+        },
+      },
+    ]);
+    assert.ok(typeof events[1]?.payload?.cleaned_at === "string");
+
+    if (daemonInstance && typeof daemonInstance.close === "function") {
+      daemonInstance.close();
+    }
+  });
+
+  it("forces isolated git worktree removal for task delete cleanup", async () => {
+    let handler;
+    const events = [];
+    const spawnCalls = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:65535",
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree-cleanup-force",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree-cleanup-force",
+      },
+      {
+        spawn: (cmd, args) => {
+          spawnCalls.push({ cmd, args });
+          const child = new EventEmitter();
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          child.kill = () => {};
+          setImmediate(() => {
+            child.emit("close", 0);
+          });
+          return child;
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (targetPath) =>
+          targetPath === "/tmp/repo/packages/app/.conductor/worktrees/task-worktree-force" ||
+          targetPath === "/tmp/repo/packages/app/.conductor/worktrees/task-worktree-force/packages/app",
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: true, json: async () => ({}) }),
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            events.push(payload);
+          },
+        }),
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+
+    handler({
+      type: "cleanup_task_worktree",
+      payload: {
+        request_id: "req-cleanup-force-1",
+        task_id: "task-worktree-force",
+        project_id: "proj-git",
+        force: true,
+        launch_config: {
+          worktree: true,
+          worktreeId: "task-worktree-force",
+          worktreeBranch: "abc123",
+          worktreeBaseRef: "main",
+          projectRepoRoot: "/tmp/repo",
+          projectWorkspacePath: "/tmp/repo/packages/app",
+          projectRelativePath: "packages/app",
+        },
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.deepStrictEqual(spawnCalls, [
+      {
+        cmd: "git",
+        args: [
+          "-C",
+          "/tmp/repo",
+          "worktree",
+          "remove",
+          "--force",
+          "/tmp/repo/packages/app/.conductor/worktrees/task-worktree-force",
+        ],
+      },
+    ]);
+    assert.deepStrictEqual(events, [
+      {
+        type: "agent_command_ack",
+        payload: {
+          request_id: "req-cleanup-force-1",
+          task_id: "task-worktree-force",
+          event_type: "cleanup_task_worktree",
+          accepted: true,
+        },
+      },
+      {
+        type: "task_worktree_cleanup_result",
+        payload: {
+          request_id: "req-cleanup-force-1",
+          task_id: "task-worktree-force",
+          daemon_host: "daemon-worktree-cleanup-force",
+          worktree_branch: "abc123",
+          removed_path: "/tmp/repo/packages/app/.conductor/worktrees/task-worktree-force",
+          cleaned: true,
+          error: null,
+          cleaned_at: events[1]?.payload?.cleaned_at,
+        },
+      },
+    ]);
+    assert.ok(typeof events[1]?.payload?.cleaned_at === "string");
+
+    if (daemonInstance && typeof daemonInstance.close === "function") {
+      daemonInstance.close();
+    }
+  });
+
+  it("creates configured project-local symlinks after preparing a worktree", (t, done) => {
+    const taskPayload = {
+      task_id: "task-worktree-links",
+      project_id: "proj-git",
+      backend_type: "codex",
+      launch_config: {
+        worktree: true,
+        worktreeId: "task-worktree-links",
+        worktreeBranch: "conductor/task/task-worktree-links",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/tmp/repo",
+        projectWorkspacePath: "/tmp/repo",
+        projectRelativePath: ".",
+      },
+    };
+
+    const symlinkCalls = [];
+    let daemonInstance = null;
+
+    wss.once("connection", (ws) => {
+      ws.send(
+        JSON.stringify({
+          type: "create_task",
+          payload: taskPayload,
+        }),
+      );
+    });
+
+    daemonInstance = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree-symlink",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree-symlink",
+      },
+      {
+        spawn: (cmd, args, opts) => {
+          if (cmd === "git") {
+            assert.deepStrictEqual(args, [
+              "-C",
+              "/tmp/repo",
+              "worktree",
+              "add",
+              "-b",
+              "conductor/task/task-worktree-links",
+              "/tmp/repo/.conductor/worktrees/task-worktree-links",
+              "main",
+            ]);
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => child.emit("close", 0));
+            return child;
+          }
+
+          assert.strictEqual(cmd, process.execPath);
+          assert.strictEqual(opts.cwd, "/tmp/repo/.conductor/worktrees/task-worktree-links");
+          return {
+            pid: 24685,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) =>
+          filePath === "/tmp/repo/.conductor/settings.yaml"
+            ? true
+            : false,
+        lstatSync: () => {
+          throw new Error("unexpected lstat");
+        },
+        readlinkSync: () => {
+          throw new Error("unexpected readlink");
+        },
+        symlinkSync: (targetPath, linkPath) => {
+          symlinkCalls.push([targetPath, linkPath]);
+        },
+        readFileSync: (filePath) => {
+          assert.strictEqual(filePath, "/tmp/repo/.conductor/settings.yaml");
+          return [
+            "worktree:",
+            "  symlink:",
+            "    - node_modules",
+            "    - packages/shared/.env.local",
+            "",
+          ].join("\n");
+        },
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.deepStrictEqual(symlinkCalls, [
+        [
+          "../../../node_modules",
+          "/tmp/repo/.conductor/worktrees/task-worktree-links/node_modules",
+        ],
+        [
+          "../../../../../packages/shared/.env.local",
+          "/tmp/repo/.conductor/worktrees/task-worktree-links/packages/shared/.env.local",
+        ],
+      ]);
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+      done();
+    }, 500);
+  });
+
+  it("reads legacy setttings.yaml and splits legacy symlink strings into separate paths", (t, done) => {
+    const taskPayload = {
+      task_id: "task-worktree-legacy-links",
+      project_id: "proj-git",
+      backend_type: "codex",
+      launch_config: {
+        worktree: true,
+        worktreeId: "task-worktree-legacy-links",
+        worktreeBranch: "abc123",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/tmp/repo",
+        projectWorkspacePath: "/tmp/repo",
+        projectRelativePath: ".",
+      },
+    };
+
+    const symlinkCalls = [];
+    let daemonInstance = null;
+
+    wss.once("connection", (ws) => {
+      ws.send(
+        JSON.stringify({
+          type: "create_task",
+          payload: taskPayload,
+        }),
+      );
+    });
+
+    daemonInstance = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree-legacy-symlink",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree-legacy-symlink",
+      },
+      {
+        spawn: (cmd, args, opts) => {
+          if (cmd === "git") {
+            assert.deepStrictEqual(args, [
+              "-C",
+              "/tmp/repo",
+              "worktree",
+              "add",
+              "-b",
+              "abc123",
+              "/tmp/repo/.conductor/worktrees/task-worktree-legacy-links",
+              "main",
+            ]);
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => child.emit("close", 0));
+            return child;
+          }
+
+          assert.strictEqual(cmd, process.execPath);
+          assert.strictEqual(opts.cwd, "/tmp/repo/.conductor/worktrees/task-worktree-legacy-links");
+          return {
+            pid: 24686,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) =>
+          filePath === "/tmp/repo/.conductor/setttings.yaml"
+            ? true
+            : false,
+        lstatSync: () => {
+          throw new Error("unexpected lstat");
+        },
+        readlinkSync: () => {
+          throw new Error("unexpected readlink");
+        },
+        symlinkSync: (targetPath, linkPath) => {
+          symlinkCalls.push([targetPath, linkPath]);
+        },
+        readFileSync: (filePath) => {
+          assert.strictEqual(filePath, "/tmp/repo/.conductor/setttings.yaml");
+          return [
+            "worktree:",
+            "  symlink:",
+            "    web/node_modules",
+            "    cli/node_modules",
+            "    web/.env",
+            "    Makefile",
+            "",
+          ].join("\n");
+        },
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.deepStrictEqual(symlinkCalls, [
+        [
+          "../../../../web/node_modules",
+          "/tmp/repo/.conductor/worktrees/task-worktree-legacy-links/web/node_modules",
+        ],
+        [
+          "../../../../cli/node_modules",
+          "/tmp/repo/.conductor/worktrees/task-worktree-legacy-links/cli/node_modules",
+        ],
+        [
+          "../../../../web/.env",
+          "/tmp/repo/.conductor/worktrees/task-worktree-legacy-links/web/.env",
+        ],
+        [
+          "../../../Makefile",
+          "/tmp/repo/.conductor/worktrees/task-worktree-legacy-links/Makefile",
+        ],
+      ]);
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+      done();
+    }, 500);
+  });
+
   it("rejects legacy backend aliases from create_task", (t, done) => {
     const taskPayload = {
       task_id: "task-alias-1",
@@ -2647,7 +3239,10 @@ describe("Daemon", () => {
     );
 
     assert.ok(typeof handler === "function");
-    assert.strictEqual(webSocketClientOptions.extraHeaders["x-conductor-capabilities"], "pty_task,terminal_snapshot");
+    assert.strictEqual(
+      webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
+      "project_path_validation,pty_task,terminal_snapshot",
+    );
 
     handler({
       type: "create_pty_task",
@@ -2926,8 +3521,8 @@ describe("Daemon", () => {
 
     assert.ok(typeof handler === "function");
     assert.strictEqual(
-      Object.prototype.hasOwnProperty.call(webSocketClientOptions.extraHeaders, "x-conductor-capabilities"),
-      false,
+      webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
+      "project_path_validation",
     );
 
     handler({
@@ -4505,6 +5100,103 @@ describe("Daemon", () => {
         },
       },
     ]);
+
+    if (daemonInstance && typeof daemonInstance.close === "function") {
+      daemonInstance.close();
+    }
+  });
+
+  it("validates workspace paths when validate_project_path is received", async () => {
+    let handler;
+    const events = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-validate-project-path",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "validate-project-daemon",
+      },
+      {
+        spawn: () => ({
+          on: () => {},
+          stdout: { on: () => {} },
+          stderr: { on: () => {} },
+        }),
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (targetPath) => targetPath === "/tmp/project-link",
+        statSync: (targetPath) => {
+          assert.strictEqual(targetPath, "/tmp/project-link");
+          return { isDirectory: () => true };
+        },
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        resolveProjectSnapshot: (projectPath) => {
+          assert.strictEqual(projectPath, "/tmp/project-link");
+          return {
+            projectRoot: "/tmp/project-real",
+            repoRoot: "/tmp/project-real",
+            worktreeBranch: "main",
+            lastCommit: "abc123",
+            fileCount: 8,
+          };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (h) => {
+            handler = h;
+          },
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            events.push(payload);
+          },
+        }),
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+
+    handler({
+      type: "validate_project_path",
+      payload: {
+        request_id: "req-validate-1",
+        workspace_path: "/tmp/project-link",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.deepStrictEqual(events, [
+      {
+        type: "project_path_validated",
+        payload: {
+          request_id: "req-validate-1",
+          daemon_host: "validate-project-daemon",
+          workspace_path: "/tmp/project-real",
+          repo_root: "/tmp/project-real",
+          worktree_branch: "main",
+          last_commit: "abc123",
+          file_count: 8,
+          error: null,
+          error_code: null,
+          validated_at: events[0]?.payload?.validated_at,
+        },
+      },
+    ]);
+    assert.ok(typeof events[0]?.payload?.validated_at === "string");
 
     if (daemonInstance && typeof daemonInstance.close === "function") {
       daemonInstance.close();

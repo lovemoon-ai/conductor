@@ -6,6 +6,7 @@ import type { Project } from '@/lib/conductor/types';
 import { useProjectsStore } from '@/lib/conductor/stores/projects';
 import { useAgentsStore } from '@/lib/conductor/stores/agents';
 import { useSwipeActions } from '@/lib/conductor/hooks/useSwipeActions';
+import { formatBindingLabel } from '@/lib/projects/format-binding-label';
 import { useConfirm, useToast } from '../common/FeedbackProvider';
 
 interface ProjectItemProps {
@@ -89,17 +90,20 @@ export function ProjectItem({ project }: ProjectItemProps) {
   const isDefault = Boolean(projectRecord.isDefault);
   const daemonHost = typeof projectRecord.daemonHost === 'string' ? projectRecord.daemonHost : null;
   const workspacePath = typeof projectRecord.workspacePath === 'string' ? projectRecord.workspacePath : null;
+  const repoRoot = typeof projectRecord.repoRoot === 'string' ? projectRecord.repoRoot : null;
   const metadata = projectRecord.metadata && typeof projectRecord.metadata === 'object' && !Array.isArray(projectRecord.metadata)
     ? (projectRecord.metadata as Record<string, unknown>)
     : null;
+  const isGitProject = Boolean(repoRoot);
   const bindingCandidate = readBindingCandidate(metadata);
   const isBoundProject = Boolean(daemonHost) && !isDefault;
   const isPendingBinding = !isDefault && !daemonHost;
   const isDaemonOnline = !daemonHost || agents.some((agent) => agent.host === daemonHost);
   const isUnavailable = isBoundProject && !isDaemonOnline;
   const pendingBindingLabel = bindingCandidate
-    ? `${bindingCandidate.daemonHost} / ${bindingCandidate.workspacePath}`
+    ? formatBindingLabel(bindingCandidate.daemonHost, bindingCandidate.workspacePath)
     : null;
+  const hasMetadataChips = isGitProject || isUnavailable || isPendingBinding;
   const swipe = useSwipeActions({
     maxOffset: isDefault ? 0 : ACTIONS_WIDTH,
   });
@@ -107,18 +111,18 @@ export function ProjectItem({ project }: ProjectItemProps) {
   const openProjectTasks = () => {
     if (isPendingBinding) {
       pushToast({
-        title: 'Project binding pending',
+        title: 'Binding pending',
         description: pendingBindingLabel
-          ? `Daemon ${pendingBindingLabel} has not confirmed this workspace yet.`
-          : 'Bind this project from the daemon/CLI before opening tasks.',
+          ? `Waiting for daemon confirmation for ${pendingBindingLabel}.`
+          : 'Waiting for daemon confirmation before opening tasks.',
         variant: 'warning',
       });
       return;
     }
     if (isUnavailable) {
       pushToast({
-        title: 'Project unavailable',
-        description: `Daemon ${daemonHost} is offline. Reconnect it to open this workspace.`,
+        title: 'Daemon offline',
+        description: `This project is bound to ${daemonHost}, but the daemon is offline. Reconnect it to open this workspace.`,
         variant: 'warning',
       });
       return;
@@ -305,32 +309,24 @@ export function ProjectItem({ project }: ProjectItemProps) {
           <div className="flex-1">
             <div className="flex items-center gap-2">
               <h3 className="font-medium">{project.name}</h3>
-              {isUnavailable ? (
-                <span className="rounded-full bg-[var(--warning)]/10 px-2 py-0.5 text-[11px] font-medium text-ink">
-                  Daemon offline
-                </span>
-              ) : isPendingBinding ? (
-                <span className="rounded-full bg-border/50 px-2 py-0.5 text-[11px] font-medium text-muted">
-                  Binding pending
-                </span>
-              ) : null}
             </div>
-            {project.description && (
-              <p className="text-sm text-muted mt-0.5">{project.description}</p>
-            )}
-            {isDefault ? (
-              <p className="mt-1 text-xs text-muted">Default workspace</p>
-            ) : isPendingBinding ? (
-              <p className="mt-1 text-xs text-muted">
-                {pendingBindingLabel
-                  ? `Awaiting daemon confirmation for ${pendingBindingLabel}`
-                  : 'Awaiting daemon confirmation'}
-              </p>
-            ) : isBoundProject ? (
-              <p className="mt-1 text-xs text-muted">
-                {daemonHost}
-                {workspacePath ? ` / ${workspacePath}` : ''}
-              </p>
+            {hasMetadataChips ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted">
+                {isGitProject ? (
+                  <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
+                    git
+                  </span>
+                ) : null}
+                {isUnavailable ? (
+                  <span className="flex items-center gap-1 rounded bg-[var(--warning)]/10 px-1.5 py-0.5 text-xs font-medium text-ink">
+                    Daemon offline
+                  </span>
+                ) : isPendingBinding ? (
+                  <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted">
+                    Binding pending
+                  </span>
+                ) : null}
+              </div>
             ) : null}
           </div>
         </div>

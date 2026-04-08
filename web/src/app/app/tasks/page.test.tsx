@@ -12,7 +12,7 @@ let tasksState: {
   fetchTasks: typeof fetchTasksMock;
   isLoading: boolean;
   currentProjectFilter: string | null;
-  tasks: Array<{ id: string }>;
+  tasks: Array<{ id: string; projectId?: string | null }>;
 };
 let searchParamsState = new URLSearchParams();
 let isDesktopViewport = false;
@@ -92,13 +92,15 @@ vi.mock('@/components/conductor/tasks/CreateTaskDialog', () => ({
     open,
     onClose,
     onCreatedTask,
+    defaultProjectId,
   }: {
     open: boolean;
     onClose: () => void;
     onCreatedTask?: (taskId: string) => void;
+    defaultProjectId?: string | null;
   }) => open ? (
     <div>
-      <div>create-dialog</div>
+      <div>create-dialog:{defaultProjectId ?? 'none'}</div>
       <button type="button" onClick={() => onCreatedTask?.('task-3')}>
         mock-create-success
       </button>
@@ -132,7 +134,10 @@ describe('TasksPage', () => {
       fetchTasks: fetchTasksMock,
       isLoading: false,
       currentProjectFilter: 'project-1',
-      tasks: [{ id: 'task-1' }, { id: 'task-2' }],
+      tasks: [
+        { id: 'task-1', projectId: 'project-1' },
+        { id: 'task-2', projectId: 'project-1' },
+      ],
     };
 
     Object.defineProperty(window, 'matchMedia', {
@@ -166,6 +171,8 @@ describe('TasksPage', () => {
   });
 
   it('refreshes tasks from the title bar controls', () => {
+    searchParamsState = new URLSearchParams('projectId=project-1');
+
     render(<TasksPage />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh tasks' }));
@@ -254,7 +261,7 @@ describe('TasksPage', () => {
 
     expect(screen.getByText('task-list:list:none:route')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Create task' }));
-    expect(screen.getByText('create-dialog')).toBeInTheDocument();
+    expect(screen.getByText('create-dialog:none')).toBeInTheDocument();
 
     tasksState = {
       ...tasksState,
@@ -264,6 +271,16 @@ describe('TasksPage', () => {
 
     expect(screen.getByText('task-list:list:task-3:inline')).toBeInTheDocument();
     expect(screen.getByText('task-detail:task-3:no-header')).toBeInTheDocument();
+  });
+
+  it('passes the current project to the create task dialog', () => {
+    searchParamsState = new URLSearchParams('projectId=project-1');
+
+    render(<TasksPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create task' }));
+
+    expect(screen.getByText('create-dialog:project-1')).toBeInTheDocument();
   });
 
   it('disables the desktop detail pane when switching from list to grid', () => {

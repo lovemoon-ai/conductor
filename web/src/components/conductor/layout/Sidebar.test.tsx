@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { Sidebar } from './Sidebar';
 
 let pathname = '/app/tasks';
@@ -29,12 +29,23 @@ describe('Sidebar', () => {
   it('renders primary navigation with unread badge', () => {
     render(<Sidebar />);
 
-    expect(screen.getByRole('navigation', { name: /Primary navigation/i })).toBeInTheDocument();
+    const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
+    const links = within(navigation).getAllByRole('link').filter((link) => {
+      const href = link.getAttribute('href');
+      return href === '/app/projects' || href === '/app/tasks' || href === '/app/settings';
+    });
+
+    expect(navigation).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Tasks/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Projects/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Settings/i })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Docs/i })).toBeNull();
     expect(screen.getByText('3')).toBeInTheDocument();
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([
+      '/app/projects',
+      '/app/tasks',
+      '/app/settings',
+    ]);
   });
 
   it('highlights the active route and exposes aria-current', () => {

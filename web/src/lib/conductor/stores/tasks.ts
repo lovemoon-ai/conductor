@@ -5,8 +5,11 @@ import type {
   RestartTaskResponse,
   RestartTaskInput,
   UpdateTaskInput,
+  CleanupTaskWorktreeResponse,
 } from '../types';
 import { getApiClient } from '../api/client';
+
+let fetchTasksRequestSequence = 0;
 
 const normalizeObject = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -70,6 +73,7 @@ interface TasksState {
   createTask: (input: CreateTaskInput) => Promise<Task>;
   updateTask: (taskId: string, input: UpdateTaskInput) => Promise<Task>;
   restartTask: (taskId: string, input?: RestartTaskInput) => Promise<RestartTaskResponse>;
+  cleanupTaskWorktree: (taskId: string) => Promise<CleanupTaskWorktreeResponse>;
   deleteTask: (taskId: string) => Promise<void>;
   setProjectFilter: (projectId: string | null) => void;
   markTaskRead: (taskId: string) => void;
@@ -140,6 +144,8 @@ export const useTasksStore = create<TasksState>()((set, get) => ({
   unreadTaskIds: new Set(),
 
   fetchTasks: async (projectId, options) => {
+    const requestId = ++fetchTasksRequestSequence;
+    const requestedProjectId = projectId ?? null;
     set({ isLoading: true, error: null });
     try {
       const api = getApiClient();
@@ -153,8 +159,14 @@ export const useTasksStore = create<TasksState>()((set, get) => ({
       }
       const suffix = query.toString() ? `?${query.toString()}` : '';
       const tasks = await api.get<Task[]>(`/tasks${suffix}`);
+      if (get().currentProjectFilter !== requestedProjectId || requestId !== fetchTasksRequestSequence) {
+        return;
+      }
       set({ tasks: tasks.map(normalizeTask), isLoading: false });
     } catch (error) {
+      if (get().currentProjectFilter !== requestedProjectId || requestId !== fetchTasksRequestSequence) {
+        return;
+      }
       set({
         isLoading: false,
         error: error instanceof Error ? error.message : 'Failed to fetch tasks',
@@ -249,6 +261,33 @@ export const useTasksStore = create<TasksState>()((set, get) => ({
     } catch (error) {
       set({
         error: error instanceof Error ? error.message : 'Failed to restart task',
+      });
+      throw error;
+    }
+  },
+
+  cleanupTaskWorktree: async (taskId) => {
+    try {
+      const api = getApiClient();
+      const response = await api.post<{
+        task: Task;
+        cleaned_at: string;
+        removed_path?: string | null;
+        worktree_branch?: string | null;
+      }>(`/tasks/${taskId}/worktree`);
+      const task = normalizeTask(response.task);
+      set((state) => ({
+        tasks: upsertTask(state.tasks, task),
+      }));
+      return {
+        task,
+        cleanedAt: response.cleaned_at,
+        removedPath: response.removed_path ?? null,
+        worktreeBranch: response.worktree_branch ?? null,
+      };
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : 'Failed to remove task worktree',
       });
       throw error;
     }

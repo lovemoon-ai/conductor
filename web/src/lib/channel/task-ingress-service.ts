@@ -134,6 +134,9 @@ export async function createTaskForUser(input: {
   const projectWorkspacePath = normalizeOptionalString(
     (project as { workspacePath?: string | null }).workspacePath,
   );
+  const projectDaemonHost = normalizeOptionalString(
+    (project as { daemonHost?: string | null }).daemonHost,
+  );
   const projectWorktreeBranch = normalizeOptionalString(
     (project as { worktreeBranch?: string | null }).worktreeBranch,
   );
@@ -142,7 +145,7 @@ export async function createTaskForUser(input: {
   const requestedBackendType = normalizeBackendType(input.backendType);
   const requestedSessionId = normalizeOptionalString(input.sessionId);
   const requestedSessionFilePath = normalizeOptionalString(input.sessionFilePath);
-  let agentHost = input.agentHost;
+  let agentHost = projectDaemonHost ?? input.agentHost ?? null;
   if (!agentHost) {
     agentHost = pickDefaultAgentHost(connectedAgents, requestedBackendType) ?? null;
   }
@@ -197,6 +200,8 @@ export async function createTaskForUser(input: {
     ...(projectWorkspacePath ? { cwd: projectWorkspacePath } : {}),
     ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
   };
+  const serializedLaunchConfig =
+    Object.keys(launchConfig).length > 0 ? JSON.stringify(launchConfig) : null;
 
   const task = await db.task.create({
     data: {
@@ -214,7 +219,7 @@ export async function createTaskForUser(input: {
       backendType: requestedBackendType,
       sessionId: requestedSessionId,
       sessionFilePath: requestedSessionFilePath,
-      launchConfig: Object.keys(launchConfig).length > 0 ? JSON.stringify(launchConfig) : null,
+      launchConfig: serializedLaunchConfig,
       metadata: metadata ? JSON.stringify(metadata) : null,
     },
   });
@@ -263,6 +268,7 @@ export async function createTaskForUser(input: {
             title: task.title,
             backend_type: task.backendType ?? metadata?.backendType,
             initial_content: initialContent ?? undefined,
+            launch_config: serializedLaunchConfig ? launchConfig : undefined,
             request_id: requestId,
           },
         },

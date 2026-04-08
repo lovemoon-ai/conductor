@@ -1,178 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { requireActiveSubscription } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
 import { deleteTaskAttachmentDirectory } from "@/lib/conductor/task-file-storage";
-
-const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
-  Object.prototype.hasOwnProperty.call(value, key);
-
-const readField = (
-  body: Record<string, unknown>,
-  snakeCaseKey: string,
-  camelCaseKey: string,
-  nested?: Record<string, unknown> | null,
-): unknown => {
-  if (hasOwn(body, snakeCaseKey)) {
-    return body[snakeCaseKey];
-  }
-  if (hasOwn(body, camelCaseKey)) {
-    return body[camelCaseKey];
-  }
-  if (nested) {
-    if (hasOwn(nested, snakeCaseKey)) {
-      return nested[snakeCaseKey];
-    }
-    if (hasOwn(nested, camelCaseKey)) {
-      return nested[camelCaseKey];
-    }
-  }
-  return undefined;
-};
-
-const normalizeOptionalString = (value: unknown): string | null => {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim();
-  return normalized || null;
-};
-
-const normalizeWorkspacePath = (value: string): string => {
-  const trimmed = value.trim();
-  const normalized = trimmed.replace(/\/+$/, "");
-  return normalized || trimmed;
-};
-
-const normalizeOptionalWorkspacePath = (value: unknown): string | null => {
-  if (typeof value !== "string") return null;
-  const normalized = normalizeWorkspacePath(value);
-  return normalized || null;
-};
-
-const normalizeOptionalInt = (value: unknown): number | null => {
-  if (typeof value === "number" && Number.isInteger(value)) {
-    return value;
-  }
-  if (typeof value !== "string") {
-    return null;
-  }
-  const normalized = value.trim();
-  if (!normalized) return null;
-  const parsed = Number.parseInt(normalized, 10);
-  return Number.isInteger(parsed) ? parsed : null;
-};
-
-const normalizeBoolean = (value: unknown): boolean => {
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value !== "string") {
-    return false;
-  }
-  const normalized = value.trim().toLowerCase();
-  return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on";
-};
-
-const readProjectBindingInput = (body: Record<string, unknown>) => {
-  const nestedBinding =
-    hasOwn(body, "binding") && body.binding && typeof body.binding === "object" && !Array.isArray(body.binding)
-      ? (body.binding as Record<string, unknown>)
-      : null;
-
-  return {
-    daemonHost: normalizeOptionalString(readField(body, "daemon_host", "daemonHost", nestedBinding)),
-    workspacePath: normalizeOptionalWorkspacePath(readField(body, "workspace_path", "workspacePath", nestedBinding)),
-    repoRoot: normalizeOptionalString(readField(body, "repo_root", "repoRoot", nestedBinding)),
-    worktreeBranch: normalizeOptionalString(readField(body, "worktree_branch", "worktreeBranch", nestedBinding)),
-    lastCommit: normalizeOptionalString(readField(body, "last_commit", "lastCommit", nestedBinding)),
-    fileCount: normalizeOptionalInt(readField(body, "file_count", "fileCount", nestedBinding)),
-  };
-};
-
-const readProjectBindingCandidateInput = (
-  metadata: Record<string, unknown> | null | undefined,
-): { daemonHost: string; workspacePath: string } | null => {
-  if (!metadata) {
-    return null;
-  }
-
-  const rawCandidate =
-    hasOwn(metadata, "bindingCandidate")
-      ? metadata.bindingCandidate
-      : hasOwn(metadata, "binding_candidate")
-        ? metadata.binding_candidate
-        : null;
-  if (!rawCandidate || typeof rawCandidate !== "object" || Array.isArray(rawCandidate)) {
-    return null;
-  }
-
-  const candidate = rawCandidate as Record<string, unknown>;
-  const daemonHost = normalizeOptionalString(readField(candidate, "daemon_host", "daemonHost"));
-  const workspacePath = normalizeOptionalWorkspacePath(readField(candidate, "workspace_path", "workspacePath"));
-  if (!daemonHost || !workspacePath) {
-    return null;
-  }
-
-  return { daemonHost, workspacePath };
-};
-
-const readLegacyLocalPath = (metadata: Record<string, unknown> | null | undefined, daemonHost: string): string | null => {
-  if (!metadata) {
-    return null;
-  }
-
-  const localPaths = metadata.localPaths;
-  if (!localPaths) {
-    return null;
-  }
-
-  if (typeof localPaths === "string") {
-    const normalized = normalizeOptionalWorkspacePath(localPaths);
-    return normalized || null;
-  }
-
-  if (Array.isArray(localPaths)) {
-    for (const candidate of localPaths) {
-      if (typeof candidate === "string") {
-        const normalized = normalizeOptionalWorkspacePath(candidate);
-        if (normalized) {
-          return normalized;
-        }
-      }
-    }
-    return null;
-  }
-
-  if (typeof localPaths === "object") {
-    const candidate = (localPaths as Record<string, unknown>)[daemonHost];
-    const normalized = normalizeOptionalWorkspacePath(candidate);
-    return normalized || null;
-  }
-
-  return null;
-};
-
-const readProjectBindingPath = (
-  project: {
-    daemonHost: string | null;
-    workspacePath: string | null;
-    metadata: string | null;
-  },
-  daemonHost: string,
-): string | null => {
-  const boundDaemonHost = normalizeOptionalString(project.daemonHost);
-  const boundWorkspacePath = normalizeOptionalWorkspacePath(project.workspacePath);
-  if (boundDaemonHost && boundWorkspacePath && boundDaemonHost === daemonHost) {
-    return boundWorkspacePath;
-  }
-
-  const parsed = parseProjectMetadata(project.metadata);
-  const candidate = readProjectBindingCandidateInput(parsed);
-  if (candidate && candidate.daemonHost === daemonHost) {
-    return candidate.workspacePath;
-  }
-
-  return readLegacyLocalPath(parsed, daemonHost);
-};
+import {
+  ProjectBindingValidationError,
+  validateProjectBindingWithDaemon,
+} from "@/lib/projects/daemon-binding";
+import { realtimeHub } from "@/lib/realtime/hub";
+import {
+  buildTaskWorktreeCleanupOutboxData,
+  getTaskWorktreeRootKey,
+  resolveTaskWorktreeCleanupHost,
+} from "@/lib/tasks/worktree";
+import { stopTaskBeforeRelaunch } from "@/lib/tasks/task-stop";
+import {
+  hasOwn,
+  isBindingConfirmed,
+  normalizeBoolean,
+  normalizeOptionalInt,
+  normalizeOptionalString,
+  normalizeOptionalWorkspacePath,
+  normalizeWorkspacePath,
+  parseProjectMetadata,
+  readField,
+  readProjectBindingCandidateInput,
+  readProjectBindingInput,
+  readProjectBindingPath,
+  readProjectMetadataInput,
+} from "./shared";
 
 const findProjectBindingMatch = async (params: {
   userId: string;
@@ -262,6 +119,14 @@ const serializeProjectMetadata = (
   metadata: Record<string, unknown> | null | undefined,
   bindingCandidate: { daemonHost: string; workspacePath: string } | null,
 ): string | null | undefined => {
+  const normalizedMetadata =
+    metadata && typeof metadata === "object"
+      ? Object.fromEntries(
+          Object.entries(metadata).filter(
+            ([key]) => key !== "bindingCandidate" && key !== "binding_candidate",
+          ),
+        )
+      : metadata;
   if (metadata === undefined) {
     return bindingCandidate ? JSON.stringify({ bindingCandidate }) : undefined;
   }
@@ -269,52 +134,12 @@ const serializeProjectMetadata = (
     return bindingCandidate ? JSON.stringify({ bindingCandidate }) : null;
   }
   if (!bindingCandidate) {
-    return JSON.stringify(metadata);
+    return JSON.stringify(normalizedMetadata);
   }
   return JSON.stringify({
-    ...metadata,
+    ...normalizedMetadata,
     bindingCandidate,
   });
-};
-
-const isBindingConfirmed = (body: Record<string, unknown>): boolean =>
-  normalizeBoolean(
-    readField(body, "binding_confirmed", "bindingConfirmed") ||
-      readField(body, "confirmed_binding", "confirmedBinding"),
-  );
-
-const readProjectMetadataInput = (body: Record<string, unknown>): {
-  hasField: boolean;
-  value: Record<string, unknown> | null | undefined;
-  error?: string;
-} => {
-  if (!hasOwn(body, "metadata")) {
-    return { hasField: false, value: undefined };
-  }
-
-  const raw = body.metadata;
-  if (raw === null) {
-    return { hasField: true, value: null };
-  }
-  if (typeof raw !== "object" || Array.isArray(raw)) {
-    return { hasField: true, value: undefined, error: "metadata must be an object or null" };
-  }
-  return { hasField: true, value: raw as Record<string, unknown> };
-};
-
-const parseProjectMetadata = (value: string | null): Record<string, unknown> | null => {
-  if (!value) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(value);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return null;
-    }
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
 };
 
 const findProjectNameConflict = async (params: {
@@ -368,6 +193,16 @@ const serializeProject = (
   updated_at: project.updatedAt.toISOString(),
 });
 
+const normalizeTaskStatus = (value: unknown): string => {
+  if (typeof value !== "string") return "unknown";
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "completed") return "completed";
+  if (normalized === "init") return "init";
+  if (normalized === "running") return "running";
+  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
+  return "unknown";
+};
+
 export const GET = requireActiveSubscription(async (_request: NextRequest, user) => {
   const projects = await db.project.findMany({
     where: { userId: user.id },
@@ -390,8 +225,9 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
     body && typeof body === "object" && !Array.isArray(body)
       ? (body as Record<string, unknown>)
       : {};
-  const hasNameField = typeof normalizedBody.name === "string";
-  const nameInput = hasNameField ? normalizedBody.name.trim() : "";
+  const rawName = normalizedBody.name;
+  const hasNameField = typeof rawName === "string";
+  const nameInput = hasNameField ? rawName.trim() : "";
   if (hasNameField && !nameInput) {
     return NextResponse.json({ error: "Project name cannot be empty" }, { status: 400 });
   }
@@ -405,30 +241,78 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
     return NextResponse.json({ error: metadataInput.error }, { status: 400 });
   }
   const bindingCandidate = readProjectBindingCandidateInput(metadataInput.value);
-  const hasUnconfirmedBindingFields =
-    binding.daemonHost !== null ||
-    binding.workspacePath !== null ||
+  const hasBindingIdentityField = binding.daemonHost !== null || binding.workspacePath !== null;
+  const hasSnapshotField =
     binding.repoRoot !== null ||
     binding.worktreeBranch !== null ||
     binding.lastCommit !== null ||
     binding.fileCount !== null;
+  const hasUnconfirmedBindingFields = hasBindingIdentityField || hasSnapshotField;
+  const shouldValidateWithDaemon =
+    !isDefaultProject &&
+    !bindingConfirmed &&
+    binding.daemonHost !== null &&
+    binding.workspacePath !== null;
+
   if (isDefaultProject && (bindingConfirmed || hasUnconfirmedBindingFields || bindingCandidate)) {
     return NextResponse.json({ error: "Default project cannot be bound to a daemon path" }, { status: 400 });
   }
+
+  let effectiveBinding = binding;
+  let effectiveBindingConfirmed = bindingConfirmed;
+  let effectiveBindingCandidate = bindingCandidate;
+
   if (!isDefaultProject && !bindingConfirmed) {
-    if (hasUnconfirmedBindingFields) {
-      return NextResponse.json({ error: "Binding fields require confirmed binding from daemon/CLI" }, { status: 409 });
-    }
-    if (!bindingCandidate) {
-      return NextResponse.json(
-        { error: "bindingCandidate metadata is required for non-default projects" },
-        { status: 400 },
-      );
+    if (shouldValidateWithDaemon) {
+      if (hasSnapshotField) {
+        return NextResponse.json(
+          { error: "Snapshot fields require confirmed binding from daemon/CLI" },
+          { status: 409 },
+        );
+      }
+      if (bindingCandidate) {
+        return NextResponse.json(
+          { error: "bindingCandidate metadata cannot be combined with daemonHost/workspacePath" },
+          { status: 400 },
+        );
+      }
+      try {
+        const validatedBinding = await validateProjectBindingWithDaemon({
+          userId: user.id,
+          daemonHost: binding.daemonHost!,
+          workspacePath: binding.workspacePath!,
+        });
+        effectiveBinding = {
+          daemonHost: validatedBinding.daemonHost,
+          workspacePath: validatedBinding.workspacePath,
+          repoRoot: validatedBinding.repoRoot,
+          worktreeBranch: validatedBinding.worktreeBranch,
+          lastCommit: validatedBinding.lastCommit,
+          fileCount: validatedBinding.fileCount,
+        };
+        effectiveBindingConfirmed = true;
+        effectiveBindingCandidate = null;
+      } catch (error) {
+        if (error instanceof ProjectBindingValidationError) {
+          return NextResponse.json({ error: error.message }, { status: error.status });
+        }
+        throw error;
+      }
+    } else {
+      if (hasUnconfirmedBindingFields) {
+        return NextResponse.json({ error: "Binding fields require confirmed binding from daemon/CLI" }, { status: 409 });
+      }
+      if (!bindingCandidate) {
+        return NextResponse.json(
+          { error: "bindingCandidate metadata is required for non-default projects" },
+          { status: 400 },
+        );
+      }
     }
   }
   const serializedMetadata = serializeProjectMetadata(
     metadataInput.value,
-    !bindingConfirmed ? bindingCandidate : null,
+    !effectiveBindingConfirmed ? effectiveBindingCandidate : null,
   );
 
   if (isDefaultProject) {
@@ -441,31 +325,31 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
     }
   }
 
-  if (!isDefaultProject && bindingConfirmed && (!binding.daemonHost || !binding.workspacePath)) {
+  if (!isDefaultProject && effectiveBindingConfirmed && (!effectiveBinding.daemonHost || !effectiveBinding.workspacePath)) {
     return NextResponse.json({ error: "daemonHost and workspacePath are required" }, { status: 400 });
   }
 
-  if (!isDefaultProject && !bindingConfirmed && bindingCandidate) {
+  if (!isDefaultProject && !effectiveBindingConfirmed && effectiveBindingCandidate) {
     const existingBinding = await findProjectBindingMatch({
       userId: user.id,
-      daemonHost: bindingCandidate.daemonHost,
-      workspacePath: bindingCandidate.workspacePath,
+      daemonHost: effectiveBindingCandidate.daemonHost,
+      workspacePath: effectiveBindingCandidate.workspacePath,
     });
     if (existingBinding) {
       return NextResponse.json({ error: "Project binding already exists" }, { status: 409 });
     }
   }
 
-  if (bindingConfirmed) {
+  if (effectiveBindingConfirmed) {
     const existingByBinding = await findProjectBindingMatch({
       userId: user.id,
-      daemonHost: binding.daemonHost!,
-      workspacePath: binding.workspacePath!,
+      daemonHost: effectiveBinding.daemonHost!,
+      workspacePath: effectiveBinding.workspacePath!,
     });
     const nameConflict = hasNameField
       ? await findProjectNameConflict({
           userId: user.id,
-          daemonHost: binding.daemonHost!,
+          daemonHost: effectiveBinding.daemonHost!,
           name,
           excludeProjectId: existingByBinding?.id ?? null,
         })
@@ -474,25 +358,31 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
       return NextResponse.json({ error: "Project name already exists on this daemon" }, { status: 409 });
     }
     if (existingByBinding) {
+      const promotedMetadata =
+        !metadataInput.hasField && existingByBinding.metadata
+          ? serializeProjectMetadata(parseProjectMetadata(existingByBinding.metadata), null)
+          : undefined;
       const updated = await db.project.update({
         where: { id: existingByBinding.id },
         data: {
           name: hasNameField ? name : undefined,
-          repoRoot: binding.repoRoot ?? undefined,
-          worktreeBranch: binding.worktreeBranch ?? undefined,
-          lastCommit: binding.lastCommit ?? undefined,
-          fileCount: binding.fileCount ?? undefined,
-          metadata: metadataInput.hasField ? serializedMetadata : undefined,
+          daemonHost: effectiveBinding.daemonHost ?? undefined,
+          workspacePath: effectiveBinding.workspacePath ?? undefined,
+          repoRoot: effectiveBinding.repoRoot ?? undefined,
+          worktreeBranch: effectiveBinding.worktreeBranch ?? undefined,
+          lastCommit: effectiveBinding.lastCommit ?? undefined,
+          fileCount: effectiveBinding.fileCount ?? undefined,
+          metadata: metadataInput.hasField ? serializedMetadata : promotedMetadata,
         },
       });
       return NextResponse.json(serializeProject(updated, false));
     }
   }
 
-  if (!bindingConfirmed && hasNameField && bindingCandidate) {
+  if (!effectiveBindingConfirmed && hasNameField && effectiveBindingCandidate) {
     const nameConflict = await findProjectNameConflict({
       userId: user.id,
-      daemonHost: bindingCandidate.daemonHost,
+      daemonHost: effectiveBindingCandidate.daemonHost,
       name,
     });
     if (nameConflict) {
@@ -506,12 +396,12 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
       data: {
         userId: user.id,
         name: isDefaultProject ? (hasNameField ? name : "Default Project") : name,
-        daemonHost: bindingConfirmed ? binding.daemonHost : null,
-        workspacePath: bindingConfirmed ? binding.workspacePath : null,
-        repoRoot: bindingConfirmed ? binding.repoRoot : null,
-        worktreeBranch: bindingConfirmed ? binding.worktreeBranch : null,
-        lastCommit: bindingConfirmed ? binding.lastCommit : null,
-        fileCount: bindingConfirmed ? binding.fileCount : null,
+        daemonHost: effectiveBindingConfirmed ? effectiveBinding.daemonHost : null,
+        workspacePath: effectiveBindingConfirmed ? effectiveBinding.workspacePath : null,
+        repoRoot: effectiveBindingConfirmed ? effectiveBinding.repoRoot : null,
+        worktreeBranch: effectiveBindingConfirmed ? effectiveBinding.worktreeBranch : null,
+        lastCommit: effectiveBindingConfirmed ? effectiveBinding.lastCommit : null,
+        fileCount: effectiveBindingConfirmed ? effectiveBinding.fileCount : null,
         metadata: serializedMetadata,
       },
     });
@@ -552,8 +442,9 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     body && typeof body === "object" && !Array.isArray(body)
       ? (body as Record<string, unknown>)
       : {};
-  const hasNameField = typeof normalizedBody.name === "string";
-  const name = hasNameField ? normalizedBody.name.trim() : undefined;
+  const rawName = normalizedBody.name;
+  const hasNameField = typeof rawName === "string";
+  const name = hasNameField ? rawName.trim() : undefined;
   const binding = readProjectBindingInput(normalizedBody);
   const bindingConfirmed = isBindingConfirmed(normalizedBody);
   const metadataInput = readProjectMetadataInput(normalizedBody);
@@ -688,7 +579,7 @@ export const DELETE = requireActiveSubscription(async (request: NextRequest, use
 
   const existing = await db.project.findFirst({
     where: { id: projectId, userId: user.id },
-    select: { id: true, name: true },
+    select: { id: true, name: true, daemonHost: true },
   });
   const defaultProject = await db.defaultProject.findUnique({
     where: { userId: user.id },
@@ -702,26 +593,104 @@ export const DELETE = requireActiveSubscription(async (request: NextRequest, use
 
   const tasks = await db.task.findMany({
     where: { projectId },
-    select: { id: true },
+    select: {
+      id: true,
+      taskType: true,
+      launchConfig: true,
+      metadata: true,
+      agentHost: true,
+      executionHost: true,
+      status: true,
+    },
   });
   const taskIds = tasks.map((task) => task.id);
+  const cleanupTargets = new Map<
+    string,
+    {
+      task: (typeof tasks)[number];
+      agentHost: string;
+    }
+  >();
+  const activeWorktreeTasks: Array<{
+    taskId: string;
+    agentHost: string;
+    taskLabel: string;
+  }> = [];
 
-  if (taskIds.length > 0) {
-    await db.message.deleteMany({
-      where: {
-        taskId: {
-          in: taskIds,
-        },
-      },
+  for (const task of tasks) {
+    const taskHost = resolveTaskWorktreeCleanupHost({
+      boundHost: realtimeHub.getTaskAgentHost(task.id),
+      agentHost: task.agentHost,
+      executionHost: task.executionHost,
+      metadata: task.metadata,
+      projectDaemonHost: existing.daemonHost,
     });
+    const worktreeRootKey = getTaskWorktreeRootKey(task.launchConfig);
+    if (worktreeRootKey && taskHost && !cleanupTargets.has(worktreeRootKey)) {
+      cleanupTargets.set(worktreeRootKey, { task, agentHost: taskHost });
+    }
+    if (normalizeTaskStatus(task.status) === "running" || normalizeTaskStatus(task.status) === "unknown") {
+      if (!taskHost) {
+        return NextResponse.json({ error: "Task missing daemon binding" }, { status: 409 });
+      }
+      activeWorktreeTasks.push({
+        taskId: task.id,
+        agentHost: taskHost,
+        taskLabel: task.taskType === "pty_task" ? "PTY task" : "task",
+      });
+    }
   }
 
-  await db.task.deleteMany({
-    where: { projectId },
+  for (const activeTask of activeWorktreeTasks) {
+    const stopResult = await stopTaskBeforeRelaunch({
+      userId: user.id,
+      taskId: activeTask.taskId,
+      projectId,
+      stopTargetHost: activeTask.agentHost,
+      reason: "project_deleted",
+      taskLabel: activeTask.taskLabel,
+    });
+    if (!stopResult.ok) {
+      return NextResponse.json(
+        { error: stopResult.error ?? `Failed to stop task ${activeTask.taskId}` },
+        { status: 409 },
+      );
+    }
+  }
+
+  await db.$transaction(async (tx) => {
+    for (const { task, agentHost } of cleanupTargets.values()) {
+      await tx.agentOutbox.create({
+        data: buildTaskWorktreeCleanupOutboxData({
+          userId: user.id,
+          agentHost,
+          taskId: task.id,
+          projectId,
+          launchConfig: task.launchConfig,
+          requestId: randomUUID(),
+          force: true,
+        }),
+      });
+    }
+
+    if (taskIds.length > 0) {
+      await tx.message.deleteMany({
+        where: {
+          taskId: {
+            in: taskIds,
+          },
+        },
+      });
+    }
+
+    await tx.task.deleteMany({
+      where: { projectId },
+    });
+    await tx.project.delete({
+      where: { id: projectId },
+    });
   });
-  await db.project.delete({
-    where: { id: projectId },
-  });
+
   await Promise.all(
     taskIds.map((taskId) =>
       Promise.resolve(deleteTaskAttachmentDirectory(taskId)).catch((error) => {
@@ -733,6 +702,8 @@ export const DELETE = requireActiveSubscription(async (request: NextRequest, use
       }),
     ),
   );
+
+  await Promise.all(taskIds.map((taskId) => Promise.resolve(realtimeHub.unbindTask(taskId))));
 
   return new NextResponse(null, { status: 204 });
 });

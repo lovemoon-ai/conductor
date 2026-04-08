@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
 import { useProjectsStore } from '@/lib/conductor/stores/projects';
+import { filterTasksByProject } from '@/lib/conductor/task-filter';
 import { TaskItem } from './TaskItem';
 import { LoadingSpinner } from '../common/LoadingSpinner';
 import { EmptyState } from '../common/EmptyState';
@@ -64,6 +65,7 @@ interface TaskListProps {
   activeTaskId?: string | null;
   onOpenTask?: (taskId: string) => void;
   desktopListPaneMode?: boolean;
+  projectFilter?: string | null;
 }
 
 export function TaskList({
@@ -71,6 +73,7 @@ export function TaskList({
   activeTaskId = null,
   onOpenTask,
   desktopListPaneMode = false,
+  projectFilter,
 }: TaskListProps) {
   const { tasks, isLoading, unreadTaskIds, currentProjectFilter, deleteTask } = useTasksStore();
   const projects = useProjectsStore((state) => state.projects);
@@ -82,14 +85,19 @@ export function TaskList({
   const previousRectsRef = useRef(new Map<string, DOMRect>());
   const previousOrderRef = useRef<string[]>([]);
   const animationFrameRef = useRef<number | null>(null);
+  const effectiveProjectFilter = projectFilter !== undefined ? projectFilter : currentProjectFilter;
+  const visibleTasks = useMemo(
+    () => filterTasksByProject(tasks, effectiveProjectFilter),
+    [tasks, effectiveProjectFilter],
+  );
 
-  const currentProjectName = currentProjectFilter
-    ? projects.find((project) => project.id === currentProjectFilter)?.name
+  const currentProjectName = effectiveProjectFilter
+    ? projects.find((project) => project.id === effectiveProjectFilter)?.name
     : null;
   const selectedCount = selectedTaskIds.size;
   const selectionMode = selectedCount > 0;
-  const hasToolbarContent = selectionMode || Boolean(currentProjectName);
-  const allTaskIds = useMemo(() => tasks.map((task) => task.id), [tasks]);
+  const hasToolbarContent = selectionMode;
+  const allTaskIds = useMemo(() => visibleTasks.map((task) => task.id), [visibleTasks]);
   const allSelected = allTaskIds.length > 0 && selectedCount === allTaskIds.length;
 
   useEffect(() => (
@@ -225,7 +233,7 @@ export function TaskList({
     }
   };
 
-  if (isLoading && tasks.length === 0) {
+  if (isLoading && visibleTasks.length === 0) {
     return (
       <div className="flex h-64 items-center justify-center">
         <LoadingSpinner size="lg" />
@@ -233,7 +241,7 @@ export function TaskList({
     );
   }
 
-  if (tasks.length === 0) {
+  if (visibleTasks.length === 0) {
     return (
       <EmptyState
         className="h-72"
@@ -256,11 +264,6 @@ export function TaskList({
             {selectionMode ? (
               <span className="rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-[var(--accent)]">
                 {selectedCount} selected
-              </span>
-            ) : null}
-            {currentProjectName ? (
-              <span className="rounded-full bg-border/60 px-2 py-0.5 text-xs font-medium text-muted">
-                {currentProjectName}
               </span>
             ) : null}
           </div>
@@ -292,7 +295,7 @@ export function TaskList({
           ? 'grid gap-4 sm:grid-cols-2 xl:grid-cols-3'
           : 'space-y-3'}
       >
-        {tasks.map((task) => (
+        {visibleTasks.map((task) => (
           <div
             key={task.id}
             ref={setItemWrapperRef(task.id)}

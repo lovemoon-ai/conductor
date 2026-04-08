@@ -81,6 +81,7 @@ describe('task-ingress-service', () => {
     vi.mocked(exceedsTaskLimit).mockReturnValue(false);
     vi.mocked(getTaskLimitMessage).mockReturnValue('limit');
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'] },
       { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
     ] as any);
     vi.mocked(db.task.create).mockResolvedValue({
@@ -172,6 +173,39 @@ describe('task-ingress-service', () => {
         agentHost: 'daemon-a',
         taskId: 'task-1',
         eventType: 'create_task',
+        envelope: expect.objectContaining({
+          type: 'create_task',
+          payload: expect.objectContaining({
+            launch_config: {
+              backendType: 'claude',
+              cwd: '/repo/project',
+              worktreeBranch: 'main',
+            },
+          }),
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it('overrides an explicitly requested daemon with the project bound daemon', async () => {
+    await createTaskForUser({
+      userId: 'user-1',
+      projectId: 'proj-1',
+      agentHost: 'daemon-b',
+      backendType: 'claude',
+      metadata: { initialContent: 'hello' },
+    });
+
+    expect(db.task.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        agentHost: 'daemon-a',
+        executionHost: 'daemon-a',
+      }),
+    }));
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentHost: 'daemon-a',
       }),
       expect.any(Object),
     );

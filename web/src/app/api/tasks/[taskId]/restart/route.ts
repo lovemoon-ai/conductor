@@ -7,7 +7,12 @@ import { realtimeHub } from "@/lib/realtime/hub";
 import {
   normalizeOptionalString,
   parseJsonObject,
+  serializeJsonObject,
 } from "@/lib/tasks/task-config";
+import {
+  acquireTaskWorktreeMutationLock,
+  inheritTaskWorktreeLaunchConfig,
+} from "@/lib/tasks/worktree";
 import { normalizeBackendType } from "@/lib/tasks/pty-runtime";
 import {
   countActiveTaskBuckets,
@@ -119,6 +124,8 @@ export async function POST(
   if (!sourceBackend) {
     return NextResponse.json({ error: "Task missing backend binding" }, { status: 409 });
   }
+  const sourceLaunchConfig = parseJsonObject(sourceTask.launchConfig);
+  const inheritedWorktreeLaunchConfig = inheritTaskWorktreeLaunchConfig(sourceLaunchConfig);
 
   const sourceSessionId = normalizeOptionalString(sourceTask.sessionId);
   if (!sourceSessionId) {
@@ -291,6 +298,14 @@ export async function POST(
 
   if (isInplaceRestart) {
     const updatedTask = await db.$transaction(async (tx) => {
+      if (inheritedWorktreeLaunchConfig) {
+        await acquireTaskWorktreeMutationLock(
+          tx as any,
+          sourceTask.id,
+          sourceTask.launchConfig as string | null,
+        );
+      }
+
       await tx.agentOutbox.create({
         data: {
           userId: user.id,
@@ -310,6 +325,7 @@ export async function POST(
               source_session_id: sourceSessionId,
               source_session_file_path: sourceTask.sessionFilePath ?? undefined,
               target_backend_type: targetBackend,
+              target_launch_config: inheritedWorktreeLaunchConfig ?? undefined,
               request_id: requestId,
             },
           }),
@@ -354,12 +370,20 @@ export async function POST(
     restartSourceBackendType: sourceBackend,
     restartStrategy: "new_task",
   };
-  const successorLaunchConfig = {
+  const successorLaunchConfig = inheritedWorktreeLaunchConfig ?? {
     ...(projectWorkspacePath ? { cwd: projectWorkspacePath } : {}),
     ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
   };
 
   const createdTask = await db.$transaction(async (tx) => {
+    if (inheritedWorktreeLaunchConfig) {
+      await acquireTaskWorktreeMutationLock(
+        tx as any,
+        sourceTask.id,
+        sourceTask.launchConfig as string | null,
+      );
+    }
+
     const task = await tx.task.create({
       data: {
         id: successorTaskId,
@@ -372,7 +396,9 @@ export async function POST(
         backendType: targetBackend,
         sessionId: null,
         sessionFilePath: null,
-        launchConfig: Object.keys(successorLaunchConfig).length > 0 ? successorLaunchConfig : null,
+        launchConfig: serializeJsonObject(
+          Object.keys(successorLaunchConfig).length > 0 ? successorLaunchConfig : null,
+        ),
         metadata: JSON.stringify(successorMetadata),
       },
     });
@@ -408,6 +434,10 @@ export async function POST(
             source_session_id: sourceSessionId,
             source_session_file_path: sourceTask.sessionFilePath ?? undefined,
             target_backend_type: targetBackend,
+            target_launch_config:
+              Object.keys(successorLaunchConfig).length > 0
+                ? successorLaunchConfig
+                : undefined,
             request_id: requestId,
           },
         }),
