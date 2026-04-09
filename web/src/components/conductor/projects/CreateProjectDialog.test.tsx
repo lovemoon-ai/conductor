@@ -64,8 +64,9 @@ describe('CreateProjectDialog', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('disables project creation when no daemon is online', async () => {
+  it('creates project with binding candidate when daemon is offline', async () => {
     agentsState = { agents: [] };
+    createProjectMock.mockResolvedValueOnce({ id: 'project-offline' });
     const onClose = vi.fn();
 
     render(<CreateProjectDialog open onClose={onClose} />);
@@ -75,12 +76,28 @@ describe('CreateProjectDialog', () => {
     fireEvent.change(screen.getByPlaceholderText('Project name'), {
       target: { value: 'Offline Project' },
     });
+    fireEvent.change(screen.getByPlaceholderText('Reconnect a daemon first'), {
+      target: { value: 'daemon-offline' },
+    });
     fireEvent.change(screen.getByPlaceholderText('Local path, e.g. /Users/you/ws/project'), {
       target: { value: '/repo/offline' },
     });
 
-    expect(screen.getByRole('button', { name: 'Create Project' })).toBeDisabled();
-    expect(createProjectMock).not.toHaveBeenCalled();
-    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Create Project' })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Project' }));
+
+    await waitFor(() => {
+      expect(createProjectMock).toHaveBeenCalledWith({
+        name: 'Offline Project',
+        metadata: {
+          bindingCandidate: {
+            daemonHost: 'daemon-offline',
+            workspacePath: '/repo/offline',
+          },
+        },
+      });
+    });
+    expect(onClose).toHaveBeenCalled();
   });
 });

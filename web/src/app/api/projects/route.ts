@@ -15,6 +15,7 @@ import {
   resolveTaskWorktreeCleanupHost,
 } from "@/lib/tasks/worktree";
 import { stopTaskBeforeRelaunch } from "@/lib/tasks/task-stop";
+import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 import {
   hasOwn,
   isBindingConfirmed,
@@ -38,9 +39,42 @@ const findProjectBindingMatch = async (params: {
   excludeProjectId?: string | null;
 }) => {
   const normalizedWorkspacePath = normalizeWorkspacePath(params.workspacePath);
+  const excludeFilter = params.excludeProjectId
+    ? { id: { not: params.excludeProjectId } }
+    : {};
 
-  const projects = await db.project.findMany({
-    where: { userId: params.userId },
+  const confirmedMatch = await db.project.findFirst({
+    where: {
+      userId: params.userId,
+      daemonHost: params.daemonHost,
+      workspacePath: normalizedWorkspacePath,
+      ...excludeFilter,
+    },
+    orderBy: { updatedAt: "desc" },
+    select: {
+      id: true,
+      name: true,
+      daemonHost: true,
+      workspacePath: true,
+      repoRoot: true,
+      worktreeBranch: true,
+      lastCommit: true,
+      fileCount: true,
+      metadata: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+  if (confirmedMatch) {
+    return confirmedMatch;
+  }
+
+  const pendingCandidates = await db.project.findMany({
+    where: {
+      userId: params.userId,
+      daemonHost: null,
+      ...excludeFilter,
+    },
     orderBy: { updatedAt: "desc" },
     select: {
       id: true,
@@ -57,41 +91,7 @@ const findProjectBindingMatch = async (params: {
     },
   });
 
-  let bestConfirmedMatch:
-    | {
-        id: string;
-        name: string;
-        daemonHost: string | null;
-        workspacePath: string | null;
-        repoRoot: string | null;
-        worktreeBranch: string | null;
-        lastCommit: string | null;
-        fileCount: number | null;
-        metadata: string | null;
-        createdAt: Date;
-        updatedAt: Date;
-      }
-    | null = null;
-  let bestPendingMatch:
-    | {
-        id: string;
-        name: string;
-        daemonHost: string | null;
-        workspacePath: string | null;
-        repoRoot: string | null;
-        worktreeBranch: string | null;
-        lastCommit: string | null;
-        fileCount: number | null;
-        metadata: string | null;
-        createdAt: Date;
-        updatedAt: Date;
-      }
-    | null = null;
-
-  for (const project of projects) {
-    if (params.excludeProjectId && project.id === params.excludeProjectId) {
-      continue;
-    }
+  for (const project of pendingCandidates) {
     const projectPath = readProjectBindingPath(project, params.daemonHost);
     if (!projectPath) {
       continue;
@@ -99,20 +99,10 @@ const findProjectBindingMatch = async (params: {
     if (normalizeWorkspacePath(projectPath) !== normalizedWorkspacePath) {
       continue;
     }
-    const hasBoundDaemonHost = normalizeOptionalString(project.daemonHost) === params.daemonHost;
-    const hasBoundWorkspacePath = normalizeOptionalWorkspacePath(project.workspacePath);
-    if (hasBoundDaemonHost && hasBoundWorkspacePath) {
-      if (!bestConfirmedMatch) {
-        bestConfirmedMatch = project;
-      }
-      continue;
-    }
-    if (!bestPendingMatch) {
-      bestPendingMatch = project;
-    }
+    return project;
   }
 
-  return bestConfirmedMatch ?? bestPendingMatch;
+  return null;
 };
 
 const serializeProjectMetadata = (
@@ -181,27 +171,17 @@ const serializeProject = (
 ) => ({
   id: project.id,
   name: project.name,
-  daemonHost: project.daemonHost,
-  workspacePath: project.workspacePath,
-  repoRoot: project.repoRoot,
-  worktreeBranch: project.worktreeBranch,
-  lastCommit: project.lastCommit,
-  fileCount: project.fileCount,
-  isDefault: isDefault,
+  daemon_host: project.daemonHost,
+  workspace_path: project.workspacePath,
+  repo_root: project.repoRoot,
+  worktree_branch: project.worktreeBranch,
+  last_commit: project.lastCommit,
+  file_count: project.fileCount,
+  is_default: isDefault,
   metadata: parseProjectMetadata(project.metadata),
   created_at: project.createdAt.toISOString(),
   updated_at: project.updatedAt.toISOString(),
 });
-
-const normalizeTaskStatus = (value: unknown): string => {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "completed") return "completed";
-  if (normalized === "init") return "init";
-  if (normalized === "running") return "running";
-  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
-  return "unknown";
-};
 
 export const GET = requireActiveSubscription(async (_request: NextRequest, user) => {
   const projects = await db.project.findMany({
@@ -641,20 +621,27 @@ export const DELETE = requireActiveSubscription(async (request: NextRequest, use
     }
   }
 
-  for (const activeTask of activeWorktreeTasks) {
-    const stopResult = await stopTaskBeforeRelaunch({
-      userId: user.id,
-      taskId: activeTask.taskId,
-      projectId,
-      stopTargetHost: activeTask.agentHost,
-      reason: "project_deleted",
-      taskLabel: activeTask.taskLabel,
-    });
-    if (!stopResult.ok) {
-      return NextResponse.json(
-        { error: stopResult.error ?? `Failed to stop task ${activeTask.taskId}` },
-        { status: 409 },
-      );
+  const stopResults = await Promise.allSettled(
+    activeWorktreeTasks.map((activeTask) =>
+      stopTaskBeforeRelaunch({
+        userId: user.id,
+        taskId: activeTask.taskId,
+        projectId,
+        stopTargetHost: activeTask.agentHost,
+        reason: "project_deleted",
+        taskLabel: activeTask.taskLabel,
+      }),
+    ),
+  );
+  for (let i = 0; i < stopResults.length; i++) {
+    const result = stopResults[i];
+    const activeTask = activeWorktreeTasks[i];
+    if (result.status === "rejected" || !result.value.ok) {
+      const error =
+        result.status === "rejected"
+          ? String(result.reason)
+          : result.value.error ?? `Failed to stop task ${activeTask.taskId}`;
+      return NextResponse.json({ error }, { status: 409 });
     }
   }
 

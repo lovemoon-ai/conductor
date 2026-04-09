@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { recoverStaleDisconnectedAgentTasks } from "@/lib/tasks/stale-recovery";
+import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 
 const STOP_TASK_ACK_TIMEOUT_MS = 2500;
 const STOP_TASK_FINAL_STATUS_TIMEOUT_MS = 5000;
@@ -20,18 +21,6 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
   const value = Number.parseInt(raw, 10);
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
-
-const normalizeTaskStatus = (value: unknown): string => {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "completed") return "completed";
-  if (normalized === "init") return "init";
-  if (normalized === "running") return "running";
-  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") {
-    return "killed";
-  }
-  return "unknown";
-};
 
 const normalizeHost = (value: unknown): string => {
   if (typeof value !== "string") return "";

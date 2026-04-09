@@ -8,6 +8,7 @@ import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
 import { deleteTaskAttachmentDirectory } from "@/lib/conductor/task-file-storage";
 import {
   normalizeOptionalString,
+  normalizeTaskStatus,
   normalizeTaskType,
   parseJsonObject,
   parseTaskType,
@@ -41,16 +42,6 @@ import {
 import { stopTaskBeforeRelaunch } from "@/lib/tasks/task-stop";
 
 const DELETE_SNAPSHOT_TRIGGER = "task_delete";
-
-const normalizeTaskStatus = (value: unknown): string => {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "completed") return "completed";
-  if (normalized === "init") return "init";
-  if (normalized === "running") return "running";
-  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
-  return "unknown";
-};
 
 const normalizeHost = (value: unknown): string => {
   if (typeof value !== "string") return "";
@@ -745,7 +736,6 @@ export async function DELETE(
       await acquireTaskWorktreeMutationLock(
         tx as any,
         taskId,
-        existing.launchConfig as string | null,
       );
       const sharedWorktreeTask =
         (

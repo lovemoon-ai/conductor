@@ -6,6 +6,7 @@ import { realtimeHub } from "@/lib/realtime/hub";
 import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
 import {
   normalizeOptionalString,
+  normalizeTaskStatus,
   normalizeTaskType,
   parseJsonObject,
   parseTaskType,
@@ -36,16 +37,6 @@ import {
   isConductorFireHost,
 } from "@/lib/subscription/plan-limits";
 import { recoverStaleDisconnectedAgentTasks } from "@/lib/tasks/stale-recovery";
-
-const normalizeTaskStatus = (value: unknown): string => {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "completed") return "completed";
-  if (normalized === "init") return "init";
-  if (normalized === "running") return "running";
-  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
-  return "unknown";
-};
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);

@@ -109,7 +109,8 @@ const readLegacyLocalPath = (metadata: Record<string, unknown> | null | undefine
   }
 
   if (typeof localPaths === "object") {
-    const candidate = (localPaths as Record<string, unknown>)[daemonHost];
+    const map = localPaths as Record<string, unknown>;
+    const candidate = map[daemonHost] ?? map["default"] ?? map["*"];
     const normalized = normalizeOptionalWorkspacePath(candidate);
     return normalized || null;
   }

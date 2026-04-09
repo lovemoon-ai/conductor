@@ -1313,7 +1313,14 @@ function resolveDaemonHost(daemonName) {
     return fromEnv;
   }
   const fromAgent = typeof process.env.CONDUCTOR_AGENT_NAME === "string" ? process.env.CONDUCTOR_AGENT_NAME.trim() : "";
-  return fromAgent;
+  if (fromAgent) {
+    return fromAgent;
+  }
+  try {
+    return os.hostname();
+  } catch {
+    return "";
+  }
 }
 
 function resolveWorkspaceSnapshot(projectPath) {

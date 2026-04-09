@@ -145,16 +145,16 @@ export const acquireTaskWorktreeMutationLock = async (
     task: {
       update: (args: {
         where: { id: string };
-        data: { launchConfig: string | null };
+        data: { updatedAt: Date };
       }) => Promise<unknown>;
     };
   },
   taskId: string,
-  launchConfig: string | null,
 ): Promise<void> => {
+  // Force a row-level write lock by bumping updatedAt within the transaction.
   await tx.task.update({
     where: { id: taskId },
-    data: { launchConfig },
+    data: { updatedAt: new Date() },
   });
 };
 

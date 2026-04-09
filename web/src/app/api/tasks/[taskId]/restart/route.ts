@@ -8,6 +8,7 @@ import {
   normalizeOptionalString,
   parseJsonObject,
   serializeJsonObject,
+  normalizeTaskStatus,
 } from "@/lib/tasks/task-config";
 import {
   acquireTaskWorktreeMutationLock,
@@ -24,16 +25,6 @@ import {
   RESTARTABLE_SOURCE_STATUSES,
   STOPPED_TASK_STATUSES,
 } from "@/lib/tasks/restart";
-
-const normalizeTaskStatus = (value: unknown): string => {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "completed") return "completed";
-  if (normalized === "init") return "init";
-  if (normalized === "running") return "running";
-  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
-  return "unknown";
-};
 
 const serializeTaskResponse = (task: {
   id: string;
@@ -272,7 +263,6 @@ export async function POST(
         await acquireTaskWorktreeMutationLock(
           tx as any,
           sourceTask.id,
-          sourceTask.launchConfig as string | null,
         );
       }
 

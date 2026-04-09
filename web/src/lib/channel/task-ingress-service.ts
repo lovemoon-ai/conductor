@@ -6,6 +6,7 @@ import { realtimeHub } from "@/lib/realtime/hub";
 import {
   isConductorFireHost,
 } from "@/lib/subscription/plan-limits";
+import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 import { projectTaskMessage } from "./task-event-projector";
 
 type ConnectedAgent = {
@@ -38,16 +39,6 @@ const normalizeOptionalString = (value: unknown): string | null => {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   return normalized || null;
-};
-
-const normalizeTaskStatus = (value: unknown): string => {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "completed") return "completed";
-  if (normalized === "init") return "init";
-  if (normalized === "running") return "running";
-  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
-  return "unknown";
 };
 
 const supportsBackend = (agent: ConnectedAgent, backendType: string): boolean =>

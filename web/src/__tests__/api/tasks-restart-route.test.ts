@@ -770,7 +770,7 @@ describe("/api/tasks/[taskId]/restart", () => {
       expect.objectContaining({
         where: { id: "task-1" },
         data: {
-          launchConfig: JSON.stringify(worktreeLaunchConfig),
+          updatedAt: expect.any(Date),
         },
       }),
     );

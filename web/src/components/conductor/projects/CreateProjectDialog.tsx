@@ -31,17 +31,25 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !daemonHost.trim() || !projectPath.trim() || !isSelectedDaemonOnline) return;
+    if (!name.trim()) return;
 
     setIsSubmitting(true);
     try {
       const trimmedProjectPath = projectPath.trim();
       const trimmedDaemonHost = daemonHost.trim();
-      await createProject({
-        name: name.trim(),
-        daemonHost: trimmedDaemonHost,
-        workspacePath: trimmedProjectPath,
-      });
+      const payload: Record<string, unknown> = { name: name.trim() };
+      if (trimmedDaemonHost && trimmedProjectPath && isSelectedDaemonOnline) {
+        payload.daemonHost = trimmedDaemonHost;
+        payload.workspacePath = trimmedProjectPath;
+      } else if (trimmedDaemonHost && trimmedProjectPath) {
+        payload.metadata = {
+          bindingCandidate: {
+            daemonHost: trimmedDaemonHost,
+            workspacePath: trimmedProjectPath,
+          },
+        };
+      }
+      await createProject(payload as any);
       onClose();
       setName('');
       setProjectPath('');
@@ -77,7 +85,7 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
             placeholder={hasDaemons ? 'Select an online daemon' : 'Reconnect a daemon first'}
             className="w-full webapp-input"
             list="daemon-host-options"
-            disabled={!hasDaemons}
+            disabled={false}
           />
           <datalist id="daemon-host-options">
             {daemons.map((daemon) => (
@@ -117,7 +125,7 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
           </button>
           <button
             type="submit"
-            disabled={!name.trim() || !daemonHost.trim() || !projectPath.trim() || !isSelectedDaemonOnline || isSubmitting}
+            disabled={!name.trim() || isSubmitting}
             className="webapp-btn-primary px-5 py-2.5 text-sm"
           >
             {isSubmitting ? 'Creating...' : 'Create Project'}

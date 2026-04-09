@@ -10,6 +10,7 @@ import {
   resolveTaskWorktreeCleanupHost,
 } from "@/lib/tasks/worktree";
 import { stopTaskBeforeRelaunch } from "@/lib/tasks/task-stop";
+import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 import { realtimeHub } from "@/lib/realtime/hub";
 import {
   hasOwn,
@@ -27,16 +28,6 @@ import {
   readProjectMetadataInput,
 } from "../shared";
 
-const normalizeTaskStatus = (value: unknown): string => {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "completed") return "completed";
-  if (normalized === "init") return "init";
-  if (normalized === "running") return "running";
-  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
-  return "unknown";
-};
-
 const findProjectBindingConflict = async (params: {
   userId: string;
   daemonHost: string;
@@ -44,30 +35,43 @@ const findProjectBindingConflict = async (params: {
   excludeProjectId?: string | null;
 }) => {
   const normalizedWorkspacePath = normalizeWorkspacePath(params.workspacePath);
+  const excludeFilter = params.excludeProjectId
+    ? { id: { not: params.excludeProjectId } }
+    : {};
 
-  const projects = await db.project.findMany({
-    where: { userId: params.userId },
-    orderBy: { updatedAt: "desc" },
-    select: {
-      id: true,
-      daemonHost: true,
-      workspacePath: true,
-      metadata: true,
+  const confirmedConflict = await db.project.findFirst({
+    where: {
+      userId: params.userId,
+      daemonHost: params.daemonHost,
+      workspacePath: normalizedWorkspacePath,
+      ...excludeFilter,
     },
+    select: { id: true, daemonHost: true, workspacePath: true, metadata: true },
+  });
+  if (confirmedConflict) {
+    return confirmedConflict;
+  }
+
+  const pendingCandidates = await db.project.findMany({
+    where: {
+      userId: params.userId,
+      daemonHost: null,
+      ...excludeFilter,
+    },
+    select: { id: true, daemonHost: true, workspacePath: true, metadata: true },
   });
 
-  return (
-    projects.find((project) => {
-      if (params.excludeProjectId && project.id === params.excludeProjectId) {
-        return false;
-      }
-      const projectPath = readProjectBindingPath(project, params.daemonHost);
-      if (!projectPath) {
-        return false;
-      }
-      return normalizeWorkspacePath(projectPath) === normalizedWorkspacePath;
-    }) ?? null
-  );
+  for (const project of pendingCandidates) {
+    const projectPath = readProjectBindingPath(project, params.daemonHost);
+    if (!projectPath) {
+      continue;
+    }
+    if (normalizeWorkspacePath(projectPath) === normalizedWorkspacePath) {
+      return project;
+    }
+  }
+
+  return null;
 };
 
 const findProjectNameConflict = async (params: {
@@ -368,20 +372,27 @@ export async function DELETE(
     }
   }
 
-  for (const activeTask of activeWorktreeTasks) {
-    const stopResult = await stopTaskBeforeRelaunch({
-      userId: user.id,
-      taskId: activeTask.taskId,
-      projectId,
-      stopTargetHost: activeTask.agentHost,
-      reason: "project_deleted",
-      taskLabel: activeTask.taskLabel,
-    });
-    if (!stopResult.ok) {
-      return NextResponse.json(
-        { error: stopResult.error ?? `Failed to stop task ${activeTask.taskId}` },
-        { status: 409 },
-      );
+  const stopResults = await Promise.allSettled(
+    activeWorktreeTasks.map((activeTask) =>
+      stopTaskBeforeRelaunch({
+        userId: user.id,
+        taskId: activeTask.taskId,
+        projectId,
+        stopTargetHost: activeTask.agentHost,
+        reason: "project_deleted",
+        taskLabel: activeTask.taskLabel,
+      }),
+    ),
+  );
+  for (let i = 0; i < stopResults.length; i++) {
+    const result = stopResults[i];
+    const activeTask = activeWorktreeTasks[i];
+    if (result.status === "rejected" || !result.value.ok) {
+      const error =
+        result.status === "rejected"
+          ? String(result.reason)
+          : result.value.error ?? `Failed to stop task ${activeTask.taskId}`;
+      return NextResponse.json({ error }, { status: 409 });
     }
   }
 

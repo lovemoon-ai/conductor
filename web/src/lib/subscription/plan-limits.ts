@@ -5,17 +5,9 @@ export type ActiveTaskCounts = {
   app: number;
 };
 
-const TERMINAL_TASK_STATUSES = new Set(["completed", "killed"]);
+import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 
-const normalizeTaskStatus = (value: unknown): string => {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "completed") return "completed";
-  if (normalized === "init") return "init";
-  if (normalized === "running") return "running";
-  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
-  return "unknown";
-};
+const TERMINAL_TASK_STATUSES = new Set(["completed", "killed"]);
 
 export const isConductorFireHost = (host: unknown): host is string =>
   typeof host === "string" && host.startsWith("conductor-fire-");

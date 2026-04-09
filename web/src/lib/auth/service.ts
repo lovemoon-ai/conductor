@@ -83,6 +83,7 @@ export async function ensureDefaultProject(userId: string, client?: DbClient): P
   const legacyCandidates = await prisma.project.findMany({
     where: {
       userId,
+      daemonHost: null,
     },
     orderBy: { createdAt: "asc" },
   });
@@ -120,7 +121,7 @@ export async function ensureDefaultProject(userId: string, client?: DbClient): P
       return createdDefault.project;
     }
     const createdCandidates = await prisma.project.findMany({
-      where: { userId },
+      where: { userId, daemonHost: null },
       orderBy: { createdAt: "asc" },
     });
     const created = createdCandidates.find(isLegacyDefaultProject) ?? null;

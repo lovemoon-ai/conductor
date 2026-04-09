@@ -365,8 +365,8 @@ describe("/api/projects", () => {
 
       expect(response.status).toBe(200);
       expect(data.id).toBe("proj-pending");
-      expect(data.daemonHost).toBeNull();
-      expect(data.workspacePath).toBeNull();
+      expect(data.daemon_host).toBeNull();
+      expect(data.workspace_path).toBeNull();
       expect(data.metadata).toEqual({
         bindingCandidate: {
           daemonHost: "daemon-1",

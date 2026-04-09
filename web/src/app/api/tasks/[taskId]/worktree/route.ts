@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
 import { realtimeHub } from "@/lib/realtime/hub";
-import { parseJsonObject } from "@/lib/tasks/task-config";
+import { normalizeTaskStatus, parseJsonObject } from "@/lib/tasks/task-config";
 import {
   hasSameTaskWorktreeRoot,
   acquireTaskWorktreeMutationLock,
@@ -10,16 +10,6 @@ import {
   parseTaskWorktreeLaunchConfig,
   requestTaskWorktreeCleanup,
 } from "@/lib/tasks/worktree";
-
-const normalizeTaskStatus = (value: unknown): string => {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "completed") return "completed";
-  if (normalized === "init") return "init";
-  if (normalized === "running") return "running";
-  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
-  return "unknown";
-};
 
 const serializeTaskResponse = (task: {
   id: string;
@@ -120,7 +110,7 @@ export async function POST(
   }
 
   const cleanupTarget = await db.$transaction(async (tx) => {
-    await acquireTaskWorktreeMutationLock(tx as any, task.id, task.launchConfig as string | null);
+    await acquireTaskWorktreeMutationLock(tx as any, task.id);
     const sharedWorktreeTask =
       (
         await tx.task.findMany({

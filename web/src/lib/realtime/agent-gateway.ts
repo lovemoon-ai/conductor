@@ -24,6 +24,7 @@ import {
   isMissingPtySchemaError,
   withPtySchemaFallback,
 } from "@/lib/tasks/pty-compat";
+import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 
 export const AGENT_WS_PATH = "/ws/agent";
 
@@ -377,15 +378,6 @@ const sendEnvelope = (socket: WebSocket, envelope: Record<string, unknown>) => {
   socket.send(JSON.stringify(envelope));
 };
 
-const normalizeTaskStatus = (value: unknown): string => {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "completed") return "completed";
-  if (normalized === "init") return "init";
-  if (normalized === "running") return "running";
-  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
-  return "unknown";
-};
 
 const normalizeOptionalString = (value: unknown): string | null => {
   if (typeof value !== "string") return null;

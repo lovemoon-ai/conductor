@@ -638,8 +638,6 @@ export class ConductorClient {
       throw new Error('project_path is required');
     }
     const result = await this.backendApi.matchProjectByPath({
-      hostname: daemonHost,
-      daemonHost,
       daemon_host: daemonHost,
       path: projectPath,
     });
