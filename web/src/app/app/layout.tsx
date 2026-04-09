@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useAuthStore } from '@/features/auth';
 import { useWebSocket } from '@/features/realtime';
 import { useAuthStorageSync } from '@/features/auth';
-import { useProjectsStore } from '@/lib/conductor/stores/projects';
+import { useProjectsStore } from '@/features/projects';
 import { useAgentsStore } from '@/lib/conductor/stores/agents';
 import { Sidebar } from '@/components/conductor/layout/Sidebar';
 import { MobileNav } from '@/components/conductor/layout/MobileNav';

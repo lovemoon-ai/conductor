@@ -18,7 +18,7 @@ vi.mock('../store', () => ({
     typeof selector === 'function' ? selector(tasksState) : tasksState,
 }));
 
-vi.mock('@/lib/conductor/stores/projects', () => ({
+vi.mock('@/features/projects', () => ({
   useProjectsStore: (selector: (state: { projects: Array<{ id: string; name: string }> }) => unknown) =>
     selector({
       projects: [

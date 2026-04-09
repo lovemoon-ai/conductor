@@ -10,12 +10,12 @@ let agentsState = {
   ],
 };
 
-vi.mock('../common/Dialog', () => ({
+vi.mock('@/components/conductor/common/Dialog', () => ({
   Dialog: ({ open, children }: { open: boolean; children: ReactNode }) =>
     open ? <div>{children}</div> : null,
 }));
 
-vi.mock('@/lib/conductor/stores/projects', () => ({
+vi.mock('../store', () => ({
   useProjectsStore: (selector: (state: { createProject: typeof createProjectMock }) => unknown) =>
     selector({ createProject: createProjectMock }),
 }));

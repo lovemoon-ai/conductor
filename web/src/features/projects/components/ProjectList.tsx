@@ -1,8 +1,8 @@
 'use client';
 
-import { useProjectsStore } from '@/lib/conductor/stores/projects';
+import { useProjectsStore } from '../store';
 import { ProjectItem } from './ProjectItem';
-import { LoadingSpinner } from '../common/LoadingSpinner';
+import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';
 
 export function ProjectList() {
   const { projects, isLoading } = useProjectsStore();

@@ -17,7 +17,7 @@ vi.mock('next/navigation', () => ({
   }),
 }));
 
-vi.mock('@/lib/conductor/stores/projects', () => ({
+vi.mock('../store', () => ({
   useProjectsStore: () => ({
     updateProject: updateProjectMock,
     deleteProject: deleteProjectMock,
@@ -41,7 +41,7 @@ vi.mock('@/shared/hooks/useSwipeActions', () => ({
   }),
 }));
 
-vi.mock('../common/FeedbackProvider', () => ({
+vi.mock('@/components/conductor/common/FeedbackProvider', () => ({
   useConfirm: () => ({
     confirm: vi.fn(),
   }),

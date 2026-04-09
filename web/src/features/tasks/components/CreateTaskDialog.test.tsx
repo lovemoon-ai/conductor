@@ -39,9 +39,13 @@ vi.mock('../store', () => ({
     selector({ createTask: createTaskMock }),
 }));
 
-vi.mock('@/lib/conductor/stores/projects', () => ({
-  useProjectsStore: (selector: (state: typeof projectsState) => unknown) => selector(projectsState),
-}));
+vi.mock('@/features/projects', async () => {
+  const actual = await vi.importActual<typeof import('@/features/projects')>('@/features/projects');
+  return {
+    ...actual,
+    useProjectsStore: (selector: (state: typeof projectsState) => unknown) => selector(projectsState),
+  };
+});
 
 vi.mock('@/lib/conductor/stores/agents', () => ({
   useAgentsStore: (selector: (state: typeof agentsState) => unknown) => selector(agentsState),

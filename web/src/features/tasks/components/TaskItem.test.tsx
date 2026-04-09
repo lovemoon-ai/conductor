@@ -38,7 +38,7 @@ vi.mock('@/lib/conductor/stores/chat', () => ({
     selector({ sendMessage: sendMessageMock, messagesByTask }),
 }));
 
-vi.mock('@/lib/conductor/stores/projects', () => ({
+vi.mock('@/features/projects', () => ({
   useProjectsStore: (selector: (state: { projects: Array<{ id: string; name: string }> }) => unknown) =>
     selector({ projects: [] }),
 }));

@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { Header } from '@/components/conductor/layout/Header';
-import { ProjectList } from '@/components/conductor/projects/ProjectList';
-import { CreateProjectDialog } from '@/components/conductor/projects/CreateProjectDialog';
-import { useProjectsStore } from '@/lib/conductor/stores/projects';
+import { ProjectList } from '@/features/projects';
+import { CreateProjectDialog } from '@/features/projects';
+import { useProjectsStore } from '@/features/projects';
 import { RefreshIcon } from '@/features/tasks';
 
 export default function ProjectsPage() {

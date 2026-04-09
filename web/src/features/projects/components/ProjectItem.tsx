@@ -3,11 +3,11 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Project } from '@/shared/types';
-import { useProjectsStore } from '@/lib/conductor/stores/projects';
+import { useProjectsStore } from '../store';
 import { useAgentsStore } from '@/lib/conductor/stores/agents';
 import { useSwipeActions } from '@/shared/hooks/useSwipeActions';
-import { formatBindingLabel } from '@/lib/projects/format-binding-label';
-import { useConfirm, useToast } from '../common/FeedbackProvider';
+import { formatBindingLabel } from '../utils/format-binding-label';
+import { useConfirm, useToast } from '@/components/conductor/common/FeedbackProvider';
 
 interface ProjectItemProps {
   project: Project;

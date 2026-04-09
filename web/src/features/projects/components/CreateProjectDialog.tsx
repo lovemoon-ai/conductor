@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Dialog } from '../common/Dialog';
-import { InlineNotice } from '../common/InlineNotice';
-import { useProjectsStore } from '@/lib/conductor/stores/projects';
+import { Dialog } from '@/components/conductor/common/Dialog';
+import { InlineNotice } from '@/components/conductor/common/InlineNotice';
+import { useProjectsStore } from '../store';
 import { useAgentsStore } from '@/lib/conductor/stores/agents';
 
 interface CreateProjectDialogProps {

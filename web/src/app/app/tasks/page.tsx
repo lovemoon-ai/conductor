@@ -15,7 +15,7 @@ import {
 import { CreateTaskDialog } from '@/features/tasks';
 import { TaskDetailPane } from '@/features/tasks';
 import { useTasksStore } from '@/features/tasks';
-import { useProjectsStore } from '@/lib/conductor/stores/projects';
+import { useProjectsStore } from '@/features/projects';
 import { filterTasksByProject } from '@/features/tasks';
 
 const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';

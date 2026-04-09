@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTasksStore } from '../store';
-import { useProjectsStore } from '@/lib/conductor/stores/projects';
+import { useProjectsStore } from '@/features/projects';
 import { filterTasksByProject } from '../utils/task-filter';
 import { TaskItem } from './TaskItem';
 import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';
