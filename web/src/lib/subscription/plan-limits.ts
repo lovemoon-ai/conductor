@@ -1,15 +1,3 @@
-export const FREE_PLAN_LIMITS = {
-  activeManualFireTasks: 1,
-  activeAppTasks: 1,
-  activeDaemonConnections: 1,
-} as const;
-
-export const PLUS_PLAN_LIMITS = {
-  activeManualFireTasks: 10,
-  activeAppTasks: 10,
-  activeDaemonConnections: 10,
-} as const;
-
 export type TaskPlanBucket = "manual_fire" | "app";
 
 export type ActiveTaskCounts = {
@@ -17,7 +5,6 @@ export type ActiveTaskCounts = {
   app: number;
 };
 
-const PLUS_TIERS = new Set(["PLUS", "PLUS_DEV"]);
 const TERMINAL_TASK_STATUSES = new Set(["completed", "killed"]);
 
 const normalizeTaskStatus = (value: unknown): string => {
@@ -39,10 +26,7 @@ export const isTaskActive = (status: unknown): boolean =>
 export const getTaskPlanBucket = (agentHost: unknown): TaskPlanBucket =>
   isConductorFireHost(agentHost) ? "manual_fire" : "app";
 
-export const isFreeTier = (tier: unknown): boolean => {
-  const normalizedTier = typeof tier === "string" ? tier.trim().toUpperCase() : "";
-  return !PLUS_TIERS.has(normalizedTier);
-};
+export const isFreeTier = (_tier: unknown): boolean => false;
 
 export const countActiveTaskBuckets = (
   tasks: Array<{ status: unknown; agentHost: unknown }>
@@ -60,46 +44,16 @@ export const countActiveTaskBuckets = (
 };
 
 export const exceedsFreeTaskLimit = (
-  bucket: TaskPlanBucket,
-  counts: ActiveTaskCounts
-): boolean =>
-  bucket === "manual_fire"
-    ? counts.manualFire >= FREE_PLAN_LIMITS.activeManualFireTasks
-    : counts.app >= FREE_PLAN_LIMITS.activeAppTasks;
+  _bucket: TaskPlanBucket,
+  _counts: ActiveTaskCounts
+): boolean => false;
 
-export const getFreeTaskLimitMessage = (bucket: TaskPlanBucket): string =>
-  bucket === "manual_fire"
-    ? "Free plan allows only one active manual fire task"
-    : "Free plan allows only one active app task";
+export const getFreeTaskLimitMessage = (_bucket: TaskPlanBucket): string => "";
 
-/**
- * Check if the task limit is exceeded for the given tier and bucket.
- * This is the unified function that works for both Free and Plus tiers.
- */
 export const exceedsTaskLimit = (
-  tier: unknown,
-  bucket: TaskPlanBucket,
-  counts: ActiveTaskCounts
-): boolean => {
-  if (isFreeTier(tier)) {
-    return bucket === "manual_fire"
-      ? counts.manualFire >= FREE_PLAN_LIMITS.activeManualFireTasks
-      : counts.app >= FREE_PLAN_LIMITS.activeAppTasks;
-  }
-  // Plus tier
-  return bucket === "manual_fire"
-    ? counts.manualFire >= PLUS_PLAN_LIMITS.activeManualFireTasks
-    : counts.app >= PLUS_PLAN_LIMITS.activeAppTasks;
-};
+  _tier: unknown,
+  _bucket: TaskPlanBucket,
+  _counts: ActiveTaskCounts
+): boolean => false;
 
-export const getTaskLimitMessage = (tier: unknown, bucket: TaskPlanBucket): string => {
-  if (isFreeTier(tier)) {
-    return bucket === "manual_fire"
-      ? "Free plan allows only one active manual fire task"
-      : "Free plan allows only one active app task";
-  }
-  // Plus tier
-  return bucket === "manual_fire"
-    ? "Plus plan allows only ten active manual fire tasks"
-    : "Plus plan allows only ten active app tasks";
-};
+export const getTaskLimitMessage = (_tier: unknown, _bucket: TaskPlanBucket): string => "";

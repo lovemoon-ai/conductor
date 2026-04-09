@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthUser } from '@/lib/auth/middleware';
-import { getSubscriptionStatus, checkAndUpdateExpiredSubscription } from '@/lib/subscription/service';
 
 export async function GET(req: NextRequest) {
   try {
@@ -9,13 +8,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Check and update expired subscription
-    await checkAndUpdateExpiredSubscription(user.id);
-
-    // Get current subscription status
-    const status = await getSubscriptionStatus(user.id);
-
-    return NextResponse.json(status);
+    return NextResponse.json({
+      status: 'ACTIVE',
+      tier: 'PLUS_DEV',
+      isActive: true,
+      daysRemaining: 0,
+      expiresAt: null,
+      trialEndsAt: null,
+      subscriptionEndsAt: null,
+      lastPaymentAt: null,
+    });
   } catch (error) {
     console.error('Error getting subscription status:', error);
     return NextResponse.json(

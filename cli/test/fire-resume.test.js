@@ -325,6 +325,37 @@ describe("fire resume resolver", () => {
     });
   });
 
+  it("resolves external resume context when session bindings store a configured alias", async () => {
+    await withClearedProviderEnv(async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-resume-"));
+      const workspaceDir = path.join(tempDir, "workspace-external-configured-alias");
+      fs.mkdirSync(workspaceDir, { recursive: true });
+
+      const conductorSessionsDir = path.join(tempDir, ".conductor", "sessions");
+      fs.mkdirSync(conductorSessionsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(conductorSessionsDir, "external-configured-alias.yaml"),
+        `sessions:\n  - project_id: project-external\n    task_id:\n      - task-external-1\n    project_path: ${JSON.stringify(workspaceDir)}\n    session_id: ext-configured-alias-1\n    backend_type: my-external\n`,
+        "utf8",
+      );
+
+      const configPath = path.join(tempDir, "config.yaml");
+      fs.writeFileSync(
+        configPath,
+        `envs:\n  AISDK_PROVIDER_PATH: ${FIXTURE_EXTERNAL_PROVIDER}\nallow_cli_list:\n  my-external: test-external\n`,
+        "utf8",
+      );
+
+      const resolved = await resolveResumeContext("test-external", "ext-configured-alias-1", {
+        homeDir: tempDir,
+        configFilePath: configPath,
+      });
+      assert.equal(resolved.provider, "test-external");
+      assert.equal(resolved.cwd, workspaceDir);
+      assert.equal(resolved.debugMetadata?.cwdSource, "conductor_session_record");
+    });
+  });
+
   it("falls back to the current working directory for external resume when no session record exists", async () => {
     await withClearedProviderEnv(async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-resume-"));

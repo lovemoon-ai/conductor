@@ -8,7 +8,6 @@ import { useTasksStore } from '@/lib/conductor/stores/tasks';
 import {
   canCreateSuccessorTask,
   getCompatibleRestartBackends,
-  STOPPED_TASK_STATUSES,
 } from '@/lib/tasks/restart';
 import { Dialog } from '../common/Dialog';
 import { useToast } from '../common/FeedbackProvider';
@@ -54,12 +53,16 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
     () => agents.find((agent) => agent.host === restartSourceHost) ?? null,
     [agents, restartSourceHost],
   );
+  const runtimeBackendMap =
+    sourceAgent?.runtimeBackendMap && typeof sourceAgent.runtimeBackendMap === 'object'
+      ? sourceAgent.runtimeBackendMap
+      : undefined;
   const supportedBackends = Array.isArray(sourceAgent?.supportedBackends)
     ? sourceAgent.supportedBackends
     : [];
   const backendOptions = useMemo(
-    () => getCompatibleRestartBackends(currentBackend, supportedBackends),
-    [currentBackend, supportedBackends],
+    () => getCompatibleRestartBackends(currentBackend, supportedBackends, { runtimeBackendMap }),
+    [currentBackend, runtimeBackendMap, supportedBackends],
   );
   const currentBackendSupported = currentBackend ? backendOptions.includes(currentBackend) : false;
 
@@ -127,7 +130,10 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
     if (!selectedBackend) {
       return 'Select a backend first';
     }
-    if (!canCreateSuccessorTask(currentBackend, selectedBackend)) {
+    if (!canCreateSuccessorTask(currentBackend, selectedBackend, {
+      sourceRuntimeBackendMap: runtimeBackendMap,
+      targetRuntimeBackendMap: runtimeBackendMap,
+    })) {
       return `Creating a new task from ${currentBackend} to ${selectedBackend} is not supported`;
     }
     return null;
@@ -135,6 +141,7 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
     backendOptions.length,
     currentBackend,
     isManualFireTask,
+    runtimeBackendMap,
     selectedBackend,
     sourceAgent,
     sourceAgentHost,

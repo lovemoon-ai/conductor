@@ -93,6 +93,140 @@ describe("conductor-fire defaults", () => {
     assert.equal(args.backend, "codex");
   });
 
+  it("rejects explicit built-in backends that are not allow-listed", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(
+      configPath,
+      "allow_cli_list:\n  claude: claude --dangerously-skip-permissions\n",
+      "utf8",
+    );
+
+    await assert.rejects(
+      () =>
+        parseCliArgs([
+          "node",
+          "conductor-fire",
+          "--config-file",
+          configPath,
+          "--backend",
+          "codex",
+          "--",
+          "fix",
+          "bug",
+        ]),
+      /Unsupported backend "codex"/,
+    );
+  });
+
+  it("accepts configured codex aliases and resolves them to the codex provider backend", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(
+      configPath,
+      "allow_cli_list:\n  codex-gamma: codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'\n",
+      "utf8",
+    );
+
+    const args = await parseCliArgs([
+      "node",
+      "conductor-fire",
+      "--config-file",
+      configPath,
+      "--backend",
+      "codex-gamma",
+      "--",
+      "fix",
+      "bug",
+    ]);
+
+    assert.equal(args.backend, "codex-gamma");
+    assert.equal(args.sessionBackend, "codex");
+  });
+
+  it("accepts configured codex aliases when the launch command is wrapped by env", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(
+      configPath,
+      "allow_cli_list:\n  codex-gamma: env MODEL=fast codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'\n",
+      "utf8",
+    );
+
+    const args = await parseCliArgs([
+      "node",
+      "conductor-fire",
+      "--config-file",
+      configPath,
+      "--backend",
+      "codex-gamma",
+      "--",
+      "fix",
+      "bug",
+    ]);
+
+    assert.equal(args.backend, "codex-gamma");
+    assert.equal(args.sessionBackend, "codex");
+  });
+
+  it("accepts configured codex aliases when the launch command is wrapped by env and pnpm exec", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(
+      configPath,
+      "allow_cli_list:\n  codex-gamma: env MODEL=fast pnpm exec codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'\n",
+      "utf8",
+    );
+
+    const args = await parseCliArgs([
+      "node",
+      "conductor-fire",
+      "--config-file",
+      configPath,
+      "--backend",
+      "codex-gamma",
+      "--",
+      "fix",
+      "bug",
+    ]);
+
+    assert.equal(args.backend, "codex-gamma");
+    assert.equal(args.sessionBackend, "codex");
+  });
+
+  it("accepts configured codex aliases even when external provider discovery fails", async () => {
+    await withProviderEnv(null, async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+      const configPath = path.join(tempDir, "config.yaml");
+      fs.writeFileSync(
+        configPath,
+        [
+          "allow_cli_list:",
+          "  codex-gamma: codex -c 'model_provider=ollama' -c 'model=gemma4:e4b'",
+          "envs:",
+          `  AISDK_PROVIDER_PATH: ${INVALID_EXTERNAL_PROVIDER}`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const args = await parseCliArgs([
+        "node",
+        "conductor-fire",
+        "--config-file",
+        configPath,
+        "--backend",
+        "codex-gamma",
+        "--",
+        "fix",
+        "bug",
+      ]);
+
+      assert.equal(args.backend, "codex-gamma");
+      assert.equal(args.sessionBackend, "codex");
+    });
+  });
+
   it("rejects legacy backend aliases", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
     const configPath = path.join(tempDir, "config.yaml");
@@ -231,7 +365,90 @@ describe("conductor-fire defaults", () => {
         "bug",
       ]);
 
-      assert.equal(args.backend, "test-external");
+      assert.equal(args.backend, "test-external-alias");
+      assert.equal(args.sessionBackend, "test-external");
+    });
+  });
+
+  it("accepts configured external aliases when the launch command is wrapped by pnpm exec", async () => {
+    await withProviderEnv(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+      const configPath = path.join(tempDir, "config.yaml");
+      fs.writeFileSync(
+        configPath,
+        "allow_cli_list:\n  my-external: pnpm exec test-external --profile fast\n",
+        "utf8",
+      );
+
+      const args = await parseCliArgs([
+        "node",
+        "conductor-fire",
+        "--config-file",
+        configPath,
+        "--backend",
+        "my-external",
+        "--",
+        "fix",
+        "bug",
+      ]);
+
+      assert.equal(args.backend, "my-external");
+      assert.equal(args.sessionBackend, "test-external");
+    });
+  });
+
+  it("accepts configured external aliases when the launch command is wrapped by env and pnpm exec", async () => {
+    await withProviderEnv(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+      const configPath = path.join(tempDir, "config.yaml");
+      fs.writeFileSync(
+        configPath,
+        "allow_cli_list:\n  my-external: env FOO=1 pnpm exec test-external --profile fast\n",
+        "utf8",
+      );
+
+      const args = await parseCliArgs([
+        "node",
+        "conductor-fire",
+        "--config-file",
+        configPath,
+        "--backend",
+        "my-external",
+        "--",
+        "fix",
+        "bug",
+      ]);
+
+      assert.equal(args.backend, "my-external");
+      assert.equal(args.sessionBackend, "test-external");
+    });
+  });
+
+  it("rejects raw external backends that are shadowed by configured aliases", async () => {
+    await withProviderEnv(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+      const configPath = path.join(tempDir, "config.yaml");
+      fs.writeFileSync(
+        configPath,
+        "allow_cli_list:\n  my-external: test-external --profile fast\n",
+        "utf8",
+      );
+
+      await assert.rejects(
+        () =>
+          parseCliArgs([
+            "node",
+            "conductor-fire",
+            "--config-file",
+            configPath,
+            "--backend",
+            "test-external",
+            "--",
+            "fix",
+            "bug",
+          ]),
+        /Unsupported backend "test-external"/,
+      );
     });
   });
 

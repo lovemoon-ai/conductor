@@ -18,9 +18,11 @@ import {
 import { DaemonLogCollector } from "./log-collector.js";
 import { resolveResumeContext } from "./fire/resume.js";
 import {
-  RUNTIME_SUPPORTED_BACKENDS,
+  filterRuntimeSupportedAllowCliList,
+  listAdvertisedBackends,
+  resolveConfiguredRuntimeBackend,
+  isBuiltInRuntimeBackend,
   isRuntimeSupportedBackend,
-  listRuntimeSupportedBackends,
   normalizeRuntimeBackendAlias,
   normalizeRuntimeBackendName,
 } from "./runtime-backends.js";
@@ -213,14 +215,12 @@ function filterConfiguredAllowCliList(allowCliList) {
   if (!allowCliList || typeof allowCliList !== "object") {
     return {};
   }
-  const builtInBackends = new Set(RUNTIME_SUPPORTED_BACKENDS);
   const filtered = {};
   for (const [backend, command] of Object.entries(allowCliList)) {
     const normalizedBackend = normalizeRuntimeBackendName(backend);
     if (
       !normalizedBackend ||
-      LEGACY_RUNTIME_BACKEND_ALIASES.has(normalizedBackend) ||
-      !builtInBackends.has(normalizedBackend)
+      LEGACY_RUNTIME_BACKEND_ALIASES.has(normalizedBackend)
     ) {
       continue;
     }
@@ -243,8 +243,26 @@ function getAllowCliList(userConfig) {
   return DEFAULT_CLI_LIST;
 }
 
+function getRawAllowCliList(userConfig) {
+  if (userConfig.allow_cli_list && typeof userConfig.allow_cli_list === "object") {
+    return userConfig.allow_cli_list;
+  }
+  return DEFAULT_CLI_LIST;
+}
+
 function formatBackendLaunchCommand(cliCommand) {
   return typeof cliCommand === "string" && cliCommand.trim() ? cliCommand.trim() : "ai-sdk-managed";
+}
+
+function serializeRuntimeBackendMap(runtimeBackendMap) {
+  if (!runtimeBackendMap || typeof runtimeBackendMap !== "object") {
+    return "";
+  }
+  return Object.entries(runtimeBackendMap)
+    .filter(([backend, runtimeBackend]) => backend && runtimeBackend)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([backend, runtimeBackend]) => `${backend}=${runtimeBackend}`)
+    .join(",");
 }
 
 async function defaultCreatePty(command, args, options) {
@@ -489,6 +507,36 @@ function normalizeTerminalEnv(value) {
   return env;
 }
 
+const PTY_TASK_SCOPED_ENV_KEYS = [
+  "CONDUCTOR_PROJECT_ID",
+  "CONDUCTOR_TASK_ID",
+  "CONDUCTOR_PTY_SESSION_ID",
+  "CONDUCTOR_LAUNCHED_BY_DAEMON",
+  "CONDUCTOR_RESUME_CWD",
+];
+
+function stripPtyTaskScopedEnv(source) {
+  const env = {
+    ...(source && typeof source === "object" ? source : {}),
+  };
+  for (const key of PTY_TASK_SCOPED_ENV_KEYS) {
+    delete env[key];
+  }
+  return env;
+}
+
+function buildPtyTaskEnv(baseEnv = process.env, launchEnv = {}) {
+  const parentEnv = stripPtyTaskScopedEnv(baseEnv);
+  const taskLaunchEnv = stripPtyTaskScopedEnv(launchEnv);
+  const env = {
+    ...parentEnv,
+  };
+  return {
+    ...env,
+    ...taskLaunchEnv,
+  };
+}
+
 export function startDaemon(config = {}, deps = {}) {
   const exitFn = deps.exit || process.exit;
   const killFn = deps.kill || process.kill;
@@ -574,8 +622,10 @@ export function startDaemon(config = {}, deps = {}) {
   const CLI_PATH_VAL = config.CLI_PATH || CLI_PATH;
 
   // Get allow_cli_list from config
-  const ALLOW_CLI_LIST = getAllowCliList(userConfig);
-  let SUPPORTED_BACKENDS = Object.keys(ALLOW_CLI_LIST);
+  const RAW_ALLOW_CLI_LIST = getRawAllowCliList(userConfig);
+  let ALLOW_CLI_LIST = {};
+  let SUPPORTED_BACKENDS = [];
+  let SUPPORTED_BACKEND_RUNTIME_MAP = {};
   const fetchLatestVersionFn = deps.fetchLatestVersion || fetchLatestVersion;
   const isNewerVersionFn = deps.isNewerVersion || isNewerVersion;
   const detectPackageManagerFn = deps.detectPackageManager || detectPackageManager;
@@ -1326,14 +1376,31 @@ export function startDaemon(config = {}, deps = {}) {
 
   void (async () => {
     try {
-      const runtimeBackends = await listRuntimeSupportedBackends({ configFilePath: config.CONFIG_FILE });
-      const externalBackends = runtimeBackends.filter((backend) => !RUNTIME_SUPPORTED_BACKENDS.includes(backend));
-      SUPPORTED_BACKENDS = [...new Set([...Object.keys(ALLOW_CLI_LIST), ...externalBackends])];
+      ALLOW_CLI_LIST = await filterRuntimeSupportedAllowCliList(RAW_ALLOW_CLI_LIST, {
+        configFilePath: config.CONFIG_FILE,
+      });
     } catch (error) {
-      logError(`Failed to discover external backends: ${error?.message || error}`);
+      ALLOW_CLI_LIST = {};
+      logError(`Failed to filter configured backends: ${error?.message || error}`);
+    }
+
+    try {
+      const advertisedBackends = await listAdvertisedBackends(ALLOW_CLI_LIST, {
+        configFilePath: config.CONFIG_FILE,
+      });
+      SUPPORTED_BACKENDS = advertisedBackends.supportedBackends;
+      SUPPORTED_BACKEND_RUNTIME_MAP = advertisedBackends.runtimeBackendMap;
+      if (advertisedBackends.discoveryError) {
+        logError(`Failed to discover external backends: ${advertisedBackends.discoveryError?.message || advertisedBackends.discoveryError}`);
+      }
+    } catch (error) {
+      SUPPORTED_BACKENDS = [];
+      SUPPORTED_BACKEND_RUNTIME_MAP = {};
+      logError(`Failed to resolve advertised backends: ${error?.message || error}`);
     }
 
     extraHeaders["x-conductor-backends"] = SUPPORTED_BACKENDS.join(",");
+    extraHeaders["x-conductor-backend-runtime-map"] = serializeRuntimeBackendMap(SUPPORTED_BACKEND_RUNTIME_MAP);
     if (typeof client?.setExtraHeaders === "function") {
       client.setExtraHeaders(extraHeaders);
     }
@@ -2670,22 +2737,7 @@ export function startDaemon(config = {}, deps = {}) {
       logError(`Failed to report agent_command_ack(create_pty_task) for ${taskId}: ${err?.message || err}`);
     });
 
-    const env = {
-      ...process.env,
-      ...launchSpec.env,
-      CONDUCTOR_PROJECT_ID: projectId,
-      CONDUCTOR_TASK_ID: taskId,
-      CONDUCTOR_PTY_SESSION_ID: ptySessionId,
-    };
-    if (config.CONFIG_FILE) {
-      env.CONDUCTOR_CONFIG = config.CONFIG_FILE;
-    }
-    if (AGENT_TOKEN) {
-      env.CONDUCTOR_AGENT_TOKEN = AGENT_TOKEN;
-    }
-    if (BACKEND_HTTP) {
-      env.CONDUCTOR_BACKEND_URL = BACKEND_HTTP;
-    }
+    const env = buildPtyTaskEnv(process.env, launchSpec.env);
 
     const logPath = path.join(launchSpec.cwd, "conductor-terminal.log");
     let logStream;
@@ -3662,8 +3714,13 @@ export function startDaemon(config = {}, deps = {}) {
     const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
     if (normalizedSessionId && normalizedBackend && normalizedBackend !== "opencode") {
       try {
+        const configuredBackend = await resolveConfiguredRuntimeBackend(normalizedBackend, ALLOW_CLI_LIST, {
+          configFilePath: config.CONFIG_FILE,
+        });
+        const resumeBackend = configuredBackend?.runtimeBackend ||
+          await normalizeRuntimeBackendAlias(normalizedBackend, { configFilePath: config.CONFIG_FILE });
         const resumeContext = await (deps.resolveResumeContext || resolveResumeContext)(
-          normalizedBackend,
+          resumeBackend,
           normalizedSessionId,
           {
             cwd: process.cwd(),
@@ -3751,11 +3808,22 @@ export function startDaemon(config = {}, deps = {}) {
     pendingTaskStarts.add(taskId);
     let acceptedAckSent = false;
     try {
-      const effectiveBackend = await normalizeRuntimeBackendAlias(backendType || SUPPORTED_BACKENDS[0], {
+      const requestedBackend = normalizeRuntimeBackendName(backendType || SUPPORTED_BACKENDS[0]);
+      const configuredBackend = await resolveConfiguredRuntimeBackend(requestedBackend, ALLOW_CLI_LIST, {
         configFilePath: config.CONFIG_FILE,
       });
-      if (!(await isRuntimeSupportedBackend(effectiveBackend, { configFilePath: config.CONFIG_FILE }))) {
-        logError(`Unsupported backend: ${effectiveBackend}. Supported: ${SUPPORTED_BACKENDS.join(", ")}`);
+      const effectiveBackend = configuredBackend?.runtimeBackend ||
+        await normalizeRuntimeBackendAlias(requestedBackend, { configFilePath: config.CONFIG_FILE });
+      const hasConfiguredEntry = Boolean(configuredBackend?.commandLine);
+      const selectedBackend = configuredBackend?.commandLine
+        ? configuredBackend.requestedBackend
+        : effectiveBackend;
+      const isAdvertisedBackend = SUPPORTED_BACKENDS.includes(selectedBackend);
+      const isAllowedExternalBackend =
+        !isBuiltInRuntimeBackend(effectiveBackend) &&
+        await isRuntimeSupportedBackend(effectiveBackend, { configFilePath: config.CONFIG_FILE });
+      if (!isAdvertisedBackend || (!hasConfiguredEntry && !isAllowedExternalBackend)) {
+        logError(`Unsupported backend: ${selectedBackend}. Supported: ${SUPPORTED_BACKENDS.join(", ")}`);
         sendAgentCommandAck({
           requestId,
           taskId,
@@ -3769,7 +3837,7 @@ export function startDaemon(config = {}, deps = {}) {
               task_id: taskId,
               project_id: projectId,
               status: "KILLED",
-              summary: `Unsupported backend: ${effectiveBackend}`,
+              summary: `Unsupported backend: ${selectedBackend}`,
             },
           })
           .catch(() => {});
@@ -3786,10 +3854,10 @@ export function startDaemon(config = {}, deps = {}) {
       });
       acceptedAckSent = true;
 
-      const cliCommand = ALLOW_CLI_LIST[effectiveBackend] || "";
+      const cliCommand = ALLOW_CLI_LIST[selectedBackend] || ALLOW_CLI_LIST[effectiveBackend] || "";
 
       log("");
-      log(`Creating task ${taskId} for project ${projectId} (${effectiveBackend})`);
+      log(`Creating task ${taskId} for project ${projectId} (${selectedBackend})`);
       log(`CLI command: ${formatBackendLaunchCommand(cliCommand)}`);
       client
         .sendJson({
@@ -3838,8 +3906,8 @@ export function startDaemon(config = {}, deps = {}) {
       }
 
       const args = [];
-      if (effectiveBackend) {
-        args.push("--backend", effectiveBackend);
+      if (selectedBackend) {
+        args.push("--backend", selectedBackend);
       }
       if (initialContent) {
         args.push("--prefill", initialContent);
@@ -4084,16 +4152,27 @@ export function startDaemon(config = {}, deps = {}) {
       return;
     }
 
-    const effectiveBackend = await normalizeRuntimeBackendAlias(targetBackendType || sourceBackendType || SUPPORTED_BACKENDS[0], {
+    const requestedBackend = normalizeRuntimeBackendName(targetBackendType || sourceBackendType || SUPPORTED_BACKENDS[0]);
+    const configuredBackend = await resolveConfiguredRuntimeBackend(requestedBackend, ALLOW_CLI_LIST, {
       configFilePath: config.CONFIG_FILE,
     });
-    if (!(await isRuntimeSupportedBackend(effectiveBackend, { configFilePath: config.CONFIG_FILE }))) {
+    const effectiveBackend = configuredBackend?.runtimeBackend ||
+      await normalizeRuntimeBackendAlias(requestedBackend, { configFilePath: config.CONFIG_FILE });
+    const hasConfiguredEntry = Boolean(configuredBackend?.commandLine);
+    const selectedBackend = configuredBackend?.commandLine
+      ? configuredBackend.requestedBackend
+      : effectiveBackend;
+    const isAdvertisedBackend = SUPPORTED_BACKENDS.includes(selectedBackend);
+    const isAllowedExternalBackend =
+      !isBuiltInRuntimeBackend(effectiveBackend) &&
+      await isRuntimeSupportedBackend(effectiveBackend, { configFilePath: config.CONFIG_FILE });
+    if (!isAdvertisedBackend || (!hasConfiguredEntry && !isAllowedExternalBackend)) {
       reportRestartFailure({
         taskId: normalizedTargetTaskId,
         projectId: normalizedProjectId,
         requestId,
         mode: normalizedMode,
-        error: new Error(`Unsupported backend: ${effectiveBackend}`),
+        error: new Error(`Unsupported backend: ${selectedBackend}`),
       });
       return;
     }
@@ -4109,7 +4188,16 @@ export function startDaemon(config = {}, deps = {}) {
         });
         return;
       }
-      if (effectiveBackend !== sourceBackendType) {
+      const normalizedSourceBackend = normalizeRuntimeBackendName(sourceBackendType);
+      const configuredSourceBackend = await resolveConfiguredRuntimeBackend(normalizedSourceBackend, ALLOW_CLI_LIST, {
+        configFilePath: config.CONFIG_FILE,
+      });
+      const sourceRuntimeBackend = configuredSourceBackend?.runtimeBackend ||
+        await normalizeRuntimeBackendAlias(normalizedSourceBackend, { configFilePath: config.CONFIG_FILE });
+      const sourceSelectedBackend = configuredSourceBackend?.commandLine
+        ? configuredSourceBackend.requestedBackend
+        : sourceRuntimeBackend;
+      if (selectedBackend !== sourceSelectedBackend) {
         reportRestartFailure({
           taskId: normalizedTargetTaskId,
           projectId: normalizedProjectId,
@@ -4130,6 +4218,13 @@ export function startDaemon(config = {}, deps = {}) {
       logError(`Failed to report agent_command_ack(restart_task) for ${normalizedTargetTaskId}: ${err?.message || err}`);
     });
 
+    const normalizedSourceBackend = normalizeRuntimeBackendName(sourceBackendType);
+    const configuredSourceBackend = await resolveConfiguredRuntimeBackend(normalizedSourceBackend, ALLOW_CLI_LIST, {
+      configFilePath: config.CONFIG_FILE,
+    });
+    const sourceRuntimeBackend = configuredSourceBackend?.runtimeBackend ||
+      await normalizeRuntimeBackendAlias(normalizedSourceBackend, { configFilePath: config.CONFIG_FILE });
+
     let resolvedResumeSessionId = normalizedSourceSessionId;
     let resolvedResumeCwd = "";
     try {
@@ -4144,11 +4239,11 @@ export function startDaemon(config = {}, deps = {}) {
         });
         const bridgeSession = await getBridgeSessionHelper();
         const bridgeResult = await bridgeSession({
-          sourceTool: sourceBackendType,
+          sourceTool: sourceRuntimeBackend,
           sourceSessionId: normalizedSourceSessionId,
           sourceSessionPath: sourceSessionFilePath ? String(sourceSessionFilePath) : undefined,
           sourceSessionInfo: {
-            tool: sourceBackendType,
+            tool: sourceRuntimeBackend,
             sessionId: normalizedSourceSessionId,
             path: sourceSessionFilePath ? String(sourceSessionFilePath) : undefined,
             cwd: sourceResumeCwd || undefined,
@@ -4202,11 +4297,11 @@ export function startDaemon(config = {}, deps = {}) {
       return;
     }
 
-    const cliCommand = ALLOW_CLI_LIST[effectiveBackend] || "";
+    const cliCommand = ALLOW_CLI_LIST[selectedBackend] || ALLOW_CLI_LIST[effectiveBackend] || "";
 
     log("");
     log(
-      `Restarting task ${normalizedTargetTaskId} from ${normalizedSourceTaskId} (${normalizedMode} -> ${effectiveBackend})`,
+      `Restarting task ${normalizedTargetTaskId} from ${normalizedSourceTaskId} (${normalizedMode} -> ${selectedBackend})`,
     );
     log(`CLI command: ${formatBackendLaunchCommand(cliCommand)}`);
 
@@ -4255,8 +4350,8 @@ export function startDaemon(config = {}, deps = {}) {
     }
 
     const args = [];
-    if (effectiveBackend) {
-      args.push("--backend", effectiveBackend);
+    if (selectedBackend) {
+      args.push("--backend", selectedBackend);
     }
     args.push("--resume", resolvedResumeSessionId);
     args.push("--");

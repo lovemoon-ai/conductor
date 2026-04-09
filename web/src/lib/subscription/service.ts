@@ -113,37 +113,11 @@ export async function activatePlusSubscription(
 }
 
 /**
- * Check if user has active subscription (trial or paid)
+ * Check if user has active subscription.
+ * Always returns true — subscription restrictions have been removed.
  */
-export function isSubscriptionActive(user: User): boolean {
-  const now = new Date();
-
-  if (
-    user.subscriptionStatus === SUBSCRIPTION_STATUS.ACTIVE &&
-    isPermanentPlusTier(user.subscriptionTier)
-  ) {
-    return true;
-  }
-
-  // Check if in free trial period
-  if (
-    user.subscriptionStatus === SUBSCRIPTION_STATUS.FREE_TRIAL &&
-    user.trialEndsAt &&
-    user.trialEndsAt > now
-  ) {
-    return true;
-  }
-
-  // Check if has active paid subscription
-  if (
-    user.subscriptionStatus === SUBSCRIPTION_STATUS.ACTIVE &&
-    user.subscriptionEndsAt &&
-    user.subscriptionEndsAt > now
-  ) {
-    return true;
-  }
-
-  return false;
+export function isSubscriptionActive(_user: User): boolean {
+  return true;
 }
 
 /**

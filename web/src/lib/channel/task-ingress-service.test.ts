@@ -25,10 +25,6 @@ vi.mock('@/lib/realtime/agent-outbox', () => ({
 }));
 
 vi.mock('@/lib/subscription/plan-limits', () => ({
-  countActiveTaskBuckets: vi.fn(),
-  exceedsTaskLimit: vi.fn(),
-  getTaskLimitMessage: vi.fn(),
-  getTaskPlanBucket: vi.fn(),
   isConductorFireHost: vi.fn((host: string) => host.startsWith('conductor-fire-')),
 }));
 
@@ -43,12 +39,6 @@ vi.mock('@/lib/auth/middleware', () => ({
 const { db } = await import('@/lib/db');
 const { realtimeHub } = await import('@/lib/realtime/hub');
 const { enqueueAndAttemptAgentCommand } = await import('@/lib/realtime/agent-outbox');
-const {
-  countActiveTaskBuckets,
-  exceedsTaskLimit,
-  getTaskLimitMessage,
-  getTaskPlanBucket,
-} = await import('@/lib/subscription/plan-limits');
 const { projectTaskMessage } = await import('./task-event-projector');
 const { getActiveSubscriptionUser } = await import('@/lib/auth/middleware');
 const {
@@ -76,10 +66,6 @@ describe('task-ingress-service', () => {
       }
       return operations;
     });
-    vi.mocked(countActiveTaskBuckets).mockReturnValue({ app: 0, manual_fire: 0 } as any);
-    vi.mocked(getTaskPlanBucket).mockReturnValue('app' as any);
-    vi.mocked(exceedsTaskLimit).mockReturnValue(false);
-    vi.mocked(getTaskLimitMessage).mockReturnValue('limit');
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
       { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'] },
       { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
@@ -251,24 +237,6 @@ describe('task-ingress-service', () => {
         agentHost: 'conductor-fire-runtime',
       }),
     );
-  });
-
-  it('throws a task limit error with current route message semantics', async () => {
-    vi.mocked(exceedsTaskLimit).mockReturnValue(true);
-
-    await expect(
-      createTaskForUser({
-        userId: 'user-1',
-        projectId: 'proj-1',
-      }),
-    ).rejects.toMatchObject({
-      name: 'TaskIngressError',
-      code: 'TASK_LIMIT_REACHED',
-      status: 403,
-      details: expect.objectContaining({
-        error: 'Task limit reached',
-      }),
-    });
   });
 
   it('keeps a freshly updated task at the top on a fresh /api/tasks read after message activity', async () => {

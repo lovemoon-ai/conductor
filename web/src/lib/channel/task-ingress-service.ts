@@ -4,10 +4,6 @@ import { db } from "@/lib/db";
 import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
 import {
-  countActiveTaskBuckets,
-  exceedsTaskLimit,
-  getTaskLimitMessage,
-  getTaskPlanBucket,
   isConductorFireHost,
 } from "@/lib/subscription/plan-limits";
 import { projectTaskMessage } from "./task-event-projector";
@@ -148,33 +144,6 @@ export async function createTaskForUser(input: {
   let agentHost = projectDaemonHost ?? input.agentHost ?? null;
   if (!agentHost) {
     agentHost = pickDefaultAgentHost(connectedAgents, requestedBackendType) ?? null;
-  }
-
-  const planUser = await db.user.findUnique({
-    where: { id: input.userId },
-    select: { subscriptionTier: true },
-  });
-  if (!planUser) {
-    throw new TaskIngressError("UNAUTHORIZED", 401, "Unauthorized", {
-      error: "Unauthorized",
-    });
-  }
-
-  const activeTasks = await db.task.findMany({
-    where: { project: { userId: input.userId } },
-    select: { status: true, agentHost: true },
-  });
-  const activeTaskCounts = countActiveTaskBuckets(activeTasks);
-  const taskBucket = getTaskPlanBucket(agentHost);
-  if (exceedsTaskLimit(planUser.subscriptionTier, taskBucket, activeTaskCounts)) {
-    throw new TaskIngressError("TASK_LIMIT_REACHED", 403, "Task limit reached", {
-      error: "Task limit reached",
-      message: getTaskLimitMessage(planUser.subscriptionTier, taskBucket),
-      limit_type:
-        taskBucket === "manual_fire"
-          ? "manual_fire_active_task"
-          : "app_active_task",
-    });
   }
 
   let metadata = input.metadata ?? null;

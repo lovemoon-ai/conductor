@@ -33,6 +33,181 @@ function normalizeRuntimeBackendName(backend) {
   return String(backend || "").trim().toLowerCase();
 }
 
+function stripExecutableSuffix(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\.(cmd|bat|exe)$/i, "");
+}
+
+function parseCommandParts(commandLine) {
+  const input = String(commandLine || "").trim();
+  if (!input) {
+    return { command: "", args: [], parts: [] };
+  }
+
+  const parts = [];
+  let current = "";
+  let quote = "";
+  let escaping = false;
+  let tokenStarted = false;
+
+  for (const char of input) {
+    if (escaping) {
+      current += char;
+      tokenStarted = true;
+      escaping = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaping = true;
+      tokenStarted = true;
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote) {
+        quote = "";
+      } else {
+        current += char;
+      }
+      tokenStarted = true;
+      continue;
+    }
+
+    if (char === "'" || char === "\"") {
+      quote = char;
+      tokenStarted = true;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      if (tokenStarted) {
+        parts.push(current);
+        current = "";
+        tokenStarted = false;
+      }
+      continue;
+    }
+
+    current += char;
+    tokenStarted = true;
+  }
+
+  if (tokenStarted) {
+    parts.push(current);
+  }
+
+  return {
+    command: parts[0] || "",
+    args: parts.slice(1),
+    parts,
+  };
+}
+
+function isEnvironmentAssignment(token) {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(String(token || "").trim());
+}
+
+function collectExecutableCandidates(commandLine) {
+  const { parts } = parseCommandParts(commandLine);
+  if (!parts.length) {
+    return [];
+  }
+
+  const candidates = [];
+  const pushCandidate = (token) => {
+    const executable = stripExecutableSuffix(path.basename(String(token || "").trim()));
+    if (!executable || candidates.includes(executable)) {
+      return;
+    }
+    candidates.push(executable);
+  };
+
+  const findFirstCommandTokenIndex = (startIndex, { skipEnvAssignments = false } = {}) => {
+    for (let index = startIndex; index < parts.length; index += 1) {
+      const token = String(parts[index] || "").trim();
+      if (!token || token === "--") {
+        continue;
+      }
+      if (skipEnvAssignments && isEnvironmentAssignment(token)) {
+        continue;
+      }
+      if (token.startsWith("-")) {
+        continue;
+      }
+      return index;
+    }
+    return -1;
+  };
+
+  const walkCommand = (startIndex, { skipEnvAssignments = false } = {}) => {
+    const tokenIndex = findFirstCommandTokenIndex(startIndex, { skipEnvAssignments });
+    if (tokenIndex === -1) {
+      return;
+    }
+
+    const token = parts[tokenIndex];
+    pushCandidate(token);
+
+    const executable = stripExecutableSuffix(path.basename(token));
+    if (executable === "env") {
+      walkCommand(tokenIndex + 1, { skipEnvAssignments: true });
+      return;
+    }
+
+    if (executable === "npx" || executable === "pnpx" || executable === "bunx") {
+      walkCommand(tokenIndex + 1);
+      return;
+    }
+
+    if (executable === "pnpm" || executable === "yarn" || executable === "npm") {
+      const subcommandIndex = findFirstCommandTokenIndex(tokenIndex + 1);
+      if (subcommandIndex === -1) {
+        return;
+      }
+      const normalizedSubcommand = stripExecutableSuffix(path.basename(parts[subcommandIndex]));
+      if (normalizedSubcommand === "exec" || normalizedSubcommand === "dlx") {
+        walkCommand(subcommandIndex + 1);
+      }
+    }
+  };
+
+  walkCommand(0);
+
+  return candidates;
+}
+
+export function inferBuiltInRuntimeBackendFromCommand(commandLine) {
+  const candidates = collectExecutableCandidates(commandLine);
+  for (const executable of candidates) {
+    if (BUILT_IN_RUNTIME_BACKEND_SET.has(executable)) {
+      return executable;
+    }
+  }
+  return "";
+}
+
+async function inferRuntimeBackendFromCommand(commandLine, options = {}) {
+  const builtInBackend = inferBuiltInRuntimeBackendFromCommand(commandLine);
+  if (builtInBackend) {
+    return builtInBackend;
+  }
+  const candidates = collectExecutableCandidates(commandLine);
+  for (const executable of candidates) {
+    const resolvedBackend = await normalizeRuntimeBackendAlias(executable, options);
+    if (await isRuntimeSupportedBackend(resolvedBackend, options)) {
+      return resolvedBackend;
+    }
+  }
+  return "";
+}
+
+export function isBuiltInRuntimeBackend(backend) {
+  return BUILT_IN_RUNTIME_BACKEND_SET.has(normalizeRuntimeBackendName(backend));
+}
+
 function readConfigEnvValue(configFilePath, key) {
   const targetPath =
     typeof configFilePath === "string" && configFilePath.trim()
@@ -227,8 +402,8 @@ export async function filterRuntimeSupportedAllowCliList(allowCliList, options =
   }
   const filtered = {};
   for (const [backend, command] of Object.entries(allowCliList)) {
-    const normalizedBackend = await normalizeRuntimeBackendAlias(backend, options);
-    if (!(await isRuntimeSupportedBackend(normalizedBackend, options))) {
+    const normalizedBackend = normalizeRuntimeBackendName(backend);
+    if (!normalizedBackend || LEGACY_RUNTIME_BACKEND_ALIASES.has(normalizedBackend)) {
       continue;
     }
     if (typeof command !== "string" || !command.trim()) {
@@ -237,9 +412,137 @@ export async function filterRuntimeSupportedAllowCliList(allowCliList, options =
     if (filtered[normalizedBackend] !== undefined) {
       continue;
     }
-    filtered[normalizedBackend] = command.trim();
+    try {
+      const inferredRuntimeBackend = await inferRuntimeBackendFromCommand(command, options);
+      if (inferredRuntimeBackend) {
+        filtered[normalizedBackend] = command.trim();
+        continue;
+      }
+    } catch {
+      // Ignore external provider discovery failures here so built-in aliases inferred from
+      // the command line can still pass through independently.
+    }
+    try {
+      const resolvedBackend = await normalizeRuntimeBackendAlias(normalizedBackend, options);
+      const isSupportedResolvedBackend = await isRuntimeSupportedBackend(resolvedBackend, options);
+      if (!isSupportedResolvedBackend) {
+        continue;
+      }
+      filtered[normalizedBackend] = command.trim();
+    } catch {
+      // Skip broken external entries here; callers that actually need external backends
+      // can surface discovery failures from the advertised-backend path.
+    }
   }
   return filtered;
+}
+
+export async function resolveConfiguredRuntimeBackend(backend, allowCliList, options = {}) {
+  const normalizedBackend = normalizeRuntimeBackendName(backend);
+  if (!normalizedBackend || LEGACY_RUNTIME_BACKEND_ALIASES.has(normalizedBackend)) {
+    return null;
+  }
+
+  const configuredCommand =
+    allowCliList && typeof allowCliList === "object" && typeof allowCliList[normalizedBackend] === "string"
+      ? allowCliList[normalizedBackend].trim()
+      : "";
+  const hasConfiguredEntry = Boolean(configuredCommand);
+  if (hasConfiguredEntry) {
+    const inferredRuntimeBackend = await inferRuntimeBackendFromCommand(configuredCommand, options);
+    if (inferredRuntimeBackend) {
+      return {
+        requestedBackend: normalizedBackend,
+        runtimeBackend: inferredRuntimeBackend,
+        commandLine: configuredCommand,
+      };
+    }
+  }
+  const resolvedBackend = await normalizeRuntimeBackendAlias(normalizedBackend, options);
+  if (hasConfiguredEntry && await isRuntimeSupportedBackend(resolvedBackend, options)) {
+    return {
+      requestedBackend: normalizedBackend,
+      runtimeBackend: resolvedBackend,
+      commandLine: configuredCommand,
+    };
+  }
+
+  if (!hasConfiguredEntry && !isBuiltInRuntimeBackend(resolvedBackend) && await isRuntimeSupportedBackend(resolvedBackend, options)) {
+    return {
+      requestedBackend: normalizedBackend,
+      runtimeBackend: resolvedBackend,
+      commandLine: "",
+    };
+  }
+  return null;
+}
+
+export async function listAdvertisedBackends(allowCliList, options = {}) {
+  const filteredAllowCliList =
+    allowCliList && typeof allowCliList === "object"
+      ? Object.fromEntries(
+          Object.entries(allowCliList)
+            .map(([backend, command]) => [normalizeRuntimeBackendName(backend), typeof command === "string" ? command.trim() : ""])
+            .filter(([backend, command]) => backend && command),
+        )
+      : {};
+  const configuredBackends = Object.keys(filteredAllowCliList);
+  let runtimeBackends = [...BUILT_IN_RUNTIME_BACKENDS];
+  let discoveryError = null;
+  try {
+    runtimeBackends = await listRuntimeSupportedBackends(options);
+  } catch (error) {
+    discoveryError = error;
+  }
+  const discoveredExternalBackends = runtimeBackends.filter((backend) => !BUILT_IN_RUNTIME_BACKEND_SET.has(backend));
+  const advertisedConfiguredBackends = [];
+  const runtimeBackendMap = {};
+
+  for (const backend of configuredBackends) {
+    try {
+      const configuredBackend = await resolveConfiguredRuntimeBackend(backend, filteredAllowCliList, options);
+      if (!configuredBackend?.runtimeBackend) {
+        continue;
+      }
+      advertisedConfiguredBackends.push(backend);
+      runtimeBackendMap[backend] = configuredBackend.runtimeBackend;
+    } catch (error) {
+      discoveryError ||= error;
+    }
+  }
+
+  const explicitlyConfiguredBackends = new Set(advertisedConfiguredBackends);
+  const shadowedExternalBackends = new Set();
+
+  for (const backend of advertisedConfiguredBackends) {
+    const runtimeBackend = runtimeBackendMap[backend] || "";
+    if (
+      !runtimeBackend ||
+      isBuiltInRuntimeBackend(runtimeBackend) ||
+      runtimeBackend === backend ||
+      explicitlyConfiguredBackends.has(runtimeBackend)
+    ) {
+      continue;
+    }
+    shadowedExternalBackends.add(runtimeBackend);
+  }
+
+  const externalBackends = discoveredExternalBackends.filter(
+    (backend) => !shadowedExternalBackends.has(backend) && !explicitlyConfiguredBackends.has(backend),
+  );
+  const supportedBackends = [...new Set([...advertisedConfiguredBackends, ...externalBackends])];
+
+  for (const backend of externalBackends) {
+    runtimeBackendMap[backend] = backend;
+  }
+
+  return {
+    configuredBackends: advertisedConfiguredBackends,
+    externalBackends,
+    supportedBackends,
+    runtimeBackendMap,
+    discoveryError,
+  };
 }
 
 export { BUILT_IN_RUNTIME_BACKENDS as RUNTIME_SUPPORTED_BACKENDS, normalizeRuntimeBackendName };

@@ -5,6 +5,7 @@ type Connection = {
   projectIds: string[];
   host?: string;
   supportedBackends?: string[];
+  runtimeBackendMap?: Record<string, string>;
   capabilities?: string[];
   version?: string;
   send: (payload: unknown) => void;
@@ -195,14 +196,31 @@ export class RealtimeHub {
     return this.agentDisconnectAt.get(this.agentKey(userId, host)) ?? null;
   }
 
-  getAgentsForUser(userId: string): { id: string; host: string; supportedBackends: string[]; capabilities: string[]; version?: string }[] {
-    const agents: { id: string; host: string; supportedBackends: string[]; capabilities: string[]; version?: string }[] = [];
+  getAgentsForUser(userId: string): {
+    id: string;
+    host: string;
+    supportedBackends: string[];
+    runtimeBackendMap?: Record<string, string>;
+    capabilities: string[];
+    version?: string;
+  }[] {
+    const agents: {
+      id: string;
+      host: string;
+      supportedBackends: string[];
+      runtimeBackendMap?: Record<string, string>;
+      capabilities: string[];
+      version?: string;
+    }[] = [];
     for (const conn of this.connections.values()) {
       if (conn.kind === "agent" && conn.userId === userId && conn.host) {
         agents.push({
           id: conn.id,
           host: conn.host,
           supportedBackends: conn.supportedBackends || [],
+          ...(conn.runtimeBackendMap && Object.keys(conn.runtimeBackendMap).length > 0
+            ? { runtimeBackendMap: conn.runtimeBackendMap }
+            : {}),
           capabilities: conn.capabilities || [],
           version: conn.version,
         });
