@@ -1,7 +1,7 @@
 {
   "name": "@love-moon/conductor-cli",
   "version": "0.2.33",
-  "gitCommitId": "c749d4b",
+  "gitCommitId": "db7f9bf",
   "type": "module",
   "bin": {
     "conductor": "bin/conductor.js"
