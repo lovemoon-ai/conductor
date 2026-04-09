@@ -10,7 +10,7 @@ import {
   useTerminalStore,
 } from '@/lib/conductor/stores/terminal';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
-import { useWebSocketStore } from '@/lib/conductor/stores/websocket';
+import { useWebSocketStore } from '@/features/realtime';
 import { useConfirm, useToast } from '@/components/conductor/common/FeedbackProvider';
 import { loadXtermModules } from './xterm-loader';
 

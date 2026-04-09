@@ -7,7 +7,7 @@ import {
   clearAllTerminalOutputSnapshots,
   useTerminalStore,
 } from '@/lib/conductor/stores/terminal';
-import { useWebSocketStore } from '@/lib/conductor/stores/websocket';
+import { useWebSocketStore } from '@/features/realtime';
 
 const deleteTaskMock = vi.fn();
 const confirmMock = vi.fn();

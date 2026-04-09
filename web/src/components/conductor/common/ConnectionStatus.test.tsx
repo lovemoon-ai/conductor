@@ -12,12 +12,9 @@ vi.mock('next/navigation', () => ({
   useParams: () => useParamsMock(),
 }));
 
-vi.mock('@/lib/conductor/stores/websocket', () => ({
+vi.mock('@/features/realtime', () => ({
   useWebSocketStore: (selector: (state: { status: 'connected' | 'connecting' | 'disconnected' }) => unknown) =>
     useWebSocketStoreMock(selector),
-}));
-
-vi.mock('@/lib/conductor/stores/runtime', () => ({
   useRuntimeStore: (selector: (state: { byTask: Record<string, unknown> }) => unknown) =>
     useRuntimeStoreMock(selector),
 }));

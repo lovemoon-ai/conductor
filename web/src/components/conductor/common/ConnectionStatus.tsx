@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { useWebSocketStore } from '@/lib/conductor/stores/websocket';
-import { useRuntimeStore } from '@/lib/conductor/stores/runtime';
+import { useWebSocketStore } from '@/features/realtime';
+import { useRuntimeStore } from '@/features/realtime';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
 import { useAgentsStore } from '@/lib/conductor/stores/agents';
 

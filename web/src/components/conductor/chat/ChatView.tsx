@@ -2,9 +2,9 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/lib/conductor/stores/chat';
-import { useRuntimeStore } from '@/lib/conductor/stores/runtime';
+import { useRuntimeStore } from '@/features/realtime';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
-import { useWebSocketStore } from '@/lib/conductor/stores/websocket';
+import { useWebSocketStore } from '@/features/realtime';
 import { MessageBubble } from './MessageBubble';
 import { MessageInput } from './MessageInput';
 import { LoadingSpinner } from '../common/LoadingSpinner';

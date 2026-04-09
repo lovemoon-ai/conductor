@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuthStore } from '@/features/auth';
-import { useWebSocket } from '@/lib/conductor/hooks/useWebSocket';
+import { useWebSocket } from '@/features/realtime';
 import { useAuthStorageSync } from '@/features/auth';
 import { useProjectsStore } from '@/lib/conductor/stores/projects';
 import { useAgentsStore } from '@/lib/conductor/stores/agents';

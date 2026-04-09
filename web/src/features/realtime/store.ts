@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 import type { WSConnectionStatus, Message, TaskStatus, TaskRuntimeStatus } from '@/shared/types';
 import { getMessageAttachments } from '@/shared/utils/message-attachments';
-import { useChatStore } from './chat';
-import { useTasksStore } from './tasks';
-import { useRuntimeStore } from './runtime';
-import { useTerminalStore } from './terminal';
+import { useChatStore } from '@/lib/conductor/stores/chat';
+import { useTasksStore } from '@/lib/conductor/stores/tasks';
+import { useRuntimeStore } from '@/features/realtime/runtime-store';
+import { useTerminalStore } from '@/lib/conductor/stores/terminal';
 
 interface WebSocketState {
   status: WSConnectionStatus;

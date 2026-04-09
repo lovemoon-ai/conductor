@@ -43,7 +43,7 @@ vi.mock('@/lib/conductor/stores/projects', () => ({
     selector({ projects: [] }),
 }));
 
-vi.mock('@/lib/conductor/stores/runtime', () => ({
+vi.mock('@/features/realtime', () => ({
   useRuntimeStore: (
     selector: (state: { byTask: Record<string, unknown>; clearTask: typeof clearRuntimeMock }) => unknown,
   ) =>

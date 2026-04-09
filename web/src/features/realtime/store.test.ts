@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { handleWSMessage, resolveAppWebSocketUrl, useWebSocketStore } from './websocket';
-import { useChatStore } from './chat';
-import { useRuntimeStore } from './runtime';
-import { useTasksStore } from './tasks';
-import { clearAllTerminalOutputSnapshots, getTerminalOutputSnapshot, useTerminalStore } from './terminal';
+import { handleWSMessage, resolveAppWebSocketUrl, useWebSocketStore } from './store';
+import { useChatStore } from '@/lib/conductor/stores/chat';
+import { useRuntimeStore } from './runtime-store';
+import { useTasksStore } from '@/lib/conductor/stores/tasks';
+import { clearAllTerminalOutputSnapshots, getTerminalOutputSnapshot, useTerminalStore } from '@/lib/conductor/stores/terminal';
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];

@@ -11,22 +11,19 @@ vi.mock('@/lib/conductor/stores/chat', () => ({
   useChatStore: () => useChatStoreMock(),
 }));
 
-vi.mock('@/lib/conductor/stores/runtime', () => ({
+vi.mock('@/features/realtime', () => ({
   useRuntimeStore: (selector: (state: {
     byTask: Record<string, unknown>;
     clearTask: (taskId: string) => void;
   }) => unknown) => useRuntimeStoreMock(selector),
+  useWebSocketStore: (selector: (state: { status: 'connected' | 'connecting' | 'disconnected' }) => unknown) =>
+    useWebSocketStoreMock(selector),
 }));
 
 vi.mock('@/lib/conductor/stores/tasks', () => ({
   useTasksStore: (selector: (state: {
     tasks: Array<Record<string, unknown>>;
   }) => unknown) => useTasksStoreMock(selector),
-}));
-
-vi.mock('@/lib/conductor/stores/websocket', () => ({
-  useWebSocketStore: (selector: (state: { status: 'connected' | 'connecting' | 'disconnected' }) => unknown) =>
-    useWebSocketStoreMock(selector),
 }));
 
 vi.mock('./MessageBubble', () => ({

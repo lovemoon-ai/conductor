@@ -9,7 +9,7 @@ import { RestartTaskControls } from './RestartTaskControls';
 import type { TaskListViewMode } from './TaskList';
 import { useChatStore } from '@/lib/conductor/stores/chat';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
-import { useRuntimeStore } from '@/lib/conductor/stores/runtime';
+import { useRuntimeStore } from '@/features/realtime';
 import { getApiClient } from '@/shared/api/client';
 import { useConfirm, useToast } from '../common/FeedbackProvider';
 
