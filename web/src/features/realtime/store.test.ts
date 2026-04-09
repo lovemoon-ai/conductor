@@ -3,7 +3,7 @@ import { handleWSMessage, resolveAppWebSocketUrl, useWebSocketStore } from './st
 import { useChatStore } from '@/features/chat';
 import { useRuntimeStore } from './runtime-store';
 import { useTasksStore } from '@/features/tasks';
-import { clearAllTerminalOutputSnapshots, getTerminalOutputSnapshot, useTerminalStore } from '@/lib/conductor/stores/terminal';
+import { clearAllTerminalOutputSnapshots, getTerminalOutputSnapshot, useTerminalStore } from '@/features/terminal';
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];

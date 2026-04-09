@@ -2,13 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import type { Task } from '@/shared/types';
-import type { TerminalLatencySample, TerminalOutputEvent, TerminalTransportState } from '@/lib/conductor/stores/terminal';
+import type { TerminalLatencySample, TerminalOutputEvent, TerminalTransportState } from '../store';
 import {
   getTerminalOutputSnapshot,
   subscribeTerminalOutput,
   subscribeTerminalTransportSignal,
   useTerminalStore,
-} from '@/lib/conductor/stores/terminal';
+} from '../store';
 import { useTasksStore } from '@/features/tasks';
 import { useWebSocketStore } from '@/features/realtime';
 import { useConfirm, useToast } from '@/components/conductor/common/FeedbackProvider';

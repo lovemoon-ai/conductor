@@ -30,7 +30,7 @@ vi.mock('@/features/chat', () => ({
   ChatView: ({ taskId }: { taskId: string }) => <div>chat:{taskId}</div>,
 }));
 
-vi.mock('@/components/conductor/terminal/TerminalView', () => ({
+vi.mock('@/features/terminal', () => ({
   TerminalView: ({ task }: { task: { id: string } }) => <div>terminal:{task.id}</div>,
 }));
 

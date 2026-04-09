@@ -6,7 +6,7 @@ import {
   TERMINAL_FRESH_RESUME_FALLBACK_MS,
   clearAllTerminalOutputSnapshots,
   useTerminalStore,
-} from '@/lib/conductor/stores/terminal';
+} from '@/features/terminal';
 import { useWebSocketStore } from '@/features/realtime';
 
 const deleteTaskMock = vi.fn();

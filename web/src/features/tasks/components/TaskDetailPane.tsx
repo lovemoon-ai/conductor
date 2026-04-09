@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Header } from '@/components/conductor/layout/Header';
 import { ChatView } from '@/features/chat';
-import { TerminalView } from '@/components/conductor/terminal/TerminalView';
+import { TerminalView } from '@/features/terminal';
 import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';
 import { useTasksStore } from '../store';
 

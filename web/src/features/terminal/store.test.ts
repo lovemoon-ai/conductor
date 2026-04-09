@@ -8,7 +8,7 @@ import {
   subscribeTerminalOutput,
   subscribeTerminalTransportSignal,
   useTerminalStore,
-} from './terminal';
+} from './store';
 
 const textEncoder = new TextEncoder();
 

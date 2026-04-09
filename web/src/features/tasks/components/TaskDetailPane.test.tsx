@@ -22,7 +22,7 @@ vi.mock('@/features/chat', () => ({
   }) => <div data-testid="chat-view">chat:{taskId}:{String(Boolean(autoFocusComposer))}</div>,
 }));
 
-vi.mock('@/components/conductor/terminal/TerminalView', () => ({
+vi.mock('@/features/terminal', () => ({
   TerminalView: ({ task }: { task: { id: string } }) => <div data-testid="terminal-view">terminal:{task.id}</div>,
 }));
 

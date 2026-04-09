@@ -4,7 +4,7 @@ import { getMessageAttachments } from '@/shared/utils/message-attachments';
 import { useChatStore } from '@/features/chat';
 import { useTasksStore } from '@/features/tasks';
 import { useRuntimeStore } from '@/features/realtime/runtime-store';
-import { useTerminalStore } from '@/lib/conductor/stores/terminal';
+import { useTerminalStore } from '@/features/terminal';
 
 interface WebSocketState {
   status: WSConnectionStatus;
