@@ -6,6 +6,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with an additional `Commits` section for each released version.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.2.33] - 2026-04-09
+
+### Added
+
+- Projects are now first-class: a project can bind to a specific daemon host and workspace path, each user has a default project, and project metadata (worktree branch, last commit, file count) is surfaced through the API.
+- Added `scripts/run_gemma4_ollama.sh` helper to launch Gemma 4 via Ollama for local backend experimentation.
+
+### Changed
+
+- Refactored the web app to a feature-based architecture (`features/` + `shared/`), co-locating each feature's store, components, hooks, and utilities. Internal reorganization only — no user-visible change.
+- Projects and agents API responses now emit both `camelCase` and `snake_case` fields so future API renames cannot silently leave the UI state undefined; the client also normalizes both casings defensively.
+
+### Fixed
+
+- Fixed `DELETE /api/tasks/[taskId]` blocking for 30 seconds on manual-fire worktree tasks, which made task deletion look broken.
+- Fixed task creation failing right after creating a new project because the project API response was missing `camelCase` fields the client relied on.
+- Fixed backend alias runtime discovery when the requested alias did not appear verbatim in a daemon's supported backend list.
+- Fixed `conductor fire` falling back to an empty daemon host when no explicit host was configured, now uses `os.hostname()`.
+- Hardened `worktreeId` handling in the daemon against path traversal.
+- Fixed parallel task-stop handling and optimized the tasks query path.
+
+### Removed
+
+- Removed subscription tiers, payment limits, and task quotas. All users now have unrestricted access to tasks and agents.
+
+### Security
+
+- _None._
+
+### Commits
+
+- `351522b` fix(web): DELETE /api/tasks/[taskId] no longer waits 30s on worktree stop
+- `17418e7` feat(web): add normalizer layer to projects and agents stores
+- `eb3d428` docs(lessons): project API snake_case regression broke CreateTaskDialog
+- `441e7fc` fix(web): project POST/GET response must include camelCase fields
+- `b267a5f` refactor(web): phase 9 — final cleanup
+- `9fb3234` refactor(web): phase 8 — flatten global components
+- `31f35cb` refactor(web): phase 7 — features/agents/
+- `a91e7c9` refactor(web): phase 6 — features/terminal/
+- `c329bbc` refactor(web): phase 5 — features/chat/
+- `b065ee7` refactor(web): phase 4 — features/projects/
+- `9747f79` refactor(web): phase 3 — features/tasks/
+- `6a362b4` refactor(web): phase 2 — features/realtime/
+- `6f5eb6e` refactor(web): phase 1 — features/auth/
+- `c5e7acd` refactor(web): phase 0 — extract shared/ foundation
+- `951c734` fix second review: worktreeId sanitization, serializeProject dedup, legacy project UX
+- `e5ebf86` fix review issues: null constraint guard, parallel stop, fire hostname fallback, query optimization
+- `54eef22` remove subscription tiers, payment limits, and task quotas
+- `1c5a355` add gemma4 ollama helper
+- `af118b2` fix backend alias runtime discovery
+
+---
+
 ## [0.2.32] - 2026-04-02
 
 ### Added
