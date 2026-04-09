@@ -226,20 +226,35 @@ type SerializableProject = {
 const serializeProject = (
   project: SerializableProject,
   isDefault = false,
-) => ({
-  id: project.id,
-  name: project.name,
-  daemon_host: project.daemonHost,
-  workspace_path: project.workspacePath,
-  repo_root: project.repoRoot,
-  worktree_branch: project.worktreeBranch,
-  last_commit: project.lastCommit,
-  file_count: project.fileCount,
-  is_default: isDefault,
-  metadata: parseProjectMetadata(project.metadata),
-  created_at: project.createdAt.toISOString(),
-  updated_at: project.updatedAt.toISOString(),
-});
+) => {
+  const createdAt = project.createdAt.toISOString();
+  const updatedAt = project.updatedAt.toISOString();
+  return {
+    id: project.id,
+    name: project.name,
+    // camelCase — primary fields consumed by the web client and SDK.
+    daemonHost: project.daemonHost,
+    workspacePath: project.workspacePath,
+    repoRoot: project.repoRoot,
+    worktreeBranch: project.worktreeBranch,
+    lastCommit: project.lastCommit,
+    fileCount: project.fileCount,
+    isDefault: isDefault,
+    createdAt,
+    updatedAt,
+    // snake_case aliases — kept for older clients / tests.
+    daemon_host: project.daemonHost,
+    workspace_path: project.workspacePath,
+    repo_root: project.repoRoot,
+    worktree_branch: project.worktreeBranch,
+    last_commit: project.lastCommit,
+    file_count: project.fileCount,
+    is_default: isDefault,
+    created_at: createdAt,
+    updated_at: updatedAt,
+    metadata: parseProjectMetadata(project.metadata),
+  };
+};
 
 export {
   hasOwn,
