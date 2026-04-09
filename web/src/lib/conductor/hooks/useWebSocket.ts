@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { useAuthStore } from '../stores/auth';
+import { useAuthStore } from '@/features/auth';
 import { useWebSocketStore } from '../stores/websocket';
 import { useTasksStore } from '../stores/tasks';
 

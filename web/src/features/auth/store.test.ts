@@ -38,7 +38,7 @@ vi.mock("@/lib/auth/token-storage", () => ({
   storeJwtToken: mockStoreJwtToken,
 }));
 
-import { AUTH_SESSION_STORAGE_KEY, AUTH_USER_TOKEN_STORAGE_KEY, useAuthStore } from "./auth";
+import { AUTH_SESSION_STORAGE_KEY, AUTH_USER_TOKEN_STORAGE_KEY, useAuthStore } from "./store";
 
 describe("useAuthStore", () => {
   beforeEach(() => {

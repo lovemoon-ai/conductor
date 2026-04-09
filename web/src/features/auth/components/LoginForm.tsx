@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useTranslation } from "@/lib/i18n";
-import { useAuthStore } from "@/lib/conductor/stores/auth";
+import { useAuthStore } from "@/features/auth";
 import Link from "next/link";
 
 // Common country codes with their dial codes

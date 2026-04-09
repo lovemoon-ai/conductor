@@ -1,7 +1,7 @@
 import { render } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { JWT_STORAGE_KEY } from '@/lib/auth/token-storage';
-import { AUTH_SESSION_STORAGE_KEY } from '../stores/auth';
+import { AUTH_SESSION_STORAGE_KEY } from '../store';
 import { useAuthStorageSync } from './useAuthStorageSync';
 
 function TestComponent({ onSync }: { onSync: () => Promise<void> }) {

@@ -32,7 +32,7 @@ vi.mock('@/components/conductor/layout/Header', () => ({
   Header: ({ title }: { title: string }) => <div>{title}</div>,
 }));
 
-vi.mock('@/lib/conductor/stores/auth', () => ({
+vi.mock('@/features/auth', () => ({
   useAuthStore: (selector: (state: typeof authState) => unknown) => selector(authState),
 }));
 

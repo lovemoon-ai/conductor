@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { JWT_STORAGE_KEY } from '@/lib/auth/token-storage';
-import { AUTH_SESSION_STORAGE_KEY } from '../stores/auth';
+import { AUTH_SESSION_STORAGE_KEY } from '../store';
 
 function isAuthStorageKey(key: string | null): boolean {
   return key === null || key === JWT_STORAGE_KEY || key === AUTH_SESSION_STORAGE_KEY;
