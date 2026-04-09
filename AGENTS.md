@@ -45,5 +45,8 @@
 4. Start the Conductor daemon and connect it to the local server: `conductor daemon --config-file ~/.conductor/config-dev.yaml`
 5. Start Conductor fire and connect it to the local server: `conductor fire --config-file ~/.conductor/config-dev.yaml -- "hi"`
 
+## How to review code
+Refer to `claw/sop/04_review-code.md`.
+
 ## How to Release
 Refer to `claw/sop/06_release.md`.
