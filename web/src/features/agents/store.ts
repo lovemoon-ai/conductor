@@ -4,6 +4,50 @@ import { ApiRequestError, getApiClient } from '@/shared/api/client';
 
 export const AGENTS_POLL_INTERVAL_MS = 15_000;
 
+const pickString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() ? value : undefined;
+
+const pickStringArray = (value: unknown): string[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const out = value.filter((entry): entry is string => typeof entry === 'string');
+  return out.length > 0 ? out : undefined;
+};
+
+const pickStringRecord = (value: unknown): Record<string, string> | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value as Record<string, unknown>).filter(
+    (entry): entry is [string, string] => typeof entry[1] === 'string',
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+};
+
+// Accept both camelCase and snake_case fields so a future API change that
+// only emits one side cannot silently leave UI state undefined.
+export const normalizeAgent = (raw: unknown): Agent | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const id = pickString(record.id);
+  const host = pickString(record.host);
+  if (!id || !host) return null;
+
+  return {
+    id,
+    host,
+    supportedBackends:
+      pickStringArray(record.supportedBackends) ?? pickStringArray(record.supported_backends),
+    runtimeBackendMap:
+      pickStringRecord(record.runtimeBackendMap) ?? pickStringRecord(record.runtime_backend_map),
+    capabilities: pickStringArray(record.capabilities),
+  };
+};
+
+const normalizeAgentList = (raw: unknown): Agent[] => {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((entry) => normalizeAgent(entry))
+    .filter((agent): agent is Agent => agent !== null);
+};
+
 type FetchAgentsOptions = {
   silent?: boolean;
 };
@@ -43,7 +87,8 @@ export const useAgentsStore = create<AgentsState>()((set) => ({
     inFlightFetch = (async () => {
       try {
         const api = getApiClient();
-        const agents = await api.get<Agent[]>('/agents');
+        const raw = await api.get<unknown>('/agents');
+        const agents = normalizeAgentList(raw);
         set((state) => ({
           agents,
           isLoading: silent ? state.isLoading : false,
