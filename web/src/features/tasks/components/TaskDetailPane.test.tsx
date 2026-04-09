@@ -12,7 +12,7 @@ vi.mock('@/components/conductor/layout/Header', () => ({
   Header: ({ title }: { title: string }) => <div data-testid="header">{title}</div>,
 }));
 
-vi.mock('@/components/conductor/chat/ChatView', () => ({
+vi.mock('@/features/chat', () => ({
   ChatView: ({
     taskId,
     autoFocusComposer,

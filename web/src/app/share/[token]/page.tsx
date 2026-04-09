@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { MessageBubble } from '@/components/conductor/chat/MessageBubble';
+import { MessageBubble } from '@/features/chat';
 import type { MessageRole } from '@/shared/types';
 
 interface SharedMessage {

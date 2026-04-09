@@ -11,7 +11,7 @@ vi.mock('@/shared/api/client', () => ({
   }),
 }));
 
-import { useChatStore } from "./chat";
+import { useChatStore } from "./store";
 
 describe("useChatStore sendMessage", () => {
   beforeEach(() => {

@@ -7,7 +7,7 @@ import type { Task } from '@/shared/types';
 import { TaskStatusBadge } from './TaskStatusBadge';
 import { RestartTaskControls } from './RestartTaskControls';
 import type { TaskListViewMode } from './TaskList';
-import { useChatStore } from '@/lib/conductor/stores/chat';
+import { useChatStore } from '@/features/chat';
 import { useTasksStore } from '../store';
 import { useRuntimeStore } from '@/features/realtime';
 import { getApiClient } from '@/shared/api/client';

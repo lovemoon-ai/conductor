@@ -7,7 +7,7 @@ const useRuntimeStoreMock = vi.fn();
 const useTasksStoreMock = vi.fn();
 const useWebSocketStoreMock = vi.fn();
 
-vi.mock('@/lib/conductor/stores/chat', () => ({
+vi.mock('../store', () => ({
   useChatStore: () => useChatStoreMock(),
 }));
 
@@ -49,7 +49,7 @@ vi.mock('./MessageInput', () => ({
   ),
 }));
 
-vi.mock('../common/LoadingSpinner', () => ({
+vi.mock('@/components/conductor/common/LoadingSpinner', () => ({
   LoadingSpinner: () => <div data-testid="loading-spinner" />,
 }));
 

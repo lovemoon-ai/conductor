@@ -1,14 +1,14 @@
 'use client';
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useChatStore } from '@/lib/conductor/stores/chat';
+import { useChatStore } from '../store';
 import { useRuntimeStore } from '@/features/realtime';
 import { useTasksStore } from '@/features/tasks';
 import { useWebSocketStore } from '@/features/realtime';
 import { MessageBubble } from './MessageBubble';
 import { MessageInput } from './MessageInput';
-import { LoadingSpinner } from '../common/LoadingSpinner';
-import { InlineNotice } from '../common/InlineNotice';
+import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';
+import { InlineNotice } from '@/components/conductor/common/InlineNotice';
 
 interface ChatViewProps {
   taskId: string;

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleWSMessage, resolveAppWebSocketUrl, useWebSocketStore } from './store';
-import { useChatStore } from '@/lib/conductor/stores/chat';
+import { useChatStore } from '@/features/chat';
 import { useRuntimeStore } from './runtime-store';
 import { useTasksStore } from '@/features/tasks';
 import { clearAllTerminalOutputSnapshots, getTerminalOutputSnapshot, useTerminalStore } from '@/lib/conductor/stores/terminal';

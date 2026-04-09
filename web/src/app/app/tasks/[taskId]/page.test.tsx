@@ -26,7 +26,7 @@ vi.mock('@/components/conductor/layout/Header', () => ({
   },
 }));
 
-vi.mock('@/components/conductor/chat/ChatView', () => ({
+vi.mock('@/features/chat', () => ({
   ChatView: ({ taskId }: { taskId: string }) => <div>chat:{taskId}</div>,
 }));
 

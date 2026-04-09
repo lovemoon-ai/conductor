@@ -28,7 +28,7 @@ vi.mock('../store', () => ({
   }),
 }));
 
-vi.mock('@/lib/conductor/stores/chat', () => ({
+vi.mock('@/features/chat', () => ({
   useChatStore: (
     selector: (state: {
       sendMessage: typeof sendMessageMock;
