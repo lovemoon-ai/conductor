@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { ThemeProvider } from "@/components/theme/ThemeProvider";
-import { FeedbackProvider } from "@/components/conductor/common/FeedbackProvider";
+import { FeedbackProvider } from "@/components/common/FeedbackProvider";
 import "./globals.css";
 
 const SITE_ICON_URL = "/icon.svg?v=20260309b";

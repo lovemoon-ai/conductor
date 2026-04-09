@@ -1,6 +1,6 @@
 "use client";
 
-import { LoginForm } from "@/components/auth/LoginForm";
+import { LoginForm } from "@/features/auth";
 import { useRouter } from "next/navigation";
 import { useTranslation } from "@/lib/i18n";
 

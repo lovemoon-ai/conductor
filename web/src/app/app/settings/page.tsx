@@ -1,8 +1,8 @@
 'use client';
 
-import { Header } from '@/components/conductor/layout/Header';
-import { useAuthStore } from '@/lib/conductor/stores/auth';
-import { useAgentsStore } from '@/lib/conductor/stores/agents';
+import { Header } from '@/components/layout/Header';
+import { useAuthStore } from '@/features/auth';
+import { useAgentsStore } from '@/features/agents';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 

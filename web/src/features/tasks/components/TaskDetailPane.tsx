@@ -1,0 +1,114 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { Header } from '@/components/layout/Header';
+import { ChatView } from '@/features/chat';
+import { TerminalView } from '@/features/terminal';
+import { LoadingSpinner } from '@/components/common/LoadingSpinner';
+import { useTasksStore } from '../store';
+
+interface TaskDetailPaneProps {
+  taskId: string;
+  showBack?: boolean;
+  onBack?: () => void;
+  compactHeader?: boolean;
+  showConnectionStatus?: boolean;
+  hideHeader?: boolean;
+}
+
+export function TaskDetailPane({
+  taskId,
+  showBack = false,
+  onBack,
+  compactHeader = false,
+  showConnectionStatus = false,
+  hideHeader = false,
+}: TaskDetailPaneProps) {
+  const { tasks, fetchTask, markTaskRead } = useTasksStore();
+  const [blockingLoadTaskId, setBlockingLoadTaskId] = useState<string | null>(null);
+  const task = tasks.find((item) => item.id === taskId);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (taskId) {
+      if (!task) {
+        setBlockingLoadTaskId(taskId);
+      } else {
+        setBlockingLoadTaskId((current) => (current === taskId ? null : current));
+      }
+
+      void fetchTask(taskId).finally(() => {
+        if (!cancelled) {
+          setBlockingLoadTaskId((current) => (current === taskId ? null : current));
+        }
+      });
+    } else {
+      setBlockingLoadTaskId(null);
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchTask, taskId]);
+
+  useEffect(() => {
+    if (task) {
+      setBlockingLoadTaskId((current) => (current === taskId ? null : current));
+    }
+  }, [task, taskId]);
+
+  useEffect(() => {
+    if (taskId) {
+      markTaskRead(taskId);
+    }
+  }, [markTaskRead, taskId]);
+
+  if (!task && blockingLoadTaskId === taskId) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
+  }
+
+  if (!task) {
+    return (
+      <>
+        {!hideHeader ? (
+          <Header
+            title="Task Not Found"
+            showBack={showBack}
+            onBack={onBack}
+            compact={compactHeader}
+          />
+        ) : null}
+        <div className="flex flex-1 items-center justify-center px-6 text-center text-muted">
+          <p>This task does not exist or has been deleted.</p>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      {!hideHeader ? (
+        <Header
+          title={task.title}
+          showBack={showBack}
+          onBack={onBack}
+          showConnectionStatus={showConnectionStatus}
+          compact={compactHeader}
+          connectionTaskId={taskId}
+        />
+      ) : null}
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {task.taskType === 'pty_task' ? (
+          <TerminalView task={task} />
+        ) : (
+          <ChatView taskId={taskId} autoFocusComposer={hideHeader} />
+        )}
+      </div>
+    </>
+  );
+}

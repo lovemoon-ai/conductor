@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { signJwt, hashSecret } from "@/lib/auth/service";
+import { ensureDefaultProject, signJwt, hashSecret } from "@/lib/auth/service";
 import { startNewUserPlusAccess } from "@/lib/subscription/service";
 import { randomBytes } from "crypto";
 
@@ -63,9 +63,7 @@ export async function GET(request: NextRequest) {
         },
       });
       await startNewUserPlusAccess(user.id);
-      await db.project.create({
-        data: { userId: user.id, name: "Default Project", metadata: JSON.stringify({ autoCreated: true }) },
-      });
+      await ensureDefaultProject(user.id);
     }
 
     const jwt = signJwt(user.id);

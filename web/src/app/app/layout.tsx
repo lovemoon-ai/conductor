@@ -2,14 +2,14 @@
 
 import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { useAuthStore } from '@/lib/conductor/stores/auth';
-import { useWebSocket } from '@/lib/conductor/hooks/useWebSocket';
-import { useAuthStorageSync } from '@/lib/conductor/hooks/useAuthStorageSync';
-import { useProjectsStore } from '@/lib/conductor/stores/projects';
-import { useAgentsStore } from '@/lib/conductor/stores/agents';
-import { Sidebar } from '@/components/conductor/layout/Sidebar';
-import { MobileNav } from '@/components/conductor/layout/MobileNav';
-import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';
+import { useAuthStore } from '@/features/auth';
+import { useWebSocket } from '@/features/realtime';
+import { useAuthStorageSync } from '@/features/auth';
+import { useProjectsStore } from '@/features/projects';
+import { useAgentsStore } from '@/features/agents';
+import { Sidebar } from '@/components/layout/Sidebar';
+import { MobileNav } from '@/components/layout/MobileNav';
+import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'conductor-sidebar-collapsed';
 

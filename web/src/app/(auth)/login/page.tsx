@@ -1,6 +1,6 @@
 "use client";
 
-import { LoginForm } from "@/components/auth/LoginForm";
+import { LoginForm } from "@/features/auth";
 import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 

@@ -19,7 +19,7 @@ import yargs from "yargs/yargs";
 import { hideBin } from "yargs/helpers";
 import yaml from "js-yaml";
 import { createAiSession } from "@love-moon/ai-sdk";
-import { ConductorClient, loadConfig } from "@love-moon/conductor-sdk";
+import { ConductorClient, ProjectContext, loadConfig } from "@love-moon/conductor-sdk";
 import {
   buildResumeArgsForBackend as buildCliResumeArgsForBackend,
   resolveResumeContext as resolveCliResumeContext,
@@ -624,6 +624,7 @@ async function main() {
       requestedTitle: requestedTaskTitle,
       backend: cliArgs.backend,
       daemonName: configuredDaemonName,
+      projectPath: runtimeProjectPath,
     });
     injectResolvedTaskId(taskContext.taskId);
     injectResolvedTaskId(taskContext.taskId, env);
@@ -1186,7 +1187,10 @@ async function ensureTaskContext(conductor, opts) {
     };
   }
 
-  const projectId = await resolveProjectId(conductor, opts.requestedProjectId);
+  const projectId = await resolveProjectId(conductor, opts.requestedProjectId, {
+    daemonName: opts.daemonName,
+    projectPath: opts.projectPath,
+  });
   const payload = {
     project_id: projectId,
     task_title: deriveTaskTitle(opts.initialPrompt, opts.requestedTitle, opts.backend),
@@ -1201,15 +1205,6 @@ async function ensureTaskContext(conductor, opts) {
 
   const session = await conductor.createTaskSession(payload);
 
-  // Auto-bind current path to project if not already bound
-  try {
-    await conductor.bindProjectPath(projectId);
-    log(`Bound current path to project ${projectId}`);
-  } catch (error) {
-    // Ignore binding errors - it's not critical
-    log(`Note: Could not bind path to project: ${error.message}`);
-  }
-
   return {
     taskId: session.task_id,
     appUrl: session.app_url || null,
@@ -1218,51 +1213,155 @@ async function ensureTaskContext(conductor, opts) {
   };
 }
 
-async function resolveProjectId(conductor, explicit) {
+export async function resolveProjectId(conductor, explicit, opts = {}) {
   if (explicit) {
     return explicit;
   }
 
-  // First, try to match project by current path
+  const daemonHost = resolveDaemonHost(opts.daemonName);
+  const projectPath = typeof opts.projectPath === "string" && opts.projectPath.trim() ? opts.projectPath.trim() : process.cwd();
+
+  if (!daemonHost) {
+    return resolveDefaultProjectId(conductor);
+  }
+
+  const exists = await isExistingDirectory(projectPath);
+  if (!exists) {
+    throw new Error(`Workspace path does not exist: ${projectPath}`);
+  }
+
+  const snapshot = resolveWorkspaceSnapshot(projectPath);
+  const projectName = deriveProjectName(snapshot);
+
   try {
-    const matchResult = await conductor.matchProjectByPath();
+    const matchResult = await conductor.matchProjectByPath({
+      daemon_host: daemonHost,
+      project_path: snapshot.projectRoot,
+    });
     if (matchResult?.project_id) {
       log(`Matched project ${matchResult.project_name || matchResult.project_id} by path ${matchResult.matched_path}`);
-      return matchResult.project_id;
+      let resolvedProjectId = matchResult.project_id;
+      try {
+        const bindResult = await conductor.bindProjectPath(matchResult.project_id, {
+          daemon_host: daemonHost,
+          project_path: snapshot.projectRoot,
+        });
+        if (typeof bindResult?.project_id === "string" && bindResult.project_id.trim()) {
+          resolvedProjectId = bindResult.project_id.trim();
+        }
+      } catch (error) {
+        log(`Unable to backfill bound workspace path: ${error.message}`);
+        try {
+          const rebound = await conductor.matchProjectByPath({
+            daemon_host: daemonHost,
+            project_path: snapshot.projectRoot,
+          });
+          if (rebound?.project_id) {
+            resolvedProjectId = rebound.project_id;
+          }
+        } catch {
+          // ignore retry match failures
+        }
+      }
+      return resolvedProjectId;
     }
   } catch (error) {
     log(`Unable to match project by path: ${error.message}`);
   }
 
   try {
-    const record = await conductor.getLocalProjectRecord();
-    if (record?.project_id) {
-      try {
-        const listing = await conductor.listProjects();
-        const exists = Array.isArray(listing?.projects)
-          ? listing.projects.some((project) => String(project?.id || "") === String(record.project_id))
-          : false;
-        if (exists) {
-          return record.project_id;
-        }
-        log(`Local session project ${record.project_id} no longer exists; falling back to server project list`);
-      } catch (verifyError) {
-        log(`Unable to verify local project record; using cached project id: ${verifyError.message}`);
-        return record.project_id;
-      }
+    const created = await conductor.createProject({
+      name: projectName,
+      bindingConfirmed: true,
+      daemonHost,
+      workspacePath: snapshot.projectRoot,
+      repoRoot: snapshot.repoRoot,
+      worktreeBranch: snapshot.worktreeBranch,
+      lastCommit: snapshot.lastCommit,
+      fileCount: snapshot.fileCount,
+    });
+    if (created?.id) {
+      log(`Created bound project ${created.name || created.id} for ${daemonHost}:${snapshot.projectRoot}`);
+      return created.id;
     }
+    throw new Error("create_project returned no id");
   } catch (error) {
-    log(`Unable to resolve project via local session: ${error.message}`);
+    log(`Unable to create bound project: ${error.message}`);
   }
 
-  const listing = await conductor.listProjects();
-  const first = listing?.projects?.[0];
-  if (first?.id) {
-    return first.id;
-  }
-  log("No projects available; creating default project...");
   try {
-    const created = await conductor.createProject("default", "Auto-created by conductor-fire");
+    const retryMatch = await conductor.matchProjectByPath({
+      daemon_host: daemonHost,
+      project_path: snapshot.projectRoot,
+    });
+    if (retryMatch?.project_id) {
+      return retryMatch.project_id;
+    }
+  } catch {
+    // ignore retry match failures
+  }
+
+  log(`Unable to resolve bound project for ${daemonHost}:${snapshot.projectRoot}, falling back to default`);
+  return resolveDefaultProjectId(conductor);
+}
+
+function resolveDaemonHost(daemonName) {
+  if (typeof daemonName === "string" && daemonName.trim()) {
+    return daemonName.trim();
+  }
+  const fromEnv = typeof process.env.CONDUCTOR_DAEMON_NAME === "string" ? process.env.CONDUCTOR_DAEMON_NAME.trim() : "";
+  if (fromEnv) {
+    return fromEnv;
+  }
+  const fromAgent = typeof process.env.CONDUCTOR_AGENT_NAME === "string" ? process.env.CONDUCTOR_AGENT_NAME.trim() : "";
+  if (fromAgent) {
+    return fromAgent;
+  }
+  try {
+    return os.hostname();
+  } catch {
+    return "";
+  }
+}
+
+function resolveWorkspaceSnapshot(projectPath) {
+  try {
+    const context = new ProjectContext(projectPath);
+    return context.snapshot();
+  } catch {
+    return {
+      projectRoot: path.resolve(projectPath),
+    };
+  }
+}
+
+function deriveProjectName(snapshot) {
+  const basePath = snapshot.repoRoot || snapshot.projectRoot;
+  const name = basePath ? path.basename(basePath) : "";
+  const baseName = name || "New Project";
+  const digest = createHash("sha1").update(basePath || baseName).digest("hex").slice(0, 8);
+  return `${baseName}-${digest}`;
+}
+
+async function resolveDefaultProjectId(conductor) {
+  try {
+    const listing = await conductor.listProjects();
+    const defaultProject = Array.isArray(listing?.projects)
+      ? listing.projects.find((project) => Boolean(project?.isDefault))
+      : null;
+    if (defaultProject?.id) {
+      return defaultProject.id;
+    }
+  } catch {
+    // ignore list failures
+  }
+
+  log("No bound daemon available; creating default project...");
+  try {
+    const created = await conductor.createProject({
+      name: "Default Project",
+      isDefault: true,
+    });
     if (created?.id) {
       log(`Created default project ${created.id}`);
       return created.id;

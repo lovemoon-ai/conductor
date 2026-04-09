@@ -7,7 +7,13 @@ import { realtimeHub } from "@/lib/realtime/hub";
 import {
   normalizeOptionalString,
   parseJsonObject,
+  serializeJsonObject,
+  normalizeTaskStatus,
 } from "@/lib/tasks/task-config";
+import {
+  acquireTaskWorktreeMutationLock,
+  inheritTaskWorktreeLaunchConfig,
+} from "@/lib/tasks/worktree";
 import { normalizeBackendType } from "@/lib/tasks/pty-runtime";
 import {
   isConductorFireHost,
@@ -19,16 +25,6 @@ import {
   RESTARTABLE_SOURCE_STATUSES,
   STOPPED_TASK_STATUSES,
 } from "@/lib/tasks/restart";
-
-const normalizeTaskStatus = (value: unknown): string => {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "completed") return "completed";
-  if (normalized === "init") return "init";
-  if (normalized === "running") return "running";
-  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
-  return "unknown";
-};
 
 const serializeTaskResponse = (task: {
   id: string;
@@ -86,6 +82,27 @@ export async function POST(
   if (!sourceTask) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
+  const project = await db.project.findFirst({
+    where: { id: sourceTask.projectId, userId: user.id },
+  });
+  if (!project) {
+    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  }
+  const defaultProject = await db.defaultProject.findUnique({
+    where: { userId: user.id },
+    select: { projectId: true },
+  });
+  const isDefaultProject = defaultProject?.projectId === project.id;
+  const projectDaemonHost = normalizeOptionalString((project as { daemonHost?: string | null }).daemonHost);
+  const projectWorkspacePath = normalizeOptionalString((project as { workspacePath?: string | null }).workspacePath);
+  const projectWorktreeBranch = normalizeOptionalString((project as { worktreeBranch?: string | null }).worktreeBranch);
+  if (
+    (!isDefaultProject && (!projectDaemonHost || !projectWorkspacePath)) ||
+    (projectDaemonHost && !projectWorkspacePath) ||
+    (!projectDaemonHost && projectWorkspacePath)
+  ) {
+    return NextResponse.json({ error: "Project binding incomplete" }, { status: 409 });
+  }
   if ((sourceTask.taskType ?? "ai_task") !== "ai_task") {
     return NextResponse.json({ error: "Only ai_task supports restart" }, { status: 409 });
   }
@@ -94,6 +111,8 @@ export async function POST(
   if (!sourceBackend) {
     return NextResponse.json({ error: "Task missing backend binding" }, { status: 409 });
   }
+  const sourceLaunchConfig = parseJsonObject(sourceTask.launchConfig);
+  const inheritedWorktreeLaunchConfig = inheritTaskWorktreeLaunchConfig(sourceLaunchConfig);
 
   const sourceSessionId = normalizeOptionalString(sourceTask.sessionId);
   if (!sourceSessionId) {
@@ -158,11 +177,24 @@ export async function POST(
     );
   }
 
-  const restartAgentHost = isManualFireTask
+  let restartAgentHost = isManualFireTask
     ? manualFireDaemonHostCandidates.find((host) =>
         connectedAgents.some((agent) => agent.host === host),
       ) ?? sourceExecutionDaemonHost
     : sourceAgentHost;
+  if (projectDaemonHost) {
+    if (
+      sourceAgentHost &&
+      !isConductorFireHost(sourceAgentHost) &&
+      sourceAgentHost !== projectDaemonHost
+    ) {
+      return NextResponse.json(
+        { error: `Task daemon ${sourceAgentHost} does not match project binding ${projectDaemonHost}` },
+        { status: 409 },
+      );
+    }
+    restartAgentHost = projectDaemonHost;
+  }
   if (!restartAgentHost) {
     return NextResponse.json(
       {
@@ -177,9 +209,11 @@ export async function POST(
   if (!restartAgent) {
     return NextResponse.json(
       {
-        error: isManualFireTask
-          ? `Original daemon ${restartAgentHost} is offline`
-          : `Source daemon ${sourceAgentHost} is offline`,
+        error: projectDaemonHost
+          ? `Project daemon ${restartAgentHost} is offline`
+          : isManualFireTask
+            ? `Original daemon ${restartAgentHost} is offline`
+            : `Source daemon ${sourceAgentHost} is offline`,
       },
       { status: 409 },
     );
@@ -225,6 +259,13 @@ export async function POST(
 
   if (isInplaceRestart) {
     const updatedTask = await db.$transaction(async (tx) => {
+      if (inheritedWorktreeLaunchConfig) {
+        await acquireTaskWorktreeMutationLock(
+          tx as any,
+          sourceTask.id,
+        );
+      }
+
       await tx.agentOutbox.create({
         data: {
           userId: user.id,
@@ -244,6 +285,7 @@ export async function POST(
               source_session_id: sourceSessionId,
               source_session_file_path: sourceTask.sessionFilePath ?? undefined,
               target_backend_type: targetBackend,
+              target_launch_config: inheritedWorktreeLaunchConfig ?? undefined,
               request_id: requestId,
             },
           }),
@@ -288,8 +330,19 @@ export async function POST(
     restartSourceBackendType: sourceBackend,
     restartStrategy: "new_task",
   };
+  const successorLaunchConfig = inheritedWorktreeLaunchConfig ?? {
+    ...(projectWorkspacePath ? { cwd: projectWorkspacePath } : {}),
+    ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
+  };
 
   const createdTask = await db.$transaction(async (tx) => {
+    if (inheritedWorktreeLaunchConfig) {
+      await acquireTaskWorktreeMutationLock(
+        tx as any,
+        sourceTask.id,
+      );
+    }
+
     const task = await tx.task.create({
       data: {
         id: successorTaskId,
@@ -302,7 +355,9 @@ export async function POST(
         backendType: targetBackend,
         sessionId: null,
         sessionFilePath: null,
-        launchConfig: null,
+        launchConfig: serializeJsonObject(
+          Object.keys(successorLaunchConfig).length > 0 ? successorLaunchConfig : null,
+        ),
         metadata: JSON.stringify(successorMetadata),
       },
     });
@@ -338,6 +393,10 @@ export async function POST(
             source_session_id: sourceSessionId,
             source_session_file_path: sourceTask.sessionFilePath ?? undefined,
             target_backend_type: targetBackend,
+            target_launch_config:
+              Object.keys(successorLaunchConfig).length > 0
+                ? successorLaunchConfig
+                : undefined,
             request_id: requestId,
           },
         }),

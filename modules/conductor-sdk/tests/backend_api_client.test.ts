@@ -18,7 +18,7 @@ describe('BackendApiClient', () => {
       expect(init?.headers).toMatchObject({ Authorization: 'Bearer token' });
       return new Response(
         JSON.stringify([
-          { id: 'p1', name: 'Demo', description: 'Project' },
+          { id: 'p1', name: 'Demo' },
           { id: 'p2', name: null },
           { name: 'missing-id' },
         ]),

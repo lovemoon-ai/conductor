@@ -25,15 +25,18 @@ conductor.db
 web/public/app/.last_build_id
 
 .conductor-*.log
+.conductor/worktrees/
+.conductor/state/
 cli/pnpm-lock.yaml
 web/public/._web
 web/package-lock.json
 conductor.log
 conductor-terminal.log
-.conductor
+.conductor/state
 .aiden
 web/.conductor-data/
 .worktrees/
 
 Makefile
 web/next-env.d.ts
+.claude/worktrees

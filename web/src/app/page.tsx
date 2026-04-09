@@ -5,8 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ConductorLogo } from "@/components/ui/ConductorLogo";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { useTranslation } from "@/lib/i18n";
-import { useAuthStore } from "@/lib/conductor/stores/auth";
-import { useAuthStorageSync } from "@/lib/conductor/hooks/useAuthStorageSync";
+import { useAuthStore } from "@/features/auth";
+import { useAuthStorageSync } from "@/features/auth";
 
 type OAuthBootstrapState = "idle" | "loading" | "retrying" | "failed";
 

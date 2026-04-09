@@ -37,13 +37,17 @@ vi.mock("@/components/theme/ThemeToggle", () => ({
   ThemeToggle: () => <div>theme-toggle</div>,
 }));
 
-vi.mock("@/components/subscription/SubscriptionBanner", () => ({
-  default: () => <div>subscription-banner</div>,
+vi.mock("@/features/subscription", () => ({
+  SubscriptionBanner: () => <div>subscription-banner</div>,
 }));
 
-vi.mock("@/lib/conductor/stores/auth", () => ({
-  useAuthStore: (selector: (state: typeof mockAuthState) => unknown) => selector(mockAuthState),
-}));
+vi.mock("@/features/auth", async () => {
+  const actual = await vi.importActual<typeof import("@/features/auth")>("@/features/auth");
+  return {
+    ...actual,
+    useAuthStore: (selector: (state: typeof mockAuthState) => unknown) => selector(mockAuthState),
+  };
+});
 
 import Home from "./page";
 

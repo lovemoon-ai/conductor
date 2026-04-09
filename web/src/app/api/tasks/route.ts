@@ -6,12 +6,17 @@ import { realtimeHub } from "@/lib/realtime/hub";
 import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
 import {
   normalizeOptionalString,
+  normalizeTaskStatus,
   normalizeTaskType,
   parseJsonObject,
   parseTaskType,
   serializeJsonObject,
   type JsonObject,
 } from "@/lib/tasks/task-config";
+import {
+  buildTaskWorktreeLaunchConfig,
+  isTaskWorktreeRequested,
+} from "@/lib/tasks/worktree";
 import {
   applyLegacyTaskShape,
   isMissingPtySchemaError,
@@ -32,16 +37,6 @@ import {
   isConductorFireHost,
 } from "@/lib/subscription/plan-limits";
 import { recoverStaleDisconnectedAgentTasks } from "@/lib/tasks/stale-recovery";
-
-const normalizeTaskStatus = (value: unknown): string => {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "completed") return "completed";
-  if (normalized === "init") return "init";
-  if (normalized === "running") return "running";
-  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
-  return "unknown";
-};
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
@@ -398,10 +393,33 @@ export async function POST(request: NextRequest) {
     where: { id: projectId, userId: user.id },
   });
   if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  const defaultProject = await db.defaultProject.findUnique({
+    where: { userId: user.id },
+    select: { projectId: true },
+  });
+  const isDefaultProject = defaultProject?.projectId === project.id;
+  const projectDaemonHost = normalizeOptionalString((project as { daemonHost?: string | null }).daemonHost);
+  const projectWorkspacePath = normalizeOptionalString((project as { workspacePath?: string | null }).workspacePath);
+  const projectRepoRoot = normalizeOptionalString((project as { repoRoot?: string | null }).repoRoot);
+  const projectWorktreeBranch = normalizeOptionalString((project as { worktreeBranch?: string | null }).worktreeBranch);
+  const projectLastCommit = normalizeOptionalString((project as { lastCommit?: string | null }).lastCommit);
+  if (
+    (!isDefaultProject && (!projectDaemonHost || !projectWorkspacePath)) ||
+    (projectDaemonHost && !projectWorkspacePath) ||
+    (!projectDaemonHost && projectWorkspacePath)
+  ) {
+    return NextResponse.json({ error: "Project binding incomplete" }, { status: 409 });
+  }
 
   const connectedAgents = realtimeHub.getAgentsForUser(
     user.id
   ) as ConnectedAgent[];
+  if (projectDaemonHost && !connectedAgents.some((agent) => agent.host === projectDaemonHost)) {
+    return NextResponse.json(
+      { error: `Project daemon ${projectDaemonHost} is offline` },
+      { status: 409 },
+    );
+  }
   const hasTaskTypeField = hasBodyField(normalizedBody, "task_type", "taskType");
   const rawTaskType = readBodyField(normalizedBody, "task_type", "taskType");
   if (hasTaskTypeField && parseTaskType(rawTaskType) === null) {
@@ -429,8 +447,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "launch_config must be an object" }, { status: 400 });
   }
   let launchConfig = launchConfigField.value;
+  const worktreeRequested = isTaskWorktreeRequested(launchConfig);
+  if (taskType === "pty_task" && worktreeRequested) {
+    return NextResponse.json({ error: "PTY task does not support worktree" }, { status: 400 });
+  }
+  const requestedId =
+    typeof normalizedBody.id === "string" && normalizedBody.id.trim()
+      ? normalizedBody.id
+      : worktreeRequested
+        ? randomUUID()
+        : undefined;
+  if (worktreeRequested && (!projectDaemonHost || !projectWorkspacePath || !projectRepoRoot)) {
+    return NextResponse.json(
+      { error: "Worktree requires a git-backed bound project" },
+      { status: 409 },
+    );
+  }
   if (taskType === "ai_task") {
-    const aiLaunchConfig = {
+    const aiLaunchConfig: JsonObject = {
       ...(launchConfig ?? {}),
       ...(requestedBackendType && launchConfig?.backendType === undefined
         ? { backendType: requestedBackendType }
@@ -445,7 +479,34 @@ export async function POST(request: NextRequest) {
         ? { sessionFilePath: requestedSessionFilePath }
         : {}),
     };
-    launchConfig = Object.keys(aiLaunchConfig).length > 0 ? aiLaunchConfig : null;
+    if (worktreeRequested) {
+      try {
+        launchConfig = buildTaskWorktreeLaunchConfig({
+          launchConfig: aiLaunchConfig,
+          worktreeId: requestedId!,
+          projectRepoRoot: projectRepoRoot!,
+          projectWorkspacePath: projectWorkspacePath!,
+          projectWorktreeBranch,
+          projectLastCommit,
+        });
+      } catch (error) {
+        return NextResponse.json(
+          { error: error instanceof Error ? error.message : "Invalid worktree request" },
+          { status: 409 },
+        );
+      }
+    } else {
+      if (projectWorkspacePath) {
+        aiLaunchConfig.cwd = projectWorkspacePath;
+      }
+      if (projectWorktreeBranch) {
+        aiLaunchConfig.worktreeBranch = projectWorktreeBranch;
+      }
+      launchConfig = Object.keys(aiLaunchConfig).length > 0 ? aiLaunchConfig : null;
+    }
+  }
+  if (taskType === "pty_task" && projectWorkspacePath && launchConfig?.cwd === undefined) {
+    launchConfig = { ...(launchConfig ?? {}), cwd: projectWorkspacePath };
   }
   if (taskType === "pty_task") {
     const launchConfigError = validatePtyLaunchConfig(launchConfig);
@@ -453,9 +514,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: launchConfigError }, { status: 400 });
     }
   }
+  const hasAgentHostField = hasBodyField(normalizedBody, "agent_host", "agentHost");
   let agentHost = normalizeOptionalString(
     readBodyField(normalizedBody, "agent_host", "agentHost")
   );
+  if (projectDaemonHost) {
+    if (hasAgentHostField && agentHost && agentHost !== projectDaemonHost) {
+      return NextResponse.json(
+        { error: `Project daemon ${projectDaemonHost} must be used for this task` },
+        { status: 409 },
+      );
+    }
+    agentHost = projectDaemonHost;
+  }
   if (taskType === "pty_task") {
     const resolvedPtyAgent = resolvePtyAgentHost({
       connectedAgents,
@@ -486,10 +557,6 @@ export async function POST(request: NextRequest) {
       ...(initialContent ? { initialContent } : {}),
     };
   }
-  const requestedId =
-    typeof normalizedBody.id === "string" && normalizedBody.id.trim()
-      ? normalizedBody.id
-      : undefined;
   const title = normalizeOptionalString(normalizedBody.title) ?? "New Task";
   const defaultTaskStatus =
     taskType === "ai_task" && typeof agentHost === "string" && isConductorFireHost(agentHost)
@@ -608,6 +675,7 @@ export async function POST(request: NextRequest) {
             title: task.title,
             backend_type: task.backendType ?? metadata?.backendType,
             initial_content: initialMessageContent ?? undefined,
+            launch_config: launchConfig ?? undefined,
             request_id: requestId,
           },
         },

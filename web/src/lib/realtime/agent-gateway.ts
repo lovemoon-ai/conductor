@@ -1,6 +1,11 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage } from "http";
-import { realtimeHub, type AgentLogCollectionResult } from "./hub";
+import {
+  realtimeHub,
+  type AgentLogCollectionResult,
+  type ProjectPathValidationResult,
+  type TaskWorktreeCleanupResult,
+} from "./hub";
 import { authenticateToken } from "../auth/service";
 import { randomUUID } from "crypto";
 import { db } from "../db";
@@ -19,6 +24,7 @@ import {
   isMissingPtySchemaError,
   withPtySchemaFallback,
 } from "@/lib/tasks/pty-compat";
+import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 
 export const AGENT_WS_PATH = "/ws/agent";
 
@@ -54,6 +60,34 @@ type AgentEvent =
           created_at?: string;
           request_id?: string;
         };
+      };
+    }
+  | {
+      type: "project_path_validated";
+      payload: {
+        request_id: string;
+        daemon_host?: string;
+        workspace_path?: string | null;
+        repo_root?: string | null;
+        worktree_branch?: string | null;
+        last_commit?: string | null;
+        file_count?: number | string | null;
+        error?: string | null;
+        error_code?: string | null;
+        validated_at?: string;
+      };
+    }
+  | {
+      type: "task_worktree_cleanup_result";
+      payload: {
+        request_id: string;
+        task_id: string;
+        daemon_host?: string;
+        worktree_branch?: string | null;
+        removed_path?: string | null;
+        cleaned?: boolean;
+        error?: string | null;
+        cleaned_at?: string;
       };
     }
   | {
@@ -344,15 +378,6 @@ const sendEnvelope = (socket: WebSocket, envelope: Record<string, unknown>) => {
   socket.send(JSON.stringify(envelope));
 };
 
-const normalizeTaskStatus = (value: unknown): string => {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "completed") return "completed";
-  if (normalized === "init") return "init";
-  if (normalized === "running") return "running";
-  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
-  return "unknown";
-};
 
 const normalizeOptionalString = (value: unknown): string | null => {
   if (typeof value !== "string") return null;
@@ -440,6 +465,51 @@ const normalizeAgentLogEntries = (value: unknown): AgentLogCollectionResult["log
       };
     })
     .filter((entry): entry is AgentLogCollectionResult["logs"][number] => Boolean(entry));
+};
+
+const normalizeProjectPathValidationResult = (
+  payload: Record<string, unknown>,
+  agentHost: string,
+): ProjectPathValidationResult | null => {
+  const requestId = normalizeOptionalString(payload.request_id);
+  if (!requestId) {
+    return null;
+  }
+
+  return {
+    request_id: requestId,
+    daemon_host: normalizeOptionalString(payload.daemon_host) || agentHost,
+    workspace_path: normalizeOptionalString(payload.workspace_path),
+    repo_root: normalizeOptionalString(payload.repo_root),
+    worktree_branch: normalizeOptionalString(payload.worktree_branch),
+    last_commit: normalizeOptionalString(payload.last_commit),
+    file_count: normalizeNonNegativeInt(payload.file_count),
+    error: normalizeOptionalString(payload.error),
+    error_code: normalizeOptionalString(payload.error_code),
+    validated_at: normalizeIsoDate(payload.validated_at, new Date().toISOString()),
+  };
+};
+
+const normalizeTaskWorktreeCleanupResult = (
+  payload: Record<string, unknown>,
+  agentHost: string,
+): TaskWorktreeCleanupResult | null => {
+  const requestId = normalizeOptionalString(payload.request_id);
+  const taskId = normalizeOptionalString(payload.task_id);
+  if (!requestId || !taskId) {
+    return null;
+  }
+
+  return {
+    request_id: requestId,
+    task_id: taskId,
+    daemon_host: normalizeOptionalString(payload.daemon_host) || agentHost,
+    worktree_branch: normalizeOptionalString(payload.worktree_branch),
+    removed_path: normalizeOptionalString(payload.removed_path),
+    cleaned: payload.cleaned !== false,
+    error: normalizeOptionalString(payload.error),
+    cleaned_at: normalizeIsoDate(payload.cleaned_at, new Date().toISOString()),
+  };
 };
 
 const getAssignedTaskHost = (task: TaskOwnershipRecord): string | null =>
@@ -1208,6 +1278,30 @@ export const setupAgentGateway = (): WebSocketServer => {
               type: "agent_log_collected_recorded",
               payload: { request_id: requestId, task_id: taskId },
             });
+            break;
+          }
+          case "project_path_validated": {
+            const normalized = normalizeProjectPathValidationResult(
+              event.payload as Record<string, unknown>,
+              agentHost,
+            );
+            if (!normalized) {
+              sendEnvelope(socket, { type: "error", payload: { message: "project_path_validated requires request_id" } });
+              break;
+            }
+            realtimeHub.resolveProjectPathValidation(normalized);
+            break;
+          }
+          case "task_worktree_cleanup_result": {
+            const normalized = normalizeTaskWorktreeCleanupResult(
+              event.payload as Record<string, unknown>,
+              agentHost,
+            );
+            if (!normalized) {
+              sendEnvelope(socket, { type: "error", payload: { message: "task_worktree_cleanup_result requires request_id and task_id" } });
+              break;
+            }
+            realtimeHub.resolveTaskWorktreeCleanup(normalized);
             break;
           }
           case "terminal_opened": {

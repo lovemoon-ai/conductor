@@ -30,6 +30,7 @@ model User {
   updatedAt          DateTime    @updatedAt @map("updated_at")
 
   projects Project[]
+  defaultProject DefaultProject? @relation("UserDefaultProject")
   tokens   UserToken[]
   orders   Order[]
   externalAccounts ExternalAccount[]
@@ -65,20 +66,44 @@ model UserToken {
 }
 
 model Project {
-  id        String   @id @default(uuid())
-  userId    String   @map("user_id")
-  name      String
-  metadata  String?
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id            String   @id @default(uuid())
+  userId        String   @map("user_id")
+  name          String
+  daemonHost    String?  @map("daemon_host")
+  workspacePath String?  @map("workspace_path")
+  repoRoot      String?  @map("repo_root")
+  worktreeBranch String? @map("worktree_branch")
+  lastCommit    String?  @map("last_commit")
+  fileCount     Int?     @map("file_count")
+  metadata      String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
 
   user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  defaultProject DefaultProject? @relation("ProjectDefaultProject")
   tasks Task[]
   channelConversations ChannelConversation[]
 
   @@index([userId])
-  @@unique([userId, name])
+  @@index([userId, name])
+  @@index([userId, daemonHost])
+  @@index([userId, workspacePath])
+  @@unique([userId, daemonHost, name])
+  @@unique([userId, daemonHost, workspacePath])
   @@map("projects")
+}
+
+model DefaultProject {
+  id        String   @id @default(uuid())
+  userId    String   @unique @map("user_id")
+  projectId String   @unique @map("project_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user    User    @relation("UserDefaultProject", fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation("ProjectDefaultProject", fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("default_projects")
 }
 
 model Task {

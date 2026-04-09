@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'crypto';
 import { db } from '@/lib/db';
+import { ensureDefaultProject } from '@/lib/auth/service';
 import { enqueueAndAttemptAgentCommand } from '@/lib/realtime/agent-outbox';
 import { realtimeHub } from '@/lib/realtime/hub';
 import { isConductorFireHost } from '@/lib/subscription/plan-limits';
@@ -33,13 +34,7 @@ function buildConversationKey(event: NormalizedInboundEvent): { provider: string
 }
 
 async function getDefaultProjectId(userId: string): Promise<string> {
-  const project = await db.project.findFirst({
-    where: { userId },
-    orderBy: { createdAt: 'asc' },
-  });
-  if (!project) {
-    throw new Error(`No project found for user ${userId}`);
-  }
+  const project = await ensureDefaultProject(userId);
   return project.id;
 }
 

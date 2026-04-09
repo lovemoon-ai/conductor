@@ -1,11 +1,12 @@
 import { randomUUID } from "crypto";
-import { getMessageAttachments } from "@/lib/conductor/message-attachments";
+import { getMessageAttachments } from "@/shared/utils/message-attachments";
 import { db } from "@/lib/db";
 import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
 import {
   isConductorFireHost,
 } from "@/lib/subscription/plan-limits";
+import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 import { projectTaskMessage } from "./task-event-projector";
 
 type ConnectedAgent = {
@@ -38,16 +39,6 @@ const normalizeOptionalString = (value: unknown): string | null => {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   return normalized || null;
-};
-
-const normalizeTaskStatus = (value: unknown): string => {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "completed") return "completed";
-  if (normalized === "init") return "init";
-  if (normalized === "running") return "running";
-  if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
-  return "unknown";
 };
 
 const supportsBackend = (agent: ConnectedAgent, backendType: string): boolean =>
@@ -127,12 +118,21 @@ export async function createTaskForUser(input: {
       error: "Project not found",
     });
   }
+  const projectWorkspacePath = normalizeOptionalString(
+    (project as { workspacePath?: string | null }).workspacePath,
+  );
+  const projectDaemonHost = normalizeOptionalString(
+    (project as { daemonHost?: string | null }).daemonHost,
+  );
+  const projectWorktreeBranch = normalizeOptionalString(
+    (project as { worktreeBranch?: string | null }).worktreeBranch,
+  );
 
   const connectedAgents = realtimeHub.getAgentsForUser(input.userId) as ConnectedAgent[];
   const requestedBackendType = normalizeBackendType(input.backendType);
   const requestedSessionId = normalizeOptionalString(input.sessionId);
   const requestedSessionFilePath = normalizeOptionalString(input.sessionFilePath);
-  let agentHost = input.agentHost;
+  let agentHost = projectDaemonHost ?? input.agentHost ?? null;
   if (!agentHost) {
     agentHost = pickDefaultAgentHost(connectedAgents, requestedBackendType) ?? null;
   }
@@ -152,6 +152,17 @@ export async function createTaskForUser(input: {
     };
   }
 
+  const launchConfig = {
+    ...(requestedBackendType ? { backendType: requestedBackendType } : {}),
+    ...(input.initialContent ? { initialContent: input.initialContent } : {}),
+    ...(requestedSessionId ? { resumeSessionId: requestedSessionId } : {}),
+    ...(requestedSessionFilePath ? { sessionFilePath: requestedSessionFilePath } : {}),
+    ...(projectWorkspacePath ? { cwd: projectWorkspacePath } : {}),
+    ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
+  };
+  const serializedLaunchConfig =
+    Object.keys(launchConfig).length > 0 ? JSON.stringify(launchConfig) : null;
+
   const task = await db.task.create({
     data: {
       id: input.id,
@@ -168,6 +179,7 @@ export async function createTaskForUser(input: {
       backendType: requestedBackendType,
       sessionId: requestedSessionId,
       sessionFilePath: requestedSessionFilePath,
+      launchConfig: serializedLaunchConfig,
       metadata: metadata ? JSON.stringify(metadata) : null,
     },
   });
@@ -216,6 +228,7 @@ export async function createTaskForUser(input: {
             title: task.title,
             backend_type: task.backendType ?? metadata?.backendType,
             initial_content: initialContent ?? undefined,
+            launch_config: serializedLaunchConfig ? launchConfig : undefined,
             request_id: requestId,
           },
         },

@@ -12,7 +12,7 @@ import next from "next";
 import { WebSocketServer, WebSocket } from "ws";
 import { setupAppGateway, APP_WS_PATH } from "./src/lib/realtime/app-gateway";
 import { setupAgentGateway, AGENT_WS_PATH } from "./src/lib/realtime/agent-gateway";
-import { startTaskAttachmentJanitor } from "./src/lib/conductor/task-file-storage";
+import { startTaskAttachmentJanitor } from "./src/lib/tasks/task-file-storage";
 import { realtimeHub } from "./src/lib/realtime/hub";
 import { db } from "./src/lib/db";
 

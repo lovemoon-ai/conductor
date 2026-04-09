@@ -13,7 +13,7 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock }),
 }));
 
-vi.mock('@/components/conductor/layout/Header', () => ({
+vi.mock('@/components/layout/Header', () => ({
   Header: ({
     title,
     showConnectionStatus,
@@ -26,23 +26,27 @@ vi.mock('@/components/conductor/layout/Header', () => ({
   },
 }));
 
-vi.mock('@/components/conductor/chat/ChatView', () => ({
+vi.mock('@/features/chat', () => ({
   ChatView: ({ taskId }: { taskId: string }) => <div>chat:{taskId}</div>,
 }));
 
-vi.mock('@/components/conductor/terminal/TerminalView', () => ({
+vi.mock('@/features/terminal', () => ({
   TerminalView: ({ task }: { task: { id: string } }) => <div>terminal:{task.id}</div>,
 }));
 
-vi.mock('@/components/conductor/common/LoadingSpinner', () => ({
+vi.mock('@/components/common/LoadingSpinner', () => ({
   LoadingSpinner: ({ children }: { children?: ReactNode }) => <div>{children ?? 'loading'}</div>,
 }));
 
-vi.mock('@/components/conductor/tasks/RestartTaskControls', () => ({
-  RestartTaskControls: () => null,
-}));
+vi.mock('@/features/tasks', async () => {
+  const actual = await vi.importActual<typeof import('@/features/tasks')>('@/features/tasks');
+  return {
+    ...actual,
+    RestartTaskControls: () => null,
+  };
+});
 
-vi.mock('@/lib/conductor/stores/tasks', () => ({
+vi.mock('@/features/tasks/store', () => ({
   useTasksStore: (selector?: (state: {
     tasks: Array<{
       id: string;

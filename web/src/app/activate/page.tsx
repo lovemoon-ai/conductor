@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useAuthStore } from "@/lib/conductor/stores/auth";
+import { useAuthStore } from "@/features/auth";
 
 type SessionStatus = "pending" | "approved" | "denied" | "expired" | "consumed";
 

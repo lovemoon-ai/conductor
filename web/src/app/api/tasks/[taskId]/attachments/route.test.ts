@@ -35,7 +35,7 @@ vi.mock("@/lib/realtime/agent-outbox", () => ({
   enqueueAndAttemptAgentCommand: vi.fn().mockResolvedValue({ delivered: false }),
 }));
 
-vi.mock("@/lib/conductor/task-file-storage", () => ({
+vi.mock("@/lib/tasks/task-file-storage", () => ({
   writeTaskAttachment: vi.fn(),
   readTaskAttachment: vi.fn(),
 }));
@@ -44,7 +44,7 @@ const { getActiveSubscriptionUser } = await import("@/lib/auth/middleware");
 const { db } = await import("@/lib/db");
 const { realtimeHub } = await import("@/lib/realtime/hub");
 const { enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
-const { writeTaskAttachment, readTaskAttachment } = await import("@/lib/conductor/task-file-storage");
+const { writeTaskAttachment, readTaskAttachment } = await import("@/lib/tasks/task-file-storage");
 
 describe("/api/tasks/[taskId]/attachments", () => {
   beforeEach(() => {

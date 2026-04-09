@@ -1,7 +1,10 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import { BackendApiClient, BackendApiError } from './backend/index.js';
 import { ConductorConfig, loadConfig } from './config/index.js';
+import { ProjectContext } from './context/index.js';
 import { getPlanLimitMessageFromError } from './limits/index.js';
 import { MessageRouter } from './message/index.js';
 import {
@@ -475,14 +478,22 @@ export class ConductorClient {
           : {
               id: project.id,
               name: project.name ?? null,
-              description: project.description ?? null,
             },
       ),
     };
   }
 
-  async createProject(name: string, description?: string, metadata?: Record<string, unknown>): Promise<Record<string, any>> {
-    const project = await this.backendApi.createProject({ name, description, metadata });
+  async createProject(name: string, metadata?: Record<string, unknown>): Promise<Record<string, any>>;
+  async createProject(payload: Record<string, any>): Promise<Record<string, any>>;
+  async createProject(
+    nameOrPayload: string | Record<string, any>,
+    metadata?: Record<string, unknown>,
+  ): Promise<Record<string, any>> {
+    const payload =
+      typeof nameOrPayload === 'string'
+        ? { name: nameOrPayload, metadata }
+        : { ...nameOrPayload };
+    const project = await this.backendApi.createProject(payload);
     return typeof (project as any).asObject === 'function' ? (project as any).asObject() : (project as any);
   }
 
@@ -611,13 +622,23 @@ export class ConductorClient {
   }
 
   async matchProjectByPath(payload: Record<string, any> = {}): Promise<Record<string, any>> {
-    const hostname = typeof payload.hostname === 'string' ? payload.hostname : currentHostname();
-    const projectPath =
+    const daemonHost =
+      (typeof payload.daemon_host === 'string' && payload.daemon_host.trim()) ||
+      (typeof payload.daemonHost === 'string' && payload.daemonHost.trim()) ||
+      (typeof payload.hostname === 'string' && payload.hostname.trim()) ||
+      this.agentHost;
+    const projectPath = resolveWorkspacePath(
       typeof payload.project_path === 'string' && payload.project_path
         ? payload.project_path
-        : this.projectPath;
+        : typeof payload.projectPath === 'string' && payload.projectPath
+          ? payload.projectPath
+          : this.projectPath,
+    );
+    if (!projectPath) {
+      throw new Error('project_path is required');
+    }
     const result = await this.backendApi.matchProjectByPath({
-      hostname,
+      daemon_host: daemonHost,
       path: projectPath,
     });
     if (result.project) {
@@ -638,21 +659,39 @@ export class ConductorClient {
     if (!projectId) {
       throw new Error('project_id is required');
     }
-    const hostname = typeof payload.hostname === 'string' ? payload.hostname : currentHostname();
-    const projectPath =
+    const daemonHost =
+      (typeof payload.daemon_host === 'string' && payload.daemon_host.trim()) ||
+      (typeof payload.daemonHost === 'string' && payload.daemonHost.trim()) ||
+      (typeof payload.hostname === 'string' && payload.hostname.trim()) ||
+      this.agentHost;
+    const projectPath = resolveWorkspacePath(
       typeof payload.project_path === 'string' && payload.project_path
         ? payload.project_path
-        : this.projectPath;
-    const project = await this.backendApi.getProject(projectId);
-    const metadata = (project.metadata || {}) as Record<string, unknown>;
-    const localPaths = (metadata.localPaths || {}) as Record<string, string>;
-    localPaths[hostname] = projectPath;
-    metadata.localPaths = localPaths;
-    await this.backendApi.updateProject(projectId, { metadata });
+        : typeof payload.projectPath === 'string' && payload.projectPath
+          ? payload.projectPath
+          : this.projectPath,
+    );
+    const snapshot = resolveWorkspaceSnapshot(projectPath);
+    const boundProject = await this.backendApi.updateProject(projectId, {
+      bindingConfirmed: true,
+      daemonHost,
+      workspacePath: snapshot.projectRoot,
+      repoRoot: snapshot.repoRoot,
+      worktreeBranch: snapshot.worktreeBranch,
+      lastCommit: snapshot.lastCommit,
+      fileCount: snapshot.fileCount,
+    });
     return {
       success: true,
-      hostname,
-      path: projectPath,
+      project_id: boundProject.id,
+      project_name: boundProject.name ?? null,
+      hostname: daemonHost,
+      daemon_host: daemonHost,
+      path: snapshot.projectRoot,
+      repo_root: snapshot.repoRoot ?? null,
+      worktree_branch: snapshot.worktreeBranch ?? null,
+      last_commit: snapshot.lastCommit ?? null,
+      file_count: snapshot.fileCount ?? null,
     };
   }
 
@@ -1145,4 +1184,27 @@ function resolveAgentHost(env: Record<string, string | undefined>, explicit?: st
 function normalizeDeliveryScopeId(scopeId: string): string {
   const normalized = String(scopeId || '').trim();
   return normalized || 'default';
+}
+
+function resolveWorkspacePath(candidate: string): string {
+  const trimmed = typeof candidate === 'string' ? candidate.trim() : '';
+  if (!trimmed) {
+    return '';
+  }
+  try {
+    return fs.realpathSync(trimmed);
+  } catch {
+    return path.resolve(trimmed);
+  }
+}
+
+function resolveWorkspaceSnapshot(projectPath: string): ReturnType<ProjectContext['snapshot']> {
+  try {
+    const context = new ProjectContext(projectPath);
+    return context.snapshot();
+  } catch {
+    return {
+      projectRoot: resolveWorkspacePath(projectPath),
+    };
+  }
 }

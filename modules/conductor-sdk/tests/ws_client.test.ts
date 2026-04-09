@@ -179,6 +179,8 @@ describe('ConductorWebSocketClient', () => {
   });
 
   test('forces reconnect when pong is missing', async () => {
+    vi.useFakeTimers();
+
     class NoPongSocket extends FakeSocket {
       override async ping(): Promise<void> {
         if (this.closed) {
@@ -203,7 +205,7 @@ describe('ConductorWebSocketClient', () => {
     });
 
     await client.connect();
-    await new Promise((resolve) => setTimeout(resolve, 35));
+    await vi.advanceTimersByTimeAsync(50);
 
     expect(disconnectReasons).toContain('pong_timeout');
     expect(connections.length).toBeGreaterThanOrEqual(2);

@@ -1,24 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
+import {
+  readProjectBindingPath,
+  serializeProject,
+} from "../shared";
 
-interface ProjectMetadata {
-  localPaths?: Record<string, string>;
-  [key: string]: unknown;
-}
-
-function getBoundPath(localPaths: Record<string, string>, hostname: string): string | null {
-  const direct = localPaths[hostname];
-  if (typeof direct === "string" && direct.trim()) return direct;
-
-  const defaultPath = localPaths.default;
-  if (typeof defaultPath === "string" && defaultPath.trim()) return defaultPath;
-
-  const wildcardPath = localPaths["*"];
-  if (typeof wildcardPath === "string" && wildcardPath.trim()) return wildcardPath;
-
-  return null;
-}
+const normalizePath = (value: string): string => value.replace(/\/+$/, "");
 
 export async function POST(request: NextRequest) {
   const userResult = await getActiveSubscriptionUser(request);
@@ -26,53 +14,101 @@ export async function POST(request: NextRequest) {
   const user = userResult;
 
   const body = await request.json();
-  const { hostname, path: requestPath } = body;
+  const normalizedBody =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
+  const daemonHost =
+    (typeof normalizedBody.daemonHost === "string" ? normalizedBody.daemonHost.trim() : "") ||
+    (typeof normalizedBody.daemon_host === "string" ? normalizedBody.daemon_host.trim() : "") ||
+    (typeof normalizedBody.hostname === "string" ? normalizedBody.hostname.trim() : "");
+  const requestPath = typeof normalizedBody.path === "string" ? normalizedBody.path.trim() : "";
 
-  if (!hostname || !requestPath) {
-    return NextResponse.json({ error: "hostname and path are required" }, { status: 400 });
+  if (!daemonHost || !requestPath) {
+    return NextResponse.json({ error: "daemonHost and path are required" }, { status: 400 });
   }
 
   const projects = await db.project.findMany({
-    where: { userId: user.id },
+    where: {
+      userId: user.id,
+      OR: [{ daemonHost }, { daemonHost: null }],
+    },
     orderBy: { updatedAt: "desc" },
+    select: {
+      id: true,
+      name: true,
+      daemonHost: true,
+      workspacePath: true,
+      repoRoot: true,
+      worktreeBranch: true,
+      lastCommit: true,
+      fileCount: true,
+      metadata: true,
+      createdAt: true,
+      updatedAt: true,
+    },
   });
 
-  // Find project where the requestPath starts with or equals the bound path for this hostname
+  const normalizedRequestPath = normalizePath(requestPath);
+  let bestConfirmedMatch:
+    | {
+        project: (typeof projects)[number];
+        boundPath: string;
+        normalizedBoundPath: string;
+      }
+    | undefined;
+  let bestPendingMatch:
+    | {
+        project: (typeof projects)[number];
+        boundPath: string;
+        normalizedBoundPath: string;
+      }
+    | undefined;
+
   for (const project of projects) {
-    if (!project.metadata) continue;
+    const boundWorkspacePath =
+      typeof project.workspacePath === "string" && project.workspacePath.trim()
+        ? project.workspacePath.trim()
+        : null;
+    const isConfirmedBinding =
+      typeof project.daemonHost === "string" &&
+      project.daemonHost.trim() === daemonHost &&
+      boundWorkspacePath !== null;
+    const workspacePath = readProjectBindingPath(
+      {
+        daemonHost: project.daemonHost,
+        workspacePath: project.workspacePath,
+        metadata: project.metadata,
+      },
+      daemonHost,
+    );
+    if (!workspacePath) continue;
 
-    let metadata: ProjectMetadata;
-    try {
-      metadata = JSON.parse(project.metadata);
-    } catch {
-      continue;
-    }
-
-    const localPaths = metadata.localPaths;
-    if (!localPaths || typeof localPaths !== "object") continue;
-
-    const boundPath = getBoundPath(localPaths, hostname);
-    if (!boundPath) continue;
-
-    // Normalize paths for comparison
-    const normalizedBoundPath = boundPath.replace(/\/+$/, "");
-    const normalizedRequestPath = requestPath.replace(/\/+$/, "");
-
-    // Check if requestPath equals or is a subdirectory of boundPath
+    const normalizedBoundPath = normalizePath(workspacePath);
     if (
       normalizedRequestPath === normalizedBoundPath ||
       normalizedRequestPath.startsWith(normalizedBoundPath + "/")
     ) {
-      return NextResponse.json({
-        project: {
-          id: project.id,
-          name: project.name,
-          metadata,
-          created_at: project.createdAt.toISOString(),
-        },
-        matched_path: boundPath,
-      });
+      const candidate = { project, boundPath: workspacePath, normalizedBoundPath };
+      if (isConfirmedBinding) {
+        if (!bestConfirmedMatch || normalizedBoundPath.length > bestConfirmedMatch.normalizedBoundPath.length) {
+          bestConfirmedMatch = candidate;
+        }
+      } else if (
+        !bestPendingMatch ||
+        normalizedBoundPath.length > bestPendingMatch.normalizedBoundPath.length
+      ) {
+        bestPendingMatch = candidate;
+      }
     }
+  }
+
+  const bestMatch = bestConfirmedMatch ?? bestPendingMatch;
+  if (bestMatch) {
+    return NextResponse.json({
+      project: serializeProject(bestMatch.project),
+      matched_path: bestMatch.boundPath,
+    });
   }
 
   return NextResponse.json({ project: null, matched_path: null });

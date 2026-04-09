@@ -13,7 +13,7 @@ vi.mock("next/navigation", () => ({
   }),
 }));
 
-vi.mock("@/components/auth/LoginForm", () => ({
+vi.mock("@/features/auth", () => ({
   LoginForm: ({ onSuccess }: { onSuccess?: (token: string) => void }) => (
     <button type="button" onClick={() => onSuccess?.("jwt-1")}>
       complete-login

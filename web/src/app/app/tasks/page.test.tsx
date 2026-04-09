@@ -12,7 +12,7 @@ let tasksState: {
   fetchTasks: typeof fetchTasksMock;
   isLoading: boolean;
   currentProjectFilter: string | null;
-  tasks: Array<{ id: string }>;
+  tasks: Array<{ id: string; projectId?: string | null }>;
 };
 let searchParamsState = new URLSearchParams();
 let isDesktopViewport = false;
@@ -27,42 +27,14 @@ vi.mock('next/navigation', () => ({
   }),
 }));
 
-vi.mock('@/lib/conductor/stores/tasks', () => ({
-  useTasksStore: (selector: (state: typeof tasksState) => unknown) => selector(tasksState),
-}));
-
-vi.mock('@/lib/conductor/stores/projects', () => ({
-  useProjectsStore: (selector: (state: { projects: Array<{ id: string; name: string }> }) => unknown) =>
-    selector({ projects: [] }),
-}));
-
-vi.mock('@/components/conductor/layout/Header', () => ({
-  Header: ({
-    title,
-    actions,
-    showConnectionStatus,
-    connectionTaskId,
-  }: {
-    title?: string;
-    actions?: React.ReactNode;
-    showConnectionStatus?: boolean;
-    connectionTaskId?: string | null;
-  }) => {
-    headerMock({ title, showConnectionStatus, connectionTaskId });
-    return (
-      <div>
-        <h1>{title}</h1>
-        <div>{actions}</div>
-      </div>
-    );
-  },
-}));
-
 const readStoredTaskListViewModeMock = vi.fn(() => 'list');
 
-vi.mock('@/components/conductor/tasks/TaskList', async () => {
+vi.mock('@/features/tasks', async () => {
   const React = await import('react');
   return {
+    useTasksStore: (selector: (state: typeof tasksState) => unknown) => selector(tasksState),
+    filterTasksByProject: (tasks: Array<{ projectId?: string | null }>, projectId: string | null) =>
+      projectId ? tasks.filter((task) => task.projectId === projectId) : tasks,
     TASK_LIST_VIEW_STORAGE_KEY: 'conductor-task-list-view',
     readStoredTaskListViewMode: () => readStoredTaskListViewModeMock(),
     ListIcon: () => <span data-testid="list-icon" />,
@@ -84,35 +56,58 @@ vi.mock('@/components/conductor/tasks/TaskList', async () => {
         </button>
       </>
     ),
+    CreateTaskDialog: ({
+      open,
+      onClose,
+      onCreatedTask,
+      defaultProjectId,
+    }: {
+      open: boolean;
+      onClose: () => void;
+      onCreatedTask?: (taskId: string) => void;
+      defaultProjectId?: string | null;
+    }) => open ? (
+      <div>
+        <div>create-dialog:{defaultProjectId ?? 'none'}</div>
+        <button type="button" onClick={() => onCreatedTask?.('task-3')}>
+          mock-create-success
+        </button>
+        <button type="button" onClick={onClose}>
+          mock-close-create
+        </button>
+      </div>
+    ) : null,
+    TaskDetailPane: ({ taskId, hideHeader }: { taskId: string; hideHeader?: boolean }) => (
+      <div>task-detail:{taskId}:{hideHeader ? 'no-header' : 'header'}</div>
+    ),
   };
 });
 
-vi.mock('@/components/conductor/tasks/CreateTaskDialog', () => ({
-  CreateTaskDialog: ({
-    open,
-    onClose,
-    onCreatedTask,
-  }: {
-    open: boolean;
-    onClose: () => void;
-    onCreatedTask?: (taskId: string) => void;
-  }) => open ? (
-    <div>
-      <div>create-dialog</div>
-      <button type="button" onClick={() => onCreatedTask?.('task-3')}>
-        mock-create-success
-      </button>
-      <button type="button" onClick={onClose}>
-        mock-close-create
-      </button>
-    </div>
-  ) : null,
+vi.mock('@/features/projects', () => ({
+  useProjectsStore: (selector: (state: { projects: Array<{ id: string; name: string }> }) => unknown) =>
+    selector({ projects: [] }),
 }));
 
-vi.mock('@/components/conductor/tasks/TaskDetailPane', () => ({
-  TaskDetailPane: ({ taskId, hideHeader }: { taskId: string; hideHeader?: boolean }) => (
-    <div>task-detail:{taskId}:{hideHeader ? 'no-header' : 'header'}</div>
-  ),
+vi.mock('@/components/layout/Header', () => ({
+  Header: ({
+    title,
+    actions,
+    showConnectionStatus,
+    connectionTaskId,
+  }: {
+    title?: string;
+    actions?: React.ReactNode;
+    showConnectionStatus?: boolean;
+    connectionTaskId?: string | null;
+  }) => {
+    headerMock({ title, showConnectionStatus, connectionTaskId });
+    return (
+      <div>
+        <h1>{title}</h1>
+        <div>{actions}</div>
+      </div>
+    );
+  },
 }));
 
 describe('TasksPage', () => {
@@ -132,7 +127,10 @@ describe('TasksPage', () => {
       fetchTasks: fetchTasksMock,
       isLoading: false,
       currentProjectFilter: 'project-1',
-      tasks: [{ id: 'task-1' }, { id: 'task-2' }],
+      tasks: [
+        { id: 'task-1', projectId: 'project-1' },
+        { id: 'task-2', projectId: 'project-1' },
+      ],
     };
 
     Object.defineProperty(window, 'matchMedia', {
@@ -166,6 +164,8 @@ describe('TasksPage', () => {
   });
 
   it('refreshes tasks from the title bar controls', () => {
+    searchParamsState = new URLSearchParams('projectId=project-1');
+
     render(<TasksPage />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh tasks' }));
@@ -254,7 +254,7 @@ describe('TasksPage', () => {
 
     expect(screen.getByText('task-list:list:none:route')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Create task' }));
-    expect(screen.getByText('create-dialog')).toBeInTheDocument();
+    expect(screen.getByText('create-dialog:none')).toBeInTheDocument();
 
     tasksState = {
       ...tasksState,
@@ -264,6 +264,16 @@ describe('TasksPage', () => {
 
     expect(screen.getByText('task-list:list:task-3:inline')).toBeInTheDocument();
     expect(screen.getByText('task-detail:task-3:no-header')).toBeInTheDocument();
+  });
+
+  it('passes the current project to the create task dialog', () => {
+    searchParamsState = new URLSearchParams('projectId=project-1');
+
+    render(<TasksPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create task' }));
+
+    expect(screen.getByText('create-dialog:project-1')).toBeInTheDocument();
   });
 
   it('disables the desktop detail pane when switching from list to grid', () => {

@@ -31,7 +31,7 @@ describe('loadConfig', () => {
       tempDir,
       'agent_token: foo\nbackend_url: https://backend.local\ndaemon_name: workstation-a\n',
     );
-    const config = loadConfig(configPath);
+    const config = loadConfig(configPath, { env: {} });
     expect(config.agentToken).toBe('foo');
     expect(new URL(config.backendUrl).host).toBe('backend.local');
     expect(config.daemonName).toBe('workstation-a');
@@ -40,7 +40,7 @@ describe('loadConfig', () => {
   test('throws when config file missing', () => {
     const tempDir = createTempDir();
     const missing = path.join(tempDir, 'missing.yaml');
-    expect(() => loadConfig(missing)).toThrow(ConfigFileNotFound);
+    expect(() => loadConfig(missing, { env: {} })).toThrow(ConfigFileNotFound);
   });
 
   test('applies environment overrides', () => {
@@ -66,7 +66,7 @@ describe('loadConfig', () => {
   test('invalid log level is reported', () => {
     const tempDir = createTempDir();
     const configPath = writeConfig(tempDir, 'agent_token: foo\nlog_level: verbose\n');
-    expect(() => loadConfig(configPath)).toThrow(ConfigValidationError);
+    expect(() => loadConfig(configPath, { env: {} })).toThrow(ConfigValidationError);
   });
 
   test('loads feishu bot settings from channels config', () => {
@@ -86,7 +86,7 @@ describe('loadConfig', () => {
       ].join('\n'),
     );
 
-    const config = loadConfig(configPath);
+    const config = loadConfig(configPath, { env: {} });
     expect(config.channels?.feishu).toEqual({
       appId: 'cli_a',
       appSecret: 'cli_s',

@@ -4,8 +4,8 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ThemeToggle } from '@/components/theme/ThemeToggle';
-import { SectionCard } from '@/components/conductor/common/SectionCard';
-import { useToast } from '@/components/conductor/common/FeedbackProvider';
+import { SectionCard } from '@/components/common/SectionCard';
+import { useToast } from '@/components/common/FeedbackProvider';
 import { useTranslation, toIntlLocale } from '@/lib/i18n';
 
 interface SubscriptionStatus {

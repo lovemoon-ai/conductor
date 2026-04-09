@@ -44,6 +44,9 @@ vi.mock("@/lib/db", () => ({
     project: {
       findFirst: vi.fn(),
     },
+    defaultProject: {
+      findUnique: vi.fn(),
+    },
     message: {
       create: vi.fn(),
       findMany: vi.fn(),
@@ -61,9 +64,18 @@ const { enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-out
 const prismaError = (code: string, message: string) =>
   Object.assign(new Error(message), { code });
 
+let defaultProjectId: string | null = null;
+const setDefaultProjectId = (projectId: string | null) => {
+  defaultProjectId = projectId;
+  vi.mocked(db.defaultProject.findUnique).mockImplementation(async () =>
+    defaultProjectId ? ({ projectId: defaultProjectId } as any) : null,
+  );
+};
+
 describe("/api/tasks", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    defaultProjectId = null;
     vi.mocked(db.$transaction).mockImplementation(async (callback: any) =>
       typeof callback === "function"
         ? callback({
@@ -116,6 +128,7 @@ describe("/api/tasks", () => {
       id: "task-updated",
       updatedAt: new Date("2024-01-03T00:00:00.000Z"),
     } as any);
+    setDefaultProjectId(null);
   });
 
   describe("GET", () => {
@@ -557,6 +570,71 @@ describe("/api/tasks", () => {
       expect(data.error).toBe("Project not found");
     });
 
+    it("should reject when project daemon conflicts with requested agent_host", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = {
+        id: "proj-bound",
+        name: "Bound Project",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/repo/bound",
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      ] as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          project_id: "proj-bound",
+          title: "New Task",
+          agent_host: "daemon-2",
+        },
+      });
+      const response = await POST(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toContain("Project daemon");
+      expect(db.task.create).not.toHaveBeenCalled();
+    });
+
+    it("should reject when project daemon is offline", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = {
+        id: "proj-bound",
+        name: "Bound Project",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/repo/bound",
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([] as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          project_id: "proj-bound",
+          title: "New Task",
+        },
+      });
+      const response = await POST(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toContain("offline");
+      expect(db.task.create).not.toHaveBeenCalled();
+    });
+
     it("should allow free user to create app task when only manual fire task is active", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const mockProject = { id: "proj-mixed", name: "Project Mixed", userId: "user-1" };
@@ -576,6 +654,7 @@ describe("/api/tasks", () => {
         id: "user-1",
         subscriptionTier: "FREE",
       } as any);
+      setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(db.task.findMany).mockResolvedValue([
         { status: "running", agentHost: "conductor-fire-mac-1" },
@@ -620,6 +699,7 @@ describe("/api/tasks", () => {
       };
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
       vi.mocked(db.message.create).mockResolvedValue({
@@ -657,6 +737,7 @@ describe("/api/tasks", () => {
       };
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
 
@@ -705,6 +786,7 @@ describe("/api/tasks", () => {
       };
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
 
@@ -769,6 +851,7 @@ describe("/api/tasks", () => {
       };
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
 
@@ -809,12 +892,263 @@ describe("/api/tasks", () => {
       });
     });
 
+    it("forces ai task launch config to use the project workspace and worktree branch", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = {
+        id: "proj-bound",
+        name: "Bound Project",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/repo/bound",
+        worktreeBranch: "main",
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(null);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        {
+          id: "agent-1",
+          host: "daemon-1",
+          supportedBackends: ["codex"],
+          capabilities: [],
+        },
+      ]);
+      vi.mocked(db.task.create).mockImplementation(async ({ data }: any) => ({
+        id: "task-bound-1",
+        projectId: data.projectId,
+        title: data.title,
+        status: data.status,
+        agentHost: data.agentHost,
+        executionHost: data.executionHost,
+        backendType: data.backendType,
+        sessionId: data.sessionId,
+        sessionFilePath: data.sessionFilePath,
+        launchConfig: data.launchConfig,
+        metadata: data.metadata,
+        createdAt: new Date("2024-01-03"),
+        updatedAt: new Date("2024-01-03"),
+      }) as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          project_id: "proj-bound",
+          title: "Bound Task",
+          backend_type: "codex",
+          agent_host: "daemon-1",
+          launch_config: {
+            cwd: "/tmp/override",
+            worktreeBranch: "feature-branch",
+            backendType: "codex",
+          },
+        },
+      });
+      const response = await POST(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(JSON.parse(vi.mocked(db.task.create).mock.calls.at(-1)?.[0].data.launchConfig as string)).toEqual({
+        backendType: "codex",
+        cwd: "/repo/bound",
+        worktreeBranch: "main",
+      });
+      expect(data.launch_config).toEqual({
+        backendType: "codex",
+        cwd: "/repo/bound",
+        worktreeBranch: "main",
+      });
+    });
+
+    it("builds task worktree launch config for git-backed ai tasks and forwards it to the daemon", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const createdAt = new Date("2024-01-03T00:00:00.000Z");
+      const mockProject = {
+        id: "proj-git",
+        name: "Git Project",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/repo/packages/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(null);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        {
+          id: "agent-1",
+          host: "daemon-1",
+          supportedBackends: ["codex"],
+          capabilities: [],
+        },
+      ]);
+      vi.mocked(db.task.create).mockImplementation(async ({ data }: any) => ({
+        id: data.id,
+        projectId: data.projectId,
+        title: data.title,
+        status: data.status,
+        agentHost: data.agentHost,
+        executionHost: data.executionHost,
+        backendType: data.backendType,
+        sessionId: data.sessionId,
+        sessionFilePath: data.sessionFilePath,
+        launchConfig: data.launchConfig,
+        metadata: data.metadata,
+        createdAt,
+        updatedAt: createdAt,
+      }) as any);
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {
+            project_id: "proj-git",
+            title: "Isolated Task",
+            backend_type: "codex",
+            launch_config: {
+              worktree: true,
+            },
+          },
+        }),
+      );
+      const data = await extractJson(response);
+      const createdLaunchConfig = JSON.parse(
+        vi.mocked(db.task.create).mock.calls.at(-1)?.[0].data.launchConfig as string,
+      );
+
+      expect(response.status).toBe(200);
+      expect(createdLaunchConfig).toEqual({
+        backendType: "codex",
+        worktree: true,
+        worktreeId: expect.any(String),
+        worktreeBranch: expect.stringMatching(/^[0-9a-f]{6}$/),
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/repo",
+        projectWorkspacePath: "/repo/packages/app",
+        projectRelativePath: "packages/app",
+      });
+      expect(data.id).toBe(createdLaunchConfig.worktreeId);
+      expect(data.launch_config).toEqual(createdLaunchConfig);
+      expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "create_task",
+          taskId: createdLaunchConfig.worktreeId,
+          envelope: {
+            type: "create_task",
+            payload: expect.objectContaining({
+              task_id: createdLaunchConfig.worktreeId,
+              launch_config: createdLaunchConfig,
+            }),
+          },
+        }),
+        expect.any(Object),
+      );
+    });
+
+    it("rejects worktree requests for projects without git metadata", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = {
+        id: "proj-no-git",
+        name: "Plain Project",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/repo/plain",
+        repoRoot: null,
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(null);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        {
+          id: "agent-1",
+          host: "daemon-1",
+          supportedBackends: ["codex"],
+          capabilities: [],
+        },
+      ]);
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {
+            project_id: "proj-no-git",
+            title: "Bad Worktree",
+            launch_config: {
+              worktree: true,
+            },
+          },
+        }),
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toBe("Worktree requires a git-backed bound project");
+      expect(db.task.create).not.toHaveBeenCalled();
+      expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+    });
+
+    it("rejects worktree requests for PTY tasks", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = {
+        id: "proj-git-pty",
+        name: "Git Project",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(null);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        {
+          id: "agent-1",
+          host: "daemon-1",
+          supportedBackends: ["codex"],
+          capabilities: ["pty_task"],
+        },
+      ]);
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {
+            project_id: "proj-git-pty",
+            title: "Bad PTY Worktree",
+            task_type: "pty_task",
+            agent_host: "daemon-1",
+            launch_config: {
+              entrypointType: "shell",
+              worktree: true,
+            },
+          },
+        }),
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(400);
+      expect(data.error).toBe("PTY task does not support worktree");
+      expect(db.task.create).not.toHaveBeenCalled();
+      expect(db.ptySession.create).not.toHaveBeenCalled();
+      expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+    });
+
     it("falls back to legacy ai_task creation when PTY task columns are missing", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const mockProject = { id: "proj-legacy", name: "Legacy Project", userId: "user-1" };
       const createdAt = new Date("2024-01-11T00:00:00.000Z");
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(db.task.create)
         .mockRejectedValueOnce(
@@ -903,6 +1237,7 @@ describe("/api/tasks", () => {
       const mockProject = { id: "proj-pty", name: "Project Pty", userId: "user-1" };
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
         {
@@ -945,6 +1280,7 @@ describe("/api/tasks", () => {
       const createdAt = new Date("2024-01-09T00:00:00.000Z");
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
         {
@@ -1034,6 +1370,7 @@ describe("/api/tasks", () => {
         updatedAt: createdAt,
       };
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
@@ -1166,6 +1503,7 @@ describe("/api/tasks", () => {
       const mockProject = { id: "proj-pty", name: "Project Pty", userId: "user-1" };
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
         {
@@ -1225,6 +1563,7 @@ describe("/api/tasks", () => {
       };
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
       vi.mocked(db.ptySession.create).mockResolvedValue({
@@ -1314,6 +1653,7 @@ describe("/api/tasks", () => {
       };
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
@@ -1359,6 +1699,7 @@ describe("/api/tasks", () => {
       };
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
@@ -1405,6 +1746,7 @@ describe("/api/tasks", () => {
       };
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([

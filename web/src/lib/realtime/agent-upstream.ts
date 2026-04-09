@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { normalizeMessageMetadata } from "@/lib/conductor/message-attachments";
+import { normalizeMessageMetadata } from "@/shared/utils/message-attachments";
 import {
   projectTaskMessage,
   projectTaskStatusUpdate,

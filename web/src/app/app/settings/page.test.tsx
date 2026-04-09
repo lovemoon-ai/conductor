@@ -28,15 +28,15 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock }),
 }));
 
-vi.mock('@/components/conductor/layout/Header', () => ({
+vi.mock('@/components/layout/Header', () => ({
   Header: ({ title }: { title: string }) => <div>{title}</div>,
 }));
 
-vi.mock('@/lib/conductor/stores/auth', () => ({
+vi.mock('@/features/auth', () => ({
   useAuthStore: (selector: (state: typeof authState) => unknown) => selector(authState),
 }));
 
-vi.mock('@/lib/conductor/stores/agents', () => ({
+vi.mock('@/features/agents', () => ({
   useAgentsStore: () => agentsState,
 }));
 

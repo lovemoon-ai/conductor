@@ -51,7 +51,13 @@ export class ProjectSummary {
   constructor(
     public readonly id: string,
     public readonly name?: string,
-    public readonly description?: string | null,
+    public readonly daemonHost?: string | null,
+    public readonly workspacePath?: string | null,
+    public readonly repoRoot?: string | null,
+    public readonly worktreeBranch?: string | null,
+    public readonly lastCommit?: string | null,
+    public readonly fileCount?: number | null,
+    public readonly isDefault?: boolean,
   ) {}
 
   static fromJSON(payload: Record<string, any>): ProjectSummary {
@@ -59,14 +65,30 @@ export class ProjectSummary {
     if (!id) {
       throw new Error('Project payload missing id');
     }
-    return new ProjectSummary(id, payload.name ?? undefined, payload.description ?? undefined);
+    return new ProjectSummary(
+      id,
+      payload.name ?? undefined,
+      payload.daemonHost ?? payload.daemon_host ?? null,
+      payload.workspacePath ?? payload.workspace_path ?? null,
+      payload.repoRoot ?? payload.repo_root ?? null,
+      payload.worktreeBranch ?? payload.worktree_branch ?? null,
+      payload.lastCommit ?? payload.last_commit ?? null,
+      payload.fileCount ?? payload.file_count ?? null,
+      payload.isDefault ?? payload.is_default ?? undefined,
+    );
   }
 
   asObject(): Record<string, unknown> {
     return {
       id: this.id,
       name: this.name,
-      description: this.description,
+      daemonHost: this.daemonHost,
+      workspacePath: this.workspacePath,
+      repoRoot: this.repoRoot,
+      worktreeBranch: this.worktreeBranch,
+      lastCommit: this.lastCommit,
+      fileCount: this.fileCount,
+      isDefault: this.isDefault,
     };
   }
 }
@@ -139,7 +161,18 @@ export class BackendApiClient {
     return results;
   }
 
-  async createProject(params: { name: string; description?: string; metadata?: Record<string, unknown> }): Promise<ProjectSummary> {
+  async createProject(params: {
+    name?: string;
+    metadata?: Record<string, unknown>;
+    isDefault?: boolean;
+    bindingConfirmed?: boolean;
+    daemonHost?: string;
+    workspacePath?: string;
+    repoRoot?: string;
+    worktreeBranch?: string;
+    lastCommit?: string;
+    fileCount?: number;
+  }): Promise<ProjectSummary> {
     const response = await this.request('POST', '/projects', {
       body: JSON.stringify(params),
     });
@@ -361,7 +394,9 @@ export class BackendApiClient {
   }
 
   async matchProjectByPath(params: {
-    hostname: string;
+    hostname?: string;
+    daemonHost?: string;
+    daemon_host?: string;
     path: string;
   }): Promise<{ project: ProjectSummary | null; matchedPath: string | null }> {
     const response = await this.request('POST', '/projects/match-path', {
@@ -374,20 +409,44 @@ export class BackendApiClient {
     };
   }
 
-  async getProject(projectId: string): Promise<{ id: string; name?: string; description?: string | null; metadata?: Record<string, unknown> }> {
+  async getProject(projectId: string): Promise<{
+    id: string;
+    name?: string;
+    metadata?: Record<string, unknown>;
+    daemonHost?: string | null;
+    workspacePath?: string | null;
+    repoRoot?: string | null;
+    worktreeBranch?: string | null;
+    lastCommit?: string | null;
+    fileCount?: number | null;
+    isDefault?: boolean;
+  }> {
     const response = await this.request('GET', `/projects/${projectId}`);
     const payload = await this.parseJson(response);
     return {
       id: payload.id,
       name: payload.name,
-      description: payload.description,
       metadata: payload.metadata ?? undefined,
+      daemonHost: payload.daemonHost ?? payload.daemon_host ?? undefined,
+      workspacePath: payload.workspacePath ?? payload.workspace_path ?? undefined,
+      repoRoot: payload.repoRoot ?? payload.repo_root ?? undefined,
+      worktreeBranch: payload.worktreeBranch ?? payload.worktree_branch ?? undefined,
+      lastCommit: payload.lastCommit ?? payload.last_commit ?? undefined,
+      fileCount: payload.fileCount ?? payload.file_count ?? undefined,
+      isDefault: payload.isDefault ?? payload.is_default ?? undefined,
     };
   }
 
   async updateProject(projectId: string, params: {
     name?: string;
     metadata?: Record<string, unknown>;
+    bindingConfirmed?: boolean;
+    daemonHost?: string;
+    workspacePath?: string;
+    repoRoot?: string;
+    worktreeBranch?: string;
+    lastCommit?: string;
+    fileCount?: number;
   }): Promise<ProjectSummary> {
     const response = await this.request('PATCH', `/projects/${projectId}`, {
       body: JSON.stringify(params),

@@ -1,6 +1,6 @@
 {
   "name": "@love-moon/conductor-cli",
-  "version": "0.2.32",
+  "version": "0.2.33",
   "gitCommitId": "c749d4b",
   "type": "module",
   "bin": {
@@ -18,8 +18,8 @@
   },
   "dependencies": {
     "@love-moon/ai-bridge": "0.1.4",
-    "@love-moon/ai-sdk": "0.2.32",
-    "@love-moon/conductor-sdk": "0.2.32",
+    "@love-moon/ai-sdk": "0.2.33",
+    "@love-moon/conductor-sdk": "0.2.33",
     "chrome-launcher": "^1.2.1",
     "chrome-remote-interface": "^0.33.0",
     "dotenv": "^16.4.5",

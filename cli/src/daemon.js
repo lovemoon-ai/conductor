@@ -8,7 +8,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import dotenv from "dotenv";
 import yaml from "js-yaml";
 
-import { ConductorWebSocketClient, ConductorConfig, loadConfig, ConfigFileNotFound } from "@love-moon/conductor-sdk";
+import {
+  ConductorWebSocketClient,
+  ConductorConfig,
+  loadConfig,
+  ConfigFileNotFound,
+  ProjectContext,
+} from "@love-moon/conductor-sdk";
 import { DaemonLogCollector } from "./log-collector.js";
 import { resolveResumeContext } from "./fire/resume.js";
 import {
@@ -426,6 +432,64 @@ function normalizeLaunchConfig(value) {
   return value;
 }
 
+function normalizeBooleanFlag(value) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value === 1;
+  }
+  if (typeof value !== "string") {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function parseTaskWorktreeLaunchConfig(launchConfig) {
+  const normalizedLaunchConfig = normalizeLaunchConfig(launchConfig);
+  const worktreeEnabled = normalizeBooleanFlag(
+    normalizedLaunchConfig.worktree ??
+      normalizedLaunchConfig.createWorktree ??
+      normalizedLaunchConfig.create_worktree,
+  );
+  if (!worktreeEnabled) {
+    return null;
+  }
+
+  const worktreeId =
+    normalizeOptionalString(normalizedLaunchConfig.worktreeId) ||
+    normalizeOptionalString(normalizedLaunchConfig.worktree_id);
+  const worktreeBranch =
+    normalizeOptionalString(normalizedLaunchConfig.worktreeBranch) ||
+    normalizeOptionalString(normalizedLaunchConfig.worktree_branch);
+  const projectRepoRoot =
+    normalizeOptionalString(normalizedLaunchConfig.projectRepoRoot) ||
+    normalizeOptionalString(normalizedLaunchConfig.project_repo_root);
+  const projectWorkspacePath =
+    normalizeOptionalString(normalizedLaunchConfig.projectWorkspacePath) ||
+    normalizeOptionalString(normalizedLaunchConfig.project_workspace_path);
+  const projectRelativePath =
+    normalizeOptionalString(normalizedLaunchConfig.projectRelativePath) ||
+    normalizeOptionalString(normalizedLaunchConfig.project_relative_path) ||
+    ".";
+  if (!worktreeId || !worktreeBranch || !projectRepoRoot || !projectWorkspacePath) {
+    return null;
+  }
+
+  return {
+    worktreeId,
+    worktreeBranch,
+    worktreeBaseRef:
+      normalizeOptionalString(normalizedLaunchConfig.worktreeBaseRef) ||
+      normalizeOptionalString(normalizedLaunchConfig.worktree_base_ref) ||
+      "HEAD",
+    projectRepoRoot,
+    projectWorkspacePath,
+    projectRelativePath,
+  };
+}
+
 function normalizeTerminalEnv(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
@@ -604,7 +668,11 @@ export function startDaemon(config = {}, deps = {}) {
   const mkdirSyncFn = deps.mkdirSync || fs.mkdirSync;
   const writeFileSyncFn = deps.writeFileSync || fs.writeFileSync;
   const existsSyncFn = deps.existsSync || fs.existsSync;
+  const statSyncFn = deps.statSync || fs.statSync;
+  const lstatSyncFn = deps.lstatSync || fs.lstatSync;
   const readFileSyncFn = deps.readFileSync || fs.readFileSync;
+  const readlinkSyncFn = deps.readlinkSync || fs.readlinkSync;
+  const symlinkSyncFn = deps.symlinkSync || fs.symlinkSync;
   const unlinkSyncFn = deps.unlinkSync || fs.unlinkSync;
   const renameSyncFn = deps.renameSync || fs.renameSync;
   const createWriteStreamFn = deps.createWriteStream || fs.createWriteStream;
@@ -615,6 +683,263 @@ export function startDaemon(config = {}, deps = {}) {
     deps.createWebSocketClient ||
     ((clientConfig, options) => new ConductorWebSocketClient(clientConfig, options));
   const createLogCollector = deps.createLogCollector || ((backendUrl) => new DaemonLogCollector(backendUrl));
+  const resolveProjectSnapshotFn =
+    deps.resolveProjectSnapshot || ((projectPath) => new ProjectContext(projectPath).snapshot());
+
+  function buildTaskWorktreeRoot(projectWorkspacePath, worktreeId) {
+    const sanitized = String(worktreeId).replace(/[/\\]/g, "_").replace(/\.\./g, "_");
+    return path.join(projectWorkspacePath, ".conductor", "worktrees", sanitized);
+  }
+
+  function resolveTaskWorktreeCwd(worktreeRoot, projectRelativePath) {
+    return projectRelativePath && projectRelativePath !== "."
+      ? path.join(worktreeRoot, projectRelativePath)
+      : worktreeRoot;
+  }
+
+  function normalizeConfiguredPathList(value, projectWorkspacePath = "") {
+    const rawList = typeof value === "string"
+      ? [value]
+      : Array.isArray(value)
+        ? value
+        : [];
+    const deduped = [];
+    for (const entry of rawList) {
+      const normalizedEntry = normalizeOptionalString(entry);
+      if (!normalizedEntry) continue;
+      const exactConfiguredPathExists =
+        projectWorkspacePath &&
+        existsSyncFn(path.resolve(projectWorkspacePath, normalizedEntry));
+      const normalizedEntries =
+        !exactConfiguredPathExists && /\s/.test(normalizedEntry)
+          ? normalizedEntry.split(/\s+/).map((part) => normalizeOptionalString(part)).filter(Boolean)
+          : [normalizedEntry];
+      for (const candidate of normalizedEntries) {
+        if (deduped.includes(candidate)) {
+          continue;
+        }
+        deduped.push(candidate);
+      }
+    }
+    return deduped;
+  }
+
+  function resolveProjectScopedPath(basePath, configuredPath, label) {
+    const resolvedPath = path.resolve(basePath, configuredPath);
+    const relativePath = path.relative(basePath, resolvedPath);
+    if (
+      relativePath === "" ||
+      relativePath === "." ||
+      relativePath.startsWith("..") ||
+      path.isAbsolute(relativePath)
+    ) {
+      throw new Error(`${label} must stay within ${basePath}`);
+    }
+    return resolvedPath;
+  }
+
+  function readProjectWorktreeSettings(projectWorkspacePath) {
+    const settingsCandidates = [
+      path.join(projectWorkspacePath, ".conductor", "settings.yaml"),
+      path.join(projectWorkspacePath, ".conductor", "settings.yml"),
+      path.join(projectWorkspacePath, ".conductor", "setttings.yaml"),
+      path.join(projectWorkspacePath, ".conductor", "setttings.yml"),
+    ];
+
+    for (const settingsPath of settingsCandidates) {
+      if (!existsSyncFn(settingsPath)) {
+        continue;
+      }
+      try {
+        const parsed = yaml.load(readFileSyncFn(settingsPath, "utf8"));
+        const worktreeSettings =
+          parsed && typeof parsed === "object" && !Array.isArray(parsed) &&
+          parsed.worktree && typeof parsed.worktree === "object" && !Array.isArray(parsed.worktree)
+            ? parsed.worktree
+            : {};
+        return {
+          symlinkPaths: normalizeConfiguredPathList(worktreeSettings.symlink, projectWorkspacePath),
+          settingsPath,
+        };
+      } catch (error) {
+        throw new Error(`Failed to read ${settingsPath}: ${error?.message || error}`);
+      }
+    }
+
+    return {
+      symlinkPaths: [],
+      settingsPath: null,
+    };
+  }
+
+  function ensureTaskWorktreeSymlinks({ projectWorkspacePath, finalCwd }) {
+    const { symlinkPaths } = readProjectWorktreeSettings(projectWorkspacePath);
+    for (const configuredPath of symlinkPaths) {
+      const sourcePath = resolveProjectScopedPath(
+        projectWorkspacePath,
+        configuredPath,
+        `worktree.symlink entry ${configuredPath}`,
+      );
+      const linkPath = resolveProjectScopedPath(
+        finalCwd,
+        configuredPath,
+        `worktree.symlink destination ${configuredPath}`,
+      );
+      mkdirSyncFn(path.dirname(linkPath), { recursive: true });
+
+      if (existsSyncFn(linkPath)) {
+        try {
+          const stat = lstatSyncFn(linkPath);
+          if (!stat.isSymbolicLink()) {
+            throw new Error(`worktree symlink destination already exists: ${linkPath}`);
+          }
+          const currentTarget = readlinkSyncFn(linkPath);
+          const currentResolvedTarget = path.resolve(path.dirname(linkPath), currentTarget);
+          if (currentResolvedTarget === sourcePath) {
+            continue;
+          }
+          throw new Error(`worktree symlink destination already points elsewhere: ${linkPath}`);
+        } catch (error) {
+          throw error instanceof Error ? error : new Error(String(error));
+        }
+      }
+
+      const relativeTarget = path.relative(path.dirname(linkPath), sourcePath) || ".";
+      symlinkSyncFn(relativeTarget, linkPath);
+    }
+  }
+
+  async function runSpawnProcess(command, args, options = {}) {
+    let child;
+    try {
+      child = spawnFn(command, args, {
+        ...options,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+
+    return await new Promise((resolve, reject) => {
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+
+      const finishResolve = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve({ stdout, stderr });
+      };
+
+      const finishReject = (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
+
+      if (child.stdout && typeof child.stdout.on === "function") {
+        child.stdout.on("data", (chunk) => {
+          stdout += String(chunk ?? "");
+        });
+      }
+      if (child.stderr && typeof child.stderr.on === "function") {
+        child.stderr.on("data", (chunk) => {
+          stderr += String(chunk ?? "");
+        });
+      }
+      if (typeof child.on === "function") {
+        child.on("error", (error) => {
+          finishReject(error);
+        });
+        child.on("close", (code, signal) => {
+          if (code === 0) {
+            finishResolve();
+            return;
+          }
+          const detail = (stderr || stdout).trim();
+          finishReject(
+            new Error(
+              `${command} ${args.join(" ")} failed` +
+                (signal ? ` (signal ${signal})` : ` (exit ${code ?? "unknown"})`) +
+                (detail ? `: ${detail}` : ""),
+            ),
+          );
+        });
+        return;
+      }
+      finishResolve();
+    });
+  }
+
+  async function ensureTaskWorktree({ taskId, projectId, launchConfig }) {
+    const worktreeConfig = parseTaskWorktreeLaunchConfig(launchConfig);
+    if (!worktreeConfig) {
+      return null;
+    }
+
+    const worktreeRoot = buildTaskWorktreeRoot(
+      worktreeConfig.projectWorkspacePath,
+      worktreeConfig.worktreeId,
+    );
+    const finalCwd = resolveTaskWorktreeCwd(worktreeRoot, worktreeConfig.projectRelativePath);
+    const gitMarkerPath = path.join(worktreeRoot, ".git");
+    if (!existsSyncFn(gitMarkerPath)) {
+      mkdirSyncFn(path.dirname(worktreeRoot), { recursive: true });
+      try {
+        await runSpawnProcess(
+          "git",
+          [
+            "-C",
+            worktreeConfig.projectRepoRoot,
+            "worktree",
+            "add",
+            "-b",
+            worktreeConfig.worktreeBranch,
+            worktreeRoot,
+            worktreeConfig.worktreeBaseRef,
+          ],
+          {
+            cwd: worktreeConfig.projectRepoRoot,
+          },
+        );
+      } catch (primaryError) {
+        if (!existsSyncFn(gitMarkerPath)) {
+          try {
+            await runSpawnProcess(
+              "git",
+              [
+                "-C",
+                worktreeConfig.projectRepoRoot,
+                "worktree",
+                "add",
+                worktreeRoot,
+                worktreeConfig.worktreeBranch,
+              ],
+              {
+                cwd: worktreeConfig.projectRepoRoot,
+              },
+            );
+          } catch (reuseError) {
+            throw new Error(
+              `Failed to prepare git worktree for ${taskId}: ${reuseError?.message || primaryError?.message || primaryError}`,
+            );
+          }
+        }
+      }
+    }
+
+    mkdirSyncFn(finalCwd, { recursive: true });
+    ensureTaskWorktreeSymlinks({
+      projectWorkspacePath: worktreeConfig.projectWorkspacePath,
+      finalCwd,
+    });
+    return finalCwd;
+  }
+
   const RTC_MODULE_CANDIDATES = resolveRtcModuleCandidates(process.env.CONDUCTOR_PTY_RTC_MODULES);
   const RTC_DIRECT_DISABLED = parseBooleanEnv(process.env.CONDUCTOR_DISABLE_PTY_DIRECT_RTC);
   const PROJECT_PATH_LOOKUP_TIMEOUT_MS = parsePositiveInt(
@@ -989,8 +1314,12 @@ export function startDaemon(config = {}, deps = {}) {
     "x-conductor-backends": SUPPORTED_BACKENDS.join(","),
     "x-conductor-version": cliVersion,
   };
+  const advertisedCapabilities = ["project_path_validation"];
   if (ptyTaskCapabilityEnabled) {
-    extraHeaders["x-conductor-capabilities"] = "pty_task,terminal_snapshot";
+    advertisedCapabilities.push("pty_task", "terminal_snapshot");
+  }
+  if (advertisedCapabilities.length > 0) {
+    extraHeaders["x-conductor-capabilities"] = advertisedCapabilities.join(",");
   }
   const client = createWebSocketClient(sdkConfig, {
     extraHeaders,
@@ -1709,6 +2038,30 @@ export function startDaemon(config = {}, deps = {}) {
     });
   }
 
+  function reportTaskWorktreeCleanupResult({
+    requestId,
+    taskId,
+    worktreeBranch = null,
+    removedPath = null,
+    cleaned = true,
+    error = null,
+  }) {
+    if (!requestId || !taskId) return Promise.resolve();
+    return client.sendJson({
+      type: "task_worktree_cleanup_result",
+      payload: {
+        request_id: String(requestId),
+        task_id: String(taskId),
+        daemon_host: AGENT_NAME || os.hostname(),
+        worktree_branch: worktreeBranch || undefined,
+        removed_path: removedPath || undefined,
+        cleaned: Boolean(cleaned),
+        error: error ? String(error) : null,
+        cleaned_at: new Date().toISOString(),
+      },
+    });
+  }
+
   function sendPtyTransportStatus(payload) {
     return client.sendJson({
       type: "pty_transport_status",
@@ -2330,7 +2683,9 @@ export function startDaemon(config = {}, deps = {}) {
       rejectCreatePtyTaskDuringShutdown(payload);
       return;
     }
-    let taskDir = normalizeOptionalString(launchConfig.cwd) || boundPath;
+    let taskDir =
+      normalizeOptionalString(launchConfig.cwd) ||
+      boundPath;
     if (!taskDir) {
       const now = new Date();
       const dayDir = path.join(WORKSPACE_ROOT, formatWorkspaceDate(now));
@@ -2470,6 +2825,119 @@ export function startDaemon(config = {}, deps = {}) {
         pty_session_id: ptySessionId,
         message: error?.message || String(error),
       }).catch(() => {});
+    }
+  }
+
+  async function handleCleanupTaskWorktree(payload) {
+    const taskId = payload?.task_id ? String(payload.task_id) : "";
+    const projectId = payload?.project_id ? String(payload.project_id) : "";
+    const requestId = payload?.request_id ? String(payload.request_id) : "";
+    const forceCleanup = payload?.force === true;
+    const launchConfig = normalizeLaunchConfig(payload?.launch_config);
+
+    if (!taskId || !projectId || !requestId) {
+      logError(`Invalid cleanup_task_worktree payload: ${JSON.stringify(payload)}`);
+      sendAgentCommandAck({
+        requestId,
+        taskId,
+        eventType: "cleanup_task_worktree",
+        accepted: false,
+      }).catch(() => {});
+      return;
+    }
+
+    const worktreeConfig = parseTaskWorktreeLaunchConfig(launchConfig);
+    if (!worktreeConfig) {
+      sendAgentCommandAck({
+        requestId,
+        taskId,
+        eventType: "cleanup_task_worktree",
+        accepted: false,
+      }).catch(() => {});
+      await reportTaskWorktreeCleanupResult({
+        requestId,
+        taskId,
+        cleaned: false,
+        error: "Task does not use an isolated worktree",
+      }).catch((error) => {
+        logError(`Failed to report task_worktree_cleanup_result for ${taskId}: ${error?.message || error}`);
+      });
+      return;
+    }
+
+    sendAgentCommandAck({
+      requestId,
+      taskId,
+      eventType: "cleanup_task_worktree",
+      accepted: true,
+    }).catch((error) => {
+      logError(`Failed to report agent_command_ack(cleanup_task_worktree) for ${taskId}: ${error?.message || error}`);
+    });
+
+    if (activeTaskProcesses.has(taskId) || activePtySessions.has(taskId)) {
+      await reportTaskWorktreeCleanupResult({
+        requestId,
+        taskId,
+        worktreeBranch: worktreeConfig.worktreeBranch,
+        cleaned: false,
+        error: "Task is still active",
+      }).catch((error) => {
+        logError(`Failed to report task_worktree_cleanup_result for ${taskId}: ${error?.message || error}`);
+      });
+      return;
+    }
+
+    const worktreeRoot = buildTaskWorktreeRoot(
+      worktreeConfig.projectWorkspacePath,
+      worktreeConfig.worktreeId,
+    );
+    const worktreeCwd = resolveTaskWorktreeCwd(worktreeRoot, worktreeConfig.projectRelativePath);
+    const statusCwd = existsSyncFn(worktreeCwd) ? worktreeCwd : worktreeRoot;
+
+    try {
+      if (existsSyncFn(worktreeRoot)) {
+        if (!forceCleanup) {
+          const { stdout } = await runSpawnProcess(
+            "git",
+            ["-C", statusCwd, "status", "--porcelain"],
+            { cwd: statusCwd },
+          );
+          if (stdout.trim()) {
+            throw new Error("Worktree has uncommitted changes");
+          }
+        }
+        await runSpawnProcess(
+          "git",
+          [
+            "-C",
+            worktreeConfig.projectRepoRoot,
+            "worktree",
+            "remove",
+            ...(forceCleanup ? ["--force"] : []),
+            worktreeRoot,
+          ],
+          { cwd: worktreeConfig.projectRepoRoot },
+        );
+      }
+
+      await reportTaskWorktreeCleanupResult({
+        requestId,
+        taskId,
+        worktreeBranch: worktreeConfig.worktreeBranch,
+        removedPath: worktreeRoot,
+        cleaned: true,
+      });
+    } catch (error) {
+      await reportTaskWorktreeCleanupResult({
+        requestId,
+        taskId,
+        worktreeBranch: worktreeConfig.worktreeBranch,
+        removedPath: worktreeRoot,
+        cleaned: false,
+        error: error instanceof Error ? error.message : String(error),
+      }).catch((reportError) => {
+        logError(`Failed to report task_worktree_cleanup_result for ${taskId}: ${reportError?.message || reportError}`);
+      });
     }
   }
 
@@ -2723,6 +3191,23 @@ export function startDaemon(config = {}, deps = {}) {
         rejectCreatePtyTaskDuringShutdown(event.payload);
         return;
       }
+      if (event.type === "cleanup_task_worktree") {
+        const requestId = event?.payload?.request_id ? String(event.payload.request_id) : "";
+        const taskId = event?.payload?.task_id ? String(event.payload.task_id) : "";
+        sendAgentCommandAck({
+          requestId,
+          taskId,
+          eventType: "cleanup_task_worktree",
+          accepted: false,
+        }).catch(() => {});
+        void reportTaskWorktreeCleanupResult({
+          requestId,
+          taskId,
+          cleaned: false,
+          error: "daemon shutting down",
+        });
+        return;
+      }
     }
 
     if (event.type === "create_task") {
@@ -2737,6 +3222,10 @@ export function startDaemon(config = {}, deps = {}) {
     }
     if (event.type === "create_pty_task") {
       void handleCreatePtyTask(event.payload);
+      return;
+    }
+    if (event.type === "cleanup_task_worktree") {
+      void handleCleanupTaskWorktree(event.payload);
       return;
     }
     if (event.type === "stop_task") {
@@ -2765,6 +3254,10 @@ export function startDaemon(config = {}, deps = {}) {
     }
     if (event.type === "collect_logs") {
       void handleCollectLogs(event.payload);
+      return;
+    }
+    if (event.type === "validate_project_path") {
+      void handleValidateProjectPath(event.payload);
     }
   }
 
@@ -2834,6 +3327,96 @@ export function startDaemon(config = {}, deps = {}) {
       });
     } catch (error) {
       logError(`Failed to report agent_log_collected for ${taskId}: ${error?.message || error}`);
+    }
+  }
+
+  async function handleValidateProjectPath(payload) {
+    const requestId = payload?.request_id ? String(payload.request_id).trim() : "";
+    const rawWorkspacePath = payload?.workspace_path ? String(payload.workspace_path).trim() : "";
+    const validatedAt = new Date().toISOString();
+
+    if (!requestId || !rawWorkspacePath) {
+      logError(`Invalid validate_project_path payload: ${JSON.stringify(payload)}`);
+      return;
+    }
+
+    let result = {
+      workspacePath: null,
+      repoRoot: null,
+      worktreeBranch: null,
+      lastCommit: null,
+      fileCount: null,
+      error: null,
+      errorCode: null,
+      validatedAt,
+    };
+
+    try {
+      const resolvedPath = path.resolve(rawWorkspacePath);
+      if (!existsSyncFn(resolvedPath)) {
+        result = {
+          ...result,
+          error: `Workspace path does not exist on daemon ${AGENT_NAME}: ${rawWorkspacePath}`,
+          errorCode: "workspace_not_found",
+        };
+      } else if (!statSyncFn(resolvedPath).isDirectory()) {
+        result = {
+          ...result,
+          error: `Workspace path is not a directory on daemon ${AGENT_NAME}: ${rawWorkspacePath}`,
+          errorCode: "workspace_not_directory",
+        };
+      } else {
+        const snapshot = await Promise.resolve(resolveProjectSnapshotFn(resolvedPath));
+        result = {
+          ...result,
+          workspacePath:
+            typeof snapshot?.projectRoot === "string" && snapshot.projectRoot.trim()
+              ? snapshot.projectRoot.trim()
+              : resolvedPath,
+          repoRoot:
+            typeof snapshot?.repoRoot === "string" && snapshot.repoRoot.trim()
+              ? snapshot.repoRoot.trim()
+              : null,
+          worktreeBranch:
+            typeof snapshot?.worktreeBranch === "string" && snapshot.worktreeBranch.trim()
+              ? snapshot.worktreeBranch.trim()
+              : null,
+          lastCommit:
+            typeof snapshot?.lastCommit === "string" && snapshot.lastCommit.trim()
+              ? snapshot.lastCommit.trim()
+              : null,
+          fileCount:
+            typeof snapshot?.fileCount === "number" && Number.isInteger(snapshot.fileCount)
+              ? snapshot.fileCount
+              : null,
+        };
+      }
+    } catch (error) {
+      result = {
+        ...result,
+        error: `Failed to validate workspace path on daemon ${AGENT_NAME}: ${error?.message || error}`,
+        errorCode: "workspace_validation_failed",
+      };
+    }
+
+    try {
+      await client.sendJson({
+        type: "project_path_validated",
+        payload: {
+          request_id: requestId,
+          daemon_host: AGENT_NAME,
+          workspace_path: result.workspacePath,
+          repo_root: result.repoRoot,
+          worktree_branch: result.worktreeBranch,
+          last_commit: result.lastCommit,
+          file_count: result.fileCount,
+          error: result.error,
+          error_code: result.errorCode,
+          validated_at: result.validatedAt,
+        },
+      });
+    } catch (error) {
+      logError(`Failed to report project_path_validated for ${rawWorkspacePath}: ${error?.message || error}`);
     }
   }
 
@@ -2965,6 +3548,20 @@ export function startDaemon(config = {}, deps = {}) {
         return null;
       }
       const project = await response.json();
+      const daemonHost =
+        (typeof project.daemon_host === "string" && project.daemon_host.trim()) ||
+        (typeof project.daemonHost === "string" && project.daemonHost.trim()) ||
+        "";
+      const workspacePath =
+        (typeof project.workspace_path === "string" && project.workspace_path.trim()) ||
+        (typeof project.workspacePath === "string" && project.workspacePath.trim()) ||
+        "";
+      if (workspacePath) {
+        if (daemonHost && daemonHost !== AGENT_NAME) {
+          return null;
+        }
+        return workspacePath;
+      }
       if (!project.metadata) {
         return null;
       }
@@ -3087,8 +3684,10 @@ export function startDaemon(config = {}, deps = {}) {
   }
 
   async function resolveRestartCwd({
+    taskId,
     projectId,
     preferredCwd = "",
+    launchConfig = null,
     backendType,
     sessionId,
     sourceSessionFilePath = "",
@@ -3096,6 +3695,15 @@ export function startDaemon(config = {}, deps = {}) {
     const normalizedPreferredCwd = typeof preferredCwd === "string" ? preferredCwd.trim() : "";
     if (normalizedPreferredCwd) {
       return normalizedPreferredCwd;
+    }
+
+    const worktreeCwd = await ensureTaskWorktree({
+      taskId,
+      projectId,
+      launchConfig,
+    });
+    if (worktreeCwd) {
+      return worktreeCwd;
     }
 
     const boundPath = await getProjectLocalPath(projectId);
@@ -3154,6 +3762,7 @@ export function startDaemon(config = {}, deps = {}) {
       request_id: requestIdRaw,
     } =
       payload || {};
+    const launchConfig = normalizeLaunchConfig(payload?.launch_config);
     const requestId = requestIdRaw ? String(requestIdRaw) : "";
 
     if (!taskId || !projectId) {
@@ -3274,9 +3883,18 @@ export function startDaemon(config = {}, deps = {}) {
       let logPath;
       let runTimestampPart = null;
 
-      if (boundPath) {
-        taskDir = boundPath;
-        log(`Using project bound path: ${taskDir}`);
+      const resolvedTaskWorkspace =
+        (await ensureTaskWorktree({
+          taskId,
+          projectId,
+          launchConfig,
+        })) ||
+        normalizeOptionalString(launchConfig.cwd) ||
+        boundPath;
+
+      if (resolvedTaskWorkspace) {
+        taskDir = resolvedTaskWorkspace;
+        log(`Using task workspace: ${taskDir}`);
         logPath = path.join(taskDir, "conductor.log");
       } else {
         const now = new Date();
@@ -3480,6 +4098,7 @@ export function startDaemon(config = {}, deps = {}) {
     const normalizedTargetTaskId = targetTaskId ? String(targetTaskId) : "";
     const normalizedProjectId = projectId ? String(projectId) : "";
     const normalizedSourceSessionId = sourceSessionId ? String(sourceSessionId).trim() : "";
+    const targetLaunchConfig = normalizeLaunchConfig(payload?.target_launch_config);
 
     if (
       !normalizedMode ||
@@ -3612,8 +4231,10 @@ export function startDaemon(config = {}, deps = {}) {
     try {
       if (normalizedMode === "bridge_to_new_task" || normalizedMode === "fork_to_new_task") {
         const sourceResumeCwd = await resolveRestartCwd({
+          taskId: normalizedTargetTaskId,
           projectId: normalizedProjectId,
           backendType: sourceBackendType,
+          launchConfig: targetLaunchConfig,
           sessionId: normalizedSourceSessionId,
           sourceSessionFilePath: sourceSessionFilePath ? String(sourceSessionFilePath) : "",
         });
@@ -3633,15 +4254,19 @@ export function startDaemon(config = {}, deps = {}) {
         });
         resolvedResumeSessionId = bridgeResult.sessionId;
         resolvedResumeCwd = await resolveRestartCwd({
+          taskId: normalizedTargetTaskId,
           projectId: normalizedProjectId,
           preferredCwd: bridgeResult.cwd,
+          launchConfig: targetLaunchConfig,
           backendType: effectiveBackend,
           sessionId: bridgeResult.sessionId,
           sourceSessionFilePath: sourceSessionFilePath ? String(sourceSessionFilePath) : "",
         });
       } else if (normalizedMode === "resume_inplace") {
         resolvedResumeCwd = await resolveRestartCwd({
+          taskId: normalizedTargetTaskId,
           projectId: normalizedProjectId,
+          launchConfig: targetLaunchConfig,
           backendType: effectiveBackend,
           sessionId: normalizedSourceSessionId,
           sourceSessionFilePath: sourceSessionFilePath ? String(sourceSessionFilePath) : "",

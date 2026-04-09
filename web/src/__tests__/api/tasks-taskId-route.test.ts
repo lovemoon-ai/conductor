@@ -26,6 +26,10 @@ vi.mock("@/lib/realtime/hub", () => ({
     getTerminalLatencySample: vi.fn(),
     waitForTaskStopAck: vi.fn(),
     waitForTaskFinalStatus: vi.fn(),
+    cancelTaskStopAck: vi.fn(),
+    cancelTaskFinalStatus: vi.fn(),
+    waitForTaskWorktreeCleanup: vi.fn(),
+    cancelTaskWorktreeCleanup: vi.fn(),
     unbindTask: vi.fn(),
   },
 }));
@@ -34,7 +38,7 @@ vi.mock("@/lib/realtime/agent-outbox", () => ({
   enqueueAndAttemptAgentCommand: vi.fn(),
 }));
 
-vi.mock("@/lib/conductor/task-file-storage", () => ({
+vi.mock("@/lib/tasks/task-file-storage", () => ({
   deleteTaskAttachmentDirectory: vi.fn(),
 }));
 
@@ -43,6 +47,7 @@ vi.mock("@/lib/db", () => ({
     $transaction: vi.fn(),
     task: {
       findFirst: vi.fn(),
+      findMany: vi.fn(),
       delete: vi.fn(),
       update: vi.fn(),
     },
@@ -57,6 +62,7 @@ vi.mock("@/lib/db", () => ({
     },
     agentOutbox: {
       findMany: vi.fn(),
+      create: vi.fn(),
     },
     taskStatusEvent: {
       findFirst: vi.fn(),
@@ -76,7 +82,7 @@ vi.mock("@/lib/db", () => ({
 const { db } = await import("@/lib/db");
 const { realtimeHub } = await import("@/lib/realtime/hub");
 const { enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
-const { deleteTaskAttachmentDirectory } = await import("@/lib/conductor/task-file-storage");
+const { deleteTaskAttachmentDirectory } = await import("@/lib/tasks/task-file-storage");
 
 const prismaError = (code: string, message: string) =>
   Object.assign(new Error(message), { code });
@@ -101,6 +107,19 @@ describe("/api/tasks/[taskId]", () => {
     } as any);
     vi.mocked(realtimeHub.waitForTaskStopAck).mockResolvedValue(true);
     vi.mocked(realtimeHub.waitForTaskFinalStatus).mockResolvedValue("killed");
+    vi.mocked(realtimeHub.cancelTaskStopAck).mockImplementation(() => true);
+    vi.mocked(realtimeHub.cancelTaskFinalStatus).mockImplementation(() => 0);
+    vi.mocked(realtimeHub.waitForTaskWorktreeCleanup).mockResolvedValue({
+      request_id: "req-cleanup-1",
+      task_id: "task-1",
+      daemon_host: "daemon-a",
+      worktree_branch: "abc123",
+      removed_path: "/repo/.conductor/worktrees/task-1",
+      cleaned: true,
+      error: null,
+      cleaned_at: "2026-03-05T12:00:02.000Z",
+    });
+    vi.mocked(realtimeHub.cancelTaskWorktreeCleanup).mockImplementation(() => {});
     vi.mocked(realtimeHub.sendToAgent).mockReturnValue(true);
     vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(null);
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([]);
@@ -119,6 +138,7 @@ describe("/api/tasks/[taskId]", () => {
     );
     vi.mocked(db.message.findMany).mockResolvedValue([]);
     vi.mocked(db.message.count).mockResolvedValue(0);
+    vi.mocked(db.task.findMany).mockResolvedValue([] as any);
     vi.mocked(db.taskStatusEvent.findFirst).mockResolvedValue(null);
     vi.mocked(db.ptySession.upsert).mockResolvedValue({
       id: "pty-1",
@@ -141,6 +161,7 @@ describe("/api/tasks/[taskId]", () => {
     } as any);
     vi.mocked(db.ptySession.deleteMany).mockResolvedValue({ count: 0 } as any);
     vi.mocked(db.agentOutbox.findMany).mockResolvedValue([]);
+    vi.mocked(db.agentOutbox.create).mockResolvedValue({ id: "outbox-1" } as any);
     vi.mocked(enqueueAndAttemptAgentCommand).mockResolvedValue({
       requestId: "req-1",
       delivered: true,
@@ -148,6 +169,16 @@ describe("/api/tasks/[taskId]", () => {
     vi.mocked(db.taskDiagnosticsSnapshot.create).mockResolvedValue({
       id: "snapshot-1",
     } as any);
+    vi.mocked(db.$transaction).mockImplementation(async (callback: any) =>
+      typeof callback === "function"
+        ? callback({
+            task: db.task,
+            ptySession: db.ptySession,
+            message: db.message,
+            agentOutbox: db.agentOutbox,
+          })
+        : callback,
+    );
   });
 
   it("should return 404 when task does not exist", async () => {
@@ -503,10 +534,361 @@ describe("/api/tasks/[taskId]", () => {
 
     expect(response.status).toBe(204);
     expect(enqueueAndAttemptAgentCommand).toHaveBeenCalled();
+    expect(realtimeHub.cancelTaskStopAck).toHaveBeenCalledWith(
+      "task-4",
+      expect.any(String),
+    );
     expect(db.task.delete).toHaveBeenCalledWith({
       where: { id: "task-4" },
     });
     expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-4");
+  });
+
+  it("cleans up the isolated worktree before deleting the task", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-worktree-delete",
+      projectId: "proj-1",
+      title: "Task With Worktree",
+      taskType: "ai_task",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      status: "running",
+      launchConfig: JSON.stringify({
+        worktree: true,
+        worktreeId: "task-worktree-delete",
+        worktreeBranch: "abc123",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/repo",
+        projectWorkspacePath: "/repo",
+        projectRelativePath: ".",
+      }),
+      createdAt: new Date("2026-03-05T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-05T12:00:01.000Z"),
+    } as any);
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(true);
+    vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(db.task.delete).mockResolvedValue({ id: "task-worktree-delete" } as any);
+
+    const request = createMockRequest({ method: "DELETE", token });
+    const response = await DELETE(request, { params: Promise.resolve({ taskId: "task-worktree-delete" }) });
+
+    expect(response.status).toBe(204);
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        taskId: "task-worktree-delete",
+        agentHost: "daemon-a",
+        eventType: "stop_task",
+      }),
+      expect.any(Object),
+    );
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          userId: "user-1",
+          agentHost: "daemon-a",
+          taskId: "task-worktree-delete",
+          eventType: "cleanup_task_worktree",
+        }),
+      }),
+    );
+    expect(db.task.delete).toHaveBeenCalledWith({
+      where: { id: "task-worktree-delete" },
+    });
+    expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-worktree-delete");
+  });
+
+  it("still deletes a stopped worktree task when its daemon is offline", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-worktree-offline",
+      projectId: "proj-1",
+      title: "Offline Worktree Task",
+      taskType: "ai_task",
+      agentHost: "daemon-offline",
+      executionHost: "daemon-offline",
+      status: "completed",
+      launchConfig: JSON.stringify({
+        worktree: true,
+        worktreeId: "task-worktree-offline",
+        worktreeBranch: "fedcba",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/repo",
+        projectWorkspacePath: "/repo",
+        projectRelativePath: ".",
+      }),
+      project: {
+        daemonHost: "daemon-offline",
+      },
+      createdAt: new Date("2026-03-05T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-05T12:00:01.000Z"),
+    } as any);
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+    vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(db.task.delete).mockResolvedValue({ id: "task-worktree-offline" } as any);
+
+    const request = createMockRequest({ method: "DELETE", token });
+    const response = await DELETE(request, { params: Promise.resolve({ taskId: "task-worktree-offline" }) });
+
+    expect(response.status).toBe(204);
+    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          userId: "user-1",
+          agentHost: "daemon-offline",
+          taskId: "task-worktree-offline",
+          eventType: "cleanup_task_worktree",
+        }),
+      }),
+    );
+    expect(db.task.delete).toHaveBeenCalledWith({
+      where: { id: "task-worktree-offline" },
+    });
+    expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-worktree-offline");
+    expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-worktree-offline");
+  });
+
+  it("routes manual-fire worktree cleanup to the original daemon from metadata", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-worktree-manual-fire",
+      projectId: "proj-1",
+      title: "Manual Fire Worktree Task",
+      taskType: "ai_task",
+      agentHost: "conductor-fire-debug-1",
+      executionHost: null,
+      status: "completed",
+      launchConfig: JSON.stringify({
+        worktree: true,
+        worktreeId: "task-worktree-manual-fire",
+        worktreeBranch: "fedcba",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/repo",
+        projectWorkspacePath: "/repo",
+        projectRelativePath: ".",
+      }),
+      metadata: JSON.stringify({ daemonName: "daemon-a" }),
+      project: {
+        daemonHost: "daemon-a",
+      },
+      createdAt: new Date("2026-03-05T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-05T12:00:01.000Z"),
+    } as any);
+    vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(db.task.delete).mockResolvedValue({ id: "task-worktree-manual-fire" } as any);
+
+    const request = createMockRequest({ method: "DELETE", token });
+    const response = await DELETE(request, {
+      params: Promise.resolve({ taskId: "task-worktree-manual-fire" }),
+    });
+
+    expect(response.status).toBe(204);
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          userId: "user-1",
+          agentHost: "daemon-a",
+          taskId: "task-worktree-manual-fire",
+          eventType: "cleanup_task_worktree",
+        }),
+      }),
+    );
+    expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-worktree-manual-fire");
+    expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-worktree-manual-fire");
+  });
+
+  it("routes legacy manual-fire worktree cleanup to the project daemon when metadata is missing", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-worktree-legacy-manual-fire",
+      projectId: "proj-1",
+      title: "Legacy Manual Fire Worktree Task",
+      taskType: "ai_task",
+      agentHost: "conductor-fire-debug-1",
+      executionHost: null,
+      status: "completed",
+      launchConfig: JSON.stringify({
+        worktree: true,
+        worktreeId: "task-worktree-legacy-manual-fire",
+        worktreeBranch: "fedcba",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/repo",
+        projectWorkspacePath: "/repo",
+        projectRelativePath: ".",
+      }),
+      metadata: null,
+      project: {
+        daemonHost: "daemon-a",
+      },
+      createdAt: new Date("2026-03-05T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-05T12:00:01.000Z"),
+    } as any);
+    vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(db.task.delete).mockResolvedValue({ id: "task-worktree-legacy-manual-fire" } as any);
+
+    const request = createMockRequest({ method: "DELETE", token });
+    const response = await DELETE(request, {
+      params: Promise.resolve({ taskId: "task-worktree-legacy-manual-fire" }),
+    });
+
+    expect(response.status).toBe(204);
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          userId: "user-1",
+          agentHost: "daemon-a",
+          taskId: "task-worktree-legacy-manual-fire",
+          eventType: "cleanup_task_worktree",
+        }),
+      }),
+    );
+    expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-worktree-legacy-manual-fire");
+    expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-worktree-legacy-manual-fire");
+  });
+
+  it("still deletes a running worktree task when its daemon is offline", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-worktree-running-offline",
+      projectId: "proj-1",
+      title: "Offline Running Worktree Task",
+      taskType: "ai_task",
+      agentHost: "daemon-offline",
+      executionHost: "daemon-offline",
+      status: "running",
+      launchConfig: JSON.stringify({
+        worktree: true,
+        worktreeId: "task-worktree-running-offline",
+        worktreeBranch: "fedcba",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/repo",
+        projectWorkspacePath: "/repo",
+        projectRelativePath: ".",
+      }),
+      project: {
+        daemonHost: "daemon-offline",
+      },
+      createdAt: new Date("2026-03-05T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-05T12:00:01.000Z"),
+    } as any);
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+    vi.mocked(enqueueAndAttemptAgentCommand).mockResolvedValue({
+      requestId: "req-stop-offline",
+      delivered: false,
+    } as any);
+    vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(db.task.delete).mockResolvedValue({ id: "task-worktree-running-offline" } as any);
+
+    const request = createMockRequest({ method: "DELETE", token });
+    const response = await DELETE(request, {
+      params: Promise.resolve({ taskId: "task-worktree-running-offline" }),
+    });
+
+    expect(response.status).toBe(204);
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "task-worktree-running-offline",
+        agentHost: "daemon-offline",
+        eventType: "stop_task",
+      }),
+      expect.any(Object),
+    );
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          userId: "user-1",
+          agentHost: "daemon-offline",
+          taskId: "task-worktree-running-offline",
+          eventType: "cleanup_task_worktree",
+        }),
+      }),
+    );
+    expect(db.task.delete).toHaveBeenCalledWith({
+      where: { id: "task-worktree-running-offline" },
+    });
+    expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-worktree-running-offline");
+    expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-worktree-running-offline");
+  });
+
+  it("skips worktree cleanup when a successor task still shares the root", async () => {
+    const token = createTestToken("user-1");
+    const sourceTask = {
+      id: "task-worktree-source",
+      projectId: "proj-1",
+      title: "Shared Worktree Source",
+      taskType: "ai_task",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      status: "running",
+      launchConfig: JSON.stringify({
+        worktree: true,
+        worktreeId: "task-worktree-source",
+        worktreeBranch: "abc123",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/repo",
+        projectWorkspacePath: "/repo",
+        projectRelativePath: ".",
+      }),
+      createdAt: new Date("2026-03-05T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-05T12:00:01.000Z"),
+      project: {
+        daemonHost: "daemon-a",
+      },
+    } as any;
+    const successorTask = {
+      id: "task-worktree-successor",
+      projectId: "proj-1",
+      title: "Shared Worktree Successor",
+      taskType: "ai_task",
+      status: "init",
+      agentHost: "daemon-a",
+      executionHost: null,
+      launchConfig: JSON.stringify({
+        worktree: true,
+        worktree_id: "task-worktree-source",
+        worktree_branch: "abc123",
+        worktree_base_ref: "main",
+        project_repo_root: "/repo",
+        project_workspace_path: "/repo",
+        project_relative_path: ".",
+      }),
+      createdAt: new Date("2026-03-05T12:00:02.000Z"),
+      updatedAt: new Date("2026-03-05T12:00:03.000Z"),
+    } as any;
+    vi.mocked(db.task.findFirst).mockImplementation(async ({ where }: any) => {
+      if (where?.id === "task-worktree-source") {
+        return sourceTask;
+      }
+      return null;
+    });
+    vi.mocked(db.task.findMany).mockResolvedValue([successorTask] as any);
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(true);
+    vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(db.task.delete).mockResolvedValue({ id: "task-worktree-source" } as any);
+
+    const request = createMockRequest({ method: "DELETE", token });
+    const response = await DELETE(request, {
+      params: Promise.resolve({ taskId: "task-worktree-source" }),
+    });
+
+    expect(response.status).toBe(204);
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledTimes(1);
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "task-worktree-source",
+        agentHost: "daemon-a",
+        eventType: "stop_task",
+      }),
+      expect.any(Object),
+    );
+    expect(db.agentOutbox.create).not.toHaveBeenCalled();
+    expect(db.task.delete).toHaveBeenCalledWith({
+      where: { id: "task-worktree-source" },
+    });
+    expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-worktree-source");
+    expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-worktree-source");
   });
 
   it("should persist task session fields via PATCH", async () => {
@@ -1654,6 +2036,8 @@ describe("/api/tasks/[taskId]", () => {
       delivered: false,
     } as any);
     vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(true);
+    vi.mocked(realtimeHub.cancelTaskStopAck).mockImplementation(() => true);
+    vi.mocked(realtimeHub.cancelTaskFinalStatus).mockImplementation(() => 0);
 
     const response = await PATCH(
       createMockRequest({
@@ -1716,6 +2100,14 @@ describe("/api/tasks/[taskId]", () => {
         }),
       }),
     );
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-stop-fail-1", "daemon-a");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledTimes(1);
+    expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-pty-stop-fail-1");
+    expect(realtimeHub.cancelTaskStopAck).toHaveBeenCalledWith(
+      "task-pty-stop-fail-1",
+      expect.any(String),
+    );
+    expect(realtimeHub.cancelTaskFinalStatus).toHaveBeenCalledWith("task-pty-stop-fail-1");
     expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledTimes(1);
     expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1725,6 +2117,178 @@ describe("/api/tasks/[taskId]", () => {
       }),
       expect.any(Object),
     );
+  });
+
+  it("rolls back PTY PATCH DB state and clears stop waiters when stop_task throws after the relaunch transaction", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-pty-stop-throw-1",
+      projectId: "proj-1",
+      title: "Rollback Terminal",
+      taskType: "pty_task",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: null,
+      sessionFilePath: null,
+      launchConfig: JSON.stringify({
+        entrypointType: "tool_preset",
+        toolPreset: "codex",
+        cwd: "/tmp/old",
+      }),
+      metadata: JSON.stringify({ before: true }),
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:10:00.000Z"),
+      ptySession: {
+        id: "pty-stop-throw-1",
+        taskId: "task-pty-stop-throw-1",
+        state: "running",
+        entrypointType: "tool_preset",
+        toolPreset: "codex",
+        commandJson: null,
+        cwd: "/tmp/old",
+        envJson: null,
+        shell: "/bin/zsh",
+        pid: 4321,
+        cols: 120,
+        rows: 40,
+        lastOutputSeq: 12,
+        startedAt: new Date("2024-01-01T00:05:00.000Z"),
+        closedAt: null,
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2024-01-01T00:10:00.000Z"),
+      },
+    } as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      {
+        id: "agent-a",
+        host: "daemon-a",
+        supportedBackends: ["codex"],
+        capabilities: ["pty_task"],
+      },
+      {
+        id: "agent-b",
+        host: "daemon-b",
+        supportedBackends: ["codex"],
+        capabilities: ["pty_task"],
+      },
+    ]);
+    vi.mocked(db.task.update)
+      .mockResolvedValueOnce({
+        id: "task-pty-stop-throw-1",
+        projectId: "proj-1",
+        title: "Rollback Terminal",
+        taskType: "pty_task",
+        status: "unknown",
+        agentHost: "daemon-b",
+        executionHost: null,
+        backendType: "codex",
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: JSON.stringify({
+          entrypointType: "tool_preset",
+          toolPreset: "codex",
+          cwd: "/tmp/new",
+        }),
+        metadata: JSON.stringify({ before: true }),
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2024-01-01T00:11:00.000Z"),
+      } as any)
+      .mockResolvedValueOnce({
+        id: "task-pty-stop-throw-1",
+        projectId: "proj-1",
+        title: "Rollback Terminal",
+        taskType: "pty_task",
+        status: "running",
+        agentHost: "daemon-a",
+        executionHost: "daemon-a",
+        backendType: "codex",
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: JSON.stringify({
+          entrypointType: "tool_preset",
+          toolPreset: "codex",
+          cwd: "/tmp/old",
+        }),
+        metadata: JSON.stringify({ before: true }),
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2024-01-01T00:12:00.000Z"),
+      } as any);
+    vi.mocked(db.ptySession.upsert)
+      .mockResolvedValueOnce({
+        id: "pty-stop-throw-1",
+        taskId: "task-pty-stop-throw-1",
+        state: "pending",
+        entrypointType: "tool_preset",
+        toolPreset: "codex",
+        commandJson: null,
+        cwd: "/tmp/new",
+        envJson: null,
+        shell: null,
+        pid: null,
+        cols: 140,
+        rows: 50,
+        lastOutputSeq: 0,
+        startedAt: null,
+        closedAt: null,
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2024-01-01T00:11:00.000Z"),
+      } as any)
+      .mockResolvedValueOnce({
+        id: "pty-stop-throw-1",
+        taskId: "task-pty-stop-throw-1",
+        state: "running",
+        entrypointType: "tool_preset",
+        toolPreset: "codex",
+        commandJson: null,
+        cwd: "/tmp/old",
+        envJson: null,
+        shell: "/bin/zsh",
+        pid: 4321,
+        cols: 120,
+        rows: 40,
+        lastOutputSeq: 12,
+        startedAt: new Date("2024-01-01T00:05:00.000Z"),
+        closedAt: null,
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2024-01-01T00:12:00.000Z"),
+      } as any);
+    vi.mocked(enqueueAndAttemptAgentCommand).mockRejectedValueOnce(new Error("socket closed"));
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(true);
+    vi.mocked(realtimeHub.cancelTaskStopAck).mockImplementation(() => true);
+    vi.mocked(realtimeHub.cancelTaskFinalStatus).mockImplementation(() => 0);
+
+    const response = await PATCH(
+      createMockRequest({
+        method: "PATCH",
+        token,
+        body: {
+          agent_host: "daemon-b",
+          launch_config: {
+            entrypointType: "tool_preset",
+            toolPreset: "codex",
+            cwd: "/tmp/new",
+            cols: 140,
+            rows: 50,
+          },
+        },
+      }),
+      { params: Promise.resolve({ taskId: "task-pty-stop-throw-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toContain("Failed to stop");
+    expect(db.$transaction).toHaveBeenCalledTimes(2);
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-stop-throw-1", "daemon-a");
+    expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-pty-stop-throw-1");
+    expect(realtimeHub.cancelTaskStopAck).toHaveBeenCalledWith(
+      "task-pty-stop-throw-1",
+      expect.any(String),
+    );
+    expect(realtimeHub.cancelTaskFinalStatus).toHaveBeenCalledWith("task-pty-stop-throw-1");
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledTimes(1);
   });
 
   it("should still delete task when diagnostics snapshot creation fails", async () => {

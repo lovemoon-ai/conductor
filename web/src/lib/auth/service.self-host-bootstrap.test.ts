@@ -4,6 +4,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { mockDb, mockStartNewUserPlusAccess } = vi.hoisted(() => {
   const project = {
     findFirst: vi.fn(),
+    findMany: vi.fn(),
+    create: vi.fn(),
+  };
+  const defaultProject = {
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
     create: vi.fn(),
   };
   const user = {
@@ -12,12 +18,14 @@ const { mockDb, mockStartNewUserPlusAccess } = vi.hoisted(() => {
   };
   const tx = {
     project,
+    defaultProject,
     user,
   };
 
   return {
     mockDb: {
       project,
+      defaultProject,
       user,
       $transaction: vi.fn(async (callback: (tx: typeof tx) => Promise<unknown>) => callback(tx)),
     },
@@ -36,6 +44,8 @@ vi.mock("@/lib/subscription/service", () => ({
 describe("self-host bootstrap auth helpers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDb.defaultProject.findUnique.mockResolvedValue(null);
+    mockDb.project.findMany.mockResolvedValue([]);
   });
 
   it("normalizes self-host bootstrap phone numbers", async () => {
@@ -54,12 +64,16 @@ describe("self-host bootstrap auth helpers", () => {
       passwordSalt: "salt",
     });
     mockStartNewUserPlusAccess.mockResolvedValue(undefined);
-    mockDb.project.findFirst.mockResolvedValueOnce(null);
     mockDb.project.create.mockResolvedValue({
       id: "project-1",
       userId: "user-1",
       name: "Default Project",
       metadata: '{"autoCreated":true,"isDefault":true}',
+    });
+    mockDb.defaultProject.create.mockResolvedValue({
+      id: "default-map-1",
+      userId: "user-1",
+      projectId: "project-1",
     });
     mockDb.user.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({
       id: "user-1",
@@ -78,6 +92,12 @@ describe("self-host bootstrap auth helpers", () => {
     expect(result.user.id).toBe("user-1");
     expect(mockStartNewUserPlusAccess).toHaveBeenCalledWith("user-1", expect.any(Object));
     expect(result.project.name).toBe("Default Project");
+    expect(mockDb.defaultProject.create).toHaveBeenCalledWith({
+      data: {
+        userId: "user-1",
+        projectId: "project-1",
+      },
+    });
   });
 
   it("reuses an existing bootstrap user and does not create a second default project", async () => {
@@ -87,11 +107,16 @@ describe("self-host bootstrap auth helpers", () => {
       phone: "+18880001234",
       email: null,
     });
-    mockDb.project.findFirst.mockResolvedValue({
-      id: "project-1",
+    mockDb.defaultProject.findUnique.mockResolvedValue({
+      id: "default-map-1",
       userId: "user-1",
-      name: "Default Project",
-      metadata: '{"autoCreated":true,"isDefault":true}',
+      projectId: "project-1",
+      project: {
+        id: "project-1",
+        userId: "user-1",
+        name: "Default Project",
+        metadata: '{"autoCreated":true,"isDefault":true}',
+      },
     });
 
     const result = await bootstrapSelfHostUserByPhone(" +18880001234 ");
@@ -100,6 +125,7 @@ describe("self-host bootstrap auth helpers", () => {
     expect(result.user.id).toBe("user-1");
     expect(mockDb.project.create).not.toHaveBeenCalled();
     expect(mockStartNewUserPlusAccess).not.toHaveBeenCalled();
+    expect(mockDb.defaultProject.create).not.toHaveBeenCalled();
   });
 
   it("falls back to the existing user when a concurrent create hits a unique constraint", async () => {
@@ -116,17 +142,35 @@ describe("self-host bootstrap auth helpers", () => {
       clientVersion: "test",
     });
     mockDb.user.create.mockRejectedValue(uniqueError);
-    mockDb.project.findFirst.mockResolvedValue({
-      id: "project-2",
+    mockDb.project.findMany.mockResolvedValue([
+      {
+        id: "project-2",
+        userId: "user-2",
+        name: "Default Project",
+        metadata: '{"autoCreated":true,"isDefault":true}',
+      },
+    ] as any);
+    mockDb.defaultProject.upsert.mockResolvedValue({
+      id: "default-map-2",
       userId: "user-2",
-      name: "Default Project",
-      metadata: '{"autoCreated":true,"isDefault":true}',
+      projectId: "project-2",
+      project: {
+        id: "project-2",
+        userId: "user-2",
+        name: "Default Project",
+        metadata: '{"autoCreated":true,"isDefault":true}',
+      },
     });
 
     const result = await bootstrapSelfHostUserByPhone("+17770001234");
 
     expect(result.created).toBe(false);
     expect(result.user.id).toBe("user-2");
+    expect(mockDb.defaultProject.upsert).toHaveBeenCalledWith({
+      where: { userId: "user-2" },
+      update: { projectId: "project-2" },
+      create: { userId: "user-2", projectId: "project-2" },
+    });
   });
 
   it("rejects phones without full international format", async () => {
