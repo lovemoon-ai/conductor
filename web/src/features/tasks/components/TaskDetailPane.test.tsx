@@ -8,7 +8,7 @@ vi.mock('../store', () => ({
   useTasksStore: () => useTasksStoreMock(),
 }));
 
-vi.mock('@/components/conductor/layout/Header', () => ({
+vi.mock('@/components/layout/Header', () => ({
   Header: ({ title }: { title: string }) => <div data-testid="header">{title}</div>,
 }));
 
@@ -26,7 +26,7 @@ vi.mock('@/features/terminal', () => ({
   TerminalView: ({ task }: { task: { id: string } }) => <div data-testid="terminal-view">terminal:{task.id}</div>,
 }));
 
-vi.mock('@/components/conductor/common/LoadingSpinner', () => ({
+vi.mock('@/components/common/LoadingSpinner', () => ({
   LoadingSpinner: () => <div data-testid="loading-spinner" />,
 }));
 

@@ -2,7 +2,7 @@
 
 import { Suspense, useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Header } from '@/components/conductor/layout/Header';
+import { Header } from '@/components/layout/Header';
 import {
   GridIcon,
   ListIcon,

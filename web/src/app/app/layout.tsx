@@ -7,9 +7,9 @@ import { useWebSocket } from '@/features/realtime';
 import { useAuthStorageSync } from '@/features/auth';
 import { useProjectsStore } from '@/features/projects';
 import { useAgentsStore } from '@/features/agents';
-import { Sidebar } from '@/components/conductor/layout/Sidebar';
-import { MobileNav } from '@/components/conductor/layout/MobileNav';
-import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';
+import { Sidebar } from '@/components/layout/Sidebar';
+import { MobileNav } from '@/components/layout/MobileNav';
+import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'conductor-sidebar-collapsed';
 

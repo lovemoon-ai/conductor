@@ -11,7 +11,7 @@ import {
 } from '../store';
 import { useTasksStore } from '@/features/tasks';
 import { useWebSocketStore } from '@/features/realtime';
-import { useConfirm, useToast } from '@/components/conductor/common/FeedbackProvider';
+import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 import { loadXtermModules } from './xterm-loader';
 
 interface TerminalViewProps {

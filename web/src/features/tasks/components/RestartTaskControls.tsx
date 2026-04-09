@@ -9,8 +9,8 @@ import {
   canCreateSuccessorTask,
   getCompatibleRestartBackends,
 } from '@/lib/tasks/restart';
-import { Dialog } from '@/components/conductor/common/Dialog';
-import { useToast } from '@/components/conductor/common/FeedbackProvider';
+import { Dialog } from '@/components/common/Dialog';
+import { useToast } from '@/components/common/FeedbackProvider';
 
 interface RestartTaskControlsProps {
   task: Task;

@@ -49,7 +49,7 @@ vi.mock('./MessageInput', () => ({
   ),
 }));
 
-vi.mock('@/components/conductor/common/LoadingSpinner', () => ({
+vi.mock('@/components/common/LoadingSpinner', () => ({
   LoadingSpinner: () => <div data-testid="loading-spinner" />,
 }));
 

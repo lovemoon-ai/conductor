@@ -88,7 +88,7 @@ vi.mock('@/features/projects', () => ({
     selector({ projects: [] }),
 }));
 
-vi.mock('@/components/conductor/layout/Header', () => ({
+vi.mock('@/components/layout/Header', () => ({
   Header: ({
     title,
     actions,

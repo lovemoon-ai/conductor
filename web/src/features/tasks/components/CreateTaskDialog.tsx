@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Dialog } from '@/components/conductor/common/Dialog';
-import { HelpTip } from '@/components/conductor/common/HelpTip';
-import { InlineNotice } from '@/components/conductor/common/InlineNotice';
+import { Dialog } from '@/components/common/Dialog';
+import { HelpTip } from '@/components/common/HelpTip';
+import { InlineNotice } from '@/components/common/InlineNotice';
 import { useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
 import { useAgentsStore } from '@/features/agents';

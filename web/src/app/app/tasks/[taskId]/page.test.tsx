@@ -13,7 +13,7 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock }),
 }));
 
-vi.mock('@/components/conductor/layout/Header', () => ({
+vi.mock('@/components/layout/Header', () => ({
   Header: ({
     title,
     showConnectionStatus,
@@ -34,7 +34,7 @@ vi.mock('@/features/terminal', () => ({
   TerminalView: ({ task }: { task: { id: string } }) => <div>terminal:{task.id}</div>,
 }));
 
-vi.mock('@/components/conductor/common/LoadingSpinner', () => ({
+vi.mock('@/components/common/LoadingSpinner', () => ({
   LoadingSpinner: ({ children }: { children?: ReactNode }) => <div>{children ?? 'loading'}</div>,
 }));
 

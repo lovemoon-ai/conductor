@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Dialog } from '@/components/conductor/common/Dialog';
-import { InlineNotice } from '@/components/conductor/common/InlineNotice';
+import { Dialog } from '@/components/common/Dialog';
+import { InlineNotice } from '@/components/common/InlineNotice';
 import { useProjectsStore } from '../store';
 import { useAgentsStore } from '@/features/agents';
 

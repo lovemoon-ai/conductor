@@ -2,7 +2,7 @@
 
 import { useProjectsStore } from '../store';
 import { ProjectItem } from './ProjectItem';
-import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';
+import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 
 export function ProjectList() {
   const { projects, isLoading } = useProjectsStore();

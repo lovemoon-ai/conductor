@@ -5,9 +5,9 @@ import { useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
 import { filterTasksByProject } from '../utils/task-filter';
 import { TaskItem } from './TaskItem';
-import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';
-import { EmptyState } from '@/components/conductor/common/EmptyState';
-import { useConfirm, useToast } from '@/components/conductor/common/FeedbackProvider';
+import { LoadingSpinner } from '@/components/common/LoadingSpinner';
+import { EmptyState } from '@/components/common/EmptyState';
+import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 
 export type TaskListViewMode = 'list' | 'grid';
 

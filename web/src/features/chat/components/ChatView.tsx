@@ -7,8 +7,8 @@ import { useTasksStore } from '@/features/tasks';
 import { useWebSocketStore } from '@/features/realtime';
 import { MessageBubble } from './MessageBubble';
 import { MessageInput } from './MessageInput';
-import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';
-import { InlineNotice } from '@/components/conductor/common/InlineNotice';
+import { LoadingSpinner } from '@/components/common/LoadingSpinner';
+import { InlineNotice } from '@/components/common/InlineNotice';
 
 interface ChatViewProps {
   taskId: string;

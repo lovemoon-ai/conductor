@@ -7,7 +7,7 @@ import { useProjectsStore } from '../store';
 import { useAgentsStore } from '@/features/agents';
 import { useSwipeActions } from '@/shared/hooks/useSwipeActions';
 import { formatBindingLabel } from '../utils/format-binding-label';
-import { useConfirm, useToast } from '@/components/conductor/common/FeedbackProvider';
+import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 
 interface ProjectItemProps {
   project: Project;

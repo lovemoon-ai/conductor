@@ -41,7 +41,7 @@ vi.mock('@/shared/hooks/useSwipeActions', () => ({
   }),
 }));
 
-vi.mock('@/components/conductor/common/FeedbackProvider', () => ({
+vi.mock('@/components/common/FeedbackProvider', () => ({
   useConfirm: () => ({
     confirm: vi.fn(),
   }),

@@ -29,7 +29,7 @@ vi.mock('next/navigation', () => ({
   }),
 }));
 
-vi.mock('@/components/conductor/common/Dialog', () => ({
+vi.mock('@/components/common/Dialog', () => ({
   Dialog: ({ open, children }: { open: boolean; children: ReactNode }) =>
     open ? <div>{children}</div> : null,
 }));

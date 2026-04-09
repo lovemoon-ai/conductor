@@ -29,7 +29,7 @@ vi.mock('../store', () => ({
     selector({ restartTask: restartTaskMock }),
 }));
 
-vi.mock('@/components/conductor/common/FeedbackProvider', () => ({
+vi.mock('@/components/common/FeedbackProvider', () => ({
   useToast: () => ({
     pushToast: pushToastMock,
   }),

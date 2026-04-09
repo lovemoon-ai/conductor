@@ -66,7 +66,7 @@ vi.mock('@/features/tasks', () => ({
     selector({ deleteTask: deleteTaskMock }),
 }));
 
-vi.mock('@/components/conductor/common/FeedbackProvider', () => ({
+vi.mock('@/components/common/FeedbackProvider', () => ({
   useConfirm: () => ({
     confirm: confirmMock,
   }),

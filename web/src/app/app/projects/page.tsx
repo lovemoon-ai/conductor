@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Header } from '@/components/conductor/layout/Header';
+import { Header } from '@/components/layout/Header';
 import { ProjectList } from '@/features/projects';
 import { CreateProjectDialog } from '@/features/projects';
 import { useProjectsStore } from '@/features/projects';

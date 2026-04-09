@@ -11,7 +11,7 @@ import { useChatStore } from '@/features/chat';
 import { useTasksStore } from '../store';
 import { useRuntimeStore } from '@/features/realtime';
 import { getApiClient } from '@/shared/api/client';
-import { useConfirm, useToast } from '@/components/conductor/common/FeedbackProvider';
+import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 
 interface TaskItemProps {
   task: Task;

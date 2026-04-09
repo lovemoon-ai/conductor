@@ -1,10 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Header } from '@/components/conductor/layout/Header';
+import { Header } from '@/components/layout/Header';
 import { ChatView } from '@/features/chat';
 import { TerminalView } from '@/features/terminal';
-import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';
+import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { useTasksStore } from '../store';
 
 interface TaskDetailPaneProps {
