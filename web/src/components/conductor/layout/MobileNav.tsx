@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useTasksStore } from '@/lib/conductor/stores/tasks';
+import { useTasksStore } from '@/features/tasks';
 
 type NavIconProps = {
   active: boolean;

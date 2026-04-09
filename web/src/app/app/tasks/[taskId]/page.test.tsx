@@ -38,11 +38,15 @@ vi.mock('@/components/conductor/common/LoadingSpinner', () => ({
   LoadingSpinner: ({ children }: { children?: ReactNode }) => <div>{children ?? 'loading'}</div>,
 }));
 
-vi.mock('@/components/conductor/tasks/RestartTaskControls', () => ({
-  RestartTaskControls: () => null,
-}));
+vi.mock('@/features/tasks', async () => {
+  const actual = await vi.importActual<typeof import('@/features/tasks')>('@/features/tasks');
+  return {
+    ...actual,
+    RestartTaskControls: () => null,
+  };
+});
 
-vi.mock('@/lib/conductor/stores/tasks', () => ({
+vi.mock('@/features/tasks/store', () => ({
   useTasksStore: (selector?: (state: {
     tasks: Array<{
       id: string;

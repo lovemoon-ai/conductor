@@ -10,7 +10,7 @@ vi.mock('@/shared/api/client', () => ({
   }),
 }));
 
-import { useTasksStore } from './tasks';
+import { useTasksStore } from './store';
 
 describe('tasks store', () => {
   beforeEach(() => {

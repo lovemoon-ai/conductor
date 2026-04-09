@@ -4,7 +4,7 @@ import { TaskDetailPane } from './TaskDetailPane';
 
 const useTasksStoreMock = vi.fn();
 
-vi.mock('@/lib/conductor/stores/tasks', () => ({
+vi.mock('../store', () => ({
   useTasksStore: () => useTasksStoreMock(),
 }));
 

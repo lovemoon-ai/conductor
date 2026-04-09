@@ -27,9 +27,61 @@ vi.mock('next/navigation', () => ({
   }),
 }));
 
-vi.mock('@/lib/conductor/stores/tasks', () => ({
-  useTasksStore: (selector: (state: typeof tasksState) => unknown) => selector(tasksState),
-}));
+const readStoredTaskListViewModeMock = vi.fn(() => 'list');
+
+vi.mock('@/features/tasks', async () => {
+  const React = await import('react');
+  return {
+    useTasksStore: (selector: (state: typeof tasksState) => unknown) => selector(tasksState),
+    filterTasksByProject: (tasks: Array<{ projectId?: string | null }>, projectId: string | null) =>
+      projectId ? tasks.filter((task) => task.projectId === projectId) : tasks,
+    TASK_LIST_VIEW_STORAGE_KEY: 'conductor-task-list-view',
+    readStoredTaskListViewMode: () => readStoredTaskListViewModeMock(),
+    ListIcon: () => <span data-testid="list-icon" />,
+    GridIcon: () => <span data-testid="grid-icon" />,
+    RefreshIcon: ({ spinning = false }: { spinning?: boolean }) => <span>{spinning ? 'spinning' : 'refresh'}</span>,
+    TaskList: ({
+      viewMode,
+      activeTaskId,
+      onOpenTask,
+    }: {
+      viewMode: string;
+      activeTaskId?: string | null;
+      onOpenTask?: (taskId: string) => void;
+    }) => (
+      <>
+        <div>task-list:{viewMode}:{activeTaskId ?? 'none'}:{onOpenTask ? 'inline' : 'route'}</div>
+        <button type="button" onClick={() => onOpenTask?.('task-2')}>
+          select-task-2
+        </button>
+      </>
+    ),
+    CreateTaskDialog: ({
+      open,
+      onClose,
+      onCreatedTask,
+      defaultProjectId,
+    }: {
+      open: boolean;
+      onClose: () => void;
+      onCreatedTask?: (taskId: string) => void;
+      defaultProjectId?: string | null;
+    }) => open ? (
+      <div>
+        <div>create-dialog:{defaultProjectId ?? 'none'}</div>
+        <button type="button" onClick={() => onCreatedTask?.('task-3')}>
+          mock-create-success
+        </button>
+        <button type="button" onClick={onClose}>
+          mock-close-create
+        </button>
+      </div>
+    ) : null,
+    TaskDetailPane: ({ taskId, hideHeader }: { taskId: string; hideHeader?: boolean }) => (
+      <div>task-detail:{taskId}:{hideHeader ? 'no-header' : 'header'}</div>
+    ),
+  };
+});
 
 vi.mock('@/lib/conductor/stores/projects', () => ({
   useProjectsStore: (selector: (state: { projects: Array<{ id: string; name: string }> }) => unknown) =>
@@ -56,65 +108,6 @@ vi.mock('@/components/conductor/layout/Header', () => ({
       </div>
     );
   },
-}));
-
-const readStoredTaskListViewModeMock = vi.fn(() => 'list');
-
-vi.mock('@/components/conductor/tasks/TaskList', async () => {
-  const React = await import('react');
-  return {
-    TASK_LIST_VIEW_STORAGE_KEY: 'conductor-task-list-view',
-    readStoredTaskListViewMode: () => readStoredTaskListViewModeMock(),
-    ListIcon: () => <span data-testid="list-icon" />,
-    GridIcon: () => <span data-testid="grid-icon" />,
-    RefreshIcon: ({ spinning = false }: { spinning?: boolean }) => <span>{spinning ? 'spinning' : 'refresh'}</span>,
-    TaskList: ({
-      viewMode,
-      activeTaskId,
-      onOpenTask,
-    }: {
-      viewMode: string;
-      activeTaskId?: string | null;
-      onOpenTask?: (taskId: string) => void;
-    }) => (
-      <>
-        <div>task-list:{viewMode}:{activeTaskId ?? 'none'}:{onOpenTask ? 'inline' : 'route'}</div>
-        <button type="button" onClick={() => onOpenTask?.('task-2')}>
-          select-task-2
-        </button>
-      </>
-    ),
-  };
-});
-
-vi.mock('@/components/conductor/tasks/CreateTaskDialog', () => ({
-  CreateTaskDialog: ({
-    open,
-    onClose,
-    onCreatedTask,
-    defaultProjectId,
-  }: {
-    open: boolean;
-    onClose: () => void;
-    onCreatedTask?: (taskId: string) => void;
-    defaultProjectId?: string | null;
-  }) => open ? (
-    <div>
-      <div>create-dialog:{defaultProjectId ?? 'none'}</div>
-      <button type="button" onClick={() => onCreatedTask?.('task-3')}>
-        mock-create-success
-      </button>
-      <button type="button" onClick={onClose}>
-        mock-close-create
-      </button>
-    </div>
-  ) : null,
-}));
-
-vi.mock('@/components/conductor/tasks/TaskDetailPane', () => ({
-  TaskDetailPane: ({ taskId, hideHeader }: { taskId: string; hideHeader?: boolean }) => (
-    <div>task-detail:{taskId}:{hideHeader ? 'no-header' : 'header'}</div>
-  ),
 }));
 
 describe('TasksPage', () => {

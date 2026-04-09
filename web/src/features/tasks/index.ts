@@ -1,0 +1,16 @@
+export { useTasksStore } from './store';
+export { filterTasksByProject } from './utils/task-filter';
+export {
+  TaskList,
+  TASK_LIST_VIEW_STORAGE_KEY,
+  ListIcon,
+  GridIcon,
+  RefreshIcon,
+  readStoredTaskListViewMode,
+  type TaskListViewMode,
+} from './components/TaskList';
+export { TaskItem } from './components/TaskItem';
+export { TaskStatusBadge } from './components/TaskStatusBadge';
+export { TaskDetailPane } from './components/TaskDetailPane';
+export { CreateTaskDialog } from './components/CreateTaskDialog';
+export { RestartTaskControls } from './components/RestartTaskControls';

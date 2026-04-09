@@ -24,12 +24,12 @@ vi.mock('@/lib/conductor/stores/agents', () => ({
   useAgentsStore: (selector: (state: typeof agentsState) => unknown) => selector(agentsState),
 }));
 
-vi.mock('@/lib/conductor/stores/tasks', () => ({
+vi.mock('../store', () => ({
   useTasksStore: (selector: (state: { restartTask: typeof restartTaskMock }) => unknown) =>
     selector({ restartTask: restartTaskMock }),
 }));
 
-vi.mock('../common/FeedbackProvider', () => ({
+vi.mock('@/components/conductor/common/FeedbackProvider', () => ({
   useToast: () => ({
     pushToast: pushToastMock,
   }),

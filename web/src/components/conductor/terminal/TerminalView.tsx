@@ -9,7 +9,7 @@ import {
   subscribeTerminalTransportSignal,
   useTerminalStore,
 } from '@/lib/conductor/stores/terminal';
-import { useTasksStore } from '@/lib/conductor/stores/tasks';
+import { useTasksStore } from '@/features/tasks';
 import { useWebSocketStore } from '@/features/realtime';
 import { useConfirm, useToast } from '@/components/conductor/common/FeedbackProvider';
 import { loadXtermModules } from './xterm-loader';

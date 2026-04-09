@@ -11,12 +11,12 @@ import {
   TaskList,
   TASK_LIST_VIEW_STORAGE_KEY,
   type TaskListViewMode,
-} from '@/components/conductor/tasks/TaskList';
-import { CreateTaskDialog } from '@/components/conductor/tasks/CreateTaskDialog';
-import { TaskDetailPane } from '@/components/conductor/tasks/TaskDetailPane';
-import { useTasksStore } from '@/lib/conductor/stores/tasks';
+} from '@/features/tasks';
+import { CreateTaskDialog } from '@/features/tasks';
+import { TaskDetailPane } from '@/features/tasks';
+import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/lib/conductor/stores/projects';
-import { filterTasksByProject } from '@/lib/conductor/task-filter';
+import { filterTasksByProject } from '@/features/tasks';
 
 const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
 

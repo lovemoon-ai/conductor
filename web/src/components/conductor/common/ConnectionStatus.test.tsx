@@ -19,7 +19,7 @@ vi.mock('@/features/realtime', () => ({
     useRuntimeStoreMock(selector),
 }));
 
-vi.mock('@/lib/conductor/stores/tasks', () => ({
+vi.mock('@/features/tasks', () => ({
   useTasksStore: (selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
     useTasksStoreMock(selector),
 }));

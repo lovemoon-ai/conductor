@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/lib/conductor/stores/chat';
 import { useRuntimeStore } from '@/features/realtime';
-import { useTasksStore } from '@/lib/conductor/stores/tasks';
+import { useTasksStore } from '@/features/tasks';
 import { useWebSocketStore } from '@/features/realtime';
 import { MessageBubble } from './MessageBubble';
 import { MessageInput } from './MessageInput';

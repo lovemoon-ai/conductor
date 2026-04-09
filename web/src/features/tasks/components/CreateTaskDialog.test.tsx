@@ -29,12 +29,12 @@ vi.mock('next/navigation', () => ({
   }),
 }));
 
-vi.mock('../common/Dialog', () => ({
+vi.mock('@/components/conductor/common/Dialog', () => ({
   Dialog: ({ open, children }: { open: boolean; children: ReactNode }) =>
     open ? <div>{children}</div> : null,
 }));
 
-vi.mock('@/lib/conductor/stores/tasks', () => ({
+vi.mock('../store', () => ({
   useTasksStore: (selector: (state: { createTask: typeof createTaskMock }) => unknown) =>
     selector({ createTask: createTaskMock }),
 }));

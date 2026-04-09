@@ -8,10 +8,10 @@ import { TaskStatusBadge } from './TaskStatusBadge';
 import { RestartTaskControls } from './RestartTaskControls';
 import type { TaskListViewMode } from './TaskList';
 import { useChatStore } from '@/lib/conductor/stores/chat';
-import { useTasksStore } from '@/lib/conductor/stores/tasks';
+import { useTasksStore } from '../store';
 import { useRuntimeStore } from '@/features/realtime';
 import { getApiClient } from '@/shared/api/client';
-import { useConfirm, useToast } from '../common/FeedbackProvider';
+import { useConfirm, useToast } from '@/components/conductor/common/FeedbackProvider';
 
 interface TaskItemProps {
   task: Task;

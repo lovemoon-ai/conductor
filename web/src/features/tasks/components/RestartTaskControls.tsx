@@ -4,13 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { Task } from '@/shared/types';
 import { useAgentsStore } from '@/lib/conductor/stores/agents';
-import { useTasksStore } from '@/lib/conductor/stores/tasks';
+import { useTasksStore } from '../store';
 import {
   canCreateSuccessorTask,
   getCompatibleRestartBackends,
 } from '@/lib/tasks/restart';
-import { Dialog } from '../common/Dialog';
-import { useToast } from '../common/FeedbackProvider';
+import { Dialog } from '@/components/conductor/common/Dialog';
+import { useToast } from '@/components/conductor/common/FeedbackProvider';
 
 interface RestartTaskControlsProps {
   task: Task;

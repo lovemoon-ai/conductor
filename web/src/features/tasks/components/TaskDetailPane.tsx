@@ -5,7 +5,7 @@ import { Header } from '@/components/conductor/layout/Header';
 import { ChatView } from '@/components/conductor/chat/ChatView';
 import { TerminalView } from '@/components/conductor/terminal/TerminalView';
 import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';
-import { useTasksStore } from '@/lib/conductor/stores/tasks';
+import { useTasksStore } from '../store';
 
 interface TaskDetailPaneProps {
   taskId: string;

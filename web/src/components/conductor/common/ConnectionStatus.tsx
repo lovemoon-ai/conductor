@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useWebSocketStore } from '@/features/realtime';
 import { useRuntimeStore } from '@/features/realtime';
-import { useTasksStore } from '@/lib/conductor/stores/tasks';
+import { useTasksStore } from '@/features/tasks';
 import { useAgentsStore } from '@/lib/conductor/stores/agents';
 
 function normalizeTaskId(value: string | string[] | undefined): string | null {

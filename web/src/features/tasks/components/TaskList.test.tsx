@@ -13,7 +13,7 @@ let tasksState: {
   deleteTask: typeof deleteTaskMock;
 };
 
-vi.mock('@/lib/conductor/stores/tasks', () => ({
+vi.mock('../store', () => ({
   useTasksStore: (selector?: (state: typeof tasksState) => unknown) =>
     typeof selector === 'function' ? selector(tasksState) : tasksState,
 }));
@@ -42,7 +42,7 @@ vi.mock('./TaskItem', () => ({
   },
 }));
 
-vi.mock('../common/LoadingSpinner', () => ({
+vi.mock('@/components/conductor/common/LoadingSpinner', () => ({
   LoadingSpinner: () => <div data-testid="loading-spinner" />,
 }));
 

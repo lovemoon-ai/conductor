@@ -5,7 +5,7 @@ import { Header } from '@/components/conductor/layout/Header';
 import { ProjectList } from '@/components/conductor/projects/ProjectList';
 import { CreateProjectDialog } from '@/components/conductor/projects/CreateProjectDialog';
 import { useProjectsStore } from '@/lib/conductor/stores/projects';
-import { RefreshIcon } from '@/components/conductor/tasks/TaskList';
+import { RefreshIcon } from '@/features/tasks';
 
 export default function ProjectsPage() {
   const [showCreateDialog, setShowCreateDialog] = useState(false);

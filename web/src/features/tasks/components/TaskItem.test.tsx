@@ -19,7 +19,7 @@ vi.mock('next/navigation', () => ({
   }),
 }));
 
-vi.mock('@/lib/conductor/stores/tasks', () => ({
+vi.mock('../store', () => ({
   useTasksStore: () => ({
     updateTask: updateTaskMock,
     restartTask: restartTaskMock,

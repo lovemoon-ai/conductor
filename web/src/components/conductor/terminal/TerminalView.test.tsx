@@ -61,7 +61,7 @@ vi.mock('./xterm-loader', () => ({
   }),
 }));
 
-vi.mock('@/lib/conductor/stores/tasks', () => ({
+vi.mock('@/features/tasks', () => ({
   useTasksStore: (selector: (state: { deleteTask: typeof deleteTaskMock }) => unknown) =>
     selector({ deleteTask: deleteTaskMock }),
 }));

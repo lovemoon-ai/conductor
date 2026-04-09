@@ -15,7 +15,7 @@ vi.mock('next/image', () => ({
   ),
 }));
 
-vi.mock('@/lib/conductor/stores/tasks', () => ({
+vi.mock('@/features/tasks', () => ({
   useTasksStore: (selector: (state: { unreadTaskIds: Set<string> }) => unknown) =>
     selector({ unreadTaskIds: new Set(Array.from({ length: unreadCount }, (_, index) => `task-${index}`)) }),
 }));

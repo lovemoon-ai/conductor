@@ -1,10 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Dialog } from '../common/Dialog';
-import { HelpTip } from '../common/HelpTip';
-import { InlineNotice } from '../common/InlineNotice';
-import { useTasksStore } from '@/lib/conductor/stores/tasks';
+import { Dialog } from '@/components/conductor/common/Dialog';
+import { HelpTip } from '@/components/conductor/common/HelpTip';
+import { InlineNotice } from '@/components/conductor/common/InlineNotice';
+import { useTasksStore } from '../store';
 import { useProjectsStore } from '@/lib/conductor/stores/projects';
 import { useAgentsStore } from '@/lib/conductor/stores/agents';
 import { ApiRequestError } from '@/shared/api/client';

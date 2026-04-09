@@ -1,13 +1,13 @@
 'use client';
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useTasksStore } from '@/lib/conductor/stores/tasks';
+import { useTasksStore } from '../store';
 import { useProjectsStore } from '@/lib/conductor/stores/projects';
-import { filterTasksByProject } from '@/lib/conductor/task-filter';
+import { filterTasksByProject } from '../utils/task-filter';
 import { TaskItem } from './TaskItem';
-import { LoadingSpinner } from '../common/LoadingSpinner';
-import { EmptyState } from '../common/EmptyState';
-import { useConfirm, useToast } from '../common/FeedbackProvider';
+import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';
+import { EmptyState } from '@/components/conductor/common/EmptyState';
+import { useConfirm, useToast } from '@/components/conductor/common/FeedbackProvider';
 
 export type TaskListViewMode = 'list' | 'grid';
 

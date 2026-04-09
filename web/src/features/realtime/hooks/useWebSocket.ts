@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { useAuthStore } from '@/features/auth';
 import { useWebSocketStore } from '../store';
-import { useTasksStore } from '@/lib/conductor/stores/tasks';
+import { useTasksStore } from '@/features/tasks';
 
 export function useWebSocket() {
   const session = useAuthStore((state) => state.session);

@@ -1,4 +1,4 @@
-import type { Task } from './types';
+import type { Task } from '@/shared/types';
 
 export function filterTasksByProject(tasks: Task[], projectId: string | null | undefined): Task[] {
   if (!projectId) {
