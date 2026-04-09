@@ -5,7 +5,7 @@ import { useParams } from 'next/navigation';
 import { useWebSocketStore } from '@/features/realtime';
 import { useRuntimeStore } from '@/features/realtime';
 import { useTasksStore } from '@/features/tasks';
-import { useAgentsStore } from '@/lib/conductor/stores/agents';
+import { useAgentsStore } from '@/features/agents';
 
 function normalizeTaskId(value: string | string[] | undefined): string | null {
   if (Array.isArray(value)) {

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Project } from '@/shared/types';
 import { useProjectsStore } from '../store';
-import { useAgentsStore } from '@/lib/conductor/stores/agents';
+import { useAgentsStore } from '@/features/agents';
 import { useSwipeActions } from '@/shared/hooks/useSwipeActions';
 import { formatBindingLabel } from '../utils/format-binding-label';
 import { useConfirm, useToast } from '@/components/conductor/common/FeedbackProvider';

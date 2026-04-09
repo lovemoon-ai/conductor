@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { Dialog } from '@/components/conductor/common/Dialog';
 import { InlineNotice } from '@/components/conductor/common/InlineNotice';
 import { useProjectsStore } from '../store';
-import { useAgentsStore } from '@/lib/conductor/stores/agents';
+import { useAgentsStore } from '@/features/agents';
 
 interface CreateProjectDialogProps {
   open: boolean;

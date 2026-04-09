@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { Task } from '@/shared/types';
-import { useAgentsStore } from '@/lib/conductor/stores/agents';
+import { useAgentsStore } from '@/features/agents';
 import { useTasksStore } from '../store';
 import {
   canCreateSuccessorTask,

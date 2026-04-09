@@ -20,7 +20,7 @@ vi.mock('../store', () => ({
     selector({ createProject: createProjectMock }),
 }));
 
-vi.mock('@/lib/conductor/stores/agents', () => ({
+vi.mock('@/features/agents', () => ({
   useAgentsStore: (selector: (state: typeof agentsState) => unknown) => selector(agentsState),
 }));
 

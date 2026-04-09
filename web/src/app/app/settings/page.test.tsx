@@ -36,7 +36,7 @@ vi.mock('@/features/auth', () => ({
   useAuthStore: (selector: (state: typeof authState) => unknown) => selector(authState),
 }));
 
-vi.mock('@/lib/conductor/stores/agents', () => ({
+vi.mock('@/features/agents', () => ({
   useAgentsStore: () => agentsState,
 }));
 

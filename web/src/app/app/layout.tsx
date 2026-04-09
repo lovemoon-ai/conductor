@@ -6,7 +6,7 @@ import { useAuthStore } from '@/features/auth';
 import { useWebSocket } from '@/features/realtime';
 import { useAuthStorageSync } from '@/features/auth';
 import { useProjectsStore } from '@/features/projects';
-import { useAgentsStore } from '@/lib/conductor/stores/agents';
+import { useAgentsStore } from '@/features/agents';
 import { Sidebar } from '@/components/conductor/layout/Sidebar';
 import { MobileNav } from '@/components/conductor/layout/MobileNav';
 import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';

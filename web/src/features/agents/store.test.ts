@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AGENTS_POLL_INTERVAL_MS, useAgentsStore } from './agents';
+import { AGENTS_POLL_INTERVAL_MS, useAgentsStore } from './store';
 
 const apiGetMock = vi.fn();
 

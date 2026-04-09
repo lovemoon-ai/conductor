@@ -20,7 +20,7 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams('projectId=proj-1&taskId=task-1'),
 }));
 
-vi.mock('@/lib/conductor/stores/agents', () => ({
+vi.mock('@/features/agents', () => ({
   useAgentsStore: (selector: (state: typeof agentsState) => unknown) => selector(agentsState),
 }));
 

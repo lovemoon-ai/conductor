@@ -6,7 +6,7 @@ import { HelpTip } from '@/components/conductor/common/HelpTip';
 import { InlineNotice } from '@/components/conductor/common/InlineNotice';
 import { useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
-import { useAgentsStore } from '@/lib/conductor/stores/agents';
+import { useAgentsStore } from '@/features/agents';
 import { ApiRequestError } from '@/shared/api/client';
 import { formatBindingLabel } from '@/features/projects';
 import { useRouter } from 'next/navigation';

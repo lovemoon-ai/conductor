@@ -24,7 +24,7 @@ vi.mock('@/features/tasks', () => ({
     useTasksStoreMock(selector),
 }));
 
-vi.mock('@/lib/conductor/stores/agents', () => ({
+vi.mock('@/features/agents', () => ({
   useAgentsStore: (selector: (state: { agents: Array<Record<string, unknown>> }) => unknown) =>
     useAgentsStoreMock(selector),
 }));
