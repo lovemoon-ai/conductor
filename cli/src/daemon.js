@@ -687,7 +687,8 @@ export function startDaemon(config = {}, deps = {}) {
     deps.resolveProjectSnapshot || ((projectPath) => new ProjectContext(projectPath).snapshot());
 
   function buildTaskWorktreeRoot(projectWorkspacePath, worktreeId) {
-    return path.join(projectWorkspacePath, ".conductor", "worktrees", worktreeId);
+    const sanitized = String(worktreeId).replace(/[/\\]/g, "_").replace(/\.\./g, "_");
+    return path.join(projectWorkspacePath, ".conductor", "worktrees", sanitized);
   }
 
   function resolveTaskWorktreeCwd(worktreeRoot, projectRelativePath) {

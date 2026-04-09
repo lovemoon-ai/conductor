@@ -97,7 +97,7 @@ export function ProjectItem({ project }: ProjectItemProps) {
   const isGitProject = Boolean(repoRoot);
   const bindingCandidate = readBindingCandidate(metadata);
   const isBoundProject = Boolean(daemonHost) && !isDefault;
-  const isPendingBinding = !isDefault && !daemonHost;
+  const isPendingBinding = !isDefault && !daemonHost && Boolean(bindingCandidate);
   const isDaemonOnline = !daemonHost || agents.some((agent) => agent.host === daemonHost);
   const isUnavailable = isBoundProject && !isDaemonOnline;
   const pendingBindingLabel = bindingCandidate

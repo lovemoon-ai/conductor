@@ -2,37 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
 import {
-  parseProjectMetadata,
   readProjectBindingPath,
+  serializeProject,
 } from "../shared";
 
 const normalizePath = (value: string): string => value.replace(/\/+$/, "");
-
-const serializeProject = (project: {
-  id: string;
-  name: string;
-  daemonHost: string | null;
-  workspacePath: string | null;
-  repoRoot: string | null;
-  worktreeBranch: string | null;
-  lastCommit: string | null;
-  fileCount: number | null;
-  metadata: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}) => ({
-  id: project.id,
-  name: project.name,
-  daemon_host: project.daemonHost,
-  workspace_path: project.workspacePath,
-  repo_root: project.repoRoot,
-  worktree_branch: project.worktreeBranch,
-  last_commit: project.lastCommit,
-  file_count: project.fileCount,
-  metadata: parseProjectMetadata(project.metadata),
-  created_at: project.createdAt.toISOString(),
-  updated_at: project.updatedAt.toISOString(),
-});
 
 export async function POST(request: NextRequest) {
   const userResult = await getActiveSubscriptionUser(request);

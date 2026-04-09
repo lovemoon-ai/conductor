@@ -209,6 +209,38 @@ const readProjectBindingPath = (
   return readLegacyLocalPath(parsed, daemonHost);
 };
 
+type SerializableProject = {
+  id: string;
+  name: string;
+  daemonHost: string | null;
+  workspacePath: string | null;
+  repoRoot: string | null;
+  worktreeBranch: string | null;
+  lastCommit: string | null;
+  fileCount: number | null;
+  metadata: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+const serializeProject = (
+  project: SerializableProject,
+  isDefault = false,
+) => ({
+  id: project.id,
+  name: project.name,
+  daemon_host: project.daemonHost,
+  workspace_path: project.workspacePath,
+  repo_root: project.repoRoot,
+  worktree_branch: project.worktreeBranch,
+  last_commit: project.lastCommit,
+  file_count: project.fileCount,
+  is_default: isDefault,
+  metadata: parseProjectMetadata(project.metadata),
+  created_at: project.createdAt.toISOString(),
+  updated_at: project.updatedAt.toISOString(),
+});
+
 export {
   hasOwn,
   isBindingConfirmed,
@@ -224,4 +256,5 @@ export {
   readProjectBindingInput,
   readProjectBindingPath,
   readProjectMetadataInput,
+  serializeProject,
 };

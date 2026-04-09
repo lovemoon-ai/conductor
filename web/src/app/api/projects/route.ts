@@ -30,6 +30,7 @@ import {
   readProjectBindingInput,
   readProjectBindingPath,
   readProjectMetadataInput,
+  serializeProject,
 } from "./shared";
 
 const findProjectBindingMatch = async (params: {
@@ -152,36 +153,6 @@ const findProjectNameConflict = async (params: {
     select: { id: true },
   });
 };
-
-const serializeProject = (
-  project: {
-    id: string;
-    name: string;
-    daemonHost: string | null;
-    workspacePath: string | null;
-    repoRoot: string | null;
-    worktreeBranch: string | null;
-    lastCommit: string | null;
-    fileCount: number | null;
-    metadata: string | null;
-    createdAt: Date;
-    updatedAt: Date;
-  },
-  isDefault: boolean,
-) => ({
-  id: project.id,
-  name: project.name,
-  daemon_host: project.daemonHost,
-  workspace_path: project.workspacePath,
-  repo_root: project.repoRoot,
-  worktree_branch: project.worktreeBranch,
-  last_commit: project.lastCommit,
-  file_count: project.fileCount,
-  is_default: isDefault,
-  metadata: parseProjectMetadata(project.metadata),
-  created_at: project.createdAt.toISOString(),
-  updated_at: project.updatedAt.toISOString(),
-});
 
 export const GET = requireActiveSubscription(async (_request: NextRequest, user) => {
   const projects = await db.project.findMany({
@@ -367,6 +338,21 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
     });
     if (nameConflict) {
       return NextResponse.json({ error: "Project name already exists on this daemon" }, { status: 409 });
+    }
+  }
+
+  if (!effectiveBindingConfirmed) {
+    const effectiveName = isDefaultProject ? (hasNameField ? name : "Default Project") : name;
+    const unboundNameConflict = await db.project.findFirst({
+      where: {
+        userId: user.id,
+        daemonHost: null,
+        name: effectiveName,
+      },
+      select: { id: true },
+    });
+    if (unboundNameConflict) {
+      return NextResponse.json({ error: "Project name already exists" }, { status: 409 });
     }
   }
 
@@ -591,7 +577,7 @@ export const DELETE = requireActiveSubscription(async (request: NextRequest, use
       agentHost: string;
     }
   >();
-  const activeWorktreeTasks: Array<{
+  const activeTasks: Array<{
     taskId: string;
     agentHost: string;
     taskLabel: string;
@@ -613,7 +599,7 @@ export const DELETE = requireActiveSubscription(async (request: NextRequest, use
       if (!taskHost) {
         return NextResponse.json({ error: "Task missing daemon binding" }, { status: 409 });
       }
-      activeWorktreeTasks.push({
+      activeTasks.push({
         taskId: task.id,
         agentHost: taskHost,
         taskLabel: task.taskType === "pty_task" ? "PTY task" : "task",
@@ -622,7 +608,7 @@ export const DELETE = requireActiveSubscription(async (request: NextRequest, use
   }
 
   const stopResults = await Promise.allSettled(
-    activeWorktreeTasks.map((activeTask) =>
+    activeTasks.map((activeTask) =>
       stopTaskBeforeRelaunch({
         userId: user.id,
         taskId: activeTask.taskId,
@@ -635,7 +621,7 @@ export const DELETE = requireActiveSubscription(async (request: NextRequest, use
   );
   for (let i = 0; i < stopResults.length; i++) {
     const result = stopResults[i];
-    const activeTask = activeWorktreeTasks[i];
+    const activeTask = activeTasks[i];
     if (result.status === "rejected" || !result.value.ok) {
       const error =
         result.status === "rejected"

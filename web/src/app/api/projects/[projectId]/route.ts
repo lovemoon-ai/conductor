@@ -26,6 +26,7 @@ import {
   readProjectBindingInput,
   readProjectBindingPath,
   readProjectMetadataInput,
+  serializeProject,
 } from "../shared";
 
 const findProjectBindingConflict = async (params: {
@@ -94,36 +95,6 @@ const findProjectNameConflict = async (params: {
     select: { id: true },
   });
 };
-
-const serializeProject = (
-  project: {
-    id: string;
-    name: string;
-    daemonHost: string | null;
-    workspacePath: string | null;
-    repoRoot: string | null;
-    worktreeBranch: string | null;
-    lastCommit: string | null;
-    fileCount: number | null;
-    metadata: string | null;
-    createdAt: Date;
-    updatedAt: Date;
-  },
-  isDefault: boolean,
-) => ({
-  id: project.id,
-  name: project.name,
-  daemon_host: project.daemonHost,
-  workspace_path: project.workspacePath,
-  repo_root: project.repoRoot,
-  worktree_branch: project.worktreeBranch,
-  last_commit: project.lastCommit,
-  file_count: project.fileCount,
-  is_default: isDefault,
-  metadata: parseProjectMetadata(project.metadata),
-  created_at: project.createdAt.toISOString(),
-  updated_at: project.updatedAt.toISOString(),
-});
 
 export async function GET(
   request: NextRequest,
@@ -342,7 +313,7 @@ export async function DELETE(
       agentHost: string;
     }
   >();
-  const activeWorktreeTasks: Array<{
+  const activeTasks: Array<{
     taskId: string;
     agentHost: string;
     taskLabel: string;
@@ -364,7 +335,7 @@ export async function DELETE(
       if (!taskHost) {
         return NextResponse.json({ error: "Task missing daemon binding" }, { status: 409 });
       }
-      activeWorktreeTasks.push({
+      activeTasks.push({
         taskId: task.id,
         agentHost: taskHost,
         taskLabel: task.taskType === "pty_task" ? "PTY task" : "task",
@@ -373,7 +344,7 @@ export async function DELETE(
   }
 
   const stopResults = await Promise.allSettled(
-    activeWorktreeTasks.map((activeTask) =>
+    activeTasks.map((activeTask) =>
       stopTaskBeforeRelaunch({
         userId: user.id,
         taskId: activeTask.taskId,
@@ -386,7 +357,7 @@ export async function DELETE(
   );
   for (let i = 0; i < stopResults.length; i++) {
     const result = stopResults[i];
-    const activeTask = activeWorktreeTasks[i];
+    const activeTask = activeTasks[i];
     if (result.status === "rejected" || !result.value.ok) {
       const error =
         result.status === "rejected"

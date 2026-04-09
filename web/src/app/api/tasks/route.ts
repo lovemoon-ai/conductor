@@ -505,7 +505,7 @@ export async function POST(request: NextRequest) {
       launchConfig = Object.keys(aiLaunchConfig).length > 0 ? aiLaunchConfig : null;
     }
   }
-  if (!worktreeRequested && projectWorkspacePath && launchConfig?.cwd === undefined) {
+  if (taskType === "pty_task" && projectWorkspacePath && launchConfig?.cwd === undefined) {
     launchConfig = { ...(launchConfig ?? {}), cwd: projectWorkspacePath };
   }
   if (taskType === "pty_task") {

@@ -1301,7 +1301,8 @@ export async function resolveProjectId(conductor, explicit, opts = {}) {
     // ignore retry match failures
   }
 
-  throw new Error(`Unable to resolve project for ${daemonHost}:${snapshot.projectRoot}`);
+  log(`Unable to resolve bound project for ${daemonHost}:${snapshot.projectRoot}, falling back to default`);
+  return resolveDefaultProjectId(conductor);
 }
 
 function resolveDaemonHost(daemonName) {
