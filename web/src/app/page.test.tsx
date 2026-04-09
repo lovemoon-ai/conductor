@@ -37,8 +37,8 @@ vi.mock("@/components/theme/ThemeToggle", () => ({
   ThemeToggle: () => <div>theme-toggle</div>,
 }));
 
-vi.mock("@/components/subscription/SubscriptionBanner", () => ({
-  default: () => <div>subscription-banner</div>,
+vi.mock("@/features/subscription", () => ({
+  SubscriptionBanner: () => <div>subscription-banner</div>,
 }));
 
 vi.mock("@/features/auth", async () => {

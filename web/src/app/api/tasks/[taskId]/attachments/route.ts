@@ -6,7 +6,7 @@ import { db } from "@/lib/db";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
 import { buildMessageResponse, getMessageAttachments } from "@/shared/utils/message-attachments";
-import { writeTaskAttachment } from "@/lib/conductor/task-file-storage";
+import { writeTaskAttachment } from "@/lib/tasks/task-file-storage";
 
 export const runtime = "nodejs";
 

@@ -5,7 +5,7 @@ import { db } from "@/lib/db";
 import { buildTaskDiagnosticsPayload } from "@/lib/diagnostics/task-diagnostics";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
-import { deleteTaskAttachmentDirectory } from "@/lib/conductor/task-file-storage";
+import { deleteTaskAttachmentDirectory } from "@/lib/tasks/task-file-storage";
 import {
   normalizeOptionalString,
   normalizeTaskStatus,

@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { requireActiveSubscription } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
-import { deleteTaskAttachmentDirectory } from "@/lib/conductor/task-file-storage";
+import { deleteTaskAttachmentDirectory } from "@/lib/tasks/task-file-storage";
 import {
   ProjectBindingValidationError,
   validateProjectBindingWithDaemon,

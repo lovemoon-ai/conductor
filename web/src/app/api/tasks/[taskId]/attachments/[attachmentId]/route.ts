@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
 import { getMessageAttachments, normalizeMessageMetadata } from "@/shared/utils/message-attachments";
-import { readTaskAttachment } from "@/lib/conductor/task-file-storage";
+import { readTaskAttachment } from "@/lib/tasks/task-file-storage";
 
 export const runtime = "nodejs";
 

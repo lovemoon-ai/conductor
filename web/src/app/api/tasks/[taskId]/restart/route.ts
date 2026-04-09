@@ -340,7 +340,6 @@ export async function POST(
       await acquireTaskWorktreeMutationLock(
         tx as any,
         sourceTask.id,
-        sourceTask.launchConfig as string | null,
       );
     }
 

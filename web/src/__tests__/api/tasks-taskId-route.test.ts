@@ -38,7 +38,7 @@ vi.mock("@/lib/realtime/agent-outbox", () => ({
   enqueueAndAttemptAgentCommand: vi.fn(),
 }));
 
-vi.mock("@/lib/conductor/task-file-storage", () => ({
+vi.mock("@/lib/tasks/task-file-storage", () => ({
   deleteTaskAttachmentDirectory: vi.fn(),
 }));
 
@@ -82,7 +82,7 @@ vi.mock("@/lib/db", () => ({
 const { db } = await import("@/lib/db");
 const { realtimeHub } = await import("@/lib/realtime/hub");
 const { enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
-const { deleteTaskAttachmentDirectory } = await import("@/lib/conductor/task-file-storage");
+const { deleteTaskAttachmentDirectory } = await import("@/lib/tasks/task-file-storage");
 
 const prismaError = (code: string, message: string) =>
   Object.assign(new Error(message), { code });

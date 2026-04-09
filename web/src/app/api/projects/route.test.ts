@@ -44,7 +44,7 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-vi.mock("@/lib/conductor/task-file-storage", () => ({
+vi.mock("@/lib/tasks/task-file-storage", () => ({
   deleteTaskAttachmentDirectory: vi.fn(),
 }));
 
@@ -75,7 +75,7 @@ vi.mock("@/lib/tasks/task-stop", () => ({
 }));
 
 const { db } = await import("@/lib/db");
-const { deleteTaskAttachmentDirectory } = await import("@/lib/conductor/task-file-storage");
+const { deleteTaskAttachmentDirectory } = await import("@/lib/tasks/task-file-storage");
 const { realtimeHub } = await import("@/lib/realtime/hub");
 const { stopTaskBeforeRelaunch } = await import("@/lib/tasks/task-stop");
 const {
