@@ -669,65 +669,50 @@ export async function DELETE(
     return NextResponse.json({ error: "Task missing daemon binding" }, { status: 409 });
   }
 
-  if (needsStop) {
-    if (stopTargetHost) {
-      if (worktreeConfig) {
-        const stopResult = await stopTaskBeforeRelaunch({
+  if (needsStop && stopTargetHost) {
+    // Best-effort stop on DELETE: try to notify the daemon but do NOT block
+    // on convergence. Waiting 30s for a manual-fire worktree task to reach
+    // a terminal state would make delete unusable — the fire process is
+    // often already gone and the daemon cannot ack the stop. The async
+    // worktree cleanup outbox (queued below) reliably removes the worktree
+    // directory whenever the daemon reconnects.
+    const requestId = randomUUID();
+    const ackPromise = realtimeHub.waitForTaskStopAck(taskId, requestId, 2500);
+    realtimeHub.bindTaskToAgent(taskId, stopTargetHost);
+    let delivered = false;
+    try {
+      ({ delivered } = await enqueueAndAttemptAgentCommand(
+        {
           userId: user.id,
+          agentHost: stopTargetHost,
           taskId,
-          projectId: existing.projectId,
-          stopTargetHost,
-          reason: "deleted_by_user",
-          taskLabel: "task",
-        });
-        if (!stopResult.ok) {
-          return NextResponse.json(
-            { error: stopResult.error ?? `Failed to stop task ${taskId}` },
-            { status: 409 },
-          );
-        }
-      } else {
-        const requestId = randomUUID();
-        const ackPromise = realtimeHub.waitForTaskStopAck(taskId, requestId, 2500);
-        realtimeHub.bindTaskToAgent(taskId, stopTargetHost);
-        let delivered = false;
-        try {
-          ({ delivered } = await enqueueAndAttemptAgentCommand(
-            {
-              userId: user.id,
-              agentHost: stopTargetHost,
-              taskId,
-              eventType: "stop_task",
-              requestId,
-              envelope: {
-                type: "stop_task",
-                payload: {
-                  task_id: taskId,
-                  project_id: existing.projectId,
-                  request_id: requestId,
-                  reason: "deleted_by_user",
-                },
-              },
+          eventType: "stop_task",
+          requestId,
+          envelope: {
+            type: "stop_task",
+            payload: {
+              task_id: taskId,
+              project_id: existing.projectId,
+              request_id: requestId,
+              reason: "deleted_by_user",
             },
-            {
-              agentHost: stopTargetHost,
-              sendToAgentHost: ({ userId: targetUserId, agentHost: targetHost, envelope }) =>
-                realtimeHub.sendToAgentHost(targetUserId, targetHost, envelope),
-              resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),
-            },
-          ));
-        } catch {
-          delivered = false;
-        }
+          },
+        },
+        {
+          agentHost: stopTargetHost,
+          sendToAgentHost: ({ userId: targetUserId, agentHost: targetHost, envelope }) =>
+            realtimeHub.sendToAgentHost(targetUserId, targetHost, envelope),
+          resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),
+        },
+      ));
+    } catch {
+      delivered = false;
+    }
 
-        if (delivered) {
-          // Best effort stop: don't block deletion on daemon ack/status,
-          // to keep delete responsive across daemon versions and stale bindings.
-          await ackPromise;
-        } else {
-          realtimeHub.cancelTaskStopAck(taskId, requestId);
-        }
-      }
+    if (delivered) {
+      await ackPromise;
+    } else {
+      realtimeHub.cancelTaskStopAck(taskId, requestId);
     }
   }
 
