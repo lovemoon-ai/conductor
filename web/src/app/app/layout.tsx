@@ -10,7 +10,6 @@ import { useAgentsStore } from '@/lib/conductor/stores/agents';
 import { Sidebar } from '@/components/conductor/layout/Sidebar';
 import { MobileNav } from '@/components/conductor/layout/MobileNav';
 import { LoadingSpinner } from '@/components/conductor/common/LoadingSpinner';
-import SubscriptionBanner from '@/components/subscription/SubscriptionBanner';
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'conductor-sidebar-collapsed';
 
@@ -100,9 +99,6 @@ export default function WebAppLayout({
 
   return (
     <div className="h-screen flex flex-col bg-paper">
-      {/* Subscription Banner */}
-      <SubscriptionBanner />
-
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
         {/* Desktop Sidebar */}
         <div className="hidden md:block">

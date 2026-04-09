@@ -22,7 +22,6 @@ export default function Home() {
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
 
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
-  const [showInsufficientDaysPopup, setShowInsufficientDaysPopup] = useState(false);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [oauthBootstrapState, setOauthBootstrapState] = useState<OAuthBootstrapState>("idle");
   const [oauthBootstrapError, setOauthBootstrapError] = useState<string | null>(null);
@@ -60,17 +59,11 @@ export default function Home() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const urlToken = params.get("token");
-    const insufficientDays = params.get("insufficient_days");
     let retryTimeoutId: number | null = null;
     let cancelled = false;
 
-    if (insufficientDays === "1") {
-      setShowInsufficientDaysPopup(true);
-    }
-
     const clearQueryParams = () => {
       params.delete("token");
-      params.delete("insufficient_days");
       const next = params.toString();
       window.history.replaceState({}, "", next ? `/?${next}` : "/");
     };
@@ -131,9 +124,6 @@ export default function Home() {
 
       setOauthBootstrapState("idle");
       setOauthBootstrapError(null);
-      if (insufficientDays) {
-        clearQueryParams();
-      }
 
       await syncStoredAuth();
     };
@@ -312,30 +302,6 @@ export default function Home() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      {showInsufficientDaysPopup && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-md rounded-2xl border border-[var(--border-default)] bg-[var(--surface-panel)] p-6 shadow-xl">
-            <h2 className="text-lg font-semibold">{t.home.insufficientDaysTitle}</h2>
-            <p className="mt-2 text-sm text-[var(--muted)]">{t.home.insufficientDaysBody}</p>
-            <div className="mt-5 flex gap-3">
-              <Link
-                href="/subscription"
-                className="flex-1 text-center px-4 py-2 rounded-lg bg-[var(--accent)] text-white font-medium hover:opacity-90 transition-opacity"
-                onClick={() => setShowInsufficientDaysPopup(false)}
-              >
-                {t.home.insufficientDaysCta}
-              </Link>
-              <button
-                type="button"
-                className="px-4 py-2 rounded-lg border border-[var(--border)] text-sm hover:bg-black/5 transition-colors"
-                onClick={() => setShowInsufficientDaysPopup(false)}
-              >
-                {t.home.insufficientDaysClose}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       <header className="flex justify-between items-center px-8 py-6">
         <Link href="/" className="shrink-0">
           <ConductorLogo

@@ -84,14 +84,14 @@ describe("Home auth bootstrap", () => {
   it("waits for oauth bootstrap to succeed before clearing the URL token", async () => {
     const deferred = createDeferred();
     mockAuthState.establishSession.mockReturnValueOnce(deferred.promise);
-    window.history.replaceState({}, "", "/?token=oauth-jwt&insufficient_days=1");
+    window.history.replaceState({}, "", "/?token=oauth-jwt");
 
     render(<Home />);
 
     await waitFor(() => {
       expect(mockAuthState.establishSession).toHaveBeenCalledWith("oauth-jwt");
     });
-    expect(window.location.search).toBe("?token=oauth-jwt&insufficient_days=1");
+    expect(window.location.search).toBe("?token=oauth-jwt");
 
     deferred.resolve();
 

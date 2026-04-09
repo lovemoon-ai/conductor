@@ -13,10 +13,7 @@ import {
 } from "./agent-upstream";
 import { outboxProcessor } from "../outbox-processor";
 import {
-  FREE_PLAN_LIMITS,
-  PLUS_PLAN_LIMITS,
   isConductorFireHost,
-  isFreeTier,
 } from "@/lib/subscription/plan-limits";
 import {
   isMissingPtySchemaError,
@@ -1013,35 +1010,14 @@ export const setupAgentGateway = (): WebSocketServer => {
       );
     }
 
-    const planUser = await db.user.findUnique({
+    const userExists = await db.user.findUnique({
       where: { id: user.id },
-      select: { subscriptionTier: true },
+      select: { id: true },
     });
-    if (!planUser) {
+    if (!userExists) {
       sendEnvelope(socket, { type: "error", payload: { message: "Invalid token" } });
       socket.close(4002, "invalid-token");
       return;
-    }
-
-    if (!isConductorFireHost(agentHost)) {
-      const activeDaemonConnections = realtimeHub
-        .getAgentsForUser(user.id)
-        .filter((agent) => !isConductorFireHost(agent.host)).length;
-      const limit = isFreeTier(planUser.subscriptionTier)
-        ? FREE_PLAN_LIMITS.activeDaemonConnections
-        : PLUS_PLAN_LIMITS.activeDaemonConnections;
-      if (activeDaemonConnections >= limit) {
-        sendEnvelope(socket, {
-          type: "error",
-          payload: {
-            message: isFreeTier(planUser.subscriptionTier)
-              ? "Free plan allows only one active daemon connection"
-              : "Plus plan allows only ten active daemon connections",
-          },
-        });
-        socket.close(4003, "daemon-limit");
-        return;
-      }
     }
 
     realtimeHub.register({

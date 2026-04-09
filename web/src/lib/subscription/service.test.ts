@@ -183,7 +183,7 @@ describe('Subscription Service', () => {
       expect(isSubscriptionActive(user)).toBe(true);
     });
 
-    it('should return false for expired free trial', async () => {
+    it('should return true even for expired free trial (limits removed)', async () => {
       const user = await prisma.user.update({
         where: { id: testUserId },
         data: {
@@ -191,7 +191,7 @@ describe('Subscription Service', () => {
           trialEndsAt: new Date(Date.now() - 1000), // 1 second ago
         },
       });
-      expect(isSubscriptionActive(user)).toBe(false);
+      expect(isSubscriptionActive(user)).toBe(true);
     });
 
     it('should return true for active Plus subscription', async () => {
@@ -216,7 +216,7 @@ describe('Subscription Service', () => {
       expect(isSubscriptionActive(user)).toBe(true);
     });
 
-    it('should return false for expired Plus subscription', async () => {
+    it('should return true even for expired Plus subscription (limits removed)', async () => {
       const user = await prisma.user.update({
         where: { id: testUserId },
         data: {
@@ -224,7 +224,7 @@ describe('Subscription Service', () => {
           subscriptionEndsAt: new Date(Date.now() - 1000), // 1 second ago
         },
       });
-      expect(isSubscriptionActive(user)).toBe(false);
+      expect(isSubscriptionActive(user)).toBe(true);
     });
   });
 

@@ -10,10 +10,6 @@ import {
 } from "@/lib/tasks/task-config";
 import { normalizeBackendType } from "@/lib/tasks/pty-runtime";
 import {
-  countActiveTaskBuckets,
-  exceedsTaskLimit,
-  getTaskLimitMessage,
-  getTaskPlanBucket,
   isConductorFireHost,
 } from "@/lib/subscription/plan-limits";
 import {
@@ -223,39 +219,6 @@ export async function POST(
     );
   }
 
-  if (!isInplaceRestart) {
-    const planUser = await db.user.findUnique({
-      where: { id: user.id },
-      select: { subscriptionTier: true },
-    });
-    if (!planUser) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    const activeTasks = await db.task.findMany({
-      where: { project: { userId: user.id } },
-      select: {
-        id: true,
-        projectId: true,
-        status: true,
-        agentHost: true,
-        executionHost: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    });
-    const activeTaskCounts = countActiveTaskBuckets(activeTasks);
-    const taskBucket = getTaskPlanBucket(restartAgentHost);
-    if (exceedsTaskLimit(planUser.subscriptionTier, taskBucket, activeTaskCounts)) {
-      return NextResponse.json(
-        {
-          error: "Task limit reached",
-          message: getTaskLimitMessage(planUser.subscriptionTier, taskBucket),
-          limit_type: taskBucket === "manual_fire" ? "manual_fire_active_task" : "app_active_task",
-        },
-        { status: 403 },
-      );
-    }
-  }
 
   const requestId = randomUUID();
   const now = new Date();

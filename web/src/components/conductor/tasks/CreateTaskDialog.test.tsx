@@ -82,52 +82,6 @@ describe('CreateTaskDialog', () => {
     expect(screen.getByText('Conversation-first task routed through the AI runner. Pick a daemon, then choose one of its available backends.')).toBeInTheDocument();
   });
 
-  it('shows inline error when create task hits free plan limit', async () => {
-    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
-    createTaskMock.mockRejectedValueOnce(
-      new ApiRequestError(403, {
-        error: 'Task limit reached',
-        message: 'Free plan allows only one active app task',
-        limit_type: 'app_active_task',
-      }),
-    );
-
-    render(<CreateTaskDialog open onClose={() => {}} />);
-
-    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
-      target: { value: 'Need a task' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('已超出当前套餐限额：Free 最多只能有 1 个活跃 app task。')).toBeInTheDocument();
-    });
-    expect(alertSpy).not.toHaveBeenCalled();
-  });
-
-  it('shows inline error when create task hits plus plan limit', async () => {
-    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
-    createTaskMock.mockRejectedValueOnce(
-      new ApiRequestError(403, {
-        error: 'Task limit reached',
-        message: 'Plus plan allows only ten active manual fire tasks',
-        limit_type: 'manual_fire_active_task',
-      }),
-    );
-
-    render(<CreateTaskDialog open onClose={() => {}} />);
-
-    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
-      target: { value: 'Need a plus task' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('已超出当前套餐限额：Plus 最多只能有 10 个活跃 fire task。')).toBeInTheDocument();
-    });
-    expect(alertSpy).not.toHaveBeenCalled();
-  });
-
   it('creates pty_task with a shell launchConfig only', async () => {
     createTaskMock.mockResolvedValueOnce({ id: 'task-pty-1' });
 

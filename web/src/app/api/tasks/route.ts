@@ -29,10 +29,6 @@ import {
   type ConnectedAgent,
 } from "@/lib/tasks/pty-runtime";
 import {
-  countActiveTaskBuckets,
-  exceedsTaskLimit,
-  getTaskLimitMessage,
-  getTaskPlanBucket,
   isConductorFireHost,
 } from "@/lib/subscription/plan-limits";
 import { recoverStaleDisconnectedAgentTasks } from "@/lib/tasks/stale-recovery";
@@ -475,43 +471,6 @@ export async function POST(request: NextRequest) {
     agentHost = pickDefaultAgentHost(connectedAgents, requestedBackendType) ?? null;
   }
 
-  const planUser = await db.user.findUnique({
-    where: { id: user.id },
-    select: { subscriptionTier: true },
-  });
-  if (!planUser) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  // Check task limits for all tiers (Free: 1 per bucket, Plus: 10 per bucket)
-  const activeTasks = await db.task.findMany({
-    where: { project: { userId: user.id } },
-    select: {
-      id: true,
-      projectId: true,
-      status: true,
-      agentHost: true,
-      executionHost: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-  });
-  await recoverStaleDisconnectedAgentTasks(user.id, activeTasks);
-  const activeTaskCounts = countActiveTaskBuckets(activeTasks);
-  const taskBucket = getTaskPlanBucket(agentHost);
-  if (exceedsTaskLimit(planUser.subscriptionTier, taskBucket, activeTaskCounts)) {
-    return NextResponse.json(
-      {
-        error: "Task limit reached",
-        message: getTaskLimitMessage(planUser.subscriptionTier, taskBucket),
-        limit_type:
-          taskBucket === "manual_fire"
-            ? "manual_fire_active_task"
-            : "app_active_task",
-      },
-      { status: 403 }
-    );
-  }
 
   let metadata = parseJsonObject(normalizedBody.metadata);
   if (taskType === "ai_task" && metadata) {
