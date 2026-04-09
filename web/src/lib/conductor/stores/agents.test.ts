@@ -3,7 +3,7 @@ import { AGENTS_POLL_INTERVAL_MS, useAgentsStore } from './agents';
 
 const apiGetMock = vi.fn();
 
-vi.mock('../api/client', () => ({
+vi.mock('@/shared/api/client', () => ({
   ApiRequestError: class MockApiRequestError extends Error {
     status: number;
 

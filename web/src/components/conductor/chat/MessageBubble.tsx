@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { Message } from '@/lib/conductor/types';
+import type { Message } from '@/shared/types';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface MessageBubbleProps {

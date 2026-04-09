@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import type { Project, CreateProjectInput, UpdateProjectInput } from '../types';
-import { getApiClient } from '../api/client';
+import type { Project, CreateProjectInput, UpdateProjectInput } from '@/shared/types';
+import { getApiClient } from '@/shared/api/client';
 
 interface ProjectsState {
   projects: Project[];

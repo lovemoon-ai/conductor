@@ -5,7 +5,7 @@ import {
   appendUserMessageToTask,
 } from "@/lib/channel/task-ingress-service";
 import { db } from "@/lib/db";
-import { buildMessageResponse } from "@/lib/conductor/message-attachments";
+import { buildMessageResponse } from "@/shared/utils/message-attachments";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;

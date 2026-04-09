@@ -1,4 +1,4 @@
-import { buildMessageResponse } from "@/lib/conductor/message-attachments";
+import { buildMessageResponse } from "@/shared/utils/message-attachments";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { enqueueProjectedTaskUpdate } from "./outbox";
 

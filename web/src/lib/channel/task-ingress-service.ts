@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { getMessageAttachments } from "@/lib/conductor/message-attachments";
+import { getMessageAttachments } from "@/shared/utils/message-attachments";
 import { db } from "@/lib/db";
 import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";

@@ -1,4 +1,4 @@
-import type { ApiError } from '../types';
+import type { ApiError } from '@/shared/types';
 import { getStoredJwtToken } from '@/lib/auth/token-storage';
 
 const API_TIMEOUT = 15000;

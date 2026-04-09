@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { TaskRuntimeStatus } from '../types';
+import type { TaskRuntimeStatus } from '@/shared/types';
 
 interface RuntimeState {
   byTask: Record<string, TaskRuntimeStatus>;

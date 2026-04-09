@@ -1,7 +1,7 @@
 import { create } from 'zustand';
-import type { Message, SendMessageInput } from '../types';
-import { getApiClient } from '../api/client';
-import { getMessageAttachments } from '../message-attachments';
+import type { Message, SendMessageInput } from '@/shared/types';
+import { getApiClient } from '@/shared/api/client';
+import { getMessageAttachments } from '@/shared/utils/message-attachments';
 
 interface ChatState {
   messagesByTask: Record<string, Message[]>;

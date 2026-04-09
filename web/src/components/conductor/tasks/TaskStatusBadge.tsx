@@ -1,6 +1,6 @@
 'use client';
 
-import type { TaskStatus } from '@/lib/conductor/types';
+import type { TaskStatus } from '@/shared/types';
 
 interface TaskStatusBadgeProps {
   status: TaskStatus;

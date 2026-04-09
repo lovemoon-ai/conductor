@@ -1,4 +1,4 @@
-import type { Message, MessageAttachment } from "./types";
+import type { Message, MessageAttachment } from "@/shared/types";
 
 type JsonRecord = Record<string, unknown>;
 export type SerializedMessage = Message & {

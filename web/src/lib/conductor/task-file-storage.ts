@@ -2,8 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-import type { MessageAttachment } from "./types";
-import { attachmentKindFromMimeType } from "./message-attachments";
+import type { MessageAttachment } from "@/shared/types";
+import { attachmentKindFromMimeType } from "@/shared/utils/message-attachments";
 
 const DEFAULT_STORAGE_ROOT = path.join(process.cwd(), ".conductor-data", "task-attachments");
 const DEFAULT_MIME_TYPE = "application/octet-stream";

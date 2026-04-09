@@ -1,5 +1,12 @@
 import type { TaskType } from "@/lib/tasks/task-config";
-import type { RestartResultMode, RestartStrategy } from "@/lib/tasks/restart";
+
+// Restart types — defined here to break a circular dep with @/lib/tasks/restart.
+// @/lib/tasks/restart re-exports these so the runtime values stay in one place.
+export type RestartStrategy = "inplace" | "new_task";
+export type RestartResultMode =
+  | "inplace_restart"
+  | "backend_switch_new_task"
+  | "successor_new_task";
 
 // User and Authentication Types
 export interface AuthUser {

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AuthSession, AuthUser } from '../types';
-import { createApiClientWithToken, getApiClient, type ApiClient, resetApiClient } from '../api/client';
+import type { AuthSession, AuthUser } from '@/shared/types';
+import { createApiClientWithToken, getApiClient, type ApiClient, resetApiClient } from '@/shared/api/client';
 import { clearStoredJwtToken, getStoredJwtToken, storeJwtToken } from '@/lib/auth/token-storage';
 
 export const AUTH_SESSION_STORAGE_KEY = 'conductor-auth';

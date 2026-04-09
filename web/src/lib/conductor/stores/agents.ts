@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import type { Agent } from '../types';
-import { ApiRequestError, getApiClient } from '../api/client';
+import type { Agent } from '@/shared/types';
+import { ApiRequestError, getApiClient } from '@/shared/api/client';
 
 export const AGENTS_POLL_INTERVAL_MS = 15_000;
 

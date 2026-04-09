@@ -7,11 +7,11 @@ import { InlineNotice } from '../common/InlineNotice';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
 import { useProjectsStore } from '@/lib/conductor/stores/projects';
 import { useAgentsStore } from '@/lib/conductor/stores/agents';
-import { ApiRequestError } from '@/lib/conductor/api/client';
+import { ApiRequestError } from '@/shared/api/client';
 import { formatBindingLabel } from '@/lib/projects/format-binding-label';
 import { useRouter } from 'next/navigation';
 import type { TaskType } from '@/lib/tasks/task-config';
-import type { Project } from '@/lib/conductor/types';
+import type { Project } from '@/shared/types';
 
 interface CreateTaskDialogProps {
   open: boolean;

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import type { Task } from '@/lib/conductor/types';
+import type { Task } from '@/shared/types';
 import { useAgentsStore } from '@/lib/conductor/stores/agents';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
 import {

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import type { WSConnectionStatus, Message, TaskStatus, TaskRuntimeStatus } from '../types';
-import { getMessageAttachments } from '../message-attachments';
+import type { WSConnectionStatus, Message, TaskStatus, TaskRuntimeStatus } from '@/shared/types';
+import { getMessageAttachments } from '@/shared/utils/message-attachments';
 import { useChatStore } from './chat';
 import { useTasksStore } from './tasks';
 import { useRuntimeStore } from './runtime';

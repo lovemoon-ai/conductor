@@ -2,10 +2,10 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { Project } from '@/lib/conductor/types';
+import type { Project } from '@/shared/types';
 import { useProjectsStore } from '@/lib/conductor/stores/projects';
 import { useAgentsStore } from '@/lib/conductor/stores/agents';
-import { useSwipeActions } from '@/lib/conductor/hooks/useSwipeActions';
+import { useSwipeActions } from '@/shared/hooks/useSwipeActions';
 import { formatBindingLabel } from '@/lib/projects/format-binding-label';
 import { useConfirm, useToast } from '../common/FeedbackProvider';
 

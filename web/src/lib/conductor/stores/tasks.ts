@@ -6,8 +6,8 @@ import type {
   RestartTaskInput,
   UpdateTaskInput,
   CleanupTaskWorktreeResponse,
-} from '../types';
-import { getApiClient } from '../api/client';
+} from '@/shared/types';
+import { getApiClient } from '@/shared/api/client';
 
 let fetchTasksRequestSequence = 0;
 

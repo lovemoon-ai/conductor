@@ -28,7 +28,7 @@ vi.mock('@/lib/conductor/stores/agents', () => ({
   useAgentsStore: (selector: (state: typeof agentsState) => unknown) => selector(agentsState),
 }));
 
-vi.mock('@/lib/conductor/hooks/useSwipeActions', () => ({
+vi.mock('@/shared/hooks/useSwipeActions', () => ({
   useSwipeActions: () => ({
     isOpen: false,
     panelStyle: {},

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, within, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { CreateTaskDialog } from './CreateTaskDialog';
-import { ApiRequestError } from '@/lib/conductor/api/client';
+import { ApiRequestError } from '@/shared/api/client';
 
 const pushMock = vi.fn();
 const createTaskMock = vi.fn();

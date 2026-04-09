@@ -1,10 +1,6 @@
-import type { TaskStatus } from "@/lib/conductor/types";
+import type { TaskStatus, RestartStrategy, RestartResultMode } from "@/shared/types";
 
-export type RestartStrategy = "inplace" | "new_task";
-export type RestartResultMode =
-  | "inplace_restart"
-  | "backend_switch_new_task"
-  | "successor_new_task";
+export type { RestartStrategy, RestartResultMode } from "@/shared/types";
 export type RestartRuntimeBackendMap = Record<string, string>;
 export type RestartCompatibilityOptions = {
   sourceRuntimeBackendMap?: RestartRuntimeBackendMap | null;

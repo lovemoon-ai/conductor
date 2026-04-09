@@ -3,14 +3,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import type { Task } from '@/lib/conductor/types';
+import type { Task } from '@/shared/types';
 import { TaskStatusBadge } from './TaskStatusBadge';
 import { RestartTaskControls } from './RestartTaskControls';
 import type { TaskListViewMode } from './TaskList';
 import { useChatStore } from '@/lib/conductor/stores/chat';
 import { useTasksStore } from '@/lib/conductor/stores/tasks';
 import { useRuntimeStore } from '@/lib/conductor/stores/runtime';
-import { getApiClient } from '@/lib/conductor/api/client';
+import { getApiClient } from '@/shared/api/client';
 import { useConfirm, useToast } from '../common/FeedbackProvider';
 
 interface TaskItemProps {

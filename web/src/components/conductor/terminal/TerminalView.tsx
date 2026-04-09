@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
-import type { Task } from '@/lib/conductor/types';
+import type { Task } from '@/shared/types';
 import type { TerminalLatencySample, TerminalOutputEvent, TerminalTransportState } from '@/lib/conductor/stores/terminal';
 import {
   getTerminalOutputSnapshot,

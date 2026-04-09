@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Message } from "../types";
+import type { Message } from '@/shared/types';
 
 const mockGet = vi.fn();
 const mockPost = vi.fn();
 
-vi.mock("../api/client", () => ({
+vi.mock('@/shared/api/client', () => ({
   getApiClient: () => ({
     get: mockGet,
     post: mockPost,

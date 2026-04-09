@@ -20,7 +20,7 @@ const {
   }),
 }));
 
-vi.mock("../api/client", () => ({
+vi.mock('@/shared/api/client', () => ({
   getApiClient: () => ({
     get: mockApiGet,
     post: mockApiPost,
