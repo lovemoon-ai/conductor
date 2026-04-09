@@ -15,6 +15,7 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
   const [name, setName] = useState('');
   const [projectPath, setProjectPath] = useState('');
   const [daemonHost, setDaemonHost] = useState('');
+  const [manualMode, setManualMode] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const createProject = useProjectsStore((state) => state.createProject);
@@ -23,11 +24,15 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
   const hasDaemons = daemons.length > 0;
   const isSelectedDaemonOnline = daemons.some((daemon) => daemon.host === daemonHost.trim());
 
+  // Auto-select the first online daemon when the dropdown is in select mode
+  // and nothing has been chosen yet. Skipped in manual mode so the user can
+  // freely type an offline daemon host for later binding.
   useEffect(() => {
+    if (manualMode) return;
     if (!daemonHost.trim() && hasDaemons) {
       setDaemonHost(daemons[0].host);
     }
-  }, [daemonHost, daemons, hasDaemons]);
+  }, [manualMode, daemonHost, daemons, hasDaemons]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -54,6 +59,7 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
       setName('');
       setProjectPath('');
       setDaemonHost('');
+      setManualMode(false);
     } catch {
       // Error handled by store
     } finally {
@@ -77,27 +83,55 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
         </div>
 
         <div>
-          <label className="block text-sm font-medium mb-2">Daemon Host</label>
-          <input
-            type="text"
-            value={daemonHost}
-            onChange={(e) => setDaemonHost(e.target.value)}
-            placeholder={hasDaemons ? 'Select an online daemon' : 'Reconnect a daemon first'}
-            className="w-full webapp-input"
-            list="daemon-host-options"
-            disabled={false}
-          />
-          <datalist id="daemon-host-options">
-            {daemons.map((daemon) => (
-              <option key={daemon.id} value={daemon.host}>
-                {daemon.host}
-              </option>
-            ))}
-          </datalist>
+          <div className="flex items-center justify-between mb-2">
+            <label className="block text-sm font-medium">Daemon Host</label>
+            {hasDaemons && (
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !manualMode;
+                  setManualMode(next);
+                  // When switching back to select mode, snap to the first
+                  // online daemon if the current value is not in the list.
+                  if (!next && !daemons.some((d) => d.host === daemonHost.trim())) {
+                    setDaemonHost(daemons[0].host);
+                  }
+                }}
+                className="text-xs text-muted hover:text-ink underline"
+              >
+                {manualMode ? 'Pick from online daemons' : 'Enter host manually'}
+              </button>
+            )}
+          </div>
+          {manualMode || !hasDaemons ? (
+            <input
+              type="text"
+              value={daemonHost}
+              onChange={(e) => setDaemonHost(e.target.value)}
+              placeholder={hasDaemons ? 'Type a daemon host' : 'Reconnect a daemon first'}
+              className="w-full webapp-input"
+            />
+          ) : (
+            <select
+              value={daemonHost}
+              onChange={(e) => setDaemonHost(e.target.value)}
+              className="w-full webapp-input"
+            >
+              {daemons.map((daemon) => (
+                <option key={daemon.id} value={daemon.host}>
+                  {daemon.host}
+                </option>
+              ))}
+            </select>
+          )}
           <InlineNotice variant="warning" className="mt-3">
-            {hasDaemons
-              ? 'Choose an online daemon. Conductor validates the workspace path immediately before creating the project.'
-              : 'No daemon is online. Reconnect conductor daemon before creating a bound project.'}
+            {!hasDaemons
+              ? 'No daemon is online. Reconnect conductor daemon before creating a bound project.'
+              : manualMode
+                ? isSelectedDaemonOnline
+                  ? 'This daemon is online. Conductor validates the workspace path immediately before creating the project.'
+                  : 'This daemon is not online right now. The project will be saved as a binding candidate and bound when the daemon reconnects.'
+                : 'Choose an online daemon. Conductor validates the workspace path immediately before creating the project.'}
           </InlineNotice>
         </div>
 
