@@ -11,6 +11,7 @@ import { useChatStore } from '@/features/chat';
 import { useTasksStore } from '../store';
 import { useRuntimeStore } from '@/features/realtime';
 import { getApiClient } from '@/shared/api/client';
+import { Dialog } from '@/components/common/Dialog';
 import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 
 interface TaskItemProps {
@@ -23,6 +24,12 @@ interface TaskItemProps {
   onOpenTask?: (taskId: string) => void;
   desktopListPaneMode?: boolean;
   viewMode?: TaskListViewMode;
+}
+
+interface ShareDialogState {
+  title: string;
+  shareUrl: string;
+  aiShareUrl: string;
 }
 
 const LEFT_ACTION_WIDTH = 52;
@@ -38,6 +45,24 @@ const AI_POPUP_LINE_THRESHOLD = 5;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const getGridDraftStorageKey = (taskId: string) => `${GRID_DRAFT_STORAGE_PREFIX}${taskId}`;
+const copyToClipboard = async (value: string): Promise<boolean> => {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(value);
+    return true;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '-1000px';
+  textarea.style.left = '-1000px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand('copy');
+  document.body.removeChild(textarea);
+  return copied;
+};
 const isInteractiveTarget = (target: EventTarget | null): boolean =>
   target instanceof Element && Boolean(target.closest('button, input, textarea, select, a, summary'));
 const normalizeOptionalString = (value: unknown): string | null => {
@@ -151,6 +176,7 @@ export function TaskItem({
   const [aiPopupStyle, setAiPopupStyle] = useState<CSSProperties | undefined>(undefined);
   const [hidePreviousAssistantReply, setHidePreviousAssistantReply] = useState(false);
   const [suppressedAssistantReply, setSuppressedAssistantReply] = useState<string | null>(null);
+  const [shareDialog, setShareDialog] = useState<ShareDialogState | null>(null);
 
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressStartXRef = useRef(0);
@@ -728,7 +754,7 @@ export function TaskItem({
   const handleShare = async () => {
     const accepted = await confirm({
       title: 'Share this conversation?',
-      description: 'Anyone with the link can view all messages in this task without logging in.',
+      description: 'Anyone with the link can view all messages in this task without logging in. The link expires in 7 days.',
       confirmLabel: 'Share',
     });
     if (!accepted) {
@@ -740,12 +766,21 @@ export function TaskItem({
       const api = getApiClient();
       const { token } = await api.post<{ token: string }>(`/tasks/${task.id}/share`);
       const url = `${window.location.origin}/share/${token}`;
+      const aiUrl = `${url}/plain`;
       try {
-        await navigator.clipboard.writeText(url);
+        const copied = await copyToClipboard(url);
+        if (!copied) {
+          throw new Error('copy_failed');
+        }
         pushToast({ title: 'Link copied', description: 'Share link copied to clipboard.', variant: 'success' });
       } catch {
         pushToast({ title: 'Link created', description: url, variant: 'success' });
       }
+      setShareDialog({
+        title: task.title,
+        shareUrl: url,
+        aiShareUrl: aiUrl,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create share link';
       pushToast({ title: 'Share failed', description: message, variant: 'error' });
@@ -753,6 +788,15 @@ export function TaskItem({
       closeSwipeActions();
     }
   };
+
+  const handleCopyShareDialogLink = useCallback(async (value: string) => {
+    const copied = await copyToClipboard(value).catch(() => false);
+    pushToast({
+      title: copied ? 'Link copied' : 'Copy failed',
+      description: copied ? value : undefined,
+      variant: copied ? 'success' : 'error',
+    });
+  }, [pushToast]);
 
   const handleRunningStatusClick = async () => {
     if (!isTaskRunning || isKillingTask || isRestartingTask) {
@@ -1283,6 +1327,57 @@ export function TaskItem({
           onClose={() => setIsRestartDialogOpen(false)}
         />
       ) : null}
+      <Dialog
+        open={shareDialog !== null}
+        onClose={() => setShareDialog(null)}
+        title="Share"
+        maxWidthClassName="max-w-xl"
+      >
+        {shareDialog ? (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-border bg-paper/70 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-medium text-ink">Link</p>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyShareDialogLink(shareDialog.shareUrl)}
+                  className="inline-flex items-center justify-center rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-ink transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                >
+                  Copy
+                </button>
+              </div>
+              <a
+                href={shareDialog.shareUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-3 block break-all text-sm text-[var(--accent)] underline underline-offset-2"
+              >
+                {shareDialog.shareUrl}
+              </a>
+            </div>
+            <div className="rounded-2xl border border-border bg-paper/70 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-medium text-ink">AI</p>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyShareDialogLink(shareDialog.aiShareUrl)}
+                  className="inline-flex items-center justify-center rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-ink transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                >
+                  Copy
+                </button>
+              </div>
+              <a
+                href={shareDialog.aiShareUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-3 block break-all text-sm text-[var(--accent)] underline underline-offset-2"
+              >
+                {shareDialog.aiShareUrl}
+              </a>
+            </div>
+          </div>
+        ) : null}
+      </Dialog>
     </div>
   );
 }
