@@ -601,6 +601,7 @@ async function main() {
       extraEnv: env,
       extraHeaders: buildConductorConnectHeaders(),
       configFile: cliArgs.configFile,
+      agentHost: configuredDaemonName || undefined,
       onConnected: (event) => {
         fireWatchdog.onConnected(event);
         scheduleReconnectRecovery(event);
