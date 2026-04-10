@@ -216,18 +216,6 @@ export function TaskItem({
     || (typeof taskMetadata?.backendType === 'string' ? taskMetadata.backendType : undefined)
     || (typeof launchConfig?.toolPreset === 'string' ? launchConfig.toolPreset : undefined)
     || runtime?.backend;
-  const daemon = (() => {
-    const runtimeDaemon = typeof runtime?.daemon === 'string' ? runtime.daemon.trim() : '';
-    if (runtimeDaemon) {
-      return runtimeDaemon;
-    }
-    const metadataDaemon = typeof taskMetadata?.daemonName === 'string' ? taskMetadata.daemonName.trim() : '';
-    if (metadataDaemon) {
-      return metadataDaemon;
-    }
-    const agentHost = task.executionHost || task.agentHost || undefined;
-    return typeof agentHost === 'string' && agentHost.trim() ? agentHost.trim() : undefined;
-  })();
   const runtimeText = runtime?.statusLine || runtime?.statusDoneLine || runtime?.replyPreview || runtime?.state || null;
   const latestInputText = task.lastUserMessage?.trim() || null;
   const latestAssistantMessageFromStore = [...taskMessages]
@@ -928,11 +916,6 @@ export function TaskItem({
       {backend ? (
         <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
           {backend}
-        </span>
-      ) : null}
-      {daemon ? (
-        <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted">
-          {daemon}
         </span>
       ) : null}
       {worktreeBranch ? (

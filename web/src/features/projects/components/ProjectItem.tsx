@@ -11,6 +11,8 @@ import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 
 interface ProjectItemProps {
   project: Project;
+  isSelected?: boolean;
+  onSelect?: (projectId: string) => void;
 }
 
 const ACTIONS_WIDTH = 144;
@@ -76,7 +78,7 @@ const readBindingCandidate = (
   return { daemonHost, workspacePath };
 };
 
-export function ProjectItem({ project }: ProjectItemProps) {
+export function ProjectItem({ project, isSelected = false, onSelect }: ProjectItemProps) {
   const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(project.name);
@@ -103,10 +105,18 @@ export function ProjectItem({ project }: ProjectItemProps) {
   const pendingBindingLabel = bindingCandidate
     ? formatBindingLabel(bindingCandidate.daemonHost, bindingCandidate.workspacePath)
     : null;
-  const hasMetadataChips = isGitProject || isUnavailable || isPendingBinding;
+  const daemonLabel = daemonHost?.trim() || bindingCandidate?.daemonHost || null;
+  const daemonTitle = daemonHost?.trim()
+    ? formatBindingLabel(daemonHost, workspacePath)
+    : pendingBindingLabel;
+  const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isUnavailable || isPendingBinding;
   const swipe = useSwipeActions({
     maxOffset: isDefault ? 0 : ACTIONS_WIDTH,
   });
+
+  const selectProject = () => {
+    onSelect?.(project.id);
+  };
 
   const openProjectTasks = () => {
     if (isPendingBinding) {
@@ -272,14 +282,15 @@ export function ProjectItem({ project }: ProjectItemProps) {
           if (swipe.consumeTap()) {
             return;
           }
-          openProjectTasks();
+          selectProject();
         }}
-        className={`webapp-card relative z-10 px-4 pb-4 pt-4 transition-colors ${
-          isUnavailable || isPendingBinding ? 'cursor-not-allowed opacity-70' : 'cursor-pointer hover:border-[var(--accent)]'
-        }`}
+        onDoubleClick={openProjectTasks}
+        className={`webapp-card relative z-10 cursor-pointer px-4 pb-4 pt-4 transition-colors hover:border-[var(--accent)] ${
+          isSelected ? 'webapp-card-list-pane-active' : 'webapp-card-list-pane-idle'
+        } ${isUnavailable || isPendingBinding ? 'opacity-70' : ''}`}
         role="button"
         tabIndex={0}
-        aria-disabled={isUnavailable || isPendingBinding}
+        aria-pressed={isSelected}
         onPointerDown={swipe.onPointerDown}
         onPointerMove={swipe.onPointerMove}
         onPointerUp={swipe.onPointerUp}
@@ -296,7 +307,7 @@ export function ProjectItem({ project }: ProjectItemProps) {
               swipe.closeActions();
               return;
             }
-            openProjectTasks();
+            selectProject();
           }
         }}
       >
@@ -315,6 +326,14 @@ export function ProjectItem({ project }: ProjectItemProps) {
                 {isGitProject ? (
                   <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
                     git
+                  </span>
+                ) : null}
+                {daemonLabel ? (
+                  <span
+                    title={daemonTitle ?? daemonLabel}
+                    className="flex max-w-[12rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted"
+                  >
+                    {daemonLabel}
                   </span>
                 ) : null}
                 {isUnavailable ? (

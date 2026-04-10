@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { ProjectItem } from './ProjectItem';
 
 const pushMock = vi.fn();
@@ -71,6 +71,7 @@ describe('ProjectItem', () => {
     );
 
     expect(screen.getByText('git')).toBeInTheDocument();
+    expect(screen.getByText('daemon-offline')).toBeInTheDocument();
     expect(screen.getByText('Daemon offline')).toBeInTheDocument();
   });
 
@@ -91,6 +92,32 @@ describe('ProjectItem', () => {
     );
 
     expect(screen.getByText('Binding pending')).toBeInTheDocument();
+    expect(screen.getByText('daemon-a')).toBeInTheDocument();
     expect(screen.queryByText('git')).toBeNull();
+  });
+
+  it('selects a project on click instead of navigating immediately', () => {
+    const onSelect = vi.fn();
+
+    render(
+      <ProjectItem
+        project={{
+          id: 'project-select',
+          name: 'Selectable Project',
+          daemonHost: 'daemon-online',
+        } as any}
+        isSelected
+        onSelect={onSelect}
+      />,
+    );
+
+    const card = screen.getByRole('button', { name: /Selectable Project/i });
+    expect(card).toHaveClass('webapp-card-list-pane-active');
+    expect(card).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(card);
+
+    expect(onSelect).toHaveBeenCalledWith('project-select');
+    expect(pushMock).not.toHaveBeenCalled();
   });
 });

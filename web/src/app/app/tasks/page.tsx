@@ -34,6 +34,7 @@ function TasksPageContent() {
   const isLoading = useTasksStore((state) => state.isLoading);
   const tasks = useTasksStore((state) => state.tasks);
   const projects = useProjectsStore((state) => state.projects);
+  const setSelectedProjectId = useProjectsStore((state) => state.setSelectedProjectId);
   const projectId = searchParams.get('projectId');
   const requestedTaskId = searchParams.get('taskId');
   const visibleTasks = useMemo(() => filterTasksByProject(tasks, projectId), [tasks, projectId]);
@@ -41,6 +42,7 @@ function TasksPageContent() {
   const currentProjectName = projectId
     ? projects.find((project) => project.id === projectId)?.name
     : null;
+  const projectTaskCountLabel = `${taskCount} ${taskCount === 1 ? 'task' : 'tasks'}`;
   const desktopListMode = isDesktop && viewMode === 'list';
   const inlineDetailEnabled = desktopListMode && taskCount > 0;
   const visibleTaskIds = useMemo(() => new Set(visibleTasks.map((task) => task.id)), [visibleTasks]);
@@ -75,7 +77,8 @@ function TasksPageContent() {
 
   useEffect(() => {
     setProjectFilter(projectId || null);
-  }, [projectId, setProjectFilter]);
+    setSelectedProjectId(projectId || null);
+  }, [projectId, setProjectFilter, setSelectedProjectId]);
 
   useEffect(() => {
     if (!inlineDetailEnabled) {
@@ -153,7 +156,7 @@ function TasksPageContent() {
   return (
     <>
       <Header
-        title={currentProjectName ? `Task ${taskCount} · ${currentProjectName}` : `Task ${taskCount}`}
+        title={currentProjectName ? `${currentProjectName} (${projectTaskCountLabel})` : `Task ${taskCount}`}
         compact
         showConnectionStatus={inlineDetailEnabled && Boolean(selectedTaskId)}
         connectionTaskId={inlineDetailEnabled ? selectedTaskId : null}

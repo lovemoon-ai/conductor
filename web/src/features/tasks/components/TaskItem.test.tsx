@@ -111,7 +111,7 @@ describe('TaskItem', () => {
     apiPostMock.mockReset();
   });
 
-  it('shows backend and daemon labels in task list item', () => {
+  it('shows backend labels without daemon labels in task list item', () => {
     render(
       <TaskItem
         task={{
@@ -132,7 +132,7 @@ describe('TaskItem', () => {
     );
 
     expect(screen.getByText('claude')).toBeInTheDocument();
-    expect(screen.getByText('daemon-a')).toBeInTheDocument();
+    expect(screen.queryByText('daemon-a')).not.toBeInTheDocument();
     expect(screen.getByText('AI')).toBeInTheDocument();
   });
 
@@ -334,7 +334,7 @@ describe('TaskItem', () => {
     expect(screen.queryByRole('button', { name: 'init' })).not.toBeInTheDocument();
   });
 
-  it('shows daemon name for direct conductor-fire tasks', () => {
+  it('does not show daemon name for direct conductor-fire tasks', () => {
     render(
       <TaskItem
         task={{
@@ -354,7 +354,7 @@ describe('TaskItem', () => {
       />
     );
 
-    expect(screen.getByText('mac-studio')).toBeInTheDocument();
+    expect(screen.queryByText('mac-studio')).not.toBeInTheDocument();
     expect(screen.queryByText('conductor-fire-mac-m1-12345')).not.toBeInTheDocument();
   });
 

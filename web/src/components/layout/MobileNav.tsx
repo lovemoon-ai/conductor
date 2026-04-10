@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTasksStore } from '@/features/tasks';
+import { useProjectsStore } from '@/features/projects';
 
 type NavIconProps = {
   active: boolean;
@@ -45,20 +46,27 @@ const SettingsIcon = ({ active }: NavIconProps) => (
 export function MobileNav() {
   const pathname = usePathname();
   const unreadCount = useTasksStore((state) => state.unreadTaskIds.size);
+  const selectedProjectId = useProjectsStore((state) => state.selectedProjectId);
+  const tasksHref = selectedProjectId
+    ? `/app/tasks?projectId=${encodeURIComponent(selectedProjectId)}`
+    : '/app/tasks';
 
   const navItems = [
     {
       href: '/app/projects',
+      activePath: '/app/projects',
       label: 'Projects',
       Icon: ProjectsIcon,
     },
     {
-      href: '/app/tasks',
+      href: tasksHref,
+      activePath: '/app/tasks',
       label: 'Tasks',
       Icon: TasksIcon,
     },
     {
       href: '/app/settings',
+      activePath: '/app/settings',
       label: 'Settings',
       Icon: SettingsIcon,
     },
@@ -67,7 +75,7 @@ export function MobileNav() {
   return (
     <nav className="fixed bottom-0 inset-x-0 z-40 h-16 bg-panel/95 backdrop-blur border-t border-border flex items-center justify-around md:hidden safe-area-bottom">
       {navItems.map((item) => {
-        const isActive = pathname.startsWith(item.href);
+        const isActive = pathname.startsWith(item.activePath);
         return (
           <Link
             key={item.href}
@@ -78,7 +86,7 @@ export function MobileNav() {
           >
             <div className="relative">
               <item.Icon active={isActive} />
-              {item.href === '/app/tasks' && unreadCount > 0 && (
+              {item.activePath === '/app/tasks' && unreadCount > 0 && (
                 <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-error rounded-full border-2 border-panel" />
               )}
             </div>

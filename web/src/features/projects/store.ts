@@ -2,6 +2,36 @@ import { create } from 'zustand';
 import type { Project, CreateProjectInput, UpdateProjectInput } from '@/shared/types';
 import { getApiClient } from '@/shared/api/client';
 
+const SELECTED_PROJECT_STORAGE_KEY = 'conductor-selected-project-id';
+
+const readStoredSelectedProjectId = (): string | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    return window.localStorage.getItem(SELECTED_PROJECT_STORAGE_KEY) || null;
+  } catch {
+    return null;
+  }
+};
+
+const writeStoredSelectedProjectId = (projectId: string | null) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    if (projectId) {
+      window.localStorage.setItem(SELECTED_PROJECT_STORAGE_KEY, projectId);
+    } else {
+      window.localStorage.removeItem(SELECTED_PROJECT_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage failures; selection still works for the current session.
+  }
+};
+
 const pickString = (value: unknown): string | null => {
   if (typeof value !== 'string') return null;
   return value;
@@ -65,26 +95,37 @@ interface ProjectsState {
   projects: Project[];
   isLoading: boolean;
   error: string | null;
+  selectedProjectId: string | null;
 
   // Actions
   fetchProjects: () => Promise<void>;
   createProject: (input: CreateProjectInput) => Promise<Project>;
   updateProject: (projectId: string, input: UpdateProjectInput) => Promise<Project>;
   deleteProject: (projectId: string) => Promise<void>;
+  setSelectedProjectId: (projectId: string | null) => void;
   clearError: () => void;
 }
 
-export const useProjectsStore = create<ProjectsState>()((set) => ({
+export const useProjectsStore = create<ProjectsState>()((set, get) => ({
   projects: [],
   isLoading: false,
   error: null,
+  selectedProjectId: readStoredSelectedProjectId(),
 
   fetchProjects: async () => {
     set({ isLoading: true, error: null });
     try {
       const api = getApiClient();
       const raw = await api.get<unknown>('/projects');
-      set({ projects: normalizeProjectList(raw), isLoading: false });
+      const projects = normalizeProjectList(raw);
+      const currentSelectedProjectId = get().selectedProjectId;
+      const selectedProjectId = currentSelectedProjectId && projects.some((project) => project.id === currentSelectedProjectId)
+        ? currentSelectedProjectId
+        : null;
+      if (selectedProjectId !== currentSelectedProjectId) {
+        writeStoredSelectedProjectId(selectedProjectId);
+      }
+      set({ projects, selectedProjectId, isLoading: false });
     } catch (error) {
       set({
         isLoading: false,
@@ -143,15 +184,26 @@ export const useProjectsStore = create<ProjectsState>()((set) => ({
     try {
       const api = getApiClient();
       await api.delete(`/projects?projectId=${encodeURIComponent(projectId)}`);
+      const shouldClearSelectedProject = get().selectedProjectId === projectId;
       set((state) => ({
         projects: state.projects.filter((p) => p.id !== projectId),
+        selectedProjectId: shouldClearSelectedProject ? null : state.selectedProjectId,
       }));
+      if (shouldClearSelectedProject) {
+        writeStoredSelectedProjectId(null);
+      }
     } catch (error) {
       set({
         error: error instanceof Error ? error.message : 'Failed to delete project',
       });
       throw error;
     }
+  },
+
+  setSelectedProjectId: (projectId) => {
+    const selectedProjectId = projectId?.trim() || null;
+    writeStoredSelectedProjectId(selectedProjectId);
+    set({ selectedProjectId });
   },
 
   clearError: () => set({ error: null }),

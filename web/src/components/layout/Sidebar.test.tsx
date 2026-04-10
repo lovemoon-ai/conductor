@@ -4,6 +4,7 @@ import { Sidebar } from './Sidebar';
 
 let pathname = '/app/tasks';
 let unreadCount = 3;
+let selectedProjectId: string | null = null;
 
 vi.mock('next/navigation', () => ({
   usePathname: () => pathname,
@@ -20,10 +21,16 @@ vi.mock('@/features/tasks', () => ({
     selector({ unreadTaskIds: new Set(Array.from({ length: unreadCount }, (_, index) => `task-${index}`)) }),
 }));
 
+vi.mock('@/features/projects', () => ({
+  useProjectsStore: (selector: (state: { selectedProjectId: string | null }) => unknown) =>
+    selector({ selectedProjectId }),
+}));
+
 describe('Sidebar', () => {
   beforeEach(() => {
     pathname = '/app/tasks';
     unreadCount = 3;
+    selectedProjectId = null;
   });
 
   it('renders primary navigation with unread badge', () => {
@@ -46,6 +53,14 @@ describe('Sidebar', () => {
       '/app/tasks',
       '/app/settings',
     ]);
+  });
+
+  it('links tasks navigation to the selected project when present', () => {
+    selectedProjectId = 'project-1';
+
+    render(<Sidebar />);
+
+    expect(screen.getByRole('link', { name: /Tasks/i })).toHaveAttribute('href', '/app/tasks?projectId=project-1');
   });
 
   it('highlights the active route and exposes aria-current', () => {

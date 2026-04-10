@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import TasksPage from './page';
 
 const setProjectFilterMock = vi.fn();
+const setSelectedProjectIdMock = vi.fn();
 const fetchTasksMock = vi.fn();
 const replaceMock = vi.fn();
 const headerMock = vi.fn();
@@ -84,8 +85,14 @@ vi.mock('@/features/tasks', async () => {
 });
 
 vi.mock('@/features/projects', () => ({
-  useProjectsStore: (selector: (state: { projects: Array<{ id: string; name: string }> }) => unknown) =>
-    selector({ projects: [] }),
+  useProjectsStore: (selector: (state: {
+    projects: Array<{ id: string; name: string }>;
+    setSelectedProjectId: typeof setSelectedProjectIdMock;
+  }) => unknown) =>
+    selector({
+      projects: [{ id: 'project-1', name: 'Conductor' }],
+      setSelectedProjectId: setSelectedProjectIdMock,
+    }),
 }));
 
 vi.mock('@/components/layout/Header', () => ({
@@ -118,6 +125,7 @@ describe('TasksPage', () => {
     readStoredTaskListViewModeMock.mockReset();
     readStoredTaskListViewModeMock.mockReturnValue('list');
     setProjectFilterMock.mockReset();
+    setSelectedProjectIdMock.mockReset();
     fetchTasksMock.mockReset();
     replaceMock.mockReset();
     headerMock.mockReset();
@@ -168,6 +176,7 @@ describe('TasksPage', () => {
 
     render(<TasksPage />);
 
+    expect(screen.getByText('Conductor (2 tasks)')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh tasks' }));
 
     expect(fetchTasksMock).toHaveBeenCalledWith('project-1', { recoverStale: true });

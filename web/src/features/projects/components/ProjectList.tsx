@@ -5,7 +5,7 @@ import { ProjectItem } from './ProjectItem';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 
 export function ProjectList() {
-  const { projects, isLoading } = useProjectsStore();
+  const { projects, isLoading, selectedProjectId, setSelectedProjectId } = useProjectsStore();
 
   if (isLoading && projects.length === 0) {
     return (
@@ -30,7 +30,12 @@ export function ProjectList() {
   return (
     <div className="space-y-3">
       {projects.map((project) => (
-        <ProjectItem key={project.id} project={project} />
+        <ProjectItem
+          key={project.id}
+          project={project}
+          isSelected={selectedProjectId === project.id}
+          onSelect={setSelectedProjectId}
+        />
       ))}
     </div>
   );

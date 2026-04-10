@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MobileNav } from './MobileNav';
 
 let pathname = '/app/projects';
 let unreadCount = 2;
+let selectedProjectId: string | null = null;
 
 vi.mock('next/navigation', () => ({
   usePathname: () => pathname,
@@ -14,7 +15,18 @@ vi.mock('@/features/tasks', () => ({
     selector({ unreadTaskIds: new Set(Array.from({ length: unreadCount }, (_, index) => `task-${index}`)) }),
 }));
 
+vi.mock('@/features/projects', () => ({
+  useProjectsStore: (selector: (state: { selectedProjectId: string | null }) => unknown) =>
+    selector({ selectedProjectId }),
+}));
+
 describe('MobileNav', () => {
+  beforeEach(() => {
+    pathname = '/app/projects';
+    unreadCount = 2;
+    selectedProjectId = null;
+  });
+
   it('renders projects before tasks', () => {
     render(<MobileNav />);
 
@@ -25,6 +37,14 @@ describe('MobileNav', () => {
       '/app/tasks',
       '/app/settings',
     ]);
+  });
+
+  it('links tasks navigation to the selected project when present', () => {
+    selectedProjectId = 'project-1';
+
+    render(<MobileNav />);
+
+    expect(screen.getByRole('link', { name: 'Tasks' })).toHaveAttribute('href', '/app/tasks?projectId=project-1');
   });
 
   it('shows the unread indicator on tasks while keeping the active route on projects', () => {

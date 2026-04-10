@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
 import { useTasksStore } from '@/features/tasks';
+import { useProjectsStore } from '@/features/projects';
 
 type NavIconProps = {
   active: boolean;
@@ -85,13 +86,17 @@ function SidebarTooltip({
 export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) {
   const pathname = usePathname();
   const unreadCount = useTasksStore((state) => state.unreadTaskIds.size);
+  const selectedProjectId = useProjectsStore((state) => state.selectedProjectId);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const iconRailClassName = 'flex h-10 w-[52px] shrink-0 items-center justify-center';
+  const tasksHref = selectedProjectId
+    ? `/app/tasks?projectId=${encodeURIComponent(selectedProjectId)}`
+    : '/app/tasks';
 
   const navItems = [
-    { href: '/app/projects', label: 'Projects', Icon: ProjectsIcon, badge: null },
-    { href: '/app/tasks', label: 'Tasks', Icon: TasksIcon, badge: unreadCount > 0 ? unreadCount : null },
-    { href: '/app/settings', label: 'Settings', Icon: SettingsIcon, badge: null },
+    { href: '/app/projects', activePath: '/app/projects', label: 'Projects', Icon: ProjectsIcon, badge: null },
+    { href: tasksHref, activePath: '/app/tasks', label: 'Tasks', Icon: TasksIcon, badge: unreadCount > 0 ? unreadCount : null },
+    { href: '/app/settings', activePath: '/app/settings', label: 'Settings', Icon: SettingsIcon, badge: null },
   ];
 
   return (
@@ -156,7 +161,7 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
       >
         <div className="space-y-0.5">
           {navItems.map((item) => {
-            const isActive = pathname.startsWith(item.href);
+            const isActive = pathname.startsWith(item.activePath);
             const tooltipId = `sidebar-tooltip-${item.label.toLowerCase()}`;
             const isTooltipVisible = collapsed && activeTooltip === item.href;
 
