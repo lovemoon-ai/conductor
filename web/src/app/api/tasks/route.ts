@@ -414,7 +414,15 @@ export async function POST(request: NextRequest) {
   const connectedAgents = realtimeHub.getAgentsForUser(
     user.id
   ) as ConnectedAgent[];
-  if (projectDaemonHost && !connectedAgents.some((agent) => agent.host === projectDaemonHost)) {
+  const requestAgentHost = normalizeOptionalString(
+    readBodyField(normalizedBody, "agent_host", "agentHost")
+  );
+  const isFireHostRequest = isConductorFireHost(requestAgentHost);
+  if (
+    projectDaemonHost &&
+    !isFireHostRequest &&
+    !connectedAgents.some((agent) => agent.host === projectDaemonHost)
+  ) {
     return NextResponse.json(
       { error: `Project daemon ${projectDaemonHost} is offline` },
       { status: 409 },
@@ -520,12 +528,17 @@ export async function POST(request: NextRequest) {
   );
   if (projectDaemonHost) {
     if (hasAgentHostField && agentHost && agentHost !== projectDaemonHost) {
-      return NextResponse.json(
-        { error: `Project daemon ${projectDaemonHost} must be used for this task` },
-        { status: 409 },
-      );
+      if (!isConductorFireHost(agentHost)) {
+        return NextResponse.json(
+          { error: `Project daemon ${projectDaemonHost} must be used for this task` },
+          { status: 409 },
+        );
+      }
+      // Fire host: keep fire's own agentHost for independent routing.
+      // The associated daemon is preserved in task metadata.daemonName.
+    } else {
+      agentHost = projectDaemonHost;
     }
-    agentHost = projectDaemonHost;
   }
   if (taskType === "pty_task") {
     const resolvedPtyAgent = resolvePtyAgentHost({
@@ -659,34 +672,38 @@ export async function POST(request: NextRequest) {
 
   if (taskType === "ai_task" && agentHost) {
     realtimeHub.bindTaskToAgent(task.id, agentHost);
-    const requestId = randomUUID();
-    await enqueueAndAttemptAgentCommand(
-      {
-        userId: user.id,
-        agentHost,
-        taskId: task.id,
-        eventType: "create_task",
-        requestId,
-        envelope: {
-          type: "create_task",
-          payload: {
-            task_id: task.id,
-            project_id: task.projectId,
-            title: task.title,
-            backend_type: task.backendType ?? metadata?.backendType,
-            initial_content: initialMessageContent ?? undefined,
-            launch_config: launchConfig ?? undefined,
-            request_id: requestId,
+    // Fire hosts run the task directly — they don't need a create_task command
+    // dispatched through the outbox (the fire process already owns the task).
+    if (!isConductorFireHost(agentHost)) {
+      const requestId = randomUUID();
+      await enqueueAndAttemptAgentCommand(
+        {
+          userId: user.id,
+          agentHost,
+          taskId: task.id,
+          eventType: "create_task",
+          requestId,
+          envelope: {
+            type: "create_task",
+            payload: {
+              task_id: task.id,
+              project_id: task.projectId,
+              title: task.title,
+              backend_type: task.backendType ?? metadata?.backendType,
+              initial_content: initialMessageContent ?? undefined,
+              launch_config: launchConfig ?? undefined,
+              request_id: requestId,
+            },
           },
         },
-      },
-      {
-        agentHost,
-        sendToAgentHost: ({ userId: targetUserId, agentHost: targetHost, envelope }) =>
-          realtimeHub.sendToAgentHost(targetUserId, targetHost, envelope),
-        resolveTaskHost: (taskId) => realtimeHub.getTaskAgentHost(taskId),
-      },
-    );
+        {
+          agentHost,
+          sendToAgentHost: ({ userId: targetUserId, agentHost: targetHost, envelope }) =>
+            realtimeHub.sendToAgentHost(targetUserId, targetHost, envelope),
+          resolveTaskHost: (taskId) => realtimeHub.getTaskAgentHost(taskId),
+        },
+      );
+    }
   }
 
   if (taskType === "pty_task" && agentHost && ptySession) {

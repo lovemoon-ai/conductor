@@ -767,6 +767,64 @@ describe("/api/tasks", () => {
       );
     });
 
+    it("should allow fire host to create tasks on daemon-bound projects", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = {
+        id: "proj-daemon",
+        name: "Daemon Project",
+        userId: "user-1",
+        daemonHost: "my-daemon",
+        workspacePath: "/home/user/project",
+      };
+      const mockTask = {
+        id: "task-fire-daemon",
+        projectId: "proj-daemon",
+        title: "Fire on Daemon Project",
+        status: "running",
+        agentHost: "conductor-fire-host-1",
+        executionHost: "conductor-fire-host-1",
+        metadata: null,
+        createdAt: new Date("2024-01-02"),
+        updatedAt: new Date("2024-01-02"),
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-fire", host: "conductor-fire-host-1", supportedBackends: ["codex"], capabilities: [] },
+      ] as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          project_id: "proj-daemon",
+          title: "Fire on Daemon Project",
+          agent_host: "conductor-fire-host-1",
+        },
+      });
+      const response = await POST(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.status).toBe("running");
+      expect(db.task.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            agentHost: "conductor-fire-host-1",
+            executionHost: "conductor-fire-host-1",
+          }),
+        })
+      );
+      // Fire host should NOT trigger create_task outbox command
+      expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+      // But the task should still be bound in realtime hub
+      expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-fire-daemon", "conductor-fire-host-1");
+    });
+
     it("should accept camelCase fields and map metadata", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const mockProject = { id: "proj-2", name: "Project 2", userId: "user-1" };

@@ -601,7 +601,6 @@ async function main() {
       extraEnv: env,
       extraHeaders: buildConductorConnectHeaders(),
       configFile: cliArgs.configFile,
-      agentHost: configuredDaemonName || undefined,
       onConnected: (event) => {
         fireWatchdog.onConnected(event);
         scheduleReconnectRecovery(event);
@@ -761,7 +760,13 @@ async function main() {
       process.off("SIGINT", onSigint);
       process.off("SIGTERM", onSigterm);
       if (!launchedByDaemon) {
+        const remoteStopReason = typeof runner.getRemoteStopReason === "function" ? runner.getRemoteStopReason() : null;
         const remoteStopSummary = typeof runner.getRemoteStopSummary === "function" ? runner.getRemoteStopSummary() : null;
+        // When the task was deleted by the user, the DB record is already gone —
+        // attempting to send a final status update would fail with 500 and the
+        // SDK durable outbox would retry forever, preventing the process from
+        // exiting.
+        const taskDeletedByUser = remoteStopReason === "deleted_by_user";
         const finalStatus = shutdownSignal
           ? {
               status: "KILLED",
@@ -781,16 +786,25 @@ async function main() {
                 status: "COMPLETED",
                 summary: "conductor fire exited",
               };
-        try {
-          const statusResult = await conductor.sendTaskStatus(taskContext.taskId, finalStatus);
-          if (statusResult?.pending && typeof conductor.flushPendingUpstreamEvents === "function") {
-            await conductor.flushPendingUpstreamEvents({
-              timeoutMs: 5_000,
-              retryIntervalMs: 250,
-            });
+        if (!taskDeletedByUser) {
+          try {
+            const statusResult = await conductor.sendTaskStatus(taskContext.taskId, finalStatus);
+            if (statusResult?.pending && typeof conductor.flushPendingUpstreamEvents === "function") {
+              await conductor.flushPendingUpstreamEvents({
+                timeoutMs: 5_000,
+                retryIntervalMs: 250,
+              });
+            }
+          } catch (error) {
+            log(`Failed to report task status (${finalStatus.status}): ${error?.message || error}`);
           }
-        } catch (error) {
-          log(`Failed to report task status (${finalStatus.status}): ${error?.message || error}`);
+        } else {
+          log(`Skipping final status report: task was deleted by user`);
+          // Also clear any pending durable outbox retries (e.g. task_stop_ack)
+          // that would keep failing against the deleted task.
+          if (typeof conductor.clearDurableOutboxTimer === "function") {
+            conductor.clearDurableOutboxTimer();
+          }
         }
       }
       if (shutdownSignal === "SIGINT") {
@@ -1774,6 +1788,10 @@ export class BridgeRunner {
 
   shouldSuppressReconnectRecovery() {
     return this.stopped || Boolean(this.remoteStopInfo);
+  }
+
+  getRemoteStopReason() {
+    return this.remoteStopInfo?.reason || null;
   }
 
   getRemoteStopSummary() {

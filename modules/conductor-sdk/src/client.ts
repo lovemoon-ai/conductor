@@ -1000,7 +1000,7 @@ export class ConductorClient {
     }, normalizedDelay);
   }
 
-  private clearDurableOutboxTimer(): void {
+  clearDurableOutboxTimer(): void {
     if (this.durableOutboxTimer) {
       clearTimeout(this.durableOutboxTimer);
       this.durableOutboxTimer = null;
