@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST, DELETE } from "@/app/api/tasks/[taskId]/share/route";
 import { createMockRequest, extractJson } from "@/__tests__/helpers";
 
@@ -24,11 +24,17 @@ const { db } = await import("@/lib/db");
 describe("/api/tasks/[taskId]/share", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-10T12:00:00.000Z"));
     vi.mocked(getActiveSubscriptionUser).mockResolvedValue({
       id: "user-1",
       email: "test@example.com",
       phone: null,
     } as any);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe("POST", () => {
@@ -65,6 +71,7 @@ describe("/api/tasks/[taskId]/share", () => {
         taskId: "task-1",
         userId: "user-1",
         token: "existing-token-abc",
+        expiresAt: new Date("2026-04-17T12:00:00.000Z"),
       } as any);
 
       const response = await POST(
@@ -74,14 +81,27 @@ describe("/api/tasks/[taskId]/share", () => {
       const data = await extractJson(response);
 
       expect(response.status).toBe(200);
-      expect(data).toEqual({ token: "existing-token-abc" });
+      expect(data).toEqual({
+        token: "existing-token-abc",
+        expiresAt: "2026-04-17T12:00:00.000Z",
+      });
+      expect(db.sharedTask.deleteMany).toHaveBeenCalledWith({
+        where: {
+          userId: "user-1",
+          taskId: "task-1",
+          expiresAt: { lte: new Date("2026-04-10T12:00:00.000Z") },
+        },
+      });
       expect(db.sharedTask.upsert).toHaveBeenCalledWith({
         where: { taskId_userId: { taskId: "task-1", userId: "user-1" } },
-        update: {},
+        update: {
+          expiresAt: new Date("2026-04-17T12:00:00.000Z"),
+        },
         create: {
           taskId: "task-1",
           userId: "user-1",
           token: expect.any(String),
+          expiresAt: new Date("2026-04-17T12:00:00.000Z"),
         },
       });
     });
@@ -93,6 +113,7 @@ describe("/api/tasks/[taskId]/share", () => {
         taskId: "task-1",
         userId: "user-1",
         token: "new-token-xyz",
+        expiresAt: new Date("2026-04-17T12:00:00.000Z"),
       } as any);
 
       const response = await POST(
@@ -102,7 +123,10 @@ describe("/api/tasks/[taskId]/share", () => {
       const data = await extractJson(response);
 
       expect(response.status).toBe(200);
-      expect(data).toEqual({ token: "new-token-xyz" });
+      expect(data).toEqual({
+        token: "new-token-xyz",
+        expiresAt: "2026-04-17T12:00:00.000Z",
+      });
     });
 
     it("returns 500 with structured error on db failure", async () => {

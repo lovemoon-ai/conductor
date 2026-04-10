@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { TaskItem } from './TaskItem';
 
 const pushMock = vi.fn();
@@ -10,6 +11,9 @@ const markTaskReadMock = vi.fn();
 const sendMessageMock = vi.fn();
 const clearRuntimeMock = vi.fn();
 const onOpenTaskMock = vi.fn();
+const confirmMock = vi.fn();
+const pushToastMock = vi.fn();
+const apiPostMock = vi.fn();
 let runtimeByTask: Record<string, unknown> = {};
 let messagesByTask: Record<string, Array<{ id: string; role: string; content: string }>> = {};
 
@@ -50,8 +54,43 @@ vi.mock('@/features/realtime', () => ({
     selector({ byTask: runtimeByTask, clearTask: clearRuntimeMock }),
 }));
 
+vi.mock('@/shared/api/client', () => ({
+  getApiClient: () => ({
+    post: apiPostMock,
+  }),
+}));
+
+vi.mock('@/components/common/FeedbackProvider', () => ({
+  useConfirm: () => ({
+    confirm: confirmMock,
+  }),
+  useToast: () => ({
+    pushToast: pushToastMock,
+  }),
+}));
+
 vi.mock('./RestartTaskControls', () => ({
   RestartTaskControls: ({ open }: { open?: boolean }) => (open ? <div data-testid="restart-controls" /> : null),
+}));
+
+vi.mock('@/components/common/Dialog', () => ({
+  Dialog: ({
+    open,
+    title,
+    description,
+    children,
+  }: {
+    open: boolean;
+    title: string;
+    description?: string;
+    children: ReactNode;
+  }) => open ? (
+    <div>
+      <div>{title}</div>
+      {description ? <div>{description}</div> : null}
+      {children}
+    </div>
+  ) : null,
 }));
 
 describe('TaskItem', () => {
@@ -67,6 +106,9 @@ describe('TaskItem', () => {
     sendMessageMock.mockReset();
     clearRuntimeMock.mockReset();
     onOpenTaskMock.mockReset();
+    confirmMock.mockReset();
+    pushToastMock.mockReset();
+    apiPostMock.mockReset();
   });
 
   it('shows backend and daemon labels in task list item', () => {
@@ -541,6 +583,69 @@ describe('TaskItem', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'New task' }));
 
     expect(screen.getByTestId('restart-controls')).toBeInTheDocument();
+  });
+
+  it('copies the share link with execCommand fallback when clipboard api is unavailable', async () => {
+    confirmMock.mockResolvedValue(true);
+    apiPostMock.mockResolvedValue({ token: 'shared-token-1' });
+    Object.defineProperty(window, 'isSecureContext', {
+      configurable: true,
+      value: false,
+    });
+    const execCommandMock = vi.fn().mockReturnValue(true);
+    document.execCommand = execCommandMock;
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-share-1',
+          title: 'Share Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />,
+    );
+
+    const card = screen.getByText('Share Task').closest('[role="button"]');
+    expect(card).not.toBeNull();
+
+    fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
+    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 80, pointerType: 'touch' });
+    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 80, pointerType: 'touch' });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Share task' }));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith('/tasks/task-share-1/share');
+      expect(execCommandMock).toHaveBeenCalledWith('copy');
+      expect(pushToastMock).toHaveBeenCalledWith({
+        title: 'Link copied',
+        description: 'Share link copied to clipboard.',
+        variant: 'success',
+      });
+    });
+    expect(screen.getByText('Share')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'http://localhost:3000/share/shared-token-1' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'http://localhost:3000/share/shared-token-1/plain' })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Copy' })).toHaveLength(2);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy' })[1]);
+
+    await waitFor(() => {
+      expect(execCommandMock).toHaveBeenCalledTimes(2);
+      expect(pushToastMock).toHaveBeenLastCalledWith({
+        title: 'Link copied',
+        description: 'http://localhost:3000/share/shared-token-1/plain',
+        variant: 'success',
+      });
+    });
   });
 
   it('does not show restart in the swipe action menu for pty tasks', async () => {

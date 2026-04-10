@@ -18,8 +18,14 @@ interface SharedTaskData {
     status: string;
     taskType: string;
     createdAt: string;
+    expiresAt: string | null;
   };
   messages: SharedMessage[];
+}
+
+function formatShortDate(value: string): string {
+  const date = new Date(value);
+  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
 }
 
 function QuestionNav({
@@ -66,6 +72,7 @@ export default function SharedTaskPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeQuestion, setActiveQuestion] = useState(0);
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
 
   const mainRef = useRef<HTMLElement | null>(null);
   const questionRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -150,6 +157,39 @@ export default function SharedTaskPage() {
     return () => container.removeEventListener('scroll', handleScroll);
   }, [userMessageIndices]);
 
+  const handleShareForAi = useCallback(async () => {
+    const aiUrl = `${window.location.origin}/share/${token}/plain`;
+
+    try {
+      let copied = false;
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(aiUrl);
+        copied = true;
+      }
+
+      if (!copied) {
+        const textarea = document.createElement('textarea');
+        textarea.value = aiUrl;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.top = '-1000px';
+        textarea.style.left = '-1000px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        copied = document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+
+      setCopyState(copied ? 'copied' : 'error');
+    } catch {
+      setCopyState('error');
+    }
+
+    window.setTimeout(() => {
+      setCopyState('idle');
+    }, 2000);
+  }, [token]);
+
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-[var(--bg)]">
@@ -172,8 +212,18 @@ export default function SharedTaskPage() {
         <div className="mx-auto max-w-3xl">
           <h1 className="text-lg font-semibold text-ink">{data.task.title}</h1>
           <p className="mt-0.5 text-xs text-muted">
-            Shared conversation &middot; {new Date(data.task.createdAt).toLocaleDateString()}
+            Shared conversation &middot; {formatShortDate(data.task.createdAt)}
+            {data.task.expiresAt ? ` · Expires ${formatShortDate(data.task.expiresAt)}` : ''}
           </p>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={handleShareForAi}
+              className="inline-flex items-center justify-center rounded-xl border border-border bg-paper/80 px-3 py-2 text-sm font-medium text-ink shadow-sm transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+            >
+              {copyState === 'copied' ? 'AI link copied' : copyState === 'error' ? 'Copy failed' : 'Share for AI'}
+            </button>
+          </div>
         </div>
       </header>
 
