@@ -11,6 +11,7 @@ export default function ProjectsPage() {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const isLoading = useProjectsStore((state) => state.isLoading);
+  const setSelectedProjectId = useProjectsStore((state) => state.setSelectedProjectId);
 
   useEffect(() => {
     fetchProjects();
@@ -21,6 +22,8 @@ export default function ProjectsPage() {
       <Header
         title="Projects"
         compact
+        onTitleDoubleClick={() => setSelectedProjectId(null)}
+        titleDoubleClickHint="Double-click to show tasks from all projects"
         actions={
           <div className="flex items-center gap-2">
             <button

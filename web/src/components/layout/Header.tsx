@@ -10,6 +10,8 @@ interface HeaderProps {
   showConnectionStatus?: boolean;
   compact?: boolean;
   connectionTaskId?: string | null;
+  onTitleDoubleClick?: () => void;
+  titleDoubleClickHint?: string;
 }
 
 const BackIcon = () => (
@@ -26,6 +28,8 @@ export function Header({
   showConnectionStatus = false,
   compact = false,
   connectionTaskId,
+  onTitleDoubleClick,
+  titleDoubleClickHint,
 }: HeaderProps) {
   return (
     <header className={`bg-panel border-b border-border flex items-center justify-between px-4 md:px-6 ${compact ? 'h-12' : 'h-16'}`}>
@@ -39,7 +43,15 @@ export function Header({
           </button>
         )}
         {title && (
-          <h2 className="text-lg md:text-xl font-semibold truncate">{title}</h2>
+          <h2
+            onDoubleClick={onTitleDoubleClick}
+            title={titleDoubleClickHint}
+            className={`text-lg md:text-xl font-semibold truncate ${
+              onTitleDoubleClick ? 'select-none cursor-default' : ''
+            }`}
+          >
+            {title}
+          </h2>
         )}
       </div>
 
