@@ -110,7 +110,8 @@ export function CreateTaskDialog({
 
     return selectableProjects[0].id;
   }, [defaultProjectId, selectableProjects]);
-  const selectedProject = selectableProjects.find((project) => project.id === projectId) ?? null;
+  const effectiveProjectId = projectId || resolvedDefaultProjectId;
+  const selectedProject = selectableProjects.find((project) => project.id === effectiveProjectId) ?? null;
   const projectRecord = selectedProject as (Project & Record<string, unknown>) | null;
   const isDefaultProject = Boolean(projectRecord?.isDefault);
   const boundDaemonHost = projectRecord && typeof projectRecord.daemonHost === 'string'
@@ -140,7 +141,12 @@ export function CreateTaskDialog({
   const eligibleDaemons = taskType === 'pty_task'
     ? daemonScope.filter((agent) => supportsPtyTask(agent.capabilities))
     : daemonScope;
-  const selectedAgent = isBoundProject ? boundDaemonAgent : eligibleDaemons.find((agent) => agent.host === agentHost);
+  const effectiveAgentHost = isBoundProject
+    ? (boundDaemonHost ?? '')
+    : (agentHost || eligibleDaemons[0]?.host || '');
+  const selectedAgent = effectiveAgentHost
+    ? eligibleDaemons.find((agent) => agent.host === effectiveAgentHost) ?? null
+    : null;
   const availableBackends = selectedAgent?.supportedBackends || [];
   const canCreatePtyTask = isBoundProject
     ? boundDaemonSupportsPty
@@ -226,10 +232,10 @@ export function CreateTaskDialog({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !projectId) {
+    if (!title.trim() || !effectiveProjectId) {
       return;
     }
-    if (taskType === 'pty_task' && !agentHost) {
+    if (taskType === 'pty_task' && !effectiveAgentHost) {
       return;
     }
 
@@ -238,9 +244,9 @@ export function CreateTaskDialog({
     try {
       const task = await createTask({
         title: title.trim(),
-        projectId: projectId || undefined,
+        projectId: effectiveProjectId || undefined,
         taskType,
-        agentHost: agentHost || undefined,
+        agentHost: effectiveAgentHost || undefined,
         backendType: taskType === 'ai_task' ? backendType || undefined : undefined,
         launchConfig:
           taskType === 'pty_task'
