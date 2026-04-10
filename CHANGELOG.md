@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with an additional `Commits` section for each released version.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.2.34] - 2026-04-10
+
+### Added
+
+- Task creation now allows `conductor fire` hosts to create tasks on daemon-bound projects without requiring the daemon to be online.
+
+### Changed
+
+- Task rename gesture changed from swipe to long-press inline editing.
+- Tasks are now scoped to the selected project.
+
+### Fixed
+
+- Fixed `conductor fire` sharing the same agentHost as the daemon, which caused Codex sessions to initialize twice and `stop_task` to be routed to the wrong process.
+- Fixed `conductor fire` not exiting after a task is deleted from the web UI, caused by the SDK durable outbox retrying a `task_status_update` against a deleted task.
+- Fixed task dialog backend selection not matching the correct daemon.
+- Fixed create project dialog not showing all online daemons.
+- Added missing Prisma migration for project daemon binding columns.
+
+### Commits
+
+- `c5a1233` fix fire sharing agentHost with daemon causing double init and stuck exit
+- `a2f454d` fix bug in conductor-fire.js
+- `ee0722b` update .conductor/config.yaml
+- `031ea02` scope tasks to selected project
+- `86cfe28` merge task dialog backend selection fix
+- `a1d4e4b` fix task dialog backend selection
+- `c5bbfda` merge task share links
+- `25cb8a7` update task share links
+- `ec3c92a` add configuredDaemonName to agentHost
+- `6935814` change task rename from swipe to long-press inline editing
+- `088ebaf` fix(web): show all online daemons in create project dialog
+- `28482eb` fix(prisma): add missing migration for project daemon binding
+- `db7f9bf` Merge branch 'feat/refactor_projeect' — release 0.2.33
+
 ## [0.2.33] - 2026-04-09
 
 ### Added
