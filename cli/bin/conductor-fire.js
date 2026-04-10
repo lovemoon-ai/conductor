@@ -1270,39 +1270,7 @@ export async function resolveProjectId(conductor, explicit, opts = {}) {
     log(`Unable to match project by path: ${error.message}`);
   }
 
-  try {
-    const created = await conductor.createProject({
-      name: projectName,
-      bindingConfirmed: true,
-      daemonHost,
-      workspacePath: snapshot.projectRoot,
-      repoRoot: snapshot.repoRoot,
-      worktreeBranch: snapshot.worktreeBranch,
-      lastCommit: snapshot.lastCommit,
-      fileCount: snapshot.fileCount,
-    });
-    if (created?.id) {
-      log(`Created bound project ${created.name || created.id} for ${daemonHost}:${snapshot.projectRoot}`);
-      return created.id;
-    }
-    throw new Error("create_project returned no id");
-  } catch (error) {
-    log(`Unable to create bound project: ${error.message}`);
-  }
-
-  try {
-    const retryMatch = await conductor.matchProjectByPath({
-      daemon_host: daemonHost,
-      project_path: snapshot.projectRoot,
-    });
-    if (retryMatch?.project_id) {
-      return retryMatch.project_id;
-    }
-  } catch {
-    // ignore retry match failures
-  }
-
-  log(`Unable to resolve bound project for ${daemonHost}:${snapshot.projectRoot}, falling back to default`);
+  log(`No matching project found for ${daemonHost}:${snapshot.projectRoot}, falling back to default`);
   return resolveDefaultProjectId(conductor);
 }
 
