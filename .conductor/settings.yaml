@@ -1,6 +1,6 @@
 worktree:
   symlink:
-    - web/node_modules
+    # - web/node_modules
     - cli/node_modules
     - web/.env
     - Makefile
