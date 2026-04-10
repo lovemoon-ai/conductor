@@ -678,7 +678,7 @@ describe('TaskItem', () => {
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: 'New task' })).not.toBeInTheDocument();
     });
-    expect(screen.getByRole('button', { name: 'Rename task' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Share task' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete task' })).toBeInTheDocument();
   });
 

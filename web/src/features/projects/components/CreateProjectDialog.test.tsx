@@ -45,7 +45,7 @@ describe('CreateProjectDialog', () => {
     fireEvent.change(screen.getByPlaceholderText('Project name'), {
       target: { value: 'Alpha Project' },
     });
-    fireEvent.change(screen.getByPlaceholderText('Select an online daemon'), {
+    fireEvent.change(screen.getByRole('combobox'), {
       target: { value: 'daemon-a' },
     });
     fireEvent.change(screen.getByPlaceholderText('Local path, e.g. /Users/you/ws/project'), {

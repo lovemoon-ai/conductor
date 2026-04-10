@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import TaskDetailPage from './page';
@@ -16,13 +16,26 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/components/layout/Header', () => ({
   Header: ({
     title,
+    showBack,
+    onBack,
     showConnectionStatus,
   }: {
     title: string;
+    showBack?: boolean;
+    onBack?: () => void;
     showConnectionStatus?: boolean;
   }) => {
-    headerMock({ title, showConnectionStatus });
-    return <div>{title}</div>;
+    headerMock({ title, showBack, showConnectionStatus });
+    return (
+      <div>
+        {showBack ? (
+          <button type="button" onClick={onBack}>
+            back
+          </button>
+        ) : null}
+        <div>{title}</div>
+      </div>
+    );
   },
 }));
 
@@ -50,6 +63,7 @@ vi.mock('@/features/tasks/store', () => ({
   useTasksStore: (selector?: (state: {
     tasks: Array<{
       id: string;
+      projectId?: string | null;
       title: string;
       taskType: string;
       status: string;
@@ -63,6 +77,7 @@ vi.mock('@/features/tasks/store', () => ({
       tasks: [
         {
           id: 'task-pty-1',
+          projectId: 'project-1',
           title: 'Persisted PTY',
           taskType: 'pty_task',
           status: 'killed',
@@ -76,6 +91,11 @@ vi.mock('@/features/tasks/store', () => ({
 
     return typeof selector === 'function' ? selector(state) : state;
   },
+}));
+
+vi.mock('@/features/projects', () => ({
+  useProjectsStore: (selector: (state: { selectedProjectId: string | null }) => unknown) =>
+    selector({ selectedProjectId: 'selected-project' }),
 }));
 
 describe('TaskDetailPage', () => {
@@ -98,8 +118,17 @@ describe('TaskDetailPage', () => {
     expect(headerMock).toHaveBeenCalledWith(
       expect.objectContaining({
         title: 'Persisted PTY',
+        showBack: true,
         showConnectionStatus: true,
       }),
     );
+  });
+
+  it('navigates back to the task list scoped to the task project', async () => {
+    render(<TaskDetailPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'back' }));
+
+    expect(pushMock).toHaveBeenCalledWith('/app/tasks?projectId=project-1');
   });
 });
