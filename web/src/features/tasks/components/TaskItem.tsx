@@ -26,8 +26,8 @@ interface TaskItemProps {
 }
 
 const LEFT_ACTION_WIDTH = 52;
-const RIGHT_ACTION_WIDTH_WITH_RESTART = 288;
-const RIGHT_ACTION_WIDTH_WITHOUT_RESTART = 216;
+const RIGHT_ACTION_WIDTH_WITH_RESTART = 216;
+const RIGHT_ACTION_WIDTH_WITHOUT_RESTART = 144;
 const SWIPE_OPEN_THRESHOLD = 0.45;
 const SWIPE_START_THRESHOLD = 8;
 const GRID_DRAFT_STORAGE_PREFIX = 'conductor-grid-task-draft:';
@@ -86,12 +86,6 @@ const parseTaskWorktreeBranch = (
     normalizeOptionalString(launchConfig.worktree_branch)
   );
 };
-
-const EditIcon = () => (
-  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-  </svg>
-);
 
 const TrashIcon = () => (
   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -158,6 +152,11 @@ export function TaskItem({
   const [hidePreviousAssistantReply, setHidePreviousAssistantReply] = useState(false);
   const [suppressedAssistantReply, setSuppressedAssistantReply] = useState<string | null>(null);
 
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressStartXRef = useRef(0);
+  const longPressStartYRef = useRef(0);
+  const longPressFiredRef = useRef(false);
+  const renamingRef = useRef(false);
   const swipeOffsetRef = useRef(0);
   const draggingRef = useRef(false);
   const pointerIdRef = useRef<number | null>(null);
@@ -330,6 +329,9 @@ export function TaskItem({
       }
       if (aiPopupHideTimeoutRef.current) {
         clearTimeout(aiPopupHideTimeoutRef.current);
+      }
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
       }
     }
   ), []);
@@ -529,6 +531,13 @@ export function TaskItem({
     }
   }, [gridDraft, task.id]);
 
+  const clearLongPress = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (viewMode !== 'list') {
       return;
@@ -567,9 +576,10 @@ export function TaskItem({
     const nextOffset = clamp(startOffsetRef.current + delta, -rightActionWidth, LEFT_ACTION_WIDTH);
     if (Math.abs(nextOffset - startOffsetRef.current) > SWIPE_START_THRESHOLD) {
       didSwipeRef.current = true;
+      clearLongPress();
     }
     setSwipeOffsetValue(nextOffset);
-  }, [setSwipeOffsetValue, viewMode]);
+  }, [clearLongPress, setSwipeOffsetValue, viewMode]);
 
   const finalizeSwipe = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (viewMode !== 'list') {
@@ -616,12 +626,49 @@ export function TaskItem({
     return false;
   }, [closeSwipeActions, viewMode]);
 
+  const handleTitlePointerDown = useCallback((e: ReactPointerEvent<HTMLHeadingElement>) => {
+    if (selectionMode) {
+      return;
+    }
+    clearLongPress();
+    longPressStartXRef.current = e.clientX;
+    longPressStartYRef.current = e.clientY;
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTimerRef.current = null;
+      longPressFiredRef.current = true;
+      setEditTitle(task.title);
+      setIsEditing(true);
+    }, 500);
+  }, [clearLongPress, selectionMode, task.title]);
+
+  const handleTitlePointerUp = useCallback(() => {
+    clearLongPress();
+  }, [clearLongPress]);
+
+  const handleTitlePointerMove = useCallback((e: ReactPointerEvent<HTMLHeadingElement>) => {
+    if (!longPressTimerRef.current) {
+      return;
+    }
+    const dx = e.clientX - longPressStartXRef.current;
+    const dy = e.clientY - longPressStartYRef.current;
+    if (dx * dx + dy * dy > 100) {
+      clearLongPress();
+    }
+  }, [clearLongPress]);
+
   const openTaskPage = useCallback(() => {
     markTaskRead(task.id);
     router.push(`/app/tasks/${task.id}`);
   }, [markTaskRead, router, task.id]);
 
   const openTaskDetail = () => {
+    if (longPressFiredRef.current) {
+      longPressFiredRef.current = false;
+      return;
+    }
+    if (isEditing) {
+      return;
+    }
     if (dismissedStatusConfirmationRef.current) {
       dismissedStatusConfirmationRef.current = false;
       return;
@@ -639,11 +686,18 @@ export function TaskItem({
   };
 
   const handleRename = async () => {
-    if (editTitle.trim() && editTitle !== task.title) {
-      await updateTask(task.id, { title: editTitle.trim() });
+    if (renamingRef.current) {
+      return;
     }
-    setIsEditing(false);
-    closeSwipeActions();
+    renamingRef.current = true;
+    try {
+      if (editTitle.trim() && editTitle !== task.title) {
+        await updateTask(task.id, { title: editTitle.trim() });
+      }
+    } finally {
+      setIsEditing(false);
+      renamingRef.current = false;
+    }
   };
 
   const handleDelete = async () => {
@@ -889,25 +943,6 @@ export function TaskItem({
         }
       : {};
 
-  if (isEditing) {
-    return (
-      <div className="webapp-card p-4">
-        <input
-          type="text"
-          value={editTitle}
-          onChange={(e) => setEditTitle(e.target.value)}
-          onBlur={() => void handleRename()}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') void handleRename();
-            if (e.key === 'Escape') setIsEditing(false);
-          }}
-          className="webapp-input w-full text-base font-medium"
-          autoFocus
-        />
-      </div>
-    );
-  }
-
   if (viewMode === 'grid') {
     const defaultGridComposerPlaceholder = !isMessageableTask
       ? 'Open task detail to use the terminal...'
@@ -939,7 +974,32 @@ export function TaskItem({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               {isUnread ? <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--accent)] animate-pulse" /> : null}
-              <h3 className="truncate text-base font-semibold text-ink">{task.title}</h3>
+              {isEditing ? (
+                <input
+                  type="text"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  onBlur={() => void handleRename()}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === 'Enter') void handleRename();
+                    if (e.key === 'Escape') setIsEditing(false);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="min-w-0 flex-1 truncate border-0 bg-transparent text-base font-semibold text-ink outline-none ring-1 ring-[var(--accent)] rounded px-1 -mx-1"
+                  autoFocus
+                />
+              ) : (
+                <h3
+                  className="truncate text-base font-semibold text-ink select-none"
+                  onPointerDown={handleTitlePointerDown}
+                  onPointerUp={handleTitlePointerUp}
+                  onPointerMove={handleTitlePointerMove}
+                  onPointerCancel={handleTitlePointerUp}
+                >
+                  {task.title}
+                </h3>
+              )}
             </div>
           </div>
           <div ref={statusBadgeRef}>
@@ -1113,21 +1173,6 @@ export function TaskItem({
         <button
           type="button"
           tabIndex={isRightActionsOpen ? 0 : -1}
-          aria-label="Rename task"
-          title="Rename"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setIsEditing(true);
-            closeSwipeActions();
-          }}
-          className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
-        >
-          <EditIcon />
-        </button>
-        <button
-          type="button"
-          tabIndex={isRightActionsOpen ? 0 : -1}
           aria-label="Delete task"
           title="Delete"
           onClick={(e) => {
@@ -1150,6 +1195,9 @@ export function TaskItem({
         }}
         onDoubleClick={(e) => {
           e.preventDefault();
+          if (isEditing) {
+            return;
+          }
           if (consumeTap()) {
             return;
           }
@@ -1187,7 +1235,32 @@ export function TaskItem({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               {isUnread ? <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--accent)] animate-pulse" /> : null}
-              <h3 className="truncate text-base font-medium text-ink">{task.title}</h3>
+              {isEditing ? (
+                <input
+                  type="text"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  onBlur={() => void handleRename()}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === 'Enter') void handleRename();
+                    if (e.key === 'Escape') setIsEditing(false);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="min-w-0 flex-1 truncate border-0 bg-transparent text-base font-medium text-ink outline-none ring-1 ring-[var(--accent)] rounded px-1 -mx-1"
+                  autoFocus
+                />
+              ) : (
+                <h3
+                  className="truncate text-base font-medium text-ink select-none"
+                  onPointerDown={handleTitlePointerDown}
+                  onPointerUp={handleTitlePointerUp}
+                  onPointerMove={handleTitlePointerMove}
+                  onPointerCancel={handleTitlePointerUp}
+                >
+                  {task.title}
+                </h3>
+              )}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted">
               {metadataChips}
