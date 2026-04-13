@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Project } from '@/shared/types';
 import { useProjectsStore } from '../store';
@@ -15,29 +16,11 @@ interface ProjectItemProps {
   onSelect?: (projectId: string) => void;
 }
 
-const ACTIONS_WIDTH = 144;
-
-const EditIcon = () => (
-  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-  </svg>
-);
+const ACTIONS_WIDTH = 72;
 
 const TrashIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-  </svg>
-);
-
-const CheckIcon = () => (
-  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-  </svg>
-);
-
-const CloseIcon = () => (
-  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
   </svg>
 );
 
@@ -82,6 +65,12 @@ export function ProjectItem({ project, isSelected = false, onSelect }: ProjectIt
   const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(project.name);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressStartXRef = useRef(0);
+  const longPressStartYRef = useRef(0);
+  const longPressFiredRef = useRef(false);
+  const renamingRef = useRef(false);
+  const skipRenameOnBlurRef = useRef(false);
 
   const { updateProject, deleteProject } = useProjectsStore();
   const agents = useAgentsStore((state) => state.agents);
@@ -114,11 +103,36 @@ export function ProjectItem({ project, isSelected = false, onSelect }: ProjectIt
     maxOffset: isDefault ? 0 : ACTIONS_WIDTH,
   });
 
+  const clearLongPress = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isEditing) {
+      setEditName(project.name);
+    }
+  }, [isEditing, project.name]);
+
+  useEffect(() => clearLongPress, [clearLongPress]);
+
   const selectProject = () => {
+    if (longPressFiredRef.current) {
+      longPressFiredRef.current = false;
+      return;
+    }
+    if (isEditing) {
+      return;
+    }
     onSelect?.(project.id);
   };
 
   const openProjectTasks = () => {
+    if (isEditing) {
+      return;
+    }
     if (isPendingBinding) {
       pushToast({
         title: 'Binding pending',
@@ -141,9 +155,21 @@ export function ProjectItem({ project, isSelected = false, onSelect }: ProjectIt
   };
 
   const handleRename = async () => {
+    if (skipRenameOnBlurRef.current) {
+      skipRenameOnBlurRef.current = false;
+      return;
+    }
+    if (renamingRef.current) {
+      return;
+    }
     const nextName = editName.trim();
-    if (!nextName) return;
+    if (!nextName) {
+      setEditName(project.name);
+      setIsEditing(false);
+      return;
+    }
 
+    renamingRef.current = true;
     if (nextName !== project.name) {
       try {
         await updateProject(project.id, { name: nextName });
@@ -154,18 +180,72 @@ export function ProjectItem({ project, isSelected = false, onSelect }: ProjectIt
           description: message,
           variant: 'error',
         });
+        renamingRef.current = false;
         return;
       }
     }
     setIsEditing(false);
+    renamingRef.current = false;
     swipe.closeActions();
   };
 
   const handleCancelRename = () => {
+    skipRenameOnBlurRef.current = true;
     setEditName(project.name);
     setIsEditing(false);
     swipe.closeActions();
   };
+
+  const handleTitlePointerDown = useCallback((e: ReactPointerEvent<HTMLHeadingElement>) => {
+    if (isDefault || isEditing) {
+      return;
+    }
+    clearLongPress();
+    longPressStartXRef.current = e.clientX;
+    longPressStartYRef.current = e.clientY;
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTimerRef.current = null;
+      longPressFiredRef.current = true;
+      skipRenameOnBlurRef.current = false;
+      setEditName(project.name);
+      setIsEditing(true);
+      swipe.closeActions();
+    }, 500);
+  }, [clearLongPress, isDefault, isEditing, project.name, swipe]);
+
+  const handleTitlePointerUp = useCallback(() => {
+    clearLongPress();
+  }, [clearLongPress]);
+
+  const clearLongPressAfterMove = useCallback((clientX: number, clientY: number) => {
+    if (!longPressTimerRef.current) {
+      return;
+    }
+    const dx = clientX - longPressStartXRef.current;
+    const dy = clientY - longPressStartYRef.current;
+    if (dx * dx + dy * dy > 100) {
+      clearLongPress();
+    }
+  }, [clearLongPress]);
+
+  const handleTitlePointerMove = useCallback((e: ReactPointerEvent<HTMLHeadingElement>) => {
+    clearLongPressAfterMove(e.clientX, e.clientY);
+  }, [clearLongPressAfterMove]);
+
+  const handleCardPointerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    clearLongPressAfterMove(e.clientX, e.clientY);
+    swipe.onPointerMove(e);
+  }, [clearLongPressAfterMove, swipe]);
+
+  const handleCardPointerUp = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    clearLongPress();
+    swipe.onPointerUp(e);
+  }, [clearLongPress, swipe]);
+
+  const handleCardPointerCancel = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    clearLongPress();
+    swipe.onPointerCancel(e);
+  }, [clearLongPress, swipe]);
 
   const handleDelete = async () => {
     if (isDefault) {
@@ -196,70 +276,10 @@ export function ProjectItem({ project, isSelected = false, onSelect }: ProjectIt
     swipe.closeActions();
   };
 
-  if (isEditing) {
-    return (
-      <div className="webapp-card p-4">
-        <div className="flex items-center gap-2">
-          <input
-            type="text"
-            value={editName}
-            onChange={(e) => setEditName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                void handleRename();
-              }
-              if (e.key === 'Escape') {
-                e.preventDefault();
-                handleCancelRename();
-              }
-            }}
-            className="flex-1 webapp-input"
-            autoFocus
-          />
-          <button
-            type="button"
-            aria-label="Cancel rename"
-            title="Cancel"
-            onClick={handleCancelRename}
-            className="w-8 h-8 inline-flex items-center justify-center rounded border border-[var(--border)] text-muted hover:text-ink hover:bg-[var(--paper)] transition-colors"
-          >
-            <CloseIcon />
-          </button>
-          <button
-            type="button"
-            aria-label="Confirm rename"
-            title="Confirm"
-            disabled={!editName.trim()}
-            onClick={() => void handleRename()}
-            className="w-8 h-8 inline-flex items-center justify-center rounded border border-[var(--border)] text-[var(--accent)] hover:bg-[var(--accent)]/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            <CheckIcon />
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="relative overflow-hidden rounded-2xl">
       {!isDefault && (
         <div className="absolute inset-y-0 right-0 flex z-0" aria-hidden={!swipe.isOpen}>
-          <button
-            type="button"
-            tabIndex={swipe.isOpen ? 0 : -1}
-            aria-label="Rename project"
-            title="Rename"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setIsEditing(true);
-              swipe.closeActions();
-            }}
-            className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--paper)] text-muted hover:text-ink transition-colors"
-          >
-            <EditIcon />
-          </button>
           <button
             type="button"
             tabIndex={swipe.isOpen ? 0 : -1}
@@ -292,9 +312,9 @@ export function ProjectItem({ project, isSelected = false, onSelect }: ProjectIt
         tabIndex={0}
         aria-pressed={isSelected}
         onPointerDown={swipe.onPointerDown}
-        onPointerMove={swipe.onPointerMove}
-        onPointerUp={swipe.onPointerUp}
-        onPointerCancel={swipe.onPointerCancel}
+        onPointerMove={handleCardPointerMove}
+        onPointerUp={handleCardPointerUp}
+        onPointerCancel={handleCardPointerCancel}
         style={swipe.panelStyle}
         onKeyDown={(e) => {
           if (e.key === 'Escape') {
@@ -319,7 +339,38 @@ export function ProjectItem({ project, isSelected = false, onSelect }: ProjectIt
           </div>
           <div className="flex-1">
             <div className="flex items-center gap-2">
-              <h3 className="font-medium">{project.name}</h3>
+              {isEditing ? (
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  onBlur={() => void handleRename()}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void handleRename();
+                    }
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      handleCancelRename();
+                    }
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="min-w-0 flex-1 truncate border-0 bg-transparent px-1 -mx-1 text-base font-medium text-ink outline-none ring-1 ring-[var(--accent)] rounded"
+                  autoFocus
+                />
+              ) : (
+                <h3
+                  className="truncate font-medium select-none"
+                  onPointerDown={handleTitlePointerDown}
+                  onPointerUp={handleTitlePointerUp}
+                  onPointerMove={handleTitlePointerMove}
+                  onPointerCancel={handleTitlePointerUp}
+                >
+                  {project.name}
+                </h3>
+              )}
             </div>
             {hasMetadataChips ? (
               <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted">

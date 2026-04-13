@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ProjectItem } from './ProjectItem';
 
 const pushMock = vi.fn();
@@ -51,6 +51,20 @@ vi.mock('@/components/common/FeedbackProvider', () => ({
 }));
 
 describe('ProjectItem', () => {
+  beforeEach(() => {
+    pushMock.mockReset();
+    updateProjectMock.mockReset();
+    deleteProjectMock.mockReset();
+    pushToastMock.mockReset();
+    agentsState = {
+      agents: [],
+    };
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('shows offline state for bound projects when daemon is offline', () => {
     agentsState = {
       agents: [
@@ -119,5 +133,65 @@ describe('ProjectItem', () => {
 
     expect(onSelect).toHaveBeenCalledWith('project-select');
     expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('renames a project inline after long pressing the title', async () => {
+    vi.useFakeTimers();
+    updateProjectMock.mockResolvedValue({
+      id: 'project-rename',
+      name: 'Renamed Project',
+      daemonHost: 'daemon-online',
+    });
+
+    render(
+      <ProjectItem
+        project={{
+          id: 'project-rename',
+          name: 'Rename Me',
+          daemonHost: 'daemon-online',
+        } as any}
+      />,
+    );
+
+    fireEvent.pointerDown(screen.getByText('Rename Me'), { clientX: 10, clientY: 10 });
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    vi.useRealTimers();
+
+    const input = screen.getByDisplayValue('Rename Me');
+    fireEvent.change(input, { target: { value: 'Renamed Project' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(updateProjectMock).toHaveBeenCalledWith('project-rename', { name: 'Renamed Project' });
+    });
+    expect(screen.queryByRole('button', { name: /Rename project/i })).toBeNull();
+  });
+
+  it('does not enter inline rename after a quick title tap', () => {
+    vi.useFakeTimers();
+
+    render(
+      <ProjectItem
+        project={{
+          id: 'project-quick-tap',
+          name: 'Quick Tap',
+          daemonHost: 'daemon-online',
+        } as any}
+      />,
+    );
+
+    const title = screen.getByText('Quick Tap');
+    const card = title.closest('[role="button"]');
+    expect(card).not.toBeNull();
+
+    fireEvent.pointerDown(title, { clientX: 10, clientY: 10 });
+    fireEvent.pointerUp(card!, { clientX: 10, clientY: 10 });
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(screen.queryByDisplayValue('Quick Tap')).toBeNull();
   });
 });
