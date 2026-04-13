@@ -98,7 +98,10 @@ export function ProjectItem({ project, isSelected = false, onSelect }: ProjectIt
   const daemonTitle = daemonHost?.trim()
     ? formatBindingLabel(daemonHost, workspacePath)
     : pendingBindingLabel;
-  const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isUnavailable || isPendingBinding;
+  const taskStatusCounts = projectRecord.taskStatusCounts as Record<string, number> | undefined;
+  const runningCount = taskStatusCounts?.running ?? 0;
+  const killedCount = taskStatusCounts?.killed ?? 0;
+  const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isUnavailable || isPendingBinding || runningCount > 0 || killedCount > 0;
   const swipe = useSwipeActions({
     maxOffset: isDefault ? 0 : ACTIONS_WIDTH,
   });
@@ -394,6 +397,16 @@ export function ProjectItem({ project, isSelected = false, onSelect }: ProjectIt
                 ) : isPendingBinding ? (
                   <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted">
                     Binding pending
+                  </span>
+                ) : null}
+                {runningCount > 0 ? (
+                  <span className="flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                    {runningCount} running
+                  </span>
+                ) : null}
+                {killedCount > 0 ? (
+                  <span className="flex items-center gap-1 rounded bg-[var(--error)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--error)]">
+                    {killedCount} killed
                   </span>
                 ) : null}
               </div>

@@ -25,6 +25,7 @@ vi.mock("@/lib/db", () => ({
     },
     task: {
       findMany: vi.fn(),
+      groupBy: vi.fn(),
       deleteMany: vi.fn(),
     },
     message: {
@@ -93,6 +94,7 @@ describe("/api/projects", () => {
     vi.mocked(db.defaultProject.findUnique).mockReset();
     vi.mocked(db.defaultProject.findMany).mockResolvedValue([]);
     vi.mocked(db.project.findMany).mockResolvedValue([]);
+    vi.mocked(db.task.groupBy).mockResolvedValue([]);
     vi.mocked(db.defaultProject.findUnique).mockResolvedValue(null);
     vi.mocked(db.project.findFirst).mockResolvedValue(null);
     vi.mocked(db.project.findUnique).mockResolvedValue(null);

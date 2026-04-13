@@ -24,6 +24,9 @@ interface TaskItemProps {
   onOpenTask?: (taskId: string) => void;
   desktopListPaneMode?: boolean;
   viewMode?: TaskListViewMode;
+  showProjectInfo?: boolean;
+  projectName?: string | null;
+  projectDaemonHost?: string | null;
 }
 
 interface ShareDialogState {
@@ -155,6 +158,9 @@ export function TaskItem({
   onOpenTask,
   desktopListPaneMode = false,
   viewMode = 'list',
+  showProjectInfo = false,
+  projectName = null,
+  projectDaemonHost = null,
 }: TaskItemProps) {
   const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
@@ -924,6 +930,22 @@ export function TaskItem({
           className="max-w-[11rem] truncate rounded bg-[var(--paper)] px-1.5 py-0.5 font-mono text-xs font-medium text-ink"
         >
           {worktreeBranch}
+        </span>
+      ) : null}
+      {showProjectInfo && projectName ? (
+        <span
+          title={projectName}
+          className="flex max-w-[10rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted"
+        >
+          {projectName}
+        </span>
+      ) : null}
+      {showProjectInfo && projectDaemonHost ? (
+        <span
+          title={projectDaemonHost}
+          className="flex max-w-[10rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted"
+        >
+          {projectDaemonHost}
         </span>
       ) : null}
     </>

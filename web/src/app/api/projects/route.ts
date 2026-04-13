@@ -155,18 +155,40 @@ const findProjectNameConflict = async (params: {
 };
 
 export const GET = requireActiveSubscription(async (_request: NextRequest, user) => {
-  const projects = await db.project.findMany({
-    where: { userId: user.id },
-    orderBy: { createdAt: "desc" },
-  });
-  const defaultProjects = await db.defaultProject.findMany({
-    where: { userId: user.id },
-    select: { projectId: true },
-  });
+  const [projects, defaultProjects, taskStatusGroups] = await Promise.all([
+    db.project.findMany({
+      where: { userId: user.id },
+      orderBy: { createdAt: "desc" },
+    }),
+    db.defaultProject.findMany({
+      where: { userId: user.id },
+      select: { projectId: true },
+    }),
+    db.task.groupBy({
+      by: ["projectId", "status"],
+      where: { project: { userId: user.id } },
+      _count: { _all: true },
+    }),
+  ]);
   const defaultProjectIds = new Set(defaultProjects.map((entry) => entry.projectId));
 
+  // Build per-project task status counts with normalized status keys.
+  const taskCountsByProject = new Map<string, Record<string, number>>();
+  for (const group of taskStatusGroups) {
+    const normalizedStatus = normalizeTaskStatus(group.status);
+    if (!taskCountsByProject.has(group.projectId)) {
+      taskCountsByProject.set(group.projectId, {});
+    }
+    const counts = taskCountsByProject.get(group.projectId)!;
+    counts[normalizedStatus] = (counts[normalizedStatus] ?? 0) + group._count._all;
+  }
+
   return NextResponse.json(
-    projects.map((p) => serializeProject(p, defaultProjectIds.has(p.id)))
+    projects.map((p) => ({
+      ...serializeProject(p, defaultProjectIds.has(p.id)),
+      taskStatusCounts: taskCountsByProject.get(p.id) ?? {},
+      task_status_counts: taskCountsByProject.get(p.id) ?? {},
+    }))
   );
 });
 

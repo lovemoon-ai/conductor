@@ -37,6 +37,17 @@ const pickString = (value: unknown): string | null => {
   return value;
 };
 
+const normalizeTaskStatusCounts = (value: unknown): Record<string, number> | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const result: Record<string, number> = {};
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof val === 'number' && val > 0) {
+      result[key] = val;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+};
+
 const pickInt = (value: unknown): number | null => {
   if (typeof value === 'number' && Number.isInteger(value)) return value;
   if (typeof value === 'string') {
@@ -77,6 +88,7 @@ export const normalizeProject = (raw: unknown): Project | null => {
           ? record.is_default
           : false,
     metadata,
+    taskStatusCounts: normalizeTaskStatusCounts(record.taskStatusCounts ?? record.task_status_counts),
     createdAt:
       pickString(record.createdAt) ?? pickString(record.created_at) ?? undefined,
     updatedAt:

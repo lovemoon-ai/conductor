@@ -91,6 +91,15 @@ export function TaskList({
     [tasks, effectiveProjectFilter],
   );
 
+  const showProjectInfo = !effectiveProjectFilter;
+  const projectMap = useMemo(() => {
+    if (!showProjectInfo) return null;
+    const map = new Map<string, { name: string; daemonHost: string | null }>();
+    for (const project of projects) {
+      map.set(project.id, { name: project.name, daemonHost: project.daemonHost ?? null });
+    }
+    return map;
+  }, [projects, showProjectInfo]);
   const currentProjectName = effectiveProjectFilter
     ? projects.find((project) => project.id === effectiveProjectFilter)?.name
     : null;
@@ -312,6 +321,9 @@ export function TaskList({
               onOpenTask={onOpenTask}
               desktopListPaneMode={desktopListPaneMode}
               viewMode={viewMode}
+              showProjectInfo={showProjectInfo}
+              projectName={projectMap?.get(task.projectId ?? '')?.name ?? null}
+              projectDaemonHost={projectMap?.get(task.projectId ?? '')?.daemonHost ?? null}
             />
           </div>
         ))}

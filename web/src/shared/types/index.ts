@@ -34,6 +34,7 @@ export interface Project {
   lastCommit?: string | null;
   fileCount?: number | null;
   isDefault?: boolean;
+  taskStatusCounts?: Record<string, number>;
   createdAt?: string;
   updatedAt?: string;
 }
