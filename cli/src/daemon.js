@@ -738,6 +738,30 @@ export function startDaemon(config = {}, deps = {}) {
     return resolvedPath;
   }
 
+  const PROJECT_SETTINGS_TEMPLATE = [
+    "worktree:",
+    "  sync_branch: true",
+    "  symlink: []",
+    "  # Example: symlink paths from the parent workspace into each worktree",
+    "  # symlink:",
+    "  #   - node_modules",
+    "  #   - .env",
+    "",
+  ].join("\n");
+
+  function ensureProjectSettingsTemplate(projectWorkspacePath) {
+    const settingsPath = path.join(projectWorkspacePath, ".conductor", "settings.yaml");
+    if (existsSyncFn(settingsPath)) {
+      return;
+    }
+    try {
+      mkdirSyncFn(path.join(projectWorkspacePath, ".conductor"), { recursive: true });
+      writeFileSyncFn(settingsPath, PROJECT_SETTINGS_TEMPLATE, "utf8");
+    } catch (_error) {
+      // best-effort; do not block project validation if template creation fails
+    }
+  }
+
   function readProjectWorktreeSettings(projectWorkspacePath) {
     const settingsCandidates = [
       path.join(projectWorkspacePath, ".conductor", "settings.yaml"),
@@ -759,6 +783,7 @@ export function startDaemon(config = {}, deps = {}) {
             : {};
         return {
           symlinkPaths: normalizeConfiguredPathList(worktreeSettings.symlink, projectWorkspacePath),
+          syncBranch: worktreeSettings.sync_branch === true || worktreeSettings.syncBranch === true,
           settingsPath,
         };
       } catch (error) {
@@ -768,6 +793,7 @@ export function startDaemon(config = {}, deps = {}) {
 
     return {
       symlinkPaths: [],
+      syncBranch: false,
       settingsPath: null,
     };
   }
@@ -888,6 +914,48 @@ export function startDaemon(config = {}, deps = {}) {
     const finalCwd = resolveTaskWorktreeCwd(worktreeRoot, worktreeConfig.projectRelativePath);
     const gitMarkerPath = path.join(worktreeRoot, ".git");
     if (!existsSyncFn(gitMarkerPath)) {
+      const { syncBranch } = readProjectWorktreeSettings(worktreeConfig.projectWorkspacePath);
+      if (syncBranch) {
+        try {
+          const { stdout: remoteStdout } = await runSpawnProcess(
+            "git",
+            ["-C", worktreeConfig.projectRepoRoot, "remote"],
+            { cwd: worktreeConfig.projectRepoRoot },
+          );
+          const hasRemote = remoteStdout.trim().length > 0;
+          if (hasRemote) {
+            await runSpawnProcess(
+              "git",
+              ["-C", worktreeConfig.projectRepoRoot, "fetch"],
+              { cwd: worktreeConfig.projectRepoRoot },
+            );
+            const { stdout: branchStdout } = await runSpawnProcess(
+              "git",
+              ["-C", worktreeConfig.projectRepoRoot, "rev-parse", "--abbrev-ref", "HEAD"],
+              { cwd: worktreeConfig.projectRepoRoot },
+            );
+            const currentBranch = branchStdout.trim();
+            if (currentBranch && currentBranch !== "HEAD") {
+              const { stdout: trackingStdout } = await runSpawnProcess(
+                "git",
+                ["-C", worktreeConfig.projectRepoRoot, "rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`],
+                { cwd: worktreeConfig.projectRepoRoot },
+              ).catch(() => ({ stdout: "" }));
+              const upstream = trackingStdout.trim();
+              if (upstream) {
+                await runSpawnProcess(
+                  "git",
+                  ["-C", worktreeConfig.projectRepoRoot, "merge", "--ff-only", upstream],
+                  { cwd: worktreeConfig.projectRepoRoot },
+                ).catch(() => {});
+              }
+            }
+          }
+        } catch (_syncError) {
+          // sync_branch is best-effort; proceed with worktree creation even if sync fails
+        }
+      }
+
       mkdirSyncFn(path.dirname(worktreeRoot), { recursive: true });
       try {
         await runSpawnProcess(
@@ -3367,12 +3435,14 @@ export function startDaemon(config = {}, deps = {}) {
         };
       } else {
         const snapshot = await Promise.resolve(resolveProjectSnapshotFn(resolvedPath));
+        const effectiveWorkspace =
+          typeof snapshot?.projectRoot === "string" && snapshot.projectRoot.trim()
+            ? snapshot.projectRoot.trim()
+            : resolvedPath;
+        ensureProjectSettingsTemplate(effectiveWorkspace);
         result = {
           ...result,
-          workspacePath:
-            typeof snapshot?.projectRoot === "string" && snapshot.projectRoot.trim()
-              ? snapshot.projectRoot.trim()
-              : resolvedPath,
+          workspacePath: effectiveWorkspace,
           repoRoot:
             typeof snapshot?.repoRoot === "string" && snapshot.repoRoot.trim()
               ? snapshot.repoRoot.trim()
