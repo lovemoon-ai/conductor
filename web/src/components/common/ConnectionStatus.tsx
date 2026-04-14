@@ -90,10 +90,10 @@ export function ConnectionStatus({
   }, [daemonFromTask, runtime?.daemon, visibleAgents]);
   const pid = runtime?.pid ?? null;
   const taskIdValue = taskId || 'n/a';
-  const sessionId = runtime?.sessionId || runtime?.threadId || 'n/a';
+  const sessionId = runtime?.sessionId || runtime?.threadId || currentTask?.sessionId || 'n/a';
   const tokenUsagePercent = formatPercent(runtime?.tokenUsagePercent);
   const contextUsagePercent = formatPercent(runtime?.contextUsagePercent);
-  const backend = runtime?.backend || 'n/a';
+  const backend = runtime?.backend || currentTask?.backendType || 'n/a';
 
   useEffect(() => {
     if (!open) {

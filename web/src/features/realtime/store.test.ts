@@ -216,6 +216,47 @@ describe('websocket runtime status handling', () => {
     expect(runtime.contextUsagePercent).toBe(5);
   });
 
+  it('preserves stable runtime details across partial task_runtime_status updates', () => {
+    handleWSMessage({
+      type: 'task_runtime_status',
+      payload: {
+        task_id: 'task-runtime-merge-1',
+        state: 'WAIT_STREAM_END',
+        status_line: 'Working...',
+        daemon: 'daemon-a',
+        pid: 12345,
+        backend: 'codex',
+        session_id: 'session-1',
+        token_usage_percent: 26,
+        context_usage_percent: 5,
+      },
+    });
+
+    handleWSMessage({
+      type: 'task_runtime_status',
+      payload: {
+        task_id: 'task-runtime-merge-1',
+        state: 'WAIT_INPUT',
+        phase: 'message_aggregation',
+        status_done_line: 'Reply complete',
+      },
+    });
+
+    expect(useRuntimeStore.getState().byTask['task-runtime-merge-1']).toMatchObject({
+      taskId: 'task-runtime-merge-1',
+      state: 'WAIT_INPUT',
+      phase: 'message_aggregation',
+      statusLine: undefined,
+      statusDoneLine: 'Reply complete',
+      daemon: 'daemon-a',
+      pid: 12345,
+      backend: 'codex',
+      sessionId: 'session-1',
+      tokenUsagePercent: 26,
+      contextUsagePercent: 5,
+    });
+  });
+
   it('keeps runtime status when assistant message arrives', () => {
     useRuntimeStore.getState().setStatus({
       taskId: 'task-2',
