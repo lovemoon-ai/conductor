@@ -14,6 +14,13 @@ const __dirname = path.dirname(__filename);
 const FIXTURE_EXTERNAL_PROVIDER = path.resolve(__dirname, "..", "fixtures", "fake-external-provider.js");
 const INVALID_EXTERNAL_PROVIDER = path.resolve(__dirname, "..", "fixtures", "invalid-external-provider.js");
 const CONFLICTING_EXTERNAL_PROVIDER = path.resolve(__dirname, "..", "fixtures", "conflicting-external-provider.js");
+const tempPaths = [];
+
+function makeTempDir(prefix = "ai-sdk-test-") {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  tempPaths.push(dir);
+  return dir;
+}
 
 function withExternalProvider(providerPath, fn) {
   const previousValue = process.env.AISDK_PROVIDER_PATH;
@@ -39,6 +46,9 @@ afterEach(() => {
   delete process.env.AISDK_PROVIDER_PATH;
   delete process.env.CONDUCTOR_AI_SDK_DISABLE_WORKER;
   resetExternalProviderRegistryForTests();
+  while (tempPaths.length > 0) {
+    fs.rmSync(tempPaths.pop(), { recursive: true, force: true });
+  }
 });
 
 describe("ai-sdk client boundary", () => {
@@ -176,6 +186,122 @@ describe("ai-sdk client boundary", () => {
 
       await session.close();
     });
+  });
+
+  it("loads external providers from config file AISDK_PROVIDER_PATH lists", async () => {
+    const tempDir = makeTempDir("ai-sdk-config-provider-");
+    const providerPath = path.join(tempDir, "yaml-list-provider.js");
+    const configFile = path.join(tempDir, "config.yaml");
+    const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+
+    try {
+      process.env.AISDK_PROVIDER_PATH = FIXTURE_EXTERNAL_PROVIDER;
+      fs.writeFileSync(
+        providerPath,
+        [
+          "class YamlListExternalSession {",
+          "  constructor(backend, options = {}) {",
+          "    this.backend = backend;",
+          "    this.options = options;",
+          "  }",
+          "  getSnapshot() {",
+          "    return {",
+          "      backend: this.backend,",
+          '      provider: "yaml-list-external-provider",',
+          "      sessionId: this.options.resumeSessionId || undefined,",
+          "      useSessionFileReplyStream: true,",
+          "    };",
+          "  }",
+          "  async ensureSessionInfo() {",
+          "    return { backend: this.backend, sessionId: this.options.resumeSessionId || 'yaml-list-session-1' };",
+          "  }",
+          "  async getSessionUsageSummary() {",
+          "    return {",
+          "      sessionId: this.options.resumeSessionId || 'yaml-list-session-1',",
+          "      sessionFilePath: undefined,",
+          "      usage: null,",
+          "      rateLimits: null,",
+          "      manualResume: {",
+          "        ready: true,",
+          "        command: `yaml-list --resume ${this.options.resumeSessionId || 'yaml-list-session-1'}`,",
+          "      },",
+          "    };",
+          "  }",
+          "  setSessionMessageHandler() {}",
+          "  setWorkingStatusHandler() {}",
+          "  setSessionReplyTarget() {}",
+          "  async runTurn(promptText) {",
+          "    return {",
+          "      text: `yaml-list:${promptText}`,",
+          "      usage: null,",
+          "      items: [],",
+          "      events: [],",
+          "      provider: this.backend,",
+          "      metadata: {",
+          '        source: "yaml-list-external-provider",',
+          "        sessionId: this.options.resumeSessionId || 'yaml-list-session-1',",
+          "      },",
+          "    };",
+          "  }",
+          "  async close() {}",
+          "}",
+          "export const providers = [",
+          "  {",
+          '    backend: "yaml-list-external",',
+          '    aliases: ["yaml-list-alias"],',
+          '    variant: "yaml-list-external-provider",',
+          "    async createSession(backend, options) {",
+          "      return new YamlListExternalSession(backend, options);",
+          "    },",
+          "  },",
+          "];",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      fs.writeFileSync(
+        configFile,
+        [
+          "envs:",
+          "  AISDK_PROVIDER_PATH:",
+          `    - ${JSON.stringify(providerPath)}`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const primary = createAiSession("test-external", {
+        cwd: process.cwd(),
+        configFile,
+        resumeSessionId: "ext-yaml-1",
+        logger: { log: () => {} },
+      });
+      await primary.readyPromise;
+      assert.equal(primary.getSnapshot().provider, "fake-external-provider");
+
+      const secondary = createAiSession("yaml-list-alias", {
+        cwd: process.cwd(),
+        configFile,
+        resumeSessionId: "yaml-list-2",
+        logger: { log: () => {} },
+      });
+      await secondary.readyPromise;
+      assert.equal(secondary.getSnapshot().backend, "yaml-list-external");
+      assert.equal(secondary.getSnapshot().provider, "yaml-list-external-provider");
+
+      const result = await secondary.runTurn("hello");
+      assert.equal(result.text, "yaml-list:hello");
+
+      await primary.close();
+      await secondary.close();
+    } finally {
+      if (previousProviderPath === undefined) {
+        delete process.env.AISDK_PROVIDER_PATH;
+      } else {
+        process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      resetExternalProviderRegistryForTests();
+    }
   });
 
   it("keeps a stable session object when worker mode is disabled", async () => {

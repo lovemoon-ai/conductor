@@ -354,6 +354,35 @@ export function ensureNodePtySpawnHelperExecutable(deps = {}) {
   return { helperPath, updated: true };
 }
 
+export function isSafeTaskWorktreeRoot(projectWorkspacePath, worktreeRoot) {
+  const normalizedWorkspacePath =
+    typeof projectWorkspacePath === "string" ? projectWorkspacePath.trim() : "";
+  const normalizedWorktreeRoot =
+    typeof worktreeRoot === "string" ? worktreeRoot.trim() : "";
+  if (!normalizedWorkspacePath || !normalizedWorktreeRoot) {
+    return false;
+  }
+
+  const resolvedWorkspacePath = path.resolve(normalizedWorkspacePath);
+  const resolvedWorktreeRoot = path.resolve(normalizedWorktreeRoot);
+  if (resolvedWorkspacePath === resolvedWorktreeRoot) {
+    return false;
+  }
+
+  const expectedParent = path.resolve(resolvedWorkspacePath, ".conductor", "worktrees");
+  const relativeToExpectedParent = path.relative(expectedParent, resolvedWorktreeRoot);
+  if (
+    !relativeToExpectedParent ||
+    relativeToExpectedParent === "." ||
+    relativeToExpectedParent.startsWith("..") ||
+    path.isAbsolute(relativeToExpectedParent)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 function normalizeOptionalString(value) {
   if (typeof value !== "string") {
     return null;
@@ -3021,6 +3050,19 @@ export function startDaemon(config = {}, deps = {}) {
       worktreeConfig.projectWorkspacePath,
       worktreeConfig.worktreeId,
     );
+    if (!isSafeTaskWorktreeRoot(worktreeConfig.projectWorkspacePath, worktreeRoot)) {
+      await reportTaskWorktreeCleanupResult({
+        requestId,
+        taskId,
+        worktreeBranch: worktreeConfig.worktreeBranch,
+        removedPath: worktreeRoot,
+        cleaned: false,
+        error: `Refusing to remove unsafe worktree path: ${worktreeRoot}`,
+      }).catch((error) => {
+        logError(`Failed to report task_worktree_cleanup_result for ${taskId}: ${error?.message || error}`);
+      });
+      return;
+    }
     const worktreeCwd = resolveTaskWorktreeCwd(worktreeRoot, worktreeConfig.projectRelativePath);
     const statusCwd = existsSyncFn(worktreeCwd) ? worktreeCwd : worktreeRoot;
 

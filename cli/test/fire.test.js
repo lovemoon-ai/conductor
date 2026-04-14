@@ -317,15 +317,82 @@ describe("conductor-fire backends", () => {
     }
   });
 
-  it("hides raw external backends that are shadowed by configured aliases", async () => {
+  it("merges process env provider paths with config-file AISDK_PROVIDER_PATH lists", async () => {
     const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-provider-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    const providerPath = path.join(tempDir, "yaml-list-provider.js");
     process.env.AISDK_PROVIDER_PATH = FIXTURE_EXTERNAL_PROVIDER;
     resetRuntimeBackendCacheForTests();
     try {
+      fs.writeFileSync(
+        providerPath,
+        [
+          "export const providers = [",
+          "  {",
+          '    backend: "yaml-list-external",',
+          '    variant: "yaml-list-external-provider",',
+          "    async createSession() {",
+          "      return {};",
+          "    },",
+          "  },",
+          "];",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      fs.writeFileSync(
+        configPath,
+        [
+          "envs:",
+          "  AISDK_PROVIDER_PATH:",
+          `    - ${JSON.stringify(providerPath)}`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const allowCliList = await filterRuntimeSupportedAllowCliList(
+        {
+          "test-external": "test-external --profile fast",
+          "yaml-list-external": "yaml-list-cli",
+        },
+        { configFilePath: configPath },
+      );
+      const advertisedBackends = await listAdvertisedBackends(allowCliList, { configFilePath: configPath });
+
+      assert.deepEqual(allowCliList, {
+        "test-external": "test-external --profile fast",
+        "yaml-list-external": "yaml-list-cli",
+      });
+      assert.deepEqual(advertisedBackends.supportedBackends, ["test-external", "yaml-list-external"]);
+      assert.deepEqual(advertisedBackends.runtimeBackendMap, {
+        "test-external": "test-external",
+        "yaml-list-external": "yaml-list-external",
+      });
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      if (previousProviderPath === undefined) {
+        delete process.env.AISDK_PROVIDER_PATH;
+      } else {
+        process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      resetRuntimeBackendCacheForTests();
+    }
+  });
+
+  it("hides raw external backends that are shadowed by configured aliases", async () => {
+    const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-provider-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    process.env.AISDK_PROVIDER_PATH = FIXTURE_EXTERNAL_PROVIDER;
+    resetRuntimeBackendCacheForTests();
+    try {
+      fs.writeFileSync(configPath, "envs: {}\n", "utf8");
       const allowCliList = await filterRuntimeSupportedAllowCliList({
         "my-external": "test-external --profile fast",
-      });
-      const advertisedBackends = await listAdvertisedBackends(allowCliList);
+      }, { configFilePath: configPath });
+      const advertisedBackends = await listAdvertisedBackends(allowCliList, { configFilePath: configPath });
 
       assert.deepEqual(advertisedBackends.supportedBackends, ["my-external"]);
       assert.deepEqual(advertisedBackends.externalBackends, []);
@@ -333,6 +400,7 @@ describe("conductor-fire backends", () => {
         "my-external": "test-external",
       });
     } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
       if (previousProviderPath === undefined) {
         delete process.env.AISDK_PROVIDER_PATH;
       } else {

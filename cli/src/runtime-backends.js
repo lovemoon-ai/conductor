@@ -17,16 +17,29 @@ const LEGACY_RUNTIME_BACKEND_ALIASES = new Set([
 const externalRuntimeCatalogPromises = new Map();
 let externalRuntimeImportNonce = 0;
 
-function normalizeProviderPathEnv(value) {
-  return String(value || "").trim();
+function appendProviderModulePaths(parts, value) {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      appendProviderModulePaths(parts, entry);
+    }
+    return;
+  }
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return;
+  }
+  for (const item of raw.split(process.platform === "win32" ? ";" : ":")) {
+    const normalized = item.trim();
+    if (normalized) {
+      parts.push(normalized);
+    }
+  }
 }
 
 function listProviderModulePaths(providerPathEnv) {
-  const raw = normalizeProviderPathEnv(providerPathEnv);
-  if (!raw) {
-    return [];
-  }
-  return [...new Set(raw.split(process.platform === "win32" ? ";" : ":").map((item) => item.trim()).filter(Boolean))];
+  const parts = [];
+  appendProviderModulePaths(parts, providerPathEnv);
+  return [...new Set(parts)];
 }
 
 function normalizeRuntimeBackendName(backend) {
@@ -221,18 +234,17 @@ function readConfigEnvValue(configFilePath, key) {
     if (!parsed || typeof parsed !== "object") {
       return "";
     }
-    const value = parsed?.envs?.[key];
-    return typeof value === "string" ? value.trim() : "";
+    return parsed?.envs?.[key];
   } catch {
-    return "";
+    return undefined;
   }
 }
 
-function resolveProviderPathEnv(options = {}) {
-  return (
-    normalizeProviderPathEnv(process.env.AISDK_PROVIDER_PATH) ||
-    normalizeProviderPathEnv(readConfigEnvValue(options.configFilePath, "AISDK_PROVIDER_PATH"))
-  );
+function resolveProviderModulePaths(options = {}) {
+  return [
+    ...listProviderModulePaths(process.env.AISDK_PROVIDER_PATH),
+    ...listProviderModulePaths(readConfigEnvValue(options.configFilePath, "AISDK_PROVIDER_PATH")),
+  ].filter((value, index, array) => array.indexOf(value) === index);
 }
 
 function createEmptyExternalCatalog() {
@@ -342,15 +354,16 @@ async function loadExternalRuntimeCatalog(providerPathEnv) {
 }
 
 async function getExternalRuntimeCatalog(options = {}) {
-  const providerPathEnv = resolveProviderPathEnv(options);
-  if (!externalRuntimeCatalogPromises.has(providerPathEnv)) {
-    const loadPromise = loadExternalRuntimeCatalog(providerPathEnv).catch((error) => {
-      externalRuntimeCatalogPromises.delete(providerPathEnv);
+  const modulePaths = resolveProviderModulePaths(options);
+  const cacheKey = modulePaths.join("\0");
+  if (!externalRuntimeCatalogPromises.has(cacheKey)) {
+    const loadPromise = loadExternalRuntimeCatalog(modulePaths).catch((error) => {
+      externalRuntimeCatalogPromises.delete(cacheKey);
       throw error;
     });
-    externalRuntimeCatalogPromises.set(providerPathEnv, loadPromise);
+    externalRuntimeCatalogPromises.set(cacheKey, loadPromise);
   }
-  return externalRuntimeCatalogPromises.get(providerPathEnv);
+  return externalRuntimeCatalogPromises.get(cacheKey);
 }
 
 export async function normalizeRuntimeBackendAlias(backend, options = {}) {
