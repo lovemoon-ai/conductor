@@ -738,6 +738,30 @@ export function startDaemon(config = {}, deps = {}) {
     return resolvedPath;
   }
 
+  const PROJECT_SETTINGS_TEMPLATE = [
+    "worktree:",
+    "  sync_branch: false",
+    "  symlink: []",
+    "  # Example: symlink paths from the parent workspace into each worktree",
+    "  # symlink:",
+    "  #   - node_modules",
+    "  #   - .env",
+    "",
+  ].join("\n");
+
+  function ensureProjectSettingsTemplate(projectWorkspacePath) {
+    const settingsPath = path.join(projectWorkspacePath, ".conductor", "settings.yaml");
+    if (existsSyncFn(settingsPath)) {
+      return;
+    }
+    try {
+      mkdirSyncFn(path.join(projectWorkspacePath, ".conductor"), { recursive: true });
+      writeFileSyncFn(settingsPath, PROJECT_SETTINGS_TEMPLATE, "utf8");
+    } catch (_error) {
+      // best-effort; do not block project validation if template creation fails
+    }
+  }
+
   function readProjectWorktreeSettings(projectWorkspacePath) {
     const settingsCandidates = [
       path.join(projectWorkspacePath, ".conductor", "settings.yaml"),
@@ -759,6 +783,7 @@ export function startDaemon(config = {}, deps = {}) {
             : {};
         return {
           symlinkPaths: normalizeConfiguredPathList(worktreeSettings.symlink, projectWorkspacePath),
+          syncBranch: worktreeSettings.sync_branch === true || worktreeSettings.syncBranch === true,
           settingsPath,
         };
       } catch (error) {
@@ -768,6 +793,7 @@ export function startDaemon(config = {}, deps = {}) {
 
     return {
       symlinkPaths: [],
+      syncBranch: false,
       settingsPath: null,
     };
   }
@@ -811,9 +837,10 @@ export function startDaemon(config = {}, deps = {}) {
 
   async function runSpawnProcess(command, args, options = {}) {
     let child;
+    const { timeoutMs, ...spawnOptions } = options || {};
     try {
       child = spawnFn(command, args, {
-        ...options,
+        ...spawnOptions,
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
@@ -824,12 +851,17 @@ export function startDaemon(config = {}, deps = {}) {
       let stdout = "";
       let stderr = "";
       let settled = false;
+      let timeoutHandle = null;
 
       const finishResolve = () => {
         if (settled) {
           return;
         }
         settled = true;
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
         resolve({ stdout, stderr });
       };
 
@@ -838,8 +870,25 @@ export function startDaemon(config = {}, deps = {}) {
           return;
         }
         settled = true;
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
         reject(error instanceof Error ? error : new Error(String(error)));
       };
+
+      if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        timeoutHandle = setTimeout(() => {
+          try {
+            if (child && typeof child.kill === "function") {
+              child.kill("SIGTERM");
+            }
+          } catch {
+            // ignore process kill failures; the timeout error is the useful signal
+          }
+          finishReject(new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
 
       if (child.stdout && typeof child.stdout.on === "function") {
         child.stdout.on("data", (chunk) => {
@@ -888,6 +937,48 @@ export function startDaemon(config = {}, deps = {}) {
     const finalCwd = resolveTaskWorktreeCwd(worktreeRoot, worktreeConfig.projectRelativePath);
     const gitMarkerPath = path.join(worktreeRoot, ".git");
     if (!existsSyncFn(gitMarkerPath)) {
+      const { syncBranch } = readProjectWorktreeSettings(worktreeConfig.projectWorkspacePath);
+      if (syncBranch) {
+        try {
+          const { stdout: remoteStdout } = await runSpawnProcess(
+            "git",
+            ["-C", worktreeConfig.projectRepoRoot, "remote"],
+            { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
+          );
+          const hasRemote = remoteStdout.trim().length > 0;
+          if (hasRemote) {
+            await runSpawnProcess(
+              "git",
+              ["-C", worktreeConfig.projectRepoRoot, "fetch"],
+              { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
+            );
+            const { stdout: branchStdout } = await runSpawnProcess(
+              "git",
+              ["-C", worktreeConfig.projectRepoRoot, "rev-parse", "--abbrev-ref", "HEAD"],
+              { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
+            );
+            const currentBranch = branchStdout.trim();
+            if (currentBranch && currentBranch !== "HEAD") {
+              const { stdout: trackingStdout } = await runSpawnProcess(
+                "git",
+                ["-C", worktreeConfig.projectRepoRoot, "rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`],
+                { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
+              ).catch(() => ({ stdout: "" }));
+              const upstream = trackingStdout.trim();
+              if (upstream) {
+                await runSpawnProcess(
+                  "git",
+                  ["-C", worktreeConfig.projectRepoRoot, "merge", "--ff-only", upstream],
+                  { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
+                ).catch(() => {});
+              }
+            }
+          }
+        } catch (_syncError) {
+          // sync_branch is best-effort; proceed with worktree creation even if sync fails
+        }
+      }
+
       mkdirSyncFn(path.dirname(worktreeRoot), { recursive: true });
       try {
         await runSpawnProcess(
@@ -961,6 +1052,10 @@ export function startDaemon(config = {}, deps = {}) {
   const DAEMON_FORCE_KILL_WAIT_MS = parsePositiveInt(
     process.env.CONDUCTOR_DAEMON_FORCE_KILL_WAIT_MS,
     2_000,
+  );
+  const WORKTREE_SYNC_TIMEOUT_MS = parsePositiveInt(
+    process.env.CONDUCTOR_WORKTREE_SYNC_TIMEOUT_MS,
+    5_000,
   );
   const SHUTDOWN_STATUS_REPORT_TIMEOUT_MS = parsePositiveInt(
     process.env.CONDUCTOR_SHUTDOWN_STATUS_REPORT_TIMEOUT_MS,
@@ -3367,12 +3462,14 @@ export function startDaemon(config = {}, deps = {}) {
         };
       } else {
         const snapshot = await Promise.resolve(resolveProjectSnapshotFn(resolvedPath));
+        const effectiveWorkspace =
+          typeof snapshot?.projectRoot === "string" && snapshot.projectRoot.trim()
+            ? snapshot.projectRoot.trim()
+            : resolvedPath;
+        ensureProjectSettingsTemplate(effectiveWorkspace);
         result = {
           ...result,
-          workspacePath:
-            typeof snapshot?.projectRoot === "string" && snapshot.projectRoot.trim()
-              ? snapshot.projectRoot.trim()
-              : resolvedPath,
+          workspacePath: effectiveWorkspace,
           repoRoot:
             typeof snapshot?.repoRoot === "string" && snapshot.repoRoot.trim()
               ? snapshot.repoRoot.trim()

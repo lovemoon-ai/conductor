@@ -4,13 +4,8 @@ import { Suspense, useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Header } from '@/components/layout/Header';
 import {
-  GridIcon,
-  ListIcon,
   RefreshIcon,
-  readStoredTaskListViewMode,
   TaskList,
-  TASK_LIST_VIEW_STORAGE_KEY,
-  type TaskListViewMode,
 } from '@/features/tasks';
 import { CreateTaskDialog } from '@/features/tasks';
 import { TaskDetailPane } from '@/features/tasks';
@@ -24,7 +19,7 @@ function TasksPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
-  const [viewMode, setViewMode] = useState<TaskListViewMode>(() => readStoredTaskListViewMode());
+  const viewMode = 'list' as const;
   const [isDesktop, setIsDesktop] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const previousRequestedTaskIdRef = useRef<string | null>(null);
@@ -43,7 +38,7 @@ function TasksPageContent() {
     ? projects.find((project) => project.id === projectId)?.name
     : null;
   const projectTaskCountLabel = `${taskCount} ${taskCount === 1 ? 'task' : 'tasks'}`;
-  const desktopListMode = isDesktop && viewMode === 'list';
+  const desktopListMode = isDesktop;
   const inlineDetailEnabled = desktopListMode && taskCount > 0;
   const visibleTaskIds = useMemo(() => new Set(visibleTasks.map((task) => task.id)), [visibleTasks]);
 
@@ -67,13 +62,6 @@ function TasksPageContent() {
     mediaQuery.addListener(updateViewport);
     return () => mediaQuery.removeListener(updateViewport);
   }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    window.localStorage.setItem(TASK_LIST_VIEW_STORAGE_KEY, viewMode);
-  }, [viewMode]);
 
   useEffect(() => {
     setProjectFilter(projectId || null);
@@ -162,37 +150,6 @@ function TasksPageContent() {
         connectionTaskId={inlineDetailEnabled ? selectedTaskId : null}
         actions={
           <div className="flex items-center gap-2">
-            <div className="inline-flex rounded-xl bg-paper/80 p-1">
-              <button
-                type="button"
-                onClick={() => setViewMode('list')}
-                aria-label="List view"
-                title="List view"
-                aria-pressed={viewMode === 'list'}
-                className={`inline-flex items-center rounded-lg p-2 text-xs font-medium transition-colors ${
-                  viewMode === 'list'
-                    ? 'bg-panel text-ink shadow-sm'
-                    : 'text-muted hover:text-ink'
-                }`}
-              >
-                <ListIcon />
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode('grid')}
-                aria-label="Grid view"
-                title="Grid view"
-                aria-pressed={viewMode === 'grid'}
-                className={`inline-flex items-center rounded-lg p-2 text-xs font-medium transition-colors ${
-                  viewMode === 'grid'
-                    ? 'bg-panel text-ink shadow-sm'
-                    : 'text-muted hover:text-ink'
-                }`}
-              >
-                <GridIcon />
-              </button>
-            </div>
-
             <button
               onClick={handleRefresh}
               disabled={isLoading}

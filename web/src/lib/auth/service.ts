@@ -18,6 +18,21 @@ const DIGEST = "sha256";
 const DEFAULT_PROJECT_NAME = "Default Project";
 const DEFAULT_PROJECT_METADATA = JSON.stringify({ autoCreated: true, isDefault: true });
 
+const PROJECT_WITHOUT_SORT_ORDER_SELECT = {
+  id: true,
+  userId: true,
+  name: true,
+  daemonHost: true,
+  workspacePath: true,
+  repoRoot: true,
+  worktreeBranch: true,
+  lastCommit: true,
+  fileCount: true,
+  metadata: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.ProjectSelect;
+
 const parseProjectMetadata = (value: string | null): Record<string, unknown> | null => {
   if (!value) {
     return null;
@@ -39,6 +54,31 @@ const isLegacyDefaultProject = (project: { metadata: string | null }): boolean =
 };
 
 type DbClient = Prisma.TransactionClient;
+
+const authErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const isMissingProjectSortOrderColumnError = (error: unknown): boolean =>
+  error instanceof Prisma.PrismaClientKnownRequestError &&
+  error.code === "P2022" &&
+  (authErrorMessage(error).includes("sort_order") || authErrorMessage(error).includes("sortOrder"));
+
+async function findDefaultProjectMapping(prisma: DbClient, userId: string) {
+  try {
+    return await prisma.defaultProject.findUnique({
+      where: { userId },
+      include: { project: true },
+    });
+  } catch (error) {
+    if (!isMissingProjectSortOrderColumnError(error)) {
+      throw error;
+    }
+    return prisma.defaultProject.findUnique({
+      where: { userId },
+      include: { project: { select: PROJECT_WITHOUT_SORT_ORDER_SELECT } },
+    });
+  }
+}
 
 export type AuthUser = { id: string; email: string | null; phone: string | null };
 export type SelfHostBootstrapUserResult = {
@@ -72,12 +112,9 @@ export function normalizeSelfHostBootstrapPhone(rawPhone: string): string {
 
 export async function ensureDefaultProject(userId: string, client?: DbClient): Promise<Project> {
   const prisma = client ?? db;
-  const existingDefault = await prisma.defaultProject.findUnique({
-    where: { userId },
-    include: { project: true },
-  });
+  const existingDefault = await findDefaultProjectMapping(prisma, userId);
   if (existingDefault?.project) {
-    return existingDefault.project;
+    return existingDefault.project as Project;
   }
 
   const legacyCandidates = await prisma.project.findMany({
@@ -86,6 +123,7 @@ export async function ensureDefaultProject(userId: string, client?: DbClient): P
       daemonHost: null,
     },
     orderBy: { createdAt: "asc" },
+    select: PROJECT_WITHOUT_SORT_ORDER_SELECT,
   });
   const legacyDefault = legacyCandidates.find(isLegacyDefaultProject) ?? null;
   if (legacyDefault) {
@@ -94,7 +132,7 @@ export async function ensureDefaultProject(userId: string, client?: DbClient): P
       update: { projectId: legacyDefault.id },
       create: { userId, projectId: legacyDefault.id },
     });
-    return legacyDefault;
+    return legacyDefault as Project;
   }
 
   try {
@@ -104,6 +142,7 @@ export async function ensureDefaultProject(userId: string, client?: DbClient): P
         name: DEFAULT_PROJECT_NAME,
         metadata: DEFAULT_PROJECT_METADATA,
       },
+      select: PROJECT_WITHOUT_SORT_ORDER_SELECT,
     });
     await prisma.defaultProject.create({
       data: {
@@ -111,18 +150,16 @@ export async function ensureDefaultProject(userId: string, client?: DbClient): P
         projectId: project.id,
       },
     });
-    return project;
+    return project as Project;
   } catch {
-    const createdDefault = await prisma.defaultProject.findUnique({
-      where: { userId },
-      include: { project: true },
-    });
+    const createdDefault = await findDefaultProjectMapping(prisma, userId);
     if (createdDefault?.project) {
-      return createdDefault.project;
+      return createdDefault.project as Project;
     }
     const createdCandidates = await prisma.project.findMany({
       where: { userId, daemonHost: null },
       orderBy: { createdAt: "asc" },
+      select: PROJECT_WITHOUT_SORT_ORDER_SELECT,
     });
     const created = createdCandidates.find(isLegacyDefaultProject) ?? null;
     if (!created) {
@@ -133,7 +170,7 @@ export async function ensureDefaultProject(userId: string, client?: DbClient): P
       update: { projectId: created.id },
       create: { userId, projectId: created.id },
     });
-    return created;
+    return created as Project;
   }
 }
 

@@ -33,6 +33,7 @@ export interface Project {
   worktreeBranch?: string | null;
   lastCommit?: string | null;
   fileCount?: number | null;
+  sortOrder?: number | null;
   isDefault?: boolean;
   taskStatusCounts?: Record<string, number>;
   createdAt?: string;

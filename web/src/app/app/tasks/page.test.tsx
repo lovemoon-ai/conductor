@@ -28,18 +28,12 @@ vi.mock('next/navigation', () => ({
   }),
 }));
 
-const readStoredTaskListViewModeMock = vi.fn(() => 'list');
-
 vi.mock('@/features/tasks', async () => {
   const React = await import('react');
   return {
     useTasksStore: (selector: (state: typeof tasksState) => unknown) => selector(tasksState),
     filterTasksByProject: (tasks: Array<{ projectId?: string | null }>, projectId: string | null) =>
       projectId ? tasks.filter((task) => task.projectId === projectId) : tasks,
-    TASK_LIST_VIEW_STORAGE_KEY: 'conductor-task-list-view',
-    readStoredTaskListViewMode: () => readStoredTaskListViewModeMock(),
-    ListIcon: () => <span data-testid="list-icon" />,
-    GridIcon: () => <span data-testid="grid-icon" />,
     RefreshIcon: ({ spinning = false }: { spinning?: boolean }) => <span>{spinning ? 'spinning' : 'refresh'}</span>,
     TaskList: ({
       viewMode,
@@ -122,8 +116,6 @@ describe('TasksPage', () => {
     localStorage.clear();
     searchParamsState = new URLSearchParams();
     isDesktopViewport = false;
-    readStoredTaskListViewModeMock.mockReset();
-    readStoredTaskListViewModeMock.mockReturnValue('list');
     setProjectFilterMock.mockReset();
     setSelectedProjectIdMock.mockReset();
     fetchTasksMock.mockReset();
@@ -156,7 +148,7 @@ describe('TasksPage', () => {
     });
   });
 
-  it('renders header controls and updates the controlled task list view', () => {
+  it('renders header controls with list view', () => {
     render(<TasksPage />);
 
     expect(screen.getByText('Task 2')).toBeInTheDocument();
@@ -164,11 +156,6 @@ describe('TasksPage', () => {
     expect(taskList).toBeInTheDocument();
     expect(taskList.parentElement?.parentElement).toHaveClass('px-4', 'pb-4', 'pt-4');
     expect(screen.queryByText('task-detail:task-1')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Grid view' }));
-
-    expect(screen.getByText('task-list:grid:none:route')).toBeInTheDocument();
-    expect(localStorage.getItem('conductor-task-list-view')).toBe('grid');
   });
 
   it('refreshes tasks from the title bar controls', () => {
@@ -180,14 +167,6 @@ describe('TasksPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Refresh tasks' }));
 
     expect(fetchTasksMock).toHaveBeenCalledWith('project-1', { recoverStale: true });
-  });
-
-  it('hydrates the initial view mode from persisted storage before interaction', () => {
-    readStoredTaskListViewModeMock.mockReturnValue('grid');
-
-    render(<TasksPage />);
-
-    expect(screen.getByText('task-list:grid:none:route')).toBeInTheDocument();
   });
 
   it('shows split view on desktop list mode and switches the selected task inline', () => {
@@ -285,21 +264,4 @@ describe('TasksPage', () => {
     expect(screen.getByText('create-dialog:project-1')).toBeInTheDocument();
   });
 
-  it('disables the desktop detail pane when switching from list to grid', () => {
-    isDesktopViewport = true;
-
-    render(<TasksPage />);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Grid view' }));
-
-    expect(screen.getByText('task-list:grid:none:route')).toBeInTheDocument();
-    expect(screen.queryByText('task-detail:task-1:no-header')).not.toBeInTheDocument();
-    expect(headerMock).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        title: 'Task 2',
-        showConnectionStatus: false,
-        connectionTaskId: null,
-      }),
-    );
-  });
 });

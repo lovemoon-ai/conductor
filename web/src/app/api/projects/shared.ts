@@ -1,3 +1,5 @@
+import { Prisma } from "@prisma/client";
+
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
 
@@ -218,9 +220,60 @@ type SerializableProject = {
   worktreeBranch: string | null;
   lastCommit: string | null;
   fileCount: number | null;
+  sortOrder?: number | null;
   metadata: string | null;
   createdAt: Date;
   updatedAt: Date;
+};
+
+const PROJECT_SERIALIZATION_SELECT = {
+  id: true,
+  name: true,
+  daemonHost: true,
+  workspacePath: true,
+  repoRoot: true,
+  worktreeBranch: true,
+  lastCommit: true,
+  fileCount: true,
+  metadata: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.ProjectSelect;
+
+const PROJECT_SERIALIZATION_WITH_SORT_SELECT = {
+  ...PROJECT_SERIALIZATION_SELECT,
+  sortOrder: true,
+} satisfies Prisma.ProjectSelect;
+
+type SortableProject = {
+  id: string;
+  sortOrder?: number | null;
+  createdAt: Date;
+};
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const isMissingProjectSortOrderColumnError = (error: unknown): boolean =>
+  error instanceof Prisma.PrismaClientKnownRequestError &&
+  error.code === "P2022" &&
+  (errorMessage(error).includes("sort_order") || errorMessage(error).includes("sortOrder"));
+
+const getComparableSortOrder = (project: SortableProject): number =>
+  typeof project.sortOrder === "number" && Number.isInteger(project.sortOrder)
+    ? project.sortOrder
+    : Number.MAX_SAFE_INTEGER;
+
+const compareProjectsForDisplay = <T extends SortableProject>(a: T, b: T): number => {
+  const sortOrderDelta = getComparableSortOrder(a) - getComparableSortOrder(b);
+  if (sortOrderDelta !== 0) {
+    return sortOrderDelta;
+  }
+  const createdAtDelta = b.createdAt.getTime() - a.createdAt.getTime();
+  if (createdAtDelta !== 0) {
+    return createdAtDelta;
+  }
+  return a.id.localeCompare(b.id);
 };
 
 const serializeProject = (
@@ -239,6 +292,7 @@ const serializeProject = (
     worktreeBranch: project.worktreeBranch,
     lastCommit: project.lastCommit,
     fileCount: project.fileCount,
+    sortOrder: project.sortOrder,
     isDefault: isDefault,
     createdAt,
     updatedAt,
@@ -249,6 +303,7 @@ const serializeProject = (
     worktree_branch: project.worktreeBranch,
     last_commit: project.lastCommit,
     file_count: project.fileCount,
+    sort_order: project.sortOrder,
     is_default: isDefault,
     created_at: createdAt,
     updated_at: updatedAt,
@@ -271,5 +326,9 @@ export {
   readProjectBindingInput,
   readProjectBindingPath,
   readProjectMetadataInput,
+  isMissingProjectSortOrderColumnError,
+  PROJECT_SERIALIZATION_SELECT,
+  PROJECT_SERIALIZATION_WITH_SORT_SELECT,
+  compareProjectsForDisplay,
   serializeProject,
 };

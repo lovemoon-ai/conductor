@@ -21,6 +21,7 @@ import {
   normalizeOptionalWorkspacePath,
   normalizeWorkspacePath,
   parseProjectMetadata,
+  PROJECT_SERIALIZATION_SELECT,
   readField,
   readProjectBindingCandidateInput,
   readProjectBindingInput,
@@ -107,6 +108,7 @@ export async function GET(
   const { projectId } = await params;
   const project = await db.project.findFirst({
     where: { id: projectId, userId: user.id },
+    select: PROJECT_SERIALIZATION_SELECT,
   });
 
   if (!project) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -263,7 +265,10 @@ export async function PATCH(
 
   if (updatedCount === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const updated = await db.project.findUnique({ where: { id: projectId } });
+  const updated = await db.project.findUnique({
+    where: { id: projectId },
+    select: PROJECT_SERIALIZATION_SELECT,
+  });
   if (!updated) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   return NextResponse.json(serializeProject(updated, defaultProject?.projectId === projectId));

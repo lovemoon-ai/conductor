@@ -81,6 +81,7 @@ export const normalizeProject = (raw: unknown): Project | null => {
     worktreeBranch: pickString(record.worktreeBranch) ?? pickString(record.worktree_branch),
     lastCommit: pickString(record.lastCommit) ?? pickString(record.last_commit),
     fileCount: pickInt(record.fileCount) ?? pickInt(record.file_count),
+    sortOrder: pickInt(record.sortOrder) ?? pickInt(record.sort_order) ?? null,
     isDefault:
       typeof record.isDefault === 'boolean'
         ? record.isDefault
@@ -114,6 +115,7 @@ interface ProjectsState {
   createProject: (input: CreateProjectInput) => Promise<Project>;
   updateProject: (projectId: string, input: UpdateProjectInput) => Promise<Project>;
   deleteProject: (projectId: string) => Promise<void>;
+  reorderProjects: (projectIds: string[]) => Promise<void>;
   setSelectedProjectId: (projectId: string | null) => void;
   clearError: () => void;
 }
@@ -209,6 +211,27 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
         error: error instanceof Error ? error.message : 'Failed to delete project',
       });
       throw error;
+    }
+  },
+
+  reorderProjects: async (projectIds) => {
+    const previousProjects = get().projects;
+    const projectMap = new Map(previousProjects.map((p) => [p.id, p]));
+    const reordered = projectIds
+      .map((id) => projectMap.get(id))
+      .filter((p): p is Project => p !== undefined);
+    const reorderedIds = new Set(projectIds);
+    const remaining = previousProjects.filter((p) => !reorderedIds.has(p.id));
+    set({ projects: [...reordered, ...remaining] });
+
+    try {
+      const api = getApiClient();
+      await api.post('/projects/reorder', { projectIds });
+    } catch (error) {
+      set({ projects: previousProjects });
+      set({
+        error: error instanceof Error ? error.message : 'Failed to reorder projects',
+      });
     }
   },
 
