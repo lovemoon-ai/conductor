@@ -167,8 +167,6 @@ export function TaskItem({
   const [editTitle, setEditTitle] = useState(task.title);
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
-  const [hidePreviousAssistantReply, setHidePreviousAssistantReply] = useState(false);
-  const [suppressedAssistantReply, setSuppressedAssistantReply] = useState<string | null>(null);
   const [shareDialog, setShareDialog] = useState<ShareDialogState | null>(null);
 
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -205,7 +203,7 @@ export function TaskItem({
     || (typeof launchConfig?.toolPreset === 'string' ? launchConfig.toolPreset : undefined)
     || runtime?.backend;
   const runtimeText = runtime?.statusLine || runtime?.statusDoneLine || runtime?.replyPreview || runtime?.state || null;
-  const latestInputText = task.lastUserMessage?.trim() || null;
+
   const latestAssistantMessageFromStore = [...taskMessages]
     .reverse()
     .find((message) => message.role !== 'user' && message.content?.trim())
@@ -215,20 +213,17 @@ export function TaskItem({
     || runtime?.statusDoneLine?.trim()
     || runtime?.state?.trim()
     || null;
-  const rawLatestAssistantContent = runtime?.replyPreview?.trim()
+  const latestAssistantContent = runtime?.replyPreview?.trim()
     || latestAssistantMessageFromStore
     || task.lastAssistantMessage?.trim()
     || null;
-  const latestAssistantContent = hidePreviousAssistantReply && rawLatestAssistantContent === suppressedAssistantReply
-    ? null
-    : rawLatestAssistantContent;
   const latestAssistantText = latestAssistantContent || latestAssistantStatusText || 'No AI response yet.';
   const isMessageableTask = taskType !== 'pty_task';
   const isTaskRunning = task.status === 'running';
   const canQuickRestart =
     taskType === 'ai_task' &&
     (task.status === 'completed' || task.status === 'killed' || task.status === 'unknown');
-  const useDesktopListPaneSurface = desktopListPaneMode && viewMode === 'list' && !selectionMode;
+  const useDesktopListPaneSurface = desktopListPaneMode && !selectionMode;
   const isHighlighted = isSelected || (!selectionMode && isActive);
   const highlightedCardClassName = useDesktopListPaneSurface
     ? isActive
@@ -298,21 +293,6 @@ export function TaskItem({
       document.removeEventListener('pointerdown', handlePointerDown, true);
     };
   }, [isKillConfirming, isRestartConfirming]);
-
-  useEffect(() => {
-    setOptimisticLatestInputText(latestInputText);
-  }, [latestInputText]);
-
-  useEffect(() => {
-    if (!hidePreviousAssistantReply) {
-      return;
-    }
-
-    if (rawLatestAssistantContent && rawLatestAssistantContent !== suppressedAssistantReply) {
-      setHidePreviousAssistantReply(false);
-      setSuppressedAssistantReply(null);
-    }
-  }, [hidePreviousAssistantReply, rawLatestAssistantContent, suppressedAssistantReply]);
 
   useEffect(() => (
     () => {
