@@ -299,17 +299,12 @@ export function TaskList({
         </div>
       ) : null}
 
-      <div
-        className={viewMode === 'grid'
-          ? 'grid gap-4 sm:grid-cols-2 xl:grid-cols-3'
-          : 'space-y-3'}
-      >
+      <div className="space-y-3">
         {visibleTasks.map((task) => (
           <div
             key={task.id}
             ref={setItemWrapperRef(task.id)}
             data-task-item-wrapper={task.id}
-            className={viewMode === 'grid' ? 'min-w-0' : undefined}
           >
             <TaskItem
               task={task}
