@@ -904,6 +904,139 @@ describe("Daemon", () => {
     }, 500);
   });
 
+  it("bounds optional sync_branch before preparing an isolated worktree", (t, done) => {
+    const previousTimeout = process.env.CONDUCTOR_WORKTREE_SYNC_TIMEOUT_MS;
+    process.env.CONDUCTOR_WORKTREE_SYNC_TIMEOUT_MS = "5";
+
+    const taskPayload = {
+      task_id: "task-worktree-sync-timeout",
+      project_id: "proj-git",
+      backend_type: "codex",
+      launch_config: {
+        worktree: true,
+        worktreeId: "task-worktree-sync-timeout",
+        worktreeBranch: "conductor/task/task-worktree-sync-timeout",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/tmp/repo",
+        projectWorkspacePath: "/tmp/repo",
+        projectRelativePath: ".",
+      },
+    };
+
+    const gitCalls = [];
+    let fetchKilled = false;
+    let runnerSpawned = false;
+    let daemonInstance = null;
+
+    const closeAndRestore = () => {
+      restoreEnv("CONDUCTOR_WORKTREE_SYNC_TIMEOUT_MS", previousTimeout);
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+        daemonInstance = null;
+      }
+    };
+
+    wss.once("connection", (ws) => {
+      ws.send(
+        JSON.stringify({
+          type: "create_task",
+          payload: taskPayload,
+        }),
+      );
+    });
+
+    daemonInstance = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree-sync-timeout",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree-sync-timeout",
+      },
+      {
+        spawn: (cmd, args, opts) => {
+          if (cmd === "git") {
+            gitCalls.push({ args, opts });
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = (signal) => {
+              if (args.includes("fetch") && signal === "SIGTERM") {
+                fetchKilled = true;
+              }
+            };
+
+            if (args.includes("remote")) {
+              setImmediate(() => {
+                child.stdout.emit("data", "origin\n");
+                child.emit("close", 0);
+              });
+              return child;
+            }
+            if (args.includes("fetch")) {
+              return child;
+            }
+            if (args.includes("worktree")) {
+              setImmediate(() => child.emit("close", 0));
+              return child;
+            }
+            throw new Error(`unexpected git command: ${args.join(" ")}`);
+          }
+
+          assert.strictEqual(cmd, process.execPath);
+          assert.strictEqual(opts.cwd, "/tmp/repo/.conductor/worktrees/task-worktree-sync-timeout");
+          runnerSpawned = true;
+          return {
+            pid: 24686,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) =>
+          filePath === "/tmp/repo/.conductor/settings.yaml"
+            ? true
+            : false,
+        readFileSync: (filePath) => {
+          assert.strictEqual(filePath, "/tmp/repo/.conductor/settings.yaml");
+          return [
+            "worktree:",
+            "  sync_branch: true",
+            "",
+          ].join("\n");
+        },
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+      },
+    );
+
+    setTimeout(() => {
+      try {
+        assert.deepStrictEqual(
+          gitCalls.map((entry) => entry.args.slice(2, 4)),
+          [
+            ["remote"],
+            ["fetch"],
+            ["worktree", "add"],
+          ],
+        );
+        assert.strictEqual(fetchKilled, true);
+        assert.strictEqual(runnerSpawned, true);
+        closeAndRestore();
+        done();
+      } catch (error) {
+        closeAndRestore();
+        done(error);
+      }
+    }, 250);
+  });
+
   it("removes an isolated git worktree when cleanup_task_worktree is requested", async () => {
     let handler;
     const events = [];
@@ -5736,6 +5869,7 @@ describe("Daemon", () => {
   it("validates workspace paths when validate_project_path is received", async () => {
     let handler;
     const events = [];
+    let projectSettingsTemplate = null;
 
     const daemonInstance = startDaemon(
       {
@@ -5752,7 +5886,11 @@ describe("Daemon", () => {
           stderr: { on: () => {} },
         }),
         mkdirSync: () => {},
-        writeFileSync: () => {},
+        writeFileSync: (filePath, contents) => {
+          if (filePath === "/tmp/project-real/.conductor/settings.yaml") {
+            projectSettingsTemplate = contents;
+          }
+        },
         existsSync: (targetPath) => targetPath === "/tmp/project-link",
         statSync: (targetPath) => {
           assert.strictEqual(targetPath, "/tmp/project-link");
@@ -5824,6 +5962,7 @@ describe("Daemon", () => {
       },
     ]);
     assert.ok(typeof events[0]?.payload?.validated_at === "string");
+    assert.ok(projectSettingsTemplate.includes("  sync_branch: false"));
 
     if (daemonInstance && typeof daemonInstance.close === "function") {
       daemonInstance.close();

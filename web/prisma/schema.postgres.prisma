@@ -75,6 +75,7 @@ model Project {
   worktreeBranch String?  @map("worktree_branch")
   lastCommit     String?  @map("last_commit")
   fileCount      Int?     @map("file_count")
+  sortOrder      Int      @default(0) @map("sort_order")
   metadata       String?
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")

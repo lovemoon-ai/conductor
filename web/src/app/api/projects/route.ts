@@ -25,11 +25,15 @@ import {
   normalizeOptionalWorkspacePath,
   normalizeWorkspacePath,
   parseProjectMetadata,
+  PROJECT_SERIALIZATION_SELECT,
+  PROJECT_SERIALIZATION_WITH_SORT_SELECT,
   readField,
   readProjectBindingCandidateInput,
   readProjectBindingInput,
   readProjectBindingPath,
   readProjectMetadataInput,
+  isMissingProjectSortOrderColumnError,
+  compareProjectsForDisplay,
   serializeProject,
 } from "./shared";
 
@@ -154,12 +158,46 @@ const findProjectNameConflict = async (params: {
   });
 };
 
+const listProjectsForDisplay = async (userId: string) => {
+  try {
+    return await db.project.findMany({
+      where: { userId },
+      orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
+      select: PROJECT_SERIALIZATION_WITH_SORT_SELECT,
+    });
+  } catch (error) {
+    if (!isMissingProjectSortOrderColumnError(error)) {
+      throw error;
+    }
+    return db.project.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      select: PROJECT_SERIALIZATION_SELECT,
+    });
+  }
+};
+
+const getNextProjectSortOrder = async (userId: string): Promise<number | null> => {
+  try {
+    const result = await db.project.aggregate({
+      where: { userId },
+      _max: { sortOrder: true },
+    });
+    const maxSortOrder = result._max.sortOrder;
+    return typeof maxSortOrder === "number" && Number.isInteger(maxSortOrder)
+      ? maxSortOrder + 1
+      : 0;
+  } catch (error) {
+    if (isMissingProjectSortOrderColumnError(error)) {
+      return null;
+    }
+    throw error;
+  }
+};
+
 export const GET = requireActiveSubscription(async (_request: NextRequest, user) => {
   const [projects, defaultProjects, taskStatusGroups] = await Promise.all([
-    db.project.findMany({
-      where: { userId: user.id },
-      orderBy: { createdAt: "desc" },
-    }),
+    listProjectsForDisplay(user.id),
     db.defaultProject.findMany({
       where: { userId: user.id },
       select: { projectId: true },
@@ -184,7 +222,7 @@ export const GET = requireActiveSubscription(async (_request: NextRequest, user)
   }
 
   return NextResponse.json(
-    projects.map((p) => ({
+    [...projects].sort(compareProjectsForDisplay).map((p) => ({
       ...serializeProject(p, defaultProjectIds.has(p.id)),
       taskStatusCounts: taskCountsByProject.get(p.id) ?? {},
       task_status_counts: taskCountsByProject.get(p.id) ?? {},
@@ -347,6 +385,7 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
           fileCount: effectiveBinding.fileCount ?? undefined,
           metadata: metadataInput.hasField ? serializedMetadata : promotedMetadata,
         },
+        select: PROJECT_SERIALIZATION_SELECT,
       });
       return NextResponse.json(serializeProject(updated, false));
     }
@@ -380,18 +419,22 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
 
   let project;
   try {
+    const nextSortOrder = await getNextProjectSortOrder(user.id);
+    const projectData = {
+      userId: user.id,
+      name: isDefaultProject ? (hasNameField ? name : "Default Project") : name,
+      daemonHost: effectiveBindingConfirmed ? effectiveBinding.daemonHost : null,
+      workspacePath: effectiveBindingConfirmed ? effectiveBinding.workspacePath : null,
+      repoRoot: effectiveBindingConfirmed ? effectiveBinding.repoRoot : null,
+      worktreeBranch: effectiveBindingConfirmed ? effectiveBinding.worktreeBranch : null,
+      lastCommit: effectiveBindingConfirmed ? effectiveBinding.lastCommit : null,
+      fileCount: effectiveBindingConfirmed ? effectiveBinding.fileCount : null,
+      metadata: serializedMetadata,
+      ...(nextSortOrder === null ? {} : { sortOrder: nextSortOrder }),
+    };
     project = await db.project.create({
-      data: {
-        userId: user.id,
-        name: isDefaultProject ? (hasNameField ? name : "Default Project") : name,
-        daemonHost: effectiveBindingConfirmed ? effectiveBinding.daemonHost : null,
-        workspacePath: effectiveBindingConfirmed ? effectiveBinding.workspacePath : null,
-        repoRoot: effectiveBindingConfirmed ? effectiveBinding.repoRoot : null,
-        worktreeBranch: effectiveBindingConfirmed ? effectiveBinding.worktreeBranch : null,
-        lastCommit: effectiveBindingConfirmed ? effectiveBinding.lastCommit : null,
-        fileCount: effectiveBindingConfirmed ? effectiveBinding.fileCount : null,
-        metadata: serializedMetadata,
-      },
+      data: projectData,
+      select: nextSortOrder === null ? PROJECT_SERIALIZATION_SELECT : PROJECT_SERIALIZATION_WITH_SORT_SELECT,
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
@@ -550,7 +593,10 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const project = await db.project.findUnique({ where: { id: projectId } });
+  const project = await db.project.findUnique({
+    where: { id: projectId },
+    select: PROJECT_SERIALIZATION_SELECT,
+  });
   if (!project) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }

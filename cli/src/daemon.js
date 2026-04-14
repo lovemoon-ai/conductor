@@ -740,7 +740,7 @@ export function startDaemon(config = {}, deps = {}) {
 
   const PROJECT_SETTINGS_TEMPLATE = [
     "worktree:",
-    "  sync_branch: true",
+    "  sync_branch: false",
     "  symlink: []",
     "  # Example: symlink paths from the parent workspace into each worktree",
     "  # symlink:",
@@ -837,9 +837,10 @@ export function startDaemon(config = {}, deps = {}) {
 
   async function runSpawnProcess(command, args, options = {}) {
     let child;
+    const { timeoutMs, ...spawnOptions } = options || {};
     try {
       child = spawnFn(command, args, {
-        ...options,
+        ...spawnOptions,
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
@@ -850,12 +851,17 @@ export function startDaemon(config = {}, deps = {}) {
       let stdout = "";
       let stderr = "";
       let settled = false;
+      let timeoutHandle = null;
 
       const finishResolve = () => {
         if (settled) {
           return;
         }
         settled = true;
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
         resolve({ stdout, stderr });
       };
 
@@ -864,8 +870,25 @@ export function startDaemon(config = {}, deps = {}) {
           return;
         }
         settled = true;
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
         reject(error instanceof Error ? error : new Error(String(error)));
       };
+
+      if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        timeoutHandle = setTimeout(() => {
+          try {
+            if (child && typeof child.kill === "function") {
+              child.kill("SIGTERM");
+            }
+          } catch {
+            // ignore process kill failures; the timeout error is the useful signal
+          }
+          finishReject(new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
 
       if (child.stdout && typeof child.stdout.on === "function") {
         child.stdout.on("data", (chunk) => {
@@ -920,33 +943,33 @@ export function startDaemon(config = {}, deps = {}) {
           const { stdout: remoteStdout } = await runSpawnProcess(
             "git",
             ["-C", worktreeConfig.projectRepoRoot, "remote"],
-            { cwd: worktreeConfig.projectRepoRoot },
+            { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
           );
           const hasRemote = remoteStdout.trim().length > 0;
           if (hasRemote) {
             await runSpawnProcess(
               "git",
               ["-C", worktreeConfig.projectRepoRoot, "fetch"],
-              { cwd: worktreeConfig.projectRepoRoot },
+              { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
             );
             const { stdout: branchStdout } = await runSpawnProcess(
               "git",
               ["-C", worktreeConfig.projectRepoRoot, "rev-parse", "--abbrev-ref", "HEAD"],
-              { cwd: worktreeConfig.projectRepoRoot },
+              { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
             );
             const currentBranch = branchStdout.trim();
             if (currentBranch && currentBranch !== "HEAD") {
               const { stdout: trackingStdout } = await runSpawnProcess(
                 "git",
                 ["-C", worktreeConfig.projectRepoRoot, "rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`],
-                { cwd: worktreeConfig.projectRepoRoot },
+                { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
               ).catch(() => ({ stdout: "" }));
               const upstream = trackingStdout.trim();
               if (upstream) {
                 await runSpawnProcess(
                   "git",
                   ["-C", worktreeConfig.projectRepoRoot, "merge", "--ff-only", upstream],
-                  { cwd: worktreeConfig.projectRepoRoot },
+                  { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
                 ).catch(() => {});
               }
             }
@@ -1029,6 +1052,10 @@ export function startDaemon(config = {}, deps = {}) {
   const DAEMON_FORCE_KILL_WAIT_MS = parsePositiveInt(
     process.env.CONDUCTOR_DAEMON_FORCE_KILL_WAIT_MS,
     2_000,
+  );
+  const WORKTREE_SYNC_TIMEOUT_MS = parsePositiveInt(
+    process.env.CONDUCTOR_WORKTREE_SYNC_TIMEOUT_MS,
+    5_000,
   );
   const SHUTDOWN_STATUS_REPORT_TIMEOUT_MS = parsePositiveInt(
     process.env.CONDUCTOR_SHUTDOWN_STATUS_REPORT_TIMEOUT_MS,

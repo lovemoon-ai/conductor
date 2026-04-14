@@ -1,9 +1,12 @@
 'use client';
 
+import { useCallback, useRef, useState } from 'react';
+import type { DragEvent } from 'react';
 import type { Project } from '@/shared/types';
 import { useAgentsStore } from '@/features/agents';
 import { useProjectsStore } from '../store';
 import { ProjectItem } from './ProjectItem';
+import { DragHandle } from './DragHandle';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 
 const getProjectDaemonHost = (project: Project): string | null => {
@@ -14,7 +17,7 @@ const getProjectDaemonHost = (project: Project): string | null => {
 };
 
 export function ProjectList() {
-  const { projects, isLoading, selectedProjectId, setSelectedProjectId } = useProjectsStore();
+  const { projects, isLoading, selectedProjectId, setSelectedProjectId, reorderProjects } = useProjectsStore();
   const agents = useAgentsStore((state) => state.agents);
   const onlineDaemonHosts = new Set(
     agents
@@ -25,6 +28,70 @@ export function ProjectList() {
     const daemonHost = getProjectDaemonHost(project);
     return !daemonHost || onlineDaemonHosts.has(daemonHost);
   });
+
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const dragSourceIdRef = useRef<string | null>(null);
+  const dragCounterRef = useRef(0);
+
+  const handleDragStart = useCallback((e: DragEvent<HTMLDivElement>, projectId: string) => {
+    dragSourceIdRef.current = projectId;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', projectId);
+  }, []);
+
+  const handleDragEnter = useCallback((index: number) => {
+    dragCounterRef.current += 1;
+    setDragOverIndex(index);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setDragOverIndex(null);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: DragEvent<HTMLDivElement>, targetIndex: number) => {
+      e.preventDefault();
+      const sourceId = e.dataTransfer.getData('text/plain') || dragSourceIdRef.current;
+      setDragOverIndex(null);
+      dragCounterRef.current = 0;
+      dragSourceIdRef.current = null;
+
+      if (!sourceId) return;
+
+      const visibleIds = visibleProjects.map((p) => p.id);
+      const fromIndex = visibleIds.indexOf(sourceId);
+      if (fromIndex === -1 || fromIndex === targetIndex) return;
+
+      visibleIds.splice(fromIndex, 1);
+      const adjustedTargetIndex = fromIndex < targetIndex ? targetIndex - 1 : targetIndex;
+      visibleIds.splice(adjustedTargetIndex, 0, sourceId);
+
+      const visibleIdSet = new Set(visibleProjects.map((p) => p.id));
+      const reorderedVisibleIds = [...visibleIds];
+      const ids = projects.map((project) =>
+        visibleIdSet.has(project.id)
+          ? reorderedVisibleIds.shift()!
+          : project.id,
+      );
+      void reorderProjects(ids);
+    },
+    [projects, visibleProjects, reorderProjects],
+  );
+
+  const handleDragEnd = useCallback(() => {
+    setDragOverIndex(null);
+    dragCounterRef.current = 0;
+    dragSourceIdRef.current = null;
+  }, []);
 
   if (isLoading && projects.length === 0) {
     return (
@@ -53,14 +120,39 @@ export function ProjectList() {
 
   return (
     <div className="space-y-3">
-      {visibleProjects.map((project) => (
-        <ProjectItem
+      {visibleProjects.map((project, index) => (
+        <div
           key={project.id}
-          project={project}
-          isSelected={selectedProjectId === project.id}
-          onSelect={setSelectedProjectId}
-        />
+          onDragOver={handleDragOver}
+          onDragEnter={() => handleDragEnter(index)}
+          onDragLeave={handleDragLeave}
+          onDrop={(e) => handleDrop(e, index)}
+          onDragEnd={handleDragEnd}
+        >
+          {dragOverIndex === index && dragSourceIdRef.current !== project.id ? (
+            <div className="h-0.5 rounded-full bg-[var(--accent)] -mt-1.5 mb-1.5" />
+          ) : null}
+          <ProjectItem
+            project={project}
+            isSelected={selectedProjectId === project.id}
+            onSelect={setSelectedProjectId}
+            dragHandle={<DragHandle projectId={project.id} onDragStart={handleDragStart} />}
+          />
+        </div>
       ))}
+      <div
+        className="h-3"
+        onDragOver={handleDragOver}
+        onDragEnter={() => handleDragEnter(visibleProjects.length)}
+        onDragLeave={handleDragLeave}
+        onDrop={(e) => handleDrop(e, visibleProjects.length)}
+        onDragEnd={handleDragEnd}
+        data-testid="project-list-end-dropzone"
+      >
+        {dragOverIndex === visibleProjects.length ? (
+          <div className="h-0.5 rounded-full bg-[var(--accent)]" />
+        ) : null}
+      </div>
     </div>
   );
 }

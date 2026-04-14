@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { Prisma } from "@prisma/client";
 import { GET, POST, PATCH, DELETE } from "@/app/api/projects/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
 import * as authService from "@/lib/auth/service";
@@ -18,6 +19,7 @@ vi.mock("@/lib/db", () => ({
       findMany: vi.fn(),
       findFirst: vi.fn(),
       findUnique: vi.fn(),
+      aggregate: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
@@ -84,12 +86,22 @@ const {
   ProjectBindingValidationError,
 } = await import("@/lib/projects/daemon-binding");
 
+const missingSortOrderColumnError = () =>
+  new Prisma.PrismaClientKnownRequestError(
+    "The column `projects.sort_order` does not exist in the current database.",
+    {
+      code: "P2022",
+      clientVersion: "test",
+    },
+  );
+
 describe("/api/projects", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(db.project.findFirst).mockReset();
     vi.mocked(db.project.findMany).mockReset();
     vi.mocked(db.project.findUnique).mockReset();
+    vi.mocked(db.project.aggregate).mockReset();
     vi.mocked(db.defaultProject.findMany).mockReset();
     vi.mocked(db.defaultProject.findUnique).mockReset();
     vi.mocked(db.defaultProject.findMany).mockResolvedValue([]);
@@ -98,6 +110,7 @@ describe("/api/projects", () => {
     vi.mocked(db.defaultProject.findUnique).mockResolvedValue(null);
     vi.mocked(db.project.findFirst).mockResolvedValue(null);
     vi.mocked(db.project.findUnique).mockResolvedValue(null);
+    vi.mocked(db.project.aggregate).mockResolvedValue({ _max: { sortOrder: null } } as any);
     vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(null);
     vi.mocked(realtimeHub.unbindTask).mockImplementation(() => undefined);
     vi.mocked(stopTaskBeforeRelaunch).mockResolvedValue({ ok: true } as any);
@@ -170,6 +183,116 @@ describe("/api/projects", () => {
       expect(data[0].name).toBe("Project 1");
       expect(data[0].metadata).toEqual({ key: "value" });
     });
+
+    it("returns projects in stable sort order with legacy null values last", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findMany).mockResolvedValue([
+        {
+          id: "proj-null",
+          name: "Legacy",
+          userId: "user-1",
+          daemonHost: null,
+          workspacePath: null,
+          repoRoot: null,
+          worktreeBranch: null,
+          lastCommit: null,
+          fileCount: null,
+          sortOrder: null,
+          metadata: null,
+          createdAt: new Date("2024-01-03"),
+          updatedAt: new Date("2024-01-03"),
+        },
+        {
+          id: "proj-1",
+          name: "One",
+          userId: "user-1",
+          daemonHost: null,
+          workspacePath: null,
+          repoRoot: null,
+          worktreeBranch: null,
+          lastCommit: null,
+          fileCount: null,
+          sortOrder: 1,
+          metadata: null,
+          createdAt: new Date("2024-01-02"),
+          updatedAt: new Date("2024-01-02"),
+        },
+        {
+          id: "proj-0",
+          name: "Zero",
+          userId: "user-1",
+          daemonHost: null,
+          workspacePath: null,
+          repoRoot: null,
+          worktreeBranch: null,
+          lastCommit: null,
+          fileCount: null,
+          sortOrder: 0,
+          metadata: null,
+          createdAt: new Date("2024-01-01"),
+          updatedAt: new Date("2024-01-01"),
+        },
+      ] as any);
+
+      const token = createTestToken("user-1");
+      const response = await GET(createMockRequest({ token }));
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.map((project: { id: string }) => project.id)).toEqual([
+        "proj-0",
+        "proj-1",
+        "proj-null",
+      ]);
+    });
+
+    it("falls back to createdAt ordering when sort_order column is missing", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findMany)
+        .mockRejectedValueOnce(missingSortOrderColumnError())
+        .mockResolvedValueOnce([
+          {
+            id: "proj-new",
+            name: "Newer",
+            userId: "user-1",
+            daemonHost: null,
+            workspacePath: null,
+            repoRoot: null,
+            worktreeBranch: null,
+            lastCommit: null,
+            fileCount: null,
+            metadata: null,
+            createdAt: new Date("2024-01-03"),
+            updatedAt: new Date("2024-01-03"),
+          },
+          {
+            id: "proj-old",
+            name: "Older",
+            userId: "user-1",
+            daemonHost: null,
+            workspacePath: null,
+            repoRoot: null,
+            worktreeBranch: null,
+            lastCommit: null,
+            fileCount: null,
+            metadata: null,
+            createdAt: new Date("2024-01-01"),
+            updatedAt: new Date("2024-01-01"),
+          },
+        ] as any);
+
+      const response = await GET(createMockRequest({ token: createTestToken("user-1") }));
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.map((project: { id: string }) => project.id)).toEqual(["proj-new", "proj-old"]);
+      expect(data[0].sortOrder).toBeUndefined();
+      expect(db.project.findMany).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        orderBy: { createdAt: "desc" },
+      }));
+    });
   });
 
   describe("POST", () => {
@@ -229,6 +352,59 @@ describe("/api/projects", () => {
       expect(response.status).toBe(200);
       expect(data.id).toBe("proj-2");
       expect(data.name).toBe("New Project");
+      expect(db.project.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          sortOrder: 0,
+        }),
+      }));
+    });
+
+    it("creates projects without sortOrder when sort_order column is missing", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = {
+        id: "proj-nosort",
+        name: "No Sort Project",
+        userId: "user-1",
+        daemonHost: null,
+        workspacePath: null,
+        repoRoot: null,
+        worktreeBranch: null,
+        lastCommit: null,
+        fileCount: null,
+        metadata: JSON.stringify({
+          bindingCandidate: {
+            daemonHost: "daemon-1",
+            workspacePath: "/Users/duo/ws/conductor",
+          },
+        }),
+        createdAt: new Date("2024-01-02"),
+        updatedAt: new Date("2024-01-02"),
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.aggregate).mockRejectedValueOnce(missingSortOrderColumnError());
+      vi.mocked(db.project.create).mockResolvedValue(mockProject);
+
+      const response = await POST(createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: {
+          name: "No Sort Project",
+          metadata: {
+            bindingCandidate: {
+              daemonHost: "daemon-1",
+              workspacePath: "/Users/duo/ws/conductor",
+            },
+          },
+        },
+      }));
+      const data = await extractJson(response);
+      const createArgs = vi.mocked(db.project.create).mock.calls[0][0] as any;
+
+      expect(response.status).toBe(200);
+      expect(data.id).toBe("proj-nosort");
+      expect(createArgs.data).not.toHaveProperty("sortOrder");
+      expect(createArgs.select).not.toHaveProperty("sortOrder");
     });
 
     it("should validate daemonHost and workspacePath before creating a bound project", async () => {
@@ -279,7 +455,7 @@ describe("/api/projects", () => {
         daemonHost: "daemon-1",
         workspacePath: "/Users/duo/ws/conductor",
       });
-      expect(db.project.create).toHaveBeenCalledWith({
+      expect(db.project.create).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({
           name: "Validated Project",
           daemonHost: "daemon-1",
@@ -290,7 +466,7 @@ describe("/api/projects", () => {
           fileCount: 42,
           metadata: undefined,
         }),
-      });
+      }));
     });
 
     it("should return validation errors from the daemon binding check", async () => {
@@ -375,7 +551,7 @@ describe("/api/projects", () => {
           workspacePath: "/Users/duo/ws/conductor",
         },
       });
-      expect(db.project.create).toHaveBeenCalledWith({
+      expect(db.project.create).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({
           name: "Pending Project",
           daemonHost: null,
@@ -387,7 +563,7 @@ describe("/api/projects", () => {
             },
           }),
         }),
-      });
+      }));
     });
 
     it("should reject a pending binding candidate when the same workspace is already bound", async () => {

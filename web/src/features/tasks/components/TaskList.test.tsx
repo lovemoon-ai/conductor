@@ -30,13 +30,12 @@ vi.mock('@/features/projects', () => ({
 vi.mock('./TaskItem', () => ({
   TaskItem: (props: {
     task: { id: string; title: string; projectId: string | null };
-    viewMode?: string;
     isActive?: boolean;
   }) => {
     taskItemMock(props);
     return (
       <div data-testid={`task-item-${props.task.id}`}>
-        {props.task.title}:{props.viewMode}:{props.isActive ? 'active' : 'idle'}
+        {props.task.title}:{props.isActive ? 'active' : 'idle'}
       </div>
     );
   },
@@ -66,22 +65,13 @@ describe('TaskList', () => {
   it('renders list view badges and items', async () => {
     render(<TaskList viewMode="list" activeTaskId="task-2" />);
 
-    expect(await screen.findByText('Task One:list:idle')).toBeInTheDocument();
-    expect(screen.queryByText('Task Two:list:active')).not.toBeInTheDocument();
+    expect(await screen.findByText('Task One:idle')).toBeInTheDocument();
+    expect(screen.queryByText('Task Two:active')).not.toBeInTheDocument();
     expect(screen.queryByText('1 unread')).not.toBeInTheDocument();
     expect(screen.queryByText('Project One')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'List view' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Grid view' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Refresh tasks' })).toBeNull();
-  });
-
-  it('renders grid view when controlled by parent', async () => {
-    const { container } = render(<TaskList viewMode="grid" />);
-
-    expect(await screen.findByText('Task One:grid:idle')).toBeInTheDocument();
-    expect(screen.queryByText('Task Two:grid:idle')).not.toBeInTheDocument();
-    expect(screen.queryByText('1 unread')).not.toBeInTheDocument();
-    expect(container.querySelector('[data-task-item-wrapper="task-1"]')).toHaveClass('min-w-0');
   });
 
   it('shows loading spinner when loading the initial task set', () => {

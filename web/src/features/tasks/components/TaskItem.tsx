@@ -6,8 +6,6 @@ import { useRouter } from 'next/navigation';
 import type { Task } from '@/shared/types';
 import { TaskStatusBadge } from './TaskStatusBadge';
 import { RestartTaskControls } from './RestartTaskControls';
-import type { TaskListViewMode } from './TaskList';
-import { useChatStore } from '@/features/chat';
 import { useTasksStore } from '../store';
 import { useRuntimeStore } from '@/features/realtime';
 import { getApiClient } from '@/shared/api/client';
@@ -23,7 +21,6 @@ interface TaskItemProps {
   onToggleSelect: (taskId: string) => void;
   onOpenTask?: (taskId: string) => void;
   desktopListPaneMode?: boolean;
-  viewMode?: TaskListViewMode;
   showProjectInfo?: boolean;
   projectName?: string | null;
   projectDaemonHost?: string | null;
@@ -40,7 +37,6 @@ const RIGHT_ACTION_WIDTH_WITH_RESTART = 216;
 const RIGHT_ACTION_WIDTH_WITHOUT_RESTART = 144;
 const SWIPE_OPEN_THRESHOLD = 0.45;
 const SWIPE_START_THRESHOLD = 8;
-const EMPTY_TASK_MESSAGES: Array<{ id: string; role: string; content: string }> = [];
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const copyToClipboard = async (value: string): Promise<boolean> => {
@@ -152,7 +148,6 @@ export function TaskItem({
   onToggleSelect,
   onOpenTask,
   desktopListPaneMode = false,
-  viewMode = 'list',
   showProjectInfo = false,
   projectName = null,
   projectDaemonHost = null,
@@ -189,7 +184,6 @@ export function TaskItem({
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
 
-  const taskMessages = useChatStore((state) => state.messagesByTask[task.id] ?? EMPTY_TASK_MESSAGES);
   const runtime = useRuntimeStore((state) => state.byTask[task.id]);
   const clearRuntime = useRuntimeStore((state) => state.clearTask);
   const taskMetadata = task.metadata as Record<string, unknown> | null;
@@ -204,21 +198,6 @@ export function TaskItem({
     || runtime?.backend;
   const runtimeText = runtime?.statusLine || runtime?.statusDoneLine || runtime?.replyPreview || runtime?.state || null;
 
-  const latestAssistantMessageFromStore = [...taskMessages]
-    .reverse()
-    .find((message) => message.role !== 'user' && message.content?.trim())
-    ?.content
-    ?.trim() || null;
-  const latestAssistantStatusText = runtime?.statusLine?.trim()
-    || runtime?.statusDoneLine?.trim()
-    || runtime?.state?.trim()
-    || null;
-  const latestAssistantContent = runtime?.replyPreview?.trim()
-    || latestAssistantMessageFromStore
-    || task.lastAssistantMessage?.trim()
-    || null;
-  const latestAssistantText = latestAssistantContent || latestAssistantStatusText || 'No AI response yet.';
-  const isMessageableTask = taskType !== 'pty_task';
   const isTaskRunning = task.status === 'running';
   const canQuickRestart =
     taskType === 'ai_task' &&

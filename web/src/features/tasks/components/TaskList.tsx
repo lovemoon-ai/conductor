@@ -9,25 +9,11 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { EmptyState } from '@/components/common/EmptyState';
 import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 
-export type TaskListViewMode = 'list' | 'grid';
-
-export const TASK_LIST_VIEW_STORAGE_KEY = 'conductor-task-list-view';
+export type TaskListViewMode = 'list';
 
 const EmptyIcon = () => (
   <svg className="h-16 w-16 text-muted/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-  </svg>
-);
-
-export const ListIcon = () => (
-  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
-  </svg>
-);
-
-export const GridIcon = () => (
-  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4h6v6H4V4zm0 10h6v6H4v-6zm10-10h6v6h-6V4zm0 10h6v6h-6v-6z" />
   </svg>
 );
 
@@ -51,15 +37,6 @@ const prefersReducedMotion = (): boolean => {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 };
 
-export function readStoredTaskListViewMode(): TaskListViewMode {
-  if (typeof window === 'undefined') {
-    return 'list';
-  }
-
-  const storedValue = window.localStorage.getItem(TASK_LIST_VIEW_STORAGE_KEY);
-  return storedValue === 'grid' ? 'grid' : 'list';
-}
-
 interface TaskListProps {
   viewMode: TaskListViewMode;
   activeTaskId?: string | null;
@@ -69,7 +46,6 @@ interface TaskListProps {
 }
 
 export function TaskList({
-  viewMode,
   activeTaskId = null,
   onOpenTask,
   desktopListPaneMode = false,
@@ -140,7 +116,6 @@ export function TaskList({
     const previousOrder = previousOrderRef.current;
     const shouldAnimate =
       desktopListPaneMode &&
-      viewMode === 'list' &&
       previousOrder.length > 0 &&
       previousOrder.join('|') !== allTaskIds.join('|') &&
       !prefersReducedMotion();
@@ -184,7 +159,7 @@ export function TaskList({
 
     previousRectsRef.current = currentRects;
     previousOrderRef.current = [...allTaskIds];
-  }, [allTaskIds, desktopListPaneMode, viewMode]);
+  }, [allTaskIds, desktopListPaneMode]);
 
   const setItemWrapperRef = (taskId: string) => (node: HTMLDivElement | null) => {
     if (node) {
@@ -315,7 +290,6 @@ export function TaskList({
               onToggleSelect={toggleTaskSelection}
               onOpenTask={onOpenTask}
               desktopListPaneMode={desktopListPaneMode}
-              viewMode={viewMode}
               showProjectInfo={showProjectInfo}
               projectName={projectMap?.get(task.projectId ?? '')?.name ?? null}
               projectDaemonHost={projectMap?.get(task.projectId ?? '')?.daemonHost ?? null}
