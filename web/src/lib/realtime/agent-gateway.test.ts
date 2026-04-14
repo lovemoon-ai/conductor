@@ -379,6 +379,37 @@ describe("agent-gateway ownership handling", () => {
     });
   });
 
+  it("allows conductor-fire hosts to repair stale daemon bindings when executionHost already points to fire", async () => {
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("daemon-a");
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(true);
+
+    await expect(
+      ensureAgentOwnsTask(
+        "user-1",
+        {
+          id: "task-ai-1",
+          taskType: "ai_task",
+          agentHost: "daemon-a",
+          executionHost: "conductor-fire-mac-1",
+        },
+        "conductor-fire-mac-1",
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-ai-1", "conductor-fire-mac-1");
+    expect(db.task.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "task-ai-1",
+        project: { userId: "user-1" },
+        OR: [
+          { executionHost: null },
+          { executionHost: { not: "conductor-fire-mac-1" } },
+        ],
+      },
+      data: { executionHost: "conductor-fire-mac-1" },
+    });
+  });
+
   it("promotes init tasks to running when runtime status arrives from a fire host", async () => {
     class FakeSocket extends EventEmitter {
       readyState = 1;
