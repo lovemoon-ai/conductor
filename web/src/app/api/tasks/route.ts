@@ -556,6 +556,9 @@ export async function POST(request: NextRequest) {
   }
 
 
+  const fireTaskDaemonName =
+    isConductorFireHost(agentHost) && projectDaemonHost ? projectDaemonHost : null;
+
   let metadata = parseJsonObject(normalizedBody.metadata);
   if (taskType === "ai_task" && metadata) {
     if (requestedBackendType && metadata.backendType === undefined) {
@@ -564,10 +567,14 @@ export async function POST(request: NextRequest) {
     if (initialContent && metadata.initialContent === undefined) {
       metadata.initialContent = initialContent;
     }
-  } else if (taskType === "ai_task" && !metadata && (requestedBackendType || initialContent)) {
+    if (fireTaskDaemonName && metadata.daemonName === undefined) {
+      metadata.daemonName = fireTaskDaemonName;
+    }
+  } else if (taskType === "ai_task" && !metadata && (requestedBackendType || initialContent || fireTaskDaemonName)) {
     metadata = {
       ...(requestedBackendType ? { backendType: requestedBackendType } : {}),
       ...(initialContent ? { initialContent } : {}),
+      ...(fireTaskDaemonName ? { daemonName: fireTaskDaemonName } : {}),
     };
   }
   const title = normalizeOptionalString(normalizedBody.title) ?? "New Task";

@@ -142,6 +142,9 @@ export async function POST(
     sourceExecutionHost && !isConductorFireHost(sourceExecutionHost)
       ? sourceExecutionHost
       : null,
+    projectDaemonHost && !isConductorFireHost(projectDaemonHost)
+      ? projectDaemonHost
+      : null,
   ]) {
     if (candidate && !manualFireDaemonHostCandidates.includes(candidate)) {
       manualFireDaemonHostCandidates.push(candidate);
