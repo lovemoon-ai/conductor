@@ -2851,6 +2851,70 @@ describe("Daemon", () => {
     assert.strictEqual(sigtermCalled, false);
   });
 
+  it("skips daemon PID lock enforcement when CONDUCTOR_TUI_DEBUG is enabled", () => {
+    const previousTuiDebug = process.env.CONDUCTOR_TUI_DEBUG;
+    let exitCode = null;
+    let lockWriteCalled = false;
+    let lockUnlinkCalled = false;
+    let killCheckCount = 0;
+
+    try {
+      process.env.CONDUCTOR_TUI_DEBUG = "1";
+
+      const daemonInstance = startDaemon(
+        {
+          BACKEND_URL: "ws://localhost:0",
+          WORKSPACE_ROOT: "/tmp/test-ws-lock-debug",
+          CLI_PATH: "/tmp/cli.js",
+          NAME: "lock-debug",
+        },
+        {
+          spawn: () => ({
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          }),
+          mkdirSync: () => {},
+          writeFileSync: (filePath) => {
+            if (filePath.endsWith("daemon.pid")) {
+              lockWriteCalled = true;
+            }
+          },
+          existsSync: (filePath) => filePath.endsWith("daemon.pid"),
+          readFileSync: () => "123",
+          unlinkSync: (filePath) => {
+            if (filePath.endsWith("daemon.pid")) {
+              lockUnlinkCalled = true;
+            }
+          },
+          createWriteStream: () => ({
+            write: () => {},
+            end: () => {},
+          }),
+          fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+          exit: (code) => {
+            exitCode = code;
+          },
+          kill: (_pid, signal) => {
+            if (signal === 0) {
+              killCheckCount += 1;
+            }
+          },
+        },
+      );
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+    } finally {
+      restoreEnv("CONDUCTOR_TUI_DEBUG", previousTuiDebug);
+    }
+
+    assert.strictEqual(exitCode, null);
+    assert.strictEqual(lockWriteCalled, false);
+    assert.strictEqual(lockUnlinkCalled, false);
+    assert.strictEqual(killCheckCount, 0);
+  });
+
   it("forces restart by stopping existing daemon when --force is set", () => {
     let exitCode = null;
     let writeCalled = false;

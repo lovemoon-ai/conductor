@@ -638,6 +638,7 @@ export function startDaemon(config = {}, deps = {}) {
   const autoUpdateForceLocal = parseBooleanEnv(process.env.CONDUCTOR_AUTO_UPDATE_FORCE_LOCAL);
   const autoUpdateSupportedInstall =
     autoUpdateForceLocal || isManagedInstallPathFn(installedPackageRoot);
+  const skipPidLockCheck = parseBooleanEnv(process.env.CONDUCTOR_TUI_DEBUG);
   const lockHandoffToken =
     normalizeOptionalString(config.LOCK_HANDOFF_TOKEN) ||
     normalizeOptionalString(process.env.CONDUCTOR_LOCK_HANDOFF_TOKEN);
@@ -1168,87 +1169,94 @@ export function startDaemon(config = {}, deps = {}) {
 
   const LOCK_FILE = path.join(WORKSPACE_ROOT, "daemon.pid");
   try {
-    if (existsSyncFn(LOCK_FILE)) {
-      const lockState = readLockState();
-      const pid = lockState?.pid;
-      if (pid) {
-        const handoffMatched = hasMatchingLockHandoff(lockState);
-        try {
-          if (handoffMatched) {
-            log(`Taking over daemon lock from PID ${pid} via handoff`);
-          } else {
-            const alive = isProcessAlive(pid);
-            if (alive) {
-              if (config.FORCE) {
-                log(`Force enabled: stopping existing daemon PID ${pid}`);
-                let alreadyExited = false;
-                try {
-                  killFn(pid, "SIGTERM");
-                } catch (killErr) {
-                  if (killErr?.code === "ESRCH") {
-                    alreadyExited = true;
-                  } else {
-                    logError(`Failed to stop existing daemon PID ${pid}: ${killErr.message}`);
-                    return exitAndReturn(1);
-                  }
-                }
-                try {
-                  let exited = alreadyExited || waitForProcessExitSync(pid, DAEMON_FORCE_STOP_GRACE_MS);
-                  if (!exited) {
-                    log(
-                      `Existing daemon PID ${pid} did not exit within ${DAEMON_FORCE_STOP_GRACE_MS}ms; sending SIGKILL`,
-                    );
-                    try {
-                      killFn(pid, "SIGKILL");
-                    } catch (killErr) {
-                      if (killErr?.code !== "ESRCH") {
-                        logError(`Failed to force kill existing daemon PID ${pid}: ${killErr.message}`);
-                        return exitAndReturn(1);
-                      }
+    if (skipPidLockCheck) {
+      log("CONDUCTOR_TUI_DEBUG enabled; skipping daemon PID lock enforcement");
+    } else {
+      if (existsSyncFn(LOCK_FILE)) {
+        const lockState = readLockState();
+        const pid = lockState?.pid;
+        if (pid) {
+          const handoffMatched = hasMatchingLockHandoff(lockState);
+          try {
+            if (handoffMatched) {
+              log(`Taking over daemon lock from PID ${pid} via handoff`);
+            } else {
+              const alive = isProcessAlive(pid);
+              if (alive) {
+                if (config.FORCE) {
+                  log(`Force enabled: stopping existing daemon PID ${pid}`);
+                  let alreadyExited = false;
+                  try {
+                    killFn(pid, "SIGTERM");
+                  } catch (killErr) {
+                    if (killErr?.code === "ESRCH") {
+                      alreadyExited = true;
+                    } else {
+                      logError(`Failed to stop existing daemon PID ${pid}: ${killErr.message}`);
+                      return exitAndReturn(1);
                     }
-                    exited = waitForProcessExitSync(pid, DAEMON_FORCE_KILL_WAIT_MS);
                   }
-                  if (!exited) {
-                    logError(`Existing daemon PID ${pid} is still running after force restart; please stop it manually.`);
+                  try {
+                    let exited = alreadyExited || waitForProcessExitSync(pid, DAEMON_FORCE_STOP_GRACE_MS);
+                    if (!exited) {
+                      log(
+                        `Existing daemon PID ${pid} did not exit within ${DAEMON_FORCE_STOP_GRACE_MS}ms; sending SIGKILL`,
+                      );
+                      try {
+                        killFn(pid, "SIGKILL");
+                      } catch (killErr) {
+                        if (killErr?.code !== "ESRCH") {
+                          logError(`Failed to force kill existing daemon PID ${pid}: ${killErr.message}`);
+                          return exitAndReturn(1);
+                        }
+                      }
+                      exited = waitForProcessExitSync(pid, DAEMON_FORCE_KILL_WAIT_MS);
+                    }
+                    if (!exited) {
+                      logError(`Existing daemon PID ${pid} is still running after force restart; please stop it manually.`);
+                      return exitAndReturn(1);
+                    }
+                  } catch (checkErr) {
+                    logError(`Failed to verify daemon PID ${pid}: ${checkErr.message}`);
                     return exitAndReturn(1);
                   }
-                } catch (checkErr) {
-                  logError(`Failed to verify daemon PID ${pid}: ${checkErr.message}`);
+                  log("Removing lock file after force stop");
+                  if (existsSyncFn(LOCK_FILE)) {
+                    unlinkSyncFn(LOCK_FILE);
+                  }
+                } else {
+                  logError(`Daemon already running with PID ${pid}`);
                   return exitAndReturn(1);
                 }
-                log("Removing lock file after force stop");
-                if (existsSyncFn(LOCK_FILE)) {
-                  unlinkSyncFn(LOCK_FILE);
-                }
               } else {
-                logError(`Daemon already running with PID ${pid}`);
-                return exitAndReturn(1);
+                log("Removing stale lock file");
+                unlinkSyncFn(LOCK_FILE);
               }
+            }
+          } catch (e) {
+            if (handoffMatched) {
+              log(`Taking over daemon lock from PID ${pid} via handoff`);
             } else {
-              log("Removing stale lock file");
-              unlinkSyncFn(LOCK_FILE);
+              logError(`Daemon already running with PID ${pid} (access denied)`);
+              return exitAndReturn(1);
             }
           }
-        } catch (e) {
-          if (handoffMatched) {
-            log(`Taking over daemon lock from PID ${pid} via handoff`);
-          } else {
-            logError(`Daemon already running with PID ${pid} (access denied)`);
-            return exitAndReturn(1);
-          }
+        } else {
+          log("Removing malformed lock file");
+          unlinkSyncFn(LOCK_FILE);
         }
-      } else {
-        log("Removing malformed lock file");
-        unlinkSyncFn(LOCK_FILE);
       }
+      writeFileSyncFn(LOCK_FILE, process.pid.toString());
     }
-    writeFileSyncFn(LOCK_FILE, process.pid.toString());
   } catch (err) {
     logError("Failed to acquire lock:", err);
     return exitAndReturn(1);
   }
 
   const cleanupLock = () => {
+    if (skipPidLockCheck) {
+      return;
+    }
     try {
       if (existsSyncFn(LOCK_FILE)) {
         const lockState = readLockState();
@@ -1262,6 +1270,9 @@ export function startDaemon(config = {}, deps = {}) {
   };
 
   const writeLockHandoff = ({ handoffToken, handoffFromPid, handoffExpiresAt }) => {
+    if (skipPidLockCheck) {
+      return;
+    }
     writeFileSyncFn(
       LOCK_FILE,
       JSON.stringify({
