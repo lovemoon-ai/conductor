@@ -44,6 +44,22 @@ export interface ProjectWithBoundDaemons extends Project {
   boundDaemonNames: string[];
 }
 
+// Issue Types
+export type IssueStatus = 'backlog' | 'todo' | 'doing' | 'review' | 'done';
+
+export interface Issue {
+  id: string;
+  projectId: string;
+  title: string;
+  description?: string | null;
+  status: IssueStatus;
+  position: number;
+  metadata?: Record<string, unknown> | null;
+  activeTask?: Task | null;
+  createdAt: string;
+  updatedAt?: string | null;
+}
+
 // Task Types
 export type TaskStatus = 'init' | 'running' | 'killed' | 'unknown' | 'completed';
 
@@ -70,6 +86,7 @@ export interface PtySession {
 export interface Task {
   id: string;
   projectId?: string | null;
+  issueId?: string | null;
   title: string;
   taskType?: TaskType;
   status: TaskStatus;
@@ -253,6 +270,23 @@ export interface UpdateProjectInput {
   lastCommit?: string;
   fileCount?: number;
   bindingConfirmed?: boolean;
+}
+
+export interface CreateIssueInput {
+  projectId: string;
+  title: string;
+  description?: string | null;
+  status?: IssueStatus;
+  position?: number;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface UpdateIssueInput {
+  title?: string;
+  description?: string | null;
+  status?: IssueStatus;
+  position?: number;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface SendMessageInput {

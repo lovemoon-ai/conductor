@@ -31,6 +31,17 @@ const ProjectsIcon = ({ active }: NavIconProps) => (
   </svg>
 );
 
+const IssuesIcon = ({ active }: NavIconProps) => (
+  <svg
+    className={`w-6 h-6 transition-all duration-200 ${active ? 'scale-110' : ''}`}
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={active ? 2.4 : 2} d="M9 12h6M9 16h4M9 8h6m-8 12h10a2 2 0 002-2V6a2 2 0 00-2-2H7a2 2 0 00-2 2v12a2 2 0 002 2z" />
+  </svg>
+);
+
 const SettingsIcon = ({ active }: NavIconProps) => (
   <svg
     className={`w-6 h-6 transition-all duration-200 ${active ? 'scale-110 rotate-12' : ''}`}
@@ -50,6 +61,9 @@ export function MobileNav() {
   const tasksHref = selectedProjectId
     ? `/app/tasks?projectId=${encodeURIComponent(selectedProjectId)}`
     : '/app/tasks';
+  const issuesHref = selectedProjectId
+    ? `/app/issues?projectId=${encodeURIComponent(selectedProjectId)}`
+    : '/app/issues';
 
   const navItems = [
     {
@@ -57,6 +71,12 @@ export function MobileNav() {
       activePath: '/app/projects',
       label: 'Projects',
       Icon: ProjectsIcon,
+    },
+    {
+      href: issuesHref,
+      activePath: '/app/issues',
+      label: 'Issues',
+      Icon: IssuesIcon,
     },
     {
       href: tasksHref,

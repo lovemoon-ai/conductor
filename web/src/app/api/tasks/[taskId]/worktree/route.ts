@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
 import { realtimeHub } from "@/lib/realtime/hub";
-import { normalizeTaskStatus, parseJsonObject } from "@/lib/tasks/task-config";
+import { serializeTaskResponse } from "@/lib/tasks/serialization";
+import { normalizeTaskStatus } from "@/lib/tasks/task-config";
+import {
+  applyLegacyTaskShape,
+  legacyTaskSelect,
+  withPtySchemaFallback,
+} from "@/lib/tasks/pty-compat";
 import {
   hasSameTaskWorktreeRoot,
   acquireTaskWorktreeMutationLock,
@@ -11,38 +17,84 @@ import {
   requestTaskWorktreeCleanup,
 } from "@/lib/tasks/worktree";
 
-const serializeTaskResponse = (task: {
-  id: string;
-  projectId: string;
-  title: string;
-  taskType?: string | null;
-  status: string;
-  agentHost: string | null;
-  executionHost: string | null;
-  backendType: string | null;
-  sessionId: string | null;
-  sessionFilePath: string | null;
-  launchConfig?: unknown;
-  metadata: unknown;
-  createdAt: Date;
-  updatedAt: Date;
-}) => ({
-  id: task.id,
-  project_id: task.projectId,
-  title: task.title,
-  task_type: task.taskType ?? "ai_task",
-  status: normalizeTaskStatus(task.status),
-  agent_host: task.agentHost,
-  execution_host: task.executionHost,
-  backend_type: task.backendType,
-  session_id: task.sessionId,
-  session_file_path: task.sessionFilePath,
-  launch_config: parseJsonObject(task.launchConfig),
-  metadata: parseJsonObject(task.metadata),
-  pty_session: null,
-  created_at: task.createdAt.toISOString(),
-  updated_at: task.updatedAt.toISOString(),
-});
+const worktreeTaskSelect = {
+  id: true,
+  projectId: true,
+  issueId: true,
+  title: true,
+  taskType: true,
+  status: true,
+  agentHost: true,
+  executionHost: true,
+  backendType: true,
+  sessionId: true,
+  sessionFilePath: true,
+  launchConfig: true,
+  metadata: true,
+  createdAt: true,
+  updatedAt: true,
+  project: {
+    select: {
+      daemonHost: true,
+    },
+  },
+} as const;
+
+const worktreeTaskSelectWithoutIssueId = {
+  id: true,
+  projectId: true,
+  title: true,
+  taskType: true,
+  status: true,
+  agentHost: true,
+  executionHost: true,
+  backendType: true,
+  sessionId: true,
+  sessionFilePath: true,
+  launchConfig: true,
+  metadata: true,
+  createdAt: true,
+  updatedAt: true,
+  project: {
+    select: {
+      daemonHost: true,
+    },
+  },
+} as const;
+
+const findWorktreeTask = async (userId: string, taskId: string) =>
+  withPtySchemaFallback(
+    "tasks.taskId.worktree.findTask",
+    () =>
+      db.task.findFirst({
+        where: { id: taskId, project: { userId } },
+        select: worktreeTaskSelect,
+      }),
+    () =>
+      withPtySchemaFallback(
+        "tasks.taskId.worktree.findTask.withoutIssueId",
+        async () => {
+          const task = await db.task.findFirst({
+            where: { id: taskId, project: { userId } },
+            select: worktreeTaskSelectWithoutIssueId,
+          });
+          return task ? { ...task, issueId: null } : null;
+        },
+        async () => {
+          const task = await db.task.findFirst({
+            where: { id: taskId, project: { userId } },
+            select: legacyTaskSelect,
+          });
+          return task
+            ? {
+                ...applyLegacyTaskShape(task),
+                issueId: null,
+                project: { daemonHost: null },
+              }
+            : null;
+        },
+      ),
+  );
 
 export async function POST(
   request: NextRequest,
@@ -53,30 +105,7 @@ export async function POST(
   const user = userResult;
 
   const { taskId } = await params;
-  const task = await db.task.findFirst({
-    where: { id: taskId, project: { userId: user.id } },
-    select: {
-      id: true,
-      projectId: true,
-      title: true,
-      taskType: true,
-      status: true,
-      agentHost: true,
-      executionHost: true,
-      backendType: true,
-      sessionId: true,
-      sessionFilePath: true,
-      launchConfig: true,
-      metadata: true,
-      createdAt: true,
-      updatedAt: true,
-      project: {
-        select: {
-          daemonHost: true,
-        },
-      },
-    },
-  });
+  const task = await findWorktreeTask(user.id, taskId);
   if (!task) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }

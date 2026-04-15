@@ -83,9 +83,10 @@ interface TasksState {
   clearError: () => void;
 }
 
-const normalizeTask = (task: any): Task => ({
+export const normalizeTask = (task: any): Task => ({
   id: task.id,
   projectId: task.projectId ?? task.project_id ?? null,
+  issueId: task.issueId ?? task.issue_id ?? null,
   title: task.title,
   taskType: task.taskType ?? task.task_type ?? 'ai_task',
   status: normalizeTaskStatus(task.status),

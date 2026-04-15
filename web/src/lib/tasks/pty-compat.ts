@@ -3,6 +3,7 @@ import { DEFAULT_TASK_TYPE } from "./task-config";
 type TaskWithLegacyFallback = {
   id: string;
   projectId: string;
+  issueId?: string | null;
   title: string;
   status: string;
   agentHost: string | null;
@@ -33,6 +34,27 @@ export const legacyTaskSelect = {
   updatedAt: true,
 } as const;
 
+/**
+ * Task select that includes PTY/worktree columns but excludes issueId.
+ * Used as an intermediate fallback when only the issue migration is missing.
+ */
+export const taskSelectWithoutIssueId = {
+  id: true,
+  projectId: true,
+  title: true,
+  taskType: true,
+  status: true,
+  agentHost: true,
+  executionHost: true,
+  backendType: true,
+  sessionId: true,
+  sessionFilePath: true,
+  launchConfig: true,
+  metadata: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
 const hasErrorCode = (error: unknown, code: string): boolean =>
   (error as { code?: unknown })?.code === code;
 
@@ -53,36 +75,79 @@ export const isMissingTaskTypeColumnError = (error: unknown): boolean =>
 export const isMissingLaunchConfigColumnError = (error: unknown): boolean =>
   hasErrorCode(error, "P2022") && includesAny(errorMessage(error), ["launch_config", "launchConfig"]);
 
+export const isMissingIssueIdColumnError = (error: unknown): boolean =>
+  hasErrorCode(error, "P2022") && includesAny(errorMessage(error), ["issue_id", "issueId"]);
+
+/**
+ * Returns true only when genuinely PTY-related schema is missing
+ * (pty_sessions table, task_type column, or launch_config column).
+ * Missing issue_id is NOT included — it has its own fallback path.
+ */
 export const isMissingPtySchemaError = (error: unknown): boolean =>
   isMissingPtySessionTableError(error) ||
   isMissingTaskTypeColumnError(error) ||
   isMissingLaunchConfigColumnError(error);
+
+/**
+ * Returns true when the error is caused by a missing issue_id column only.
+ */
+export const isMissingIssueIdSchemaError = (error: unknown): boolean =>
+  isMissingIssueIdColumnError(error);
+
+/**
+ * Returns true for any newer column that is missing (PTY or issue_id).
+ * Useful for catch-all guards in DELETE paths and similar non-critical contexts.
+ */
+export const isMissingAnyNewSchemaError = (error: unknown): boolean =>
+  isMissingPtySchemaError(error) || isMissingIssueIdSchemaError(error);
 
 const warnedContexts = new Set<string>();
 
 export const warnMissingPtySchema = (context: string, error: unknown): void => {
   if (warnedContexts.has(context)) return;
   warnedContexts.add(context);
+  const errorDetail = error instanceof Error ? error.message : String(error);
   console.warn(
-    `[pty-compat] ${context}: PTY schema missing, falling back to legacy task behavior. Run 'pnpm -C web db:push' to enable PTY tasks. (${
-      error instanceof Error ? error.message : String(error)
-    })`,
+    `[pty-compat] ${context}: task schema is missing newer columns, falling back to legacy task behavior. Run 'pnpm -C web db:push' to enable PTY tasks and issue-linked tasks. (${errorDetail})`,
   );
 };
 
+const warnMissingIssueIdSchema = (context: string, error: unknown): void => {
+  if (warnedContexts.has(context)) return;
+  warnedContexts.add(context);
+  const errorDetail = error instanceof Error ? error.message : String(error);
+  console.warn(
+    `[pty-compat] ${context}: issue_id column is missing, falling back to task shape without issueId. Run 'pnpm -C web db:push' to enable issue-linked tasks. (${errorDetail})`,
+  );
+};
+
+/**
+ * Three-tier fallback:
+ *  1. run()                         — full schema (PTY + issueId)
+ *  2. issueIdFallback()             — PTY columns present, issueId missing
+ *  3. legacyFallback()              — genuinely missing PTY/task columns
+ *
+ * If issueIdFallback is not provided, missing issueId falls through to
+ * legacyFallback for backward compatibility.
+ */
 export async function withPtySchemaFallback<T>(
   context: string,
   run: () => Promise<T>,
-  fallback: () => Promise<T>,
+  legacyFallback: () => Promise<T>,
+  issueIdFallback?: () => Promise<T>,
 ): Promise<T> {
   try {
     return await run();
   } catch (error) {
-    if (!isMissingPtySchemaError(error)) {
+    if (isMissingIssueIdSchemaError(error) && issueIdFallback) {
+      warnMissingIssueIdSchema(context, error);
+      return issueIdFallback();
+    }
+    if (!isMissingPtySchemaError(error) && !isMissingIssueIdSchemaError(error)) {
       throw error;
     }
     warnMissingPtySchema(context, error);
-    return fallback();
+    return legacyFallback();
   }
 }
 
@@ -94,6 +159,7 @@ export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
   }
   return {
     ...task,
+    issueId: task.issueId ?? null,
     taskType: DEFAULT_TASK_TYPE,
     launchConfig: null,
     ptySession: null,

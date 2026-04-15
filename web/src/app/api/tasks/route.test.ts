@@ -81,6 +81,7 @@ describe("/api/tasks", () => {
         ? callback({
             task: db.task,
             ptySession: db.ptySession,
+            message: db.message,
           })
         : Array.isArray(callback)
           ? Promise.all(callback)
@@ -342,6 +343,48 @@ describe("/api/tasks", () => {
       expect(data).toEqual([
         expect.objectContaining({
           id: "task-legacy-1",
+          task_type: "ai_task",
+          launch_config: null,
+          pty_session: null,
+        }),
+      ]);
+    });
+
+    it("falls back to legacy task reads when issue relation columns are missing", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.task.findMany)
+        .mockRejectedValueOnce(
+          prismaError("P2022", 'The column `tasks.issue_id` does not exist in the current database.'),
+        )
+        .mockResolvedValueOnce([
+          {
+            id: "task-legacy-issue-1",
+            projectId: "proj-1",
+            title: "Legacy Issue Task",
+            status: "running",
+            agentHost: "daemon-a",
+            executionHost: "daemon-a",
+            backendType: "codex",
+            sessionId: null,
+            sessionFilePath: null,
+            metadata: JSON.stringify({ source: "legacy" }),
+            createdAt: new Date("2024-01-01T00:00:00.000Z"),
+            updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+          },
+        ] as any);
+
+      const response = await GET(createMockRequest({ token: createTestToken("user-1") }));
+      const data = await extractJson(response);
+      const legacyFindManyCall = vi.mocked(db.task.findMany).mock.calls[1]?.[0];
+
+      expect(response.status).toBe(200);
+      expect(legacyFindManyCall?.select).not.toHaveProperty("issueId");
+      expect(data).toEqual([
+        expect.objectContaining({
+          id: "task-legacy-issue-1",
+          issue_id: null,
           task_type: "ai_task",
           launch_config: null,
           pty_session: null,
@@ -1287,6 +1330,96 @@ describe("/api/tasks", () => {
           eventType: "create_task",
         }),
         expect.any(Object),
+      );
+    });
+
+    it("falls back to legacy ai_task creation when issue relation columns are missing", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = { id: "proj-legacy", name: "Legacy Project", userId: "user-1" };
+      const createdAt = new Date("2024-01-12T00:00:00.000Z");
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(db.task.create)
+        .mockRejectedValueOnce(
+          prismaError("P2022", 'The column `tasks.issue_id` does not exist in the current database.'),
+        )
+        .mockResolvedValueOnce({
+          id: "task-legacy-issue-create-1",
+          projectId: "proj-legacy",
+          title: "Legacy Issue Create",
+          status: "unknown",
+          agentHost: "daemon-a",
+          executionHost: "daemon-a",
+          backendType: "codex",
+          sessionId: "session-legacy",
+          sessionFilePath: "/tmp/session-legacy.jsonl",
+          metadata: JSON.stringify({ initialContent: "hi" }),
+          createdAt,
+          updatedAt: createdAt,
+        } as any);
+      vi.mocked(db.task.update)
+        .mockRejectedValueOnce(
+          prismaError("P2022", 'The column `tasks.issue_id` does not exist in the current database.'),
+        )
+        .mockResolvedValueOnce({
+          updatedAt: createdAt,
+        } as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        {
+          id: "agent-1",
+          host: "daemon-a",
+          supportedBackends: ["codex"],
+          capabilities: [],
+        },
+      ]);
+      vi.mocked(db.message.create).mockResolvedValue({
+        id: "message-issue-1",
+        createdAt,
+      } as any);
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {
+            project_id: "proj-legacy",
+            title: "Legacy Issue Create",
+            backend_type: "codex",
+            session_id: "session-legacy",
+            session_file_path: "/tmp/session-legacy.jsonl",
+            initial_content: "hi",
+            agent_host: "daemon-a",
+          },
+        }),
+      );
+      const data = await extractJson(response);
+      const legacyCreateCall = vi.mocked(db.task.create).mock.calls[1]?.[0];
+      const legacyUpdateCall = vi.mocked(db.task.update).mock.calls[1]?.[0];
+
+      expect(response.status).toBe(200);
+      expect(legacyCreateCall?.data).not.toHaveProperty("issueId");
+      expect(legacyCreateCall?.select).not.toHaveProperty("issueId");
+      expect(legacyUpdateCall).toEqual(
+        expect.objectContaining({
+          where: { id: "task-legacy-issue-create-1" },
+          data: {
+            updatedAt: expect.any(Date),
+          },
+          select: {
+            updatedAt: true,
+          },
+        }),
+      );
+      expect(data).toEqual(
+        expect.objectContaining({
+          id: "task-legacy-issue-create-1",
+          issue_id: null,
+          task_type: "ai_task",
+          launch_config: null,
+          pty_session: null,
+        }),
       );
     });
 

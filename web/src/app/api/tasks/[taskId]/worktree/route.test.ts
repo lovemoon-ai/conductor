@@ -38,6 +38,9 @@ const { db } = await import("@/lib/db");
 const { realtimeHub } = await import("@/lib/realtime/hub");
 const { enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
 
+const prismaError = (code: string, message: string) =>
+  Object.assign(new Error(message), { code });
+
 describe("/api/tasks/[taskId]/worktree", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -53,6 +56,7 @@ describe("/api/tasks/[taskId]/worktree", () => {
     vi.mocked(db.task.findFirst).mockResolvedValue({
       id: "task-1",
       projectId: "proj-1",
+      issueId: "issue-1",
       title: "Worktree Task",
       taskType: "ai_task",
       status: "completed",
@@ -129,6 +133,7 @@ describe("/api/tasks/[taskId]/worktree", () => {
     expect(data).toEqual({
       task: expect.objectContaining({
         id: "task-1",
+        issue_id: "issue-1",
         task_type: "ai_task",
       }),
       cleaned_at: "2026-04-03T12:05:00.000Z",
@@ -140,6 +145,56 @@ describe("/api/tasks/[taskId]/worktree", () => {
         where: { id: "task-1" },
       }),
     );
+  });
+
+  it("falls back to worktree task reads when issue relation columns are missing", async () => {
+    vi.mocked(db.task.findFirst)
+      .mockRejectedValueOnce(
+        prismaError("P2022", "The column `tasks.issue_id` does not exist in the current database."),
+      )
+      .mockResolvedValueOnce({
+        id: "task-1",
+        projectId: "proj-1",
+        title: "Worktree Task",
+        taskType: "ai_task",
+        status: "completed",
+        agentHost: "daemon-1",
+        executionHost: "daemon-1",
+        backendType: "codex",
+        sessionId: "session-1",
+        sessionFilePath: "/tmp/session-1.jsonl",
+        launchConfig: JSON.stringify({
+          worktree: true,
+          worktreeId: "task-1",
+          worktreeBranch: "conductor/task/task-1",
+          worktreeBaseRef: "main",
+          projectRepoRoot: "/repo",
+          projectWorkspacePath: "/repo/app",
+          projectRelativePath: "app",
+        }),
+        metadata: null,
+        createdAt: new Date("2026-04-03T12:00:00.000Z"),
+        updatedAt: new Date("2026-04-03T12:01:00.000Z"),
+        project: {
+          daemonHost: "daemon-1",
+        },
+      } as any);
+
+    const response = await POST(
+      new NextRequest("http://localhost:6152/api/tasks/task-1/worktree", {
+        method: "POST",
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+    const fallbackReadCall = vi.mocked(db.task.findFirst).mock.calls[1]?.[0];
+
+    expect(response.status).toBe(200);
+    expect(fallbackReadCall?.select).not.toHaveProperty("issueId");
+    expect(data.task).toEqual(expect.objectContaining({
+      id: "task-1",
+      issue_id: null,
+    }));
   });
 
   it("rejects cleanup when another task still shares the worktree root", async () => {
