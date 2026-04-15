@@ -686,6 +686,7 @@ async function main() {
       envTaskTitle: process.env.CONDUCTOR_TASK_TITLE,
       runtimeProjectPath,
     });
+    const resolvedDaemonName = resolveDaemonHost(configuredDaemonName);
 
     conductor = await ConductorClient.connect({
       projectPath: runtimeProjectPath,
@@ -714,7 +715,7 @@ async function main() {
       providedTaskId: process.env.CONDUCTOR_TASK_ID,
       requestedTitle: requestedTaskTitle,
       backend: cliArgs.backend,
-      daemonName: configuredDaemonName,
+      daemonName: resolvedDaemonName,
       projectPath: runtimeProjectPath,
     });
     injectResolvedTaskId(taskContext.taskId);
@@ -738,6 +739,7 @@ async function main() {
           project_id: process.env.CONDUCTOR_PROJECT_ID,
           project_path: runtimeProjectPath,
           backend_type: cliArgs.backend,
+          daemon_name: resolvedDaemonName,
         });
       } catch {
         // best effort only
@@ -786,7 +788,7 @@ async function main() {
       cliArgs: cliArgs.rawBackendArgs,
       backendName: cliArgs.backend,
       resumeSessionId: resolvedResumeSessionId,
-      daemonName: configuredDaemonName,
+      daemonName: resolvedDaemonName,
     });
     reconnectRunner = runner;
     if (pendingRemoteStopEvent) {
@@ -1387,7 +1389,7 @@ export async function resolveProjectId(conductor, explicit, opts = {}) {
   return resolveDefaultProjectId(conductor);
 }
 
-function resolveDaemonHost(daemonName) {
+export function resolveDaemonHost(daemonName) {
   if (typeof daemonName === "string" && daemonName.trim()) {
     return daemonName.trim();
   }
@@ -1807,6 +1809,7 @@ export class BridgeRunner {
         session_file_path:
           typeof sessionFilePath === "string" && sessionFilePath.trim() ? sessionFilePath.trim() : undefined,
         backend_type: this.backendName,
+        daemon_name: this.daemonName,
       });
       this.boundSessionId = normalizedSessionId;
       return true;

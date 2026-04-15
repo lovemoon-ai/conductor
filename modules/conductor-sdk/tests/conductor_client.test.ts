@@ -55,6 +55,7 @@ class FakeBackendApi {
     backendType?: string | null;
     sessionId?: string | null;
     sessionFilePath?: string | null;
+    metadata?: Record<string, unknown>;
   }> = [];
   commitSdkMessageCalls: Array<{
     agentHost: string;
@@ -185,6 +186,7 @@ class FakeBackendApi {
       backendType?: string | null;
       sessionId?: string | null;
       sessionFilePath?: string | null;
+      metadata?: Record<string, unknown>;
     },
   ) {
     this.updateTaskCalls.push({
@@ -192,6 +194,7 @@ class FakeBackendApi {
       backendType: params.backendType,
       sessionId: params.sessionId,
       sessionFilePath: params.sessionFilePath,
+      metadata: params.metadata,
     });
     const task = this.tasks.find((entry) => entry.id === taskId);
     if (task) {
@@ -459,6 +462,29 @@ describe('ConductorClient', () => {
     expect(local?.backendType).toBe('codex');
     expect(local?.sessionId).toBe('session-bind-1');
     expect(local?.sessionFilePath).toBe('/tmp/session-bind-1.jsonl');
+    await client.close();
+  });
+
+  test('bindTaskSession forwards daemon name for manual fire task metadata repair', async () => {
+    const client = await makeClient();
+    await client.createTaskSession({
+      project_id: 'proj1',
+      task_title: 'Hello',
+      task_id: 'task-bind-daemon-1',
+    });
+
+    await client.bindTaskSession('task-bind-daemon-1', {
+      backend_type: 'codex',
+      daemon_name: 'mac-studio',
+    });
+
+    expect(backendApi.updateTaskCalls).toContainEqual(
+      expect.objectContaining({
+        taskId: 'task-bind-daemon-1',
+        backendType: 'codex',
+        metadata: { daemonName: 'mac-studio' },
+      }),
+    );
     await client.close();
   });
 

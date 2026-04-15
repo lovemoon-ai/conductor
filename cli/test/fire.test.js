@@ -19,6 +19,7 @@ import {
   injectResolvedTaskId,
   isLaunchedByDaemon,
   parseCliArgs,
+  resolveDaemonHost,
   resolveAiSessionCommandLine,
   resolveFreshSessionBootstrapLockPath,
   resolveProjectId,
@@ -728,6 +729,21 @@ describe("conductor-fire backends", () => {
     assert.equal(calls[1].method, "bind");
   });
 
+  it("resolves manual fire daemon host from env when config daemon name is absent", () => {
+    const previousDaemonName = process.env.CONDUCTOR_DAEMON_NAME;
+    delete process.env.CONDUCTOR_AGENT_NAME;
+    process.env.CONDUCTOR_DAEMON_NAME = "daemon-from-env";
+    try {
+      assert.equal(resolveDaemonHost(""), "daemon-from-env");
+    } finally {
+      if (previousDaemonName === undefined) {
+        delete process.env.CONDUCTOR_DAEMON_NAME;
+      } else {
+        process.env.CONDUCTOR_DAEMON_NAME = previousDaemonName;
+      }
+    }
+  });
+
   it("releases fresh-session lock after bootstrap finishes", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-lock-"));
     const lockPath = resolveFreshSessionBootstrapLockPath("codex", tempDir);
@@ -952,6 +968,7 @@ describe("conductor-fire backends", () => {
       includeInitialImages: false,
       cliArgs: [],
       backendName: "claude",
+      daemonName: "daemon-a",
     });
 
     const startPromise = runner.start();
@@ -1233,6 +1250,7 @@ describe("conductor-fire backends", () => {
       includeInitialImages: false,
       cliArgs: [],
       backendName: "claude",
+      daemonName: "daemon-a",
     });
 
     await runner.announceBackendSession();
@@ -1246,6 +1264,7 @@ describe("conductor-fire backends", () => {
     assert.equal(bindCalls.length, 1);
     assert.equal(bindCalls[0].payload.session_id, realSessionId);
     assert.equal(bindCalls[0].payload.session_file_path, "/tmp/claude-session.jsonl");
+    assert.equal(bindCalls[0].payload.daemon_name, "daemon-a");
     assert.equal(sentMessages[1]?.content, "Claude streamed reply");
     assert.equal(sentMessages[1]?.metadata?.session_id, realSessionId);
   });

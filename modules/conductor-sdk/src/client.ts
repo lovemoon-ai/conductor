@@ -561,6 +561,12 @@ export class ConductorClient {
       throw new Error('task_id is required');
     }
     this.promoteTaskDeliveryScope(normalizedTaskId);
+    const explicitDaemonName =
+      typeof payload.daemon_name === 'string' && payload.daemon_name.trim()
+        ? payload.daemon_name.trim()
+        : typeof payload.daemonName === 'string' && payload.daemonName.trim()
+          ? payload.daemonName.trim()
+          : null;
 
     const existing = this.sessionStore.findByTaskId(normalizedTaskId);
     const inMemorySession = await this.sessions.getSession(normalizedTaskId);
@@ -607,6 +613,7 @@ export class ConductorClient {
         backendType: record.backendType ?? null,
         sessionId: record.sessionId ?? null,
         sessionFilePath: record.sessionFilePath ?? null,
+        metadata: explicitDaemonName ? { daemonName: explicitDaemonName } : undefined,
       });
     }
 
