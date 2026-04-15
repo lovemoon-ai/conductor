@@ -669,6 +669,8 @@ async function main() {
       configFile: cliArgs.configFile,
       ...(sessionCommandLine ? { commandLine: sessionCommandLine } : {}),
       logger: { log },
+      sessionStoreKey: taskContext.taskId ? `task-${taskContext.taskId}` : undefined,
+      resumePersistedSession: Boolean(!resolvedResumeSessionId && taskContext.taskId),
     });
 
     log(`Using backend: ${cliArgs.backend}`);
