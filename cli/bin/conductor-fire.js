@@ -2077,6 +2077,11 @@ export class BridgeRunner {
       session_file_path: payload.session_file_path || runtimeContext?.session_file_path,
       token_usage_percent: runtimeContext?.token_usage_percent,
       context_usage_percent: runtimeContext?.context_usage_percent,
+      tool_name: payload.tool_name ? String(payload.tool_name) : undefined,
+      tool_id: payload.tool_id ? String(payload.tool_id) : undefined,
+      item_id: payload.item_id ? String(payload.item_id) : undefined,
+      turn_started_at: payload.turn_started_at ? String(payload.turn_started_at) : undefined,
+      event_count: typeof payload.event_count === "number" ? payload.event_count : undefined,
     };
   }
 
