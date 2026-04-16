@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildResumeArgsForBackend, parseCliArgs } from "../bin/conductor-fire.js";
+import { buildResumeArgsForBackend, expandEnvVars, parseCliArgs, resolveConfiguredPrePrompt } from "../bin/conductor-fire.js";
 import { listRuntimeSupportedBackends, resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -633,6 +633,72 @@ describe("conductor-fire defaults", () => {
 
     assert.equal(args.taskTitle, "my-task");
     assert.equal(args.hasExplicitTaskTitle, true);
+  });
+});
+
+describe("pre_prompt config", () => {
+  it("expands braced and bare environment variables", () => {
+    const env = { PWD: "/tmp/demo", HOME: "/Users/test" };
+    assert.equal(expandEnvVars("cwd=${PWD} home=$HOME missing=$NOPE", env), "cwd=/tmp/demo home=/Users/test missing=$NOPE");
+  });
+
+  it("loads backend-specific pre_prompt from config and expands env vars", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(
+      configPath,
+      [
+        "pre_prompt:",
+        '  mira: "inspect ${PWD} then continue"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const resolved = resolveConfiguredPrePrompt({
+      configFilePath: configPath,
+      backend: "mira",
+      env: { ...process.env, PWD: "/Users/duino/ws/mira" },
+    });
+
+    assert.equal(resolved, "inspect /Users/duino/ws/mira then continue");
+  });
+
+  it("falls back to sessionBackend-specific pre_prompt", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(
+      configPath,
+      [
+        "pre_prompt:",
+        '  codex: "use ${PWD}"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const resolved = resolveConfiguredPrePrompt({
+      configFilePath: configPath,
+      backend: "codex-gamma",
+      sessionBackend: "codex",
+      env: { ...process.env, PWD: "/repo" },
+    });
+
+    assert.equal(resolved, "use /repo");
+  });
+
+  it("returns undefined when no pre_prompt is configured", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(configPath, "allow_cli_list:\n  codex: codex\n", "utf8");
+
+    const resolved = resolveConfiguredPrePrompt({
+      configFilePath: configPath,
+      backend: "mira",
+      env: process.env,
+    });
+
+    assert.equal(resolved, undefined);
   });
 });
 
