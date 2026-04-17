@@ -183,16 +183,20 @@ export async function PATCH(
   let updated;
   if (spawnTaskArgs) {
     const transactionResult = await db.$transaction(async (tx) => {
-      // Re-check inside transaction to prevent duplicate task spawning
-      // under concurrent todo -> doing updates.
-      const freshIssue = await tx.issue.findUnique({
-        where: { id: existing.id },
-        include: issueWithActiveTaskInclude,
+      // Atomically claim the todo -> doing transition.
+      // updateMany returns count; if 0, another request already transitioned this issue.
+      const claimed = await tx.issue.updateMany({
+        where: {
+          id: existing.id,
+          status: 'todo',
+        },
+        data: {
+          status: 'doing',
+        },
       });
-      const alreadyTransitioned = freshIssue?.status !== 'todo';
-      const alreadyHasActiveTask = (freshIssue?.tasks?.length ?? 0) > 0;
-      if (alreadyTransitioned || alreadyHasActiveTask) {
-        // Another concurrent request already spawned the task — just update
+
+      if (claimed.count === 0) {
+        // Another concurrent request already claimed the transition — just update remaining fields
         const updatedIssue = await tx.issue.update(issueUpdateArgs);
         return {
           createdTask: null,
@@ -201,6 +205,7 @@ export async function PATCH(
         };
       }
 
+      // We own the transition — safe to spawn the task
       const createdTask = await createAiTaskArtifacts(spawnTaskArgs!, tx);
       const updatedIssue = await tx.issue.update(issueUpdateArgs);
       return {

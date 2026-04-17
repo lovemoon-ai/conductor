@@ -18,6 +18,7 @@ import {
 import {
   applyLegacyTaskShape,
   isMissingAnyNewSchemaError,
+  isMissingIssueIdSchemaError,
   isMissingPtySchemaError,
   legacyTaskSelect,
   PTY_SCHEMA_UNAVAILABLE_MESSAGE,
@@ -506,32 +507,41 @@ export async function PATCH(
         data: taskUpdateData,
       });
     } catch (error) {
-      if (!isMissingPtySchemaError(error)) {
+      if (isMissingIssueIdSchemaError(error)) {
+        // taskUpdateData has no issueId field, so we can pass it directly
+        const updated = await db.task.update({
+          where: { id: taskId },
+          data: taskUpdateData,
+          select: taskSelectWithoutIssueId,
+        });
+        task = { ...updated, issueId: null };
+      } else if (isMissingPtySchemaError(error)) {
+        task = applyLegacyTaskShape(
+          await db.task.update({
+            where: { id: taskId },
+            data: {
+              projectId: nextProjectId,
+              title: normalizedBody.title ?? existing.title,
+              status: nextStatus,
+              agentHost: nextAgentHost,
+              executionHost: nextExecutionHost,
+              backendType: nextBackendType,
+              sessionId:
+                sessionIdInput !== undefined
+                  ? normalizeOptionalString(sessionIdInput)
+                  : existing.sessionId,
+              sessionFilePath:
+                sessionFilePathInput !== undefined
+                  ? normalizeOptionalString(sessionFilePathInput)
+                  : existing.sessionFilePath,
+              metadata: nextMetadata,
+            },
+            select: legacyTaskSelect,
+          }),
+        );
+      } else {
         throw error;
       }
-      task = applyLegacyTaskShape(
-        await db.task.update({
-          where: { id: taskId },
-          data: {
-            projectId: nextProjectId,
-            title: normalizedBody.title ?? existing.title,
-            status: nextStatus,
-            agentHost: nextAgentHost,
-            executionHost: nextExecutionHost,
-            backendType: nextBackendType,
-            sessionId:
-              sessionIdInput !== undefined
-                ? normalizeOptionalString(sessionIdInput)
-                : existing.sessionId,
-            sessionFilePath:
-              sessionFilePathInput !== undefined
-                ? normalizeOptionalString(sessionFilePathInput)
-                : existing.sessionFilePath,
-            metadata: nextMetadata,
-          },
-          select: legacyTaskSelect,
-        }),
-      );
     }
   }
   return NextResponse.json(serializeTaskResponse({ ...task, ptySession }));

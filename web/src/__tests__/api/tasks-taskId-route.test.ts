@@ -1471,13 +1471,16 @@ describe("/api/tasks/[taskId]", () => {
         id: "task-legacy-issue-patch-1",
         projectId: "proj-1",
         title: "Legacy Task",
+        taskType: "ai_task",
         status: "running",
         agentHost: "daemon-a",
         executionHost: "daemon-a",
         backendType: "codex",
         sessionId: null,
         sessionFilePath: null,
+        launchConfig: null,
         metadata: null,
+        ptySession: null,
         createdAt: new Date("2024-01-01T00:00:00.000Z"),
         updatedAt: new Date("2024-01-01T00:01:00.000Z"),
       } as any);
@@ -1489,12 +1492,14 @@ describe("/api/tasks/[taskId]", () => {
         id: "task-legacy-issue-patch-1",
         projectId: "proj-1",
         title: "Legacy Rename",
+        taskType: "ai_task",
         status: "running",
         agentHost: "daemon-a",
         executionHost: "daemon-a",
         backendType: "codex",
         sessionId: null,
         sessionFilePath: null,
+        launchConfig: null,
         metadata: null,
         createdAt: new Date("2024-01-01T00:00:00.000Z"),
         updatedAt: new Date("2024-01-01T00:02:00.000Z"),
@@ -1509,21 +1514,21 @@ describe("/api/tasks/[taskId]", () => {
       { params: Promise.resolve({ taskId: "task-legacy-issue-patch-1" }) },
     );
     const data = await extractJson(response);
-    const legacyFindFirstCall = vi.mocked(db.task.findFirst).mock.calls[1]?.[0];
-    const legacyUpdateCall = vi.mocked(db.task.update).mock.calls[1]?.[0];
+    const issueIdFallbackFindCall = vi.mocked(db.task.findFirst).mock.calls[1]?.[0];
+    const issueIdFallbackUpdateCall = vi.mocked(db.task.update).mock.calls[1]?.[0];
 
     expect(response.status).toBe(200);
-    expect(legacyFindFirstCall?.select).not.toHaveProperty("issueId");
-    expect(legacyUpdateCall?.data).not.toHaveProperty("issueId");
-    expect(legacyUpdateCall?.select).not.toHaveProperty("issueId");
+    // issueId-only fallback: PTY columns preserved, only issueId omitted
+    expect(issueIdFallbackFindCall?.select).toBeDefined();
+    expect(issueIdFallbackFindCall?.select).not.toHaveProperty("issueId");
+    expect(issueIdFallbackFindCall?.select).toHaveProperty("taskType");
+    expect(issueIdFallbackUpdateCall?.data).not.toHaveProperty("issueId");
     expect(data).toEqual(
       expect.objectContaining({
         id: "task-legacy-issue-patch-1",
         title: "Legacy Rename",
         issue_id: null,
         task_type: "ai_task",
-        launch_config: null,
-        pty_session: null,
       }),
     );
   });

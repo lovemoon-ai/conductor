@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   closestCenter,
   DndContext,
@@ -56,16 +56,36 @@ export function ProjectList() {
 
   const visibleProjectIds = useMemo(() => visibleProjects.map((project) => project.id).join(','), [visibleProjects]);
 
+  const prevVisibleProjectsRef = useRef(visibleProjects);
+
   useEffect(() => {
     if (activeProjectId !== null) {
       return;
     }
 
-    const currentIds = orderedVisibleProjects.map((project) => project.id).join(',');
-    if (currentIds !== visibleProjectIds) {
-      setOrderedVisibleProjects(visibleProjects);
+    const prev = prevVisibleProjectsRef.current;
+    prevVisibleProjectsRef.current = visibleProjects;
+
+    // Same reference — nothing changed
+    if (prev === visibleProjects) {
+      return;
     }
-  }, [activeProjectId, orderedVisibleProjects, visibleProjectIds, visibleProjects]);
+
+    setOrderedVisibleProjects((current) => {
+      const currentIds = current.map((p) => p.id).join(',');
+      if (currentIds !== visibleProjectIds) {
+        // ID set changed — full reset
+        return visibleProjects;
+      }
+      // IDs unchanged — refresh object references so renamed/updated projects render
+      const byId = new Map<string, Project>();
+      for (const p of visibleProjects) byId.set(p.id, p);
+      const next = current.map((p) => byId.get(p.id) ?? p);
+      // Only return a new array if something actually changed
+      const changed = next.some((p, i) => p !== current[i]);
+      return changed ? next : current;
+    });
+  }, [activeProjectId, visibleProjectIds, visibleProjects]);
 
   const activeProject = useMemo(() => {
     if (!activeProjectId) {

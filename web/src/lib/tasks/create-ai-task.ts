@@ -7,6 +7,7 @@ import {
   isMissingIssueIdSchemaError,
   isMissingPtySchemaError,
   legacyTaskSelect,
+  taskSelectWithoutIssueId,
 } from '@/lib/tasks/pty-compat';
 import {
   normalizeTaskStatus,
@@ -101,7 +102,7 @@ const createAiTaskRecord = async (
   } catch (error) {
     // Tier 1 fallback: only issue_id column is missing — keep PTY fields intact
     if (isMissingIssueIdSchemaError(error)) {
-      return await taskStore.create({
+      const created = await taskStore.create({
         data: {
           id: args.requestedId,
           projectId: args.projectId,
@@ -116,7 +117,9 @@ const createAiTaskRecord = async (
           launchConfig: serializeJsonObject(args.launchConfig ?? null),
           metadata: args.metadata ? JSON.stringify(args.metadata) : null,
         },
+        select: taskSelectWithoutIssueId,
       });
+      return { ...created, issueId: null };
     }
     // Tier 2 fallback: genuinely missing PTY schema columns
     if (!isMissingPtySchemaError(error)) {

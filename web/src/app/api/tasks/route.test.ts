@@ -1349,12 +1349,14 @@ describe("/api/tasks", () => {
           id: "task-legacy-issue-create-1",
           projectId: "proj-legacy",
           title: "Legacy Issue Create",
+          taskType: "ai_task",
           status: "unknown",
           agentHost: "daemon-a",
           executionHost: "daemon-a",
           backendType: "codex",
           sessionId: "session-legacy",
           sessionFilePath: "/tmp/session-legacy.jsonl",
+          launchConfig: JSON.stringify({ backendType: "codex", initialContent: "hi", cwd: null }),
           metadata: JSON.stringify({ initialContent: "hi" }),
           createdAt,
           updatedAt: createdAt,
@@ -1395,30 +1397,18 @@ describe("/api/tasks", () => {
         }),
       );
       const data = await extractJson(response);
-      const legacyCreateCall = vi.mocked(db.task.create).mock.calls[1]?.[0];
-      const legacyUpdateCall = vi.mocked(db.task.update).mock.calls[1]?.[0];
+      const issueIdFallbackCreateCall = vi.mocked(db.task.create).mock.calls[1]?.[0];
 
       expect(response.status).toBe(200);
-      expect(legacyCreateCall?.data).not.toHaveProperty("issueId");
-      expect(legacyCreateCall?.select).not.toHaveProperty("issueId");
-      expect(legacyUpdateCall).toEqual(
-        expect.objectContaining({
-          where: { id: "task-legacy-issue-create-1" },
-          data: {
-            updatedAt: expect.any(Date),
-          },
-          select: {
-            updatedAt: true,
-          },
-        }),
-      );
+      // issueId-only fallback: PTY columns preserved, only issueId removed
+      expect(issueIdFallbackCreateCall?.data).not.toHaveProperty("issueId");
+      expect(issueIdFallbackCreateCall?.data).toHaveProperty("taskType", "ai_task");
+      expect(issueIdFallbackCreateCall?.data).toHaveProperty("launchConfig");
       expect(data).toEqual(
         expect.objectContaining({
           id: "task-legacy-issue-create-1",
           issue_id: null,
           task_type: "ai_task",
-          launch_config: null,
-          pty_session: null,
         }),
       );
     });

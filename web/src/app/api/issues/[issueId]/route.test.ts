@@ -13,6 +13,7 @@ vi.mock('@/lib/db', () => ({
       aggregate: vi.fn(),
       findFirst: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
       delete: vi.fn(),
     },
     defaultProject: {
@@ -70,6 +71,7 @@ describe('/api/issues/[issueId]', () => {
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([]);
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: 4 } } as any);
     vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({ status: 'doing', tasks: [] }) as any);
+    vi.mocked(db.issue.updateMany).mockResolvedValue({ count: 1 } as any);
     vi.mocked(db.issue.delete).mockResolvedValue({ id: 'issue-1' } as any);
     vi.mocked(finalizeAiTaskCreation).mockResolvedValue(undefined);
   });
@@ -239,4 +241,30 @@ describe('/api/issues/[issueId]', () => {
     expect(response.status).toBe(204);
     expect(db.issue.delete).toHaveBeenCalledWith({ where: { id: 'issue-1' } });
   });
+
+  it('skips task spawn when another request already claimed the todo-to-doing transition', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue() as any);
+    // Simulate concurrent claim: updateMany returns count: 0
+    vi.mocked(db.issue.updateMany).mockResolvedValue({ count: 0 } as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { status: 'doing' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.issue.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'issue-1', status: 'todo' }),
+        data: expect.objectContaining({ status: 'doing' }),
+      }),
+    );
+    expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    expect(finalizeAiTaskCreation).not.toHaveBeenCalled();
+    expect(data.spawnedTask).toBeNull();
+  });
+
 });

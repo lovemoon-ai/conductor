@@ -11,6 +11,10 @@ import {
 } from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { isConductorFireHost } from "@/lib/subscription/plan-limits";
+import {
+  isMissingAnyNewSchemaError,
+  taskSelectWithoutIssueId,
+} from "@/lib/tasks/pty-compat";
 
 type TaskOwnershipRecord = {
   id: string;
@@ -129,15 +133,29 @@ async function ensureAgentOwnsTaskRecord(
 }
 
 async function ensureAgentOwnsTask(userId: string, taskId: string, agentHost: string): Promise<void> {
-  const task = await db.task.findFirst({
-    where: { id: taskId, project: { userId } },
-    select: {
-      id: true,
-      agentHost: true,
-      executionHost: true,
-      taskType: true,
-    },
-  });
+  let task: TaskOwnershipRecord | null;
+  try {
+    task = await db.task.findFirst({
+      where: { id: taskId, project: { userId } },
+      select: {
+        id: true,
+        agentHost: true,
+        executionHost: true,
+        taskType: true,
+      },
+    });
+  } catch (error) {
+    if (!isMissingAnyNewSchemaError(error)) throw error;
+    const partial = await db.task.findFirst({
+      where: { id: taskId, project: { userId } },
+      select: {
+        id: true,
+        agentHost: true,
+        executionHost: true,
+      },
+    });
+    task = partial ? { ...partial, taskType: null } : null;
+  }
   if (!task) {
     throw new Error(`Task ${taskId} not found`);
   }
@@ -145,9 +163,19 @@ async function ensureAgentOwnsTask(userId: string, taskId: string, agentHost: st
 }
 
 async function getOwnedTask(userId: string, taskId: string, agentHost: string) {
-  const task = await db.task.findFirst({
-    where: { id: taskId, project: { userId } },
-  });
+  let task;
+  try {
+    task = await db.task.findFirst({
+      where: { id: taskId, project: { userId } },
+    });
+  } catch (error) {
+    if (!isMissingAnyNewSchemaError(error)) throw error;
+    const partial = await db.task.findFirst({
+      where: { id: taskId, project: { userId } },
+      select: { ...taskSelectWithoutIssueId },
+    });
+    task = partial ? { ...partial, issueId: null } : null;
+  }
   if (!task) {
     throw new Error(`Task ${taskId} not found`);
   }

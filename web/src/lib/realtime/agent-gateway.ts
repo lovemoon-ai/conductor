@@ -21,7 +21,10 @@ import {
   isConductorFireHost,
 } from "@/lib/subscription/plan-limits";
 import {
+  isMissingAnyNewSchemaError,
   isMissingPtySchemaError,
+  legacyTaskSelect,
+  taskSelectWithoutIssueId,
   withPtySchemaFallback,
 } from "@/lib/tasks/pty-compat";
 import { normalizeTaskStatus } from "@/lib/tasks/task-config";
@@ -1115,15 +1118,33 @@ export const setupAgentGateway = (): WebSocketServer => {
         realtimeHub.heartbeat(connectionId);
         switch (event.type) {
           case "create_task": {
-            const task = await db.task.create({
-              data: {
-                id: event.payload.task_id,
-                projectId: event.payload.project_id,
-                title: event.payload.title,
-                agentHost,
-                executionHost: agentHost,
-              },
-            });
+            let task;
+            try {
+              task = await db.task.create({
+                data: {
+                  id: event.payload.task_id,
+                  projectId: event.payload.project_id,
+                  title: event.payload.title,
+                  agentHost,
+                  executionHost: agentHost,
+                },
+                select: { ...taskSelectWithoutIssueId },
+              });
+            } catch (error) {
+              if (!isMissingAnyNewSchemaError(error)) throw error;
+              // Legacy schema lacks taskType/launchConfig columns — use narrower select.
+              // Downstream only reads task.id and task.projectId, so the missing fields are safe.
+              task = await db.task.create({
+                data: {
+                  id: event.payload.task_id,
+                  projectId: event.payload.project_id,
+                  title: event.payload.title,
+                  agentHost,
+                  executionHost: agentHost,
+                },
+                select: { ...legacyTaskSelect, title: true },
+              });
+            }
             if (event.payload.prefill) {
               const [message] = await db.$transaction([
                 db.message.create({
@@ -1151,8 +1172,11 @@ export const setupAgentGateway = (): WebSocketServer => {
             break;
           }
           case "sdk_message": {
+            // Narrow select avoids hitting missing issueId/taskType columns.
+            // Only task.id is used here — commitSdkMessage re-fetches the full task.
             const task = await db.task.findFirst({
               where: { id: event.payload.task_id, project: { userId: user.id } },
+              select: { id: true },
             });
             if (!task) {
               sendEnvelope(socket, { type: "error", payload: { message: `Task ${event.payload.task_id} not found` } });
@@ -1180,8 +1204,11 @@ export const setupAgentGateway = (): WebSocketServer => {
               sendEnvelope(socket, { type: "error", payload: { message: "task_status_update requires task_id and status" } });
               break;
             }
+            // Narrow select avoids hitting missing issueId/taskType columns.
+            // Only task.id and task.projectId are used — commitTaskStatusUpdate re-fetches via getOwnedTask.
             const task = await db.task.findFirst({
               where: { id: taskId, project: { userId: user.id } },
+              select: { id: true, projectId: true },
             });
             if (!task) {
               sendEnvelope(socket, { type: "error", payload: { message: `Task ${taskId} not found` } });
@@ -1369,9 +1396,28 @@ export const setupAgentGateway = (): WebSocketServer => {
               sendEnvelope(socket, { type: "error", payload: { message: "task_runtime_status requires task_id" } });
               break;
             }
-            const task = await db.task.findFirst({
-              where: { id: taskId, project: { userId: user.id } },
-            });
+            let task;
+            try {
+              task = await db.task.findFirst({
+                where: { id: taskId, project: { userId: user.id } },
+                select: {
+                  id: true, projectId: true, status: true,
+                  agentHost: true, executionHost: true, taskType: true,
+                },
+              });
+            } catch (error) {
+              if (!isMissingAnyNewSchemaError(error)) throw error;
+              const partial = await db.task.findFirst({
+                where: { id: taskId, project: { userId: user.id } },
+                select: {
+                  id: true, projectId: true, status: true,
+                  agentHost: true, executionHost: true,
+                },
+              });
+              // taskType: null means fire host cannot claim this task on old schema —
+              // this is intentional: old schema = old behavior (daemon-only).
+              task = partial ? { ...partial, taskType: null } : null;
+            }
             if (!task) {
               sendEnvelope(socket, { type: "error", payload: { message: `Task ${taskId} not found` } });
               break;

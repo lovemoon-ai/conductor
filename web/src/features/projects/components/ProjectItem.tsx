@@ -299,6 +299,12 @@ export function ProjectItem({
     disabled: dragDisabled,
   });
 
+  const handleCardPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    swipe.onPointerDown(e);
+    // Forward the event to dnd-kit's sortable listener so PointerSensor can start.
+    (listeners as Record<string, Function> | undefined)?.onPointerDown?.(e);
+  }, [swipe, listeners]);
+
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -330,7 +336,6 @@ export function ProjectItem({
 
       <div
         {...attributes}
-        {...listeners}
         onClick={() => {
           if (swipe.consumeTap()) {
             return;
@@ -345,7 +350,7 @@ export function ProjectItem({
         tabIndex={0}
         aria-pressed={isSelected}
         data-project-id={project.id}
-        onPointerDown={swipe.onPointerDown}
+        onPointerDown={handleCardPointerDown}
         onPointerMove={handleCardPointerMove}
         onPointerUp={handleCardPointerUp}
         onPointerCancel={handleCardPointerCancel}

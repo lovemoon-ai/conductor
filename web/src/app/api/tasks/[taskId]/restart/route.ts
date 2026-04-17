@@ -7,9 +7,11 @@ import { realtimeHub } from "@/lib/realtime/hub";
 import { serializeTaskResponse } from "@/lib/tasks/serialization";
 import {
   applyLegacyTaskShape,
-  isMissingIssueIdColumnError,
+  isMissingAnyNewSchemaError,
+  isMissingIssueIdSchemaError,
   isMissingPtySchemaError,
   legacyTaskSelect,
+  taskSelectWithoutIssueId,
   withPtySchemaFallback,
 } from "@/lib/tasks/pty-compat";
 import {
@@ -36,23 +38,6 @@ import {
 
 const appendBackendSuffix = (title: string, backend: string): string => `${title} [${backend}]`;
 
-const restartTaskSelectWithoutIssueId = {
-  id: true,
-  projectId: true,
-  title: true,
-  taskType: true,
-  status: true,
-  agentHost: true,
-  executionHost: true,
-  backendType: true,
-  sessionId: true,
-  sessionFilePath: true,
-  launchConfig: true,
-  metadata: true,
-  createdAt: true,
-  updatedAt: true,
-} as const;
-
 const findRestartSourceTask = async (userId: string, taskId: string) =>
   withPtySchemaFallback(
     "tasks.taskId.restart.findSource",
@@ -66,7 +51,7 @@ const findRestartSourceTask = async (userId: string, taskId: string) =>
         async () => {
           const task = await db.task.findFirst({
             where: { id: taskId, project: { userId } },
-            select: restartTaskSelectWithoutIssueId,
+            select: taskSelectWithoutIssueId,
           });
           return task ? { ...task, issueId: null } : null;
         },
@@ -88,14 +73,14 @@ const updateTaskWithRestartFallback = async (
   try {
     return await taskStore.update(args);
   } catch (error) {
-    if (!isMissingPtySchemaError(error)) {
+    if (!isMissingAnyNewSchemaError(error)) {
       throw error;
     }
 
     try {
       const task = await taskStore.update({
         ...args,
-        select: restartTaskSelectWithoutIssueId,
+        select: taskSelectWithoutIssueId,
       });
       return { ...task, issueId };
     } catch (fallbackError) {
@@ -120,16 +105,16 @@ const createSuccessorTaskWithRestartFallback = async (
   try {
     return await taskStore.create(args);
   } catch (error) {
-    if (!isMissingPtySchemaError(error)) {
+    if (!isMissingAnyNewSchemaError(error)) {
       throw error;
     }
 
-    if (isMissingIssueIdColumnError(error)) {
+    if (isMissingIssueIdSchemaError(error)) {
       const { issueId: _issueId, ...dataWithoutIssueId } = args.data;
       try {
         const task = await taskStore.create({
           data: dataWithoutIssueId,
-          select: restartTaskSelectWithoutIssueId,
+          select: taskSelectWithoutIssueId,
         });
         return { ...task, issueId: null };
       } catch (fallbackError) {

@@ -526,10 +526,6 @@ export async function POST(request: NextRequest) {
     if (taskType === "pty_task" && isMissingPtySchemaError(error)) {
       return NextResponse.json({ error: PTY_SCHEMA_UNAVAILABLE_MESSAGE }, { status: 409 });
     }
-    if (isMissingAnyNewSchemaError(error)) {
-      // Missing issue_id column should not block task creation — PTY schema is present
-      throw error;
-    }
     throw error;
   }
 
