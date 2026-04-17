@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import { FeedbackProvider } from "@/components/common/FeedbackProvider";
+import { ServiceWorkerRegister } from "@/components/common/ServiceWorkerRegister";
 import "./globals.css";
 
 const SITE_ICON_URL = "/icon.svg?v=20260309b";
@@ -35,6 +36,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ThemeProvider>
           <FeedbackProvider>{children}</FeedbackProvider>
         </ThemeProvider>
+        <ServiceWorkerRegister />
       </body>
     </html>
   );

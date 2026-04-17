@@ -36,9 +36,44 @@ fi
 echo "🔧 Generating Prisma Client..."
 npm --prefix web run db:generate
 
-# 4. Force a fresh production build every time instead of reusing an old .next artifact
-echo "🔨 Building production bundle..."
-npm --prefix web run build
+# 3b. Stamp build info so /build-info.json can prove which commit is live
+echo "🏷️  Writing build-info.json..."
+mkdir -p web/public
+COMMIT=$(git -C "$REMOTE_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
+COMMIT_SHORT=$(git -C "$REMOTE_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+WEB_VERSION=$(node -p "require('./web/package.json').version" 2>/dev/null || echo "unknown")
+cat > web/public/build-info.json <<EOF
+{
+  "commit": "$COMMIT",
+  "commitShort": "$COMMIT_SHORT",
+  "buildTime": "$BUILD_TIME",
+  "webVersion": "$WEB_VERSION"
+}
+EOF
+echo "   commit=$COMMIT_SHORT buildTime=$BUILD_TIME"
+
+# 4. Atomic production build: compile into .next.tmp, validate, then swap.
+# The live server keeps reading the old .next until the swap, so mid-build
+# requests can't see half-written files. distDir is picked up from
+# NEXT_DIST_DIR by next.config.ts.
+echo "🔨 Building production bundle (into .next.tmp)..."
+rm -rf web/.next.tmp
+(cd web && NEXT_DIST_DIR=.next.tmp npx next build)
+
+if [[ ! -f web/.next.tmp/BUILD_ID ]]; then
+  echo "❌ Build did not produce web/.next.tmp/BUILD_ID; aborting (old .next left untouched)."
+  rm -rf web/.next.tmp
+  exit 1
+fi
+
+echo "🔁 Swapping .next <- .next.tmp..."
+rm -rf web/.next.old
+if [[ -d web/.next ]]; then
+  mv web/.next web/.next.old
+fi
+mv web/.next.tmp web/.next
+rm -rf web/.next.old
 
 # Make sure Nginx can read the static files
 chmod -R 755 web/.next
@@ -102,6 +137,43 @@ if command -v curl >/dev/null 2>&1; then
 
   echo "Nginx HTTPS (443):"
   curl -k -I --max-time 5 https://127.0.0.1/ 2>/dev/null | head -n 1 || echo "  ❌ Failed"
+
+  # 6b. Real page smoke test: any 200 with a <title>404 body means Next fell
+  # back to the global not-found during prerender, i.e. the build is broken
+  # even though /api/health is green.
+  echo ""
+  echo "🔎 Page smoke test:"
+  smoke_fail=0
+  for path in / /login /app/tasks /app/projects; do
+    tmp=$(mktemp)
+    code=$(curl -s -o "$tmp" -w '%{http_code}' --max-time 5 "http://127.0.0.1:6152$path")
+    size=$(wc -c <"$tmp" | tr -d ' ')
+    if [[ "$code" != "200" ]]; then
+      echo "  ❌ $path http=$code size=$size"
+      smoke_fail=1
+    elif grep -q '<title>404' "$tmp"; then
+      echo "  ❌ $path rendered 404 page (prerender bailout)"
+      smoke_fail=1
+    else
+      echo "  ✅ $path http=$code size=$size"
+    fi
+    rm -f "$tmp"
+  done
+
+  # Verify build-info.json is actually served so we know what is live.
+  build_info=$(curl -s --max-time 5 http://127.0.0.1:6152/build-info.json || true)
+  if printf '%s' "$build_info" | grep -q "$COMMIT_SHORT"; then
+    echo "  ✅ /build-info.json reports commit=$COMMIT_SHORT"
+  else
+    echo "  ❌ /build-info.json missing or stale: $build_info"
+    smoke_fail=1
+  fi
+
+  if [[ "$smoke_fail" == "1" ]]; then
+    echo ""
+    echo "❌ Smoke test failed — check $LOG and /var/log/nginx/error.log before declaring ship."
+    exit 1
+  fi
 fi
 
 echo ""

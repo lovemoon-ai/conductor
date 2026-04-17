@@ -1,18 +1,10 @@
 import type { NextConfig } from "next";
 import nextra from "nextra";
-import withPWAInit from "next-pwa";
 import fs from "node:fs";
 import path from "node:path";
 
 const withNextra = nextra({
   contentDirBasePath: "/docs",
-});
-
-const withPWA = withPWAInit({
-  dest: "public",
-  disable: process.env.NODE_ENV === "development",
-  register: true,
-  skipWaiting: true,
 });
 
 interface CliPackageInfo {
@@ -44,6 +36,9 @@ function resolveCliPackageInfo(): CliPackageInfo {
 const cliInfo = resolveCliPackageInfo();
 
 const nextConfig: NextConfig = {
+  // Allow deploy-prod.sh to build into .next.tmp and atomically swap afterwards
+  // so the live server never reads a half-written .next.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   turbopack: {
     resolveAlias: {
       "next-mdx-import-source-file": "./src/mdx-components.tsx",
@@ -86,4 +81,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default withNextra(withPWA(nextConfig));
+export default withNextra(nextConfig);

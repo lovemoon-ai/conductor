@@ -32,9 +32,10 @@ dist/
 public/app
 public/app_volc.tar.gz
 public/app_vercel.tar.gz
+public/build-info.json
 
 # PWA
-public/sw.js
+# public/sw.js is now a hand-written minimal worker that ships with the repo.
 public/sw.js.map
 public/workbox-*.js
 public/workbox-*.js.map
