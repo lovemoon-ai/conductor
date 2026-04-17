@@ -1,12 +1,12 @@
+import { act, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
-import type { ReactNode } from 'react';
 import type { Project } from '@/shared/types';
 import { ProjectList } from './ProjectList';
 
 const setSelectedProjectIdMock = vi.fn();
 const reorderProjectsMock = vi.fn();
 
+let latestDndContextProps: Record<string, any> | null = null;
 let projectsState = {
   projects: [] as Project[],
   isLoading: false,
@@ -27,17 +27,65 @@ vi.mock('@/features/agents', () => ({
   useAgentsStore: (selector: (state: typeof agentsState) => unknown) => selector(agentsState),
 }));
 
+vi.mock('@dnd-kit/core', () => ({
+  DndContext: ({ children, ...props }: { children: React.ReactNode }) => {
+    latestDndContextProps = props;
+    return <div>{children}</div>;
+  },
+  DragOverlay: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  PointerSensor: class PointerSensor {},
+  useSensor: () => ({}),
+  useSensors: (...sensors: unknown[]) => sensors,
+  closestCenter: () => [],
+  pointerWithin: () => [],
+}));
+
+vi.mock('@dnd-kit/sortable', () => ({
+  SortableContext: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  useSortable: () => ({
+    attributes: {},
+    listeners: {},
+    setNodeRef: () => undefined,
+    transform: null,
+    transition: undefined,
+    isDragging: false,
+  }),
+  verticalListSortingStrategy: {},
+}));
+
+vi.mock('@dnd-kit/utilities', () => ({
+  CSS: {
+    Transform: {
+      toString: () => undefined,
+    },
+  },
+}));
+
 vi.mock('./ProjectItem', () => ({
-  ProjectItem: ({ project, dragHandle }: { project: Project; dragHandle?: ReactNode }) => (
-    <div data-testid={`project-item-${project.id}`}>
-      {dragHandle}
-      <span>{project.name}</span>
+  ProjectItem: ({ project }: { project: Project }) => (
+    <div data-project-id={project.id} data-testid={`project-item-${project.id}`}>
+      {project.name}
     </div>
   ),
 }));
 
+vi.mock('./project-list-utils', () => ({
+  reorderProjectsLocally: (projects: Project[], activeId: string, overId: string) => {
+    const activeIndex = projects.findIndex((project) => project.id === activeId);
+    const overIndex = projects.findIndex((project) => project.id === overId);
+    if (activeIndex === -1 || overIndex === -1 || activeIndex === overIndex) {
+      return projects;
+    }
+    const next = [...projects];
+    const [moved] = next.splice(activeIndex, 1);
+    next.splice(overIndex, 0, moved);
+    return next;
+  },
+}));
+
 describe('ProjectList', () => {
   beforeEach(() => {
+    latestDndContextProps = null;
     setSelectedProjectIdMock.mockReset();
     reorderProjectsMock.mockReset();
   });
@@ -88,7 +136,8 @@ describe('ProjectList', () => {
     expect(screen.queryByText('Offline Project')).toBeNull();
   });
 
-  it('keeps hidden offline projects in the submitted order when visible projects are dragged', () => {
+  it('keeps hidden offline projects in the submitted order when visible projects are dragged', async () => {
+    reorderProjectsMock.mockResolvedValue(undefined);
     projectsState = {
       projects: [
         { id: 'online-a', name: 'Online A', daemonHost: 'daemon-online' },
@@ -106,25 +155,23 @@ describe('ProjectList', () => {
 
     render(<ProjectList />);
 
-    const dataTransfer = {
-      data: {} as Record<string, string>,
-      effectAllowed: '',
-      dropEffect: '',
-      setData(type: string, value: string) {
-        this.data[type] = value;
-      },
-      getData(type: string) {
-        return this.data[type] ?? '';
-      },
-    };
-    const dragHandles = screen.getAllByLabelText('Drag to reorder');
-    fireEvent.dragStart(dragHandles[1], { dataTransfer });
-    fireEvent.drop(screen.getByTestId('project-item-online-a').parentElement!, { dataTransfer });
+    await act(async () => {
+      latestDndContextProps?.onDragStart?.({ active: { id: 'online-c' } });
+    });
+    await act(async () => {
+      latestDndContextProps?.onDragOver?.({ active: { id: 'online-c' }, over: { id: 'online-a' } });
+    });
+    await act(async () => {
+      render(<ProjectList />);
+    });
+    await act(async () => {
+      await latestDndContextProps?.onDragEnd?.({ active: { id: 'online-c' }, over: { id: 'online-a' } });
+    });
 
     expect(reorderProjectsMock).toHaveBeenCalledWith(['online-c', 'offline-b', 'online-a']);
   });
 
-  it('allows dragging a visible project after the last visible project', () => {
+  it('reorders visible projects in-place while dragging', async () => {
     projectsState = {
       projects: [
         { id: 'project-a', name: 'Project A' },
@@ -140,20 +187,14 @@ describe('ProjectList', () => {
 
     render(<ProjectList />);
 
-    const dataTransfer = {
-      data: {} as Record<string, string>,
-      effectAllowed: '',
-      dropEffect: '',
-      setData(type: string, value: string) {
-        this.data[type] = value;
-      },
-      getData(type: string) {
-        return this.data[type] ?? '';
-      },
-    };
-    fireEvent.dragStart(screen.getAllByLabelText('Drag to reorder')[0], { dataTransfer });
-    fireEvent.drop(screen.getByTestId('project-list-end-dropzone'), { dataTransfer });
+    await act(async () => {
+      latestDndContextProps?.onDragStart?.({ active: { id: 'project-a' } });
+    });
+    await act(async () => {
+      latestDndContextProps?.onDragOver?.({ active: { id: 'project-a' }, over: { id: 'project-c' } });
+    });
 
-    expect(reorderProjectsMock).toHaveBeenCalledWith(['project-b', 'project-c', 'project-a']);
+    const renderedIds = screen.getAllByTestId(/project-item-/).slice(0, 3).map((item) => item.getAttribute('data-project-id'));
+    expect(renderedIds).toEqual(['project-b', 'project-c', 'project-a']);
   });
 });

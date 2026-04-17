@@ -44,9 +44,13 @@ const { db } = await import("@/lib/db");
 const { realtimeHub } = await import("@/lib/realtime/hub");
 const { deliverAgentOutboxForHost } = await import("@/lib/realtime/agent-outbox");
 
+const prismaError = (code: string, message: string) =>
+  Object.assign(new Error(message), { code });
+
 const buildTask = (overrides: Record<string, unknown> = {}) => ({
   id: "task-1",
   projectId: "proj-1",
+  issueId: null,
   title: "Fix login bug",
   taskType: "ai_task",
   status: "killed",
@@ -775,6 +779,114 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson).toContain(
       '"target_backend_type":"codex"',
     );
+  });
+
+  it("preserves issue linkage for successor restart tasks", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({ status: "running", issueId: "issue-42" }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: {
+          backend_type: "codex",
+          strategy: "new_task",
+        },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+    expect(data.task.issue_id).toBe("issue-42");
+    expect(db.task.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          issueId: "issue-42",
+        }),
+      }),
+    );
+  });
+
+  it("falls back to restart source reads when issue relation columns are missing", async () => {
+    vi.mocked(db.task.findFirst)
+      .mockRejectedValueOnce(
+        prismaError("P2022", "The column `tasks.issue_id` does not exist in the current database."),
+      )
+      .mockResolvedValueOnce(buildTask({ status: "running" }) as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: {
+          backend_type: "codex",
+          strategy: "new_task",
+        },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+    const legacyReadCall = vi.mocked(db.task.findFirst).mock.calls[1]?.[0];
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+    expect(legacyReadCall?.select).not.toHaveProperty("issueId");
+    expect(data.task.issue_id).toBeNull();
+  });
+
+  it("falls back to successor creation without issueId when issue relation columns are missing", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({ status: "running", issueId: "issue-42" }) as any,
+    );
+    vi.mocked(db.task.create)
+      .mockRejectedValueOnce(
+        prismaError("P2022", "The column `tasks.issue_id` does not exist in the current database."),
+      )
+      .mockResolvedValueOnce({
+        ...buildTask({
+          id: "task-successor",
+          status: "init",
+          agentHost: "daemon-1",
+          executionHost: null,
+          backendType: "codex",
+          sessionId: null,
+          sessionFilePath: null,
+          launchConfig: JSON.stringify({ cwd: "/repo/project" }),
+          metadata: JSON.stringify({
+            continuedFromTaskId: "task-1",
+            restartSourceBackendType: "codex",
+            restartStrategy: "new_task",
+          }),
+          createdAt: new Date("2026-03-24T10:10:00.000Z"),
+          updatedAt: new Date("2026-03-24T10:10:00.000Z"),
+        }),
+        issueId: undefined,
+      } as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: {
+          backend_type: "codex",
+          strategy: "new_task",
+        },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+    const firstCreateCall = vi.mocked(db.task.create).mock.calls[0]?.[0];
+    const fallbackCreateCall = vi.mocked(db.task.create).mock.calls[1]?.[0];
+
+    expect(response.status).toBe(200);
+    expect(firstCreateCall?.data).toEqual(expect.objectContaining({ issueId: "issue-42" }));
+    expect(fallbackCreateCall?.data).not.toHaveProperty("issueId");
+    expect(fallbackCreateCall?.select).not.toHaveProperty("issueId");
+    expect(data.task.issue_id).toBeNull();
   });
 
   it("inherits the same worktree launch config for successor tasks", async () => {

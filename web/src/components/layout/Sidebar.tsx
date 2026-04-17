@@ -34,6 +34,17 @@ const ProjectsIcon = ({ active, compact = false }: NavIconProps) => (
   </svg>
 );
 
+const IssuesIcon = ({ active, compact = false }: NavIconProps) => (
+  <svg
+    className={compact ? 'h-[18px] w-[18px]' : 'h-[18px] w-[18px]'}
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={active ? 2.2 : 1.9} d="M9 12h6M9 16h4M9 8h6m-8 12h10a2 2 0 002-2V6a2 2 0 00-2-2H7a2 2 0 00-2 2v12a2 2 0 002 2z" />
+  </svg>
+);
+
 const SettingsIcon = ({ active, compact = false }: NavIconProps) => (
   <svg
     className={compact ? 'h-[18px] w-[18px]' : 'h-[18px] w-[18px]'}
@@ -92,9 +103,13 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
   const tasksHref = selectedProjectId
     ? `/app/tasks?projectId=${encodeURIComponent(selectedProjectId)}`
     : '/app/tasks';
+  const issuesHref = selectedProjectId
+    ? `/app/issues?projectId=${encodeURIComponent(selectedProjectId)}`
+    : '/app/issues';
 
   const navItems = [
     { href: '/app/projects', activePath: '/app/projects', label: 'Projects', Icon: ProjectsIcon, badge: null },
+    { href: issuesHref, activePath: '/app/issues', label: 'Issues', Icon: IssuesIcon, badge: null },
     { href: tasksHref, activePath: '/app/tasks', label: 'Tasks', Icon: TasksIcon, badge: unreadCount > 0 ? unreadCount : null },
     { href: '/app/settings', activePath: '/app/settings', label: 'Settings', Icon: SettingsIcon, badge: null },
   ];

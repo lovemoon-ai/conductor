@@ -331,6 +331,7 @@ describe('tasks store', () => {
       tasks: [
         {
           id: 'task-1',
+          issueId: 'issue-1',
           title: 'Worktree task',
           taskType: 'ai_task',
           status: 'completed',
@@ -346,6 +347,7 @@ describe('tasks store', () => {
     mockPost.mockResolvedValueOnce({
       task: {
         id: 'task-1',
+        issue_id: 'issue-1',
         title: 'Worktree task',
         task_type: 'ai_task',
         status: 'completed',
@@ -370,11 +372,13 @@ describe('tasks store', () => {
       worktreeBranch: 'conductor/task/task-1',
       task: {
         id: 'task-1',
+        issueId: 'issue-1',
         updatedAt: '2024-01-01T00:01:00.000Z',
       },
     });
     expect(useTasksStore.getState().tasks[0]).toMatchObject({
       id: 'task-1',
+      issueId: 'issue-1',
       updatedAt: '2024-01-01T00:01:00.000Z',
     });
   });

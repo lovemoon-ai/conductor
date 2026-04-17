@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useRouter } from 'next/navigation';
+import { useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import type { Project } from '@/shared/types';
 import { useProjectsStore } from '../store';
 import { useAgentsStore } from '@/features/agents';
@@ -14,7 +16,7 @@ interface ProjectItemProps {
   project: Project;
   isSelected?: boolean;
   onSelect?: (projectId: string) => void;
-  dragHandle?: React.ReactNode;
+  dragDisabled?: boolean;
 }
 
 const ACTIONS_WIDTH = 72;
@@ -62,7 +64,12 @@ const readBindingCandidate = (
   return { daemonHost, workspacePath };
 };
 
-export function ProjectItem({ project, isSelected = false, onSelect, dragHandle }: ProjectItemProps) {
+export function ProjectItem({
+  project,
+  isSelected = false,
+  onSelect,
+  dragDisabled = false,
+}: ProjectItemProps) {
   const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(project.name);
@@ -280,8 +287,34 @@ export function ProjectItem({ project, isSelected = false, onSelect, dragHandle 
     swipe.closeActions();
   };
 
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: project.id,
+    disabled: dragDisabled,
+  });
+
+  const handleCardPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    swipe.onPointerDown(e);
+    // Forward the event to dnd-kit's sortable listener so PointerSensor can start.
+    (listeners as Record<string, Function> | undefined)?.onPointerDown?.(e);
+  }, [swipe, listeners]);
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.45 : 1,
+    touchAction: dragDisabled ? 'auto' : 'none',
+  };
+
   return (
-    <div className="relative overflow-hidden rounded-2xl">
+    <div ref={setNodeRef} style={style}>
+      <div className="relative overflow-hidden rounded-2xl">
       {!isDefault && (
         <div className="absolute inset-y-0 right-0 flex z-0" aria-hidden={!swipe.isOpen}>
           <button
@@ -302,6 +335,7 @@ export function ProjectItem({ project, isSelected = false, onSelect, dragHandle 
       )}
 
       <div
+        {...attributes}
         onClick={() => {
           if (swipe.consumeTap()) {
             return;
@@ -315,7 +349,8 @@ export function ProjectItem({ project, isSelected = false, onSelect, dragHandle 
         role="button"
         tabIndex={0}
         aria-pressed={isSelected}
-        onPointerDown={swipe.onPointerDown}
+        data-project-id={project.id}
+        onPointerDown={handleCardPointerDown}
         onPointerMove={handleCardPointerMove}
         onPointerUp={handleCardPointerUp}
         onPointerCancel={handleCardPointerCancel}
@@ -336,7 +371,6 @@ export function ProjectItem({ project, isSelected = false, onSelect, dragHandle 
         }}
       >
         <div className="flex items-start gap-3">
-          {dragHandle}
           <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${isDefault ? 'webapp-gradient-bg' : 'bg-accent/10'}`}>
             <svg className={`w-5 h-5 ${isDefault ? 'text-white' : 'text-accent'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
@@ -415,6 +449,7 @@ export function ProjectItem({ project, isSelected = false, onSelect, dragHandle 
             ) : null}
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

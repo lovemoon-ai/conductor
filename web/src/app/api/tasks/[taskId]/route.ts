@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { buildTaskDiagnosticsPayload } from "@/lib/diagnostics/task-diagnostics";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
+import { serializeTaskResponse } from "@/lib/tasks/serialization";
 import { deleteTaskAttachmentDirectory } from "@/lib/tasks/task-file-storage";
 import {
   normalizeOptionalString,
@@ -16,9 +17,12 @@ import {
 } from "@/lib/tasks/task-config";
 import {
   applyLegacyTaskShape,
+  isMissingAnyNewSchemaError,
+  isMissingIssueIdSchemaError,
   isMissingPtySchemaError,
   legacyTaskSelect,
   PTY_SCHEMA_UNAVAILABLE_MESSAGE,
+  taskSelectWithoutIssueId,
   withPtySchemaFallback,
 } from "@/lib/tasks/pty-compat";
 import {
@@ -62,81 +66,6 @@ const readPatchField = (
   return undefined;
 };
 
-const serializePtySession = (ptySession: {
-  id: string;
-  taskId: string;
-  state: string;
-  entrypointType: string | null;
-  toolPreset: string | null;
-  commandJson: string | null;
-  cwd: string | null;
-  envJson: string | null;
-  shell: string | null;
-  pid: number | null;
-  cols: number | null;
-  rows: number | null;
-  lastOutputSeq: number;
-  startedAt: Date | null;
-  closedAt: Date | null;
-  createdAt: Date;
-  updatedAt: Date;
-} | null) =>
-  ptySession
-    ? {
-        id: ptySession.id,
-        task_id: ptySession.taskId,
-        state: ptySession.state,
-        entrypoint_type: ptySession.entrypointType,
-        tool_preset: ptySession.toolPreset,
-        command: parseJsonObject(ptySession.commandJson),
-        cwd: ptySession.cwd,
-        env: parseJsonObject(ptySession.envJson),
-        shell: ptySession.shell,
-        pid: ptySession.pid,
-        cols: ptySession.cols,
-        rows: ptySession.rows,
-        last_output_seq: ptySession.lastOutputSeq,
-        started_at: ptySession.startedAt?.toISOString() ?? null,
-        closed_at: ptySession.closedAt?.toISOString() ?? null,
-        created_at: ptySession.createdAt.toISOString(),
-        updated_at: ptySession.updatedAt.toISOString(),
-      }
-    : null;
-
-const serializeTaskResponse = (task: {
-  id: string;
-  projectId: string;
-  title: string;
-  taskType?: string | null;
-  status: string;
-  agentHost: string | null;
-  executionHost: string | null;
-  backendType: string | null;
-  sessionId: string | null;
-  sessionFilePath: string | null;
-  launchConfig?: unknown;
-  metadata: unknown;
-  createdAt: Date;
-  updatedAt: Date;
-  ptySession?: Parameters<typeof serializePtySession>[0];
-}) => ({
-  id: task.id,
-  project_id: task.projectId,
-  title: task.title,
-  task_type: normalizeTaskType(task.taskType),
-  status: normalizeTaskStatus(task.status),
-  agent_host: task.agentHost,
-  execution_host: task.executionHost,
-  backend_type: task.backendType,
-  session_id: task.sessionId,
-  session_file_path: task.sessionFilePath,
-  launch_config: parseJsonObject(task.launchConfig),
-  metadata: parseJsonObject(task.metadata),
-  created_at: task.createdAt.toISOString(),
-  updated_at: task.updatedAt.toISOString(),
-  pty_session: serializePtySession(task.ptySession ?? null),
-});
-
 const findTaskDetail = async (userId: string, taskId: string) =>
   withPtySchemaFallback(
     "tasks.taskId.GET",
@@ -148,10 +77,21 @@ const findTaskDetail = async (userId: string, taskId: string) =>
         },
       }),
     async () => {
-      return db.task.findFirst({
+      const task = await db.task.findFirst({
         where: { id: taskId, project: { userId } },
         select: legacyTaskSelect,
       });
+      return task ? { ...applyLegacyTaskShape(task), issueId: null } : null;
+    },
+    async () => {
+      const task = await db.task.findFirst({
+        where: { id: taskId, project: { userId } },
+        select: {
+          ...taskSelectWithoutIssueId,
+          ptySession: true,
+        },
+      });
+      return task ? { ...task, issueId: null } : null;
     },
   );
 
@@ -170,7 +110,17 @@ const findTaskForPatch = async (userId: string, taskId: string) =>
         where: { id: taskId, project: { userId } },
         select: legacyTaskSelect,
       });
-      return task ? applyLegacyTaskShape(task) : null;
+      return task ? { ...applyLegacyTaskShape(task), issueId: null } : null;
+    },
+    async () => {
+      const task = await db.task.findFirst({
+        where: { id: taskId, project: { userId } },
+        select: {
+          ...taskSelectWithoutIssueId,
+          ptySession: true,
+        },
+      });
+      return task ? { ...task, issueId: null } : null;
     },
   );
 
@@ -566,32 +516,41 @@ export async function PATCH(
         data: taskUpdateData,
       });
     } catch (error) {
-      if (!isMissingPtySchemaError(error)) {
+      if (isMissingIssueIdSchemaError(error)) {
+        // taskUpdateData has no issueId field, so we can pass it directly
+        const updated = await db.task.update({
+          where: { id: taskId },
+          data: taskUpdateData,
+          select: taskSelectWithoutIssueId,
+        });
+        task = { ...updated, issueId: null };
+      } else if (isMissingPtySchemaError(error)) {
+        task = applyLegacyTaskShape(
+          await db.task.update({
+            where: { id: taskId },
+            data: {
+              projectId: nextProjectId,
+              title: normalizedBody.title ?? existing.title,
+              status: nextStatus,
+              agentHost: nextAgentHost,
+              executionHost: nextExecutionHost,
+              backendType: nextBackendType,
+              sessionId:
+                sessionIdInput !== undefined
+                  ? normalizeOptionalString(sessionIdInput)
+                  : existing.sessionId,
+              sessionFilePath:
+                sessionFilePathInput !== undefined
+                  ? normalizeOptionalString(sessionFilePathInput)
+                  : existing.sessionFilePath,
+              metadata: nextMetadata,
+            },
+            select: legacyTaskSelect,
+          }),
+        );
+      } else {
         throw error;
       }
-      task = applyLegacyTaskShape(
-        await db.task.update({
-          where: { id: taskId },
-          data: {
-            projectId: nextProjectId,
-            title: normalizedBody.title ?? existing.title,
-            status: nextStatus,
-            agentHost: nextAgentHost,
-            executionHost: nextExecutionHost,
-            backendType: nextBackendType,
-            sessionId:
-              sessionIdInput !== undefined
-                ? normalizeOptionalString(sessionIdInput)
-                : existing.sessionId,
-            sessionFilePath:
-              sessionFilePathInput !== undefined
-                ? normalizeOptionalString(sessionFilePathInput)
-                : existing.sessionFilePath,
-            metadata: nextMetadata,
-          },
-          select: legacyTaskSelect,
-        }),
-      );
     }
   }
   return NextResponse.json(serializeTaskResponse({ ...task, ptySession }));

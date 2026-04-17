@@ -1,13 +1,35 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
-import type { DragEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  closestCenter,
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  pointerWithin,
+  useSensor,
+  useSensors,
+  type CollisionDetection,
+  type DragCancelEvent,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+} from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import type { Project } from '@/shared/types';
 import { useAgentsStore } from '@/features/agents';
 import { useProjectsStore } from '../store';
 import { ProjectItem } from './ProjectItem';
-import { DragHandle } from './DragHandle';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
+import { reorderProjectsLocally } from './project-list-utils';
+
+const collisionDetection: CollisionDetection = (args) => {
+  const pointerIntersections = pointerWithin(args);
+  if (pointerIntersections.length > 0) {
+    return pointerIntersections;
+  }
+  return closestCenter(args);
+};
 
 const getProjectDaemonHost = (project: Project): string | null => {
   if (typeof project.daemonHost !== 'string') {
@@ -28,70 +50,103 @@ export function ProjectList() {
     const daemonHost = getProjectDaemonHost(project);
     return !daemonHost || onlineDaemonHosts.has(daemonHost);
   });
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const [orderedVisibleProjects, setOrderedVisibleProjects] = useState<Project[]>(visibleProjects);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
 
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
-  const dragSourceIdRef = useRef<string | null>(null);
-  const dragCounterRef = useRef(0);
+  const visibleProjectIds = useMemo(() => visibleProjects.map((project) => project.id).join(','), [visibleProjects]);
 
-  const handleDragStart = useCallback((e: DragEvent<HTMLDivElement>, projectId: string) => {
-    dragSourceIdRef.current = projectId;
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', projectId);
-  }, []);
+  const prevVisibleProjectsRef = useRef(visibleProjects);
 
-  const handleDragEnter = useCallback((index: number) => {
-    dragCounterRef.current += 1;
-    setDragOverIndex(index);
-  }, []);
-
-  const handleDragLeave = useCallback(() => {
-    dragCounterRef.current -= 1;
-    if (dragCounterRef.current <= 0) {
-      dragCounterRef.current = 0;
-      setDragOverIndex(null);
+  useEffect(() => {
+    if (activeProjectId !== null) {
+      return;
     }
+
+    const prev = prevVisibleProjectsRef.current;
+    prevVisibleProjectsRef.current = visibleProjects;
+
+    // Same reference — nothing changed
+    if (prev === visibleProjects) {
+      return;
+    }
+
+    setOrderedVisibleProjects((current) => {
+      const currentIds = current.map((p) => p.id).join(',');
+      if (currentIds !== visibleProjectIds) {
+        // ID set changed — full reset
+        return visibleProjects;
+      }
+      // IDs unchanged — refresh object references so renamed/updated projects render
+      const byId = new Map<string, Project>();
+      for (const p of visibleProjects) byId.set(p.id, p);
+      const next = current.map((p) => byId.get(p.id) ?? p);
+      // Only return a new array if something actually changed
+      const changed = next.some((p, i) => p !== current[i]);
+      return changed ? next : current;
+    });
+  }, [activeProjectId, visibleProjectIds, visibleProjects]);
+
+  const activeProject = useMemo(() => {
+    if (!activeProjectId) {
+      return null;
+    }
+    return orderedVisibleProjects.find((project) => project.id === activeProjectId)
+      ?? visibleProjects.find((project) => project.id === activeProjectId)
+      ?? null;
+  }, [activeProjectId, orderedVisibleProjects, visibleProjects]);
+
+  const commitOrder = useCallback((nextVisibleProjects: Project[]) => {
+    const visibleIdSet = new Set(visibleProjects.map((project) => project.id));
+    const reorderedVisibleIds = nextVisibleProjects.map((project) => project.id);
+    const ids = projects.map((project) => (
+      visibleIdSet.has(project.id)
+        ? reorderedVisibleIds.shift()!
+        : project.id
+    ));
+    void reorderProjects(ids);
+  }, [projects, reorderProjects, visibleProjects]);
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    setActiveProjectId(String(event.active.id));
   }, []);
 
-  const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
+  const handleDragOver = useCallback((event: DragOverEvent) => {
+    if (!event.over) {
+      return;
+    }
+
+    const activeId = String(event.active.id);
+    const overId = String(event.over.id);
+    setOrderedVisibleProjects((current) => reorderProjectsLocally(current, activeId, overId));
   }, []);
 
-  const handleDrop = useCallback(
-    (e: DragEvent<HTMLDivElement>, targetIndex: number) => {
-      e.preventDefault();
-      const sourceId = e.dataTransfer.getData('text/plain') || dragSourceIdRef.current;
-      setDragOverIndex(null);
-      dragCounterRef.current = 0;
-      dragSourceIdRef.current = null;
+  const handleDragCancel = useCallback((_event: DragCancelEvent) => {
+    setActiveProjectId(null);
+    setOrderedVisibleProjects(visibleProjects);
+  }, [visibleProjects]);
 
-      if (!sourceId) return;
+  const handleDragEnd = useCallback(async (event: DragEndEvent) => {
+    if (!event.over) {
+      setActiveProjectId(null);
+      setOrderedVisibleProjects(visibleProjects);
+      return;
+    }
 
-      const visibleIds = visibleProjects.map((p) => p.id);
-      const fromIndex = visibleIds.indexOf(sourceId);
-      if (fromIndex === -1 || fromIndex === targetIndex) return;
+    const activeId = String(event.active.id);
+    const overId = String(event.over.id);
+    const nextVisibleProjects = reorderProjectsLocally(orderedVisibleProjects, activeId, overId);
+    setOrderedVisibleProjects(nextVisibleProjects);
+    setActiveProjectId(null);
 
-      visibleIds.splice(fromIndex, 1);
-      const adjustedTargetIndex = fromIndex < targetIndex ? targetIndex - 1 : targetIndex;
-      visibleIds.splice(adjustedTargetIndex, 0, sourceId);
+    const previousOrder = visibleProjects.map((project) => project.id).join(',');
+    const nextOrder = nextVisibleProjects.map((project) => project.id).join(',');
+    if (previousOrder === nextOrder) {
+      return;
+    }
 
-      const visibleIdSet = new Set(visibleProjects.map((p) => p.id));
-      const reorderedVisibleIds = [...visibleIds];
-      const ids = projects.map((project) =>
-        visibleIdSet.has(project.id)
-          ? reorderedVisibleIds.shift()!
-          : project.id,
-      );
-      void reorderProjects(ids);
-    },
-    [projects, visibleProjects, reorderProjects],
-  );
-
-  const handleDragEnd = useCallback(() => {
-    setDragOverIndex(null);
-    dragCounterRef.current = 0;
-    dragSourceIdRef.current = null;
-  }, []);
+    await commitOrder(nextVisibleProjects);
+  }, [commitOrder, orderedVisibleProjects, visibleProjects]);
 
   if (isLoading && projects.length === 0) {
     return (
@@ -119,40 +174,38 @@ export function ProjectList() {
   }
 
   return (
-    <div className="space-y-3">
-      {visibleProjects.map((project, index) => (
-        <div
-          key={project.id}
-          onDragOver={handleDragOver}
-          onDragEnter={() => handleDragEnter(index)}
-          onDragLeave={handleDragLeave}
-          onDrop={(e) => handleDrop(e, index)}
-          onDragEnd={handleDragEnd}
-        >
-          {dragOverIndex === index && dragSourceIdRef.current !== project.id ? (
-            <div className="h-0.5 rounded-full bg-[var(--accent)] -mt-1.5 mb-1.5" />
-          ) : null}
-          <ProjectItem
-            project={project}
-            isSelected={selectedProjectId === project.id}
-            onSelect={setSelectedProjectId}
-            dragHandle={<DragHandle projectId={project.id} onDragStart={handleDragStart} />}
-          />
+    <DndContext
+      sensors={sensors}
+      collisionDetection={collisionDetection}
+      onDragStart={handleDragStart}
+      onDragOver={handleDragOver}
+      onDragCancel={handleDragCancel}
+      onDragEnd={handleDragEnd}
+    >
+      <SortableContext items={orderedVisibleProjects.map((project) => project.id)} strategy={verticalListSortingStrategy}>
+        <div className="space-y-3">
+          {orderedVisibleProjects.map((project) => (
+            <ProjectItem
+              key={project.id}
+              project={project}
+              isSelected={selectedProjectId === project.id}
+              onSelect={setSelectedProjectId}
+              dragDisabled={isLoading}
+            />
+          ))}
         </div>
-      ))}
-      <div
-        className="h-3"
-        onDragOver={handleDragOver}
-        onDragEnter={() => handleDragEnter(visibleProjects.length)}
-        onDragLeave={handleDragLeave}
-        onDrop={(e) => handleDrop(e, visibleProjects.length)}
-        onDragEnd={handleDragEnd}
-        data-testid="project-list-end-dropzone"
-      >
-        {dragOverIndex === visibleProjects.length ? (
-          <div className="h-0.5 rounded-full bg-[var(--accent)]" />
+      </SortableContext>
+
+      <DragOverlay>
+        {activeProject ? (
+          <ProjectItem
+            project={activeProject}
+            isSelected={selectedProjectId === activeProject.id}
+            onSelect={setSelectedProjectId}
+            dragDisabled
+          />
         ) : null}
-      </div>
-    </div>
+      </DragOverlay>
+    </DndContext>
   );
 }

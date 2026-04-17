@@ -6,6 +6,9 @@ import {
 } from "@/lib/channel/task-ingress-service";
 import { db } from "@/lib/db";
 import { buildMessageResponse } from "@/shared/utils/message-attachments";
+import {
+  isMissingAnyNewSchemaError,
+} from "@/lib/tasks/pty-compat";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
@@ -36,6 +39,7 @@ export async function GET(
   const { taskId } = await params;
   const task = await db.task.findFirst({
     where: { id: taskId, project: { userId: user.id } },
+    select: { id: true },
   });
 
   if (!task) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -122,9 +126,19 @@ export async function POST(
     return NextResponse.json({ error: "content required" }, { status: 400 });
   }
 
-  const task = await db.task.findFirst({
-    where: { id: taskId, project: { userId: user.id } },
-  });
+  let task: { id: string; projectId: string; taskType?: string | null } | null;
+  try {
+    task = await db.task.findFirst({
+      where: { id: taskId, project: { userId: user.id } },
+      select: { id: true, projectId: true, taskType: true },
+    });
+  } catch (error) {
+    if (!isMissingAnyNewSchemaError(error)) throw error;
+    task = await db.task.findFirst({
+      where: { id: taskId, project: { userId: user.id } },
+      select: { id: true, projectId: true },
+    });
+  }
   if (!task) return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (task.taskType === "pty_task") {
     return NextResponse.json(

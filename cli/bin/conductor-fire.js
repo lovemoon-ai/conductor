@@ -82,23 +82,62 @@ export function shouldRunReconnectRecovery({
 }
 
 // Load allow_cli_list from config file (no defaults - must be configured)
-async function loadAllowCliList(configFilePath) {
+function loadFireConfigYaml(configFilePath) {
   const home = os.homedir();
   const configPath = configFilePath || process.env.CONDUCTOR_CONFIG || path.join(home, ".conductor", "config.yaml");
-  let parsed = null;
   try {
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, "utf8");
-      parsed = yaml.load(content);
+      const parsed = yaml.load(content);
+      if (parsed && typeof parsed === "object") {
+        return { configPath, parsed };
+      }
     }
   } catch (error) {
     // ignore error
   }
-  if (parsed && typeof parsed === "object" && parsed.allow_cli_list) {
+  return { configPath, parsed: null };
+}
+
+// Load allow_cli_list from config file (no defaults - must be configured)
+async function loadAllowCliList(configFilePath) {
+  const { configPath, parsed } = loadFireConfigYaml(configFilePath);
+  if (parsed && parsed.allow_cli_list) {
     return await filterRuntimeSupportedAllowCliList(parsed.allow_cli_list, { configFilePath: configPath });
   }
   return {};
 }
+
+function loadPrePromptMap(configFilePath) {
+  const { parsed } = loadFireConfigYaml(configFilePath);
+  if (parsed && parsed.pre_prompt && typeof parsed.pre_prompt === "object") {
+    return parsed.pre_prompt;
+  }
+  return {};
+}
+
+export function expandEnvVars(text, env = process.env) {
+  if (typeof text !== "string" || !text) {
+    return "";
+  }
+  return text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (match, braced, bare) => {
+    const key = braced || bare;
+    return Object.prototype.hasOwnProperty.call(env, key) && env[key] != null ? String(env[key]) : match;
+  });
+}
+
+export function resolveConfiguredPrePrompt({ configFilePath, backend, sessionBackend, env = process.env } = {}) {
+  const prePromptMap = loadPrePromptMap(configFilePath);
+  const candidates = [backend, sessionBackend]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean);
+  for (const candidate of candidates) {
+    if (typeof prePromptMap[candidate] === "string") {
+      const resolved = expandEnvVars(prePromptMap[candidate], env);
+      return resolved || undefined;
+    }
+  }
+  return undefined;
 
 function parseCommandParts(commandLine) {
   const input = String(commandLine || "").trim();
@@ -754,6 +793,12 @@ async function main() {
       process.env,
       cliArgs.sessionBackend,
     );
+    const resolvedPrePrompt = resolveConfiguredPrePrompt({
+      configFilePath: cliArgs.configFile,
+      backend: cliArgs.backend,
+      sessionBackend: cliArgs.sessionBackend,
+      env: process.env,
+    });
 
     backendSession = createAiSession(cliArgs.sessionBackend || cliArgs.backend, {
       initialImages: cliArgs.initialImages,
@@ -763,6 +808,9 @@ async function main() {
       ...(cliArgs.sessionOptions || {}),
       ...(sessionCommandLine ? { commandLine: sessionCommandLine } : {}),
       logger: { log },
+      ...(resolvedPrePrompt ? { prePrompt: resolvedPrePrompt } : {}),
+      sessionStoreKey: taskContext.taskId ? `task-${taskContext.taskId}` : undefined,
+      resumePersistedSession: Boolean(!resolvedResumeSessionId && taskContext.taskId),
     });
 
     log(`Using backend: ${cliArgs.backend}`);
@@ -2179,6 +2227,11 @@ export class BridgeRunner {
       session_file_path: payload.session_file_path || runtimeContext?.session_file_path,
       token_usage_percent: runtimeContext?.token_usage_percent,
       context_usage_percent: runtimeContext?.context_usage_percent,
+      tool_name: payload.tool_name ? String(payload.tool_name) : undefined,
+      tool_id: payload.tool_id ? String(payload.tool_id) : undefined,
+      item_id: payload.item_id ? String(payload.item_id) : undefined,
+      turn_started_at: payload.turn_started_at ? String(payload.turn_started_at) : undefined,
+      event_count: typeof payload.event_count === "number" ? payload.event_count : undefined,
     };
   }
 

@@ -369,6 +369,46 @@ describe("/api/tasks/[taskId]", () => {
     expect(db.message.findMany).not.toHaveBeenCalled();
   });
 
+  it("falls back to legacy task detail reads when issue relation columns are missing", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst)
+      .mockRejectedValueOnce(
+        prismaError("P2022", 'The column `tasks.issue_id` does not exist in the current database.'),
+      )
+      .mockResolvedValueOnce({
+        id: "task-legacy-issue-1",
+        projectId: "proj-1",
+        title: "Legacy Issue Task",
+        status: "running",
+        agentHost: "daemon-a",
+        executionHost: "daemon-a",
+        backendType: "codex",
+        sessionId: null,
+        sessionFilePath: null,
+        metadata: JSON.stringify({ legacy: true }),
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+      } as any);
+
+    const response = await GET(createMockRequest({ method: "GET", token }), {
+      params: Promise.resolve({ taskId: "task-legacy-issue-1" }),
+    });
+    const data = await extractJson(response);
+    const legacyFindFirstCall = vi.mocked(db.task.findFirst).mock.calls[1]?.[0];
+
+    expect(response.status).toBe(200);
+    expect(legacyFindFirstCall?.select).not.toHaveProperty("issueId");
+    expect(data).toEqual(
+      expect.objectContaining({
+        id: "task-legacy-issue-1",
+        issue_id: null,
+        task_type: "ai_task",
+        launch_config: null,
+        pty_session: null,
+      }),
+    );
+  });
+
   it("should send stop_task to agent and delete task", async () => {
     const token = createTestToken("user-1");
     vi.mocked(db.task.findFirst).mockResolvedValue({
@@ -1482,6 +1522,78 @@ describe("/api/tasks/[taskId]", () => {
         task_type: "ai_task",
         launch_config: null,
         pty_session: null,
+      }),
+    );
+  });
+
+  it("falls back to legacy ai_task PATCH when issue relation columns are missing", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst)
+      .mockRejectedValueOnce(
+        prismaError("P2022", 'The column `tasks.issue_id` does not exist in the current database.'),
+      )
+      .mockResolvedValueOnce({
+        id: "task-legacy-issue-patch-1",
+        projectId: "proj-1",
+        title: "Legacy Task",
+        taskType: "ai_task",
+        status: "running",
+        agentHost: "daemon-a",
+        executionHost: "daemon-a",
+        backendType: "codex",
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: null,
+        ptySession: null,
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+      } as any);
+    vi.mocked(db.task.update)
+      .mockRejectedValueOnce(
+        prismaError("P2022", 'The column `tasks.issue_id` does not exist in the current database.'),
+      )
+      .mockResolvedValueOnce({
+        id: "task-legacy-issue-patch-1",
+        projectId: "proj-1",
+        title: "Legacy Rename",
+        taskType: "ai_task",
+        status: "running",
+        agentHost: "daemon-a",
+        executionHost: "daemon-a",
+        backendType: "codex",
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: null,
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2024-01-01T00:02:00.000Z"),
+      } as any);
+
+    const response = await PATCH(
+      createMockRequest({
+        method: "PATCH",
+        token,
+        body: { title: "Legacy Rename" },
+      }),
+      { params: Promise.resolve({ taskId: "task-legacy-issue-patch-1" }) },
+    );
+    const data = await extractJson(response);
+    const issueIdFallbackFindCall = vi.mocked(db.task.findFirst).mock.calls[1]?.[0];
+    const issueIdFallbackUpdateCall = vi.mocked(db.task.update).mock.calls[1]?.[0];
+
+    expect(response.status).toBe(200);
+    // issueId-only fallback: PTY columns preserved, only issueId omitted
+    expect(issueIdFallbackFindCall?.select).toBeDefined();
+    expect(issueIdFallbackFindCall?.select).not.toHaveProperty("issueId");
+    expect(issueIdFallbackFindCall?.select).toHaveProperty("taskType");
+    expect(issueIdFallbackUpdateCall?.data).not.toHaveProperty("issueId");
+    expect(data).toEqual(
+      expect.objectContaining({
+        id: "task-legacy-issue-patch-1",
+        title: "Legacy Rename",
+        issue_id: null,
+        task_type: "ai_task",
       }),
     );
   });

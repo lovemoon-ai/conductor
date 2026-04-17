@@ -39,20 +39,30 @@ describe('Sidebar', () => {
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
     const links = within(navigation).getAllByRole('link').filter((link) => {
       const href = link.getAttribute('href');
-      return href === '/app/projects' || href === '/app/tasks' || href === '/app/settings';
+      return href === '/app/projects' || href === '/app/issues' || href === '/app/tasks' || href === '/app/settings';
     });
 
     expect(navigation).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Tasks/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Projects/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Issues/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Settings/i })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Docs/i })).toBeNull();
     expect(screen.getByText('3')).toBeInTheDocument();
     expect(links.map((link) => link.getAttribute('href'))).toEqual([
       '/app/projects',
+      '/app/issues',
       '/app/tasks',
       '/app/settings',
     ]);
+  });
+
+  it('links issues navigation to the selected project when present', () => {
+    selectedProjectId = 'project-1';
+
+    render(<Sidebar />);
+
+    expect(screen.getByRole('link', { name: /Issues/i })).toHaveAttribute('href', '/app/issues?projectId=project-1');
   });
 
   it('links tasks navigation to the selected project when present', () => {

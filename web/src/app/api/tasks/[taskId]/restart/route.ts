@@ -4,6 +4,16 @@ import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
 import { deliverAgentOutboxForHost } from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
+import { serializeTaskResponse } from "@/lib/tasks/serialization";
+import {
+  applyLegacyTaskShape,
+  isMissingAnyNewSchemaError,
+  isMissingIssueIdSchemaError,
+  isMissingPtySchemaError,
+  legacyTaskSelect,
+  taskSelectWithoutIssueId,
+  withPtySchemaFallback,
+} from "@/lib/tasks/pty-compat";
 import {
   normalizeOptionalString,
   parseJsonObject,
@@ -26,40 +36,108 @@ import {
   STOPPED_TASK_STATUSES,
 } from "@/lib/tasks/restart";
 
-const serializeTaskResponse = (task: {
-  id: string;
-  projectId: string;
-  title: string;
-  taskType?: string | null;
-  status: string;
-  agentHost: string | null;
-  executionHost: string | null;
-  backendType: string | null;
-  sessionId: string | null;
-  sessionFilePath: string | null;
-  launchConfig?: unknown;
-  metadata: unknown;
-  createdAt: Date;
-  updatedAt: Date;
-}) => ({
-  id: task.id,
-  project_id: task.projectId,
-  title: task.title,
-  task_type: task.taskType ?? "ai_task",
-  status: normalizeTaskStatus(task.status),
-  agent_host: task.agentHost,
-  execution_host: task.executionHost,
-  backend_type: task.backendType,
-  session_id: task.sessionId,
-  session_file_path: task.sessionFilePath,
-  launch_config: parseJsonObject(task.launchConfig),
-  metadata: parseJsonObject(task.metadata),
-  pty_session: null,
-  created_at: task.createdAt.toISOString(),
-  updated_at: task.updatedAt.toISOString(),
-});
-
 const appendBackendSuffix = (title: string, backend: string): string => `${title} [${backend}]`;
+
+const findRestartSourceTask = async (userId: string, taskId: string) =>
+  withPtySchemaFallback(
+    "tasks.taskId.restart.findSource",
+    () =>
+      db.task.findFirst({
+        where: { id: taskId, project: { userId } },
+      }),
+    () =>
+      withPtySchemaFallback(
+        "tasks.taskId.restart.findSource.withoutIssueId",
+        async () => {
+          const task = await db.task.findFirst({
+            where: { id: taskId, project: { userId } },
+            select: taskSelectWithoutIssueId,
+          });
+          return task ? { ...task, issueId: null } : null;
+        },
+        async () => {
+          const task = await db.task.findFirst({
+            where: { id: taskId, project: { userId } },
+            select: legacyTaskSelect,
+          });
+          return task ? { ...applyLegacyTaskShape(task), issueId: null } : null;
+        },
+      ),
+  );
+
+const updateTaskWithRestartFallback = async (
+  taskStore: any,
+  args: { where: { id: string }; data: Record<string, unknown> },
+  issueId: string | null,
+) => {
+  try {
+    return await taskStore.update(args);
+  } catch (error) {
+    if (!isMissingAnyNewSchemaError(error)) {
+      throw error;
+    }
+
+    try {
+      const task = await taskStore.update({
+        ...args,
+        select: taskSelectWithoutIssueId,
+      });
+      return { ...task, issueId };
+    } catch (fallbackError) {
+      if (!isMissingPtySchemaError(fallbackError)) {
+        throw fallbackError;
+      }
+
+      return applyLegacyTaskShape(
+        await taskStore.update({
+          ...args,
+          select: legacyTaskSelect,
+        }),
+      );
+    }
+  }
+};
+
+const createSuccessorTaskWithRestartFallback = async (
+  taskStore: any,
+  args: { data: Record<string, unknown> },
+) => {
+  try {
+    return await taskStore.create(args);
+  } catch (error) {
+    if (!isMissingAnyNewSchemaError(error)) {
+      throw error;
+    }
+
+    if (isMissingIssueIdSchemaError(error)) {
+      const { issueId: _issueId, ...dataWithoutIssueId } = args.data;
+      try {
+        const task = await taskStore.create({
+          data: dataWithoutIssueId,
+          select: taskSelectWithoutIssueId,
+        });
+        return { ...task, issueId: null };
+      } catch (fallbackError) {
+        if (!isMissingPtySchemaError(fallbackError)) {
+          throw fallbackError;
+        }
+      }
+    }
+
+    const {
+      issueId: _issueId,
+      taskType: _taskType,
+      launchConfig: _launchConfig,
+      ...legacyData
+    } = args.data;
+    return applyLegacyTaskShape(
+      await taskStore.create({
+        data: legacyData,
+        select: legacyTaskSelect,
+      }),
+    );
+  }
+};
 
 export async function POST(
   request: NextRequest,
@@ -76,9 +154,7 @@ export async function POST(
       ? (body as Record<string, unknown>)
       : {};
 
-  const sourceTask = await db.task.findFirst({
-    where: { id: taskId, project: { userId: user.id } },
-  });
+  const sourceTask = await findRestartSourceTask(user.id, taskId);
   if (!sourceTask) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
@@ -298,15 +374,19 @@ export async function POST(
         },
       });
 
-      return tx.task.update({
-        where: { id: sourceTask.id },
-        data: {
-          status: "running",
-          executionHost: restartAgentHost,
-          agentHost: restartAgentHost,
-          updatedAt: now,
+      return updateTaskWithRestartFallback(
+        tx.task,
+        {
+          where: { id: sourceTask.id },
+          data: {
+            status: "running",
+            executionHost: restartAgentHost,
+            agentHost: restartAgentHost,
+            updatedAt: now,
+          },
         },
-      });
+        sourceTask.issueId ?? null,
+      );
     });
 
     realtimeHub.bindTaskToAgent(sourceTask.id, restartAgentHost);
@@ -346,10 +426,11 @@ export async function POST(
       );
     }
 
-    const task = await tx.task.create({
+    const task = await createSuccessorTaskWithRestartFallback(tx.task, {
       data: {
         id: successorTaskId,
         projectId: sourceTask.projectId,
+        issueId: sourceTask.issueId ?? null,
         title: successorTitle,
         taskType: "ai_task",
         status: "init",
@@ -375,6 +456,7 @@ export async function POST(
           ...(isBackendSwitch ? { backendSwitchRequestId: requestId } : {}),
         }),
       },
+      select: { id: true },
     });
 
     await tx.agentOutbox.create({

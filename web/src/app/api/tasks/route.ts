@@ -3,7 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
 import { realtimeHub } from "@/lib/realtime/hub";
-import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
+import { createAndDispatchAiTask } from "@/lib/tasks/create-ai-task";
+import { serializeTaskResponse } from "@/lib/tasks/serialization";
 import {
   normalizeOptionalString,
   normalizeTaskStatus,
@@ -19,9 +20,11 @@ import {
 } from "@/lib/tasks/worktree";
 import {
   applyLegacyTaskShape,
+  isMissingAnyNewSchemaError,
   isMissingPtySchemaError,
   legacyTaskSelect,
   PTY_SCHEMA_UNAVAILABLE_MESSAGE,
+  taskSelectWithoutIssueId,
   withPtySchemaFallback,
 } from "@/lib/tasks/pty-compat";
 import {
@@ -74,85 +77,6 @@ const parseJsonField = (
     value: parseJsonObject(raw),
   };
 };
-
-const serializePtySession = (ptySession: {
-  id: string;
-  taskId: string;
-  state: string;
-  entrypointType: string | null;
-  toolPreset: string | null;
-  commandJson: string | null;
-  cwd: string | null;
-  envJson: string | null;
-  shell: string | null;
-  pid: number | null;
-  cols: number | null;
-  rows: number | null;
-  lastOutputSeq: number;
-  startedAt: Date | null;
-  closedAt: Date | null;
-  createdAt: Date;
-  updatedAt: Date;
-} | null) =>
-  ptySession
-    ? {
-        id: ptySession.id,
-        task_id: ptySession.taskId,
-        state: ptySession.state,
-        entrypoint_type: ptySession.entrypointType,
-        tool_preset: ptySession.toolPreset,
-        command: parseJsonObject(ptySession.commandJson),
-        cwd: ptySession.cwd,
-        env: parseJsonObject(ptySession.envJson),
-        shell: ptySession.shell,
-        pid: ptySession.pid,
-        cols: ptySession.cols,
-        rows: ptySession.rows,
-        last_output_seq: ptySession.lastOutputSeq,
-        started_at: ptySession.startedAt?.toISOString() ?? null,
-        closed_at: ptySession.closedAt?.toISOString() ?? null,
-        created_at: ptySession.createdAt.toISOString(),
-        updated_at: ptySession.updatedAt.toISOString(),
-      }
-    : null;
-
-const serializeTaskResponse = (task: {
-  id: string;
-  projectId: string;
-  title: string;
-  taskType?: string | null;
-  status: string;
-  agentHost: string | null;
-  executionHost: string | null;
-  backendType: string | null;
-  sessionId: string | null;
-  sessionFilePath: string | null;
-  launchConfig?: unknown;
-  metadata: unknown;
-  lastUserMessage?: string | null;
-  lastAssistantMessage?: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-  ptySession?: Parameters<typeof serializePtySession>[0];
-}) => ({
-  id: task.id,
-  project_id: task.projectId,
-  title: task.title,
-  task_type: normalizeTaskType(task.taskType),
-  status: normalizeTaskStatus(task.status),
-  agent_host: task.agentHost,
-  execution_host: task.executionHost,
-  backend_type: task.backendType,
-  session_id: task.sessionId,
-  session_file_path: task.sessionFilePath,
-  launch_config: parseJsonObject(task.launchConfig),
-  metadata: parseJsonObject(task.metadata),
-  last_user_message: task.lastUserMessage ?? null,
-  last_assistant_message: task.lastAssistantMessage ?? null,
-  created_at: task.createdAt.toISOString(),
-  updated_at: task.updatedAt.toISOString(),
-  ...(task.ptySession !== undefined ? { pty_session: serializePtySession(task.ptySession) } : {}),
-});
 
 const buildTaskMessagePreviews = async (
   taskIds: string[],
@@ -234,68 +158,22 @@ const findTasksForList = async (userId: string, projectId: string | null) =>
           ...(projectId ? { projectId } : {}),
         },
         select: legacyTaskSelect,
-      })).map((task) => applyLegacyTaskShape(task)),
+      })).map((task) => ({ ...applyLegacyTaskShape(task), issueId: null })),
+    async () =>
+      (await db.task.findMany({
+        where: {
+          project: { userId },
+          ...(projectId ? { projectId } : {}),
+        },
+        select: {
+          ...taskSelectWithoutIssueId,
+          ptySession: true,
+        },
+      })).map((task) => ({ ...task, issueId: null })),
   );
 
 const getTaskListSortTime = (task: { updatedAt?: Date | null; createdAt: Date }) =>
   (task.updatedAt instanceof Date ? task.updatedAt : task.createdAt).getTime();
-
-const createTaskRecord = async (args: {
-  requestedId?: string;
-  projectId: string;
-  title: string;
-  taskType: string;
-  status: string;
-  agentHost: string | null;
-  requestedBackendType: string | null;
-  requestedSessionId: string | null;
-  requestedSessionFilePath: string | null;
-  launchConfig: JsonObject | null;
-  metadata: JsonObject | null;
-}) => {
-  try {
-    return await db.task.create({
-      data: {
-        id: args.requestedId,
-        projectId: args.projectId,
-        title: args.title,
-        taskType: args.taskType,
-        status: args.status,
-        agentHost: args.agentHost,
-        executionHost: args.taskType === "ai_task" ? args.agentHost ?? null : null,
-        backendType: args.requestedBackendType,
-        sessionId: args.requestedSessionId,
-        sessionFilePath: args.requestedSessionFilePath,
-        launchConfig: serializeJsonObject(args.launchConfig),
-        metadata: args.metadata ? JSON.stringify(args.metadata) : null,
-      },
-    });
-  } catch (error) {
-    if (!isMissingPtySchemaError(error)) {
-      throw error;
-    }
-    if (args.taskType === "pty_task") {
-      throw error;
-    }
-    return applyLegacyTaskShape(
-      await db.task.create({
-        data: {
-          id: args.requestedId,
-          projectId: args.projectId,
-          title: args.title,
-          status: args.status,
-          agentHost: args.agentHost,
-          executionHost: args.agentHost ?? null,
-          backendType: args.requestedBackendType,
-          sessionId: args.requestedSessionId,
-          sessionFilePath: args.requestedSessionFilePath,
-          metadata: args.metadata ? JSON.stringify(args.metadata) : null,
-        },
-        select: legacyTaskSelect,
-      }),
-    );
-  }
-};
 
 const createPtyTaskRecord = async (args: {
   requestedId?: string;
@@ -582,6 +460,12 @@ export async function POST(request: NextRequest) {
     taskType === "ai_task" && typeof agentHost === "string" && isConductorFireHost(agentHost)
       ? "running"
       : "init";
+  const initialMessageContent =
+    taskType === "ai_task" &&
+    typeof metadata?.initialContent === "string" &&
+    metadata.initialContent.trim()
+      ? metadata.initialContent.trim()
+      : null;
 
   let ptySession:
     | {
@@ -622,18 +506,20 @@ export async function POST(request: NextRequest) {
       task = created.task;
       ptySession = created.ptySession;
     } else {
-      task = await createTaskRecord({
-        requestedId,
+      task = await createAndDispatchAiTask({
+        userId: user.id,
         projectId,
+        issueId: null,
         title,
-        taskType,
-        status: normalizeTaskStatus(normalizedBody.status ?? defaultTaskStatus),
         agentHost,
+        requestedId,
         requestedBackendType,
         requestedSessionId,
         requestedSessionFilePath,
         launchConfig,
         metadata,
+        initialMessageContent,
+        status: normalizeTaskStatus(normalizedBody.status ?? defaultTaskStatus),
       });
     }
   } catch (error) {
@@ -641,76 +527,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: PTY_SCHEMA_UNAVAILABLE_MESSAGE }, { status: 409 });
     }
     throw error;
-  }
-
-  let initialMessage: { id: string; createdAt: Date } | null = null;
-  const initialMessageContent =
-    taskType === "ai_task" &&
-    typeof metadata?.initialContent === "string" &&
-    metadata.initialContent.trim()
-      ? metadata.initialContent.trim()
-      : null;
-  if (initialMessageContent) {
-    [initialMessage] = await db.$transaction([
-      db.message.create({
-        data: {
-          taskId: task.id,
-          role: "user",
-          content: initialMessageContent,
-        },
-      }),
-      db.task.update({
-        where: { id: task.id },
-        data: { updatedAt: new Date() },
-      }),
-    ]);
-    realtimeHub.broadcast(user.id, task.projectId, {
-      type: "task_user_message",
-      payload: {
-        id: initialMessage.id,
-        task_id: task.id,
-        project_id: task.projectId,
-        role: "user",
-        content: initialMessageContent,
-        created_at: initialMessage.createdAt.toISOString(),
-      },
-    });
-  }
-
-  if (taskType === "ai_task" && agentHost) {
-    realtimeHub.bindTaskToAgent(task.id, agentHost);
-    // Fire hosts run the task directly — they don't need a create_task command
-    // dispatched through the outbox (the fire process already owns the task).
-    if (!isConductorFireHost(agentHost)) {
-      const requestId = randomUUID();
-      await enqueueAndAttemptAgentCommand(
-        {
-          userId: user.id,
-          agentHost,
-          taskId: task.id,
-          eventType: "create_task",
-          requestId,
-          envelope: {
-            type: "create_task",
-            payload: {
-              task_id: task.id,
-              project_id: task.projectId,
-              title: task.title,
-              backend_type: task.backendType ?? metadata?.backendType,
-              initial_content: initialMessageContent ?? undefined,
-              launch_config: launchConfig ?? undefined,
-              request_id: requestId,
-            },
-          },
-        },
-        {
-          agentHost,
-          sendToAgentHost: ({ userId: targetUserId, agentHost: targetHost, envelope }) =>
-            realtimeHub.sendToAgentHost(targetUserId, targetHost, envelope),
-          resolveTaskHost: (taskId) => realtimeHub.getTaskAgentHost(taskId),
-        },
-      );
-    }
   }
 
   if (taskType === "pty_task" && agentHost && ptySession) {
@@ -728,15 +544,7 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const taskResponseRecord = {
-    ...task,
-    ...(ptySession !== undefined || "ptySession" in task
-      ? {
-          ptySession:
-            ptySession ?? (task as { ptySession?: Parameters<typeof serializePtySession>[0] }).ptySession ?? null,
-        }
-      : {}),
-  };
+  const taskResponseRecord = ptySession ? { ...task, ptySession } : task;
 
   return NextResponse.json(serializeTaskResponse(taskResponseRecord));
 }

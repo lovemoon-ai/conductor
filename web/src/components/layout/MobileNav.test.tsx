@@ -34,9 +34,18 @@ describe('MobileNav', () => {
 
     expect(links.map((link) => link.getAttribute('href'))).toEqual([
       '/app/projects',
+      '/app/issues',
       '/app/tasks',
       '/app/settings',
     ]);
+  });
+
+  it('links issues navigation to the selected project when present', () => {
+    selectedProjectId = 'project-1';
+
+    render(<MobileNav />);
+
+    expect(screen.getByRole('link', { name: 'Issues' })).toHaveAttribute('href', '/app/issues?projectId=project-1');
   });
 
   it('links tasks navigation to the selected project when present', () => {
