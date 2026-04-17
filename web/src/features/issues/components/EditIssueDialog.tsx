@@ -1,40 +1,37 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import type { Issue } from '@/shared/types';
 import { Dialog } from '@/components/common/Dialog';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { useToast } from '@/components/common/FeedbackProvider';
-import { ISSUE_STATUS_LABELS } from '@/lib/issues/config';
 import { useIssuesStore } from '../store';
 
-const DEFAULT_STATUS = 'backlog' as const;
-
-export function CreateIssueDialog({
+export function EditIssueDialog({
   open,
   onClose,
-  projectId,
+  issue,
 }: {
   open: boolean;
   onClose: () => void;
-  projectId: string | null;
+  issue: Issue | null;
 }) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
 
-  const createIssue = useIssuesStore((state) => state.createIssue);
-  const error = useIssuesStore((state) => state.error);
-  const clearError = useIssuesStore((state) => state.clearError);
+  const updateIssue = useIssuesStore((state) => state.updateIssue);
   const { pushToast } = useToast();
 
   useEffect(() => {
-    if (!open) {
+    if (!open || !issue) {
       return;
     }
-    setTitle('');
-    setDescription('');
-    clearError();
-  }, [clearError, open]);
+    setTitle(issue.title);
+    setDescription(issue.description ?? '');
+    setLocalError(null);
+  }, [issue, open]);
 
   const handleClose = () => {
     if (isSubmitting) {
@@ -45,26 +42,39 @@ export function CreateIssueDialog({
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!projectId || !title.trim()) {
+    if (!issue) {
+      return;
+    }
+    const nextTitle = title.trim();
+    if (!nextTitle) {
+      setLocalError('Title is required.');
+      return;
+    }
+
+    const nextDescription = description.trim();
+    const previousDescription = issue.description?.trim() ?? '';
+    const titleChanged = nextTitle !== issue.title;
+    const descriptionChanged = nextDescription !== previousDescription;
+
+    if (!titleChanged && !descriptionChanged) {
+      onClose();
       return;
     }
 
     setIsSubmitting(true);
+    setLocalError(null);
     try {
-      await createIssue({
-        projectId,
-        title: title.trim(),
-        description: description.trim() ? description.trim() : null,
-        status: DEFAULT_STATUS,
+      await updateIssue(issue.id, {
+        ...(titleChanged ? { title: nextTitle } : {}),
+        ...(descriptionChanged ? { description: nextDescription ? nextDescription : null } : {}),
       });
       pushToast({
-        title: 'Issue created',
-        description: `Added to ${ISSUE_STATUS_LABELS[DEFAULT_STATUS]}.`,
+        title: 'Issue updated',
         variant: 'success',
       });
       onClose();
-    } catch {
-      // Store captures the message; surfaced below.
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : 'Failed to update issue.');
     } finally {
       setIsSubmitting(false);
     }
@@ -74,16 +84,10 @@ export function CreateIssueDialog({
     <Dialog
       open={open}
       onClose={handleClose}
-      title="Create Issue"
+      title="Edit Issue"
       maxWidthClassName="max-w-lg"
     >
       <form onSubmit={handleSubmit} className="space-y-5">
-        {!projectId ? (
-          <InlineNotice variant="warning" title="No project available">
-            Select a project before creating an issue.
-          </InlineNotice>
-        ) : null}
-
         <div>
           <label className="mb-2 block text-sm font-medium text-ink">Title</label>
           <input
@@ -106,9 +110,9 @@ export function CreateIssueDialog({
           />
         </div>
 
-        {error ? (
-          <InlineNotice variant="error" title="Issue creation failed">
-            {error}
+        {localError ? (
+          <InlineNotice variant="error" title="Update failed">
+            {localError}
           </InlineNotice>
         ) : null}
 
@@ -122,10 +126,10 @@ export function CreateIssueDialog({
           </button>
           <button
             type="submit"
-            disabled={!projectId || !title.trim() || isSubmitting}
+            disabled={!issue || !title.trim() || isSubmitting}
             className="webapp-btn-primary px-5 py-2.5 text-sm"
           >
-            {isSubmitting ? 'Creating...' : 'Create Issue'}
+            {isSubmitting ? 'Saving...' : 'Save'}
           </button>
         </div>
       </form>

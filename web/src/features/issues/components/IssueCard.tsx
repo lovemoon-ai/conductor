@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type SyntheticEvent } from 'react';
 import { CSS } from '@dnd-kit/utilities';
 import { useSortable } from '@dnd-kit/sortable';
 import type { Issue } from '@/shared/types';
@@ -10,6 +10,10 @@ import {
   ISSUE_STATUS_BADGE_CLASSNAMES,
   ISSUE_STATUS_LABELS,
 } from '@/lib/issues/config';
+import { EditIssueDialog } from './EditIssueDialog';
+
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_MOVE_THRESHOLD_SQ = 25;
 
 const stopEventPropagation = (event: SyntheticEvent) => {
   event.stopPropagation();
@@ -118,7 +122,48 @@ function IssueCardBody({
   const activeTask = issue.activeTask ?? null;
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const deleteActionRef = useRef<HTMLButtonElement>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressStartXRef = useRef(0);
+  const longPressStartYRef = useRef(0);
+
+  const clearLongPress = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => clearLongPress, [clearLongPress]);
+
+  const handleTitlePointerDown = useCallback((event: ReactPointerEvent<HTMLHeadingElement>) => {
+    if (!interactive) {
+      return;
+    }
+    clearLongPress();
+    longPressStartXRef.current = event.clientX;
+    longPressStartYRef.current = event.clientY;
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTimerRef.current = null;
+      setIsEditDialogOpen(true);
+    }, LONG_PRESS_MS);
+  }, [clearLongPress, interactive]);
+
+  const handleTitlePointerMove = useCallback((event: ReactPointerEvent<HTMLHeadingElement>) => {
+    if (!longPressTimerRef.current) {
+      return;
+    }
+    const dx = event.clientX - longPressStartXRef.current;
+    const dy = event.clientY - longPressStartYRef.current;
+    if (dx * dx + dy * dy > LONG_PRESS_MOVE_THRESHOLD_SQ) {
+      clearLongPress();
+    }
+  }, [clearLongPress]);
+
+  const handleTitlePointerEnd = useCallback(() => {
+    clearLongPress();
+  }, [clearLongPress]);
 
   useEffect(() => {
     if (!isConfirmingDelete || isDeleting) {
@@ -166,7 +211,19 @@ function IssueCardBody({
     >
       <div className="min-w-0">
         <div className="flex flex-wrap items-start gap-2">
-          <h3 className="min-w-0 flex-1 text-sm font-semibold text-ink">{issue.title}</h3>
+          <h3
+            className={[
+              'min-w-0 flex-1 text-sm font-semibold text-ink',
+              interactive ? 'select-none' : '',
+            ].join(' ')}
+            onPointerDown={interactive ? handleTitlePointerDown : undefined}
+            onPointerMove={interactive ? handleTitlePointerMove : undefined}
+            onPointerUp={interactive ? handleTitlePointerEnd : undefined}
+            onPointerCancel={interactive ? handleTitlePointerEnd : undefined}
+            onPointerLeave={interactive ? handleTitlePointerEnd : undefined}
+          >
+            {issue.title}
+          </h3>
           {interactive ? (
             <IssueStatusMenu issue={issue} onStatusChange={onStatusChange} disabled={statusMenuDisabled} />
           ) : (
@@ -223,6 +280,13 @@ function IssueCardBody({
           </div>
         ) : null}
       </div>
+      {interactive ? (
+        <EditIssueDialog
+          open={isEditDialogOpen}
+          onClose={() => setIsEditDialogOpen(false)}
+          issue={issue}
+        />
+      ) : null}
     </article>
   );
 }
