@@ -36,6 +36,17 @@ function expectEvent(events, type, assertPayload) {
   assertPayload(event.payload);
 }
 
+async function waitUntil(predicate, { timeoutMs = 500, intervalMs = 10, message = "condition" } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  assert.fail(`Timed out waiting for ${message}`);
+}
+
 describe("Daemon", () => {
   let wss;
   let daemon;
@@ -3174,6 +3185,7 @@ describe("Daemon", () => {
 
   it("stops running child process when stop_task is received", async () => {
     let handler;
+    let connected = false;
     let childExitHandler = null;
     const killCalls = [];
 
@@ -3224,7 +3236,9 @@ describe("Daemon", () => {
           registerHandler: (h) => {
             handler = h;
           },
-          connect: async () => {},
+          connect: async () => {
+            connected = true;
+          },
           disconnect: async () => {},
           sendJson: async () => {},
         }),
@@ -3232,6 +3246,7 @@ describe("Daemon", () => {
     );
 
     assert.ok(typeof handler === "function");
+    await waitUntil(() => connected, { message: "stop-task daemon to connect" });
 
     handler({
       type: "create_task",
@@ -3242,7 +3257,7 @@ describe("Daemon", () => {
       },
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(() => typeof childExitHandler === "function", { message: "task-stop-1 to spawn" });
 
     handler({
       type: "stop_task",
@@ -3265,6 +3280,7 @@ describe("Daemon", () => {
 
   it("restarts same-backend tasks without calling bridge and skips UNKNOWN before running", async () => {
     let handler;
+    let connected = false;
     const spawnCalls = [];
     const sentEvents = [];
     let bridgeCalls = 0;
@@ -3319,7 +3335,9 @@ describe("Daemon", () => {
           registerHandler: (nextHandler) => {
             handler = nextHandler;
           },
-          connect: async () => {},
+          connect: async () => {
+            connected = true;
+          },
           disconnect: async () => {},
           sendJson: async (payload) => {
             sentEvents.push(payload);
@@ -3327,6 +3345,8 @@ describe("Daemon", () => {
         }),
       },
     );
+
+    await waitUntil(() => connected, { message: "restart-same daemon to connect" });
 
     handler({
       type: "restart_task",
@@ -3343,7 +3363,7 @@ describe("Daemon", () => {
       },
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(() => spawnCalls.length === 1, { message: "same-backend restart to spawn" });
 
     assert.strictEqual(bridgeCalls, 0);
     assert.strictEqual(spawnCalls.length, 1);
@@ -3382,6 +3402,7 @@ describe("Daemon", () => {
 
   it("bridges cross-backend restarts and launches the successor task", async () => {
     let handler;
+    let connected = false;
     const spawnCalls = [];
     const bridgeCalls = [];
     const sentEvents = [];
@@ -3434,7 +3455,9 @@ describe("Daemon", () => {
           registerHandler: (nextHandler) => {
             handler = nextHandler;
           },
-          connect: async () => {},
+          connect: async () => {
+            connected = true;
+          },
           disconnect: async () => {},
           sendJson: async (payload) => {
             sentEvents.push(payload);
@@ -3442,6 +3465,8 @@ describe("Daemon", () => {
         }),
       },
     );
+
+    await waitUntil(() => connected, { message: "restart-bridge daemon to connect" });
 
     handler({
       type: "restart_task",
@@ -3459,7 +3484,7 @@ describe("Daemon", () => {
       },
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(() => spawnCalls.length === 1, { message: "cross-backend restart to spawn" });
 
     expectEvent(sentEvents, "task_status_update", (payload) => {
       assert.strictEqual(payload.task_id, "task-successor-1");
@@ -3498,6 +3523,7 @@ describe("Daemon", () => {
 
   it("bridges same-backend successor tasks and launches the new task", async () => {
     let handler;
+    let connected = false;
     const spawnCalls = [];
     const bridgeCalls = [];
 
@@ -3549,12 +3575,16 @@ describe("Daemon", () => {
           registerHandler: (nextHandler) => {
             handler = nextHandler;
           },
-          connect: async () => {},
+          connect: async () => {
+            connected = true;
+          },
           disconnect: async () => {},
           sendJson: async () => {},
         }),
       },
     );
+
+    await waitUntil(() => connected, { message: "restart-fork-same daemon to connect" });
 
     handler({
       type: "restart_task",
@@ -3572,7 +3602,7 @@ describe("Daemon", () => {
       },
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(() => spawnCalls.length === 1, { message: "same-backend successor restart to spawn" });
 
     assert.deepStrictEqual(bridgeCalls, [
       {
@@ -3607,6 +3637,7 @@ describe("Daemon", () => {
 
   it("loads the local ai-bridge helper from CONDUCTOR_AI_BRIDGE_API_PATH when no injected bridge is provided", async () => {
     let handler;
+    let connected = false;
     const spawnCalls = [];
     const previousBridgeApiPath = process.env.CONDUCTOR_AI_BRIDGE_API_PATH;
     const tempDir = `/tmp/conductor-bridge-api-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -3679,15 +3710,19 @@ describe("Daemon", () => {
             return { ok: true, json: async () => ({}) };
           },
           createWebSocketClient: () => ({
-            registerHandler: (nextHandler) => {
-              handler = nextHandler;
-            },
-            connect: async () => {},
+              registerHandler: (nextHandler) => {
+                handler = nextHandler;
+              },
+              connect: async () => {
+                connected = true;
+              },
             disconnect: async () => {},
             sendJson: async () => {},
           }),
         },
       );
+
+      await waitUntil(() => connected, { message: "restart-local-bridge daemon to connect" });
 
       handler({
         type: "restart_task",
@@ -3704,7 +3739,7 @@ describe("Daemon", () => {
         },
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await waitUntil(() => spawnCalls.length === 1, { message: "local bridge restart to spawn" });
 
       assert.strictEqual(spawnCalls.length, 1);
       assert.deepStrictEqual(spawnCalls[0].args, [
@@ -3879,6 +3914,7 @@ describe("Daemon", () => {
 
   it("reports killed summary when backend bridge fails", async () => {
     let handler;
+    let connected = false;
     const sentEvents = [];
     let spawnCount = 0;
 
@@ -3920,7 +3956,9 @@ describe("Daemon", () => {
           registerHandler: (nextHandler) => {
             handler = nextHandler;
           },
-          connect: async () => {},
+          connect: async () => {
+            connected = true;
+          },
           disconnect: async () => {},
           sendJson: async (payload) => {
             sentEvents.push(payload);
@@ -3928,6 +3966,8 @@ describe("Daemon", () => {
         }),
       },
     );
+
+    await waitUntil(() => connected, { message: "restart-bridge-fail daemon to connect" });
 
     handler({
       type: "restart_task",
@@ -3944,7 +3984,16 @@ describe("Daemon", () => {
       },
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (entry) =>
+            entry.type === "task_status_update" &&
+            entry.payload?.task_id === "task-successor-fail-1" &&
+            entry.payload?.status === "KILLED",
+        ),
+      { message: "bridge failure KILLED status" },
+    );
 
     assert.strictEqual(spawnCount, 0);
     expectEvent(sentEvents, "agent_command_ack", (payload) => {
@@ -4076,7 +4125,10 @@ describe("Daemon", () => {
       );
 
       assert.ok(typeof handler === "function");
-      assert.strictEqual(webSocketClientOptions.extraHeaders["x-conductor-capabilities"], "pty_task,terminal_snapshot");
+      assert.strictEqual(
+        webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
+        "project_path_validation,pty_task,terminal_snapshot",
+      );
 
       handler({
         type: "create_pty_task",
@@ -6067,6 +6119,7 @@ describe("Daemon", () => {
 
   it("reports active tasks as killed before disconnect on daemon close", async () => {
     let handler;
+    let connected = false;
     const killCalls = [];
     const events = [];
 
@@ -6113,7 +6166,9 @@ describe("Daemon", () => {
           registerHandler: (h) => {
             handler = h;
           },
-          connect: async () => {},
+          connect: async () => {
+            connected = true;
+          },
           disconnect: async () => {
             events.push({ type: "disconnect" });
           },
@@ -6125,6 +6180,7 @@ describe("Daemon", () => {
     );
 
     assert.ok(typeof handler === "function");
+    await waitUntil(() => connected, { message: "close-status daemon to connect" });
 
     handler({
       type: "create_task",
@@ -6135,14 +6191,23 @@ describe("Daemon", () => {
       },
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(
+      () =>
+        events.some(
+          (event) =>
+            event.type === "sendJson" &&
+            event.payload?.type === "task_status_update" &&
+            event.payload?.payload?.task_id === "task-close-1" &&
+            event.payload?.payload?.status === "RUNNING",
+        ),
+      { message: "task-close-1 to start running" },
+    );
 
     if (daemonInstance && typeof daemonInstance.close === "function") {
-      daemonInstance.close();
+      await daemonInstance.close();
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
+    await waitUntil(() => killCalls.includes("SIGTERM"), { message: "task-close-1 SIGTERM" });
     assert.deepStrictEqual(killCalls, ["SIGTERM"]);
 
     const runningIdx = events.findIndex(
@@ -6777,6 +6842,8 @@ describe("Daemon", () => {
 
     const exitCodes = [];
     let handler;
+    let spawnCount = 0;
+    let connected = false;
 
     startDaemon(
       {
@@ -6790,13 +6857,16 @@ describe("Daemon", () => {
         exit: (code) => {
           exitCodes.push(code);
         },
-        spawn: () => ({
-          pid: 45678,
-          kill: () => {},
-          on: () => {},
-          stdout: { on: () => {} },
-          stderr: { on: () => {} },
-        }),
+        spawn: () => {
+          spawnCount += 1;
+          return {
+            pid: 45678,
+            kill: () => {},
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
         mkdirSync: () => {},
         writeFileSync: () => {},
         existsSync: () => false,
@@ -6821,7 +6891,9 @@ describe("Daemon", () => {
           registerHandler: (h) => {
             handler = h;
           },
-          connect: async () => {},
+          connect: async () => {
+            connected = true;
+          },
           disconnect: async () => {},
           sendJson: async () => new Promise(() => {}),
         }),
@@ -6829,6 +6901,7 @@ describe("Daemon", () => {
     );
 
     assert.ok(typeof handler === "function");
+    await waitUntil(() => connected, { message: "sigint-force daemon to connect" });
 
     handler({
       type: "create_task",
@@ -6839,7 +6912,7 @@ describe("Daemon", () => {
       },
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(() => spawnCount === 1, { message: "task-sigint-force-1 to spawn" });
 
     const sigintHandlers = signalHandlers.get("SIGINT") || [];
     assert.strictEqual(sigintHandlers.length, 1);
@@ -6937,6 +7010,7 @@ describe("Daemon", () => {
     let spawnCount = 0;
     const sentEvents = [];
     let resolveProjectLookup;
+    let connected = false;
 
     const daemonInstance = startDaemon(
       {
@@ -6985,7 +7059,9 @@ describe("Daemon", () => {
           registerHandler: (nextHandler) => {
             handler = nextHandler;
           },
-          connect: async () => {},
+          connect: async () => {
+            connected = true;
+          },
           disconnect: async () => {},
           sendJson: async (payload) => {
             sentEvents.push(payload);
@@ -6993,6 +7069,8 @@ describe("Daemon", () => {
         }),
       },
     );
+
+    await waitUntil(() => connected, { message: "shutdown-late daemon to connect" });
 
     handler({
       type: "create_task",
@@ -7004,7 +7082,10 @@ describe("Daemon", () => {
       },
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitUntil(
+      () => typeof resolveProjectLookup === "function",
+      { message: "project path lookup to begin" },
+    );
     daemonInstance.close();
     resolveProjectLookup();
     await new Promise((resolve) => setTimeout(resolve, 20));

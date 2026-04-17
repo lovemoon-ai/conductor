@@ -6,6 +6,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with an additional `Commits` section for each released version.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.2.35] - 2026-04-17
+
+### Added
+
+- Added Issues as a first-class workflow for project planning, including issue CRUD APIs, an Issues page, board/list views, status changes, drag ordering, and issue-linked AI task creation.
+- Added `pre_prompt` support for `conductor fire` configuration so backend-specific session instructions can be loaded from the local config file.
+- Added per-task session persistence for `conductor fire` sessions backed by the AI SDK.
+- Added richer fire working-status forwarding, including tool, item, turn, and event metadata.
+
+### Changed
+
+- Refactored AI task creation and task response serialization so issue task creation, normal task creation, and restart flows share the same behavior.
+- Updated project list ordering to use the same drag-and-drop runtime used by the Issues board.
+- Improved project/task navigation, project cards, task cards, worktree sync support, and runtime detail display.
+
+### Fixed
+
+- Fixed issue-linked task rollout compatibility so mixed-version deployments can fall back when newer task or issue columns are not available yet.
+- Fixed `conductor fire` task restart, provider loading, daemon binding, stale binding, and task removal edge cases.
+- Fixed CLI release-blocking test failures caused by an incomplete `conductor-fire` export block and daemon tests racing backend initialization.
+
+### Removed
+
+- Removed the remaining task grid-view dead code.
+
+### Security
+
+- _None._
+
+### Commits
+
+- `7972beb` update project task navigation
+- `21b407b` merge project task navigation
+- `a7048c8` update project list interactions
+- `6ccf146` add task status tags on project card and project/daemon tags on task card
+- `2f23e72` add sync_branch support for worktree creation
+- `df595bd` remove grid view from task list page
+- `0f391ac` remove remaining grid view dead code in TaskItem
+- `9b5bbe0` fix fire task restart by persisting daemonName in metadata
+- `7a94a84` fix project ordering rollout and worktree sync
+- `545764b` merge project ordering and worktree sync
+- `bfe903c` add skip lock for debug daemon
+- `0be97e9` fix runtime details fields
+- `0317d20` fix stale fire binding
+- `2c8d7c9` fix task remove bug
+- `79e5c13` fix fire provider loading and worktree cleanup
+- `d31d639` fix fire task daemon binding
+- `90f5875` feat: add issues module with full CRUD, DB schema, UI integration, and task API refactoring
+- `e4e887b` feat(fire): forward mira-sdk enriched working status fields to conductor server
+- `c5ff374` feat(fire): per-task session persistence for mira-sdk
+- `80e5e53` feat: load pre_prompt from conductor config for ai sessions
+- `0301c3f` fix: address review findings — schema fallback cleanup and consistency
+- `20327e0` fix conflict
+- `140f89d` Merge pull request #2 from lovemoon-ai/feat/issue
+
 ## [0.2.34] - 2026-04-10
 
 ### Added

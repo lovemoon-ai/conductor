@@ -138,6 +138,7 @@ export function resolveConfiguredPrePrompt({ configFilePath, backend, sessionBac
     }
   }
   return undefined;
+}
 
 function parseCommandParts(commandLine) {
   const input = String(commandLine || "").trim();
