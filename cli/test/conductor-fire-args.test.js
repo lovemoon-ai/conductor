@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildResumeArgsForBackend, expandEnvVars, parseCliArgs, resolveConfiguredPrePrompt } from "../bin/conductor-fire.js";
+import { parseCliArgs, resolveAiSessionOptions } from "../bin/conductor-fire.js";
 import { listRuntimeSupportedBackends, resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
 
 const __filename = fileURLToPath(import.meta.url);

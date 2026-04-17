@@ -363,4 +363,60 @@ describe("/api/agent/events", () => {
       }),
     );
   });
+
+  it("allows conductor-fire hosts to repair stale daemon bindings when executionHost already points to fire", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValueOnce({
+      id: "task-1",
+      projectId: "proj-1",
+      status: "running",
+      taskType: "ai_task",
+      agentHost: "m1",
+      executionHost: "conductor-fire-debug-123",
+    } as any);
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("m1");
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(true);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:6152/api/agent/events",
+        token,
+        body: {
+          agent_host: "conductor-fire-debug-123",
+          events: [
+            {
+              event_type: "sdk_message",
+              task_id: "task-1",
+              content: "reply after stale bind",
+              message_id: "msg-fire-rebind-1",
+            },
+          ],
+        },
+      }),
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.results).toEqual([
+      expect.objectContaining({
+        event_type: "sdk_message",
+        task_id: "task-1",
+        message_id: "msg-fire-rebind-1",
+        duplicate: false,
+      }),
+    ]);
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-1", "conductor-fire-debug-123");
+    expect(db.task.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "task-1",
+        project: { userId: "user-1" },
+        OR: [
+          { executionHost: null },
+          { executionHost: { not: "conductor-fire-debug-123" } },
+        ],
+      },
+      data: { executionHost: "conductor-fire-debug-123" },
+    });
+  });
 });

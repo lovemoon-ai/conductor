@@ -5,3 +5,10 @@ worktree:
     - cli/node_modules
     - web/.env
     - Makefile
+
+agents:
+  - review: claw/sop/04_review-code.md
+  - publish: claw/sop/06_release.md
+  - planner:
+  - executor:
+  - critic:

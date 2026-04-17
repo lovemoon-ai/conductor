@@ -10,6 +10,9 @@ const pushToastMock = vi.fn();
 let agentsState = {
   agents: [] as Array<{ host: string; supportedBackends: string[]; runtimeBackendMap?: Record<string, string> }>,
 };
+let projectsState = {
+  projects: [] as Array<{ id: string; daemonHost?: string | null }>,
+};
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
@@ -22,6 +25,10 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('@/features/agents', () => ({
   useAgentsStore: (selector: (state: typeof agentsState) => unknown) => selector(agentsState),
+}));
+
+vi.mock('@/features/projects', () => ({
+  useProjectsStore: (selector: (state: typeof projectsState) => unknown) => selector(projectsState),
 }));
 
 vi.mock('../store', () => ({
@@ -44,6 +51,9 @@ describe('RestartTaskControls', () => {
           supportedBackends: ['codex', 'claude', 'opencode'],
         },
       ],
+    };
+    projectsState = {
+      projects: [],
     };
     pushMock.mockReset();
     replaceMock.mockReset();
@@ -270,6 +280,40 @@ describe('RestartTaskControls', () => {
     );
 
     expect(screen.getByLabelText('Backend')).toHaveValue('codex');
+    expect(screen.getByRole('button', { name: 'New task' })).toBeEnabled();
+  });
+
+  it('uses the bound project daemon when a conductor-fire task has no daemon metadata yet', () => {
+    projectsState = {
+      projects: [
+        {
+          id: 'project-1',
+          daemonHost: 'daemon-1',
+        },
+      ],
+    };
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-fire-1c',
+          projectId: 'project-1',
+          title: 'Stopped Fire Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'conductor-fire-mac-1',
+          executionHost: 'conductor-fire-mac-1',
+          backendType: 'codex',
+          sessionId: 'sess-fire-1c',
+          createdAt: new Date().toISOString(),
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText('Backend')).toHaveValue('codex');
+    expect(screen.getByRole('option', { name: 'claude' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'New task' })).toBeEnabled();
   });
 

@@ -8,29 +8,37 @@ const BUILT_IN_BACKENDS = new Set(["codex", "claude", "kimi", "opencode"]);
 const registryPromises = new Map();
 let externalProviderImportNonce = 0;
 
-function normalizeProviderPathEnv(value) {
-  return String(value || "").trim();
+function appendProviderModulePaths(parts, value) {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      appendProviderModulePaths(parts, entry);
+    }
+    return;
+  }
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return;
+  }
+  for (const item of raw.split(process.platform === "win32" ? ";" : ":")) {
+    const normalized = item.trim();
+    if (normalized) {
+      parts.push(normalized);
+    }
+  }
 }
 
 function listProviderModulePathsFromValue(rawValue) {
-  const raw = normalizeProviderPathEnv(rawValue);
-  if (!raw) {
-    return [];
-  }
-  const parts = raw
-    .split(process.platform === "win32" ? ";" : ":")
-    .map((item) => item.trim())
-    .filter(Boolean);
+  const parts = [];
+  appendProviderModulePaths(parts, rawValue);
   return [...new Set(parts)];
 }
 
-function resolveProviderPathEnv(options = {}) {
-  const envValue = normalizeProviderPathEnv(process.env.AISDK_PROVIDER_PATH);
-  if (envValue) {
-    return envValue;
-  }
+function resolveProviderModulePaths(options = {}) {
   const envConfig = loadEnvConfig(options.configFile);
-  return normalizeProviderPathEnv(envConfig?.AISDK_PROVIDER_PATH);
+  return [
+    ...listProviderModulePathsFromValue(process.env.AISDK_PROVIDER_PATH),
+    ...listProviderModulePathsFromValue(envConfig?.AISDK_PROVIDER_PATH),
+  ].filter((value, index, array) => array.indexOf(value) === index);
 }
 
 function normalizeName(value) {
@@ -130,15 +138,16 @@ async function loadRegistry(modulePaths) {
 }
 
 export async function getExternalProviderRegistry(options = {}) {
-  const providerPathEnv = resolveProviderPathEnv(options);
-  if (!registryPromises.has(providerPathEnv)) {
-    const loadPromise = loadRegistry(listProviderModulePathsFromValue(providerPathEnv)).catch((error) => {
-      registryPromises.delete(providerPathEnv);
+  const modulePaths = resolveProviderModulePaths(options);
+  const cacheKey = modulePaths.join("\0");
+  if (!registryPromises.has(cacheKey)) {
+    const loadPromise = loadRegistry(modulePaths).catch((error) => {
+      registryPromises.delete(cacheKey);
       throw error;
     });
-    registryPromises.set(providerPathEnv, loadPromise);
+    registryPromises.set(cacheKey, loadPromise);
   }
-  return registryPromises.get(providerPathEnv);
+  return registryPromises.get(cacheKey);
 }
 
 export async function resolveExternalBackend(backend, options = {}) {

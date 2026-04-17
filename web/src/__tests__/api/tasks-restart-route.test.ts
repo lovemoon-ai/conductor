@@ -451,6 +451,48 @@ describe("/api/tasks/[taskId]/restart", () => {
     );
   });
 
+  it("uses the project daemon binding for conductor-fire backend switches when task daemon metadata is unavailable", async () => {
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex", "claude"], capabilities: [] },
+    ] as any);
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        status: "running",
+        agentHost: "conductor-fire-debug-1",
+        executionHost: "conductor-fire-debug-1",
+        metadata: null,
+      }) as any,
+    );
+    vi.mocked(db.project.findFirst).mockResolvedValue({
+      id: "proj-1",
+      userId: "user-1",
+      daemonHost: "daemon-1",
+      workspacePath: "/repo/project",
+    } as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { backend_type: "claude", strategy: "new_task" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("backend_switch_new_task");
+    expect(data.task.backend_type).toBe("claude");
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentHost: "daemon-1",
+          payloadJson: expect.stringContaining('"target_backend_type":"claude"'),
+        }),
+      }),
+    );
+  });
+
   it("allows running conductor-fire task to create new task", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(
       buildTask({

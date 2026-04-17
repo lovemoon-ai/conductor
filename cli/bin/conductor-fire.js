@@ -138,6 +138,90 @@ export function resolveConfiguredPrePrompt({ configFilePath, backend, sessionBac
     }
   }
   return undefined;
+
+function parseCommandParts(commandLine) {
+  const input = String(commandLine || "").trim();
+  if (!input) {
+    return [];
+  }
+
+  const parts = [];
+  let current = "";
+  let quote = "";
+  let escaping = false;
+  let tokenStarted = false;
+
+  for (const char of input) {
+    if (escaping) {
+      current += char;
+      tokenStarted = true;
+      escaping = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaping = true;
+      tokenStarted = true;
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote) {
+        quote = "";
+      } else {
+        current += char;
+      }
+      tokenStarted = true;
+      continue;
+    }
+
+    if (char === "'" || char === "\"") {
+      quote = char;
+      tokenStarted = true;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      if (tokenStarted) {
+        parts.push(current);
+        current = "";
+        tokenStarted = false;
+      }
+      continue;
+    }
+
+    current += char;
+    tokenStarted = true;
+  }
+
+  if (tokenStarted) {
+    parts.push(current);
+  }
+
+  return parts;
+}
+
+function extractModelOptionFromCommandLine(commandLine) {
+  const parts = parseCommandParts(commandLine);
+  for (let index = 0; index < parts.length; index += 1) {
+    const token = String(parts[index] || "").trim();
+    if (!token) {
+      continue;
+    }
+    if (token === "--model") {
+      const next = String(parts[index + 1] || "").trim();
+      return next || "";
+    }
+    if (token.startsWith("--model=")) {
+      return token.slice("--model=".length).trim();
+    }
+  }
+  return "";
+}
+
+function extractAiSessionOptionsFromCommandLine(commandLine) {
+  const model = extractModelOptionFromCommandLine(commandLine);
+  return model ? { model } : {};
 }
 
 export function resolveAiSessionCommandLine(backend, allowCliList, env = process.env, sessionBackend = backend) {
@@ -180,6 +264,12 @@ export function resolveAiSessionCommandLine(backend, allowCliList, env = process
   }
 
   return resolvedCommand;
+}
+
+export function resolveAiSessionOptions(backend, allowCliList, env = process.env, sessionBackend = backend) {
+  return extractAiSessionOptionsFromCommandLine(
+    resolveAiSessionCommandLine(backend, allowCliList, env, sessionBackend),
+  );
 }
 
 const DEFAULT_POLL_INTERVAL_MS = parseInt(
@@ -635,6 +725,7 @@ async function main() {
       envTaskTitle: process.env.CONDUCTOR_TASK_TITLE,
       runtimeProjectPath,
     });
+    const resolvedDaemonName = resolveDaemonHost(configuredDaemonName);
 
     conductor = await ConductorClient.connect({
       projectPath: runtimeProjectPath,
@@ -663,7 +754,7 @@ async function main() {
       providedTaskId: process.env.CONDUCTOR_TASK_ID,
       requestedTitle: requestedTaskTitle,
       backend: cliArgs.backend,
-      daemonName: configuredDaemonName,
+      daemonName: resolvedDaemonName,
       projectPath: runtimeProjectPath,
     });
     injectResolvedTaskId(taskContext.taskId);
@@ -687,6 +778,7 @@ async function main() {
           project_id: process.env.CONDUCTOR_PROJECT_ID,
           project_path: runtimeProjectPath,
           backend_type: cliArgs.backend,
+          daemon_name: resolvedDaemonName,
         });
       } catch {
         // best effort only
@@ -713,6 +805,7 @@ async function main() {
       cwd: runtimeProjectPath,
       resumeSessionId: resolvedResumeSessionId,
       configFile: cliArgs.configFile,
+      ...(cliArgs.sessionOptions || {}),
       ...(sessionCommandLine ? { commandLine: sessionCommandLine } : {}),
       logger: { log },
       ...(resolvedPrePrompt ? { prePrompt: resolvedPrePrompt } : {}),
@@ -743,7 +836,7 @@ async function main() {
       cliArgs: cliArgs.rawBackendArgs,
       backendName: cliArgs.backend,
       resumeSessionId: resolvedResumeSessionId,
-      daemonName: configuredDaemonName,
+      daemonName: resolvedDaemonName,
     });
     reconnectRunner = runner;
     if (pendingRemoteStopEvent) {
@@ -1087,6 +1180,12 @@ Environment:
   const sessionBackend =
     configuredBackend?.runtimeBackend ||
     (backend ? await normalizeRuntimeBackendAlias(backend, { configFilePath: configFileFromArgs }) : "");
+  const sessionOptions = resolveAiSessionOptions(
+    backend,
+    allowCliList,
+    process.env,
+    sessionBackend || backend,
+  );
   const shouldRequireBackend =
     !Boolean(conductorArgs.listBackends) &&
     !listBackendsWithoutSeparator &&
@@ -1135,6 +1234,7 @@ Environment:
     hasExplicitTaskTitle: typeof conductorArgs.title === "string" && Boolean(conductorArgs.title.trim()),
     configFile: conductorArgs.configFile,
     sessionBackend,
+    sessionOptions,
     resumeSessionId,
     showVersion: Boolean(conductorArgs.version) || versionWithoutSeparator,
     listBackends: Boolean(conductorArgs.listBackends) || listBackendsWithoutSeparator,
@@ -1337,7 +1437,7 @@ export async function resolveProjectId(conductor, explicit, opts = {}) {
   return resolveDefaultProjectId(conductor);
 }
 
-function resolveDaemonHost(daemonName) {
+export function resolveDaemonHost(daemonName) {
   if (typeof daemonName === "string" && daemonName.trim()) {
     return daemonName.trim();
   }
@@ -1757,6 +1857,7 @@ export class BridgeRunner {
         session_file_path:
           typeof sessionFilePath === "string" && sessionFilePath.trim() ? sessionFilePath.trim() : undefined,
         backend_type: this.backendName,
+        daemon_name: this.daemonName,
       });
       this.boundSessionId = normalizedSessionId;
       return true;

@@ -354,6 +354,35 @@ export function ensureNodePtySpawnHelperExecutable(deps = {}) {
   return { helperPath, updated: true };
 }
 
+export function isSafeTaskWorktreeRoot(projectWorkspacePath, worktreeRoot) {
+  const normalizedWorkspacePath =
+    typeof projectWorkspacePath === "string" ? projectWorkspacePath.trim() : "";
+  const normalizedWorktreeRoot =
+    typeof worktreeRoot === "string" ? worktreeRoot.trim() : "";
+  if (!normalizedWorkspacePath || !normalizedWorktreeRoot) {
+    return false;
+  }
+
+  const resolvedWorkspacePath = path.resolve(normalizedWorkspacePath);
+  const resolvedWorktreeRoot = path.resolve(normalizedWorktreeRoot);
+  if (resolvedWorkspacePath === resolvedWorktreeRoot) {
+    return false;
+  }
+
+  const expectedParent = path.resolve(resolvedWorkspacePath, ".conductor", "worktrees");
+  const relativeToExpectedParent = path.relative(expectedParent, resolvedWorktreeRoot);
+  if (
+    !relativeToExpectedParent ||
+    relativeToExpectedParent === "." ||
+    relativeToExpectedParent.startsWith("..") ||
+    path.isAbsolute(relativeToExpectedParent)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 function normalizeOptionalString(value) {
   if (typeof value !== "string") {
     return null;
@@ -2981,6 +3010,30 @@ export function startDaemon(config = {}, deps = {}) {
     });
 
     if (activeTaskProcesses.has(taskId) || activePtySessions.has(taskId)) {
+      if (forceCleanup) {
+        const stopStarted = stopActiveTaskProcess(taskId, {
+          reason: "cleanup_task_worktree",
+          suppressExitStatusReport: true,
+        });
+        if (stopStarted) {
+          const stopped = await waitForTaskToStop(taskId);
+          if (!stopped && (activeTaskProcesses.has(taskId) || activePtySessions.has(taskId))) {
+            await reportTaskWorktreeCleanupResult({
+              requestId,
+              taskId,
+              worktreeBranch: worktreeConfig.worktreeBranch,
+              cleaned: false,
+              error: "Task is still active",
+            }).catch((error) => {
+              logError(`Failed to report task_worktree_cleanup_result for ${taskId}: ${error?.message || error}`);
+            });
+            return;
+          }
+        }
+      }
+    }
+
+    if (activeTaskProcesses.has(taskId) || activePtySessions.has(taskId)) {
       await reportTaskWorktreeCleanupResult({
         requestId,
         taskId,
@@ -2997,6 +3050,19 @@ export function startDaemon(config = {}, deps = {}) {
       worktreeConfig.projectWorkspacePath,
       worktreeConfig.worktreeId,
     );
+    if (!isSafeTaskWorktreeRoot(worktreeConfig.projectWorkspacePath, worktreeRoot)) {
+      await reportTaskWorktreeCleanupResult({
+        requestId,
+        taskId,
+        worktreeBranch: worktreeConfig.worktreeBranch,
+        removedPath: worktreeRoot,
+        cleaned: false,
+        error: `Refusing to remove unsafe worktree path: ${worktreeRoot}`,
+      }).catch((error) => {
+        logError(`Failed to report task_worktree_cleanup_result for ${taskId}: ${error?.message || error}`);
+      });
+      return;
+    }
     const worktreeCwd = resolveTaskWorktreeCwd(worktreeRoot, worktreeConfig.projectRelativePath);
     const statusCwd = existsSyncFn(worktreeCwd) ? worktreeCwd : worktreeRoot;
 
@@ -3528,57 +3594,25 @@ export function startDaemon(config = {}, deps = {}) {
     }
   }
 
-  function handleStopTask(payload) {
-    const taskId = payload?.task_id;
-    if (!taskId) return;
-    const requestId = payload?.request_id ? String(payload.request_id) : "";
-    if (requestId && !markRequestSeen(requestId)) {
-      log(`Duplicate stop_task ignored for ${taskId} (request_id=${requestId})`);
-      sendAgentCommandAck({
-        requestId,
-        taskId,
-        eventType: "stop_task",
-        accepted: true,
-      }).catch(() => {});
-      return;
-    }
-
-    const sendStopAck = (accepted) => {
-      if (!requestId) return;
-      client
-        .sendJson({
-          type: "task_stop_ack",
-          payload: {
-            task_id: taskId,
-            request_id: requestId,
-            accepted: Boolean(accepted),
-          },
-        })
-        .catch((err) => {
-          logError(`Failed to report task_stop_ack for ${taskId}: ${err?.message || err}`);
-        });
-      sendAgentCommandAck({
-        requestId,
-        taskId,
-        eventType: "stop_task",
-        accepted,
-      }).catch((err) => {
-        logError(`Failed to report agent_command_ack(stop_task) for ${taskId}: ${err?.message || err}`);
-      });
-    };
-
+  function stopActiveTaskProcess(
+    taskId,
+    {
+      reason = "",
+      suppressExitStatusReport = false,
+    } = {},
+  ) {
     const processRecord = activeTaskProcesses.get(taskId);
     const ptyRecord = activePtySessions.get(taskId);
     if ((!processRecord || !processRecord.child) && !ptyRecord) {
-      log(`Stop requested for task ${taskId}, but no active process found`);
-      sendStopAck(false);
-      return;
+      return false;
     }
 
-    const reason = payload?.reason ? ` (${payload.reason})` : "";
-    log(`Stopping task ${taskId}${reason}`);
+    if (suppressExitStatusReport) {
+      suppressedExitStatusReports.add(taskId);
+    }
 
-    sendStopAck(true);
+    const reasonSuffix = reason ? ` (${reason})` : "";
+    log(`Stopping task ${taskId}${reasonSuffix}`);
 
     const activeRecord = processRecord || ptyRecord;
     if (activeRecord?.stopForceKillTimer) {
@@ -3636,6 +3670,75 @@ export function startDaemon(config = {}, deps = {}) {
     if (typeof activeRecord.stopForceKillTimer?.unref === "function") {
       activeRecord.stopForceKillTimer.unref();
     }
+
+    return true;
+  }
+
+  async function waitForTaskToStop(taskId, timeoutMs = DAEMON_FORCE_STOP_GRACE_MS) {
+    const deadline = Date.now() + Math.max(timeoutMs, 0);
+
+    while (activeTaskProcesses.has(taskId) || activePtySessions.has(taskId)) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        return false;
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(DAEMON_FORCE_STOP_POLL_INTERVAL_MS, remainingMs)),
+      );
+    }
+
+    return true;
+  }
+
+  function handleStopTask(payload) {
+    const taskId = payload?.task_id;
+    if (!taskId) return;
+    const requestId = payload?.request_id ? String(payload.request_id) : "";
+    if (requestId && !markRequestSeen(requestId)) {
+      log(`Duplicate stop_task ignored for ${taskId} (request_id=${requestId})`);
+      sendAgentCommandAck({
+        requestId,
+        taskId,
+        eventType: "stop_task",
+        accepted: true,
+      }).catch(() => {});
+      return;
+    }
+
+    const sendStopAck = (accepted) => {
+      if (!requestId) return;
+      client
+        .sendJson({
+          type: "task_stop_ack",
+          payload: {
+            task_id: taskId,
+            request_id: requestId,
+            accepted: Boolean(accepted),
+          },
+        })
+        .catch((err) => {
+          logError(`Failed to report task_stop_ack for ${taskId}: ${err?.message || err}`);
+        });
+      sendAgentCommandAck({
+        requestId,
+        taskId,
+        eventType: "stop_task",
+        accepted,
+      }).catch((err) => {
+        logError(`Failed to report agent_command_ack(stop_task) for ${taskId}: ${err?.message || err}`);
+      });
+    };
+
+    const processRecord = activeTaskProcesses.get(taskId);
+    const ptyRecord = activePtySessions.get(taskId);
+    if ((!processRecord || !processRecord.child) && !ptyRecord) {
+      log(`Stop requested for task ${taskId}, but no active process found`);
+      sendStopAck(false);
+      return;
+    }
+
+    sendStopAck(true);
+    stopActiveTaskProcess(taskId, { reason: payload?.reason });
   }
 
   async function getProjectLocalPath(projectId) {

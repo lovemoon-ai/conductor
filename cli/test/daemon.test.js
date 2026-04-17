@@ -10,6 +10,7 @@ import { WebSocketServer } from "ws";
 
 import {
   ensureNodePtySpawnHelperExecutable,
+  isSafeTaskWorktreeRoot,
   probePtyTaskCapability,
   resolveDefaultPtyShell,
   startDaemon,
@@ -141,6 +142,37 @@ describe("Daemon", () => {
       updated: false,
     });
     assert.strictEqual(capability.spawnPty, spawnPty);
+  });
+
+  it("treats only nested .conductor worktree paths as safe cleanup targets", () => {
+    assert.strictEqual(
+      isSafeTaskWorktreeRoot(
+        "/tmp/repo/packages/app",
+        "/tmp/repo/packages/app/.conductor/worktrees/task-1",
+      ),
+      true,
+    );
+    assert.strictEqual(
+      isSafeTaskWorktreeRoot(
+        "/tmp/repo/packages/app",
+        "/tmp/repo/packages/app",
+      ),
+      false,
+    );
+    assert.strictEqual(
+      isSafeTaskWorktreeRoot(
+        "/tmp/repo/packages/app",
+        "/tmp/repo/packages/app/.conductor/worktrees",
+      ),
+      false,
+    );
+    assert.strictEqual(
+      isSafeTaskWorktreeRoot(
+        "/tmp/repo/packages/app",
+        "/tmp/repo/packages/app/.conductor/other/task-1",
+      ),
+      false,
+    );
   });
 
   it("skips auto-update for local installs by default", async () => {

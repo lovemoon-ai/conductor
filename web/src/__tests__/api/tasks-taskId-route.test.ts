@@ -989,6 +989,71 @@ describe("/api/tasks/[taskId]", () => {
     expect(data.task_type).toBe("ai_task");
   });
 
+  it("merges metadata when PATCH adds daemon binding for a manual fire task", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-5b",
+      projectId: "proj-1",
+      title: "Task 5b",
+      status: "running",
+      agentHost: "conductor-fire-host-1",
+      backendType: "codex",
+      sessionId: "session-5b",
+      sessionFilePath: "/tmp/session-5b.jsonl",
+      metadata: JSON.stringify({ initialContent: "hello", source: "manual-fire" }),
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:00:00.000Z"),
+    } as any);
+    vi.mocked(db.task.update).mockResolvedValue({
+      id: "task-5b",
+      projectId: "proj-1",
+      title: "Task 5b",
+      status: "running",
+      agentHost: "conductor-fire-host-1",
+      backendType: "codex",
+      sessionId: "session-5b",
+      sessionFilePath: "/tmp/session-5b.jsonl",
+      metadata: JSON.stringify({
+        initialContent: "hello",
+        source: "manual-fire",
+        daemonName: "daemon-a",
+      }),
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+    } as any);
+
+    const request = createMockRequest({
+      method: "PATCH",
+      token,
+      body: {
+        metadata: {
+          daemonName: "daemon-a",
+        },
+      },
+    });
+    const response = await PATCH(request, { params: Promise.resolve({ taskId: "task-5b" }) });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "task-5b" },
+        data: expect.objectContaining({
+          metadata: JSON.stringify({
+            initialContent: "hello",
+            source: "manual-fire",
+            daemonName: "daemon-a",
+          }),
+        }),
+      }),
+    );
+    expect(data.metadata).toEqual({
+      initialContent: "hello",
+      source: "manual-fire",
+      daemonName: "daemon-a",
+    });
+  });
+
   it("sends stop_task when PATCH marks a running task as killed", async () => {
     const token = createTestToken("user-1");
     vi.mocked(db.task.findFirst).mockResolvedValue({

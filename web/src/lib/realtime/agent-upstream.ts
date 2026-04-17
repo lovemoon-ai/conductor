@@ -119,7 +119,11 @@ async function ensureAgentOwnsTaskRecord(
 
   const boundHost = realtimeHub.getTaskAgentHost(task.id);
   if (boundHost && boundHost !== agentHost && realtimeHub.hasAgentHost(boundHost, userId)) {
-    if (allowFireHostClaim && !isConductorFireHost(boundHost)) {
+    const allowFireHostRebind =
+      isConductorFireHost(agentHost) &&
+      assignedHost === agentHost &&
+      !isConductorFireHost(boundHost);
+    if ((allowFireHostClaim || allowFireHostRebind) && !isConductorFireHost(boundHost)) {
       realtimeHub.bindTaskToAgent(task.id, agentHost);
       await persistTaskExecutionHost(userId, task.id, agentHost);
       return;

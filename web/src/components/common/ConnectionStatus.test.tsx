@@ -152,4 +152,37 @@ describe('ConnectionStatus', () => {
 
     expect(screen.queryByText('Runtime Details')).toBeNull();
   });
+
+  it('falls back to persisted task backend and session when runtime fields are missing', () => {
+    useRuntimeStoreMock.mockImplementation((selector: (state: { byTask: Record<string, unknown> }) => unknown) =>
+      selector({
+        byTask: {
+          'task-123': {
+            taskId: 'task-123',
+            daemon: 'daemon-a',
+            pid: 2345,
+          },
+        },
+      }),
+    );
+    useTasksStoreMock.mockImplementation((selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
+      selector({
+        tasks: [
+          {
+            id: 'task-123',
+            executionHost: 'daemon-a',
+            backendType: 'codex',
+            sessionId: 'session-persisted-1',
+          },
+        ],
+      }),
+    );
+
+    render(<ConnectionStatus detailsEnabled />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open connection details' }));
+
+    expect(screen.getByText('codex')).toBeInTheDocument();
+    expect(screen.getByText('session-persisted-1')).toBeInTheDocument();
+  });
 });

@@ -319,6 +319,11 @@ export async function PATCH(
   );
   const backendTypeInput = readPatchField(normalizedBody, "backend_type", "backendType");
   const hasMetadataField = Object.prototype.hasOwnProperty.call(normalizedBody, "metadata");
+  const metadataInput = hasMetadataField ? normalizedBody.metadata : undefined;
+  const parsedMetadataInput = hasMetadataField && metadataInput != null ? parseJsonObject(metadataInput) : null;
+  if (hasMetadataField && metadataInput != null && parsedMetadataInput === null) {
+    return NextResponse.json({ error: "metadata must be an object" }, { status: 400 });
+  }
   const nextBackendType =
     backendTypeInput !== undefined
       ? normalizeBackendType(backendTypeInput)
@@ -383,11 +388,15 @@ export async function PATCH(
       : executionHostInput !== undefined
         ? normalizeOptionalString(executionHostInput)
         : existing.executionHost;
+  const existingMetadataObject = parseJsonObject(existing.metadata);
 
   const nextMetadata = hasMetadataField
-    ? normalizedBody.metadata
-      ? JSON.stringify(normalizedBody.metadata)
-      : null
+    ? metadataInput == null
+      ? null
+      : JSON.stringify({
+          ...(existingMetadataObject ?? {}),
+          ...(parsedMetadataInput ?? {}),
+        })
     : existing.metadata;
   const taskUpdateData = {
     projectId: nextProjectId,

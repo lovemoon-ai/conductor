@@ -19,6 +19,7 @@ import {
   injectResolvedTaskId,
   isLaunchedByDaemon,
   parseCliArgs,
+  resolveDaemonHost,
   resolveAiSessionCommandLine,
   resolveFreshSessionBootstrapLockPath,
   resolveProjectId,
@@ -317,15 +318,82 @@ describe("conductor-fire backends", () => {
     }
   });
 
-  it("hides raw external backends that are shadowed by configured aliases", async () => {
+  it("merges process env provider paths with config-file AISDK_PROVIDER_PATH lists", async () => {
     const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-provider-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    const providerPath = path.join(tempDir, "yaml-list-provider.js");
     process.env.AISDK_PROVIDER_PATH = FIXTURE_EXTERNAL_PROVIDER;
     resetRuntimeBackendCacheForTests();
     try {
+      fs.writeFileSync(
+        providerPath,
+        [
+          "export const providers = [",
+          "  {",
+          '    backend: "yaml-list-external",',
+          '    variant: "yaml-list-external-provider",',
+          "    async createSession() {",
+          "      return {};",
+          "    },",
+          "  },",
+          "];",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      fs.writeFileSync(
+        configPath,
+        [
+          "envs:",
+          "  AISDK_PROVIDER_PATH:",
+          `    - ${JSON.stringify(providerPath)}`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const allowCliList = await filterRuntimeSupportedAllowCliList(
+        {
+          "test-external": "test-external --profile fast",
+          "yaml-list-external": "yaml-list-cli",
+        },
+        { configFilePath: configPath },
+      );
+      const advertisedBackends = await listAdvertisedBackends(allowCliList, { configFilePath: configPath });
+
+      assert.deepEqual(allowCliList, {
+        "test-external": "test-external --profile fast",
+        "yaml-list-external": "yaml-list-cli",
+      });
+      assert.deepEqual(advertisedBackends.supportedBackends, ["test-external", "yaml-list-external"]);
+      assert.deepEqual(advertisedBackends.runtimeBackendMap, {
+        "test-external": "test-external",
+        "yaml-list-external": "yaml-list-external",
+      });
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      if (previousProviderPath === undefined) {
+        delete process.env.AISDK_PROVIDER_PATH;
+      } else {
+        process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      resetRuntimeBackendCacheForTests();
+    }
+  });
+
+  it("hides raw external backends that are shadowed by configured aliases", async () => {
+    const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-provider-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    process.env.AISDK_PROVIDER_PATH = FIXTURE_EXTERNAL_PROVIDER;
+    resetRuntimeBackendCacheForTests();
+    try {
+      fs.writeFileSync(configPath, "envs: {}\n", "utf8");
       const allowCliList = await filterRuntimeSupportedAllowCliList({
         "my-external": "test-external --profile fast",
-      });
-      const advertisedBackends = await listAdvertisedBackends(allowCliList);
+      }, { configFilePath: configPath });
+      const advertisedBackends = await listAdvertisedBackends(allowCliList, { configFilePath: configPath });
 
       assert.deepEqual(advertisedBackends.supportedBackends, ["my-external"]);
       assert.deepEqual(advertisedBackends.externalBackends, []);
@@ -333,6 +401,7 @@ describe("conductor-fire backends", () => {
         "my-external": "test-external",
       });
     } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
       if (previousProviderPath === undefined) {
         delete process.env.AISDK_PROVIDER_PATH;
       } else {
@@ -660,6 +729,21 @@ describe("conductor-fire backends", () => {
     assert.equal(calls[1].method, "bind");
   });
 
+  it("resolves manual fire daemon host from env when config daemon name is absent", () => {
+    const previousDaemonName = process.env.CONDUCTOR_DAEMON_NAME;
+    delete process.env.CONDUCTOR_AGENT_NAME;
+    process.env.CONDUCTOR_DAEMON_NAME = "daemon-from-env";
+    try {
+      assert.equal(resolveDaemonHost(""), "daemon-from-env");
+    } finally {
+      if (previousDaemonName === undefined) {
+        delete process.env.CONDUCTOR_DAEMON_NAME;
+      } else {
+        process.env.CONDUCTOR_DAEMON_NAME = previousDaemonName;
+      }
+    }
+  });
+
   it("releases fresh-session lock after bootstrap finishes", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-lock-"));
     const lockPath = resolveFreshSessionBootstrapLockPath("codex", tempDir);
@@ -884,6 +968,7 @@ describe("conductor-fire backends", () => {
       includeInitialImages: false,
       cliArgs: [],
       backendName: "claude",
+      daemonName: "daemon-a",
     });
 
     const startPromise = runner.start();
@@ -1165,6 +1250,7 @@ describe("conductor-fire backends", () => {
       includeInitialImages: false,
       cliArgs: [],
       backendName: "claude",
+      daemonName: "daemon-a",
     });
 
     await runner.announceBackendSession();
@@ -1178,6 +1264,7 @@ describe("conductor-fire backends", () => {
     assert.equal(bindCalls.length, 1);
     assert.equal(bindCalls[0].payload.session_id, realSessionId);
     assert.equal(bindCalls[0].payload.session_file_path, "/tmp/claude-session.jsonl");
+    assert.equal(bindCalls[0].payload.daemon_name, "daemon-a");
     assert.equal(sentMessages[1]?.content, "Claude streamed reply");
     assert.equal(sentMessages[1]?.metadata?.session_id, realSessionId);
   });

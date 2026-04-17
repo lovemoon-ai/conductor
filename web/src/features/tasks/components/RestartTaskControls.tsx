@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { Task } from '@/shared/types';
 import { useAgentsStore } from '@/features/agents';
+import { useProjectsStore } from '@/features/projects';
 import { useTasksStore } from '../store';
 import {
   canCreateSuccessorTask,
@@ -29,6 +30,7 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const agents = useAgentsStore((state) => state.agents);
+  const projects = useProjectsStore((state) => state.projects);
   const restartTask = useTasksStore((state) => state.restartTask);
   const { pushToast } = useToast();
   const [selectedBackend, setSelectedBackend] = useState(task.backendType ?? '');
@@ -39,13 +41,22 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
   const sourceExecutionHost = typeof task.executionHost === 'string' ? task.executionHost.trim() : '';
   const sourceMetadataDaemonHost =
     task.metadata && typeof task.metadata.daemonName === 'string' ? task.metadata.daemonName.trim() : '';
+  const sourceProjectDaemonHost = useMemo(() => {
+    const projectId = typeof task.projectId === 'string' ? task.projectId.trim() : '';
+    if (!projectId) {
+      return '';
+    }
+    const project = projects.find((entry) => entry.id === projectId);
+    return project && typeof project.daemonHost === 'string' ? project.daemonHost.trim() : '';
+  }, [projects, task.projectId]);
   const currentBackend = typeof task.backendType === 'string' ? task.backendType.trim() : '';
   const isManualFireTask = isConductorFireHost(sourceAgentHost);
   const sourceExecutionDaemonHost =
     isManualFireTask
       ? (
           (!isConductorFireHost(sourceMetadataDaemonHost) ? sourceMetadataDaemonHost : '') ||
-          (sourceExecutionHost && !isConductorFireHost(sourceExecutionHost) ? sourceExecutionHost : '')
+          (sourceExecutionHost && !isConductorFireHost(sourceExecutionHost) ? sourceExecutionHost : '') ||
+          (!isConductorFireHost(sourceProjectDaemonHost) ? sourceProjectDaemonHost : '')
         )
       : '';
   const restartSourceHost = isManualFireTask ? sourceExecutionDaemonHost : sourceAgentHost;
@@ -146,6 +157,7 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
     sourceAgent,
     sourceAgentHost,
     sourceExecutionDaemonHost,
+    sourceProjectDaemonHost,
     task.sessionId,
     task.status,
     task.taskType,
