@@ -1,0 +1,28 @@
+{
+  "name": "@dang7up/ai-manager",
+  "version": "0.1.0",
+  "description": "Manage local AI CLI tools (codex, claude): install/network health, quota, and codex account switching",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "clean": "rimraf dist",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "tslib": "^2.6.2",
+    "yaml": "^2.5.1",
+    "@types/node": "^20.19.25",
+    "typescript": "^5.9.3"
+  },
+  "devDependencies": {
+    "rimraf": "^5.0.10"
+  }
+}
