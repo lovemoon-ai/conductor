@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with an additional `Commits` section for each released version.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.2.37] - 2026-04-18
+
+### Added
+
+- Added a Restart button on each Connected Daemon card in Settings: it asks
+  the daemon to upgrade the `conductor` CLI to the latest version and respawn
+  itself, so operators can roll out CLI updates without SSH. Gated behind a
+  new `restart_daemon` capability, so older daemons that do not understand
+  the command simply hide the button.
+- Added `POST /api/agents/[host]/restart`: validates the target version with
+  Zod (`latest` or semver), rejects hosts that do not advertise
+  `restart_daemon` with `409`, and dispatches the event through
+  `realtimeHub.sendToAgentHost` scoped to the requesting user.
+- Daemon now handles the `restart_daemon` realtime event: sends an
+  `agent_command_ack` for observability, fetches the latest version, runs
+  the existing install/verify/native-dep-repair pipeline, and respawns with
+  lock handoff. Install failures fall back to a plain restart.
+
+### Changed
+
+- `restartDaemonProcess` always daemonizes respawn output to
+  `~/.conductor/logs/conductor-daemon.log` instead of re-attaching to the
+  current TTY, avoiding an orphaned daemon when the command is issued
+  against a `conductor daemon` process started in the foreground.
+- Auto-update respawn stays opt-in behind `CONDUCTOR_AUTO_UPDATE_RESPAWN` /
+  `auto_update_respawn` in `~/.conductor/config.yaml`: auto-update will
+  install the new version but will not respawn unless operators explicitly
+  enable it. This preserves the pre-existing "install, wait for manual
+  restart" behaviour while the new restart path is rolled out.
+
+### Fixed
+
+- Fixed a silent config-key casing mismatch in `conductor-daemon.js`: the
+  launcher wrapper was passing `restartLauncherScript` (camelCase) but the
+  daemon reads `RESTART_LAUNCHER_SCRIPT` (UPPER_SNAKE), so respawn was
+  always erroring with "Missing daemon restart launcher script" in
+  production. Keys are now consistent.
+
+### Commits
+
+- `c656a7d` add daemon restart from web settings
+
 ## [0.2.36] - 2026-04-18
 
 ### Added
