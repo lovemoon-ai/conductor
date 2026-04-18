@@ -21,11 +21,13 @@ export {
   type GetClaudeQuotaOptions,
   type ClaudeCredential,
 } from "./quota/claude.ts";
+export { getKimiQuota, type GetKimiQuotaOptions } from "./quota/kimi.ts";
 export type {
   AiManagerConfig,
   CodexAccount,
   CodexQuota,
   ClaudeQuota,
+  KimiQuota,
   InstallStatus,
   NetworkStatus,
   QuotaWindow,

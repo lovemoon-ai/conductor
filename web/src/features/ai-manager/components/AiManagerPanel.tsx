@@ -1,0 +1,153 @@
+'use client';
+
+import { useEffect } from 'react';
+import { SectionCard } from '@/components/common/SectionCard';
+import { useAgentsStore } from '@/features/agents';
+import { useAiManagerStore } from '../store';
+import { CodexAccountSwitcher } from './CodexAccountSwitcher';
+import { QuotaBar } from './QuotaBar';
+import { ToolStatusRow } from './ToolStatusRow';
+
+interface AiManagerPanelProps {
+  /** Daemon to display. Falls back to the first connected daemon when omitted. */
+  initialAgentHost?: string;
+}
+
+/** Daemons that accept ai_manager_request. Excludes ephemeral fire hosts. */
+function isManageableHost(host: string): boolean {
+  return !host.startsWith('conductor-fire-');
+}
+
+export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
+  const agents = useAgentsStore((s) => s.agents);
+  const fetchAgents = useAgentsStore((s) => s.fetchAgents);
+  const visibleDaemons = agents.filter((a) => isManageableHost(a.host));
+
+  const selectedHost = useAiManagerStore((s) => s.selectedHost);
+  const setSelectedHost = useAiManagerStore((s) => s.setSelectedHost);
+  const byHost = useAiManagerStore((s) => s.byHost);
+  const fetchAll = useAiManagerStore((s) => s.fetchAll);
+  const startPolling = useAiManagerStore((s) => s.startPolling);
+  const stopPolling = useAiManagerStore((s) => s.stopPolling);
+
+  useEffect(() => {
+    void fetchAgents();
+  }, [fetchAgents]);
+
+  // Honor the explicit prop on first mount (and whenever it changes), regardless of
+  // any prior store selection. Falls back to the first connected manageable daemon
+  // (skipping ephemeral conductor-fire-* hosts that don't expose ai_manager).
+  useEffect(() => {
+    if (initialAgentHost && initialAgentHost !== selectedHost) {
+      setSelectedHost(initialAgentHost);
+      return;
+    }
+    if (!selectedHost && visibleDaemons.length > 0) {
+      setSelectedHost(visibleDaemons[0].host);
+    }
+  }, [initialAgentHost, visibleDaemons, selectedHost, setSelectedHost]);
+
+  // Fetch + poll whenever the selection changes.
+  useEffect(() => {
+    if (!selectedHost) return;
+    void fetchAll(selectedHost);
+    startPolling(selectedHost);
+    return () => stopPolling();
+  }, [selectedHost, fetchAll, startPolling, stopPolling]);
+
+  if (visibleDaemons.length === 0 && !selectedHost) {
+    return (
+      <SectionCard title="No daemon">
+        <p className="text-sm text-muted">
+          No daemons connected. Run <code>conductor daemon</code> on a machine to get started.
+        </p>
+      </SectionCard>
+    );
+  }
+
+  const host = selectedHost ?? visibleDaemons[0]?.host ?? '';
+  const state = byHost[host];
+  const status = state?.status ?? null;
+  const quota = state?.quota ?? null;
+  const accounts = state?.accounts?.accounts ?? [];
+
+  return (
+    <div className="flex flex-col gap-4">
+      <SectionCard title={host}>
+        <div className="flex flex-col divide-y divide-border">
+          <ToolStatusRow tool="codex" install={status?.install.codex} network={status?.network.codex} />
+          <ToolStatusRow tool="claude" install={status?.install.claude} network={status?.network.claude} />
+          <ToolStatusRow tool="kimi" install={status?.install.kimi} network={status?.network.kimi} />
+        </div>
+        {state?.error.status ? (
+          <p className="mt-2 text-xs text-[var(--error)]">{state.error.status}</p>
+        ) : null}
+      </SectionCard>
+
+      <SectionCard title="Quota">
+        <div className="grid gap-5 md:grid-cols-3">
+          <div className="flex flex-col gap-3">
+            <div className="text-sm font-semibold text-ink">
+              Codex
+              {quota?.codex?.plan ? (
+                <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
+                  {quota.codex.plan}
+                </span>
+              ) : null}
+            </div>
+            <QuotaBar label="5h" window={quota?.codex?.fiveHour} />
+            <QuotaBar label="Weekly" window={quota?.codex?.weekly} />
+            {quota?.codex?.error ? (
+              <p className="text-xs text-[var(--error)]">{quota.codex.error}</p>
+            ) : null}
+          </div>
+          <div className="flex flex-col gap-3">
+            <div className="text-sm font-semibold text-ink">
+              Claude
+              {quota?.claude?.overallStatus ? (
+                <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
+                  {quota.claude.overallStatus}
+                </span>
+              ) : null}
+            </div>
+            <QuotaBar label="5h" window={quota?.claude?.fiveHour} />
+            <QuotaBar label="Weekly" window={quota?.claude?.weekly} />
+            {quota?.claude?.weeklySonnet ? (
+              <QuotaBar label="Weekly · Sonnet" window={quota.claude.weeklySonnet} />
+            ) : null}
+            {quota?.claude?.error ? (
+              <p className="text-xs text-[var(--error)]">{quota.claude.error}</p>
+            ) : null}
+          </div>
+          <div className="flex flex-col gap-3">
+            <div className="text-sm font-semibold text-ink">
+              Kimi
+              {quota?.kimi?.membership ? (
+                <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
+                  {quota.kimi.membership.replace(/^LEVEL_/, '').toLowerCase()}
+                </span>
+              ) : null}
+            </div>
+            <QuotaBar label="5h" window={quota?.kimi?.fiveHour} />
+            <QuotaBar label="Weekly" window={quota?.kimi?.weekly} />
+            {quota?.kimi?.error ? (
+              <p className="text-xs text-[var(--error)]">{quota.kimi.error}</p>
+            ) : null}
+          </div>
+        </div>
+        {state?.error.quota ? (
+          <p className="mt-2 text-xs text-[var(--error)]">{state.error.quota}</p>
+        ) : null}
+      </SectionCard>
+
+      <SectionCard title="Codex accounts">
+        <CodexAccountSwitcher
+          agentHost={host}
+          accounts={accounts}
+          loading={state?.loading.accounts ?? false}
+          errorMessage={state?.error.accounts}
+        />
+      </SectionCard>
+    </div>
+  );
+}

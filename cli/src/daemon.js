@@ -16,6 +16,7 @@ import {
   ProjectContext,
 } from "@love-moon/conductor-sdk";
 import { DaemonLogCollector } from "./log-collector.js";
+import { createAiManagerHandlers, handleAiManagerRequest } from "./ai-manager-handlers.js";
 import { resolveResumeContext } from "./fire/resume.js";
 import {
   filterRuntimeSupportedAllowCliList,
@@ -1456,6 +1457,8 @@ export function startDaemon(config = {}, deps = {}) {
   if (advertisedCapabilities.length > 0) {
     extraHeaders["x-conductor-capabilities"] = advertisedCapabilities.join(",");
   }
+  const aiManagerHandlers = createAiManagerHandlers({ configPath: config.CONFIG_FILE });
+
   const client = createWebSocketClient(sdkConfig, {
     extraHeaders,
     onConnected: ({ isReconnect, connectedAt } = { isReconnect: false, connectedAt: Date.now() }) => {
@@ -3430,6 +3433,11 @@ export function startDaemon(config = {}, deps = {}) {
     }
     if (event.type === "validate_project_path") {
       void handleValidateProjectPath(event.payload);
+    }
+    if (event.type === "ai_manager_request") {
+      handleAiManagerRequest(client, aiManagerHandlers, event.payload).catch((error) => {
+        logError(`Unhandled ai_manager_request failure: ${error?.message || error}`);
+      });
     }
   }
 

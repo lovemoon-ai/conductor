@@ -219,6 +219,15 @@ type AgentEvent =
         collected_at?: string;
       };
     }
+  | {
+      type: "ai_manager_response";
+      payload: {
+        request_id?: string;
+        action?: string;
+        result?: unknown;
+        error?: string | null;
+      };
+    }
   | { type: "heartbeat"; payload?: Record<string, unknown> };
 
 const persistTaskExecutionHost = async (
@@ -1479,6 +1488,24 @@ export const setupAgentGateway = (): WebSocketServer => {
               },
             });
             sendEnvelope(socket, { type: "runtime_status_recorded", payload: { task_id: task.id } });
+            break;
+          }
+          case "ai_manager_response": {
+            const requestId = normalizeOptionalString(event.payload.request_id);
+            if (!requestId) {
+              sendEnvelope(socket, { type: "error", payload: { message: "ai_manager_response requires request_id" } });
+              break;
+            }
+            realtimeHub.resolveAiManagerResponse(
+              {
+                request_id: requestId,
+                action: normalizeOptionalString(event.payload.action) || "",
+                result: event.payload.result,
+                error: normalizeOptionalString(event.payload.error),
+              },
+              user.id,
+              agentHost,
+            );
             break;
           }
           case "heartbeat": {

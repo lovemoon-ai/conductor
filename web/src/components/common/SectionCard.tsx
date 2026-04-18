@@ -1,7 +1,7 @@
 'use client';
 
 interface SectionCardProps {
-  title?: string;
+  title?: React.ReactNode;
   description?: string;
   headerAction?: React.ReactNode;
   children: React.ReactNode;

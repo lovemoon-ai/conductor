@@ -1,4 +1,4 @@
-export type Tool = "codex" | "claude";
+export type Tool = "codex" | "claude" | "kimi";
 
 export interface InstallStatus {
   installed: boolean;
@@ -28,6 +28,10 @@ export interface QuotaWindow {
   status?: string;
   /** Window length in minutes, if known (300 = 5h, 10080 = 7d). */
   windowMinutes?: number;
+  /** Absolute counts when the provider exposes them (Kimi). */
+  limit?: number;
+  used?: number;
+  remaining?: number;
 }
 
 export interface CodexQuota {
@@ -63,6 +67,20 @@ export interface ClaudeQuota {
   fetchedAt: number;
   source: "fresh" | "cached" | "stale" | "unknown";
   raw?: Record<string, string>;
+  error?: string;
+}
+
+export interface KimiQuota {
+  tool: "kimi";
+  userId?: string;
+  region?: string;
+  membership?: string;
+  fiveHour: QuotaWindow;
+  weekly: QuotaWindow;
+  parallelLimit?: number;
+  fetchedAt: number;
+  source: "fresh" | "cached" | "stale" | "unknown";
+  raw?: Record<string, unknown>;
   error?: string;
 }
 

@@ -15,10 +15,6 @@ const OAUTH_BOOTSTRAP_RETRY_DELAY_MS = 2000;
 const GITHUB_REPO_URL = "https://github.com/lovemoon-ai/conductor";
 
 export default function Home() {
-  const [apiToken, setApiToken] = useState<string | null>(null);
-  const [tokenLoading, setTokenLoading] = useState(false);
-  const [tokenError, setTokenError] = useState<string | null>(null);
-  const [copyState, setCopyState] = useState<"idle" | "success" | "error">("idle");
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
 
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
@@ -38,9 +34,6 @@ export default function Home() {
 
   const clearAuthState = useCallback(() => {
     clearAuthSession();
-    setApiToken(null);
-    setTokenLoading(false);
-    setTokenError(null);
   }, [clearAuthSession]);
 
   const syncStoredAuth = useCallback(async () => {
@@ -139,51 +132,6 @@ export default function Home() {
   }, [clearAuthState, establishSession, oauthRetryNonce, syncStoredAuth, t.loginForm.networkError]);
 
   useEffect(() => {
-    if (!token) {
-      setApiToken(null);
-      setTokenLoading(false);
-      setTokenError(null);
-      return;
-    }
-
-    let cancelled = false;
-    setTokenLoading(true);
-    setTokenError(null);
-    fetch("/api/auth/tokens/latest", { headers: { Authorization: `Bearer ${token}` } })
-      .then(async (response) => {
-        if (cancelled) {
-          return;
-        }
-        if (!response.ok) {
-          if (response.status === 401) {
-            clearAuthState();
-            return;
-          }
-          throw new Error(`HTTP ${response.status}`);
-        }
-        const payload = await response.json();
-        if (!cancelled) {
-          setApiToken(payload.token ?? null);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setApiToken(null);
-          setTokenError("load_failed");
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setTokenLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [clearAuthState, token]);
-
-  useEffect(() => {
     if (!isActionsMenuOpen) {
       return;
     }
@@ -201,59 +149,6 @@ export default function Home() {
 
   const logout = () => {
     clearAuthState();
-  };
-
-  const createApiToken = async () => {
-    if (!token) return;
-    setTokenLoading(true);
-    setTokenError(null);
-    try {
-      const res = await fetch("/api/auth/tokens", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ name: "web" }),
-      });
-      if (!res.ok) {
-        if (res.status === 401) {
-          clearAuthState();
-          return;
-        }
-        throw new Error("create_failed");
-      }
-      const data = await res.json();
-      setApiToken(data.token ?? null);
-    } catch {
-      setTokenError("create_failed");
-    } finally {
-      setTokenLoading(false);
-    }
-  };
-
-  const copyApiToken = async () => {
-    if (!apiToken) return;
-    try {
-      let copied = false;
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(apiToken);
-        copied = true;
-      }
-      if (!copied) {
-        const textarea = document.createElement("textarea");
-        textarea.value = apiToken;
-        textarea.setAttribute("readonly", "");
-        textarea.style.position = "fixed";
-        textarea.style.top = "-1000px";
-        textarea.style.left = "-1000px";
-        document.body.appendChild(textarea);
-        textarea.select();
-        copied = document.execCommand("copy");
-        document.body.removeChild(textarea);
-      }
-      setCopyState(copied ? "success" : "error");
-    } catch {
-      setCopyState("error");
-    }
-    window.setTimeout(() => setCopyState("idle"), 2000);
   };
 
   const copyCommand = async (command: string) => {
@@ -284,13 +179,6 @@ export default function Home() {
     }
   };
 
-  const maskToken = (value: string) => {
-    return `${value.slice(0, 6)}${"*".repeat(6)}`;
-  };
-
-  const tokenErrorMessage = tokenError === "create_failed" ? t.home.tokenCreateFailed : t.home.tokenLoadFailed;
-  const tokenCopyLabel =
-    copyState === "success" ? t.home.tokenCopied : copyState === "error" ? t.home.tokenCopyFailed : t.home.tokenCopy;
   const topbarCircleButtonClass =
     "w-9 h-9 flex items-center justify-center rounded-full border border-[var(--border)] bg-[var(--panel)] hover:bg-[var(--border)] transition-colors";
   const oauthBootstrapMessage =
@@ -518,81 +406,6 @@ export default function Home() {
                   </button>
                 </div>
             </div>
-          </div>
-        )}
-
-        {token && (
-          <div className="w-full max-w-2xl p-6 mt-6 bg-[var(--panel)] rounded-2xl border border-[var(--border)] shadow-lg">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-xl font-semibold">{t.home.tokenTitle}</h2>
-              {!tokenLoading && !tokenError && apiToken && (
-                <button
-                  type="button"
-                  onClick={createApiToken}
-                  className="px-4 py-2 bg-[var(--accent)] text-white rounded-full text-sm"
-                >
-                  {t.home.tokenOverwrite}
-                </button>
-              )}
-            </div>
-            <p className="text-sm text-[var(--muted)] mb-4">{t.home.tokenHint}</p>
-            {tokenLoading && <div className="text-sm text-[var(--muted)]">{t.home.tokenLoading}</div>}
-            {!tokenLoading && tokenError && (
-              <div className="text-sm text-red-500">{tokenErrorMessage}</div>
-            )}
-            {!tokenLoading && !tokenError && apiToken && (
-              <div className="flex items-center justify-between gap-3 px-4 py-3 bg-black/5 rounded-lg border border-[var(--border)]">
-                <div className="font-mono text-sm break-all">{maskToken(apiToken)}</div>
-                <button
-                  type="button"
-                  onClick={copyApiToken}
-                  className="p-2 border border-[var(--border)] rounded-full transition-transform active:scale-90 flex-shrink-0"
-                  aria-label={tokenCopyLabel}
-                  title={tokenCopyLabel}
-                >
-                  {copyState === "success" ? (
-                    <svg
-                      aria-hidden="true"
-                      viewBox="0 0 24 24"
-                      className="w-4 h-4"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <polyline points="20 6 9 17 4 12" />
-                    </svg>
-                  ) : (
-                    <svg
-                      aria-hidden="true"
-                      viewBox="0 0 24 24"
-                      className="w-4 h-4"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <rect x="9" y="9" width="13" height="13" rx="2" />
-                      <rect x="2" y="2" width="13" height="13" rx="2" />
-                    </svg>
-                  )}
-                </button>
-              </div>
-            )}
-            {!tokenLoading && !tokenError && !apiToken && (
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-[var(--muted)]">{t.home.tokenEmpty}</span>
-                <button
-                  type="button"
-                  onClick={createApiToken}
-                  className="px-4 py-2 bg-[var(--accent)] text-white rounded-full text-sm"
-                >
-                  {t.home.tokenCreate}
-                </button>
-              </div>
-            )}
           </div>
         )}
 

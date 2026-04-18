@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@love-moon/ai-bridge": "0.1.4",
+    "@love-moon/ai-manager": "0.2.35",
     "@love-moon/ai-sdk": "0.2.35",
     "@love-moon/conductor-sdk": "0.2.35",
     "chrome-launcher": "^1.2.1",
@@ -39,6 +40,7 @@
     ],
     "overrides": {
       "@love-moon/ai-sdk": "file:../modules/ai-sdk",
+      "@love-moon/ai-manager": "file:../modules/ai-manager",
       "@love-moon/conductor-sdk": "file:../modules/conductor-sdk"
     }
   }

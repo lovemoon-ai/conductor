@@ -74,6 +74,7 @@ update_cli_dependencies() {
     pkg.dependencies = pkg.dependencies || {};
     pkg.dependencies["@love-moon/ai-sdk"] = version;
     pkg.dependencies["@love-moon/conductor-sdk"] = version;
+    pkg.dependencies["@love-moon/ai-manager"] = version;
     delete pkg.dependencies["@love-moon/tui-driver"];
     fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
   ' "$package_json_path" "$version"
@@ -90,10 +91,12 @@ trap cleanup EXIT
 CLI_PACKAGE_JSON="$ROOT_DIR/cli/package.json"
 AI_SDK_PACKAGE_JSON="$ROOT_DIR/modules/ai-sdk/package.json"
 SDK_PACKAGE_JSON="$ROOT_DIR/modules/conductor-sdk/package.json"
+AI_MANAGER_PACKAGE_JSON="$ROOT_DIR/modules/ai-manager/package.json"
 
 echo "Updating package versions to ${TARGET_VERSION}..."
 update_package_json_version "$AI_SDK_PACKAGE_JSON" "$TARGET_VERSION"
 update_package_json_version "$SDK_PACKAGE_JSON" "$TARGET_VERSION"
+update_package_json_version "$AI_MANAGER_PACKAGE_JSON" "$TARGET_VERSION"
 update_package_json_version "$CLI_PACKAGE_JSON" "$TARGET_VERSION"
 update_cli_dependencies "$CLI_PACKAGE_JSON" "$TARGET_VERSION"
 
@@ -147,4 +150,5 @@ publish_simple() {
 
 publish_with_build "modules/ai-sdk"
 publish_with_build "modules/conductor-sdk"
+publish_with_build "modules/ai-manager"
 publish_simple "cli"

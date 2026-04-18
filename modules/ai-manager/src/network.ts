@@ -3,6 +3,7 @@ import type { NetworkStatus, Tool } from "./types.ts";
 const ENDPOINTS: Record<Tool, string> = {
   codex: "https://chatgpt.com/",
   claude: "https://api.anthropic.com/v1/messages",
+  kimi: "https://api.kimi.com/coding/v1/usages",
 };
 
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -43,9 +44,10 @@ export async function checkNetwork(
 export async function checkNetworkAll(opts?: {
   timeoutMs?: number;
 }): Promise<Record<Tool, NetworkStatus>> {
-  const [codex, claude] = await Promise.all([
+  const [codex, claude, kimi] = await Promise.all([
     checkNetwork("codex", opts),
     checkNetwork("claude", opts),
+    checkNetwork("kimi", opts),
   ]);
-  return { codex, claude };
+  return { codex, claude, kimi };
 }

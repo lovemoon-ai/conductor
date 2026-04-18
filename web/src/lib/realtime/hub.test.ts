@@ -136,3 +136,78 @@ describe('RealtimeHub connected agents metadata', () => {
     expect(hub.getAgentDisconnectAt('daemon-a', 'user-1')).toBeNull();
   });
 });
+
+describe('RealtimeHub ai_manager waiter', () => {
+  it('resolves when source userId+host match the registered waiter', async () => {
+    const hub = new RealtimeHub();
+    const pending = hub.waitForAiManagerResponse('req-1', 5000, 'user-1', 'daemon-a');
+    hub.resolveAiManagerResponse(
+      { request_id: 'req-1', action: 'status', result: { ok: true } },
+      'user-1',
+      'daemon-a',
+    );
+    const result = await pending;
+    expect(result).toMatchObject({ request_id: 'req-1', action: 'status' });
+  });
+
+  it('drops responses from a different host (cross-host safety)', async () => {
+    vi.useFakeTimers();
+    try {
+      const hub = new RealtimeHub();
+      const pending = hub.waitForAiManagerResponse('req-2', 5000, 'user-1', 'daemon-a');
+      // Imposter daemon resolves with a guessed request_id.
+      hub.resolveAiManagerResponse(
+        { request_id: 'req-2', action: 'status', result: { hijacked: true } },
+        'user-1',
+        'daemon-imposter',
+      );
+      vi.advanceTimersByTime(5000);
+      const result = await pending;
+      expect(result).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops responses from a different user even if host matches', async () => {
+    vi.useFakeTimers();
+    try {
+      const hub = new RealtimeHub();
+      const pending = hub.waitForAiManagerResponse('req-3', 5000, 'user-1', 'daemon-a');
+      hub.resolveAiManagerResponse(
+        { request_id: 'req-3', action: 'status', result: { x: 1 } },
+        'user-2',
+        'daemon-a',
+      );
+      vi.advanceTimersByTime(5000);
+      const result = await pending;
+      expect(result).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancelAiManagerResponse after resolve is a no-op', async () => {
+    const hub = new RealtimeHub();
+    const pending = hub.waitForAiManagerResponse('req-4', 5000, 'user-1', 'daemon-a');
+    hub.resolveAiManagerResponse(
+      { request_id: 'req-4', action: 'quota', result: {} },
+      'user-1',
+      'daemon-a',
+    );
+    await pending;
+    expect(() => hub.cancelAiManagerResponse('req-4')).not.toThrow();
+  });
+
+  it('returns null on timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const hub = new RealtimeHub();
+      const pending = hub.waitForAiManagerResponse('req-5', 1000, 'user-1', 'daemon-a');
+      vi.advanceTimersByTime(1000);
+      expect(await pending).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

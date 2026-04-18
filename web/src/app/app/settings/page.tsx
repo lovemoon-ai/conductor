@@ -1,9 +1,8 @@
 'use client';
 
 import { Header } from '@/components/layout/Header';
-import { useAuthStore } from '@/features/auth';
 import { useAgentsStore } from '@/features/agents';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 
 function formatBuildTimeInBeijing(rawBuildTime: string) {
@@ -31,9 +30,7 @@ function formatBuildTimeInBeijing(rawBuildTime: string) {
 }
 
 export default function SettingsPage() {
-  const session = useAuthStore((state) => state.session);
   const { agents, fetchAgents, error: agentsError, errorStatus: agentsErrorStatus } = useAgentsStore();
-  const [copied, setCopied] = useState(false);
   const router = useRouter();
   const cliVersion = process.env.NEXT_PUBLIC_CLI_VERSION || 'unknown';
   const gitCommitId = process.env.NEXT_PUBLIC_GIT_COMMIT_ID || 'unknown';
@@ -44,21 +41,15 @@ export default function SettingsPage() {
     fetchAgents();
   }, [fetchAgents]);
 
-  const userToken = session?.userToken || '';
   const visibleDaemons = agents.filter((agent) => !agent.host.startsWith('conductor-fire-'));
   const isDaemonAuthError = agentsErrorStatus === 401;
-  const truncatedToken = userToken.length > 20
-    ? `${userToken.slice(0, 10)}...${userToken.slice(-10)}`
-    : userToken;
-
-  const copyToken = () => {
-    navigator.clipboard.writeText(userToken);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
 
   const exitToHome = () => {
     router.push('/');
+  };
+
+  const openAiManager = (host: string) => {
+    router.push(`/app/ai-manager?agentHost=${encodeURIComponent(host)}`);
   };
 
   return (
@@ -66,59 +57,6 @@ export default function SettingsPage() {
       <Header title="Settings" compact />
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4 webapp-scrollbar">
-        {/* API Token Section */}
-        <section className="webapp-card p-6">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center">
-              <svg className="w-5 h-5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
-              </svg>
-            </div>
-            <h2 className="text-xl font-semibold">API Token</h2>
-          </div>
-          <div className="flex items-center justify-between gap-3 px-4 py-3 bg-black/5 rounded-lg border border-[var(--border)]">
-            <div className="font-mono text-sm break-all">
-              {truncatedToken}
-            </div>
-            <button
-              type="button"
-              onClick={copyToken}
-              aria-label={copied ? 'Copied!' : 'Copy token'}
-              title={copied ? 'Copied!' : 'Copy token'}
-              className="p-2 border border-[var(--border)] rounded-full transition-transform active:scale-90 flex-shrink-0"
-            >
-              {copied ? (
-                <svg
-                  aria-hidden="true"
-                  viewBox="0 0 24 24"
-                  className="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              ) : (
-                <svg
-                  aria-hidden="true"
-                  viewBox="0 0 24 24"
-                  className="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <rect x="9" y="9" width="13" height="13" rx="2" />
-                  <rect x="2" y="2" width="13" height="13" rx="2" />
-                </svg>
-              )}
-            </button>
-          </div>
-        </section>
-
         {/* Connected Daemons Section */}
         <section className="webapp-card p-5">
           <div className="flex items-center gap-3 mb-4">
@@ -153,9 +91,12 @@ export default function SettingsPage() {
           ) : (
             <div className="space-y-2">
               {visibleDaemons.map((agent) => (
-                <div
+                <button
                   key={agent.id}
-                  className="flex items-center justify-between p-3 bg-paper border border-border rounded-lg"
+                  type="button"
+                  onClick={() => openAiManager(agent.host)}
+                  aria-label={`Open AI Manager for ${agent.host}`}
+                  className="flex w-full items-center justify-between p-3 bg-paper border border-border rounded-lg text-left transition-colors hover:bg-[var(--accent)]/5 hover:border-[var(--accent)]/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40"
                 >
                   <div className="flex items-center gap-3">
                     <div className="w-2 h-2 bg-success rounded-full animate-pulse" />
@@ -168,7 +109,10 @@ export default function SettingsPage() {
                       )}
                     </div>
                   </div>
-                </div>
+                  <svg className="w-4 h-4 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
               ))}
             </div>
           )}

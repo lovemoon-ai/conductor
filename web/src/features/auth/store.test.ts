@@ -240,6 +240,33 @@ describe("useAuthStore", () => {
     expect(mockResetApiClient).toHaveBeenCalledTimes(1);
   });
 
+  it("logs out when /auth/tokens/latest returns 401 and create-token also fails", async () => {
+    // Storage has a JWT but no in-memory session, so fetchUserToken is forced
+    // to run instead of trusting a previously-cached userToken.
+    mockGetStoredJwtToken.mockReturnValue("jwt-fresh");
+    mockApiGet
+      // /auth/me succeeds with a valid user
+      .mockResolvedValueOnce({
+        user: {
+          id: "user-1",
+          email: "u@example.com",
+          phone: null,
+        },
+      })
+      // /auth/tokens/latest rejects with a 401-ish error (ApiClient throws)
+      .mockRejectedValueOnce(Object.assign(new Error("Unauthorized"), { status: 401 }));
+    // POST /auth/tokens fallback also fails (any error)
+    mockApiPost.mockRejectedValueOnce(new Error("token endpoint unreachable"));
+
+    // No prior in-memory session — buildSession cannot reuse a userToken.
+    useAuthStore.setState({ session: null });
+
+    await useAuthStore.getState().initFromStorage();
+
+    expect(useAuthStore.getState().session).toBeNull();
+    expect(mockClearStoredJwtToken).toHaveBeenCalled();
+  });
+
   it("fully clears auth storage on logout", () => {
     localStorage.setItem("conductor.jwt", "jwt-1");
     localStorage.setItem(AUTH_SESSION_STORAGE_KEY, '{"state":{"session":{"jwtToken":"jwt-1"}},"version":0}');

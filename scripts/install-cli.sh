@@ -13,6 +13,8 @@ pnpm -C "$ROOT_DIR/modules/ai-sdk" install
 pnpm -C "$ROOT_DIR/modules/ai-sdk" run build
 pnpm -C "$ROOT_DIR/modules/conductor-sdk" install
 pnpm -C "$ROOT_DIR/modules/conductor-sdk" run build
+pnpm -C "$ROOT_DIR/modules/ai-manager" install
+pnpm -C "$ROOT_DIR/modules/ai-manager" run build
 
 echo "==> Installing CLI dependencies"
 pnpm -C "$ROOT_DIR/cli" install

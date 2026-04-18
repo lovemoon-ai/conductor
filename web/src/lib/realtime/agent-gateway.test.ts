@@ -41,6 +41,7 @@ vi.mock("./hub", () => ({
     broadcastTerminal: vi.fn(),
     broadcast: vi.fn(),
     notifyTaskStatus: vi.fn(),
+    resolveAiManagerResponse: vi.fn(),
   },
 }));
 
@@ -830,5 +831,89 @@ describe("agent-gateway ownership handling", () => {
         },
       },
     });
+  });
+
+  it("ai_manager_response forwards user.id + agentHost to the hub on resolve", async () => {
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+    const socket = new FakeSocket();
+    const wss = setupAgentGateway();
+    const request = {
+      headers: { authorization: "Bearer test-token", "x-conductor-host": "daemon-aim" },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as any;
+
+    wss.emit("connection", socket as any, request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    socket.emit(
+      "message",
+      Buffer.from(
+        JSON.stringify({
+          type: "ai_manager_response",
+          payload: {
+            request_id: "req-aim-1",
+            action: "status",
+            result: { ok: true },
+            error: null,
+          },
+        }),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(realtimeHub.resolveAiManagerResponse).toHaveBeenCalledWith(
+      {
+        request_id: "req-aim-1",
+        action: "status",
+        result: { ok: true },
+        error: null,
+      },
+      "user-1",
+      "daemon-aim",
+    );
+  });
+
+  it("ai_manager_response with missing request_id sends an error envelope and does not resolve", async () => {
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+    const socket = new FakeSocket();
+    const wss = setupAgentGateway();
+    const request = {
+      headers: { authorization: "Bearer test-token", "x-conductor-host": "daemon-aim-2" },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as any;
+
+    wss.emit("connection", socket as any, request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    socket.emit(
+      "message",
+      Buffer.from(
+        JSON.stringify({
+          type: "ai_manager_response",
+          payload: { action: "status", result: { ok: true } },
+        }),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(realtimeHub.resolveAiManagerResponse).not.toHaveBeenCalled();
+    const errorSends = (socket.send as any).mock.calls.filter((call: any[]) => {
+      try {
+        return JSON.parse(String(call[0])).type === "error";
+      } catch {
+        return false;
+      }
+    });
+    expect(errorSends.length).toBeGreaterThan(0);
+    const lastError = JSON.parse(String(errorSends[errorSends.length - 1][0]));
+    expect(lastError.payload.message).toMatch(/request_id/);
   });
 });

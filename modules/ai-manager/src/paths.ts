@@ -11,4 +11,5 @@ export function expandHome(p: string): string {
 export const DEFAULT_CONDUCTOR_CONFIG = join(homedir(), ".conductor", "config.yaml");
 export const DEFAULT_CODEX_AUTH = join(homedir(), ".codex", "auth.json");
 export const DEFAULT_CODEX_CONFIG = join(homedir(), ".codex", "config.toml");
+export const DEFAULT_KIMI_CREDENTIAL = join(homedir(), ".kimi", "credentials", "kimi-code.json");
 export const DEFAULT_QUOTA_CACHE_DIR = join(homedir(), ".conductor", "cache", "ai-manager");

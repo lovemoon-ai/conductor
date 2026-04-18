@@ -65,16 +65,23 @@ export async function checkInstall(
       error: res.error?.message ?? (res.stderr.trim() || `exit ${res.code}`),
     };
   }
-  const version = (res.stdout.trim() || res.stderr.trim()).split("\n")[0];
-  return { installed: true, path, version };
+  const rawLine = (res.stdout.trim() || res.stderr.trim()).split("\n")[0] ?? "";
+  return { installed: true, path, version: extractSemver(rawLine) ?? rawLine };
+}
+
+/** Pull the first semver-looking token out of an arbitrary `--version` line. */
+function extractSemver(line: string): string | undefined {
+  const m = /\d+\.\d+(?:\.\d+)?(?:[-+][\w.]+)?/.exec(line);
+  return m ? m[0] : undefined;
 }
 
 export async function checkInstallAll(opts?: {
   timeoutMs?: number;
 }): Promise<Record<Tool, InstallStatus>> {
-  const [codex, claude] = await Promise.all([
+  const [codex, claude, kimi] = await Promise.all([
     checkInstall("codex", opts),
     checkInstall("claude", opts),
+    checkInstall("kimi", opts),
   ]);
-  return { codex, claude };
+  return { codex, claude, kimi };
 }

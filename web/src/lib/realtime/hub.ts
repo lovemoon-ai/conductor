@@ -91,6 +91,23 @@ type TaskWorktreeCleanupWaiter = {
   timeout: NodeJS.Timeout;
 };
 
+export type AiManagerResponse = {
+  request_id: string;
+  action: string;
+  result?: unknown;
+  error?: string | null;
+};
+
+type AiManagerWaiter = {
+  resolve: (result: AiManagerResponse | null) => void;
+  timeout: NodeJS.Timeout;
+  /** Caller that registered this waiter; resolution is rejected when the
+   *  responding socket does not match. Defends against cross-user collisions
+   *  on a guessed request_id. */
+  expectedUserId: string;
+  expectedAgentHost: string;
+};
+
 type TerminalDetachResult = {
   detachedTaskIds: string[];
   releasedWriterTaskIds: string[];
@@ -111,6 +128,7 @@ export class RealtimeHub {
   private agentLogWaiters = new Map<string, AgentLogWaiter>();
   private projectPathValidationWaiters = new Map<string, ProjectPathValidationWaiter>();
   private taskWorktreeCleanupWaiters = new Map<string, TaskWorktreeCleanupWaiter>();
+  private aiManagerWaiters = new Map<string, AiManagerWaiter>();
   private terminalSubscriptions = new Map<string, Set<string>>();
   private appTerminalTasks = new Map<string, Set<string>>();
   private terminalWriters = new Map<string, string>();
@@ -534,6 +552,57 @@ export class RealtimeHub {
 
     clearTimeout(waiter.timeout);
     this.agentLogWaiters.delete(requestId);
+    waiter.resolve(null);
+  }
+
+  waitForAiManagerResponse(
+    requestId: string,
+    timeoutMs: number,
+    expectedUserId: string,
+    expectedAgentHost: string,
+  ): Promise<AiManagerResponse | null> {
+    return new Promise<AiManagerResponse | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.aiManagerWaiters.delete(requestId);
+        resolve(null);
+      }, timeoutMs);
+      this.aiManagerWaiters.set(requestId, {
+        resolve,
+        timeout,
+        expectedUserId,
+        expectedAgentHost,
+      });
+    });
+  }
+
+  /**
+   * Deliver a response to its waiter, but only when the source socket matches
+   * the user+host the request was originally addressed to. Mismatches are
+   * dropped silently — the waiter remains pending and will time out normally.
+   */
+  resolveAiManagerResponse(
+    result: AiManagerResponse,
+    sourceUserId: string,
+    sourceAgentHost: string,
+  ) {
+    const waiter = this.aiManagerWaiters.get(result.request_id);
+    if (!waiter) return;
+    if (waiter.expectedUserId !== sourceUserId || waiter.expectedAgentHost !== sourceAgentHost) {
+      console.warn(
+        `[realtimeHub] dropped ai_manager_response: requestId=${result.request_id}, expected=${waiter.expectedUserId}/${waiter.expectedAgentHost}, got=${sourceUserId}/${sourceAgentHost}`,
+      );
+      return;
+    }
+    clearTimeout(waiter.timeout);
+    this.aiManagerWaiters.delete(result.request_id);
+    waiter.resolve(result);
+  }
+
+  cancelAiManagerResponse(requestId: string) {
+    const waiter = this.aiManagerWaiters.get(requestId);
+    if (!waiter) return;
+    clearTimeout(waiter.timeout);
+    this.aiManagerWaiters.delete(requestId);
     waiter.resolve(null);
   }
 
