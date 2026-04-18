@@ -1,6 +1,6 @@
 {
   "name": "@love-moon/ai-manager",
-  "version": "0.2.35",
+  "version": "0.2.36",
   "description": "Manage local AI CLI tools (codex, claude): install/network health, quota, and codex account switching",
   "publishConfig": {
     "access": "public"
@@ -8,7 +8,9 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -26,5 +28,6 @@
   },
   "devDependencies": {
     "rimraf": "^5.0.10"
-  }
+  },
+  "gitCommitId": "54d9de4"
 }

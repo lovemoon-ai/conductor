@@ -6,6 +6,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with an additional `Commits` section for each released version.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.2.36] - 2026-04-18
+
+### Added
+
+- Added `ai-manager` web dashboard at `/app/ai-manager` reachable from any
+  daemon card in Settings, showing install status, network reachability, and
+  5h / weekly quota for `codex`, `claude`, and `kimi` on the selected daemon.
+- Added Codex account switcher: list authorized `auth.json` profiles configured
+  under `ai_manager.codex.auth_json` in `~/.conductor/config.yaml` and
+  atomically swap `~/.codex/auth.json` between them, with a confirmation
+  dialog warning that already-running codex sessions keep the previous token.
+- Added Kimi quota provider in `@love-moon/ai-manager`: refreshes expired
+  OAuth access tokens via `auth.kimi.com/api/oauth/token` and persists them
+  back to `~/.kimi/credentials/kimi-code.json`.
+- Added `ai_manager_request` / `ai_manager_response` realtime envelope on the
+  agent gateway and a `requestAiManager()` helper for API routes; waiters are
+  bound to `{userId, agentHost}` so a stray response cannot satisfy another
+  user's pending call.
+
+### Changed
+
+- Settings page now links each Connected Daemon card to `/app/ai-manager` for
+  the corresponding host; the dedicated AI Manager entry has been removed
+  from the sidebar.
+- `AiManager.getConfig()` now uses an mtime-based cache instead of a process-
+  lifetime memoization, so edits to `~/.conductor/config.yaml` take effect
+  without restarting the daemon.
+- `--version` parsing in `@love-moon/ai-manager` now extracts a normalized
+  semver, so `codex / claude / kimi` all render identically.
+- Daemon `status` now skips the network probe for tools that are not
+  installed, removing duplicate "not installed" badges in the UI and avoiding
+  a wasted outbound timeout per missing tool.
+
+### Removed
+
+- Removed the personal-access-token card from the home page and the API
+  Token block from the Settings page; both were redundant after the move to
+  device-flow login.
+
+### Fixed
+
+- `/api/ai-manager/quota?tool=kimi` no longer falls through to fetching all
+  three tools.
+- `/api/ai-manager/*` rejects `conductor-fire-*` hosts with `400` instead of
+  letting the realtime waiter time out at 15s.
+- The `AiManagerPanel` default-host fallback now skips `conductor-fire-*`
+  hosts so direct navigation to `/app/ai-manager` does not pick an ephemeral
+  fire process.
+
+### Security
+
+- _None._
+
+### Commits
+
+- `54d9de4` add ai-manager dashboard with kimi quota and codex switcher
+
 ## [0.2.35] - 2026-04-17
 
 ### Added
