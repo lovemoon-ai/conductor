@@ -267,6 +267,7 @@ describe("Daemon", () => {
         RESTART_LAUNCHER_ARGS: ["daemon", "--config-file", "/tmp/config.yaml"],
         VERSION_CHECK_SCRIPT: "/mock/bin/conductor",
         VERSION_CHECK_ARGS: ["--version"],
+        AUTO_UPDATE_RESPAWN: true,
       },
       {
         spawn: (cmd, args, opts) => {
@@ -418,6 +419,7 @@ describe("Daemon", () => {
         RESTART_LAUNCHER_ARGS: ["daemon"],
         VERSION_CHECK_SCRIPT: "/mock/bin/conductor",
         VERSION_CHECK_ARGS: ["--version"],
+        AUTO_UPDATE_RESPAWN: true,
       },
       {
         spawn: (cmd, args) => {
@@ -518,6 +520,7 @@ describe("Daemon", () => {
         RESTART_LAUNCHER_ARGS: ["daemon"],
         VERSION_CHECK_SCRIPT: "/mock/bin/conductor",
         VERSION_CHECK_ARGS: ["--version"],
+        AUTO_UPDATE_RESPAWN: true,
       },
       {
         spawn: (cmd, args, options = {}) => {
@@ -4127,7 +4130,7 @@ describe("Daemon", () => {
       assert.ok(typeof handler === "function");
       assert.strictEqual(
         webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-        "project_path_validation,pty_task,terminal_snapshot",
+        "project_path_validation,restart_daemon,pty_task,terminal_snapshot",
       );
 
       handler({
@@ -4157,7 +4160,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,pty_task,terminal_snapshot",
+      "project_path_validation,restart_daemon,pty_task,terminal_snapshot",
     );
 
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -4430,7 +4433,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation",
+      "project_path_validation,restart_daemon",
     );
 
     handler({
@@ -7188,6 +7191,301 @@ describe("Daemon", () => {
     expectEvent(sentEvents, "terminal_error", (payload) => {
       assert.strictEqual(payload.task_id, "task-shutdown-late-pty");
       assert.strictEqual(payload.message, "daemon shutting down");
+    });
+  });
+
+  describe("handleRestartDaemon", () => {
+    function buildRestartDaemonFixture({
+      cliVersion = "0.2.21",
+      fetchLatestVersion = async () => "0.2.21",
+      spawnImpl,
+      installAssertions = {},
+    } = {}) {
+      let handler = null;
+      let webSocketClientOptions = null;
+      const sentEvents = [];
+      let exitCode = null;
+      const spawnCalls = [];
+      let installAttempts = 0;
+
+      const defaultSpawn = (cmd, args) => {
+        if (cmd === "npm") {
+          const child = new EventEmitter();
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          child.kill = () => {};
+          if (args[0] === "install") {
+            installAttempts += 1;
+            if (installAssertions.expectedPkgSpec) {
+              assert.strictEqual(args[2], installAssertions.expectedPkgSpec);
+            }
+          }
+          if (args[0] === "root") {
+            setImmediate(() => {
+              child.stdout.emit("data", "/mock/global/node_modules\n");
+              child.emit("close", 0);
+            });
+          } else if (installAssertions.failInstall && args[0] === "install") {
+            setImmediate(() => {
+              child.stderr.emit("data", "install failed");
+              child.emit("close", 1);
+            });
+          } else {
+            setImmediate(() => child.emit("close", 0));
+          }
+          return child;
+        }
+        if (cmd === process.execPath && args[0] === "/mock/bin/conductor" && args[1] === "--version") {
+          const child = new EventEmitter();
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          child.kill = () => {};
+          setImmediate(() => {
+            child.stdout.emit("data", `conductor version ${installAssertions.installedVersion || cliVersion} (test)\n`);
+            child.emit("close", 0);
+          });
+          return child;
+        }
+        if (cmd === process.execPath && args[0] === "-e") {
+          const child = new EventEmitter();
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          child.kill = () => {};
+          setImmediate(() => child.emit("close", 0));
+          return child;
+        }
+        if (cmd === process.execPath && args[0] === "/mock/bin/conductor" && args[1] === "daemon") {
+          spawnCalls.push({ cmd, args, opts: arguments[2] });
+          const child = new EventEmitter();
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          child.kill = () => {};
+          child.unref = () => {};
+          child.pid = 44444;
+          setImmediate(() => child.emit("close", 0));
+          return child;
+        }
+        throw new Error(`unexpected spawn: ${cmd} ${args.join(" ")}`);
+      };
+
+      const daemonInstance = startDaemon(
+        {
+          BACKEND_URL: "ws://localhost:0",
+          WORKSPACE_ROOT: `/tmp/test-restart-daemon-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          CLI_PATH: "/tmp/cli.js",
+          DAEMON_NAME: "daemon-restart",
+          RESTART_LAUNCHER_SCRIPT: "/mock/bin/conductor",
+          RESTART_LAUNCHER_ARGS: ["daemon"],
+          VERSION_CHECK_SCRIPT: "/mock/bin/conductor",
+          VERSION_CHECK_ARGS: ["--version"],
+        },
+        {
+          spawn: function (cmd, args, opts) {
+            spawnCalls.push({ cmd, args, opts });
+            return (spawnImpl || defaultSpawn)(cmd, args, opts);
+          },
+          mkdirSync: () => {},
+          writeFileSync: () => {},
+          existsSync: () => false,
+          readFileSync: () => {
+            throw new Error("unexpected read");
+          },
+          unlinkSync: () => {},
+          renameSync: () => {},
+          createWriteStream: () => ({ write: () => {}, end: () => {} }),
+          fetch: async () => ({ ok: true, json: async () => [] }),
+          fetchLatestVersion,
+          isNewerVersion: (a, b) => a !== b,
+          detectPackageManager: () => "npm",
+          isInUpdateWindow: () => false,
+          isManagedInstallPath: () => true,
+          isBackgroundProcess: true,
+          cliVersion,
+          exit: (code) => {
+            exitCode = code;
+          },
+          createWebSocketClient: (_sdk, options) => {
+            webSocketClientOptions = options;
+            return {
+              registerHandler: (h) => {
+                handler = h;
+              },
+              connect: async () => {},
+              disconnect: async () => {},
+              sendJson: async (payload) => {
+                sentEvents.push(payload);
+              },
+            };
+          },
+        },
+      );
+
+      return {
+        dispatch: (event) => handler(event),
+        sentEvents,
+        spawnCalls: () => spawnCalls,
+        installAttempts: () => installAttempts,
+        getExitCode: () => exitCode,
+        webSocketClientOptions: () => webSocketClientOptions,
+        close: () => daemonInstance.close(),
+      };
+    }
+
+    it("plain-restarts and exits when already on the latest version", async () => {
+      const fx = buildRestartDaemonFixture({
+        cliVersion: "0.2.21",
+        fetchLatestVersion: async () => "0.2.21",
+      });
+      await new Promise((r) => setTimeout(r, 20));
+
+      fx.dispatch({
+        type: "restart_daemon",
+        payload: { request_id: "req-plain", target_version: "latest" },
+      });
+
+      await waitUntil(() => fx.getExitCode() === 0, { message: "daemon exits after plain restart" });
+
+      assert.strictEqual(fx.installAttempts(), 0);
+      const ack = fx.sentEvents.find((e) => e.type === "agent_command_ack");
+      assert.ok(ack, "expected agent_command_ack to be sent");
+      assert.strictEqual(ack.payload.request_id, "req-plain");
+      assert.strictEqual(ack.payload.event_type, "restart_daemon");
+      assert.strictEqual(ack.payload.accepted, true);
+      const respawn = fx.spawnCalls().find(
+        (c) => c.cmd === process.execPath && c.args[0] === "/mock/bin/conductor" && c.args[1] === "daemon",
+      );
+      assert.ok(respawn, "expected a respawn via the launcher script");
+      fx.close();
+    });
+
+    it("installs then restarts when a newer version is available", async () => {
+      const fx = buildRestartDaemonFixture({
+        cliVersion: "0.2.20",
+        fetchLatestVersion: async () => "0.2.21",
+        installAssertions: { expectedPkgSpec: "@love-moon/conductor-cli@0.2.21", installedVersion: "0.2.21" },
+      });
+      await new Promise((r) => setTimeout(r, 20));
+
+      fx.dispatch({
+        type: "restart_daemon",
+        payload: { request_id: "req-install", target_version: "latest" },
+      });
+
+      await waitUntil(() => fx.getExitCode() === 0, { message: "daemon exits after install+restart" });
+
+      assert.strictEqual(fx.installAttempts(), 1);
+      const respawn = fx.spawnCalls().find(
+        (c) => c.cmd === process.execPath && c.args[0] === "/mock/bin/conductor" && c.args[1] === "daemon",
+      );
+      assert.ok(respawn);
+      fx.close();
+    });
+
+    it("falls back to plain restart when install fails", async () => {
+      const fx = buildRestartDaemonFixture({
+        cliVersion: "0.2.20",
+        fetchLatestVersion: async () => "0.2.21",
+        installAssertions: { expectedPkgSpec: "@love-moon/conductor-cli@0.2.21", failInstall: true },
+      });
+      await new Promise((r) => setTimeout(r, 20));
+
+      fx.dispatch({
+        type: "restart_daemon",
+        payload: { request_id: "req-fallback", target_version: "latest" },
+      });
+
+      await waitUntil(() => fx.getExitCode() === 0, { message: "daemon exits after fallback restart" });
+
+      const respawn = fx.spawnCalls().find(
+        (c) => c.cmd === process.execPath && c.args[0] === "/mock/bin/conductor" && c.args[1] === "daemon",
+      );
+      assert.ok(respawn, "expected plain respawn after install failure");
+      fx.close();
+    });
+
+    it("ignores a second restart while one is already in progress and acks rejection", async () => {
+      const fx = buildRestartDaemonFixture({
+        cliVersion: "0.2.21",
+        fetchLatestVersion: async () => new Promise(() => {}),
+      });
+      await new Promise((r) => setTimeout(r, 20));
+
+      fx.dispatch({
+        type: "restart_daemon",
+        payload: { request_id: "req-first", target_version: "latest" },
+      });
+      await new Promise((r) => setTimeout(r, 10));
+
+      fx.dispatch({
+        type: "restart_daemon",
+        payload: { request_id: "req-second", target_version: "latest" },
+      });
+      await new Promise((r) => setTimeout(r, 10));
+
+      const acks = fx.sentEvents.filter((e) => e.type === "agent_command_ack");
+      const rejectedAck = acks.find((a) => a.payload.request_id === "req-second");
+      assert.ok(rejectedAck, "expected rejection ack for second restart");
+      assert.strictEqual(rejectedAck.payload.accepted, false);
+      fx.close();
+    });
+
+    it("advertises the restart_daemon capability in the agent headers", async () => {
+      const fx = buildRestartDaemonFixture();
+      await new Promise((r) => setTimeout(r, 20));
+      const headers = fx.webSocketClientOptions()?.extraHeaders || {};
+      const caps = String(headers["x-conductor-capabilities"] || "").split(",");
+      assert.ok(caps.includes("restart_daemon"));
+      fx.close();
+    });
+
+    it("installs an explicit semver target when it differs from current", async () => {
+      const fx = buildRestartDaemonFixture({
+        cliVersion: "0.2.20",
+        fetchLatestVersion: async () => {
+          throw new Error("should not be called for explicit semver");
+        },
+        installAssertions: { expectedPkgSpec: "@love-moon/conductor-cli@0.2.30", installedVersion: "0.2.30" },
+      });
+      await new Promise((r) => setTimeout(r, 20));
+
+      fx.dispatch({
+        type: "restart_daemon",
+        payload: { request_id: "req-explicit", target_version: "0.2.30" },
+      });
+
+      await waitUntil(() => fx.getExitCode() === 0, { message: "daemon exits after explicit semver install" });
+      assert.strictEqual(fx.installAttempts(), 1);
+      fx.close();
+    });
+
+    it("rejects restart and acks when the daemon is already shutting down", async () => {
+      const fx = buildRestartDaemonFixture({
+        cliVersion: "0.2.21",
+        fetchLatestVersion: async () => new Promise(() => {}),
+      });
+      await new Promise((r) => setTimeout(r, 20));
+
+      // Start a first restart so that handleRestartDaemon blocks on fetchLatestVersion;
+      // then invoke close() which flips daemonShuttingDown=true.
+      fx.dispatch({
+        type: "restart_daemon",
+        payload: { request_id: "req-pre", target_version: "latest" },
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      fx.close();
+      await new Promise((r) => setTimeout(r, 10));
+
+      fx.dispatch({
+        type: "restart_daemon",
+        payload: { request_id: "req-during-shutdown", target_version: "latest" },
+      });
+      await new Promise((r) => setTimeout(r, 10));
+
+      const ack = fx.sentEvents.find(
+        (e) => e.type === "agent_command_ack" && e.payload.request_id === "req-during-shutdown",
+      );
+      assert.ok(ack, "expected rejection ack while shutting down");
+      assert.strictEqual(ack.payload.accepted, false);
     });
   });
 });

@@ -691,6 +691,17 @@ export function startDaemon(config = {}, deps = {}) {
     autoUpdateSupportedInstall &&
     (process.env.CONDUCTOR_AUTO_UPDATE !== "false") &&
     (userConfig.auto_update !== false);
+  // Auto-update respawn was historically broken in prod (camelCase/UPPER_SNAKE
+  // config-key mismatch between conductor-daemon.js and daemon.js), so no fleet
+  // has actually restarted itself via this path. The key mismatch is now fixed,
+  // which means auto-update would start respawning daemons globally. To avoid a
+  // silent activation, keep respawn gated behind an explicit opt-in until it
+  // has been validated on a canary.
+  const AUTO_UPDATE_RESPAWN_ENABLED =
+    config.AUTO_UPDATE_RESPAWN === true ||
+    config.AUTO_UPDATE_RESPAWN === "true" ||
+    process.env.CONDUCTOR_AUTO_UPDATE_RESPAWN === "true" ||
+    userConfig.auto_update_respawn === true;
   const UPDATE_WINDOW = parseUpdateWindowFn(
     process.env.CONDUCTOR_UPDATE_WINDOW || userConfig.update_window || "02:00-04:00"
   );
@@ -1450,7 +1461,7 @@ export function startDaemon(config = {}, deps = {}) {
     "x-conductor-backends": SUPPORTED_BACKENDS.join(","),
     "x-conductor-version": cliVersion,
   };
-  const advertisedCapabilities = ["project_path_validation"];
+  const advertisedCapabilities = ["project_path_validation", "restart_daemon"];
   if (ptyTaskCapabilityEnabled) {
     advertisedCapabilities.push("pty_task", "terminal_snapshot");
   }
@@ -1897,7 +1908,7 @@ export function startDaemon(config = {}, deps = {}) {
     return newPkg.version || null;
   }
 
-  async function performAutoUpdate(targetVersion) {
+  async function installCliVersion(targetVersion, tag) {
     const pm = detectPackageManagerFn({
       launcherPath: restartLauncherScript || versionCheckScript,
       packageRoot: installedPackageRoot,
@@ -1905,7 +1916,7 @@ export function startDaemon(config = {}, deps = {}) {
     const pkgSpec = `${PACKAGE_NAME}@${targetVersion}`;
 
     if (pm === "pnpm") {
-      log("[auto-update] Preparing pnpm native dependency allowlist for node-pty");
+      log(`[${tag}] Preparing pnpm native dependency allowlist for node-pty`);
       await ensurePnpmOnlyBuiltDependencies({
         runCommand: runBufferedCommand,
         dependencies: ["node-pty"],
@@ -1913,9 +1924,7 @@ export function startDaemon(config = {}, deps = {}) {
       });
     }
 
-    log(`[auto-update] Installing ${pkgSpec} via ${pm}...`);
-
-    // Step 1: install
+    log(`[${tag}] Installing ${pkgSpec} via ${pm}...`);
     const result = await runInstallCommand(pm, pkgSpec);
     if (!result.success) {
       throw new Error(
@@ -1923,13 +1932,6 @@ export function startDaemon(config = {}, deps = {}) {
       );
     }
 
-    // Step 2: re-check active tasks — a task may have arrived during the install
-    if (hasActiveTasks()) {
-      log("[auto-update] Active tasks appeared during install; aborting restart (will retry later)");
-      return;
-    }
-
-    // Step 3: verify installed version using the globally resolved CLI entry point.
     try {
       const installedVersion = await readInstalledCliVersion();
       if (installedVersion !== targetVersion) {
@@ -1941,7 +1943,6 @@ export function startDaemon(config = {}, deps = {}) {
       throw new Error(`Version verification failed: ${verifyErr?.message || verifyErr}`);
     }
 
-    // Step 4: repair and verify native dependencies before shutting down the healthy daemon.
     try {
       await repairAndVerifyGlobalNodePty({
         packageManager: pm,
@@ -1953,26 +1954,33 @@ export function startDaemon(config = {}, deps = {}) {
       throw new Error(`Native dependency verification failed: ${verifyErr?.message || verifyErr}`);
     }
 
-    log(`[auto-update] Verified ${targetVersion} and node-pty. Restarting daemon...`);
+    log(`[${tag}] Installed and verified ${targetVersion} (node-pty OK)`);
+  }
+
+  async function restartDaemonProcess(reason, { allowForegroundRespawn = false } = {}) {
+    const shouldRespawn = isBackgroundProcess || allowForegroundRespawn;
+    if (shouldRespawn && !restartLauncherScript) {
+      throw new Error("Missing daemon restart launcher script");
+    }
 
     let logFd = null;
-    if (isBackgroundProcess) {
-      if (!restartLauncherScript) {
-        throw new Error("Missing daemon restart launcher script");
-      }
+    if (shouldRespawn) {
       try {
         mkdirSyncFn(DAEMON_LOG_DIR, { recursive: true });
       } catch {
         /* ignore */
       }
       logFd = fs.openSync(DAEMON_LOG_PATH, "a");
+      if (!isBackgroundProcess) {
+        log(
+          `[${reason}] Foreground daemon will be respawned in background. Logs: ${DAEMON_LOG_PATH}`
+        );
+      }
     }
 
-    // Step 5: graceful shutdown
-    await shutdownDaemon("auto-update");
+    await shutdownDaemon(reason);
 
-    // Step 6: re-spawn (only in background/nohup mode)
-    if (isBackgroundProcess) {
+    if (shouldRespawn) {
       const handoffToken = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       const handoffExpiresAt = Date.now() + 15_000;
       try {
@@ -1992,7 +2000,7 @@ export function startDaemon(config = {}, deps = {}) {
           },
         });
         child.unref();
-        log(`[auto-update] New daemon spawned (PID ${child.pid})`);
+        log(`[${reason}] New daemon spawned (PID ${child.pid})`);
       } catch (error) {
         cleanupLock();
         exitFn(1);
@@ -2003,11 +2011,108 @@ export function startDaemon(config = {}, deps = {}) {
         }
       }
     } else {
-      log(
-        `[auto-update] Updated to ${targetVersion}. Foreground mode — please restart the daemon.`
-      );
+      log(`[${reason}] Foreground mode — please restart the daemon manually.`);
     }
     exitFn(0);
+  }
+
+  async function performAutoUpdate(targetVersion) {
+    await installCliVersion(targetVersion, "auto-update");
+
+    if (!AUTO_UPDATE_RESPAWN_ENABLED) {
+      log(
+        `[auto-update] Installed ${targetVersion}. Respawn is gated off (set CONDUCTOR_AUTO_UPDATE_RESPAWN=true to enable); new version will take effect on next manual restart.`
+      );
+      return;
+    }
+
+    // Re-check active tasks — a task may have arrived during the install
+    if (hasActiveTasks()) {
+      log("[auto-update] Active tasks appeared during install; aborting restart (will retry later)");
+      return;
+    }
+
+    log(`[auto-update] Restarting daemon after upgrade to ${targetVersion}...`);
+    await restartDaemonProcess("auto-update");
+  }
+
+  async function handleRestartDaemon(payload) {
+    const requestId = payload?.request_id ? String(payload.request_id) : "";
+    const targetVersionRaw = payload?.target_version
+      ? String(payload.target_version).trim()
+      : "latest";
+
+    if (daemonShuttingDown) {
+      log(`[restart_daemon] Ignored (${requestId}): daemon already shutting down`);
+      sendAgentCommandAck({
+        requestId,
+        eventType: "restart_daemon",
+        accepted: false,
+      }).catch(() => {});
+      return;
+    }
+    if (autoUpdateInProgress) {
+      log(`[restart_daemon] Ignored (${requestId}): restart already in progress`);
+      sendAgentCommandAck({
+        requestId,
+        eventType: "restart_daemon",
+        accepted: false,
+      }).catch(() => {});
+      return;
+    }
+
+    autoUpdateInProgress = true;
+    try {
+      log(
+        `[restart_daemon] Received (request_id=${requestId}, target=${targetVersionRaw}, current=${cliVersion})`
+      );
+      // Ack receipt before blocking work so the server learns this daemon
+      // accepted the command even if install/shutdown takes several seconds.
+      await sendAgentCommandAck({
+        requestId,
+        eventType: "restart_daemon",
+        accepted: true,
+      }).catch(() => {});
+
+      let resolvedTarget = null;
+      if (targetVersionRaw === "latest") {
+        try {
+          const latest = await fetchLatestVersionFn();
+          if (latest && SEMVER_RE.test(latest) && isNewerVersionFn(latest, cliVersion)) {
+            resolvedTarget = latest;
+          } else if (latest) {
+            log(`[restart_daemon] Already on latest (${cliVersion}); plain restart`);
+          }
+        } catch (err) {
+          logError(`[restart_daemon] Failed to fetch latest version: ${err?.message || err}`);
+        }
+      } else if (SEMVER_RE.test(targetVersionRaw) && targetVersionRaw !== cliVersion) {
+        resolvedTarget = targetVersionRaw;
+      }
+
+      if (resolvedTarget) {
+        try {
+          await installCliVersion(resolvedTarget, "restart_daemon");
+        } catch (err) {
+          logError(
+            `[restart_daemon] Install failed, falling back to plain restart: ${err?.message || err}`
+          );
+        }
+      }
+
+      try {
+        await restartDaemonProcess("restart_daemon", { allowForegroundRespawn: true });
+      } catch (err) {
+        logError(`[restart_daemon] Restart failed after shutdown; exiting: ${err?.message || err}`);
+        cleanupLock();
+        exitFn(1);
+      }
+    } finally {
+      // Clear in case restartDaemonProcess never actually exited (e.g. in tests
+      // where exitFn is mocked). In real runtime exitFn is process.exit, so
+      // this line is unreachable on both success and failure paths.
+      autoUpdateInProgress = false;
+    }
   }
 
   const getActiveTaskIds = () => [
@@ -3437,6 +3542,11 @@ export function startDaemon(config = {}, deps = {}) {
     if (event.type === "ai_manager_request") {
       handleAiManagerRequest(client, aiManagerHandlers, event.payload).catch((error) => {
         logError(`Unhandled ai_manager_request failure: ${error?.message || error}`);
+      });
+    }
+    if (event.type === "restart_daemon") {
+      void handleRestartDaemon(event.payload).catch((error) => {
+        logError(`Unhandled restart_daemon failure: ${error?.message || error}`);
       });
     }
   }

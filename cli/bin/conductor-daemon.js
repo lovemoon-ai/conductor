@@ -48,19 +48,19 @@ function resolveLauncherConfig() {
 
   if (inheritedLauncherScript && inheritedSubcommand === "daemon" && inheritedSubcommandArgs) {
     return {
-      restartLauncherScript: inheritedLauncherScript,
-      restartLauncherArgs: ["daemon", ...stripNohupArgs(inheritedSubcommandArgs)],
-      versionCheckScript: inheritedLauncherScript,
-      versionCheckArgs: ["--version"],
+      RESTART_LAUNCHER_SCRIPT: inheritedLauncherScript,
+      RESTART_LAUNCHER_ARGS: ["daemon", ...stripNohupArgs(inheritedSubcommandArgs)],
+      VERSION_CHECK_SCRIPT: inheritedLauncherScript,
+      VERSION_CHECK_ARGS: ["--version"],
     };
   }
 
   const daemonScript = path.resolve(process.argv[1]);
   return {
-    restartLauncherScript: daemonScript,
-    restartLauncherArgs: argv,
-    versionCheckScript: inheritedLauncherScript,
-    versionCheckArgs: ["--version"],
+    RESTART_LAUNCHER_SCRIPT: daemonScript,
+    RESTART_LAUNCHER_ARGS: argv,
+    VERSION_CHECK_SCRIPT: inheritedLauncherScript,
+    VERSION_CHECK_ARGS: ["--version"],
   };
 }
 

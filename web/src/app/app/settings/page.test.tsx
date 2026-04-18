@@ -18,7 +18,12 @@ const authState = {
 };
 
 const agentsState = {
-  agents: [] as Array<{ id: string; host: string; supportedBackends?: string[] }>,
+  agents: [] as Array<{
+    id: string;
+    host: string;
+    supportedBackends?: string[];
+    capabilities?: string[];
+  }>,
   fetchAgents: fetchAgentsMock,
   error: null as string | null,
   errorStatus: null as number | null,
@@ -73,5 +78,31 @@ describe('SettingsPage', () => {
     expect(screen.getByText('Unable to load connected daemons.')).toBeInTheDocument();
     expect(screen.getByText('Request timeout')).toBeInTheDocument();
     expect(screen.queryByText('Please log in to view connected daemons.')).toBeNull();
+  });
+
+  it('shows the Restart button only when the daemon advertises restart_daemon capability', async () => {
+    agentsState.agents = [
+      {
+        id: 'agent-new',
+        host: 'daemon-new',
+        supportedBackends: ['codex'],
+        capabilities: ['project_path_validation', 'restart_daemon'],
+      },
+      {
+        id: 'agent-old',
+        host: 'daemon-old',
+        supportedBackends: ['codex'],
+        capabilities: ['project_path_validation'],
+      },
+    ];
+
+    render(<SettingsPage />);
+
+    await waitFor(() => {
+      expect(fetchAgentsMock).toHaveBeenCalled();
+    });
+
+    expect(screen.getByLabelText('Restart daemon on daemon-new')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Restart daemon on daemon-old')).toBeNull();
   });
 });

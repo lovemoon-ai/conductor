@@ -2,8 +2,10 @@
 
 import { Header } from '@/components/layout/Header';
 import { useAgentsStore } from '@/features/agents';
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
+import { getApiClient } from '@/shared/api/client';
 
 function formatBuildTimeInBeijing(rawBuildTime: string) {
   if (!rawBuildTime || rawBuildTime === 'unknown') {
@@ -32,6 +34,10 @@ function formatBuildTimeInBeijing(rawBuildTime: string) {
 export default function SettingsPage() {
   const { agents, fetchAgents, error: agentsError, errorStatus: agentsErrorStatus } = useAgentsStore();
   const router = useRouter();
+  const { confirm } = useConfirm();
+  const { pushToast } = useToast();
+  const [restartingHost, setRestartingHost] = useState<string | null>(null);
+  const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cliVersion = process.env.NEXT_PUBLIC_CLI_VERSION || 'unknown';
   const gitCommitId = process.env.NEXT_PUBLIC_GIT_COMMIT_ID || 'unknown';
   const buildTime = process.env.NEXT_PUBLIC_BUILD_TIME || 'unknown';
@@ -39,6 +45,12 @@ export default function SettingsPage() {
 
   useEffect(() => {
     fetchAgents();
+    return () => {
+      if (restartTimerRef.current) {
+        clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = null;
+      }
+    };
   }, [fetchAgents]);
 
   const visibleDaemons = agents.filter((agent) => !agent.host.startsWith('conductor-fire-'));
@@ -50,6 +62,45 @@ export default function SettingsPage() {
 
   const openAiManager = (host: string) => {
     router.push(`/app/ai-manager?agentHost=${encodeURIComponent(host)}`);
+  };
+
+  const handleRestartDaemon = async (host: string) => {
+    const accepted = await confirm({
+      title: `Restart daemon on ${host}?`,
+      description:
+        'This upgrades the conductor CLI to the latest version and restarts the daemon. Any tasks running on this daemon will be interrupted.',
+      confirmLabel: 'Restart',
+      tone: 'danger',
+    });
+    if (!accepted) return;
+
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+    setRestartingHost(host);
+    try {
+      const api = getApiClient();
+      await api.post(`/agents/${encodeURIComponent(host)}/restart`, { targetVersion: 'latest' });
+      pushToast({
+        title: 'Restart requested',
+        description: `${host} will reconnect after upgrade.`,
+        variant: 'success',
+      });
+      restartTimerRef.current = setTimeout(() => {
+        fetchAgents();
+        setRestartingHost(null);
+        restartTimerRef.current = null;
+      }, 10_000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to restart daemon';
+      pushToast({
+        title: 'Failed to restart daemon',
+        description: message,
+        variant: 'error',
+      });
+      setRestartingHost(null);
+    }
   };
 
   return (
@@ -90,30 +141,47 @@ export default function SettingsPage() {
             </div>
           ) : (
             <div className="space-y-2">
-              {visibleDaemons.map((agent) => (
-                <button
-                  key={agent.id}
-                  type="button"
-                  onClick={() => openAiManager(agent.host)}
-                  aria-label={`Open AI Manager for ${agent.host}`}
-                  className="flex w-full items-center justify-between p-3 bg-paper border border-border rounded-lg text-left transition-colors hover:bg-[var(--accent)]/5 hover:border-[var(--accent)]/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-2 h-2 bg-success rounded-full animate-pulse" />
-                    <div>
-                      <p className="font-medium text-sm">{agent.host}</p>
-                      {agent.supportedBackends && agent.supportedBackends.length > 0 && (
-                        <p className="text-xs text-muted mt-0.5">
-                          {agent.supportedBackends.join(', ')}
-                        </p>
-                      )}
-                    </div>
+              {visibleDaemons.map((agent) => {
+                const isRestarting = restartingHost === agent.host;
+                const supportsRestart = agent.capabilities?.includes('restart_daemon') ?? false;
+                return (
+                  <div
+                    key={agent.id}
+                    className="flex items-center gap-2 p-3 bg-paper border border-border rounded-lg transition-colors hover:bg-[var(--accent)]/5 hover:border-[var(--accent)]/40"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => openAiManager(agent.host)}
+                      aria-label={`Open AI Manager for ${agent.host}`}
+                      className="flex flex-1 items-center gap-3 text-left min-w-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40 rounded"
+                    >
+                      <div className="w-2 h-2 bg-success rounded-full animate-pulse shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-sm truncate">{agent.host}</p>
+                        {agent.supportedBackends && agent.supportedBackends.length > 0 && (
+                          <p className="text-xs text-muted mt-0.5 truncate">
+                            {agent.supportedBackends.join(', ')}
+                          </p>
+                        )}
+                      </div>
+                      <svg className="w-4 h-4 text-muted shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    </button>
+                    {supportsRestart ? (
+                      <button
+                        type="button"
+                        onClick={() => handleRestartDaemon(agent.host)}
+                        disabled={isRestarting}
+                        aria-label={`Restart daemon on ${agent.host}`}
+                        className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-full border border-border bg-paper hover:bg-[var(--accent)]/10 hover:border-[var(--accent)]/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40"
+                      >
+                        {isRestarting ? 'Restarting…' : 'Restart'}
+                      </button>
+                    ) : null}
                   </div>
-                  <svg className="w-4 h-4 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                </button>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
