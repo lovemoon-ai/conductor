@@ -6,6 +6,12 @@ const pushMock = vi.fn();
 const updateProjectMock = vi.fn();
 const deleteProjectMock = vi.fn();
 const pushToastMock = vi.fn();
+const sortableListeners = vi.hoisted(() => ({
+  onPointerDown: vi.fn(),
+  onMouseDown: vi.fn(),
+  onTouchStart: vi.fn(),
+  onKeyDown: vi.fn(),
+}));
 
 let agentsState = {
   agents: [] as Array<{ id: string; host: string }>,
@@ -41,6 +47,25 @@ vi.mock('@/shared/hooks/useSwipeActions', () => ({
   }),
 }));
 
+vi.mock('@dnd-kit/sortable', () => ({
+  useSortable: () => ({
+    attributes: {},
+    listeners: sortableListeners,
+    setNodeRef: vi.fn(),
+    transform: null,
+    transition: undefined,
+    isDragging: false,
+  }),
+}));
+
+vi.mock('@dnd-kit/utilities', () => ({
+  CSS: {
+    Transform: {
+      toString: () => undefined,
+    },
+  },
+}));
+
 vi.mock('@/components/common/FeedbackProvider', () => ({
   useConfirm: () => ({
     confirm: vi.fn(),
@@ -56,6 +81,10 @@ describe('ProjectItem', () => {
     updateProjectMock.mockReset();
     deleteProjectMock.mockReset();
     pushToastMock.mockReset();
+    sortableListeners.onPointerDown.mockReset();
+    sortableListeners.onMouseDown.mockReset();
+    sortableListeners.onTouchStart.mockReset();
+    sortableListeners.onKeyDown.mockReset();
     agentsState = {
       agents: [],
     };
@@ -193,5 +222,81 @@ describe('ProjectItem', () => {
     });
 
     expect(screen.queryByDisplayValue('Quick Tap')).toBeNull();
+  });
+
+  it('starts sortable drag from the folder icon handle', () => {
+    render(
+      <ProjectItem
+        project={{
+          id: 'project-drag',
+          name: 'Drag Project',
+          daemonHost: 'daemon-online',
+        } as any}
+      />,
+    );
+
+    const dragHandle = screen.getByLabelText('Drag project');
+    fireEvent.mouseDown(dragHandle);
+    fireEvent.touchStart(dragHandle);
+
+    expect(sortableListeners.onMouseDown).toHaveBeenCalledTimes(1);
+    expect(sortableListeners.onTouchStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start sortable drag from the project card body', () => {
+    render(
+      <ProjectItem
+        project={{
+          id: 'project-body',
+          name: 'Body Project',
+          daemonHost: 'daemon-online',
+        } as any}
+      />,
+    );
+
+    const card = screen.getByRole('button', { name: /Body Project/i });
+    fireEvent.mouseDown(card);
+    fireEvent.touchStart(card);
+
+    expect(sortableListeners.onMouseDown).not.toHaveBeenCalled();
+    expect(sortableListeners.onTouchStart).not.toHaveBeenCalled();
+  });
+
+  it('does not select the project when tapping the folder drag handle', () => {
+    const onSelect = vi.fn();
+
+    render(
+      <ProjectItem
+        project={{
+          id: 'project-handle',
+          name: 'Handle Project',
+          daemonHost: 'daemon-online',
+        } as any}
+        onSelect={onSelect}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Drag project'));
+
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('does not start sortable drag from the rename title area', () => {
+    render(
+      <ProjectItem
+        project={{
+          id: 'project-title',
+          name: 'Title Project',
+          daemonHost: 'daemon-online',
+        } as any}
+      />,
+    );
+
+    const title = screen.getByText('Title Project');
+    fireEvent.mouseDown(title);
+    fireEvent.touchStart(title);
+
+    expect(sortableListeners.onMouseDown).not.toHaveBeenCalled();
+    expect(sortableListeners.onTouchStart).not.toHaveBeenCalled();
   });
 });

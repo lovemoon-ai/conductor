@@ -1,7 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { PointerEvent as ReactPointerEvent } from 'react';
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  SyntheticEvent,
+  TouchEvent as ReactTouchEvent,
+} from 'react';
 import { useRouter } from 'next/navigation';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -20,6 +26,8 @@ interface ProjectItemProps {
 }
 
 const ACTIONS_WIDTH = 72;
+type SortableActivatorName = 'onPointerDown' | 'onMouseDown' | 'onTouchStart' | 'onKeyDown';
+type SortableActivatorListeners = Partial<Record<SortableActivatorName, (event: SyntheticEvent) => void>>;
 
 const TrashIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -110,6 +118,7 @@ export function ProjectItem({
   const runningCount = taskStatusCounts?.running ?? 0;
   const killedCount = taskStatusCounts?.killed ?? 0;
   const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isUnavailable || isPendingBinding || runningCount > 0 || killedCount > 0;
+  const projectTitleId = `project-title-${project.id}`;
   const swipe = useSwipeActions({
     maxOffset: isDefault ? 0 : ACTIONS_WIDTH,
   });
@@ -300,11 +309,45 @@ export function ProjectItem({
     disabled: dragDisabled,
   });
 
+  const forwardSortableActivator = useCallback((name: SortableActivatorName, e: SyntheticEvent) => {
+    (listeners as SortableActivatorListeners | undefined)?.[name]?.(e);
+  }, [listeners]);
+
   const handleCardPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     swipe.onPointerDown(e);
-    // Forward the event to dnd-kit's sortable listener so PointerSensor can start.
-    (listeners as Record<string, Function> | undefined)?.onPointerDown?.(e);
-  }, [swipe, listeners]);
+  }, [swipe]);
+
+  const handleDragHandlePointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    forwardSortableActivator('onPointerDown', e);
+  }, [forwardSortableActivator]);
+
+  const handleDragHandleMouseDown = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    forwardSortableActivator('onMouseDown', e);
+  }, [forwardSortableActivator]);
+
+  const handleDragHandleTouchStart = useCallback((e: ReactTouchEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    forwardSortableActivator('onTouchStart', e);
+  }, [forwardSortableActivator]);
+
+  const handleDragHandleClick = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+  }, []);
+
+  const handleDragHandleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    forwardSortableActivator('onKeyDown', e);
+  }, [forwardSortableActivator]);
+
+  const handleTitleMouseDown = useCallback((e: ReactMouseEvent<HTMLHeadingElement>) => {
+    e.stopPropagation();
+  }, []);
+
+  const handleTitleTouchStart = useCallback((e: ReactTouchEvent<HTMLHeadingElement>) => {
+    e.stopPropagation();
+  }, []);
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -336,7 +379,6 @@ export function ProjectItem({
       )}
 
       <div
-        {...attributes}
         onClick={() => {
           if (swipe.consumeTap()) {
             return;
@@ -349,6 +391,7 @@ export function ProjectItem({
         } ${isUnavailable || isPendingBinding ? 'opacity-70' : ''}`}
         role="button"
         tabIndex={0}
+        aria-label={project.name}
         aria-pressed={isSelected}
         data-project-id={project.id}
         onPointerDown={handleCardPointerDown}
@@ -356,7 +399,7 @@ export function ProjectItem({
         onPointerUp={handleCardPointerUp}
         onPointerCancel={handleCardPointerCancel}
         style={swipe.panelStyle}
-        onKeyDown={(e) => {
+        onKeyDown={(e: ReactKeyboardEvent<HTMLDivElement>) => {
           if (e.key === 'Escape') {
             swipe.closeActions();
             return;
@@ -372,7 +415,20 @@ export function ProjectItem({
         }}
       >
         <div className="flex items-start gap-3">
-          <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${isDefault ? 'webapp-gradient-bg' : 'bg-accent/10'}`}>
+          <div
+            {...attributes}
+            role="button"
+            tabIndex={0}
+            aria-label="Drag project"
+            aria-describedby={projectTitleId}
+            title="Hold and drag to reorder"
+            className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 cursor-grab active:cursor-grabbing ${isDefault ? 'webapp-gradient-bg' : 'bg-accent/10'}`}
+            onPointerDown={handleDragHandlePointerDown}
+            onMouseDown={handleDragHandleMouseDown}
+            onTouchStart={handleDragHandleTouchStart}
+            onClick={handleDragHandleClick}
+            onKeyDown={handleDragHandleKeyDown}
+          >
             <svg className={`w-5 h-5 ${isDefault ? 'text-white' : 'text-accent'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
             </svg>
@@ -402,8 +458,11 @@ export function ProjectItem({
                 />
               ) : (
                 <h3
+                  id={projectTitleId}
                   className="truncate font-medium select-none"
                   onPointerDown={handleTitlePointerDown}
+                  onMouseDown={handleTitleMouseDown}
+                  onTouchStart={handleTitleTouchStart}
                   onPointerUp={handleTitlePointerUp}
                   onPointerMove={handleTitlePointerMove}
                   onPointerCancel={handleTitlePointerUp}
