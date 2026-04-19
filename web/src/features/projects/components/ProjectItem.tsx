@@ -211,6 +211,7 @@ export function ProjectItem({
     if (isDefault || isEditing) {
       return;
     }
+    e.stopPropagation();
     clearLongPress();
     longPressStartXRef.current = e.clientX;
     longPressStartYRef.current = e.clientY;

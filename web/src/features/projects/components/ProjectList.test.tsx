@@ -7,6 +7,7 @@ const setSelectedProjectIdMock = vi.fn();
 const reorderProjectsMock = vi.fn();
 
 let latestDndContextProps: Record<string, any> | null = null;
+let latestSensorOptions: Array<{ name: string; options: Record<string, any> }> = [];
 let projectsState = {
   projects: [] as Project[],
   isLoading: false,
@@ -33,8 +34,12 @@ vi.mock('@dnd-kit/core', () => ({
     return <div>{children}</div>;
   },
   DragOverlay: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
-  PointerSensor: class PointerSensor {},
-  useSensor: () => ({}),
+  MouseSensor: class MouseSensor {},
+  TouchSensor: class TouchSensor {},
+  useSensor: (sensor: { name?: string }, options: Record<string, any>) => {
+    latestSensorOptions.push({ name: sensor.name ?? 'unknown', options });
+    return {};
+  },
   useSensors: (...sensors: unknown[]) => sensors,
   closestCenter: () => [],
   pointerWithin: () => [],
@@ -86,8 +91,44 @@ vi.mock('./project-list-utils', () => ({
 describe('ProjectList', () => {
   beforeEach(() => {
     latestDndContextProps = null;
+    latestSensorOptions = [];
     setSelectedProjectIdMock.mockReset();
     reorderProjectsMock.mockReset();
+  });
+
+  it('requires long press only for touch project dragging', () => {
+    projectsState = {
+      projects: [
+        { id: 'project-a', name: 'Project A' },
+      ],
+      isLoading: false,
+      selectedProjectId: null,
+      setSelectedProjectId: setSelectedProjectIdMock,
+      reorderProjects: reorderProjectsMock,
+    };
+    agentsState = { agents: [] };
+
+    render(<ProjectList />);
+
+    expect(latestSensorOptions).toEqual([
+      {
+        name: 'MouseSensor',
+        options: {
+          activationConstraint: {
+            distance: 6,
+          },
+        },
+      },
+      {
+        name: 'TouchSensor',
+        options: {
+          activationConstraint: {
+            delay: 350,
+            tolerance: 8,
+          },
+        },
+      },
+    ]);
   });
 
   it('hides projects bound to offline daemons', () => {

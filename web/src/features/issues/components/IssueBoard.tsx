@@ -39,17 +39,23 @@ const collisionDetection: CollisionDetection = (args) => {
 export function IssueBoard({
   issues,
   isLoading = false,
+  dragDisabled = false,
+  statusMenuDisabled = false,
   onMoveIssue,
   onStatusChange,
   onDeleteIssue,
 }: {
   issues: Issue[];
   isLoading?: boolean;
+  dragDisabled?: boolean;
+  statusMenuDisabled?: boolean;
   onMoveIssue: (issueId: string, status: Issue['status'], position: number) => Promise<void> | void;
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
   onDeleteIssue?: (issueId: string) => Promise<void> | void;
 }) {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const effectiveDragDisabled = isLoading || dragDisabled;
+  const effectiveStatusMenuDisabled = isLoading || statusMenuDisabled;
   const [columns, setColumns] = useState<IssueBoardColumns>(() => buildIssueColumns(issues));
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
 
@@ -108,7 +114,10 @@ export function IssueBoard({
     }
 
     const nextColumn = nextColumns[nextStatus];
-    const nextPosition = calculateIssuePosition(nextColumn, activeId);
+    const projectScopedNextColumn = nextColumn.filter(
+      (issue) => issue.id === activeId || issue.projectId === previousIssue.projectId,
+    );
+    const nextPosition = calculateIssuePosition(projectScopedNextColumn, activeId);
     const statusChanged = previousIssue.status !== nextStatus;
     const positionChanged = Math.abs(previousIssue.position - nextPosition) > 1e-9;
 
@@ -142,7 +151,8 @@ export function IssueBoard({
             <IssueColumn
               status={status}
               issues={columns[status]}
-              dragDisabled={isLoading}
+              dragDisabled={effectiveDragDisabled}
+              statusMenuDisabled={effectiveStatusMenuDisabled}
               onStatusChange={onStatusChange}
               onDeleteIssue={onDeleteIssue}
             />

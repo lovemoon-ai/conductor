@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getActiveSubscriptionUser } from '@/lib/auth/middleware';
 import { db } from '@/lib/db';
@@ -6,7 +7,8 @@ import {
   finalizeAiTaskCreation,
 } from '@/lib/tasks/create-ai-task';
 import { serializeTaskResponse } from '@/lib/tasks/serialization';
-import { normalizeOptionalString } from '@/lib/tasks/task-config';
+import { normalizeOptionalString, type JsonObject } from '@/lib/tasks/task-config';
+import { buildTaskWorktreeLaunchConfig } from '@/lib/tasks/worktree';
 import {
   ConnectedAgent,
   pickDefaultAgentHost,
@@ -40,7 +42,9 @@ const issueWithProjectAndActiveTaskInclude = {
       id: true,
       daemonHost: true,
       workspacePath: true,
+      repoRoot: true,
       worktreeBranch: true,
+      lastCommit: true,
     },
   },
 };
@@ -120,7 +124,9 @@ export async function PATCH(
     const isDefaultProject = defaultProject?.projectId === existing.projectId;
     const projectDaemonHost = normalizeOptionalString(existing.project.daemonHost);
     const projectWorkspacePath = normalizeOptionalString(existing.project.workspacePath);
+    const projectRepoRoot = normalizeOptionalString(existing.project.repoRoot);
     const projectWorktreeBranch = normalizeOptionalString(existing.project.worktreeBranch);
+    const projectLastCommit = normalizeOptionalString(existing.project.lastCommit);
 
     if (
       (!isDefaultProject && (!projectDaemonHost || !projectWorkspacePath)) ||
@@ -147,12 +153,33 @@ export async function PATCH(
       description: input.description ?? existing.description,
     });
     const metadata = initialContent ? { initialContent } : null;
-    const launchConfig = projectWorkspacePath
-      ? {
+    let requestedTaskId: string | undefined;
+    let launchConfig: JsonObject | null = null;
+    if (projectWorkspacePath) {
+      if (projectRepoRoot) {
+        requestedTaskId = randomUUID();
+        try {
+          launchConfig = buildTaskWorktreeLaunchConfig({
+            launchConfig: null,
+            worktreeId: requestedTaskId,
+            projectRepoRoot,
+            projectWorkspacePath,
+            projectWorktreeBranch,
+            projectLastCommit,
+          });
+        } catch (error) {
+          return NextResponse.json(
+            { error: error instanceof Error ? error.message : 'Invalid worktree request' },
+            { status: 409 },
+          );
+        }
+      } else {
+        launchConfig = {
           cwd: projectWorkspacePath,
           ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
-        }
-      : null;
+        };
+      }
+    }
 
     spawnTaskArgs = {
       userId: user.id,
@@ -160,6 +187,7 @@ export async function PATCH(
       issueId: existing.id,
       title: input.title ?? existing.title,
       agentHost,
+      requestedId: requestedTaskId,
       launchConfig,
       metadata,
       initialMessageContent: initialContent,

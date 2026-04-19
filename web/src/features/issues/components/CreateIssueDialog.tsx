@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Dialog } from '@/components/common/Dialog';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { useToast } from '@/components/common/FeedbackProvider';
 import { ISSUE_STATUS_LABELS } from '@/lib/issues/config';
 import { useIssuesStore } from '../store';
+import { useProjectsStore } from '@/features/projects';
 
 const DEFAULT_STATUS = 'backlog' as const;
 
@@ -20,12 +21,22 @@ export function CreateIssueDialog({
 }) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(projectId);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const projects = useProjectsStore((state) => state.projects);
+  const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const createIssue = useIssuesStore((state) => state.createIssue);
   const error = useIssuesStore((state) => state.error);
   const clearError = useIssuesStore((state) => state.clearError);
   const { pushToast } = useToast();
+
+  const defaultProjectId = useMemo(
+    () => projectId ?? projects.find((project) => project.isDefault)?.id ?? projects[0]?.id ?? null,
+    [projectId, projects],
+  );
+  const effectiveProjectId = projectId ?? selectedProjectId;
+  const showProjectPicker = !projectId;
 
   useEffect(() => {
     if (!open) {
@@ -36,6 +47,28 @@ export function CreateIssueDialog({
     clearError();
   }, [clearError, open]);
 
+  useEffect(() => {
+    if (!open || projects.length > 0) {
+      return;
+    }
+    void fetchProjects();
+  }, [fetchProjects, open, projects.length]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    if (projectId) {
+      setSelectedProjectId(projectId);
+      return;
+    }
+    setSelectedProjectId((current) => (
+      current && projects.some((project) => project.id === current)
+        ? current
+        : defaultProjectId
+    ));
+  }, [defaultProjectId, open, projectId, projects]);
+
   const handleClose = () => {
     if (isSubmitting) {
       return;
@@ -45,14 +78,14 @@ export function CreateIssueDialog({
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!projectId || !title.trim()) {
+    if (!effectiveProjectId || !title.trim()) {
       return;
     }
 
     setIsSubmitting(true);
     try {
       await createIssue({
-        projectId,
+        projectId: effectiveProjectId,
         title: title.trim(),
         description: description.trim() ? description.trim() : null,
         status: DEFAULT_STATUS,
@@ -78,10 +111,34 @@ export function CreateIssueDialog({
       maxWidthClassName="max-w-lg"
     >
       <form onSubmit={handleSubmit} className="space-y-5">
-        {!projectId ? (
+        {!effectiveProjectId ? (
           <InlineNotice variant="warning" title="No project available">
             Select a project before creating an issue.
           </InlineNotice>
+        ) : null}
+
+        {showProjectPicker ? (
+          <div>
+            <label htmlFor="create-issue-project" className="mb-2 block text-sm font-medium text-ink">
+              Project
+            </label>
+            <select
+              id="create-issue-project"
+              value={selectedProjectId ?? ''}
+              onChange={(event) => setSelectedProjectId(event.target.value || null)}
+              disabled={projects.length === 0}
+              className="w-full webapp-input"
+            >
+              <option value="" disabled>
+                {projects.length === 0 ? 'No projects available' : 'Select a project'}
+              </option>
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </div>
         ) : null}
 
         <div>
@@ -122,7 +179,7 @@ export function CreateIssueDialog({
           </button>
           <button
             type="submit"
-            disabled={!projectId || !title.trim() || isSubmitting}
+            disabled={!effectiveProjectId || !title.trim() || isSubmitting}
             className="webapp-btn-primary px-5 py-2.5 text-sm"
           >
             {isSubmitting ? 'Creating...' : 'Create Issue'}

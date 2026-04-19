@@ -1,9 +1,7 @@
 'use client';
 
-import Link from 'next/link';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { EmptyState } from '@/components/common/EmptyState';
 import { useToast } from '@/components/common/FeedbackProvider';
 import { Header } from '@/components/layout/Header';
 import { CreateIssueDialog, IssueBoard, IssueList, useIssuesStore } from '@/features/issues';
@@ -41,19 +39,12 @@ function IssuesPageContent() {
     void fetchProjects();
   }, [fetchProjects]);
 
-  const defaultProjectId = useMemo(
-    () => projects.find((project) => project.isDefault)?.id ?? null,
-    [projects],
-  );
   const resolvedProjectId = useMemo(() => {
     if (projectIdFromUrl && projects.some((project) => project.id === projectIdFromUrl)) {
       return projectIdFromUrl;
     }
-    if (!projectIdFromUrl) {
-      return defaultProjectId;
-    }
-    return defaultProjectId;
-  }, [defaultProjectId, projectIdFromUrl, projects]);
+    return null;
+  }, [projectIdFromUrl, projects]);
   const currentProject = useMemo(
     () => projects.find((project) => project.id === resolvedProjectId) ?? null,
     [projects, resolvedProjectId],
@@ -63,6 +54,7 @@ function IssuesPageContent() {
     ? `${currentProject.name} (${issueCount} ${issueCount === 1 ? 'issue' : 'issues'})`
     : 'Issues';
   const shouldWaitForProjects = !hasRequestedProjects || (isProjectsLoading && projects.length === 0);
+  const shouldWaitForProjectResolution = Boolean(projectIdFromUrl) && shouldWaitForProjects;
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -86,22 +78,23 @@ function IssuesPageContent() {
   }, []);
 
   useEffect(() => {
-    if (shouldWaitForProjects || !resolvedProjectId) {
+    if (shouldWaitForProjectResolution || !projectIdFromUrl || resolvedProjectId) {
       return;
     }
 
     const nextParams = new URLSearchParams(searchParams.toString());
-    if (nextParams.get('projectId') === resolvedProjectId) {
-      return;
-    }
-    nextParams.set('projectId', resolvedProjectId);
-    router.replace(`/app/issues?${nextParams.toString()}`, { scroll: false });
-  }, [resolvedProjectId, router, searchParams, shouldWaitForProjects]);
+    nextParams.delete('projectId');
+    const nextQuery = nextParams.toString();
+    router.replace(nextQuery ? `/app/issues?${nextQuery}` : '/app/issues', { scroll: false });
+  }, [projectIdFromUrl, resolvedProjectId, router, searchParams, shouldWaitForProjectResolution]);
 
   useEffect(() => {
+    if (shouldWaitForProjectResolution) {
+      return;
+    }
     setSelectedProjectId(resolvedProjectId ?? null);
     void fetchIssues(resolvedProjectId);
-  }, [fetchIssues, resolvedProjectId, setSelectedProjectId]);
+  }, [fetchIssues, resolvedProjectId, setSelectedProjectId, shouldWaitForProjectResolution]);
 
   const handleRefresh = () => {
     void fetchIssues(resolvedProjectId);
@@ -125,7 +118,8 @@ function IssuesPageContent() {
       return;
     }
 
-    const nextPosition = calculateIssueAppendPosition(issues, status, issueId);
+    const projectIssues = issues.filter((entry) => entry.projectId === issue.projectId);
+    const nextPosition = calculateIssueAppendPosition(projectIssues, status, issueId);
     await handleMoveIssue(issueId, status, nextPosition);
   };
 
@@ -145,19 +139,6 @@ function IssuesPageContent() {
     }
   };
 
-  const emptyProjectState = (
-    <EmptyState
-      title="No default project yet"
-      description="Issues must belong to a project. Create or select a default project to start planning work."
-      action={(
-        <Link href="/app/projects" className="webapp-btn-primary inline-flex items-center justify-center px-4 py-2 text-sm">
-          Open projects
-        </Link>
-      )}
-      className="min-h-[24rem]"
-    />
-  );
-
   return (
     <>
       <Header
@@ -167,7 +148,7 @@ function IssuesPageContent() {
           <div className="flex items-center gap-2">
             <button
               onClick={handleRefresh}
-              disabled={isIssuesLoading || !resolvedProjectId}
+              disabled={isIssuesLoading || shouldWaitForProjectResolution}
               aria-label={isIssuesLoading ? 'Refreshing issues' : 'Refresh issues'}
               title={isIssuesLoading ? 'Refreshing issues' : 'Refresh issues'}
               className="flex items-center justify-center rounded-lg bg-paper/80 p-2 text-sm text-muted transition-colors hover:text-ink disabled:opacity-50"
@@ -178,7 +159,7 @@ function IssuesPageContent() {
               onClick={() => setShowCreateDialog(true)}
               aria-label="Create issue"
               title="Create issue"
-              disabled={!resolvedProjectId}
+              disabled={shouldWaitForProjectResolution}
               className="webapp-btn-primary flex items-center justify-center p-2.5 text-sm disabled:opacity-50"
             >
               <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -190,12 +171,10 @@ function IssuesPageContent() {
       />
 
       <div className="flex-1 overflow-hidden px-4 pb-4 pt-4">
-        {shouldWaitForProjects ? (
+        {shouldWaitForProjectResolution ? (
           <div className="flex h-full min-h-[24rem] items-center justify-center rounded-[28px] border border-border bg-panel/60">
             <RefreshIcon spinning />
           </div>
-        ) : !resolvedProjectId ? (
-          emptyProjectState
         ) : !isDesktop ? (
           <IssueList
             issues={issues}
@@ -206,6 +185,7 @@ function IssuesPageContent() {
           <IssueBoard
             issues={issues}
             isLoading={isIssuesLoading}
+            dragDisabled={!resolvedProjectId}
             onMoveIssue={handleMoveIssue}
             onStatusChange={handleStatusChange}
             onDeleteIssue={handleDeleteIssue}

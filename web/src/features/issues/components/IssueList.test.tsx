@@ -31,7 +31,7 @@ describe('IssueList', () => {
     vi.clearAllMocks();
   });
 
-  it('defaults to showing only non-empty status sections', () => {
+  it('defaults to showing the first non-empty status section', () => {
     render(<IssueList issues={issues} />);
 
     expect(screen.getByRole('button', { name: 'Backlog' }).parentElement?.parentElement).toHaveClass('sticky');
@@ -39,26 +39,26 @@ describe('IssueList', () => {
     expect(screen.getByRole('button', { name: 'Doing(1)' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: /Backlog|Todo|Doing|Review|Done/ })).toBeNull();
     expect(screen.getByText('Plan board UX')).toBeInTheDocument();
-    expect(screen.getByText('Build AI task handoff')).toBeInTheDocument();
+    expect(screen.queryByText('Build AI task handoff')).toBeNull();
   });
 
-  it('shows or hides sections as status filters are toggled', () => {
+  it('shows only one status when filters are selected', () => {
+    render(<IssueList issues={issues} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Doing(?:\(\d+\))?$/ }));
+    expect(screen.queryByText('Plan board UX')).toBeNull();
+    expect(screen.getByText('Build AI task handoff')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Todo(?:\(\d+\))?$/ })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: /^Doing(?:\(\d+\))?$/ })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('shows an empty hint for the selected status when it has no issues', () => {
     render(<IssueList issues={issues} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Backlog' }));
-    expect(screen.getByRole('button', { name: 'Backlog' })).toHaveAttribute('aria-pressed', 'true');
 
-    fireEvent.click(screen.getByRole('button', { name: /^Doing(?:\(\d+\))?$/ }));
+    expect(screen.queryByText('Plan board UX')).toBeNull();
     expect(screen.queryByText('Build AI task handoff')).toBeNull();
-    expect(screen.getByRole('button', { name: /^Doing(?:\(\d+\))?$/ })).toHaveAttribute('aria-pressed', 'false');
-  });
-
-  it('shows an empty hint when all status filters are disabled', () => {
-    render(<IssueList issues={issues} />);
-
-    fireEvent.click(screen.getByRole('button', { name: /^Todo(?:\(\d+\))?$/ }));
-    fireEvent.click(screen.getByRole('button', { name: /^Doing(?:\(\d+\))?$/ }));
-
-    expect(screen.getByText('Select at least one status to show issues.')).toBeInTheDocument();
+    expect(screen.getByText('No issues in Backlog.')).toBeInTheDocument();
   });
 });

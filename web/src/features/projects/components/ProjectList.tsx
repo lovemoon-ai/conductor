@@ -5,8 +5,9 @@ import {
   closestCenter,
   DndContext,
   DragOverlay,
-  PointerSensor,
+  MouseSensor,
   pointerWithin,
+  TouchSensor,
   useSensor,
   useSensors,
   type CollisionDetection,
@@ -31,6 +32,10 @@ const collisionDetection: CollisionDetection = (args) => {
   return closestCenter(args);
 };
 
+const PROJECT_DRAG_ACTIVATION_DELAY_MS = 350;
+const PROJECT_DRAG_ACTIVATION_TOLERANCE_PX = 8;
+const PROJECT_DRAG_ACTIVATION_DISTANCE_PX = 6;
+
 const getProjectDaemonHost = (project: Project): string | null => {
   if (typeof project.daemonHost !== 'string') {
     return null;
@@ -50,7 +55,19 @@ export function ProjectList() {
     const daemonHost = getProjectDaemonHost(project);
     return !daemonHost || onlineDaemonHosts.has(daemonHost);
   });
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const sensors = useSensors(
+    useSensor(MouseSensor, {
+      activationConstraint: {
+        distance: PROJECT_DRAG_ACTIVATION_DISTANCE_PX,
+      },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: {
+        delay: PROJECT_DRAG_ACTIVATION_DELAY_MS,
+        tolerance: PROJECT_DRAG_ACTIVATION_TOLERANCE_PX,
+      },
+    }),
+  );
   const [orderedVisibleProjects, setOrderedVisibleProjects] = useState<Project[]>(visibleProjects);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
 

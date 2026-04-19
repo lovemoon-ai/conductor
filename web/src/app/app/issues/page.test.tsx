@@ -53,18 +53,26 @@ vi.mock('@/features/issues', () => ({
   IssueBoard: ({
     issues,
     isLoading,
+    dragDisabled,
     onMoveIssue,
+    onStatusChange,
     onDeleteIssue,
   }: {
     issues: typeof issuesState.issues;
     isLoading?: boolean;
+    dragDisabled?: boolean;
     onMoveIssue: (issueId: string, status: 'backlog' | 'todo' | 'doing' | 'review' | 'done', position: number) => void;
+    onStatusChange?: (issueId: string, status: 'backlog' | 'todo' | 'doing' | 'review' | 'done') => void;
     onDeleteIssue?: (issueId: string) => Promise<void> | void;
   }) => (
     <div>
       <div>issue-board:{issues.length}:{isLoading ? 'loading' : 'ready'}</div>
+      <div>drag:{dragDisabled ? 'disabled' : 'enabled'}</div>
       <button type="button" onClick={() => onMoveIssue('issue-1', 'doing', 1.5)}>
         move-issue
+      </button>
+      <button type="button" onClick={() => onStatusChange?.('issue-1', 'doing')}>
+        status-issue
       </button>
       <button type="button" onClick={() => void onDeleteIssue?.('issue-1')}>
         delete-issue
@@ -167,13 +175,20 @@ describe('IssuesPage', () => {
     });
   });
 
-  it('resolves /app/issues to the default project when projectId is missing', () => {
+  it('lists all issues when projectId is missing', () => {
     render(<IssuesPage />);
 
     expect(fetchProjectsMock).toHaveBeenCalledTimes(1);
-    expect(setSelectedProjectIdMock).toHaveBeenCalledWith('project-default');
-    expect(fetchIssuesMock).toHaveBeenCalledWith('project-default');
-    expect(replaceMock).toHaveBeenCalledWith('/app/issues?projectId=project-default', { scroll: false });
+    expect(setSelectedProjectIdMock).toHaveBeenCalledWith(null);
+    expect(fetchIssuesMock).toHaveBeenCalledWith(null);
+    expect(replaceMock).not.toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: 'Issues' })).toBeInTheDocument();
+    expect(screen.getByText('issue-board:2:ready')).toBeInTheDocument();
+    expect(screen.getByText('drag:disabled')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create issue' })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create issue' }));
+    expect(screen.getByText('create-issue-dialog:none')).toBeInTheDocument();
   });
 
   it('renders the project-scoped board and opens the create issue dialog', () => {
@@ -183,6 +198,7 @@ describe('IssuesPage', () => {
 
     expect(screen.getByRole('heading', { name: 'Default Project (2 issues)' })).toBeInTheDocument();
     expect(screen.getByText('issue-board:2:ready')).toBeInTheDocument();
+    expect(screen.getByText('drag:enabled')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh issues' }));
     expect(fetchIssuesMock).toHaveBeenLastCalledWith('project-default');
@@ -217,7 +233,38 @@ describe('IssuesPage', () => {
     });
   });
 
-  it('shows an empty state when no default project can be resolved', () => {
+  it('uses same-project issues when changing status from all-project view', async () => {
+    issuesState = {
+      ...issuesState,
+      issues: [
+        {
+          id: 'issue-1',
+          projectId: 'project-a',
+          title: 'Project A todo',
+          status: 'todo',
+          position: 0,
+          createdAt: '2026-04-14T00:00:00.000Z',
+        },
+        {
+          id: 'issue-2',
+          projectId: 'project-b',
+          title: 'Project B doing',
+          status: 'doing',
+          position: 100,
+          createdAt: '2026-04-14T00:10:00.000Z',
+        },
+      ],
+    };
+
+    render(<IssuesPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'status-issue' }));
+
+    expect(moveIssueMock).toHaveBeenCalledWith('issue-1', 'doing', 0);
+  });
+
+  it('clears an invalid projectId and fetches all issues', () => {
+    searchParamsState = new URLSearchParams('projectId=missing&view=board');
     projectsState = {
       ...projectsState,
       projects: [],
@@ -225,7 +272,9 @@ describe('IssuesPage', () => {
 
     render(<IssuesPage />);
 
-    expect(screen.getByText('No default project yet')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open projects' })).toHaveAttribute('href', '/app/projects');
+    expect(setSelectedProjectIdMock).toHaveBeenCalledWith(null);
+    expect(fetchIssuesMock).toHaveBeenCalledWith(null);
+    expect(replaceMock).toHaveBeenCalledWith('/app/issues?view=board', { scroll: false });
+    expect(screen.getByText('issue-board:2:ready')).toBeInTheDocument();
   });
 });

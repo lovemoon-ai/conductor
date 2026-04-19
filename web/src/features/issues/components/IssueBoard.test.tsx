@@ -144,6 +144,27 @@ describe('IssueBoard', () => {
     expect(onStatusChange).toHaveBeenCalledWith('issue-1', 'doing');
   });
 
+  it('keeps status updates enabled when dragging is disabled', async () => {
+    render(
+      <IssueBoard
+        issues={issues}
+        dragDisabled
+        onMoveIssue={onMoveIssue}
+        onStatusChange={onStatusChange}
+        onDeleteIssue={onDeleteIssue}
+      />,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Change status for Plan board UX' }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Move Plan board UX to Doing' }));
+    });
+
+    expect(onStatusChange).toHaveBeenCalledWith('issue-1', 'doing');
+  });
+
   it('deletes an issue via in-place confirmation', async () => {
     render(
       <IssueBoard
@@ -259,6 +280,62 @@ describe('IssueBoard', () => {
     });
 
     expect(onMoveIssue).toHaveBeenCalledWith('issue-1', 'doing', 3);
+  });
+
+  it('calculates drag positions within the dragged issue project only', async () => {
+    const mixedProjectIssues: Issue[] = [
+      {
+        id: 'issue-project-a-todo',
+        projectId: 'project-a',
+        title: 'Project A todo',
+        status: 'todo',
+        position: 0,
+        createdAt: '2026-04-14T00:00:00.000Z',
+      },
+      {
+        id: 'issue-project-b-doing',
+        projectId: 'project-b',
+        title: 'Project B doing',
+        status: 'doing',
+        position: 2,
+        createdAt: '2026-04-14T00:05:00.000Z',
+      },
+      {
+        id: 'issue-project-a-doing',
+        projectId: 'project-a',
+        title: 'Project A doing',
+        status: 'doing',
+        position: 4,
+        createdAt: '2026-04-14T00:10:00.000Z',
+      },
+    ];
+
+    render(
+      <IssueBoard
+        issues={mixedProjectIssues}
+        onMoveIssue={onMoveIssue}
+        onStatusChange={onStatusChange}
+        onDeleteIssue={onDeleteIssue}
+      />,
+    );
+
+    await act(async () => {
+      latestDndContextProps?.onDragStart?.({ active: { id: 'issue-project-a-todo' } });
+    });
+    await act(async () => {
+      latestDndContextProps?.onDragOver?.({
+        active: { id: 'issue-project-a-todo' },
+        over: { id: 'issue-project-b-doing' },
+      });
+    });
+    await act(async () => {
+      await latestDndContextProps?.onDragEnd?.({
+        active: { id: 'issue-project-a-todo' },
+        over: { id: 'issue-project-b-doing' },
+      });
+    });
+
+    expect(onMoveIssue).toHaveBeenCalledWith('issue-project-a-todo', 'doing', 3);
   });
 
   it('does not call onMoveIssue when the issue is dropped onto itself', async () => {

@@ -14,12 +14,14 @@ export function IssueColumn({
   status,
   issues,
   dragDisabled = false,
+  statusMenuDisabled = false,
   onStatusChange,
   onDeleteIssue,
 }: {
   status: IssueStatus;
   issues: Issue[];
   dragDisabled?: boolean;
+  statusMenuDisabled?: boolean;
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
   onDeleteIssue?: (issueId: string) => Promise<void> | void;
 }) {
@@ -47,7 +49,7 @@ export function IssueColumn({
                 key={issue.id}
                 issue={issue}
                 disabled={dragDisabled}
-                statusMenuDisabled={dragDisabled}
+                statusMenuDisabled={statusMenuDisabled}
                 onStatusChange={onStatusChange}
                 onDelete={onDeleteIssue}
               />

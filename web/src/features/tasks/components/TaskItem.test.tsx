@@ -528,7 +528,7 @@ describe('TaskItem', () => {
     });
   });
 
-  it('does not show restart in the swipe action menu for pty tasks', async () => {
+  it('only shows delete in the swipe action menu for pty tasks', async () => {
     render(
       <TaskItem
         task={{
@@ -558,7 +558,7 @@ describe('TaskItem', () => {
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: 'New task' })).not.toBeInTheDocument();
     });
-    expect(screen.getByRole('button', { name: 'Share task' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Share task' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete task' })).toBeInTheDocument();
   });
 

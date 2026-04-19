@@ -53,7 +53,9 @@ const buildExistingIssue = (overrides: Record<string, unknown> = {}) => ({
     id: 'project-1',
     daemonHost: null,
     workspacePath: null,
+    repoRoot: null,
     worktreeBranch: null,
+    lastCommit: null,
   },
   ...overrides,
 });
@@ -128,6 +130,66 @@ describe('/api/issues/[issueId]', () => {
     expect(data.spawnedTask).toEqual(expect.objectContaining({
       id: 'task-1',
       issue_id: 'issue-1',
+    }));
+  });
+
+  it('spawns todo-to-doing tasks in an isolated worktree for git-backed bound projects', async () => {
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: 'agent-1', host: 'daemon-a' },
+    ] as any);
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      project: {
+        id: 'project-1',
+        daemonHost: 'daemon-a',
+        workspacePath: '/repo/packages/web',
+        repoRoot: '/repo',
+        worktreeBranch: 'main',
+        lastCommit: 'abc123',
+      },
+    }) as any);
+    vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+      task: {
+        id: 'task-worktree',
+        projectId: 'project-1',
+        issueId: 'issue-1',
+        title: 'Board implementation',
+        status: 'init',
+        taskType: 'ai_task',
+        agentHost: 'daemon-a',
+        executionHost: 'daemon-a',
+        backendType: null,
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: null,
+        createdAt: new Date('2026-04-14T00:20:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+      },
+      initialMessage: null,
+      initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+    } as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { status: 'doing' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    const createArgs = vi.mocked(createAiTaskArtifacts).mock.calls[0][0] as any;
+    expect(createArgs).toEqual(expect.objectContaining({
+      requestedId: expect.any(String),
+      agentHost: 'daemon-a',
+    }));
+    expect(createArgs.launchConfig).toEqual(expect.objectContaining({
+      worktree: true,
+      worktreeId: createArgs.requestedId,
+      worktreeBranch: expect.stringMatching(/^[0-9a-f]{6}$/),
+      worktreeBaseRef: 'main',
+      projectRepoRoot: '/repo',
+      projectWorkspacePath: '/repo/packages/web',
+      projectRelativePath: 'packages/web',
     }));
   });
 

@@ -71,6 +71,60 @@ describe('/api/issues', () => {
     ]);
   });
 
+  it('lists issues from all user projects when project_id is missing', async () => {
+    vi.mocked(db.issue.findMany).mockResolvedValue([
+      {
+        id: 'issue-1',
+        projectId: 'project-1',
+        title: 'Project one issue',
+        description: null,
+        status: 'todo',
+        position: 0,
+        metadata: null,
+        tasks: [],
+        createdAt: new Date('2026-04-14T00:00:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:10:00.000Z'),
+      },
+      {
+        id: 'issue-2',
+        projectId: 'project-2',
+        title: 'Project two issue',
+        description: null,
+        status: 'doing',
+        position: 1,
+        metadata: null,
+        tasks: [],
+        createdAt: new Date('2026-04-14T00:20:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:30:00.000Z'),
+      },
+    ] as any);
+
+    const response = await GET(createMockRequest({
+      method: 'GET',
+      url: 'http://localhost:6152/api/issues',
+    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.issue.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        project: { userId: 'user-1' },
+      },
+    }));
+    expect(data).toEqual([
+      expect.objectContaining({
+        id: 'issue-1',
+        projectId: 'project-1',
+        project_id: 'project-1',
+      }),
+      expect.objectContaining({
+        id: 'issue-2',
+        projectId: 'project-2',
+        project_id: 'project-2',
+      }),
+    ]);
+  });
+
   it('creates an issue using the next position when none is provided', async () => {
     vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: 4 } } as any);

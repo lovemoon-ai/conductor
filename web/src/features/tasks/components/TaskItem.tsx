@@ -33,8 +33,7 @@ interface ShareDialogState {
 }
 
 const LEFT_ACTION_WIDTH = 52;
-const RIGHT_ACTION_WIDTH_WITH_RESTART = 216;
-const RIGHT_ACTION_WIDTH_WITHOUT_RESTART = 144;
+const RIGHT_ACTION_BUTTON_WIDTH = 72;
 const SWIPE_OPEN_THRESHOLD = 0.45;
 const SWIPE_START_THRESHOLD = 8;
 
@@ -191,7 +190,12 @@ export function TaskItem({
   const taskType = task.taskType ?? 'ai_task';
   const worktreeBranch = parseTaskWorktreeBranch(task);
   const showRestartAction = taskType === 'ai_task';
-  const rightActionWidth = showRestartAction ? RIGHT_ACTION_WIDTH_WITH_RESTART : RIGHT_ACTION_WIDTH_WITHOUT_RESTART;
+  const showShareAction = taskType === 'ai_task';
+  const rightActionWidth = RIGHT_ACTION_BUTTON_WIDTH * (
+    1 +
+    (showRestartAction ? 1 : 0) +
+    (showShareAction ? 1 : 0)
+  );
   const backend = task.backendType
     || (typeof taskMetadata?.backendType === 'string' ? taskMetadata.backendType : undefined)
     || (typeof launchConfig?.toolPreset === 'string' ? launchConfig.toolPreset : undefined)
@@ -712,20 +716,22 @@ export function TaskItem({
             <NewTaskIcon />
           </button>
         ) : null}
-        <button
-          type="button"
-          tabIndex={isRightActionsOpen ? 0 : -1}
-          aria-label="Share task"
-          title="Share"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            void handleShare();
-          }}
-          className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
-        >
-          <ShareIcon />
-        </button>
+        {showShareAction ? (
+          <button
+            type="button"
+            tabIndex={isRightActionsOpen ? 0 : -1}
+            aria-label="Share task"
+            title="Share"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              void handleShare();
+            }}
+            className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
+          >
+            <ShareIcon />
+          </button>
+        ) : null}
         <button
           type="button"
           tabIndex={isRightActionsOpen ? 0 : -1}

@@ -157,13 +157,9 @@ export const useIssuesStore = create<IssuesState>()((set, get) => ({
   fetchIssues: async (projectId) => {
     const normalizedProjectId = projectId?.trim() || null;
     set({ isLoading: true, error: null, currentProjectId: normalizedProjectId });
-    if (!normalizedProjectId) {
-      set({ issues: [], isLoading: false, currentProjectId: null });
-      return;
-    }
     try {
       const api = getApiClient();
-      const suffix = `?project_id=${encodeURIComponent(normalizedProjectId)}`;
+      const suffix = normalizedProjectId ? `?project_id=${encodeURIComponent(normalizedProjectId)}` : '';
       const issues = sortIssues(normalizeIssueList(await api.get(`/issues${suffix}`)));
       if (get().currentProjectId !== normalizedProjectId) {
         return;

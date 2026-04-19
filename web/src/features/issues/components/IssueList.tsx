@@ -10,10 +10,9 @@ import {
 import { buildIssueColumns } from './board-utils';
 import { IssueCard } from './IssueCard';
 
-const getDefaultVisibleStatuses = (issues: Issue[]): Issue['status'][] => {
+const getDefaultVisibleStatus = (issues: Issue[]): Issue['status'] => {
   const columns = buildIssueColumns(issues);
-  const nonEmptyStatuses = ISSUE_STATUSES.filter((status) => columns[status].length > 0);
-  return nonEmptyStatuses.length > 0 ? nonEmptyStatuses : [...ISSUE_STATUSES];
+  return ISSUE_STATUSES.find((status) => columns[status].length > 0) ?? ISSUE_STATUSES[0];
 };
 
 export function IssueList({
@@ -26,26 +25,21 @@ export function IssueList({
   onDeleteIssue?: (issueId: string) => Promise<void> | void;
 }) {
   const columns = useMemo(() => buildIssueColumns(issues), [issues]);
-  const defaultVisibleStatuses = useMemo(() => getDefaultVisibleStatuses(issues), [issues]);
-  const [visibleStatuses, setVisibleStatuses] = useState<Issue['status'][]>(defaultVisibleStatuses);
-  const [hasCustomizedFilters, setHasCustomizedFilters] = useState(false);
+  const defaultVisibleStatus = useMemo(() => getDefaultVisibleStatus(issues), [issues]);
+  const [visibleStatus, setVisibleStatus] = useState<Issue['status']>(defaultVisibleStatus);
+  const [hasCustomizedFilter, setHasCustomizedFilter] = useState(false);
 
   useEffect(() => {
-    if (!hasCustomizedFilters) {
-      setVisibleStatuses(defaultVisibleStatuses);
+    if (!hasCustomizedFilter) {
+      setVisibleStatus(defaultVisibleStatus);
     }
-  }, [defaultVisibleStatuses, hasCustomizedFilters]);
+  }, [defaultVisibleStatus, hasCustomizedFilter]);
 
-  const visibleSections = ISSUE_STATUSES.filter((status) => visibleStatuses.includes(status));
+  const visibleIssues = columns[visibleStatus];
 
   const handleToggleStatus = (status: Issue['status']) => {
-    setHasCustomizedFilters(true);
-    setVisibleStatuses((current) => {
-      if (current.includes(status)) {
-        return current.filter((entry) => entry !== status);
-      }
-      return ISSUE_STATUSES.filter((entry) => current.includes(entry) || entry === status);
-    });
+    setHasCustomizedFilter(true);
+    setVisibleStatus(status);
   };
 
   return (
@@ -53,7 +47,7 @@ export function IssueList({
       <div className="sticky top-0 z-40 mb-3 bg-paper/90 pb-2 pt-0.5 backdrop-blur-xl">
         <div className="flex gap-2 overflow-x-auto webapp-scrollbar">
           {ISSUE_STATUSES.map((status) => {
-            const selected = visibleStatuses.includes(status);
+            const selected = visibleStatus === status;
             return (
               <button
                 key={status}
@@ -74,32 +68,21 @@ export function IssueList({
         </div>
       </div>
 
-      {visibleSections.length > 0 ? (
+      {visibleIssues.length > 0 ? (
         <div className="space-y-3 pb-1">
-          {visibleSections.map((status) => {
-            const columnIssues = columns[status];
-            return (
-              columnIssues.length > 0 ? (
-                <section key={status} className="space-y-2">
-                  <div className="space-y-2">
-                    {columnIssues.map((issue) => (
-                      <IssueCard
-                        key={issue.id}
-                        issue={issue}
-                        disabled
-                        onStatusChange={onStatusChange}
-                        onDelete={onDeleteIssue}
-                      />
-                    ))}
-                  </div>
-                </section>
-              ) : null
-            );
-          })}
+          {visibleIssues.map((issue) => (
+            <IssueCard
+              key={issue.id}
+              issue={issue}
+              disabled
+              onStatusChange={onStatusChange}
+              onDelete={onDeleteIssue}
+            />
+          ))}
         </div>
       ) : (
         <div className="rounded-[22px] border border-dashed border-border bg-panel/45 px-4 py-6 text-center text-sm text-muted/75">
-          Select at least one status to show issues.
+          No issues in {ISSUE_STATUS_LABELS[visibleStatus]}.
         </div>
       )}
     </div>
