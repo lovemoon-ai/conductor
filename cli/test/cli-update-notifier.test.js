@@ -86,6 +86,17 @@ describe("buildUpdateNotice", () => {
       "New conductor version available: 0.2.20 -> 0.2.21. Run: conductor update",
     );
   });
+
+  it("switches the hint for Homebrew-managed installs", () => {
+    assert.strictEqual(
+      buildUpdateNotice({
+        currentVersion: "0.2.20",
+        latestVersion: "0.2.21",
+        installMethod: "homebrew",
+      }),
+      "New conductor version available: 0.2.20 -> 0.2.21. Run: brew upgrade lovemoon-ai/tap/conductor",
+    );
+  });
 });
 
 describe("maybeCheckForUpdates", () => {

@@ -1,0 +1,145 @@
+name: Build CLI Release Archives
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "CLI version to package"
+        required: false
+        type: string
+      publish_release:
+        description: "Upload build outputs to a GitHub release"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      publish_release: ${{ steps.resolve.outputs.publish_release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.11.0
+
+      - name: Resolve release metadata
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            publish_release="true"
+          elif [[ -n "${{ inputs.version || '' }}" ]]; then
+            version="${{ inputs.version }}"
+            publish_release="${{ inputs.publish_release && 'true' || 'false' }}"
+          else
+            version="$(node -p "require('./cli/package.json').version")"
+            publish_release="${{ inputs.publish_release && 'true' || 'false' }}"
+          fi
+
+          if [[ -z "$version" ]]; then
+            echo "Unable to determine CLI version" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "publish_release=$publish_release" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.os }}-${{ matrix.arch }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            os: darwin
+            arch: arm64
+          - runner: macos-15-intel
+            os: darwin
+            arch: x64
+          - runner: ubuntu-24.04
+            os: linux
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            os: linux
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.11.0
+          registry-url: https://registry.npmjs.org
+
+      - name: Build release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./scripts/build-cli-release.sh
+          ./scripts/build-cli-release.sh "${{ needs.prepare.outputs.version }}" "${{ matrix.os }}" "${{ matrix.arch }}"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: conductor-${{ matrix.os }}-${{ matrix.arch }}
+          path: cli/dist/release/conductor-v${{ needs.prepare.outputs.version }}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz*
+          if-no-files-found: error
+
+  publish:
+    needs:
+      - prepare
+      - build
+    if: needs.prepare.outputs.publish_release == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: cli/dist/release
+          merge-multiple: true
+
+      - name: Render Homebrew formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./scripts/render-homebrew-formula.sh
+          ./scripts/render-homebrew-formula.sh "${{ needs.prepare.outputs.version }}"
+
+      - name: Upload formula artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: conductor-homebrew-formula
+          path: cli/Formula/conductor.rb
+          if-no-files-found: error
+
+      - name: Publish GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --generate-notes
+          fi
+
+          gh release upload "$RELEASE_TAG" cli/dist/release/* cli/Formula/conductor.rb --clobber

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { fetchLatestVersion, isNewerVersion } from "./version-check.js";
+import { buildUpgradeCommand, fetchLatestVersion, isNewerVersion } from "./version-check.js";
 
 export const DEFAULT_VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 export const DEFAULT_VERSION_NOTIFY_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -115,8 +115,13 @@ export function shouldSkipVersionCheck(options = {}) {
   return { skip: false, reason: null };
 }
 
-export function buildUpdateNotice({ currentVersion, latestVersion }) {
-  return `New conductor version available: ${currentVersion} -> ${latestVersion}. Run: conductor update`;
+export function buildUpdateNotice({ currentVersion, latestVersion, installMethod, env }) {
+  const noticeEnv =
+    installMethod && !env?.CONDUCTOR_INSTALL_METHOD
+      ? { ...env, CONDUCTOR_INSTALL_METHOD: installMethod }
+      : env;
+  const upgradeCommand = buildUpgradeCommand({ env: noticeEnv });
+  return `New conductor version available: ${currentVersion} -> ${latestVersion}. Run: ${upgradeCommand}`;
 }
 
 function shouldNotifyVersion({ latestVersion, currentVersion, cache, nowMs, notifyIntervalMs }) {
@@ -147,6 +152,7 @@ export async function maybeCheckForUpdates(options = {}) {
   const env = options.env || process.env;
   const currentVersion = normalizeOptionalString(options.currentVersion);
   const subcommand = normalizeOptionalString(options.subcommand);
+  const installMethod = normalizeOptionalString(env.CONDUCTOR_INSTALL_METHOD);
   const nowMs = options.nowMs ?? Date.now();
   const checkIntervalMs = options.checkIntervalMs ?? DEFAULT_VERSION_CHECK_INTERVAL_MS;
   const notifyIntervalMs = options.notifyIntervalMs ?? DEFAULT_VERSION_NOTIFY_INTERVAL_MS;
@@ -182,7 +188,12 @@ export async function maybeCheckForUpdates(options = {}) {
       nowMs,
       notifyIntervalMs,
     })) {
-      writeNotice(buildUpdateNotice({ currentVersion, latestVersion: cache.latestVersion }));
+      writeNotice(buildUpdateNotice({
+        currentVersion,
+        latestVersion: cache.latestVersion,
+        installMethod,
+        env,
+      }));
       cache = createUpdatedCache(cache, {
         lastNotifiedVersion: cache.latestVersion,
         lastNotifiedAt: new Date(nowMs).toISOString(),
@@ -223,7 +234,12 @@ export async function maybeCheckForUpdates(options = {}) {
     nowMs,
     notifyIntervalMs,
   })) {
-    writeNotice(buildUpdateNotice({ currentVersion, latestVersion: versionToNotify }));
+      writeNotice(buildUpdateNotice({
+        currentVersion,
+        latestVersion: versionToNotify,
+        installMethod,
+        env,
+      }));
     cache = createUpdatedCache(cache, {
       lastNotifiedVersion: versionToNotify,
       lastNotifiedAt: new Date(nowMs).toISOString(),
