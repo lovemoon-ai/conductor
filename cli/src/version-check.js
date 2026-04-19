@@ -2,14 +2,17 @@
  * Shared version-check utilities used by both `conductor update` and the daemon auto-update flow.
  */
 
+import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 
 export const PACKAGE_NAME = "@love-moon/conductor-cli";
+export const DEFAULT_HOMEBREW_FORMULA = "lovemoon-ai/tap/conductor";
 const DEFAULT_UPDATE_WINDOW = { startMinutes: 120, endMinutes: 240 };
 const REQUEST_TIMEOUT_MS = 10_000;
+const INSTALL_METHOD_FILENAME = ".install-method";
 
 function resolveTimeoutMs(value) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -98,6 +101,50 @@ function getRegistryBaseUrl(overrideRegistryUrl) {
     return "https://registry.npmjs.org";
   }
   return candidate;
+}
+
+function normalizeInstallMethod(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized || null;
+}
+
+export function resolveHomebrewFormula(env = process.env) {
+  const configured = typeof env?.CONDUCTOR_HOMEBREW_FORMULA === "string"
+    ? env.CONDUCTOR_HOMEBREW_FORMULA.trim()
+    : "";
+  return configured || DEFAULT_HOMEBREW_FORMULA;
+}
+
+export function resolveInstallMethod(options = {}) {
+  const env = options.env || process.env;
+  const envMethod = normalizeInstallMethod(env?.CONDUCTOR_INSTALL_METHOD);
+  if (envMethod) {
+    return envMethod;
+  }
+
+  const packageRoot = typeof options.packageRoot === "string" ? options.packageRoot.trim() : "";
+  if (!packageRoot) {
+    return null;
+  }
+
+  const readFileSyncFn = options.readFileSync || fs.readFileSync;
+  const installMethodPath = path.join(path.resolve(packageRoot), INSTALL_METHOD_FILENAME);
+  try {
+    return normalizeInstallMethod(readFileSyncFn(installMethodPath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+export function buildUpgradeCommand(options = {}) {
+  const installMethod = resolveInstallMethod(options);
+  if (installMethod === "homebrew") {
+    return `brew upgrade ${resolveHomebrewFormula(options.env || process.env)}`;
+  }
+  return "conductor update";
 }
 
 /**
@@ -217,7 +264,10 @@ export function parseUpdateWindow(str) {
  * Auto-update should only mutate managed/global installs. Local repo runs and pnpm-linked
  * worktrees are treated as development installs and are skipped by default.
  */
-export function isManagedInstallPath(packageRoot) {
+export function isManagedInstallPath(packageRoot, options = {}) {
+  if (resolveInstallMethod({ ...options, packageRoot }) === "homebrew") {
+    return false;
+  }
   if (typeof packageRoot !== "string" || !packageRoot.trim()) {
     return false;
   }

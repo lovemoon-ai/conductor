@@ -2,12 +2,14 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 
 import {
+  buildUpgradeCommand,
   detectPackageManager,
   fetchLatestVersion,
   isNewerVersion,
   parseUpdateWindow,
   isInUpdateWindow,
   isManagedInstallPath,
+  resolveInstallMethod,
 } from "../src/version-check.js";
 
 describe("isNewerVersion", () => {
@@ -123,6 +125,48 @@ describe("isManagedInstallPath", () => {
     assert.strictEqual(
       isManagedInstallPath("/home/duino/ws/conductor-worktrees/daemon-auto-update/cli"),
       false,
+    );
+  });
+
+  it("returns false for Homebrew installs even when layout is managed", () => {
+    assert.strictEqual(
+      isManagedInstallPath("/opt/homebrew/Cellar/conductor/0.2.34/libexec/package/node_modules/@love-moon/conductor-cli", {
+        env: {
+          CONDUCTOR_INSTALL_METHOD: "homebrew",
+        },
+      }),
+      false,
+    );
+  });
+});
+
+describe("resolveInstallMethod", () => {
+  it("prefers the explicit environment variable", () => {
+    assert.strictEqual(
+      resolveInstallMethod({
+        env: {
+          CONDUCTOR_INSTALL_METHOD: "homebrew",
+        },
+        packageRoot: "/tmp/ignored",
+      }),
+      "homebrew",
+    );
+  });
+});
+
+describe("buildUpgradeCommand", () => {
+  it("defaults to conductor update for npm-style installs", () => {
+    assert.strictEqual(buildUpgradeCommand({ env: {} }), "conductor update");
+  });
+
+  it("returns brew upgrade for Homebrew installs", () => {
+    assert.strictEqual(
+      buildUpgradeCommand({
+        env: {
+          CONDUCTOR_INSTALL_METHOD: "homebrew",
+        },
+      }),
+      "brew upgrade lovemoon-ai/tap/conductor",
     );
   });
 });

@@ -6,13 +6,14 @@
 
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { createRequire } from "node:module";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import process from "node:process";
 import readline from "node:readline/promises";
 import {
   PACKAGE_NAME,
+  buildUpgradeCommand,
+  resolveInstallMethod,
   fetchLatestVersion,
   isNewerVersion,
   detectPackageManager,
@@ -24,11 +25,14 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const require = createRequire(import.meta.url);
 const PKG_ROOT = path.join(__dirname, "..");
 
 const pkgJson = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf-8"));
 const CURRENT_VERSION = pkgJson.version;
+const INSTALL_METHOD = resolveInstallMethod({
+  env: process.env,
+  packageRoot: PKG_ROOT,
+});
 
 // ANSI 颜色代码
 const COLORS = {
@@ -53,6 +57,13 @@ async function main() {
 
   if (showHelp) {
     showHelpMessage();
+    process.exit(0);
+  }
+
+  if (INSTALL_METHOD === "homebrew") {
+    console.log(colorize("🍺 Homebrew-managed install detected", "cyan"));
+    console.log("");
+    console.log(`   Use ${colorize(buildUpgradeCommand({ env: process.env }), "green")} to upgrade conductor.`);
     process.exit(0);
   }
 

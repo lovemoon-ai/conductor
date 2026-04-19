@@ -29,12 +29,14 @@ import {
 } from "./runtime-backends.js";
 import {
   PACKAGE_NAME,
+  buildUpgradeCommand,
   fetchLatestVersion,
   isNewerVersion,
   detectPackageManager,
   parseUpdateWindow,
   isInUpdateWindow,
   isManagedInstallPath,
+  resolveInstallMethod,
 } from "./version-check.js";
 import {
   ensurePnpmOnlyBuiltDependencies,
@@ -662,12 +664,22 @@ export function startDaemon(config = {}, deps = {}) {
   const parseUpdateWindowFn = deps.parseUpdateWindow || parseUpdateWindow;
   const isInUpdateWindowFn = deps.isInUpdateWindow || isInUpdateWindow;
   const isManagedInstallPathFn = deps.isManagedInstallPath || isManagedInstallPath;
+  const resolveInstallMethodFn = deps.resolveInstallMethod || resolveInstallMethod;
   const installedPackageRoot = deps.packageRoot || PACKAGE_ROOT;
   const cliVersion = deps.cliVersion || CLI_VERSION;
   const isBackgroundProcess = deps.isBackgroundProcess ?? !process.stdout.isTTY;
   const autoUpdateForceLocal = parseBooleanEnv(process.env.CONDUCTOR_AUTO_UPDATE_FORCE_LOCAL);
+  const installMethod = resolveInstallMethodFn({
+    env: process.env,
+    packageRoot: installedPackageRoot,
+    readFileSync: deps.readFileSync || fs.readFileSync,
+  });
   const autoUpdateSupportedInstall =
-    autoUpdateForceLocal || isManagedInstallPathFn(installedPackageRoot);
+    (installMethod !== "homebrew") &&
+    (autoUpdateForceLocal || isManagedInstallPathFn(installedPackageRoot, {
+      env: process.env,
+      readFileSync: deps.readFileSync || fs.readFileSync,
+    }));
   const skipPidLockCheck = parseBooleanEnv(process.env.CONDUCTOR_TUI_DEBUG);
   const lockHandoffToken =
     normalizeOptionalString(config.LOCK_HANDOFF_TOKEN) ||
@@ -1570,7 +1582,11 @@ export function startDaemon(config = {}, deps = {}) {
     });
 
     if (!AUTO_UPDATE_ENABLED && autoUpdateSupportedInstall === false) {
-      log("[auto-update] Disabled for local/dev install; set CONDUCTOR_AUTO_UPDATE_FORCE_LOCAL=true to override");
+      if (installMethod === "homebrew") {
+        log(`[auto-update] Disabled for Homebrew install; use ${buildUpgradeCommand({ env: process.env })}`);
+      } else {
+        log("[auto-update] Disabled for local/dev install; set CONDUCTOR_AUTO_UPDATE_FORCE_LOCAL=true to override");
+      }
     }
 
     watchdogTimer = setInterval(() => {
