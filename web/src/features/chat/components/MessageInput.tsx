@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 const SEND_BUTTON_SIZE_PX = 32;
 const COMPOSER_HORIZONTAL_PADDING_PX = 24;
@@ -25,6 +25,10 @@ interface MessageInputProps {
   disabled?: boolean;
   sendDisabled?: boolean;
   autoFocus?: boolean;
+  resendRequest?: {
+    id: number;
+    content: string;
+  } | null;
 }
 
 const getDraftStorageKey = (taskId: string) => `${DRAFT_STORAGE_PREFIX}${taskId}`;
@@ -47,6 +51,7 @@ export function MessageInput({
   disabled,
   sendDisabled = false,
   autoFocus = false,
+  resendRequest = null,
 }: MessageInputProps) {
   const [content, setContent] = useState('');
   const [isSendOnNextLine, setIsSendOnNextLine] = useState(false);
@@ -60,6 +65,7 @@ export function MessageInput({
   const skipStoreEffectRef = useRef(true);
   const historyCursorRef = useRef<number | null>(null);
   const historyDraftRef = useRef('');
+  const lastResendRequestIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -206,21 +212,21 @@ export function MessageInput({
 
   const canSend = Boolean(content.trim()) && !disabled && !sendDisabled;
 
-  const moveCaretToEnd = () => {
+  const moveCaretToEnd = useCallback((nextValue?: string) => {
     const textarea = textareaRef.current;
     if (!textarea) {
       return;
     }
-    const nextPosition = textarea.value.length;
+    const nextPosition = (nextValue ?? textarea.value).length;
     requestAnimationFrame(() => {
       textarea.focus({ preventScroll: true });
       textarea.setSelectionRange(nextPosition, nextPosition);
     });
-  };
+  }, []);
 
-  const handleSubmit = () => {
-    if (!content.trim() || disabled || sendDisabled) return;
-    const trimmedContent = content.trim();
+  const submitContent = useCallback((nextContent: string) => {
+    if (!nextContent.trim() || disabled || sendDisabled) return false;
+    const trimmedContent = nextContent.trim();
     onSend(trimmedContent);
     setSentHistory((previous) => {
       const deduped = previous.filter((item) => item !== trimmedContent);
@@ -229,6 +235,28 @@ export function MessageInput({
     historyCursorRef.current = null;
     historyDraftRef.current = '';
     setContent('');
+    return true;
+  }, [disabled, onSend, sendDisabled]);
+
+  useEffect(() => {
+    if (!resendRequest || lastResendRequestIdRef.current === resendRequest.id) {
+      return;
+    }
+
+    lastResendRequestIdRef.current = resendRequest.id;
+    const nextContent = resendRequest.content;
+    setContent(nextContent);
+    historyCursorRef.current = null;
+    historyDraftRef.current = '';
+
+    const didSubmit = submitContent(nextContent);
+    if (!didSubmit) {
+      moveCaretToEnd(nextContent);
+    }
+  }, [moveCaretToEnd, resendRequest, submitContent]);
+
+  const handleSubmit = () => {
+    submitContent(content);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -249,7 +277,7 @@ export function MessageInput({
       }
       const nextHistory = sentHistory[historyCursorRef.current] ?? sentHistory[sentHistory.length - 1] ?? '';
       setContent(nextHistory);
-      moveCaretToEnd();
+      moveCaretToEnd(nextHistory);
       return;
     }
 
@@ -264,12 +292,14 @@ export function MessageInput({
       e.preventDefault();
       if (historyCursorRef.current < sentHistory.length - 1) {
         historyCursorRef.current += 1;
-        setContent(sentHistory[historyCursorRef.current] ?? '');
+        const nextHistory = sentHistory[historyCursorRef.current] ?? '';
+        setContent(nextHistory);
+        moveCaretToEnd(nextHistory);
       } else {
         historyCursorRef.current = null;
         setContent(historyDraftRef.current);
+        moveCaretToEnd(historyDraftRef.current);
       }
-      moveCaretToEnd();
       return;
     }
 

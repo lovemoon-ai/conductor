@@ -72,6 +72,54 @@ describe('MessageInput', () => {
     expect(textarea.value).toBe('second');
   });
 
+  it('submits a resend request through the normal send flow', async () => {
+    const onSendMock = vi.fn();
+    const { rerender } = render(
+      <MessageInput
+        taskId="task-resend"
+        onSend={onSendMock}
+      />,
+    );
+
+    rerender(
+      <MessageInput
+        taskId="task-resend"
+        onSend={onSendMock}
+        resendRequest={{ id: 1, content: '  repeat this  ' }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(onSendMock).toHaveBeenCalledWith('repeat this');
+    });
+    expect(screen.getByTestId('message-input-textarea')).toHaveValue('');
+  });
+
+  it('keeps a resend request in the composer when sending is disabled', async () => {
+    const onSendMock = vi.fn();
+    const { rerender } = render(
+      <MessageInput
+        taskId="task-resend-disabled"
+        onSend={onSendMock}
+        sendDisabled
+      />,
+    );
+
+    rerender(
+      <MessageInput
+        taskId="task-resend-disabled"
+        onSend={onSendMock}
+        sendDisabled
+        resendRequest={{ id: 1, content: 'retry when ready' }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('message-input-textarea')).toHaveValue('retry when ready');
+    });
+    expect(onSendMock).not.toHaveBeenCalled();
+  });
+
   it('uses ArrowDown to move forward through recalled history and restore the draft', async () => {
     const onSendMock = vi.fn();
 

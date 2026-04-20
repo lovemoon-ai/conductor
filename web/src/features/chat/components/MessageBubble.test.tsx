@@ -70,6 +70,25 @@ describe('MessageBubble', () => {
     expect(screen.queryByText('Copy')).not.toBeInTheDocument();
   });
 
+  it('calls onResend with the current message from the double-click toolbar', () => {
+    const onResend = vi.fn();
+    const { container } = render(
+      <MessageBubble
+        message={makeMessage({ role: 'user', content: 'repeat this' })}
+        onResend={onResend}
+      />,
+    );
+
+    const bubble = container.querySelector('[role="button"]') as HTMLElement;
+    fireEvent.doubleClick(bubble);
+
+    expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Resend message' }));
+
+    expect(onResend).toHaveBeenCalledWith('repeat this');
+    expect(screen.queryByRole('button', { name: 'Resend message' })).not.toBeInTheDocument();
+  });
+
   it('renders ai messages in the same shared full-width column with left-side corner', () => {
     const { container } = render(<MessageBubble message={makeMessage({ role: 'assistant', content: 'ai message' })} />);
 

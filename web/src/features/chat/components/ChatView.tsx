@@ -98,6 +98,7 @@ const getAiRuntimeStatusText = (runtime?: {
 
 export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const resendRequestIdRef = useRef(0);
   const previousMessageCountRef = useRef(0);
   const pendingRestoreScrollStateRef = useRef<StoredScrollState | null>(null);
   const pendingPrependAnchorRef = useRef<{ previousScrollHeight: number; previousScrollTop: number } | null>(null);
@@ -116,6 +117,10 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   const [composerFeedback, setComposerFeedback] = useState<{
     variant: 'warning' | 'error';
     message: string;
+  } | null>(null);
+  const [resendRequest, setResendRequest] = useState<{
+    id: number;
+    content: string;
   } | null>(null);
 
   const messages = messagesByTask[taskId] || [];
@@ -316,6 +321,14 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     }
   };
 
+  const handleResend = (content: string) => {
+    resendRequestIdRef.current += 1;
+    setResendRequest({
+      id: resendRequestIdRef.current,
+      content,
+    });
+  };
+
   const handleScroll = () => {
     persistScrollPosition();
 
@@ -370,7 +383,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
               </div>
             ) : null}
             {messages.map((message) => (
-              <MessageBubble key={message.id} message={message} />
+              <MessageBubble key={message.id} message={message} onResend={handleResend} />
             ))}
           </div>
         )}
@@ -396,6 +409,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
         onSend={handleSend}
         sendDisabled={!isTaskRunning}
         autoFocus={autoFocusComposer}
+        resendRequest={resendRequest}
       />
     </div>
   );

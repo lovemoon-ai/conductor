@@ -27,8 +27,19 @@ vi.mock('@/features/tasks', () => ({
 }));
 
 vi.mock('./MessageBubble', () => ({
-  MessageBubble: ({ message }: { message: { id: string; content: string } }) => (
-    <div data-testid={`message-${message.id}`}>{message.content}</div>
+  MessageBubble: ({
+    message,
+    onResend,
+  }: {
+    message: { id: string; content: string };
+    onResend?: (content: string) => void;
+  }) => (
+    <div data-testid={`message-${message.id}`}>
+      <span>{message.content}</span>
+      <button type="button" data-testid={`resend-${message.id}`} onClick={() => onResend?.(message.content)}>
+        resend
+      </button>
+    </div>
   ),
 }));
 
@@ -36,15 +47,18 @@ vi.mock('./MessageInput', () => ({
   MessageInput: ({
     onSend,
     sendDisabled,
+    resendRequest,
   }: {
     onSend: (content: string) => void;
     sendDisabled?: boolean;
+    resendRequest?: { id: number; content: string } | null;
   }) => (
     <div data-testid="message-input">
       <button type="button" data-testid="send-button" onClick={() => onSend('hello')}>
         mock send
       </button>
       <div data-testid="send-disabled">{String(Boolean(sendDisabled))}</div>
+      <div data-testid="resend-request">{resendRequest?.content ?? ''}</div>
     </div>
   ),
 }));
@@ -284,6 +298,20 @@ describe('ChatView', () => {
     });
     expect(alertSpy).not.toHaveBeenCalled();
     expect(screen.getByTestId('send-disabled')).toHaveTextContent('true');
+  });
+
+  it('routes a message resend action into the composer request', () => {
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [makeMessage('1', 'repeat this prompt')] },
+    };
+
+    render(<ChatView taskId="task-1" />);
+
+    expect(screen.getByTestId('resend-request')).toHaveTextContent('');
+    fireEvent.click(screen.getByTestId('resend-1'));
+
+    expect(screen.getByTestId('resend-request')).toHaveTextContent('repeat this prompt');
   });
 
   it('shows the simplified status chips row', () => {

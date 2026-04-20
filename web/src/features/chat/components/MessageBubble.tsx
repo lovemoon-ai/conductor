@@ -6,6 +6,7 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface MessageBubbleProps {
   message: Message;
+  onResend?: (content: string) => void;
 }
 
 const formatBytes = (value: number) => {
@@ -21,7 +22,7 @@ const formatBytes = (value: number) => {
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 };
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, onResend }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [isToolbarOpen, setIsToolbarOpen] = useState(false);
@@ -78,6 +79,14 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     }
   };
 
+  const resendMessage = () => {
+    if (!message.content.trim()) {
+      return;
+    }
+    onResend?.(message.content);
+    setIsToolbarOpen(false);
+  };
+
   useEffect(() => {
     if (!isToolbarOpen) {
       return;
@@ -116,6 +125,26 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   const toolbarActions = (
     <>
+      {onResend ? (
+        <button
+          type="button"
+          aria-label="Resend message"
+          title="Resend message"
+          disabled={!message.content.trim()}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            resendMessage();
+          }}
+          className={`${actionButtonClassName} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent`}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 12a8 8 0 1 0 2.34-5.66" />
+            <path d="M4 4v6h6" />
+            <path d="M12 8v5l3 2" />
+          </svg>
+        </button>
+      ) : null}
       <button
         type="button"
         aria-label={copyState === 'copied' ? 'Copied message' : 'Copy message'}
