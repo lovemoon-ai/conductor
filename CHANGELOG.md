@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with an additional `Commits` section for each released version.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.2.38] - 2026-04-20
+
+### Changed
+
+- Moved daemon restart out of each daemon list item and into a dedicated
+  Danger zone card at the bottom of the Daemon page, keeping the high-impact
+  restart action away from routine daemon browsing.
+- Homebrew release generation now uses the tracked Formula template and
+  release notes extracted from this changelog, so archive releases can publish
+  consistent notes and generated Formula assets.
+
+### Fixed
+
+- Fixed daemon-launched tasks so `${PWD}` in backend-specific `pre_prompt`
+  expands to the task workspace selected during `create_task`, including
+  isolated worktrees, instead of inheriting the directory where
+  `conductor daemon` was started.
+- Fixed the Homebrew launcher path and added coverage for the symlinked
+  launcher shape used by installed CLI archives.
+
+### Commits
+
+- `76a675a` fix homebrew launcher path
+- `05a4988` test homebrew launcher symlink
+- `7849808` move daemon restart action
+- `376044b` simplify daemon restart card
+- `eafcca0` use homebrew formula template
+- `2f3a233` use changelog release notes
+- `6bf5515` fix daemon task pwd
+
 ## [0.2.37] - 2026-04-18
 
 ### Added
