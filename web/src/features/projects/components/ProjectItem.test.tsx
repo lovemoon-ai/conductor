@@ -37,7 +37,7 @@ vi.mock('@/features/agents', () => ({
 vi.mock('@/shared/hooks/useSwipeActions', () => ({
   useSwipeActions: () => ({
     isOpen: false,
-    panelStyle: {},
+    panelStyle: { touchAction: 'pan-y' },
     onPointerDown: vi.fn(),
     onPointerMove: vi.fn(),
     onPointerUp: vi.fn(),
@@ -296,6 +296,27 @@ describe('ProjectItem', () => {
 
     expect(sortableListeners.onMouseDown).toHaveBeenCalledTimes(1);
     expect(sortableListeners.onTouchStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps mobile vertical scrolling available outside the drag handle', () => {
+    const { container } = render(
+      <ProjectItem
+        project={{
+          id: 'project-scroll',
+          name: 'Scrollable Project',
+          daemonHost: 'daemon-online',
+        } as any}
+      />,
+    );
+
+    const sortableWrapper = container.firstElementChild as HTMLElement | null;
+    const card = screen.getByRole('button', { name: /Scrollable Project/i });
+    const dragHandle = screen.getByLabelText('Drag project');
+
+    expect(sortableWrapper).not.toBeNull();
+    expect(sortableWrapper).not.toHaveStyle({ touchAction: 'none' });
+    expect(card).toHaveStyle({ touchAction: 'pan-y' });
+    expect(dragHandle).toHaveStyle({ touchAction: 'none' });
   });
 
   it('does not start sortable drag from the project card body', () => {
