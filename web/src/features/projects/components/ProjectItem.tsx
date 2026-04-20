@@ -399,6 +399,9 @@ export function ProjectItem({
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.45 : 1,
+  };
+
+  const dragHandleStyle = {
     touchAction: dragDisabled ? 'auto' : 'none',
   };
 
@@ -502,6 +505,7 @@ export function ProjectItem({
             aria-describedby={projectTitleId}
             title="Hold and drag to reorder"
             className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 cursor-grab active:cursor-grabbing ${isDefault ? 'webapp-gradient-bg' : 'bg-accent/10'}`}
+            style={dragHandleStyle}
             onPointerDown={handleDragHandlePointerDown}
             onMouseDown={handleDragHandleMouseDown}
             onTouchStart={handleDragHandleTouchStart}
