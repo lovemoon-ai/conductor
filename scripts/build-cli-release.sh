@@ -97,9 +97,11 @@ CHECKSUM_PATH="${ARCHIVE_PATH}.sha256"
 NODE_ARCHIVE_NAME="node-v${NODE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz"
 NODE_DOWNLOAD_URL="https://nodejs.org/dist/v${NODE_VERSION}/${NODE_ARCHIVE_NAME}"
 TEMP_NODE_ARCHIVE="$(mktemp -t "${ARCHIVE_STEM}.XXXXXX")"
+SYMLINK_SMOKE_DIR="$(mktemp -d -t "${ARCHIVE_STEM}.symlink.XXXXXX")"
 
 cleanup() {
   rm -f "$TEMP_NODE_ARCHIVE"
+  rm -rf "$SYMLINK_SMOKE_DIR"
 }
 trap cleanup EXIT
 
@@ -153,6 +155,8 @@ chmod 755 "$STAGE_ROOT/bin/conductor"
 
 log "Running smoke tests"
 "$STAGE_ROOT/bin/conductor" --version >/dev/null
+ln -s "$STAGE_ROOT/bin/conductor" "$SYMLINK_SMOKE_DIR/conductor"
+"$SYMLINK_SMOKE_DIR/conductor" --version >/dev/null
 "$STAGE_ROOT/libexec/node/bin/node" \
   "$PACKAGE_ROOT/bin/conductor-verify-node-pty.js" \
   "$PACKAGE_BUNDLE_ROOT" >/dev/null
