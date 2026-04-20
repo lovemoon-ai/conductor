@@ -134,7 +134,17 @@ log "Writing conductor launcher"
 cat > "$STAGE_ROOT/bin/conductor" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-HERE="\$(cd -- "\$(dirname -- "\${BASH_SOURCE[0]}")" && pwd)"
+SOURCE="\${BASH_SOURCE[0]}"
+while [[ -h "\$SOURCE" ]]; do
+  DIR="\$(cd -P -- "\$(dirname -- "\$SOURCE")" && pwd)"
+  TARGET="\$(readlink "\$SOURCE")"
+  if [[ "\$TARGET" == /* ]]; then
+    SOURCE="\$TARGET"
+  else
+    SOURCE="\$DIR/\$TARGET"
+  fi
+done
+HERE="\$(cd -P -- "\$(dirname -- "\$SOURCE")" && pwd)"
 export CONDUCTOR_INSTALL_METHOD="homebrew"
 export CONDUCTOR_HOMEBREW_FORMULA="${HOMEBREW_FORMULA}"
 exec "\$HERE/../libexec/node/bin/node" "\$HERE/../libexec/package/node_modules/${PACKAGE_NAME}/bin/conductor.js" "\$@"
