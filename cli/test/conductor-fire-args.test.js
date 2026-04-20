@@ -11,6 +11,7 @@ import {
   parseCliArgs,
   resolveAiSessionOptions,
   resolveConfiguredPrePrompt,
+  syncPwdEnvWithProcessCwdForDaemonLaunch,
 } from "../bin/conductor-fire.js";
 import { listRuntimeSupportedBackends, resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
 
@@ -643,6 +644,27 @@ describe("conductor-fire defaults", () => {
 });
 
 describe("pre_prompt config", () => {
+  it("resets daemon-launched PWD from the fire process cwd", () => {
+    const env = {
+      CONDUCTOR_LAUNCHED_BY_DAEMON: "1",
+      PWD: "/tmp/daemon-start",
+    };
+
+    const changed = syncPwdEnvWithProcessCwdForDaemonLaunch(env, () => "/tmp/task-worktree");
+
+    assert.equal(changed, true);
+    assert.equal(env.PWD, "/tmp/task-worktree");
+  });
+
+  it("does not rewrite PWD for direct fire invocations", () => {
+    const env = { PWD: "/tmp/shell-cwd" };
+
+    const changed = syncPwdEnvWithProcessCwdForDaemonLaunch(env, () => "/tmp/process-cwd");
+
+    assert.equal(changed, false);
+    assert.equal(env.PWD, "/tmp/shell-cwd");
+  });
+
   it("expands braced and bare environment variables", () => {
     const env = { PWD: "/tmp/demo", HOME: "/Users/test" };
     assert.equal(expandEnvVars("cwd=${PWD} home=$HOME missing=$NOPE", env), "cwd=/tmp/demo home=/Users/test missing=$NOPE");

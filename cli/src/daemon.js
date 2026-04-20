@@ -4262,6 +4262,7 @@ export function startDaemon(config = {}, deps = {}) {
 
       const env = {
         ...process.env,
+        PWD: taskDir,
         CONDUCTOR_PROJECT_ID: projectId,
         CONDUCTOR_TASK_ID: taskId,
         CONDUCTOR_LAUNCHED_BY_DAEMON: "1",

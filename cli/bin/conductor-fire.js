@@ -53,6 +53,14 @@ export function isLaunchedByDaemon(env = process.env) {
   );
 }
 
+export function syncPwdEnvWithProcessCwdForDaemonLaunch(env = process.env, cwdFn = process.cwd) {
+  if (!isLaunchedByDaemon(env)) {
+    return false;
+  }
+  env.PWD = cwdFn();
+  return true;
+}
+
 const ENABLE_FIRE_LOCAL_LOG = !isLaunchedByDaemon(process.env);
 
 const pkgJson = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf-8"));
@@ -570,6 +578,7 @@ export class FireWatchdog {
 }
 
 async function main() {
+  syncPwdEnvWithProcessCwdForDaemonLaunch();
   const cliArgs = await parseCliArgs();
   let runtimeProjectPath = process.cwd();
   let backendSession = null;

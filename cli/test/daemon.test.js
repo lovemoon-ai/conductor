@@ -849,6 +849,10 @@ describe("Daemon", () => {
   });
 
   it("creates and uses an isolated git worktree when launch_config requests it", (t, done) => {
+    const previousPwd = process.env.PWD;
+    process.env.PWD = "/tmp/daemon-start";
+    t.after(() => restoreEnv("PWD", previousPwd));
+
     const taskPayload = {
       task_id: "task-worktree",
       project_id: "proj-git",
@@ -890,6 +894,7 @@ describe("Daemon", () => {
 
       assert.strictEqual(cmd, process.execPath);
       assert.strictEqual(opts.cwd, "/tmp/repo/packages/app/.conductor/worktrees/task-worktree/packages/app");
+      assert.strictEqual(opts.env.PWD, "/tmp/repo/packages/app/.conductor/worktrees/task-worktree/packages/app");
       return {
         pid: 24684,
         on: () => {},
