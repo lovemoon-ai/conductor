@@ -38,19 +38,26 @@ describe('CreateProjectDialog', () => {
     createProjectMock.mockResolvedValueOnce({ id: 'project-1' });
     const onClose = vi.fn();
 
-    render(<CreateProjectDialog open onClose={onClose} />);
+    const { container } = render(<CreateProjectDialog open onClose={onClose} />);
 
-    expect(screen.getByText('Choose an online daemon. Conductor validates the workspace path immediately before creating the project.')).toBeInTheDocument();
+    expect(
+      Array.from(container.querySelectorAll('label')).map((label) => label.textContent?.trim()),
+    ).toEqual(['Daemon Host', 'Workspace Path', 'Name']);
+    expect(screen.queryByText('Enter host manually')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText('Daemon Host')).toHaveValue('daemon-a'));
 
-    fireEvent.change(screen.getByPlaceholderText('Project name'), {
-      target: { value: 'Alpha Project' },
-    });
-    fireEvent.change(screen.getByRole('combobox'), {
-      target: { value: 'daemon-a' },
-    });
-    fireEvent.change(screen.getByPlaceholderText('Local path, e.g. /Users/you/ws/project'), {
+    fireEvent.change(screen.getByLabelText('Workspace Path'), {
       target: { value: '/repo/alpha' },
     });
+    expect(screen.getByLabelText('Name')).toHaveValue('alpha');
+
+    fireEvent.change(screen.getByLabelText('Name'), {
+      target: { value: 'Alpha Project' },
+    });
+    fireEvent.change(screen.getByLabelText('Workspace Path'), {
+      target: { value: '/repo/beta' },
+    });
+    expect(screen.getByLabelText('Name')).toHaveValue('Alpha Project');
 
     fireEvent.click(screen.getByRole('button', { name: 'Create Project' }));
 
@@ -58,7 +65,7 @@ describe('CreateProjectDialog', () => {
       expect(createProjectMock).toHaveBeenCalledWith({
         name: 'Alpha Project',
         daemonHost: 'daemon-a',
-        workspacePath: '/repo/alpha',
+        workspacePath: '/repo/beta',
       });
     });
     expect(onClose).toHaveBeenCalled();
@@ -71,15 +78,10 @@ describe('CreateProjectDialog', () => {
 
     render(<CreateProjectDialog open onClose={onClose} />);
 
-    expect(screen.getByText('No daemon is online. Reconnect conductor daemon before creating a bound project.')).toBeInTheDocument();
-
-    fireEvent.change(screen.getByPlaceholderText('Project name'), {
-      target: { value: 'Offline Project' },
-    });
-    fireEvent.change(screen.getByPlaceholderText('Reconnect a daemon first'), {
+    fireEvent.change(screen.getByLabelText('Daemon Host'), {
       target: { value: 'daemon-offline' },
     });
-    fireEvent.change(screen.getByPlaceholderText('Local path, e.g. /Users/you/ws/project'), {
+    fireEvent.change(screen.getByLabelText('Workspace Path'), {
       target: { value: '/repo/offline' },
     });
 
@@ -89,7 +91,7 @@ describe('CreateProjectDialog', () => {
 
     await waitFor(() => {
       expect(createProjectMock).toHaveBeenCalledWith({
-        name: 'Offline Project',
+        name: 'offline',
         metadata: {
           bindingCandidate: {
             daemonHost: 'daemon-offline',
