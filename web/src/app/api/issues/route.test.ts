@@ -146,12 +146,17 @@ describe('/api/issues', () => {
       body: {
         projectId: 'project-1',
         title: 'Ship issue nav',
-        status: 'todo',
       },
     }));
     const data = await extractJson(response);
 
     expect(response.status).toBe(200);
+    expect(db.issue.aggregate).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        projectId: 'project-1',
+        status: 'todo',
+      }),
+    }));
     expect(db.issue.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         projectId: 'project-1',
@@ -165,6 +170,40 @@ describe('/api/issues', () => {
       projectId: 'project-1',
       project_id: 'project-1',
       position: 5,
+    }));
+  });
+
+  it('maps legacy backlog create requests to todo', async () => {
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
+    vi.mocked(db.issue.create).mockResolvedValue({
+      id: 'issue-legacy',
+      projectId: 'project-1',
+      title: 'Legacy client issue',
+      description: null,
+      status: 'todo',
+      position: 0,
+      metadata: null,
+      tasks: [],
+      createdAt: new Date('2026-04-14T00:20:00.000Z'),
+      updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+    } as any);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: {
+        projectId: 'project-1',
+        title: 'Legacy client issue',
+        status: 'backlog',
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(db.issue.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: 'todo',
+        position: 0,
+      }),
     }));
   });
 });

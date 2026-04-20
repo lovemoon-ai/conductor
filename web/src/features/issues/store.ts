@@ -6,7 +6,7 @@ import type {
   Task,
 } from '@/shared/types';
 import { getApiClient } from '@/shared/api/client';
-import { normalizeIssueStatus } from '@/lib/issues/config';
+import { ISSUE_STATUSES, normalizeIssueStatus } from '@/lib/issues/config';
 import { normalizeTask, useTasksStore } from '@/features/tasks/store';
 
 const pickString = (value: unknown): string | null => {
@@ -85,17 +85,11 @@ const normalizeIssueList = (raw: unknown): Issue[] => {
 };
 
 const sortIssues = (issues: Issue[]): Issue[] => {
-  const statusOrder = new Map([
-    ['backlog', 0],
-    ['todo', 1],
-    ['doing', 2],
-    ['review', 3],
-    ['done', 4],
-  ]);
+  const statusOrder = new Map(ISSUE_STATUSES.map((status, index) => [status, index]));
 
   return issues.slice().sort((left, right) => {
-    const leftStatus = statusOrder.get(left.status) ?? Number.MAX_SAFE_INTEGER;
-    const rightStatus = statusOrder.get(right.status) ?? Number.MAX_SAFE_INTEGER;
+    const leftStatus = statusOrder.get(normalizeIssueStatus(left.status)) ?? Number.MAX_SAFE_INTEGER;
+    const rightStatus = statusOrder.get(normalizeIssueStatus(right.status)) ?? Number.MAX_SAFE_INTEGER;
     if (leftStatus !== rightStatus) {
       return leftStatus - rightStatus;
     }

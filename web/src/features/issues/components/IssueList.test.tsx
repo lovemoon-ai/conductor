@@ -34,10 +34,12 @@ describe('IssueList', () => {
   it('defaults to showing the first non-empty status section', () => {
     render(<IssueList issues={issues} />);
 
-    expect(screen.getByRole('button', { name: 'Backlog' }).parentElement?.parentElement).toHaveClass('sticky');
+    expect(screen.getByRole('button', { name: 'Todo(1)' }).parentElement?.parentElement).toHaveClass('sticky');
     expect(screen.getByRole('button', { name: 'Todo(1)' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Doing(1)' })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: /Backlog|Todo|Doing|Review|Done/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Backlog' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Review' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: /Todo|Doing|Done/ })).toBeNull();
     expect(screen.getByText('Plan board UX')).toBeInTheDocument();
     expect(screen.queryByText('Build AI task handoff')).toBeNull();
   });
@@ -55,10 +57,10 @@ describe('IssueList', () => {
   it('shows an empty hint for the selected status when it has no issues', () => {
     render(<IssueList issues={issues} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Backlog' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
 
     expect(screen.queryByText('Plan board UX')).toBeNull();
     expect(screen.queryByText('Build AI task handoff')).toBeNull();
-    expect(screen.getByText('No issues in Backlog.')).toBeInTheDocument();
+    expect(screen.getByText('No issues in Done.')).toBeInTheDocument();
   });
 });

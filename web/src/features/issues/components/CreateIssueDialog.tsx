@@ -8,7 +8,7 @@ import { ISSUE_STATUS_LABELS } from '@/lib/issues/config';
 import { useIssuesStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
 
-const DEFAULT_STATUS = 'backlog' as const;
+const DEFAULT_STATUS = 'todo' as const;
 
 export function CreateIssueDialog({
   open,

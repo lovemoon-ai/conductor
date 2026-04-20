@@ -8,6 +8,7 @@ import { CreateIssueDialog, IssueBoard, IssueList, useIssuesStore } from '@/feat
 import { useProjectsStore } from '@/features/projects';
 import { RefreshIcon } from '@/features/tasks';
 import { calculateIssueAppendPosition } from '@/features/issues/components/board-utils';
+import type { IssueStatus } from '@/shared/types';
 
 const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
 
@@ -111,7 +112,7 @@ function IssuesPageContent() {
     void fetchIssues(resolvedProjectId);
   };
 
-  const handleMoveIssue = async (issueId: string, status: 'backlog' | 'todo' | 'doing' | 'review' | 'done', position: number) => {
+  const handleMoveIssue = async (issueId: string, status: IssueStatus, position: number) => {
     try {
       await moveIssue(issueId, status, position);
     } catch (error) {
@@ -123,7 +124,7 @@ function IssuesPageContent() {
     }
   };
 
-  const handleStatusChange = async (issueId: string, status: 'backlog' | 'todo' | 'doing' | 'review' | 'done') => {
+  const handleStatusChange = async (issueId: string, status: IssueStatus) => {
     const issue = visibleIssues.find((entry) => entry.id === issueId);
     if (!issue || issue.status === status) {
       return;
