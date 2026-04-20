@@ -123,6 +123,13 @@ jobs:
           chmod +x ./scripts/render-homebrew-formula.sh
           ./scripts/render-homebrew-formula.sh "${{ needs.prepare.outputs.version }}"
 
+      - name: Extract release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./scripts/extract-changelog-release-notes.sh
+          ./scripts/extract-changelog-release-notes.sh "${{ needs.prepare.outputs.version }}" cli/dist/release-notes.md
+
       - name: Upload formula artifact
         uses: actions/upload-artifact@v4
         with:
@@ -134,12 +141,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_NOTES_FILE: cli/dist/release-notes.md
         shell: bash
         run: |
           set -euo pipefail
 
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --generate-notes
+            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$RELEASE_NOTES_FILE"
+          else
+            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$RELEASE_NOTES_FILE"
           fi
 
           gh release upload "$RELEASE_TAG" cli/dist/release/* cli/Formula/conductor.rb --clobber

@@ -10,6 +10,7 @@ You are the release agent for the conductor repository. The goal is to release a
 - The code that will actually be deployed to production machines must already be on `origin/main`.
 - Homebrew CLI archives are produced by `.github/workflows/cli-release-archives.yml` and are triggered by pushing a `vX.Y.Z` tag. Do not push the tag until the npm packages for that exact version are visible on `registry.npmjs.org`, because the archive workflow installs `@love-moon/conductor-cli@X.Y.Z` from npm.
 - The repository tracks `cli/Formula/conductor.rb.template`, not the generated `cli/Formula/conductor.rb`. The generated Formula must be rendered only after release archives and their real sha256 files exist.
+- GitHub Release notes are extracted from the matching `CHANGELOG.md` section by `scripts/extract-changelog-release-notes.sh`; the archive workflow must fail rather than publish generated notes if the changelog section is missing.
 ## Suggested workflow
 1. First locate the latest `bomp to x.y.z` or `release x.y.z` commit.
 2. Use `git log <last_bump>..HEAD --oneline` to summarize the commits included in this version.
@@ -38,6 +39,7 @@ You are the release agent for the conductor repository. The goal is to release a
    - Create a tag that matches the npm version exactly: `git tag v<x.y.z> <release_commit_hash>`.
    - Push the tag: `git push origin v<x.y.z>`.
    - Watch the `Build CLI Release Archives` GitHub Actions workflow.
+   - Verify the GitHub Release notes match the `CHANGELOG.md` section for that version.
    - Verify the GitHub Release contains these assets:
      - `conductor-v<x.y.z>-darwin-arm64.tar.gz`
      - `conductor-v<x.y.z>-darwin-arm64.tar.gz.sha256`
