@@ -28,6 +28,7 @@ web/public/app/.last_build_id
 .conductor/worktrees/
 .conductor/state/
 cli/pnpm-lock.yaml
+cli/Formula/conductor.rb
 web/public/._web
 web/package-lock.json
 conductor.log

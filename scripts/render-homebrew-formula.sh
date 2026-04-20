@@ -5,12 +5,14 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 FORMULA_PATH="${2:-$ROOT_DIR/cli/Formula/conductor.rb}"
 RELEASE_REPO="${3:-lovemoon-ai/conductor}"
 RELEASE_DIR="${RELEASE_DIR:-$ROOT_DIR/cli/dist/release}"
+TEMPLATE_PATH="${CONDUCTOR_HOMEBREW_FORMULA_TEMPLATE:-$ROOT_DIR/cli/Formula/conductor.rb.template}"
 
 usage() {
   cat <<'EOF'
 Usage: render-homebrew-formula.sh <version> [formula_path] [release_repo]
 
-Reads checksum files from cli/dist/release and renders cli/Formula/conductor.rb.
+Reads checksum files from cli/dist/release and renders cli/Formula/conductor.rb
+from cli/Formula/conductor.rb.template.
 
 Expected files:
   cli/dist/release/conductor-v<version>-darwin-arm64.tar.gz.sha256
@@ -26,6 +28,11 @@ if [[ $# -lt 1 || $# -gt 3 ]]; then
 fi
 
 VERSION="$1"
+
+if [[ ! -f "$TEMPLATE_PATH" ]]; then
+  printf 'Missing formula template: %s\n' "$TEMPLATE_PATH" >&2
+  exit 1
+fi
 
 read_sha() {
   local target_os="$1"
@@ -45,41 +52,19 @@ LINUX_X64_SHA="$(read_sha linux x64)"
 
 mkdir -p "$(dirname "$FORMULA_PATH")"
 
-cat > "$FORMULA_PATH" <<EOF
-class Conductor < Formula
-  desc "Run the Conductor CLI and daemon with bundled Node.js runtime"
-  homepage "https://conductor-ai.top/"
-  version "${VERSION}"
+formula="$(< "$TEMPLATE_PATH")"
+formula="${formula//__VERSION__/$VERSION}"
+formula="${formula//__RELEASE_REPO__/$RELEASE_REPO}"
+formula="${formula//__SHA256_DARWIN_ARM64__/$DARWIN_ARM64_SHA}"
+formula="${formula//__SHA256_DARWIN_X64__/$DARWIN_X64_SHA}"
+formula="${formula//__SHA256_LINUX_ARM64__/$LINUX_ARM64_SHA}"
+formula="${formula//__SHA256_LINUX_X64__/$LINUX_X64_SHA}"
 
-  on_macos do
-    if Hardware::CPU.arm?
-      url "https://github.com/${RELEASE_REPO}/releases/download/v#{version}/conductor-v#{version}-darwin-arm64.tar.gz"
-      sha256 "${DARWIN_ARM64_SHA}"
-    else
-      url "https://github.com/${RELEASE_REPO}/releases/download/v#{version}/conductor-v#{version}-darwin-x64.tar.gz"
-      sha256 "${DARWIN_X64_SHA}"
-    end
-  end
+if [[ "$formula" == *"__"* ]]; then
+  printf 'Rendered formula still contains placeholders\n' >&2
+  exit 1
+fi
 
-  on_linux do
-    if Hardware::CPU.arm?
-      url "https://github.com/${RELEASE_REPO}/releases/download/v#{version}/conductor-v#{version}-linux-arm64.tar.gz"
-      sha256 "${LINUX_ARM64_SHA}"
-    else
-      url "https://github.com/${RELEASE_REPO}/releases/download/v#{version}/conductor-v#{version}-linux-x64.tar.gz"
-      sha256 "${LINUX_X64_SHA}"
-    end
-  end
-
-  def install
-    bin.install "bin/conductor"
-    libexec.install Dir["libexec/*"]
-  end
-
-  test do
-    assert_match "conductor version", shell_output("#{bin}/conductor --version")
-  end
-end
-EOF
+printf '%s\n' "$formula" > "$FORMULA_PATH"
 
 printf 'Rendered %s\n' "$FORMULA_PATH"
