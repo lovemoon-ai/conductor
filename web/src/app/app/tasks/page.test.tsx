@@ -13,7 +13,7 @@ let tasksState: {
   fetchTasks: typeof fetchTasksMock;
   isLoading: boolean;
   currentProjectFilter: string | null;
-  tasks: Array<{ id: string; projectId?: string | null }>;
+  tasks: Array<{ id: string; projectId?: string | null; status?: string }>;
 };
 let searchParamsState = new URLSearchParams();
 let isDesktopViewport = false;
@@ -49,13 +49,16 @@ vi.mock('@/features/tasks', async () => {
       viewMode,
       activeTaskId,
       onOpenTask,
+      runningOnly,
     }: {
       viewMode: string;
       activeTaskId?: string | null;
       onOpenTask?: (taskId: string) => void;
+      runningOnly?: boolean;
     }) => (
       <>
         <div>task-list:{viewMode}:{activeTaskId ?? 'none'}:{onOpenTask ? 'inline' : 'route'}</div>
+        <div>running-only:{runningOnly ? 'yes' : 'no'}</div>
         <button type="button" onClick={() => onOpenTask?.('task-2')}>
           select-task-2
         </button>
@@ -110,16 +113,20 @@ vi.mock('@/components/layout/Header', () => ({
     actions,
     showConnectionStatus,
     connectionTaskId,
+    onTitleDoubleClick,
+    titleDoubleClickHint,
   }: {
     title?: string;
     actions?: React.ReactNode;
     showConnectionStatus?: boolean;
     connectionTaskId?: string | null;
+    onTitleDoubleClick?: () => void;
+    titleDoubleClickHint?: string;
   }) => {
-    headerMock({ title, showConnectionStatus, connectionTaskId });
+    headerMock({ title, showConnectionStatus, connectionTaskId, titleDoubleClickHint });
     return (
       <div>
-        <h1>{title}</h1>
+        <h1 onDoubleClick={onTitleDoubleClick} title={titleDoubleClickHint}>{title}</h1>
         <div>{actions}</div>
       </div>
     );
@@ -144,8 +151,8 @@ describe('TasksPage', () => {
       isLoading: false,
       currentProjectFilter: 'project-1',
       tasks: [
-        { id: 'task-1', projectId: 'project-1' },
-        { id: 'task-2', projectId: 'project-1' },
+        { id: 'task-1', projectId: 'project-1', status: 'running' },
+        { id: 'task-2', projectId: 'project-1', status: 'running' },
       ],
     };
 
@@ -167,9 +174,10 @@ describe('TasksPage', () => {
   it('renders header controls with list view', () => {
     render(<TasksPage />);
 
-    expect(screen.getByText('Task 2')).toBeInTheDocument();
+    expect(screen.getByText('Tasks(2)')).toBeInTheDocument();
     const taskList = screen.getByText('task-list:list:none:route');
     expect(taskList).toBeInTheDocument();
+    expect(screen.getByText('running-only:no')).toBeInTheDocument();
     expect(taskList.parentElement?.parentElement).toHaveClass('px-4', 'pb-4', 'pt-4');
     expect(screen.queryByText('task-detail:task-1')).not.toBeInTheDocument();
   });
@@ -198,7 +206,8 @@ describe('TasksPage', () => {
     expect(replaceMock).toHaveBeenCalledWith('/app/tasks?taskId=task-1', { scroll: false });
     expect(headerMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'Task 2',
+        title: 'Tasks(2)',
+        titleDoubleClickHint: 'Double-click to show running tasks only.',
         showConnectionStatus: true,
         connectionTaskId: 'task-1',
       }),
@@ -210,11 +219,46 @@ describe('TasksPage', () => {
     expect(screen.getByText('task-detail:task-2:no-header')).toBeInTheDocument();
     expect(headerMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'Task 2',
+        title: 'Tasks(2)',
+        titleDoubleClickHint: 'Double-click to show running tasks only.',
         showConnectionStatus: true,
         connectionTaskId: 'task-2',
       }),
     );
+  });
+
+  it('toggles running-only tasks when double-clicking the Tasks title', () => {
+    tasksState = {
+      ...tasksState,
+      tasks: [
+        { id: 'task-1', projectId: 'project-1', status: 'running' },
+        { id: 'task-2', projectId: 'project-1', status: 'completed' },
+      ],
+    };
+
+    render(<TasksPage />);
+
+    expect(screen.getByRole('heading', { name: 'Tasks(2)' })).toHaveAttribute(
+      'title',
+      'Double-click to show running tasks only.',
+    );
+    expect(screen.getByText('running-only:no')).toBeInTheDocument();
+
+    fireEvent.doubleClick(screen.getByRole('heading', { name: 'Tasks(2)' }));
+
+    expect(screen.getByRole('heading', { name: 'Tasks(1)' })).toHaveAttribute(
+      'title',
+      'Double-click to show all tasks.',
+    );
+    expect(screen.getByText('running-only:yes')).toBeInTheDocument();
+
+    fireEvent.doubleClick(screen.getByRole('heading', { name: 'Tasks(1)' }));
+
+    expect(screen.getByRole('heading', { name: 'Tasks(2)' })).toHaveAttribute(
+      'title',
+      'Double-click to show running tasks only.',
+    );
+    expect(screen.getByText('running-only:no')).toBeInTheDocument();
   });
 
   it('keeps inline selection when clicking a new task with an existing taskId in the URL', () => {
@@ -262,7 +306,7 @@ describe('TasksPage', () => {
 
     tasksState = {
       ...tasksState,
-      tasks: [{ id: 'task-3' }],
+      tasks: [{ id: 'task-3', status: 'running' }],
     };
     fireEvent.click(screen.getByRole('button', { name: 'mock-create-success' }));
 
@@ -285,14 +329,14 @@ describe('TasksPage', () => {
     tasksState = {
       ...tasksState,
       tasks: [
-        { id: 'task-1', projectId: 'project-1' },
-        { id: 'task-hidden', projectId: 'project-hidden' },
+        { id: 'task-1', projectId: 'project-1', status: 'running' },
+        { id: 'task-hidden', projectId: 'project-hidden', status: 'running' },
       ],
     };
 
     render(<TasksPage />);
 
-    expect(screen.getByText('Task 1')).toBeInTheDocument();
+    expect(screen.getByText('Tasks(1)')).toBeInTheDocument();
   });
 
   it('clears a hidden projectId from the URL', () => {

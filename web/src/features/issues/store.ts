@@ -106,17 +106,19 @@ const normalizeIssueMutationResponse = (raw: unknown): {
   issue: Issue | null;
   activeTask: Task | null;
   spawnedTask: Task | null;
+  killedTask: Task | null;
 } => {
   if (!raw || typeof raw !== 'object') {
-    return { issue: null, activeTask: null, spawnedTask: null };
+    return { issue: null, activeTask: null, spawnedTask: null, killedTask: null };
   }
 
   const record = raw as Record<string, unknown>;
   const issue = normalizeIssue(record.issue ?? raw);
   const activeTask = syncTask(record.activeTask ?? record.active_task, false);
   const spawnedTask = syncTask(record.spawnedTask ?? record.spawned_task, true);
+  const killedTask = syncTask(record.killedTask ?? record.killed_task, false);
 
-  return { issue, activeTask, spawnedTask };
+  return { issue, activeTask, spawnedTask, killedTask };
 };
 
 const upsertIssue = (issues: Issue[], issue: Issue): Issue[] => {

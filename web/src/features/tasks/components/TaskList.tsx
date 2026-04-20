@@ -43,6 +43,7 @@ interface TaskListProps {
   onOpenTask?: (taskId: string) => void;
   desktopListPaneMode?: boolean;
   projectFilter?: string | null;
+  runningOnly?: boolean;
 }
 
 export function TaskList({
@@ -50,6 +51,7 @@ export function TaskList({
   onOpenTask,
   desktopListPaneMode = false,
   projectFilter,
+  runningOnly = false,
 }: TaskListProps) {
   const { tasks, isLoading, unreadTaskIds, currentProjectFilter, deleteTask } = useTasksStore();
   const projects = useProjectsStore((state) => state.projects);
@@ -63,9 +65,13 @@ export function TaskList({
   const previousOrderRef = useRef<string[]>([]);
   const animationFrameRef = useRef<number | null>(null);
   const effectiveProjectFilter = projectFilter !== undefined ? projectFilter : currentProjectFilter;
-  const visibleTasks = useMemo(
+  const projectVisibleTasks = useMemo(
     () => filterTasksByProject(tasks, effectiveProjectFilter, hiddenProjectIds),
     [tasks, effectiveProjectFilter, hiddenProjectIds],
+  );
+  const visibleTasks = useMemo(
+    () => runningOnly ? projectVisibleTasks.filter((task) => task.status === 'running') : projectVisibleTasks,
+    [projectVisibleTasks, runningOnly],
   );
 
   const showProjectInfo = !effectiveProjectFilter;
@@ -231,9 +237,13 @@ export function TaskList({
       <EmptyState
         className="h-72"
         icon={<EmptyIcon />}
-        title="No tasks yet"
+        title={runningOnly ? 'No running tasks' : 'No tasks yet'}
         description={
-          currentProjectName
+          runningOnly
+            ? currentProjectName
+              ? `No running tasks found in ${currentProjectName}.`
+              : 'No running tasks right now.'
+            : currentProjectName
             ? `No tasks found in ${currentProjectName}. Switch projects or create a new task to start work here.`
             : 'Create your first task to start building with Conductor.'
         }

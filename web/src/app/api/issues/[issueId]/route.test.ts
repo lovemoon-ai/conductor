@@ -16,6 +16,9 @@ vi.mock('@/lib/db', () => ({
       updateMany: vi.fn(),
       delete: vi.fn(),
     },
+    task: {
+      update: vi.fn(),
+    },
     defaultProject: {
       findUnique: vi.fn(),
     },
@@ -27,15 +30,21 @@ vi.mock('@/lib/tasks/create-ai-task', () => ({
   finalizeAiTaskCreation: vi.fn(),
 }));
 
+vi.mock('@/lib/tasks/task-stop', () => ({
+  stopTaskBeforeRelaunch: vi.fn(),
+}));
+
 vi.mock('@/lib/realtime/hub', () => ({
   realtimeHub: {
     getAgentsForUser: vi.fn(),
+    getTaskAgentHost: vi.fn(),
   },
 }));
 
 const { getActiveSubscriptionUser } = await import('@/lib/auth/middleware');
 const { db } = await import('@/lib/db');
 const { createAiTaskArtifacts, finalizeAiTaskCreation } = await import('@/lib/tasks/create-ai-task');
+const { stopTaskBeforeRelaunch } = await import('@/lib/tasks/task-stop');
 const { realtimeHub } = await import('@/lib/realtime/hub');
 
 const buildExistingIssue = (overrides: Record<string, unknown> = {}) => ({
@@ -66,7 +75,7 @@ describe('/api/issues/[issueId]', () => {
     vi.mocked(getActiveSubscriptionUser).mockResolvedValue({ id: 'user-1' } as any);
     vi.mocked(db.$transaction).mockImplementation(async (callback: any) =>
       typeof callback === 'function'
-        ? callback({ issue: db.issue })
+        ? callback({ issue: db.issue, task: db.task })
         : callback,
     );
     vi.mocked(db.defaultProject.findUnique).mockResolvedValue({ projectId: 'project-1' } as any);
@@ -74,8 +83,27 @@ describe('/api/issues/[issueId]', () => {
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: 4 } } as any);
     vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({ status: 'doing', tasks: [] }) as any);
     vi.mocked(db.issue.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(db.task.update).mockResolvedValue({
+      id: 'task-active',
+      projectId: 'project-1',
+      issueId: 'issue-1',
+      title: 'Existing active task',
+      status: 'killed',
+      taskType: 'ai_task',
+      agentHost: null,
+      executionHost: null,
+      backendType: null,
+      sessionId: null,
+      sessionFilePath: null,
+      launchConfig: null,
+      metadata: null,
+      createdAt: new Date('2026-04-14T00:15:00.000Z'),
+      updatedAt: new Date('2026-04-14T00:25:00.000Z'),
+    } as any);
     vi.mocked(db.issue.delete).mockResolvedValue({ id: 'issue-1' } as any);
     vi.mocked(finalizeAiTaskCreation).mockResolvedValue(undefined);
+    vi.mocked(stopTaskBeforeRelaunch).mockResolvedValue({ ok: true });
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(null);
   });
 
   it('spawns an AI task only when transitioning from todo to doing', async () => {
@@ -326,6 +354,74 @@ describe('/api/issues/[issueId]', () => {
     expect(finalizeAiTaskCreation).not.toHaveBeenCalled();
     expect(data.activeTask).toEqual(expect.objectContaining({ id: 'task-active' }));
     expect(data.spawnedTask).toBeNull();
+  });
+
+  it('marks the linked active task killed when moving a doing issue to done', async () => {
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue('daemon-a');
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      status: 'doing',
+      tasks: [
+        {
+          id: 'task-active',
+          projectId: 'project-1',
+          issueId: 'issue-1',
+          title: 'Existing active task',
+          status: 'running',
+          taskType: 'ai_task',
+          agentHost: null,
+          executionHost: 'daemon-a',
+          backendType: null,
+          sessionId: null,
+          sessionFilePath: null,
+          launchConfig: null,
+          metadata: null,
+          createdAt: new Date('2026-04-14T00:15:00.000Z'),
+          updatedAt: new Date('2026-04-14T00:15:00.000Z'),
+        },
+      ],
+    }) as any);
+    vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({
+      status: 'done',
+      tasks: [],
+    }) as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { status: 'done' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(stopTaskBeforeRelaunch).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'user-1',
+      taskId: 'task-active',
+      projectId: 'project-1',
+      stopTargetHost: 'daemon-a',
+      reason: 'issue_done',
+    }));
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: 'task-active' },
+      data: {
+        status: 'killed',
+        executionHost: null,
+      },
+    });
+    expect(db.issue.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'done' }),
+    }));
+    expect(data.issue).toEqual(expect.objectContaining({
+      id: 'issue-1',
+      status: 'done',
+      active_task: null,
+    }));
+    expect(data.activeTask).toBeNull();
+    expect(data.killedTask).toEqual(expect.objectContaining({
+      id: 'task-active',
+      status: 'killed',
+      execution_host: null,
+    }));
   });
 
   it('does not finalize task side effects when the issue update fails inside the transaction', async () => {

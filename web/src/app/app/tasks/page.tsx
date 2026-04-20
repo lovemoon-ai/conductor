@@ -19,6 +19,7 @@ function TasksPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [showRunningOnly, setShowRunningOnly] = useState(false);
   const viewMode = 'list' as const;
   const [isDesktop, setIsDesktop] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -35,7 +36,11 @@ function TasksPageContent() {
   const hiddenProjectIdSet = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
   const projectId = projectIdFromUrl && !hiddenProjectIdSet.has(projectIdFromUrl) ? projectIdFromUrl : null;
   const requestedTaskId = searchParams.get('taskId');
-  const visibleTasks = useMemo(() => filterTasksByProject(tasks, projectId, hiddenProjectIds), [tasks, projectId, hiddenProjectIds]);
+  const projectVisibleTasks = useMemo(() => filterTasksByProject(tasks, projectId, hiddenProjectIds), [tasks, projectId, hiddenProjectIds]);
+  const visibleTasks = useMemo(
+    () => showRunningOnly ? projectVisibleTasks.filter((task) => task.status === 'running') : projectVisibleTasks,
+    [projectVisibleTasks, showRunningOnly],
+  );
   const taskCount = visibleTasks.length;
   const currentProjectName = projectId
     ? projects.find((project) => project.id === projectId)?.name
@@ -144,6 +149,10 @@ function TasksPageContent() {
     fetchTasks(projectId ?? undefined, { recoverStale: true });
   };
 
+  const handleTitleDoubleClick = () => {
+    setShowRunningOnly((value) => !value);
+  };
+
   const handleSelectTask = (taskId: string) => {
     if (!inlineDetailEnabled) {
       return;
@@ -158,8 +167,12 @@ function TasksPageContent() {
   return (
     <>
       <Header
-        title={currentProjectName ? `${currentProjectName} (${projectTaskCountLabel})` : `Task ${taskCount}`}
+        title={currentProjectName ? `${currentProjectName} (${projectTaskCountLabel})` : `Tasks(${taskCount})`}
         compact
+        onTitleDoubleClick={handleTitleDoubleClick}
+        titleDoubleClickHint={showRunningOnly
+          ? 'Double-click to show all tasks.'
+          : 'Double-click to show running tasks only.'}
         showConnectionStatus={inlineDetailEnabled && Boolean(selectedTaskId)}
         connectionTaskId={inlineDetailEnabled ? selectedTaskId : null}
         actions={
@@ -198,6 +211,7 @@ function TasksPageContent() {
                 onOpenTask={handleSelectTask}
                 desktopListPaneMode
                 projectFilter={projectId}
+                runningOnly={showRunningOnly}
               />
             </div>
             <div className="hidden min-h-0 min-w-0 flex-1 overflow-hidden rounded-[24px] border border-border bg-paper shadow-sm md:flex md:flex-col">
@@ -213,7 +227,7 @@ function TasksPageContent() {
           </div>
         ) : (
           <div className="h-full overflow-y-auto webapp-scrollbar">
-            <TaskList viewMode={viewMode} projectFilter={projectId} />
+            <TaskList viewMode={viewMode} projectFilter={projectId} runningOnly={showRunningOnly} />
           </div>
         )}
       </div>

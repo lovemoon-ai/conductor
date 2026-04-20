@@ -6,7 +6,7 @@ const deleteTaskMock = vi.fn();
 const taskItemMock = vi.fn();
 
 let tasksState: {
-  tasks: Array<{ id: string; title: string; projectId: string | null }>;
+  tasks: Array<{ id: string; title: string; projectId: string | null; status: string }>;
   isLoading: boolean;
   unreadTaskIds: Set<string>;
   currentProjectFilter: string | null;
@@ -28,7 +28,7 @@ vi.mock('@/features/projects', () => ({
 
 vi.mock('./TaskItem', () => ({
   TaskItem: (props: {
-    task: { id: string; title: string; projectId: string | null };
+    task: { id: string; title: string; projectId: string | null; status: string };
     isActive?: boolean;
   }) => {
     taskItemMock(props);
@@ -51,8 +51,8 @@ describe('TaskList', () => {
 
     tasksState = {
       tasks: [
-        { id: 'task-1', title: 'Task One', projectId: 'project-1' },
-        { id: 'task-2', title: 'Task Two', projectId: 'project-2' },
+        { id: 'task-1', title: 'Task One', projectId: 'project-1', status: 'running' },
+        { id: 'task-2', title: 'Task Two', projectId: 'project-2', status: 'completed' },
       ],
       isLoading: false,
       unreadTaskIds: new Set(['task-2']),
@@ -102,6 +102,18 @@ describe('TaskList', () => {
     };
 
     render(<TaskList viewMode="list" />);
+
+    expect(screen.getByText('Task One:idle')).toBeInTheDocument();
+    expect(screen.queryByText('Task Two:idle')).toBeNull();
+  });
+
+  it('hides non-running tasks when runningOnly is enabled', () => {
+    tasksState = {
+      ...tasksState,
+      currentProjectFilter: null,
+    };
+
+    render(<TaskList viewMode="list" runningOnly />);
 
     expect(screen.getByText('Task One:idle')).toBeInTheDocument();
     expect(screen.queryByText('Task Two:idle')).toBeNull();

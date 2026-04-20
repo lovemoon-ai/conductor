@@ -7,7 +7,8 @@ import {
   finalizeAiTaskCreation,
 } from '@/lib/tasks/create-ai-task';
 import { serializeTaskResponse } from '@/lib/tasks/serialization';
-import { normalizeOptionalString, type JsonObject } from '@/lib/tasks/task-config';
+import { normalizeOptionalString, normalizeTaskStatus, type JsonObject } from '@/lib/tasks/task-config';
+import { stopTaskBeforeRelaunch } from '@/lib/tasks/task-stop';
 import { buildTaskWorktreeLaunchConfig } from '@/lib/tasks/worktree';
 import {
   ConnectedAgent,
@@ -115,6 +116,8 @@ export async function PATCH(
   const shouldSpawnTask = currentStatus === 'todo' && nextStatus === 'doing';
 
   let activeTask: Parameters<typeof serializeTaskResponse>[0] | null = existing.tasks[0] ?? null;
+  const shouldKillActiveTask = currentStatus === 'doing' && nextStatus === 'done' && Boolean(activeTask);
+  let killedTask: Parameters<typeof serializeTaskResponse>[0] | null = null;
   let spawnedTask: Awaited<ReturnType<typeof createAiTaskArtifacts>> | null = null;
   let spawnTaskArgs: Parameters<typeof createAiTaskArtifacts>[0] | null = null;
 
@@ -196,6 +199,33 @@ export async function PATCH(
     };
   }
 
+  if (shouldKillActiveTask && activeTask) {
+    const normalizedTaskStatus = normalizeTaskStatus(activeTask.status);
+    const shouldStopTask = normalizedTaskStatus === 'running' || normalizedTaskStatus === 'unknown';
+    const stopTargetHost = shouldStopTask
+      ? normalizeOptionalString(realtimeHub.getTaskAgentHost(activeTask.id)) ??
+        normalizeOptionalString(activeTask.executionHost) ??
+        normalizeOptionalString(activeTask.agentHost)
+      : null;
+
+    if (shouldStopTask && stopTargetHost) {
+      const stopResult = await stopTaskBeforeRelaunch({
+        userId: user.id,
+        taskId: activeTask.id,
+        projectId: activeTask.projectId,
+        stopTargetHost,
+        reason: 'issue_done',
+        taskLabel: 'issue task',
+      });
+      if (!stopResult.ok) {
+        return NextResponse.json(
+          { error: stopResult.error ?? 'Failed to stop issue task' },
+          { status: 409 },
+        );
+      }
+    }
+  }
+
   const issueUpdateArgs = {
     where: { id: existing.id },
     data: {
@@ -255,6 +285,24 @@ export async function PATCH(
       });
     }
     updated = transactionResult.updatedIssue;
+  } else if (shouldKillActiveTask && activeTask) {
+    const transactionResult = await db.$transaction(async (tx) => {
+      const updatedTask = await tx.task.update({
+        where: { id: activeTask!.id },
+        data: {
+          status: 'killed',
+          executionHost: null,
+        },
+      });
+      const updatedIssue = await tx.issue.update(issueUpdateArgs);
+      return {
+        updatedIssue,
+        updatedTask,
+      };
+    });
+    updated = transactionResult.updatedIssue;
+    killedTask = transactionResult.updatedTask;
+    activeTask = null;
   } else {
     updated = await db.issue.update(issueUpdateArgs);
   }
@@ -262,6 +310,7 @@ export async function PATCH(
   const serializedIssue = serializeIssueWithActiveTask(updated);
   const serializedActiveTask = activeTask ? serializeTaskResponse(activeTask) : null;
   const serializedSpawnedTask = spawnedTask ? serializeTaskResponse(spawnedTask.task) : null;
+  const serializedKilledTask = killedTask ? serializeTaskResponse(killedTask) : null;
 
   return NextResponse.json({
     issue: serializedIssue,
@@ -269,6 +318,8 @@ export async function PATCH(
     active_task: serializedActiveTask,
     spawnedTask: serializedSpawnedTask,
     spawned_task: serializedSpawnedTask,
+    killedTask: serializedKilledTask,
+    killed_task: serializedKilledTask,
   });
 }
 
