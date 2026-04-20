@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { normalizeProject } from './store';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { normalizeProject, useProjectsStore } from './store';
 
 describe('normalizeProject', () => {
   it('reads camelCase fields from a server response', () => {
@@ -84,5 +84,60 @@ describe('normalizeProject', () => {
   it('defaults isDefault to false when missing', () => {
     const project = normalizeProject({ id: 'p', name: 'p' });
     expect(project?.isDefault).toBe(false);
+  });
+});
+
+describe('useProjectsStore hidden project state', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    useProjectsStore.setState({
+      projects: [],
+      isLoading: false,
+      error: null,
+      selectedProjectId: null,
+      hiddenProjectIds: [],
+      showHiddenProjects: false,
+    });
+  });
+
+  it('hides a project locally and clears it when selected', () => {
+    useProjectsStore.setState({
+      selectedProjectId: 'project-1',
+      showHiddenProjects: true,
+    });
+
+    useProjectsStore.getState().hideProject('project-1');
+
+    expect(useProjectsStore.getState().hiddenProjectIds).toEqual(['project-1']);
+    expect(useProjectsStore.getState().selectedProjectId).toBeNull();
+    expect(useProjectsStore.getState().showHiddenProjects).toBe(false);
+    expect(window.localStorage.getItem('conductor-hidden-project-ids')).toBe('["project-1"]');
+    expect(window.localStorage.getItem('conductor-selected-project-id')).toBeNull();
+  });
+
+  it('clears a selected hidden project when hiding hidden cards again', () => {
+    useProjectsStore.setState({
+      selectedProjectId: 'project-1',
+      hiddenProjectIds: ['project-1'],
+      showHiddenProjects: true,
+    });
+
+    useProjectsStore.getState().toggleShowHiddenProjects();
+
+    expect(useProjectsStore.getState().showHiddenProjects).toBe(false);
+    expect(useProjectsStore.getState().selectedProjectId).toBeNull();
+  });
+
+  it('restores a locally hidden project', () => {
+    useProjectsStore.setState({
+      hiddenProjectIds: ['project-1', 'project-2'],
+      showHiddenProjects: true,
+    });
+
+    useProjectsStore.getState().unhideProject('project-1');
+
+    expect(useProjectsStore.getState().hiddenProjectIds).toEqual(['project-2']);
+    expect(useProjectsStore.getState().showHiddenProjects).toBe(true);
+    expect(window.localStorage.getItem('conductor-hidden-project-ids')).toBe('["project-2"]');
   });
 });

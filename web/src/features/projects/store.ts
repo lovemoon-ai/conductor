@@ -3,6 +3,8 @@ import type { Project, CreateProjectInput, UpdateProjectInput } from '@/shared/t
 import { getApiClient } from '@/shared/api/client';
 
 const SELECTED_PROJECT_STORAGE_KEY = 'conductor-selected-project-id';
+const HIDDEN_PROJECTS_STORAGE_KEY = 'conductor-hidden-project-ids';
+const SHOW_HIDDEN_PROJECTS_STORAGE_KEY = 'conductor-show-hidden-projects';
 
 const readStoredSelectedProjectId = (): string | null => {
   if (typeof window === 'undefined') {
@@ -29,6 +31,74 @@ const writeStoredSelectedProjectId = (projectId: string | null) => {
     }
   } catch {
     // Ignore storage failures; selection still works for the current session.
+  }
+};
+
+const readStoredHiddenProjectIds = (): string[] => {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(HIDDEN_PROJECTS_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    const ids = parsed
+      .filter((entry): entry is string => typeof entry === 'string')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+    return [...new Set(ids)];
+  } catch {
+    return [];
+  }
+};
+
+const writeStoredHiddenProjectIds = (projectIds: string[]) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    if (projectIds.length === 0) {
+      window.localStorage.removeItem(HIDDEN_PROJECTS_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(HIDDEN_PROJECTS_STORAGE_KEY, JSON.stringify(projectIds));
+    }
+  } catch {
+    // Ignore storage failures; hidden project state still works for the current session.
+  }
+};
+
+const readStoredShowHiddenProjects = (): boolean => {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  try {
+    return window.localStorage.getItem(SHOW_HIDDEN_PROJECTS_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+
+const writeStoredShowHiddenProjects = (value: boolean) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    if (value) {
+      window.localStorage.setItem(SHOW_HIDDEN_PROJECTS_STORAGE_KEY, '1');
+    } else {
+      window.localStorage.removeItem(SHOW_HIDDEN_PROJECTS_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage failures; visibility state still works for the current session.
   }
 };
 
@@ -109,6 +179,8 @@ interface ProjectsState {
   isLoading: boolean;
   error: string | null;
   selectedProjectId: string | null;
+  hiddenProjectIds: string[];
+  showHiddenProjects: boolean;
 
   // Actions
   fetchProjects: () => Promise<void>;
@@ -117,6 +189,9 @@ interface ProjectsState {
   deleteProject: (projectId: string) => Promise<void>;
   reorderProjects: (projectIds: string[]) => Promise<void>;
   setSelectedProjectId: (projectId: string | null) => void;
+  hideProject: (projectId: string) => void;
+  unhideProject: (projectId: string) => void;
+  toggleShowHiddenProjects: () => void;
   clearError: () => void;
 }
 
@@ -125,6 +200,8 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
   isLoading: false,
   error: null,
   selectedProjectId: readStoredSelectedProjectId(),
+  hiddenProjectIds: readStoredHiddenProjectIds(),
+  showHiddenProjects: readStoredShowHiddenProjects(),
 
   fetchProjects: async () => {
     set({ isLoading: true, error: null });
@@ -133,13 +210,21 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
       const raw = await api.get<unknown>('/projects');
       const projects = normalizeProjectList(raw);
       const currentSelectedProjectId = get().selectedProjectId;
-      const selectedProjectId = currentSelectedProjectId && projects.some((project) => project.id === currentSelectedProjectId)
+      const projectIds = new Set(projects.map((project) => project.id));
+      const hiddenProjectIds = get().hiddenProjectIds.filter((projectId) => projectIds.has(projectId));
+      const hiddenProjectIdSet = new Set(hiddenProjectIds);
+      const selectedProjectId = currentSelectedProjectId
+        && projectIds.has(currentSelectedProjectId)
+        && (get().showHiddenProjects || !hiddenProjectIdSet.has(currentSelectedProjectId))
         ? currentSelectedProjectId
         : null;
       if (selectedProjectId !== currentSelectedProjectId) {
         writeStoredSelectedProjectId(selectedProjectId);
       }
-      set({ projects, selectedProjectId, isLoading: false });
+      if (hiddenProjectIds.length !== get().hiddenProjectIds.length) {
+        writeStoredHiddenProjectIds(hiddenProjectIds);
+      }
+      set({ projects, selectedProjectId, hiddenProjectIds, isLoading: false });
     } catch (error) {
       set({
         isLoading: false,
@@ -239,6 +324,55 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
     const selectedProjectId = projectId?.trim() || null;
     writeStoredSelectedProjectId(selectedProjectId);
     set({ selectedProjectId });
+  },
+
+  hideProject: (projectId) => {
+    const normalizedProjectId = projectId.trim();
+    if (!normalizedProjectId) {
+      return;
+    }
+    const hiddenProjectIds = get().hiddenProjectIds.includes(normalizedProjectId)
+      ? get().hiddenProjectIds
+      : [...get().hiddenProjectIds, normalizedProjectId];
+    writeStoredHiddenProjectIds(hiddenProjectIds);
+    writeStoredShowHiddenProjects(false);
+    const shouldClearSelectedProject = get().selectedProjectId === normalizedProjectId;
+    if (shouldClearSelectedProject) {
+      writeStoredSelectedProjectId(null);
+    }
+    set((state) => ({
+      hiddenProjectIds,
+      showHiddenProjects: false,
+      selectedProjectId: shouldClearSelectedProject ? null : state.selectedProjectId,
+    }));
+  },
+
+  unhideProject: (projectId) => {
+    const normalizedProjectId = projectId.trim();
+    if (!normalizedProjectId) {
+      return;
+    }
+    const hiddenProjectIds = get().hiddenProjectIds.filter((id) => id !== normalizedProjectId);
+    writeStoredHiddenProjectIds(hiddenProjectIds);
+    set({ hiddenProjectIds });
+  },
+
+  toggleShowHiddenProjects: () => {
+    const nextShowHiddenProjects = !get().showHiddenProjects;
+    writeStoredShowHiddenProjects(nextShowHiddenProjects);
+    const hiddenProjectIdSet = new Set(get().hiddenProjectIds);
+    const selectedProjectId = get().selectedProjectId;
+    const shouldClearSelectedProject =
+      !nextShowHiddenProjects
+      && selectedProjectId !== null
+      && hiddenProjectIdSet.has(selectedProjectId);
+    if (shouldClearSelectedProject) {
+      writeStoredSelectedProjectId(null);
+    }
+    set((state) => ({
+      showHiddenProjects: nextShowHiddenProjects,
+      selectedProjectId: shouldClearSelectedProject ? null : state.selectedProjectId,
+    }));
   },
 
   clearError: () => set({ error: null }),

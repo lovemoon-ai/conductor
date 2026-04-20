@@ -44,17 +44,31 @@ const getProjectDaemonHost = (project: Project): string | null => {
 };
 
 export function ProjectList() {
-  const { projects, isLoading, selectedProjectId, setSelectedProjectId, reorderProjects } = useProjectsStore();
+  const {
+    projects,
+    isLoading,
+    selectedProjectId,
+    hiddenProjectIds,
+    showHiddenProjects,
+    setSelectedProjectId,
+    hideProject,
+    unhideProject,
+    reorderProjects,
+  } = useProjectsStore();
   const agents = useAgentsStore((state) => state.agents);
   const onlineDaemonHosts = new Set(
     agents
       .map((agent) => agent.host.trim())
       .filter(Boolean),
   );
-  const visibleProjects = projects.filter((project) => {
+  const hiddenProjectIdSet = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
+  const onlineProjects = projects.filter((project) => {
     const daemonHost = getProjectDaemonHost(project);
     return !daemonHost || onlineDaemonHosts.has(daemonHost);
   });
+  const visibleProjects = onlineProjects.filter((project) => (
+    showHiddenProjects || !hiddenProjectIdSet.has(project.id)
+  ));
   const sensors = useSensors(
     useSensor(MouseSensor, {
       activationConstraint: {
@@ -174,10 +188,16 @@ export function ProjectList() {
   }
 
   if (visibleProjects.length === 0) {
-    const emptyTitle = projects.length === 0 ? 'No projects yet' : 'No online projects';
+    const emptyTitle = projects.length === 0
+      ? 'No projects yet'
+      : onlineProjects.length === 0
+        ? 'No online projects'
+        : 'No visible projects';
     const emptyDescription = projects.length === 0
       ? 'Create a project to organize your tasks'
-      : 'Reconnect a daemon to show its projects';
+      : onlineProjects.length === 0
+        ? 'Reconnect a daemon to show its projects'
+        : 'Double-click Projects to show hidden projects';
 
     return (
       <div className="flex flex-col items-center justify-center h-64 text-muted">
@@ -206,7 +226,10 @@ export function ProjectList() {
               key={project.id}
               project={project}
               isSelected={selectedProjectId === project.id}
+              isHidden={hiddenProjectIdSet.has(project.id)}
               onSelect={setSelectedProjectId}
+              onHide={hideProject}
+              onUnhide={unhideProject}
               dragDisabled={isLoading}
             />
           ))}
@@ -218,7 +241,10 @@ export function ProjectList() {
           <ProjectItem
             project={activeProject}
             isSelected={selectedProjectId === activeProject.id}
+            isHidden={hiddenProjectIdSet.has(activeProject.id)}
             onSelect={setSelectedProjectId}
+            onHide={hideProject}
+            onUnhide={unhideProject}
             dragDisabled
           />
         ) : null}

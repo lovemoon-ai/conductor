@@ -10,6 +10,7 @@ interface HeaderProps {
   showConnectionStatus?: boolean;
   compact?: boolean;
   connectionTaskId?: string | null;
+  onTitleClick?: () => void;
   onTitleDoubleClick?: () => void;
   titleDoubleClickHint?: string;
 }
@@ -28,6 +29,7 @@ export function Header({
   showConnectionStatus = false,
   compact = false,
   connectionTaskId,
+  onTitleClick,
   onTitleDoubleClick,
   titleDoubleClickHint,
 }: HeaderProps) {
@@ -44,10 +46,11 @@ export function Header({
         )}
         {title && (
           <h2
+            onClick={onTitleClick}
             onDoubleClick={onTitleDoubleClick}
             title={titleDoubleClickHint}
             className={`text-lg md:text-xl font-semibold truncate ${
-              onTitleDoubleClick ? 'select-none cursor-default' : ''
+              onTitleClick || onTitleDoubleClick ? 'select-none cursor-default' : ''
             }`}
           >
             {title}

@@ -12,6 +12,8 @@ export default function ProjectsPage() {
   const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const isLoading = useProjectsStore((state) => state.isLoading);
   const setSelectedProjectId = useProjectsStore((state) => state.setSelectedProjectId);
+  const showHiddenProjects = useProjectsStore((state) => state.showHiddenProjects);
+  const toggleShowHiddenProjects = useProjectsStore((state) => state.toggleShowHiddenProjects);
 
   useEffect(() => {
     fetchProjects();
@@ -22,8 +24,11 @@ export default function ProjectsPage() {
       <Header
         title="Projects"
         compact
-        onTitleDoubleClick={() => setSelectedProjectId(null)}
-        titleDoubleClickHint="Double-click to show tasks from all projects"
+        onTitleClick={() => setSelectedProjectId(null)}
+        onTitleDoubleClick={toggleShowHiddenProjects}
+        titleDoubleClickHint={showHiddenProjects
+          ? 'Click to clear project selection. Double-click to hide hidden projects.'
+          : 'Click to clear project selection. Double-click to show hidden projects.'}
         actions={
           <div className="flex items-center gap-2">
             <button

@@ -21,7 +21,10 @@ import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 interface ProjectItemProps {
   project: Project;
   isSelected?: boolean;
+  isHidden?: boolean;
   onSelect?: (projectId: string) => void;
+  onHide?: (projectId: string) => void;
+  onUnhide?: (projectId: string) => void;
   dragDisabled?: boolean;
 }
 
@@ -32,6 +35,19 @@ type SortableActivatorListeners = Partial<Record<SortableActivatorName, (event: 
 const TrashIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+  </svg>
+);
+
+const HideIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c1.461 0 2.855-.296 4.122-.831M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l12.544 12.544M9.88 9.88a3 3 0 104.24 4.24" />
+  </svg>
+);
+
+const ShowIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.43 0 .637C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.964-7.178z" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
   </svg>
 );
 
@@ -75,7 +91,10 @@ const readBindingCandidate = (
 export function ProjectItem({
   project,
   isSelected = false,
+  isHidden = false,
   onSelect,
+  onHide,
+  onUnhide,
   dragDisabled = false,
 }: ProjectItemProps) {
   const router = useRouter();
@@ -117,10 +136,14 @@ export function ProjectItem({
   const taskStatusCounts = projectRecord.taskStatusCounts as Record<string, number> | undefined;
   const runningCount = taskStatusCounts?.running ?? 0;
   const killedCount = taskStatusCounts?.killed ?? 0;
-  const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isUnavailable || isPendingBinding || runningCount > 0 || killedCount > 0;
+  const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isUnavailable || isPendingBinding || isHidden || runningCount > 0 || killedCount > 0;
   const projectTitleId = `project-title-${project.id}`;
+  const canHide = Boolean(onHide) && !isHidden;
+  const canUnhide = Boolean(onUnhide) && isHidden;
+  const canDelete = !isDefault;
+  const swipeActionsWidth = (canHide || canUnhide ? ACTIONS_WIDTH : 0) + (canDelete ? ACTIONS_WIDTH : 0);
   const swipe = useSwipeActions({
-    maxOffset: isDefault ? 0 : ACTIONS_WIDTH,
+    maxOffset: swipeActionsWidth,
   });
 
   const clearLongPress = useCallback(() => {
@@ -297,6 +320,29 @@ export function ProjectItem({
     swipe.closeActions();
   };
 
+  const handleHide = () => {
+    if (isEditing || !canHide) {
+      return;
+    }
+    onHide?.(project.id);
+    pushToast({
+      title: 'Project hidden',
+      description: 'Double-click Projects to show hidden projects.',
+    });
+    swipe.closeActions();
+  };
+
+  const handleUnhide = () => {
+    if (isEditing || !canUnhide) {
+      return;
+    }
+    onUnhide?.(project.id);
+    pushToast({
+      title: 'Project restored',
+    });
+    swipe.closeActions();
+  };
+
   const {
     attributes,
     listeners,
@@ -359,22 +405,55 @@ export function ProjectItem({
   return (
     <div ref={setNodeRef} style={style}>
       <div className="relative overflow-hidden rounded-2xl">
-      {!isDefault && (
+      {swipeActionsWidth > 0 && (
         <div className="absolute inset-y-0 right-0 flex z-0" aria-hidden={!swipe.isOpen}>
-          <button
-            type="button"
-            tabIndex={swipe.isOpen ? 0 : -1}
-            aria-label="Delete project"
-            title="Delete"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              void handleDelete();
-            }}
-            className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--error)]/10 text-[var(--error)] hover:bg-[var(--error)]/20 transition-colors"
-          >
-            <TrashIcon />
-          </button>
+          {canHide ? (
+            <button
+              type="button"
+              tabIndex={swipe.isOpen ? 0 : -1}
+              aria-label="Hide project"
+              title="Hide"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handleHide();
+              }}
+              className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--paper)] text-muted hover:text-ink transition-colors"
+            >
+              <HideIcon />
+            </button>
+          ) : canUnhide ? (
+            <button
+              type="button"
+              tabIndex={swipe.isOpen ? 0 : -1}
+              aria-label="Show project"
+              title="Show"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handleUnhide();
+              }}
+              className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--accent)]/10 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors"
+            >
+              <ShowIcon />
+            </button>
+          ) : null}
+          {canDelete ? (
+            <button
+              type="button"
+              tabIndex={swipe.isOpen ? 0 : -1}
+              aria-label="Delete project"
+              title="Delete"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void handleDelete();
+              }}
+              className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--error)]/10 text-[var(--error)] hover:bg-[var(--error)]/20 transition-colors"
+            >
+              <TrashIcon />
+            </button>
+          ) : null}
         </div>
       )}
 
@@ -493,6 +572,11 @@ export function ProjectItem({
                 ) : isPendingBinding ? (
                   <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted">
                     Binding pending
+                  </span>
+                ) : null}
+                {isHidden ? (
+                  <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted">
+                    Hidden
                   </span>
                 ) : null}
                 {runningCount > 0 ? (

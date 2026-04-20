@@ -5,6 +5,8 @@ import { ProjectList } from './ProjectList';
 
 const setSelectedProjectIdMock = vi.fn();
 const reorderProjectsMock = vi.fn();
+const hideProjectMock = vi.fn();
+const unhideProjectMock = vi.fn();
 
 let latestDndContextProps: Record<string, any> | null = null;
 let latestSensorOptions: Array<{ name: string; options: Record<string, any> }> = [];
@@ -12,7 +14,11 @@ let projectsState = {
   projects: [] as Project[],
   isLoading: false,
   selectedProjectId: null as string | null,
+  hiddenProjectIds: [] as string[],
+  showHiddenProjects: false,
   setSelectedProjectId: setSelectedProjectIdMock,
+  hideProject: hideProjectMock,
+  unhideProject: unhideProjectMock,
   reorderProjects: reorderProjectsMock,
 };
 
@@ -67,9 +73,21 @@ vi.mock('@dnd-kit/utilities', () => ({
 }));
 
 vi.mock('./ProjectItem', () => ({
-  ProjectItem: ({ project }: { project: Project }) => (
-    <div data-project-id={project.id} data-testid={`project-item-${project.id}`}>
+  ProjectItem: ({
+    project,
+    isHidden = false,
+    onHide,
+    onUnhide,
+  }: {
+    project: Project;
+    isHidden?: boolean;
+    onHide?: (projectId: string) => void;
+    onUnhide?: (projectId: string) => void;
+  }) => (
+    <div data-hidden={isHidden ? 'true' : 'false'} data-project-id={project.id} data-testid={`project-item-${project.id}`}>
       {project.name}
+      <button type="button" onClick={() => onHide?.(project.id)}>hide {project.name}</button>
+      <button type="button" onClick={() => onUnhide?.(project.id)}>show {project.name}</button>
     </div>
   ),
 }));
@@ -94,6 +112,8 @@ describe('ProjectList', () => {
     latestSensorOptions = [];
     setSelectedProjectIdMock.mockReset();
     reorderProjectsMock.mockReset();
+    hideProjectMock.mockReset();
+    unhideProjectMock.mockReset();
   });
 
   it('requires long press only for touch project dragging', () => {
@@ -103,7 +123,11 @@ describe('ProjectList', () => {
       ],
       isLoading: false,
       selectedProjectId: null,
+      hiddenProjectIds: [],
+      showHiddenProjects: false,
       setSelectedProjectId: setSelectedProjectIdMock,
+      hideProject: hideProjectMock,
+      unhideProject: unhideProjectMock,
       reorderProjects: reorderProjectsMock,
     };
     agentsState = { agents: [] };
@@ -141,7 +165,11 @@ describe('ProjectList', () => {
       ],
       isLoading: false,
       selectedProjectId: null,
+      hiddenProjectIds: [],
+      showHiddenProjects: false,
       setSelectedProjectId: setSelectedProjectIdMock,
+      hideProject: hideProjectMock,
+      unhideProject: unhideProjectMock,
       reorderProjects: reorderProjectsMock,
     };
     agentsState = {
@@ -163,7 +191,11 @@ describe('ProjectList', () => {
       ],
       isLoading: false,
       selectedProjectId: null,
+      hiddenProjectIds: [],
+      showHiddenProjects: false,
       setSelectedProjectId: setSelectedProjectIdMock,
+      hideProject: hideProjectMock,
+      unhideProject: unhideProjectMock,
       reorderProjects: reorderProjectsMock,
     };
     agentsState = {
@@ -187,7 +219,11 @@ describe('ProjectList', () => {
       ],
       isLoading: false,
       selectedProjectId: null,
+      hiddenProjectIds: [],
+      showHiddenProjects: false,
       setSelectedProjectId: setSelectedProjectIdMock,
+      hideProject: hideProjectMock,
+      unhideProject: unhideProjectMock,
       reorderProjects: reorderProjectsMock,
     };
     agentsState = {
@@ -221,7 +257,11 @@ describe('ProjectList', () => {
       ],
       isLoading: false,
       selectedProjectId: null,
+      hiddenProjectIds: [],
+      showHiddenProjects: false,
       setSelectedProjectId: setSelectedProjectIdMock,
+      hideProject: hideProjectMock,
+      unhideProject: unhideProjectMock,
       reorderProjects: reorderProjectsMock,
     };
     agentsState = { agents: [] };
@@ -237,5 +277,96 @@ describe('ProjectList', () => {
 
     const renderedIds = screen.getAllByTestId(/project-item-/).slice(0, 3).map((item) => item.getAttribute('data-project-id'));
     expect(renderedIds).toEqual(['project-b', 'project-c', 'project-a']);
+  });
+
+  it('hides locally hidden project cards until hidden projects are shown', () => {
+    projectsState = {
+      projects: [
+        { id: 'project-a', name: 'Project A' },
+        { id: 'project-b', name: 'Project B' },
+      ],
+      isLoading: false,
+      selectedProjectId: null,
+      hiddenProjectIds: ['project-b'],
+      showHiddenProjects: false,
+      setSelectedProjectId: setSelectedProjectIdMock,
+      hideProject: hideProjectMock,
+      unhideProject: unhideProjectMock,
+      reorderProjects: reorderProjectsMock,
+    };
+    agentsState = { agents: [] };
+
+    render(<ProjectList />);
+
+    expect(screen.getByText('Project A')).toBeInTheDocument();
+    expect(screen.queryByText('Project B')).toBeNull();
+  });
+
+  it('shows hidden project cards when hidden visibility is enabled', () => {
+    projectsState = {
+      projects: [
+        { id: 'project-a', name: 'Project A' },
+        { id: 'project-b', name: 'Project B' },
+      ],
+      isLoading: false,
+      selectedProjectId: null,
+      hiddenProjectIds: ['project-b'],
+      showHiddenProjects: true,
+      setSelectedProjectId: setSelectedProjectIdMock,
+      hideProject: hideProjectMock,
+      unhideProject: unhideProjectMock,
+      reorderProjects: reorderProjectsMock,
+    };
+    agentsState = { agents: [] };
+
+    render(<ProjectList />);
+
+    expect(screen.getByTestId('project-item-project-b')).toHaveAttribute('data-hidden', 'true');
+  });
+
+  it('passes project hide actions to project items', () => {
+    projectsState = {
+      projects: [
+        { id: 'project-hide', name: 'Project Hide' },
+      ],
+      isLoading: false,
+      selectedProjectId: null,
+      hiddenProjectIds: [],
+      showHiddenProjects: false,
+      setSelectedProjectId: setSelectedProjectIdMock,
+      hideProject: hideProjectMock,
+      unhideProject: unhideProjectMock,
+      reorderProjects: reorderProjectsMock,
+    };
+    agentsState = { agents: [] };
+
+    render(<ProjectList />);
+
+    screen.getByRole('button', { name: 'hide Project Hide' }).click();
+
+    expect(hideProjectMock).toHaveBeenCalledWith('project-hide');
+  });
+
+  it('passes project show actions to hidden project items', () => {
+    projectsState = {
+      projects: [
+        { id: 'project-show', name: 'Project Show' },
+      ],
+      isLoading: false,
+      selectedProjectId: null,
+      hiddenProjectIds: ['project-show'],
+      showHiddenProjects: true,
+      setSelectedProjectId: setSelectedProjectIdMock,
+      hideProject: hideProjectMock,
+      unhideProject: unhideProjectMock,
+      reorderProjects: reorderProjectsMock,
+    };
+    agentsState = { agents: [] };
+
+    render(<ProjectList />);
+
+    screen.getByRole('button', { name: 'show Project Show' }).click();
+
+    expect(unhideProjectMock).toHaveBeenCalledWith('project-show');
   });
 });

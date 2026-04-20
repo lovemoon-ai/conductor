@@ -164,6 +164,61 @@ describe('ProjectItem', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
+  it('hides a project from the swipe action', () => {
+    const onHide = vi.fn();
+
+    const { container } = render(
+      <ProjectItem
+        project={{
+          id: 'project-hide',
+          name: 'Hide Project',
+          daemonHost: 'daemon-online',
+        } as any}
+        onHide={onHide}
+      />,
+    );
+
+    const hideButton = container.querySelector('button[aria-label="Hide project"]');
+    expect(hideButton).not.toBeNull();
+
+    fireEvent.click(hideButton!);
+
+    expect(onHide).toHaveBeenCalledWith('project-hide');
+    expect(pushToastMock).toHaveBeenCalledWith({
+      title: 'Project hidden',
+      description: 'Double-click Projects to show hidden projects.',
+    });
+  });
+
+  it('marks hidden projects and restores them from the swipe action', () => {
+    const onUnhide = vi.fn();
+    const { container } = render(
+      <ProjectItem
+        project={{
+          id: 'project-hidden',
+          name: 'Hidden Project',
+          daemonHost: 'daemon-online',
+        } as any}
+        isHidden
+        onHide={vi.fn()}
+        onUnhide={onUnhide}
+      />,
+    );
+
+    expect(screen.getByText('Hidden')).toBeInTheDocument();
+    expect(container.querySelector('button[aria-label="Hide project"]')).toBeNull();
+
+    const showButton = container.querySelector('button[aria-label="Show project"]');
+    expect(showButton).not.toBeNull();
+
+    fireEvent.click(showButton!);
+
+    expect(onUnhide).toHaveBeenCalledWith('project-hidden');
+    expect(pushToastMock).toHaveBeenCalledWith({
+      title: 'Project restored',
+    });
+  });
+
   it('renames a project inline after long pressing the title', async () => {
     vi.useFakeTimers();
     updateProjectMock.mockResolvedValue({
