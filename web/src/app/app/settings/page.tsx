@@ -2,10 +2,8 @@
 
 import { Header } from '@/components/layout/Header';
 import { useAgentsStore } from '@/features/agents';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
-import { getApiClient } from '@/shared/api/client';
 
 function formatBuildTimeInBeijing(rawBuildTime: string) {
   if (!rawBuildTime || rawBuildTime === 'unknown') {
@@ -34,10 +32,6 @@ function formatBuildTimeInBeijing(rawBuildTime: string) {
 export default function SettingsPage() {
   const { agents, fetchAgents, error: agentsError, errorStatus: agentsErrorStatus } = useAgentsStore();
   const router = useRouter();
-  const { confirm } = useConfirm();
-  const { pushToast } = useToast();
-  const [restartingHost, setRestartingHost] = useState<string | null>(null);
-  const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cliVersion = process.env.NEXT_PUBLIC_CLI_VERSION || 'unknown';
   const gitCommitId = process.env.NEXT_PUBLIC_GIT_COMMIT_ID || 'unknown';
   const buildTime = process.env.NEXT_PUBLIC_BUILD_TIME || 'unknown';
@@ -45,12 +39,6 @@ export default function SettingsPage() {
 
   useEffect(() => {
     fetchAgents();
-    return () => {
-      if (restartTimerRef.current) {
-        clearTimeout(restartTimerRef.current);
-        restartTimerRef.current = null;
-      }
-    };
   }, [fetchAgents]);
 
   const visibleDaemons = agents.filter((agent) => !agent.host.startsWith('conductor-fire-'));
@@ -62,45 +50,6 @@ export default function SettingsPage() {
 
   const openAiManager = (host: string) => {
     router.push(`/app/ai-manager?agentHost=${encodeURIComponent(host)}`);
-  };
-
-  const handleRestartDaemon = async (host: string) => {
-    const accepted = await confirm({
-      title: `Restart daemon on ${host}?`,
-      description:
-        'This upgrades the conductor CLI to the latest version and restarts the daemon. Any tasks running on this daemon will be interrupted.',
-      confirmLabel: 'Restart',
-      tone: 'danger',
-    });
-    if (!accepted) return;
-
-    if (restartTimerRef.current) {
-      clearTimeout(restartTimerRef.current);
-      restartTimerRef.current = null;
-    }
-    setRestartingHost(host);
-    try {
-      const api = getApiClient();
-      await api.post(`/agents/${encodeURIComponent(host)}/restart`, { targetVersion: 'latest' });
-      pushToast({
-        title: 'Restart requested',
-        description: `${host} will reconnect after upgrade.`,
-        variant: 'success',
-      });
-      restartTimerRef.current = setTimeout(() => {
-        fetchAgents();
-        setRestartingHost(null);
-        restartTimerRef.current = null;
-      }, 10_000);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to restart daemon';
-      pushToast({
-        title: 'Failed to restart daemon',
-        description: message,
-        variant: 'error',
-      });
-      setRestartingHost(null);
-    }
   };
 
   return (
@@ -142,8 +91,6 @@ export default function SettingsPage() {
           ) : (
             <div className="space-y-2">
               {visibleDaemons.map((agent) => {
-                const isRestarting = restartingHost === agent.host;
-                const supportsRestart = agent.capabilities?.includes('restart_daemon') ?? false;
                 return (
                   <div
                     key={agent.id}
@@ -168,17 +115,6 @@ export default function SettingsPage() {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                       </svg>
                     </button>
-                    {supportsRestart ? (
-                      <button
-                        type="button"
-                        onClick={() => handleRestartDaemon(agent.host)}
-                        disabled={isRestarting}
-                        aria-label={`Restart daemon on ${agent.host}`}
-                        className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-full border border-border bg-paper hover:bg-[var(--accent)]/10 hover:border-[var(--accent)]/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40"
-                      >
-                        {isRestarting ? 'Restarting…' : 'Restart'}
-                      </button>
-                    ) : null}
                   </div>
                 );
               })}

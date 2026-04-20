@@ -80,7 +80,7 @@ describe('SettingsPage', () => {
     expect(screen.queryByText('Please log in to view connected daemons.')).toBeNull();
   });
 
-  it('shows the Restart button only when the daemon advertises restart_daemon capability', async () => {
+  it('opens the daemon page without showing restart controls in the list', async () => {
     agentsState.agents = [
       {
         id: 'agent-new',
@@ -102,7 +102,8 @@ describe('SettingsPage', () => {
       expect(fetchAgentsMock).toHaveBeenCalled();
     });
 
-    expect(screen.getByLabelText('Restart daemon on daemon-new')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Restart daemon on daemon-new')).toBeNull();
     expect(screen.queryByLabelText('Restart daemon on daemon-old')).toBeNull();
+    expect(screen.getByLabelText('Open AI Manager for daemon-new')).toBeInTheDocument();
   });
 });

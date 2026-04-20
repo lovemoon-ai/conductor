@@ -1,8 +1,10 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { SectionCard } from '@/components/common/SectionCard';
+import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 import { useAgentsStore } from '@/features/agents';
+import { getApiClient } from '@/shared/api/client';
 import { useAiManagerStore } from '../store';
 import { CodexAccountSwitcher } from './CodexAccountSwitcher';
 import { QuotaBar } from './QuotaBar';
@@ -22,6 +24,10 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
   const agents = useAgentsStore((s) => s.agents);
   const fetchAgents = useAgentsStore((s) => s.fetchAgents);
   const visibleDaemons = agents.filter((a) => isManageableHost(a.host));
+  const { confirm } = useConfirm();
+  const { pushToast } = useToast();
+  const [restartingHost, setRestartingHost] = useState<string | null>(null);
+  const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const selectedHost = useAiManagerStore((s) => s.selectedHost);
   const setSelectedHost = useAiManagerStore((s) => s.setSelectedHost);
@@ -32,6 +38,12 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
 
   useEffect(() => {
     void fetchAgents();
+    return () => {
+      if (restartTimerRef.current) {
+        clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = null;
+      }
+    };
   }, [fetchAgents]);
 
   // Honor the explicit prop on first mount (and whenever it changes), regardless of
@@ -66,10 +78,56 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
   }
 
   const host = selectedHost ?? visibleDaemons[0]?.host ?? '';
+  const selectedDaemon = visibleDaemons.find((daemon) => daemon.host === host) ?? null;
+  const supportsRestart = selectedDaemon?.capabilities?.includes('restart_daemon') ?? false;
+  const isRestarting = restartingHost === host;
   const state = byHost[host];
   const status = state?.status ?? null;
   const quota = state?.quota ?? null;
   const accounts = state?.accounts?.accounts ?? [];
+
+  const handleRestartDaemon = async () => {
+    if (!host || !supportsRestart || isRestarting) {
+      return;
+    }
+
+    const accepted = await confirm({
+      title: `Restart daemon on ${host}?`,
+      description:
+        'This upgrades the conductor CLI to the latest version and restarts the daemon. Running tasks on this daemon will be interrupted.',
+      confirmLabel: 'Restart',
+      tone: 'danger',
+    });
+    if (!accepted) return;
+
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+    setRestartingHost(host);
+    try {
+      const api = getApiClient();
+      await api.post(`/agents/${encodeURIComponent(host)}/restart`, { targetVersion: 'latest' });
+      pushToast({
+        title: 'Restart requested',
+        description: `${host} will reconnect after upgrade.`,
+        variant: 'success',
+      });
+      restartTimerRef.current = setTimeout(() => {
+        void fetchAgents();
+        setRestartingHost(null);
+        restartTimerRef.current = null;
+      }, 10_000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to restart daemon';
+      pushToast({
+        title: 'Failed to restart daemon',
+        description: message,
+        variant: 'error',
+      });
+      setRestartingHost(null);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -147,6 +205,28 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
           loading={state?.loading.accounts ?? false}
           errorMessage={state?.error.accounts}
         />
+      </SectionCard>
+
+      <SectionCard
+        title="Restart"
+        description="Upgrade the conductor CLI on this daemon and reconnect it."
+      >
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm text-muted">
+            {supportsRestart
+              ? `Restart ${host} when you need the daemon to pick up the latest CLI version.`
+              : 'This daemon does not advertise restart support yet.'}
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleRestartDaemon()}
+            disabled={!supportsRestart || isRestarting}
+            aria-label={`Restart daemon on ${host}`}
+            className="webapp-btn-primary inline-flex items-center justify-center px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isRestarting ? 'Restarting...' : 'Restart daemon'}
+          </button>
+        </div>
       </SectionCard>
     </div>
   );
