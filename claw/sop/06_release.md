@@ -11,6 +11,7 @@ You are the release agent for the conductor repository. The goal is to release a
 - Homebrew CLI archives are produced by `.github/workflows/cli-release-archives.yml` and are triggered by pushing a `vX.Y.Z` tag. Do not push the tag until the npm packages for that exact version are visible on `registry.npmjs.org`, because the archive workflow installs `@love-moon/conductor-cli@X.Y.Z` from npm.
 - The repository tracks `cli/Formula/conductor.rb.template`, not the generated `cli/Formula/conductor.rb`. The generated Formula must be rendered only after release archives and their real sha256 files exist.
 - GitHub Release notes are extracted from the matching `CHANGELOG.md` section by `scripts/extract-changelog-release-notes.sh`; the archive workflow must fail rather than publish generated notes if the changelog section is missing.
+- Updating `lovemoon-ai/homebrew-tap` is part of the archive workflow. The conductor repository must have a `HOMEBREW_TAP_TOKEN` secret with `Contents: Read and write` permission on `lovemoon-ai/homebrew-tap`.
 ## Suggested workflow
 1. First locate the latest `bomp to x.y.z` or `release x.y.z` commit.
 2. Use `git log <last_bump>..HEAD --oneline` to summarize the commits included in this version.
@@ -50,8 +51,10 @@ You are the release agent for the conductor repository. The goal is to release a
      - `conductor-v<x.y.z>-linux-x64.tar.gz`
      - `conductor-v<x.y.z>-linux-x64.tar.gz.sha256`
      - `conductor.rb`
-10. Update the Homebrew tap after the archive workflow succeeds:
-   - Use the generated `conductor.rb` from the GitHub Release or workflow artifact.
+10. Verify the Homebrew tap update after the archive workflow succeeds:
+   - The workflow should commit the generated `conductor.rb` into `lovemoon-ai/homebrew-tap/Formula/conductor.rb`.
+   - If the workflow cannot update the tap, check that the `HOMEBREW_TAP_TOKEN` secret exists and can write to `lovemoon-ai/homebrew-tap`.
+   - As a manual fallback, use the generated `conductor.rb` from the GitHub Release or workflow artifact.
    - Do not hand-edit `cli/Formula/conductor.rb`; update `cli/Formula/conductor.rb.template` only when the Formula structure changes.
    - Copy it into the tap repository as `Formula/conductor.rb`.
    - Commit and push the tap update.
