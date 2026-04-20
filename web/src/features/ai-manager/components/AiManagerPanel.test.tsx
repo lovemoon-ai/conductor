@@ -87,7 +87,7 @@ describe('AiManagerPanel', () => {
 
     render(<AiManagerPanel initialAgentHost="daemon-a" />);
 
-    expect(screen.getByRole('heading', { name: 'Restart' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Danger zone' })).toBeInTheDocument();
     expect(screen.getByText('Restart daemon')).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText('Restart daemon on daemon-a'));
@@ -118,7 +118,6 @@ describe('AiManagerPanel', () => {
 
     render(<AiManagerPanel initialAgentHost="daemon-old" />);
 
-    expect(screen.getByText('This daemon does not advertise restart support yet.')).toBeInTheDocument();
     expect(screen.getByLabelText('Restart daemon on daemon-old')).toBeDisabled();
   });
 });

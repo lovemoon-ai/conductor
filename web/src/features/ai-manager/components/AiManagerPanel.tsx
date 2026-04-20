@@ -207,16 +207,8 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
         />
       </SectionCard>
 
-      <SectionCard
-        title="Restart"
-        description="Upgrade the conductor CLI on this daemon and reconnect it."
-      >
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-sm text-muted">
-            {supportsRestart
-              ? `Restart ${host} when you need the daemon to pick up the latest CLI version.`
-              : 'This daemon does not advertise restart support yet.'}
-          </div>
+      <SectionCard title="Danger zone">
+        <div className="flex justify-end">
           <button
             type="button"
             onClick={() => void handleRestartDaemon()}
