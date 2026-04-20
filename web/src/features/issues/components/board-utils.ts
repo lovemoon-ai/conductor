@@ -12,10 +12,8 @@ const toTimestamp = (value: string | null | undefined): number => {
 };
 
 export const createEmptyIssueColumns = (): IssueBoardColumns => ({
-  backlog: [],
   todo: [],
   doing: [],
-  review: [],
   done: [],
 });
 

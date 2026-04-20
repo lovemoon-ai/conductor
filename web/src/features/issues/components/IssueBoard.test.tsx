@@ -101,7 +101,7 @@ describe('IssueBoard', () => {
     onDeleteIssue.mockReset();
   });
 
-  it('renders the five status columns and only the compact open-task action', () => {
+  it('renders the simplified status columns and only the compact open-task action', () => {
     render(
       <IssueBoard
         issues={issues}
@@ -111,11 +111,11 @@ describe('IssueBoard', () => {
       />,
     );
 
-    expect(screen.getByRole('heading', { name: /^Backlog(?:\(\d+\))?$/ })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /^Todo(?:\(\d+\))?$/ })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /^Doing(?:\(\d+\))?$/ })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /^Review(?:\(\d+\))?$/ })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /^Done(?:\(\d+\))?$/ })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /^Backlog(?:\(\d+\))?$/ })).toBeNull();
+    expect(screen.queryByRole('heading', { name: /^Review(?:\(\d+\))?$/ })).toBeNull();
     const openTaskLink = screen.getByRole('link', { name: 'Open task' });
     expect(openTaskLink).toHaveAttribute('href', '/app/tasks/task-1');
     const issue2DeleteButton = screen.getByRole('button', { name: 'Delete issue Build AI task handoff' });
@@ -229,17 +229,17 @@ describe('IssueBoard', () => {
     expect(screen.getByRole('button', { name: 'Delete issue Plan board UX' })).toBeInTheDocument();
   });
 
-  it('uses the shared shallow indigo token on backlog status badge', () => {
-    const backlogIssues: Issue[] = [
+  it('uses the shared sky token on todo status badge', () => {
+    const todoIssues: Issue[] = [
       {
         ...issues[0],
-        status: 'backlog',
+        status: 'todo',
       },
     ];
 
     render(
       <IssueBoard
-        issues={backlogIssues}
+        issues={todoIssues}
         onMoveIssue={onMoveIssue}
         onStatusChange={onStatusChange}
         onDeleteIssue={onDeleteIssue}
@@ -247,7 +247,7 @@ describe('IssueBoard', () => {
     );
 
     const statusButton = screen.getByRole('button', { name: 'Change status for Plan board UX' });
-    const expectedBadgeClasses = ISSUE_STATUS_BADGE_CLASSNAMES.backlog.split(' ');
+    const expectedBadgeClasses = ISSUE_STATUS_BADGE_CLASSNAMES.todo.split(' ');
     for (const className of expectedBadgeClasses) {
       expect(statusButton).toHaveClass(className);
     }

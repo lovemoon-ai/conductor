@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { db } from '@/lib/db';
-import { ACTIVE_ISSUE_TASK_STATUSES, ISSUE_STATUSES } from '@/lib/issues/config';
+import { ACTIVE_ISSUE_TASK_STATUSES, coerceIssueStatus, ISSUE_STATUSES } from '@/lib/issues/config';
 import { serializeIssue } from '@/lib/issues/serialization';
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
@@ -45,6 +45,13 @@ const normalizeOptionalFiniteNumber = (value: unknown): number | undefined => {
   return undefined;
 };
 
+const normalizeOptionalIssueStatus = (value: unknown): string | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  return coerceIssueStatus(value) ?? normalizeOptionalString(value) ?? undefined;
+};
+
 const normalizeMetadata = (value: unknown): Record<string, unknown> | null | undefined => {
   if (value === undefined) {
     return undefined;
@@ -65,7 +72,7 @@ export const issueCreateSchema = z.object({
   projectId: z.string().min(1),
   title: z.string().trim().min(1),
   description: z.string().trim().nullable().optional(),
-  status: issueStatusSchema.default('backlog'),
+  status: issueStatusSchema.default('todo'),
   position: z.number().finite().optional(),
   metadata: issueMetadataSchema.nullable().optional(),
 });
@@ -89,7 +96,7 @@ export const normalizeIssueCreateBody = (body: unknown) => {
     projectId: normalizeOptionalString(readField(record, 'project_id', 'projectId')) ?? '',
     title: normalizeOptionalString(record.title) ?? '',
     description: hasOwn(record, 'description') ? normalizeOptionalString(record.description) : undefined,
-    status: normalizeOptionalString(record.status) ?? undefined,
+    status: normalizeOptionalIssueStatus(record.status),
     position: hasOwn(record, 'position')
       ? (normalizeOptionalFiniteNumber(record.position) ?? record.position)
       : undefined,
@@ -112,7 +119,7 @@ export const normalizeIssuePatchBody = (body: unknown) => {
     normalized.description = normalizeOptionalString(record.description);
   }
   if (hasOwn(record, 'status')) {
-    normalized.status = normalizeOptionalString(record.status) ?? '';
+    normalized.status = normalizeOptionalIssueStatus(record.status) ?? '';
   }
   if (hasOwn(record, 'position')) {
     normalized.position = normalizeOptionalFiniteNumber(record.position) ?? record.position;

@@ -194,7 +194,7 @@ describe('/api/issues/[issueId]', () => {
   });
 
   it('does not spawn when entering doing from a non-todo status', async () => {
-    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ status: 'backlog' }) as any);
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ status: 'done' }) as any);
 
     const response = await PATCH(createMockRequest({
       method: 'PATCH',
@@ -208,6 +208,86 @@ describe('/api/issues/[issueId]', () => {
     expect(createAiTaskArtifacts).not.toHaveBeenCalled();
     expect(finalizeAiTaskCreation).not.toHaveBeenCalled();
     expect(data.spawnedTask).toBeNull();
+  });
+
+  it('treats legacy backlog as todo when entering doing', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ status: 'backlog' }) as any);
+    vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+      task: {
+        id: 'task-legacy',
+        projectId: 'project-1',
+        issueId: 'issue-1',
+        title: 'Board implementation',
+        status: 'init',
+        taskType: 'ai_task',
+        agentHost: null,
+        executionHost: null,
+        backendType: null,
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: null,
+        createdAt: new Date('2026-04-14T00:20:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+      },
+      initialMessage: null,
+      initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+    } as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { status: 'doing' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(db.issue.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'issue-1', status: 'backlog' }),
+        data: expect.objectContaining({ status: 'doing' }),
+      }),
+    );
+    expect(createAiTaskArtifacts).toHaveBeenCalled();
+  });
+
+  it('maps legacy review patch requests to doing', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      tasks: [
+        {
+          id: 'task-active',
+          projectId: 'project-1',
+          issueId: 'issue-1',
+          title: 'Existing active task',
+          status: 'running',
+          taskType: 'ai_task',
+          agentHost: null,
+          executionHost: null,
+          backendType: null,
+          sessionId: null,
+          sessionFilePath: null,
+          launchConfig: null,
+          metadata: null,
+          createdAt: new Date('2026-04-14T00:15:00.000Z'),
+          updatedAt: new Date('2026-04-14T00:15:00.000Z'),
+        },
+      ],
+    }) as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { status: 'review' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(db.issue.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: 'doing',
+      }),
+    }));
+    expect(createAiTaskArtifacts).not.toHaveBeenCalled();
   });
 
   it('does not spawn a duplicate task when an active linked task already exists', async () => {

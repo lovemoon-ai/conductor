@@ -14,6 +14,7 @@ import {
   pickDefaultAgentHost,
 } from '@/lib/tasks/pty-runtime';
 import { realtimeHub } from '@/lib/realtime/hub';
+import { normalizeIssueStatus } from '@/lib/issues/config';
 import {
   buildIssueInitialContent,
   getNextIssuePosition,
@@ -104,13 +105,14 @@ export async function PATCH(
   }
 
   const input = parsed.data;
-  const nextStatus = input.status ?? existing.status;
+  const currentStatus = normalizeIssueStatus(existing.status);
+  const nextStatus = input.status ?? currentStatus;
   const nextPosition = typeof input.position === 'number'
     ? input.position
-    : nextStatus !== existing.status
+    : nextStatus !== currentStatus
       ? await getNextIssuePosition(existing.projectId, nextStatus)
       : existing.position;
-  const shouldSpawnTask = existing.status === 'todo' && nextStatus === 'doing';
+  const shouldSpawnTask = currentStatus === 'todo' && nextStatus === 'doing';
 
   let activeTask: Parameters<typeof serializeTaskResponse>[0] | null = existing.tasks[0] ?? null;
   let spawnedTask: Awaited<ReturnType<typeof createAiTaskArtifacts>> | null = null;
@@ -211,12 +213,12 @@ export async function PATCH(
   let updated;
   if (spawnTaskArgs) {
     const transactionResult = await db.$transaction(async (tx) => {
-      // Atomically claim the todo -> doing transition.
+      // Atomically claim the current -> doing transition.
       // updateMany returns count; if 0, another request already transitioned this issue.
       const claimed = await tx.issue.updateMany({
         where: {
           id: existing.id,
-          status: 'todo',
+          status: existing.status,
         },
         data: {
           status: 'doing',

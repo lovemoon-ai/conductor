@@ -87,12 +87,12 @@ describe('CreateIssueDialog', () => {
         projectId: 'project-2',
         title: 'Ship all-project issue creation',
         description: null,
-        status: 'backlog',
+        status: 'todo',
       });
     });
     expect(pushToastMock).toHaveBeenCalledWith({
       title: 'Issue created',
-      description: 'Added to Backlog.',
+      description: 'Added to Todo.',
       variant: 'success',
     });
   });

@@ -19,7 +19,7 @@ let projectsState: {
   setSelectedProjectId: typeof setSelectedProjectIdMock;
 };
 let issuesState: {
-  issues: Array<{ id: string; projectId: string; title: string; status: 'backlog' | 'todo' | 'doing' | 'review' | 'done'; position: number; createdAt: string }>;
+  issues: Array<{ id: string; projectId: string; title: string; status: 'todo' | 'doing' | 'done'; position: number; createdAt: string }>;
   isLoading: boolean;
   fetchIssues: typeof fetchIssuesMock;
   moveIssue: typeof moveIssueMock;
@@ -61,8 +61,8 @@ vi.mock('@/features/issues', () => ({
     issues: typeof issuesState.issues;
     isLoading?: boolean;
     dragDisabled?: boolean;
-    onMoveIssue: (issueId: string, status: 'backlog' | 'todo' | 'doing' | 'review' | 'done', position: number) => void;
-    onStatusChange?: (issueId: string, status: 'backlog' | 'todo' | 'doing' | 'review' | 'done') => void;
+    onMoveIssue: (issueId: string, status: 'todo' | 'doing' | 'done', position: number) => void;
+    onStatusChange?: (issueId: string, status: 'todo' | 'doing' | 'done') => void;
     onDeleteIssue?: (issueId: string) => Promise<void> | void;
   }) => (
     <div>
