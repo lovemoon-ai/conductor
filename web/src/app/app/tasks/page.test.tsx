@@ -17,6 +17,7 @@ let tasksState: {
 };
 let searchParamsState = new URLSearchParams();
 let isDesktopViewport = false;
+let hiddenProjectIdsState: string[] = [];
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
@@ -32,8 +33,17 @@ vi.mock('@/features/tasks', async () => {
   const React = await import('react');
   return {
     useTasksStore: (selector: (state: typeof tasksState) => unknown) => selector(tasksState),
-    filterTasksByProject: (tasks: Array<{ projectId?: string | null }>, projectId: string | null) =>
-      projectId ? tasks.filter((task) => task.projectId === projectId) : tasks,
+    filterTasksByProject: (
+      tasks: Array<{ projectId?: string | null }>,
+      projectId: string | null,
+      hiddenProjectIds: string[] = [],
+    ) => {
+      const hiddenProjectIdSet = new Set(hiddenProjectIds);
+      if (projectId) {
+        return hiddenProjectIdSet.has(projectId) ? [] : tasks.filter((task) => task.projectId === projectId);
+      }
+      return tasks.filter((task) => !task.projectId || !hiddenProjectIdSet.has(task.projectId));
+    },
     RefreshIcon: ({ spinning = false }: { spinning?: boolean }) => <span>{spinning ? 'spinning' : 'refresh'}</span>,
     TaskList: ({
       viewMode,
@@ -81,10 +91,15 @@ vi.mock('@/features/tasks', async () => {
 vi.mock('@/features/projects', () => ({
   useProjectsStore: (selector: (state: {
     projects: Array<{ id: string; name: string }>;
+    hiddenProjectIds: string[];
     setSelectedProjectId: typeof setSelectedProjectIdMock;
   }) => unknown) =>
     selector({
-      projects: [{ id: 'project-1', name: 'Conductor' }],
+      projects: [
+        { id: 'project-1', name: 'Conductor' },
+        { id: 'project-hidden', name: 'Hidden' },
+      ],
+      hiddenProjectIds: hiddenProjectIdsState,
       setSelectedProjectId: setSelectedProjectIdMock,
     }),
 }));
@@ -116,6 +131,7 @@ describe('TasksPage', () => {
     localStorage.clear();
     searchParamsState = new URLSearchParams();
     isDesktopViewport = false;
+    hiddenProjectIdsState = [];
     setProjectFilterMock.mockReset();
     setSelectedProjectIdMock.mockReset();
     fetchTasksMock.mockReset();
@@ -262,6 +278,32 @@ describe('TasksPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create task' }));
 
     expect(screen.getByText('create-dialog:project-1')).toBeInTheDocument();
+  });
+
+  it('excludes hidden project tasks when no project is selected', () => {
+    hiddenProjectIdsState = ['project-hidden'];
+    tasksState = {
+      ...tasksState,
+      tasks: [
+        { id: 'task-1', projectId: 'project-1' },
+        { id: 'task-hidden', projectId: 'project-hidden' },
+      ],
+    };
+
+    render(<TasksPage />);
+
+    expect(screen.getByText('Task 1')).toBeInTheDocument();
+  });
+
+  it('clears a hidden projectId from the URL', () => {
+    hiddenProjectIdsState = ['project-hidden'];
+    searchParamsState = new URLSearchParams('projectId=project-hidden&taskId=task-1');
+
+    render(<TasksPage />);
+
+    expect(setProjectFilterMock).toHaveBeenCalledWith(null);
+    expect(setSelectedProjectIdMock).toHaveBeenCalledWith(null);
+    expect(replaceMock).toHaveBeenCalledWith('/app/tasks?taskId=task-1', { scroll: false });
   });
 
 });

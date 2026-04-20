@@ -14,6 +14,7 @@ let searchParamsState = new URLSearchParams();
 let isDesktopViewport = true;
 let projectsState: {
   projects: Array<{ id: string; name: string; isDefault?: boolean }>;
+  hiddenProjectIds: string[];
   isLoading: boolean;
   fetchProjects: typeof fetchProjectsMock;
   setSelectedProjectId: typeof setSelectedProjectIdMock;
@@ -130,7 +131,9 @@ describe('IssuesPage', () => {
       projects: [
         { id: 'project-default', name: 'Default Project', isDefault: true },
         { id: 'project-2', name: 'Other Project' },
+        { id: 'project-hidden', name: 'Hidden Project' },
       ],
+      hiddenProjectIds: [],
       isLoading: false,
       fetchProjects: fetchProjectsMock,
       setSelectedProjectId: setSelectedProjectIdMock,
@@ -189,6 +192,39 @@ describe('IssuesPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Create issue' }));
     expect(screen.getByText('create-issue-dialog:none')).toBeInTheDocument();
+  });
+
+  it('excludes hidden project issues when projectId is missing', () => {
+    projectsState = {
+      ...projectsState,
+      hiddenProjectIds: ['project-hidden'],
+    };
+    issuesState = {
+      ...issuesState,
+      issues: [
+        {
+          id: 'issue-1',
+          projectId: 'project-default',
+          title: 'Visible issue',
+          status: 'todo',
+          position: 0,
+          createdAt: '2026-04-14T00:00:00.000Z',
+        },
+        {
+          id: 'issue-hidden',
+          projectId: 'project-hidden',
+          title: 'Hidden issue',
+          status: 'todo',
+          position: 1,
+          createdAt: '2026-04-14T00:10:00.000Z',
+        },
+      ],
+    };
+
+    render(<IssuesPage />);
+
+    expect(fetchIssuesMock).toHaveBeenCalledWith(null);
+    expect(screen.getByText('issue-board:1:ready')).toBeInTheDocument();
   });
 
   it('renders the project-scoped board and opens the create issue dialog', () => {
@@ -276,5 +312,19 @@ describe('IssuesPage', () => {
     expect(fetchIssuesMock).toHaveBeenCalledWith(null);
     expect(replaceMock).toHaveBeenCalledWith('/app/issues?view=board', { scroll: false });
     expect(screen.getByText('issue-board:2:ready')).toBeInTheDocument();
+  });
+
+  it('clears a hidden projectId and fetches visible all-project issues', () => {
+    searchParamsState = new URLSearchParams('projectId=project-hidden&view=board');
+    projectsState = {
+      ...projectsState,
+      hiddenProjectIds: ['project-hidden'],
+    };
+
+    render(<IssuesPage />);
+
+    expect(setSelectedProjectIdMock).toHaveBeenCalledWith(null);
+    expect(fetchIssuesMock).toHaveBeenCalledWith(null);
+    expect(replaceMock).toHaveBeenCalledWith('/app/issues?view=board', { scroll: false });
   });
 });

@@ -12,6 +12,10 @@ let tasksState: {
   currentProjectFilter: string | null;
   deleteTask: typeof deleteTaskMock;
 };
+let projectsState: {
+  projects: Array<{ id: string; name: string }>;
+  hiddenProjectIds: string[];
+};
 
 vi.mock('../store', () => ({
   useTasksStore: (selector?: (state: typeof tasksState) => unknown) =>
@@ -19,12 +23,7 @@ vi.mock('../store', () => ({
 }));
 
 vi.mock('@/features/projects', () => ({
-  useProjectsStore: (selector: (state: { projects: Array<{ id: string; name: string }> }) => unknown) =>
-    selector({
-      projects: [
-        { id: 'project-1', name: 'Project One' },
-      ],
-    }),
+  useProjectsStore: (selector: (state: typeof projectsState) => unknown) => selector(projectsState),
 }));
 
 vi.mock('./TaskItem', () => ({
@@ -60,6 +59,12 @@ describe('TaskList', () => {
       currentProjectFilter: 'project-1',
       deleteTask: deleteTaskMock,
     };
+    projectsState = {
+      projects: [
+        { id: 'project-1', name: 'Project One' },
+      ],
+      hiddenProjectIds: [],
+    };
   });
 
   it('renders list view badges and items', async () => {
@@ -84,5 +89,21 @@ describe('TaskList', () => {
     render(<TaskList viewMode="list" />);
 
     expect(screen.getByTestId('loading-spinner')).toBeInTheDocument();
+  });
+
+  it('excludes hidden project tasks from all-project lists', () => {
+    tasksState = {
+      ...tasksState,
+      currentProjectFilter: null,
+    };
+    projectsState = {
+      ...projectsState,
+      hiddenProjectIds: ['project-2'],
+    };
+
+    render(<TaskList viewMode="list" />);
+
+    expect(screen.getByText('Task One:idle')).toBeInTheDocument();
+    expect(screen.queryByText('Task Two:idle')).toBeNull();
   });
 });

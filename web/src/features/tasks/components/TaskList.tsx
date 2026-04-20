@@ -53,6 +53,7 @@ export function TaskList({
 }: TaskListProps) {
   const { tasks, isLoading, unreadTaskIds, currentProjectFilter, deleteTask } = useTasksStore();
   const projects = useProjectsStore((state) => state.projects);
+  const hiddenProjectIds = useProjectsStore((state) => state.hiddenProjectIds);
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
@@ -63,8 +64,8 @@ export function TaskList({
   const animationFrameRef = useRef<number | null>(null);
   const effectiveProjectFilter = projectFilter !== undefined ? projectFilter : currentProjectFilter;
   const visibleTasks = useMemo(
-    () => filterTasksByProject(tasks, effectiveProjectFilter),
-    [tasks, effectiveProjectFilter],
+    () => filterTasksByProject(tasks, effectiveProjectFilter, hiddenProjectIds),
+    [tasks, effectiveProjectFilter, hiddenProjectIds],
   );
 
   const showProjectInfo = !effectiveProjectFilter;

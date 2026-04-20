@@ -22,6 +22,7 @@ function IssuesPageContent() {
   const { pushToast } = useToast();
 
   const projects = useProjectsStore((state) => state.projects);
+  const hiddenProjectIds = useProjectsStore((state) => state.hiddenProjectIds);
   const isProjectsLoading = useProjectsStore((state) => state.isLoading);
   const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const setSelectedProjectId = useProjectsStore((state) => state.setSelectedProjectId);
@@ -33,6 +34,7 @@ function IssuesPageContent() {
   const deleteIssue = useIssuesStore((state) => state.deleteIssue);
 
   const projectIdFromUrl = searchParams.get('projectId');
+  const hiddenProjectIdSet = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
 
   useEffect(() => {
     setHasRequestedProjects(true);
@@ -40,16 +42,25 @@ function IssuesPageContent() {
   }, [fetchProjects]);
 
   const resolvedProjectId = useMemo(() => {
-    if (projectIdFromUrl && projects.some((project) => project.id === projectIdFromUrl)) {
+    if (
+      projectIdFromUrl
+      && !hiddenProjectIdSet.has(projectIdFromUrl)
+      && projects.some((project) => project.id === projectIdFromUrl)
+    ) {
       return projectIdFromUrl;
     }
     return null;
-  }, [projectIdFromUrl, projects]);
+  }, [hiddenProjectIdSet, projectIdFromUrl, projects]);
   const currentProject = useMemo(
     () => projects.find((project) => project.id === resolvedProjectId) ?? null,
     [projects, resolvedProjectId],
   );
-  const issueCount = issues.length;
+  const visibleIssues = useMemo(() => (
+    resolvedProjectId
+      ? issues
+      : issues.filter((issue) => !hiddenProjectIdSet.has(issue.projectId))
+  ), [hiddenProjectIdSet, issues, resolvedProjectId]);
+  const issueCount = visibleIssues.length;
   const title = currentProject
     ? `${currentProject.name} (${issueCount} ${issueCount === 1 ? 'issue' : 'issues'})`
     : 'Issues';
@@ -113,12 +124,12 @@ function IssuesPageContent() {
   };
 
   const handleStatusChange = async (issueId: string, status: 'backlog' | 'todo' | 'doing' | 'review' | 'done') => {
-    const issue = issues.find((entry) => entry.id === issueId);
+    const issue = visibleIssues.find((entry) => entry.id === issueId);
     if (!issue || issue.status === status) {
       return;
     }
 
-    const projectIssues = issues.filter((entry) => entry.projectId === issue.projectId);
+    const projectIssues = visibleIssues.filter((entry) => entry.projectId === issue.projectId);
     const nextPosition = calculateIssueAppendPosition(projectIssues, status, issueId);
     await handleMoveIssue(issueId, status, nextPosition);
   };
@@ -177,13 +188,13 @@ function IssuesPageContent() {
           </div>
         ) : !isDesktop ? (
           <IssueList
-            issues={issues}
+            issues={visibleIssues}
             onStatusChange={handleStatusChange}
             onDeleteIssue={handleDeleteIssue}
           />
         ) : (
           <IssueBoard
-            issues={issues}
+            issues={visibleIssues}
             isLoading={isIssuesLoading}
             dragDisabled={!resolvedProjectId}
             onMoveIssue={handleMoveIssue}

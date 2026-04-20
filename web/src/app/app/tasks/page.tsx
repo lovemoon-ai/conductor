@@ -29,10 +29,13 @@ function TasksPageContent() {
   const isLoading = useTasksStore((state) => state.isLoading);
   const tasks = useTasksStore((state) => state.tasks);
   const projects = useProjectsStore((state) => state.projects);
+  const hiddenProjectIds = useProjectsStore((state) => state.hiddenProjectIds);
   const setSelectedProjectId = useProjectsStore((state) => state.setSelectedProjectId);
-  const projectId = searchParams.get('projectId');
+  const projectIdFromUrl = searchParams.get('projectId');
+  const hiddenProjectIdSet = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
+  const projectId = projectIdFromUrl && !hiddenProjectIdSet.has(projectIdFromUrl) ? projectIdFromUrl : null;
   const requestedTaskId = searchParams.get('taskId');
-  const visibleTasks = useMemo(() => filterTasksByProject(tasks, projectId), [tasks, projectId]);
+  const visibleTasks = useMemo(() => filterTasksByProject(tasks, projectId, hiddenProjectIds), [tasks, projectId, hiddenProjectIds]);
   const taskCount = visibleTasks.length;
   const currentProjectName = projectId
     ? projects.find((project) => project.id === projectId)?.name
@@ -62,6 +65,17 @@ function TasksPageContent() {
     mediaQuery.addListener(updateViewport);
     return () => mediaQuery.removeListener(updateViewport);
   }, []);
+
+  useEffect(() => {
+    if (!projectIdFromUrl || !hiddenProjectIdSet.has(projectIdFromUrl)) {
+      return;
+    }
+
+    const nextSearchParams = new URLSearchParams(searchParams.toString());
+    nextSearchParams.delete('projectId');
+    const nextQuery = nextSearchParams.toString();
+    router.replace(nextQuery ? `/app/tasks?${nextQuery}` : '/app/tasks', { scroll: false });
+  }, [hiddenProjectIdSet, projectIdFromUrl, router, searchParams]);
 
   useEffect(() => {
     setProjectFilter(projectId || null);
