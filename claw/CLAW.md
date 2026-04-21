@@ -14,6 +14,9 @@ postmortems, and reusable planning templates. Do not create new root-level
   be moved into the right folder instead of being duplicated.
 - Prefer links between notes over copying the same explanation into multiple
   files.
+- If a task involves `task` / `fire` / `daemon` relationships, read
+  `architecture/task-fire-daemon.md` first. That document is the current source
+  of truth for that subsystem.
 
 ## Folder Roles
 
@@ -28,6 +31,14 @@ Put here:
 - cross-package boundaries
 - deployment topology
 - long-lived data-flow notes
+
+When a subsystem has multiple historical notes in `lessons/`, `diagnosis/`, or
+`archived/`, and the model has converged, write one architecture note that
+becomes the explicit source of truth for current behavior. That note should:
+
+- state that it is the current source of truth
+- link the historical notes it supersedes or consolidates
+- distinguish current implementation from future or archived plans
 
 Do not put sprint status, bug timelines, or task checklists here.
 
@@ -167,6 +178,11 @@ Put here:
 - obsolete designs
 - historical references that still provide context
 
+Archived material is never the current implementation by default. If an
+archived document still matters, the current behavior should be restated in
+`architecture/` or `adr/` and the archived document should only serve as
+history.
+
 Do not keep active specs here.
 
 ## Placement Rules
@@ -181,6 +197,10 @@ When adding a new note, use this order:
 6. If it is a completed learning from real usage, use `lessons/`.
 7. If it is process guidance, use `developer/`.
 8. If it is just a reusable skeleton, use `templates/`.
+
+If several notes describe the same subsystem across time, add one current note
+in `architecture/` or `adr/` that names the canonical model instead of asking
+readers to reconstruct it from history.
 
 ## Naming Guidance
 

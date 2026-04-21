@@ -25,3 +25,4 @@ Avoid putting sprint planning or issue state here. That belongs in Linear.
 Available notes:
 
 - `ai-sdk.md`: codex app-server runtime architecture for the local AI session layer
+- `task-fire-daemon.md`: current source of truth for `ai_task` / daemon / fire ownership, routing, and restart semantics
