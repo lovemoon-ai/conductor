@@ -1,6 +1,6 @@
 {
   "name": "@love-moon/conductor-sdk",
-  "version": "0.2.38",
+  "version": "0.2.39",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -27,5 +27,5 @@
     "typescript": "^5.6.3",
     "vitest": "^2.1.4"
   },
-  "gitCommitId": "6bf5515"
+  "gitCommitId": "30204c8"
 }

@@ -6,6 +6,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with an additional `Commits` section for each released version.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.2.39] - 2026-04-21
+
+### Added
+
+- Task turn interruption: users can interrupt an ongoing AI task turn directly
+  from the chat UI, giving immediate control over long-running agent responses.
+- Project hide controls: projects can now be hidden from the main workspace
+  views without deleting their history, reducing clutter across project and
+  issue management.
+- Message resend action: failed chat messages can be retried with a single click.
+
+### Changed
+
+- Simplified issue statuses: streamlined the issue workflow to fewer, clearer
+  states.
+- Updated issue task UI: improved visual linkage between issues and their linked
+  tasks.
+- Updated create project popup: refined the project creation dialog for better
+  usability.
+
+### Fixed
+
+- Fixed mobile project list scrolling on touch devices.
+- Fixed task killing consistency: resolved edge cases where terminating a task
+  could leave its state inconsistent between the web UI and the daemon.
+- Fixed fire kill ownership and issue card status: corrected CLI `fire` command
+  ownership handling so killed tasks report the right owner, and issue cards now
+  accurately reflect linked task status.
+- Fixed managed daemon auto-update startup checks so background daemons no longer
+  miss the first eligible upgrade cycle after launch.
+- Fixed provider path parsing in `@love-moon/ai-sdk`: comma-delimited external
+  provider paths are now parsed correctly.
+- Fixed persist issue task linkage: associations between issues and tasks are now
+  preserved reliably across updates and restarts.
+
+### Removed
+
+- _None._
+
+### Security
+
+- _None._
+
+### Commits
+
+- `7f87b15` merge task turn interruption
+- `eee2f6a` add task turn interruption
+- `9e297d8` update docs
+- `21c3ec6` fix provider path parsing
+- `98338ab` fix fire kill ownership and issue card status
+- `809c505` persist issue task linkage
+- `a80a246` fix task killing consistency
+- `540bdac` fix mobile project list scrolling
+- `53030fa` add message resend action
+- `0a1dfe7` update create project popup
+- `bdb5c18` update issue task ui
+- `d3018cf` simplify issue statuses
+- `6f17c01` merge issue status simplification
+- `bef8117` filter hidden project content
+- `2f510d9` add project card hide controls
+- `b5488bc` update homebrew tap from release workflow
+
 ## [0.2.38] - 2026-04-20
 
 ### Changed
