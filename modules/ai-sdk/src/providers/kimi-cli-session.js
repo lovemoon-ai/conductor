@@ -962,13 +962,15 @@ export class KimiCliSession extends EventEmitter {
 
   async interruptCurrentTurn() {
     if (!this.currentTurn) {
-      return;
+      return false;
     }
     try {
       await this.transport.request("cancel", {});
+      return true;
     } catch {
       // best effort
     }
+    return false;
   }
 
   async runTurn(promptText, { useInitialImages = false, onProgress = null } = {}) {

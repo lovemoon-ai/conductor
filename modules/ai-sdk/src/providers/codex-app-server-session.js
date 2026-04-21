@@ -956,16 +956,18 @@ export class CodexAppServerSession extends EventEmitter {
   async interruptCurrentTurn() {
     const currentTurn = this.currentTurn;
     if (!currentTurn || !this.sessionId || !currentTurn.turnId) {
-      return;
+      return false;
     }
     try {
       await this.transport.request("turn/interrupt", {
         threadId: this.sessionId,
         turnId: currentTurn.turnId,
       });
+      return true;
     } catch {
       // best effort
     }
+    return false;
   }
 
   async runTurn(promptText, { useInitialImages = false } = {}) {

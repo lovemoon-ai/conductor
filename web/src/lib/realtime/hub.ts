@@ -18,6 +18,15 @@ type StopAckWaiter = {
   timeout: NodeJS.Timeout;
 };
 
+type AgentCommandAckWaiter = {
+  resolve: (acked: boolean | null) => void;
+  timeout: NodeJS.Timeout;
+  expectedHosts: Set<string> | null;
+  pendingHosts: Set<string> | null;
+  expectedEventType: string | null;
+  sawReject: boolean;
+};
+
 type FinalStatusWaiter = {
   resolve: (status: string | null) => void;
   timeout: NodeJS.Timeout;
@@ -124,6 +133,7 @@ export class RealtimeHub {
   private taskToAgent = new Map<string, string>();
   private agentDisconnectAt = new Map<string, number>();
   private stopAckWaiters = new Map<string, StopAckWaiter>();
+  private agentCommandAckWaiters = new Map<string, AgentCommandAckWaiter>();
   private finalStatusWaiters = new Map<string, Set<FinalStatusWaiter>>();
   private agentLogWaiters = new Map<string, AgentLogWaiter>();
   private projectPathValidationWaiters = new Map<string, ProjectPathValidationWaiter>();
@@ -448,6 +458,42 @@ export class RealtimeHub {
     });
   }
 
+  waitForAgentCommandAck(
+    taskId: string,
+    requestId: string,
+    timeoutMs: number,
+    options: { expectedHosts?: string[]; eventType?: string | null } = {},
+  ): Promise<boolean | null> {
+    const key = `${taskId}:${requestId}`;
+    const normalizedHosts = Array.from(
+      new Set(
+        (options.expectedHosts || [])
+          .map((host) => (typeof host === "string" ? host.trim() : ""))
+          .filter(Boolean),
+      ),
+    );
+    const expectedHosts = normalizedHosts.length > 0 ? new Set(normalizedHosts) : null;
+    const pendingHosts = expectedHosts ? new Set(normalizedHosts) : null;
+    const expectedEventType =
+      typeof options.eventType === "string" && options.eventType.trim() ? options.eventType.trim() : null;
+
+    return new Promise<boolean | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        const current = this.agentCommandAckWaiters.get(key);
+        this.agentCommandAckWaiters.delete(key);
+        resolve(current?.sawReject ? false : null);
+      }, timeoutMs);
+      this.agentCommandAckWaiters.set(key, {
+        resolve,
+        timeout,
+        expectedHosts,
+        pendingHosts,
+        expectedEventType,
+        sawReject: false,
+      });
+    });
+  }
+
   cancelTaskStopAck(taskId: string, requestId: string): boolean {
     const key = `${taskId}:${requestId}`;
     const waiter = this.stopAckWaiters.get(key);
@@ -455,6 +501,17 @@ export class RealtimeHub {
 
     clearTimeout(waiter.timeout);
     this.stopAckWaiters.delete(key);
+    waiter.resolve(null);
+    return true;
+  }
+
+  cancelAgentCommandAck(taskId: string, requestId: string): boolean {
+    const key = `${taskId}:${requestId}`;
+    const waiter = this.agentCommandAckWaiters.get(key);
+    if (!waiter) return false;
+
+    clearTimeout(waiter.timeout);
+    this.agentCommandAckWaiters.delete(key);
     waiter.resolve(null);
     return true;
   }
@@ -467,6 +524,45 @@ export class RealtimeHub {
     clearTimeout(waiter.timeout);
     this.stopAckWaiters.delete(key);
     waiter.resolve(Boolean(accepted));
+  }
+
+  acknowledgeAgentCommand(
+    taskId: string,
+    requestId: string,
+    accepted = true,
+    options: { agentHost?: string | null; eventType?: string | null } = {},
+  ) {
+    const key = `${taskId}:${requestId}`;
+    const waiter = this.agentCommandAckWaiters.get(key);
+    if (!waiter) return;
+
+    const eventType = typeof options.eventType === "string" ? options.eventType.trim() : "";
+    if (waiter.expectedEventType && eventType && waiter.expectedEventType !== eventType) {
+      return;
+    }
+
+    const agentHost = typeof options.agentHost === "string" ? options.agentHost.trim() : "";
+    if (waiter.expectedHosts) {
+      if (!agentHost || !waiter.expectedHosts.has(agentHost)) {
+        return;
+      }
+      waiter.pendingHosts?.delete(agentHost);
+    }
+
+    if (accepted) {
+      clearTimeout(waiter.timeout);
+      this.agentCommandAckWaiters.delete(key);
+      waiter.resolve(true);
+      return;
+    }
+
+    waiter.sawReject = true;
+
+    if (!waiter.pendingHosts || waiter.pendingHosts.size === 0) {
+      clearTimeout(waiter.timeout);
+      this.agentCommandAckWaiters.delete(key);
+      waiter.resolve(false);
+    }
   }
 
   cancelTaskFinalStatus(taskId: string): number {

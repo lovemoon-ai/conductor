@@ -33,6 +33,36 @@ const normalizeOptionalString = (value: FormDataEntryValue | null): string => {
   return value.trim();
 };
 
+const normalizeHost = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized || null;
+};
+
+const resolveTaskUserMessageFireHost = (
+  task: { agentHost?: string | null; executionHost?: string | null },
+  boundHost: string | null,
+): string | null => {
+  const configuredAgentHost = normalizeHost(task.agentHost);
+  const executionHost = normalizeHost(task.executionHost);
+  const normalizedBoundHost = normalizeHost(boundHost);
+  const isManualFireTask = Boolean(configuredAgentHost && isConductorFireHost(configuredAgentHost));
+  const executionFireHost = executionHost && isConductorFireHost(executionHost) ? executionHost : null;
+  const configuredFireHost = configuredAgentHost && isConductorFireHost(configuredAgentHost) ? configuredAgentHost : null;
+  const boundFireHost =
+    normalizedBoundHost &&
+    isConductorFireHost(normalizedBoundHost) &&
+    (normalizedBoundHost === executionFireHost || normalizedBoundHost === configuredFireHost)
+      ? normalizedBoundHost
+      : null;
+
+  return isManualFireTask
+    ? boundFireHost || executionFireHost || configuredFireHost
+    : executionFireHost;
+};
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ taskId: string }> },
@@ -63,6 +93,20 @@ export async function POST(
 
   const role = normalizeMessageRole(formData.get("role"));
   const content = normalizeOptionalString(formData.get("content"));
+  const targetHost =
+    role === "user"
+      ? resolveTaskUserMessageFireHost(task, realtimeHub.getTaskAgentHost(taskId))
+      : null;
+  if (role === "user" && !targetHost) {
+    return NextResponse.json(
+      {
+        error: "Task missing active fire owner",
+        message: "The task is not connected to an active fire owner. Try again after it reconnects.",
+      },
+      { status: 409 },
+    );
+  }
+
   const bytes = Buffer.from(await fileValue.arrayBuffer());
   const attachment = await writeTaskAttachment({
     taskId,
@@ -97,11 +141,6 @@ export async function POST(
   });
 
   if (role === "user") {
-    const boundAgentHost = realtimeHub.getTaskAgentHost(taskId);
-    const boundFireHost = isConductorFireHost(boundAgentHost) ? boundAgentHost : null;
-    const runtimeFireHost = isConductorFireHost(task.executionHost) ? task.executionHost : null;
-    const fallbackFireHost = isConductorFireHost(task.agentHost) ? task.agentHost : null;
-    const targetHost = boundFireHost || runtimeFireHost || fallbackFireHost || null;
     const requestId = message.id;
 
     await enqueueAndAttemptAgentCommand(

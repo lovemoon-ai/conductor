@@ -94,7 +94,14 @@ async function persistTaskExecutionHost(
 const getAssignedTaskHost = (task: TaskOwnershipRecord): string | null =>
   normalizeOptionalString(task.executionHost) || normalizeOptionalString(task.agentHost);
 
-const canFireHostClaimTask = (task: TaskOwnershipRecord, agentHost: string): boolean => {
+const canFireHostClaimTask = (
+  task: TaskOwnershipRecord,
+  agentHost: string,
+  options: { allowFireHostClaim?: boolean } = {},
+): boolean => {
+  if (options.allowFireHostClaim === false) {
+    return false;
+  }
   const daemonHost = normalizeOptionalString(task.agentHost);
   return (
     isConductorFireHost(agentHost) &&
@@ -108,12 +115,13 @@ async function ensureAgentOwnsTaskRecord(
   userId: string,
   task: TaskOwnershipRecord,
   agentHost: string,
+  options: { allowFireHostClaim?: boolean } = {},
 ): Promise<void> {
   const assignedHost = getAssignedTaskHost(task);
   if (!assignedHost) {
     throw new Error(`Task ${task.id} has no assigned agent host`);
   }
-  const allowFireHostClaim = assignedHost !== agentHost && canFireHostClaimTask(task, agentHost);
+  const allowFireHostClaim = assignedHost !== agentHost && canFireHostClaimTask(task, agentHost, options);
   if (!allowFireHostClaim && assignedHost !== agentHost) {
     throw new Error(`Task ${task.id} is assigned to ${assignedHost}, not ${agentHost}`);
   }
@@ -137,7 +145,12 @@ async function ensureAgentOwnsTaskRecord(
   await persistTaskExecutionHost(userId, task.id, agentHost);
 }
 
-async function ensureAgentOwnsTask(userId: string, taskId: string, agentHost: string): Promise<void> {
+async function ensureAgentOwnsTask(
+  userId: string,
+  taskId: string,
+  agentHost: string,
+  options: { allowFireHostClaim?: boolean } = {},
+): Promise<void> {
   let task: TaskOwnershipRecord | null;
   try {
     task = await db.task.findFirst({
@@ -164,7 +177,7 @@ async function ensureAgentOwnsTask(userId: string, taskId: string, agentHost: st
   if (!task) {
     throw new Error(`Task ${taskId} not found`);
   }
-  await ensureAgentOwnsTaskRecord(userId, task, agentHost);
+  await ensureAgentOwnsTaskRecord(userId, task, agentHost, options);
 }
 
 async function getOwnedTask(userId: string, taskId: string, agentHost: string) {
@@ -409,18 +422,27 @@ export async function commitAgentCommandAck(input: {
   }
   const taskId = normalizeOptionalString(input.taskId);
   if (taskId) {
-    await ensureAgentOwnsTask(input.userId, taskId, input.agentHost);
+    await ensureAgentOwnsTask(input.userId, taskId, input.agentHost, {
+      allowFireHostClaim: normalizeOptionalString(input.eventType) !== "interrupt_turn",
+    });
+  }
+  const accepted = input.accepted !== false;
+  if (taskId) {
+    realtimeHub.acknowledgeAgentCommand(taskId, requestId, accepted, {
+      agentHost: input.agentHost,
+      eventType: normalizeOptionalString(input.eventType) || null,
+    });
   }
   await drainAgentOutboxForHost(input.userId, input.agentHost);
   const result = await acknowledgeAgentCommand({
     userId: input.userId,
     requestId,
-    accepted: input.accepted !== false,
+    accepted,
     eventType: normalizeOptionalString(input.eventType) || undefined,
   });
   return {
     requestId,
-    accepted: input.accepted !== false,
+    accepted,
     duplicate: result.count === 0,
   };
 }

@@ -89,6 +89,60 @@ describe('MessageBubble', () => {
     expect(screen.queryByRole('button', { name: 'Resend message' })).not.toBeInTheDocument();
   });
 
+  it('calls onInterrupt from the message action sheet', () => {
+    const onInterrupt = vi.fn();
+    const { container } = render(
+      <MessageBubble
+        message={makeMessage({ role: 'assistant', content: 'ai reply' })}
+        onInterrupt={onInterrupt}
+        interruptEnabled
+      />,
+    );
+
+    const bubble = container.querySelector('[role="button"]') as HTMLElement;
+    fireEvent.doubleClick(bubble);
+    expect(screen.getByRole('button', { name: 'Interrupt current reply' })).toBeInTheDocument();
+    expect(screen.queryByText('中断')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('message-bubble-interrupt-button'));
+
+    expect(onInterrupt).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('message-bubble-interrupt-button')).not.toBeInTheDocument();
+  });
+
+  it('disables the message interrupt action when no reply can be interrupted', () => {
+    const onInterrupt = vi.fn();
+    const { container } = render(
+      <MessageBubble
+        message={makeMessage({ role: 'assistant', content: 'ai reply' })}
+        onInterrupt={onInterrupt}
+      />,
+    );
+
+    const bubble = container.querySelector('[role="button"]') as HTMLElement;
+    fireEvent.doubleClick(bubble);
+    const interruptButton = screen.getByTestId('message-bubble-interrupt-button');
+
+    expect(interruptButton).toBeDisabled();
+    fireEvent.click(interruptButton);
+    expect(onInterrupt).not.toHaveBeenCalled();
+  });
+
+  it('opens the message action sheet on double tap', () => {
+    const { container } = render(
+      <MessageBubble
+        message={makeMessage({ role: 'assistant', content: 'ai reply' })}
+        onInterrupt={() => {}}
+        interruptEnabled
+      />,
+    );
+
+    const bubble = container.querySelector('[role="button"]') as HTMLElement;
+    fireEvent.touchEnd(bubble);
+    fireEvent.touchEnd(bubble);
+
+    expect(screen.getByTestId('message-bubble-interrupt-button')).toBeInTheDocument();
+  });
+
   it('renders ai messages in the same shared full-width column with left-side corner', () => {
     const { container } = render(<MessageBubble message={makeMessage({ role: 'assistant', content: 'ai message' })} />);
 

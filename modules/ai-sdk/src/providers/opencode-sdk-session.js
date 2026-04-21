@@ -1287,7 +1287,7 @@ export class OpencodeSdkSession extends EventEmitter {
   async interruptCurrentTurn() {
     const currentTurn = this.currentTurn;
     if (!currentTurn || !this.client?.session || !this.sessionId) {
-      return;
+      return false;
     }
     try {
       currentTurn.abortController?.abort?.();
@@ -1299,9 +1299,11 @@ export class OpencodeSdkSession extends EventEmitter {
         { sessionID: this.sessionId },
         { throwOnError: true, responseStyle: "data" },
       );
+      return true;
     } catch {
       // best effort
     }
+    return true;
   }
 
   async runTurn(promptText, { useInitialImages = false, onProgress = null } = {}) {

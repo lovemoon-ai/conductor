@@ -94,6 +94,28 @@ function buildOutboxDeliveryOptions(agentHost: string | null) {
   };
 }
 
+const resolveTaskUserMessageFireHost = (task: {
+  agentHost?: string | null;
+  executionHost?: string | null;
+}, boundHost: string | null): string | null => {
+  const configuredAgentHost = normalizeOptionalString(task.agentHost);
+  const executionHost = normalizeOptionalString(task.executionHost);
+  const normalizedBoundHost = normalizeOptionalString(boundHost);
+  const isManualFireTask = Boolean(configuredAgentHost && isConductorFireHost(configuredAgentHost));
+  const executionFireHost = executionHost && isConductorFireHost(executionHost) ? executionHost : null;
+  const configuredFireHost = configuredAgentHost && isConductorFireHost(configuredAgentHost) ? configuredAgentHost : null;
+  const boundFireHost =
+    normalizedBoundHost &&
+    isConductorFireHost(normalizedBoundHost) &&
+    (normalizedBoundHost === executionFireHost || normalizedBoundHost === configuredFireHost)
+      ? normalizedBoundHost
+      : null;
+
+  return isManualFireTask
+    ? boundFireHost || executionFireHost || configuredFireHost
+    : executionFireHost;
+};
+
 export async function createTaskForUser(input: {
   userId: string;
   projectId: string;
@@ -258,6 +280,22 @@ export async function appendUserMessageToTask(input: {
       error: "Not found",
     });
   }
+  const normalizedInputRole = String(input.role ?? "sdk").trim().toLowerCase();
+  const userMessageTargetHost =
+    normalizedInputRole === "user"
+      ? resolveTaskUserMessageFireHost(task, realtimeHub.getTaskAgentHost(input.taskId))
+      : null;
+  if (normalizedInputRole === "user" && !userMessageTargetHost) {
+    throw new TaskIngressError(
+      "TASK_MISSING_ACTIVE_FIRE_OWNER",
+      409,
+      "Task missing active fire owner",
+      {
+        error: "Task missing active fire owner",
+        message: "The task is not connected to an active fire owner. Try again after it reconnects.",
+      },
+    );
+  }
 
   const [message] = await db.$transaction([
     db.message.create({
@@ -280,13 +318,8 @@ export async function appendUserMessageToTask(input: {
     message,
   });
 
-  const normalizedRole = String(message.role || "").toLowerCase();
-  if (normalizedRole === "user") {
-    const boundAgentHost = realtimeHub.getTaskAgentHost(input.taskId);
-    const boundFireHost = isConductorFireHost(boundAgentHost) ? boundAgentHost : null;
-    const runtimeFireHost = isConductorFireHost(task.executionHost) ? task.executionHost : null;
-    const fallbackFireHost = isConductorFireHost(task.agentHost) ? task.agentHost : null;
-    const targetHost = boundFireHost || runtimeFireHost || fallbackFireHost || null;
+  if (normalizedInputRole === "user") {
+    const targetHost = userMessageTargetHost;
     const requestId = message.id;
 
     await enqueueAndAttemptAgentCommand(

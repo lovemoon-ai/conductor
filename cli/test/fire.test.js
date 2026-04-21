@@ -14,6 +14,7 @@ import {
   bootstrapResumeContextForFire,
   buildConductorConnectHeaders,
   BridgeRunner,
+  createPendingRemoteInterruptQueue,
   FireWatchdog,
   formatFatalError,
   injectResolvedTaskId,
@@ -987,6 +988,450 @@ describe("conductor-fire backends", () => {
     assert.equal(result, "done");
     assert.equal(closeCalls, 1);
     assert.equal(runner.stopped, true);
+  });
+
+  it("sends an interrupt confirmation when interrupt_turn stops the current turn", async () => {
+    const sentMessages = [];
+    const sentRuntimeStatuses = [];
+    let interruptCalls = 0;
+    let turnStartedResolve;
+    let runTurnReject;
+    const turnStarted = new Promise((resolve) => {
+      turnStartedResolve = resolve;
+    });
+    const blockedTurn = new Promise((_, reject) => {
+      runTurnReject = reject;
+    });
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        interruptCurrentTurn: async () => {
+          interruptCalls += 1;
+          const interruptedError = new Error("turn interrupted");
+          interruptedError.reason = "turn_interrupted";
+          runTurnReject(interruptedError);
+        },
+        runTurn: async () => {
+          turnStartedResolve();
+          return blockedTurn;
+        },
+        threadId: "thread-1",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async (taskId, payload) => {
+          sentRuntimeStatuses.push({ taskId, payload });
+          return {};
+        },
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-interrupt-1",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    const respondPromise = runner.respondToMessage({
+      message_id: "msg-interrupt-1",
+      role: "user",
+      content: "hello",
+    });
+    await turnStarted;
+    await runner.requestInterruptFromRemote({
+      taskId: "task-interrupt-1",
+      requestId: "req-interrupt-1",
+      reason: "user_interrupt",
+      targetReplyTo: "msg-interrupt-1",
+    });
+    await respondPromise;
+
+    assert.equal(interruptCalls, 1);
+    assert.equal(runner.stopped, false);
+    assert.ok(runner.processedMessageIds.has("msg-interrupt-1"));
+    assert.deepEqual(
+      sentMessages,
+      [
+        {
+          taskId: "task-interrupt-1",
+          content: "Conversation interrupted",
+          metadata: {
+            backend: "codex",
+            reply_to: "msg-interrupt-1",
+            interrupted: true,
+            interruption_request_id: "req-interrupt-1",
+            reason: "user_interrupt",
+            cli_args: [],
+          },
+        },
+      ],
+    );
+    assert.ok(
+      sentRuntimeStatuses.some(
+        (entry) =>
+          entry.payload?.phase === "interrupted" &&
+          entry.payload?.reply_in_progress === false &&
+          entry.payload?.status_done_line === "Conversation interrupted",
+      ),
+    );
+  });
+
+  it("keeps startup interrupt acknowledgements pending until a runner handles them", async () => {
+    const pendingQueue = createPendingRemoteInterruptQueue();
+    let settled = false;
+
+    const interruptPromise = pendingQueue.enqueue({
+      taskId: "task-startup-interrupt-1",
+      targetReplyTo: "msg-startup-interrupt-1",
+    });
+    void interruptPromise.then(() => {
+      settled = true;
+    });
+
+    await Promise.resolve();
+    assert.equal(settled, false);
+
+    await pendingQueue.flushWith(async (event) => event?.targetReplyTo === "msg-startup-interrupt-1");
+
+    assert.equal(await interruptPromise, true);
+  });
+
+  it("rejects queued startup interrupts when runner bootstrap never completes", async () => {
+    const pendingQueue = createPendingRemoteInterruptQueue();
+    const interruptPromise = pendingQueue.enqueue({
+      taskId: "task-startup-interrupt-fail-1",
+      targetReplyTo: "msg-startup-interrupt-fail-1",
+    });
+
+    pendingQueue.rejectAll();
+
+    assert.equal(await interruptPromise, false);
+  });
+
+  it("queues an interrupt that arrives before the reply starts and applies it once the turn begins", async () => {
+    const sentMessages = [];
+    let interruptCalls = 0;
+    let runTurnReject;
+    const blockedTurn = new Promise((_, reject) => {
+      runTurnReject = reject;
+    });
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        interruptCurrentTurn: async () => {
+          interruptCalls += 1;
+          const interruptedError = new Error("turn interrupted");
+          interruptedError.reason = "turn_interrupted";
+          runTurnReject(interruptedError);
+        },
+        runTurn: async () => blockedTurn,
+        threadId: "thread-1",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-interrupt-queued-1",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    const queuedInterruptAccepted = await runner.requestInterruptFromRemote({
+      taskId: "task-interrupt-queued-1",
+      requestId: "req-interrupt-queued-1",
+      reason: "user_interrupt",
+      targetReplyTo: "msg-interrupt-queued-1",
+    });
+
+    await runner.respondToMessage({
+      message_id: "msg-interrupt-queued-1",
+      role: "user",
+      content: "hello",
+    });
+
+    assert.equal(queuedInterruptAccepted, true);
+    assert.equal(interruptCalls, 1);
+    assert.deepEqual(
+      sentMessages,
+      [
+        {
+          taskId: "task-interrupt-queued-1",
+          content: "Conversation interrupted",
+          metadata: {
+            backend: "codex",
+            reply_to: "msg-interrupt-queued-1",
+            interrupted: true,
+            interruption_request_id: "req-interrupt-queued-1",
+            reason: "user_interrupt",
+            cli_args: [],
+          },
+        },
+      ],
+    );
+  });
+
+  it("retries an interrupt that arrives before the backend turn is interruptible", async () => {
+    const sentMessages = [];
+    let interruptCalls = 0;
+    let backendTurnActive = false;
+    let runTurnReject;
+    let startStatusSeenResolve;
+    let releaseStartStatus;
+    const startStatusSeen = new Promise((resolve) => {
+      startStatusSeenResolve = resolve;
+    });
+    const startStatusBlocked = new Promise((resolve) => {
+      releaseStartStatus = resolve;
+    });
+    const blockedTurn = new Promise((_, reject) => {
+      runTurnReject = reject;
+    });
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        interruptCurrentTurn: async () => {
+          interruptCalls += 1;
+          if (!backendTurnActive) {
+            return false;
+          }
+          const interruptedError = new Error("turn interrupted");
+          interruptedError.reason = "turn_interrupted";
+          runTurnReject(interruptedError);
+          return true;
+        },
+        runTurn: async () => {
+          backendTurnActive = true;
+          return blockedTurn;
+        },
+        threadId: "thread-1",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async (_taskId, payload) => {
+          if (payload?.reply_in_progress === true && payload?.phase === "start_turn") {
+            startStatusSeenResolve();
+            await startStatusBlocked;
+          }
+          return {};
+        },
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-interrupt-race-1",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    const respondPromise = runner.respondToMessage({
+      message_id: "msg-interrupt-race-1",
+      role: "user",
+      content: "hello",
+    });
+    await startStatusSeen;
+
+    const accepted = await runner.requestInterruptFromRemote({
+      taskId: "task-interrupt-race-1",
+      requestId: "req-interrupt-race-1",
+      reason: "user_interrupt",
+      targetReplyTo: "msg-interrupt-race-1",
+    });
+    releaseStartStatus();
+    await respondPromise;
+
+    assert.equal(accepted, true);
+    assert.ok(interruptCalls >= 2);
+    assert.deepEqual(
+      sentMessages,
+      [
+        {
+          taskId: "task-interrupt-race-1",
+          content: "Conversation interrupted",
+          metadata: {
+            backend: "codex",
+            reply_to: "msg-interrupt-race-1",
+            interrupted: true,
+            interruption_request_id: "req-interrupt-race-1",
+            reason: "user_interrupt",
+            cli_args: [],
+          },
+        },
+      ],
+    );
+  });
+
+  it("retries backend interruption when the first interrupt attempt fails", async () => {
+    const sentMessages = [];
+    let interruptCalls = 0;
+    let turnStartedResolve;
+    let runTurnReject;
+    const turnStarted = new Promise((resolve) => {
+      turnStartedResolve = resolve;
+    });
+    const blockedTurn = new Promise((_, reject) => {
+      runTurnReject = reject;
+    });
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        interruptCurrentTurn: async () => {
+          interruptCalls += 1;
+          if (interruptCalls === 1) {
+            throw new Error("transient interrupt transport failure");
+          }
+          const interruptedError = new Error("turn interrupted");
+          interruptedError.reason = "turn_interrupted";
+          runTurnReject(interruptedError);
+        },
+        runTurn: async () => {
+          turnStartedResolve();
+          return blockedTurn;
+        },
+        threadId: "thread-1",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-interrupt-retry-1",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    const respondPromise = runner.respondToMessage({
+      message_id: "msg-interrupt-retry-1",
+      role: "user",
+      content: "hello",
+    });
+    await turnStarted;
+
+    const firstAttempt = await runner.requestInterruptFromRemote({
+      taskId: "task-interrupt-retry-1",
+      requestId: "req-interrupt-retry-1",
+      reason: "user_interrupt",
+      targetReplyTo: "msg-interrupt-retry-1",
+    });
+    const secondAttempt = await runner.requestInterruptFromRemote({
+      taskId: "task-interrupt-retry-1",
+      requestId: "req-interrupt-retry-2",
+      reason: "user_interrupt",
+      targetReplyTo: "msg-interrupt-retry-1",
+    });
+    await respondPromise;
+
+    assert.equal(firstAttempt, false);
+    assert.equal(secondAttempt, true);
+    assert.equal(interruptCalls, 2);
+    assert.deepEqual(
+      sentMessages,
+      [
+        {
+          taskId: "task-interrupt-retry-1",
+          content: "Conversation interrupted",
+          metadata: {
+            backend: "codex",
+            reply_to: "msg-interrupt-retry-1",
+            interrupted: true,
+            interruption_request_id: "req-interrupt-retry-2",
+            reason: "user_interrupt",
+            cli_args: [],
+          },
+        },
+      ],
+    );
+  });
+
+  it("does not interrupt the backend after runTurn has already completed", async () => {
+    let interruptCalls = 0;
+    let sendMessageResolve;
+    let sendMessageStartedResolve;
+    const sendMessageStarted = new Promise((resolve) => {
+      sendMessageStartedResolve = resolve;
+    });
+    const sendMessageBlocked = new Promise((resolve) => {
+      sendMessageResolve = resolve;
+    });
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        interruptCurrentTurn: async () => {
+          interruptCalls += 1;
+        },
+        runTurn: async () => ({
+          text: "completed reply",
+          usage: null,
+          items: [],
+          metadata: null,
+        }),
+        threadId: "thread-1",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async () => {
+          sendMessageStartedResolve();
+          await sendMessageBlocked;
+          return {};
+        },
+      },
+      taskId: "task-interrupt-tail-1",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    const respondPromise = runner.respondToMessage({
+      message_id: "msg-interrupt-tail-1",
+      role: "user",
+      content: "hello",
+    });
+    await sendMessageStarted;
+
+    const interruptAccepted = await runner.requestInterruptFromRemote({
+      taskId: "task-interrupt-tail-1",
+      requestId: "req-interrupt-tail-1",
+      reason: "user_interrupt",
+      targetReplyTo: "msg-interrupt-tail-1",
+    });
+    sendMessageResolve();
+    await respondPromise;
+
+    assert.equal(interruptAccepted, false);
+    assert.equal(interruptCalls, 0);
   });
 
   it("announces session started without id when real session id is unavailable", async () => {

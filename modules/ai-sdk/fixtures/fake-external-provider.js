@@ -3,6 +3,7 @@ class FakeExternalSession {
     this.backend = backend;
     this.options = options;
     this.closed = false;
+    this.currentTurn = null;
   }
 
   getSnapshot() {
@@ -44,7 +45,24 @@ class FakeExternalSession {
 
   setSessionReplyTarget() {}
 
+  async interruptCurrentTurn() {
+    if (!this.currentTurn) {
+      return false;
+    }
+    const { reject } = this.currentTurn;
+    this.currentTurn = null;
+    const error = new Error("external turn interrupted");
+    error.reason = "turn_interrupted";
+    reject(error);
+    return true;
+  }
+
   async runTurn(promptText) {
+    if (promptText.includes("[wait-for-interrupt]")) {
+      return await new Promise((resolve, reject) => {
+        this.currentTurn = { resolve, reject };
+      });
+    }
     return {
       text: `external:${promptText}`,
       usage: null,
@@ -59,6 +77,7 @@ class FakeExternalSession {
   }
 
   async close() {
+    await this.interruptCurrentTurn();
     this.closed = true;
   }
 }

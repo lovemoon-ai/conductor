@@ -1,14 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ChatView } from './ChatView';
 
 const useChatStoreMock = vi.fn();
 const useRuntimeStoreMock = vi.fn();
 const useTasksStoreMock = vi.fn();
 const useWebSocketStoreMock = vi.fn();
+const apiPostMock = vi.fn().mockResolvedValue({ delivered: true });
 
 vi.mock('../store', () => ({
   useChatStore: () => useChatStoreMock(),
+}));
+
+vi.mock('@/shared/api/client', () => ({
+  getApiClient: () => ({
+    post: apiPostMock,
+  }),
 }));
 
 vi.mock('@/features/realtime', () => ({
@@ -30,15 +37,26 @@ vi.mock('./MessageBubble', () => ({
   MessageBubble: ({
     message,
     onResend,
+    onInterrupt,
+    interruptEnabled,
+    interruptPending,
   }: {
     message: { id: string; content: string };
     onResend?: (content: string) => void;
+    onInterrupt?: () => void;
+    interruptEnabled?: boolean;
+    interruptPending?: boolean;
   }) => (
     <div data-testid={`message-${message.id}`}>
       <span>{message.content}</span>
       <button type="button" data-testid={`resend-${message.id}`} onClick={() => onResend?.(message.content)}>
         resend
       </button>
+      <button type="button" data-testid={`message-interrupt-${message.id}`} onClick={() => onInterrupt?.()}>
+        interrupt message
+      </button>
+      <div data-testid={`message-interrupt-enabled-${message.id}`}>{String(Boolean(interruptEnabled))}</div>
+      <div data-testid={`message-interrupt-pending-${message.id}`}>{String(Boolean(interruptPending))}</div>
     </div>
   ),
 }));
@@ -46,18 +64,29 @@ vi.mock('./MessageBubble', () => ({
 vi.mock('./MessageInput', () => ({
   MessageInput: ({
     onSend,
+    onInterrupt,
     sendDisabled,
+    interruptEnabled,
+    interruptPending,
     resendRequest,
   }: {
     onSend: (content: string) => void;
+    onInterrupt?: () => void;
     sendDisabled?: boolean;
+    interruptEnabled?: boolean;
+    interruptPending?: boolean;
     resendRequest?: { id: number; content: string } | null;
   }) => (
     <div data-testid="message-input">
       <button type="button" data-testid="send-button" onClick={() => onSend('hello')}>
         mock send
       </button>
+      <button type="button" data-testid="interrupt-button" onClick={() => onInterrupt?.()}>
+        mock interrupt
+      </button>
       <div data-testid="send-disabled">{String(Boolean(sendDisabled))}</div>
+      <div data-testid="interrupt-enabled">{String(Boolean(interruptEnabled))}</div>
+      <div data-testid="interrupt-pending">{String(Boolean(interruptPending))}</div>
       <div data-testid="resend-request">{resendRequest?.content ?? ''}</div>
     </div>
   ),
@@ -71,11 +100,12 @@ const fetchMessagesMock = vi.fn().mockResolvedValue(undefined);
 const sendMessageMock = vi.fn().mockResolvedValue(undefined);
 const clearRuntimeMock = vi.fn();
 
-const makeMessage = (id: string, content = `message-${id}`) => ({
+const makeMessage = (id: string, content = `message-${id}`, metadata: Record<string, unknown> | null = null) => ({
   id,
   taskId: 'task-1',
   role: 'sdk' as const,
   content,
+  metadata,
   createdAt: '2026-03-07T12:00:00.000Z',
 });
 
@@ -149,7 +179,10 @@ describe('ChatView', () => {
     sessionStorage.clear();
     fetchMessagesMock.mockClear();
     sendMessageMock.mockClear();
+    sendMessageMock.mockResolvedValue(makeMessage('msg-sent-1', 'hello'));
     clearRuntimeMock.mockClear();
+    apiPostMock.mockClear();
+    apiPostMock.mockResolvedValue({ delivered: true });
 
     chatState = {
       messagesByTask: {},
@@ -464,5 +497,349 @@ describe('ChatView', () => {
     await waitFor(() => {
       expect(fetchMessagesMock).toHaveBeenCalledWith('task-1', { force: true });
     });
+  });
+
+  it('sends an interrupt request for the current reply target', async () => {
+    runtimeState = {
+      byTask: {
+        'task-1': {
+          replyInProgress: true,
+          replyTo: 'msg-user-1',
+          statusLine: 'Thinking',
+        },
+      },
+      clearTask: clearRuntimeMock,
+    };
+    useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+
+    render(<ChatView taskId="task-1" />);
+    fireEvent.click(screen.getByTestId('interrupt-button'));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith('/tasks/task-1/interrupt', {
+        target_reply_to: 'msg-user-1',
+      });
+    });
+    expect(screen.getByTestId('interrupt-enabled')).toHaveTextContent('true');
+  });
+
+  it('sends an interrupt request from the message action sheet path', async () => {
+    chatState = {
+      ...chatState,
+      messagesByTask: {
+        'task-1': [makeMessage('msg-user-1', 'hello', null)],
+      },
+    };
+    useChatStoreMock.mockImplementation(() => chatState);
+    runtimeState = {
+      byTask: {
+        'task-1': {
+          replyInProgress: true,
+          replyTo: 'msg-user-1',
+          statusLine: 'Thinking',
+        },
+      },
+      clearTask: clearRuntimeMock,
+    };
+    useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+
+    render(<ChatView taskId="task-1" />);
+    expect(screen.getByTestId('message-interrupt-enabled-msg-user-1')).toHaveTextContent('true');
+    fireEvent.click(screen.getByTestId('message-interrupt-msg-user-1'));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith('/tasks/task-1/interrupt', {
+        target_reply_to: 'msg-user-1',
+      });
+    });
+  });
+
+  it('does not enable interrupt from a completed runtime reply target', async () => {
+    runtimeState = {
+      byTask: {
+        'task-1': {
+          replyInProgress: false,
+          replyTo: 'msg-user-old',
+          statusDoneLine: 'codex finished',
+        },
+      },
+      clearTask: clearRuntimeMock,
+    };
+    useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+
+    render(<ChatView taskId="task-1" />);
+
+    expect(screen.getByTestId('interrupt-enabled')).toHaveTextContent('false');
+    fireEvent.click(screen.getByTestId('interrupt-button'));
+
+    await waitFor(() => {
+      expect(apiPostMock).not.toHaveBeenCalled();
+    });
+    expect(screen.getByText('The current reply is not ready to interrupt yet. Try again in a moment.')).toBeInTheDocument();
+  });
+
+  it('uses the freshly sent message target instead of a stale completed runtime reply target', async () => {
+    runtimeState = {
+      byTask: {
+        'task-1': {
+          replyInProgress: false,
+          replyTo: 'msg-user-old',
+          statusDoneLine: 'codex finished',
+        },
+      },
+      clearTask: clearRuntimeMock,
+    };
+    useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+    sendMessageMock.mockResolvedValue(makeMessage('msg-user-new', 'hello'));
+
+    render(<ChatView taskId="task-1" />);
+    fireEvent.click(screen.getByTestId('send-button'));
+
+    await waitFor(() => {
+      expect(sendMessageMock).toHaveBeenCalledWith('task-1', { content: 'hello', role: 'user' });
+    });
+    expect(screen.getByTestId('interrupt-enabled')).toHaveTextContent('true');
+
+    fireEvent.click(screen.getByTestId('interrupt-button'));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith('/tasks/task-1/interrupt', {
+        target_reply_to: 'msg-user-new',
+      });
+    });
+  });
+
+  it('enables interrupt immediately after sending a message, before runtime status catches up', async () => {
+    sendMessageMock.mockResolvedValue(makeMessage('msg-user-immediate', 'hello'));
+
+    render(<ChatView taskId="task-1" />);
+    fireEvent.click(screen.getByTestId('send-button'));
+
+    await waitFor(() => {
+      expect(sendMessageMock).toHaveBeenCalledWith('task-1', { content: 'hello', role: 'user' });
+    });
+    expect(screen.getByTestId('interrupt-enabled')).toHaveTextContent('true');
+
+    fireEvent.click(screen.getByTestId('interrupt-button'));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith('/tasks/task-1/interrupt', {
+        target_reply_to: 'msg-user-immediate',
+      });
+    });
+  });
+
+  it('falls back to the last sent user message id when runtime reply target is not ready yet', async () => {
+    sendMessageMock.mockResolvedValue(makeMessage('msg-user-fallback', 'hello'));
+
+    render(<ChatView taskId="task-1" />);
+    fireEvent.click(screen.getByTestId('send-button'));
+
+    await waitFor(() => {
+      expect(sendMessageMock).toHaveBeenCalledWith('task-1', { content: 'hello', role: 'user' });
+    });
+
+    runtimeState = {
+      byTask: {
+        'task-1': {
+          replyInProgress: true,
+          statusLine: 'Thinking',
+        },
+      },
+      clearTask: clearRuntimeMock,
+    };
+    useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+
+    fireEvent.click(screen.getByTestId('interrupt-button'));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith('/tasks/task-1/interrupt', {
+        target_reply_to: 'msg-user-fallback',
+      });
+    });
+  });
+
+  it('releases the pending interrupt state when no confirmation arrives in time', async () => {
+    vi.useFakeTimers();
+    runtimeState = {
+      byTask: {
+        'task-1': {
+          replyInProgress: true,
+          replyTo: 'msg-user-1',
+          statusLine: 'Thinking',
+        },
+      },
+      clearTask: clearRuntimeMock,
+    };
+    useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+
+    render(<ChatView taskId="task-1" />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('interrupt-button'));
+      await Promise.resolve();
+    });
+
+    expect(apiPostMock).toHaveBeenCalledWith('/tasks/task-1/interrupt', {
+      target_reply_to: 'msg-user-1',
+    });
+    expect(screen.getByTestId('interrupt-pending')).toHaveTextContent('true');
+
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+
+    expect(screen.getByTestId('interrupt-pending')).toHaveTextContent('false');
+    expect(screen.getByText('Interrupt request was not confirmed. You can try again.')).toBeInTheDocument();
+  });
+
+  it('keeps the pending interrupt target stable and blocks new sends until it settles', async () => {
+    vi.useFakeTimers();
+    runtimeState = {
+      byTask: {
+        'task-1': {
+          replyInProgress: true,
+          replyTo: 'msg-user-1',
+          statusLine: 'Thinking',
+        },
+      },
+      clearTask: clearRuntimeMock,
+    };
+    useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+
+    const view = render(<ChatView taskId="task-1" />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('interrupt-button'));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('interrupt-pending')).toHaveTextContent('true');
+    expect(screen.getByTestId('send-disabled')).toHaveTextContent('true');
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('send-button'));
+      await Promise.resolve();
+    });
+
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(screen.getByText('Wait for the current interrupt to finish before sending another message.')).toBeInTheDocument();
+
+    chatState = {
+      ...chatState,
+      messagesByTask: {
+        'task-1': [
+          makeMessage('msg-interrupted-1', 'Conversation interrupted', {
+            interrupted: true,
+            reply_to: 'msg-user-1',
+          }),
+        ],
+      },
+    };
+    useChatStoreMock.mockImplementation(() => chatState);
+
+    act(() => {
+      view.rerender(<ChatView taskId="task-1" />);
+    });
+
+    expect(screen.getByTestId('interrupt-pending')).toHaveTextContent('false');
+
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+
+    expect(screen.queryByText('Interrupt request was not confirmed. You can try again.')).not.toBeInTheDocument();
+  });
+
+  it('clears pending interrupt state when an interrupt confirmation message arrives before runtime flips', async () => {
+    vi.useFakeTimers();
+    sendMessageMock.mockResolvedValue(makeMessage('msg-user-immediate', 'hello'));
+
+    const view = render(<ChatView taskId="task-1" />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('send-button'));
+      await Promise.resolve();
+    });
+    expect(sendMessageMock).toHaveBeenCalledWith('task-1', { content: 'hello', role: 'user' });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('interrupt-button'));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('interrupt-pending')).toHaveTextContent('true');
+
+    chatState = {
+      ...chatState,
+      messagesByTask: {
+        'task-1': [
+          makeMessage('msg-user-immediate', 'hello'),
+          makeMessage('msg-interrupted-1', 'Conversation interrupted', {
+            interrupted: true,
+            reply_to: 'msg-user-immediate',
+          }),
+        ],
+      },
+    };
+    useChatStoreMock.mockImplementation(() => chatState);
+
+    act(() => {
+      view.rerender(<ChatView taskId="task-1" />);
+    });
+
+    expect(screen.getByTestId('interrupt-pending')).toHaveTextContent('false');
+
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+
+    expect(screen.queryByText('Interrupt request was not confirmed. You can try again.')).not.toBeInTheDocument();
+  });
+
+  it('clears pending interrupt state once runtime confirms the reply has stopped', async () => {
+    vi.useFakeTimers();
+    runtimeState = {
+      byTask: {
+        'task-1': {
+          replyInProgress: true,
+          replyTo: 'msg-user-1',
+          statusLine: 'Thinking',
+        },
+      },
+      clearTask: clearRuntimeMock,
+    };
+    useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+
+    const view = render(<ChatView taskId="task-1" />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('interrupt-button'));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('interrupt-pending')).toHaveTextContent('true');
+
+    runtimeState = {
+      byTask: {
+        'task-1': {
+          replyInProgress: false,
+          statusDoneLine: 'response interrupted',
+        },
+      },
+      clearTask: clearRuntimeMock,
+    };
+    useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+
+    act(() => {
+      view.rerender(<ChatView taskId="task-1" />);
+    });
+
+    expect(screen.getByTestId('interrupt-pending')).toHaveTextContent('false');
+
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+
+    expect(screen.queryByText('Interrupt request was not confirmed. You can try again.')).not.toBeInTheDocument();
   });
 });

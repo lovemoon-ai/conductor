@@ -176,4 +176,56 @@ describe('MessageInput', () => {
     });
     expect(textarea.placeholder).toBe('Paste a concrete task to get started…');
   });
+
+  it('uses Escape to interrupt when the composer is empty', () => {
+    const onInterruptMock = vi.fn();
+
+    render(
+      <MessageInput
+        taskId="task-interrupt"
+        onSend={() => {}}
+        onInterrupt={onInterruptMock}
+        interruptEnabled
+      />,
+    );
+
+    const textarea = screen.getByTestId('message-input-textarea');
+    fireEvent.keyDown(textarea, { key: 'Escape' });
+
+    expect(onInterruptMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not use Escape to interrupt when the composer still has content', () => {
+    const onInterruptMock = vi.fn();
+
+    render(
+      <MessageInput
+        taskId="task-interrupt-content"
+        onSend={() => {}}
+        onInterrupt={onInterruptMock}
+        interruptEnabled
+      />,
+    );
+
+    const textarea = screen.getByTestId('message-input-textarea');
+    fireEvent.change(textarea, { target: { value: 'still typing' } });
+    fireEvent.keyDown(textarea, { key: 'Escape' });
+
+    expect(onInterruptMock).not.toHaveBeenCalled();
+  });
+
+  it('does not open an interrupt action sheet from the composer', () => {
+    render(
+      <MessageInput
+        taskId="task-interrupt-composer"
+        onSend={() => {}}
+        interruptEnabled
+      />,
+    );
+
+    fireEvent.doubleClick(screen.getByTestId('message-input-composer'));
+    fireEvent.doubleClick(screen.getByTestId('message-input-textarea'));
+
+    expect(screen.queryByTestId('message-input-interrupt-button')).not.toBeInTheDocument();
+  });
 });

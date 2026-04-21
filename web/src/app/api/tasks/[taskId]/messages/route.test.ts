@@ -2,6 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET, POST } from "@/app/api/tasks/[taskId]/messages/route";
 import { createMockRequest, extractJson } from "@/__tests__/helpers";
 
+vi.mock("@prisma/client", () => ({
+  Prisma: {
+    PrismaClientKnownRequestError: class PrismaClientKnownRequestError extends Error {
+      code: string;
+
+      constructor(message: string, options: { code?: string } = {}) {
+        super(message);
+        this.code = options.code || "UNKNOWN";
+      }
+    },
+  },
+}));
+
 vi.mock("@/lib/auth/middleware", () => ({
   getActiveSubscriptionUser: vi.fn(),
 }));
@@ -69,6 +82,36 @@ describe("/api/tasks/[taskId]/messages", () => {
     expect(data).toEqual({
       error: "task_type_not_messageable",
       message: "pty_task does not accept chat messages",
+    });
+    expect(db.message.create).not.toHaveBeenCalled();
+    expect(realtimeHub.broadcast).not.toHaveBeenCalled();
+    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+  });
+
+  it("rejects POST user messages when the ai task has no runtime fire owner", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "proj-1",
+      taskType: "ai_task",
+      agentHost: "daemon-a",
+      executionHost: null,
+    } as any);
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("conductor-fire-stale");
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:6152/api/tasks/task-1/messages",
+        body: { content: "hello", role: "user" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data).toEqual({
+      error: "Task missing active fire owner",
+      message: "The task is not connected to an active fire owner. Try again after it reconnects.",
     });
     expect(db.message.create).not.toHaveBeenCalled();
     expect(realtimeHub.broadcast).not.toHaveBeenCalled();

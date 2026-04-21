@@ -197,6 +197,12 @@ export class RemoteAiSession extends EventEmitter {
     return this.callWorker("getSessionUsageSummary", []);
   }
 
+  async interruptCurrentTurn() {
+    return this.callWorker("interruptCurrentTurn", [], {
+      messageType: "control",
+    });
+  }
+
   async runTurn(promptText, options = {}) {
     const { onProgress, ...restOptions } = options || {};
     return this.callWorker("runTurn", [promptText, restOptions], {
@@ -242,7 +248,7 @@ export class RemoteAiSession extends EventEmitter {
     }
   }
 
-  async callWorker(method, args = [], { progressHandler = null } = {}) {
+  async callWorker(method, args = [], { progressHandler = null, messageType = "request" } = {}) {
     if (this.closed) {
       throw createSessionClosedError();
     }
@@ -252,7 +258,7 @@ export class RemoteAiSession extends EventEmitter {
     }
     const requestId = this.nextRequestId++;
     const payload = {
-      type: "request",
+      type: messageType,
       id: requestId,
       method,
       args,
@@ -625,6 +631,14 @@ class LocalAiSessionProxy extends EventEmitter {
   async getSessionUsageSummary() {
     const session = await this.readyPromise;
     return await session.getSessionUsageSummary();
+  }
+
+  async interruptCurrentTurn() {
+    const session = await this.readyPromise;
+    if (typeof session.interruptCurrentTurn === "function") {
+      return await session.interruptCurrentTurn();
+    }
+    return false;
   }
 
   async runTurn(promptText, options = {}) {

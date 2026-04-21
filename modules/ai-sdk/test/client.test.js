@@ -329,6 +329,27 @@ describe("ai-sdk client boundary", () => {
     });
   });
 
+  it("interrupts a worker-backed turn through the control lane", async () => {
+    await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      const session = createAiSession("test-external-alias", {
+        cwd: process.cwd(),
+        logger: { log: () => {} },
+      });
+
+      await session.readyPromise;
+      const turnPromise = session.runTurn("hello [wait-for-interrupt]");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await session.interruptCurrentTurn();
+
+      await assert.rejects(
+        () => turnPromise,
+        (error) => error?.reason === "turn_interrupted",
+      );
+
+      await session.close();
+    });
+  });
+
   it("rejects unsupported backends when no external provider is configured", async () => {
     const session = createAiSession("test-external", {
       cwd: process.cwd(),

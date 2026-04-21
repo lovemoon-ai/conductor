@@ -1,5 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@prisma/client", () => ({
+  Prisma: {
+    PrismaClientKnownRequestError: class PrismaClientKnownRequestError extends Error {
+      code: string;
+
+      constructor(message: string, options: { code?: string } = {}) {
+        super(message);
+        this.code = options.code || "UNKNOWN";
+      }
+    },
+  },
+}));
+
 vi.mock("@/lib/db", () => ({
   db: {
     $transaction: vi.fn(),
@@ -27,6 +40,7 @@ vi.mock("@/lib/realtime/agent-outbox", () => ({
 
 vi.mock("@/lib/realtime/hub", () => ({
   realtimeHub: {
+    acknowledgeAgentCommand: vi.fn(),
     bindTaskToAgent: vi.fn(),
     getTaskAgentHost: vi.fn(),
     hasAgentHost: vi.fn(),
@@ -36,9 +50,9 @@ vi.mock("@/lib/realtime/hub", () => ({
 
 const { db } = await import("@/lib/db");
 const { projectTaskStatusUpdate } = await import("@/lib/channel/task-event-projector");
-const { deliverAgentOutboxForHost } = await import("@/lib/realtime/agent-outbox");
+const { acknowledgeAgentCommand, deliverAgentOutboxForHost } = await import("@/lib/realtime/agent-outbox");
 const { realtimeHub } = await import("@/lib/realtime/hub");
-const { commitTaskStatusUpdate } = await import("./agent-upstream");
+const { commitAgentCommandAck, commitTaskStatusUpdate } = await import("./agent-upstream");
 
 describe("commitTaskStatusUpdate", () => {
   beforeEach(() => {
@@ -52,6 +66,7 @@ describe("commitTaskStatusUpdate", () => {
       taskType: "ai_task",
     } as any);
     vi.mocked(db.task.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(acknowledgeAgentCommand).mockResolvedValue({ count: 1 } as any);
     vi.mocked(deliverAgentOutboxForHost).mockResolvedValue({ attempted: 0, delivered: 0 });
     vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(null);
     vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
@@ -96,5 +111,67 @@ describe("commitTaskStatusUpdate", () => {
       summary: "Stopped",
     });
     expect(result.status).toBe("killed");
+  });
+
+  it("rejects stale fire interrupt acknowledgements for another execution host", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "conductor-fire-a",
+      taskType: "ai_task",
+    } as any);
+
+    await expect(
+      commitAgentCommandAck({
+        userId: "user-1",
+        agentHost: "conductor-fire-b",
+        taskId: "task-1",
+        requestId: "interrupt-1",
+        eventType: "interrupt_turn",
+        accepted: true,
+      }),
+    ).rejects.toThrow("Task task-1 is assigned to conductor-fire-a, not conductor-fire-b");
+
+    expect(realtimeHub.acknowledgeAgentCommand).not.toHaveBeenCalled();
+    expect(acknowledgeAgentCommand).not.toHaveBeenCalled();
+  });
+
+  it("records interrupt acknowledgements from the current execution host", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "conductor-fire-a",
+      taskType: "ai_task",
+    } as any);
+
+    await expect(
+      commitAgentCommandAck({
+        userId: "user-1",
+        agentHost: "conductor-fire-a",
+        taskId: "task-1",
+        requestId: "interrupt-2",
+        eventType: "interrupt_turn",
+        accepted: true,
+      }),
+    ).resolves.toEqual({
+      requestId: "interrupt-2",
+      accepted: true,
+      duplicate: false,
+    });
+
+    expect(realtimeHub.acknowledgeAgentCommand).toHaveBeenCalledWith("task-1", "interrupt-2", true, {
+      agentHost: "conductor-fire-a",
+      eventType: "interrupt_turn",
+    });
+    expect(acknowledgeAgentCommand).toHaveBeenCalledWith({
+      userId: "user-1",
+      requestId: "interrupt-2",
+      accepted: true,
+      eventType: "interrupt_turn",
+    });
   });
 });
