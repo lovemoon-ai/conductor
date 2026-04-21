@@ -28,7 +28,9 @@ type RestartableTask = {
   sessionId: string | null;
   sessionFilePath: string | null;
   launchConfig?: unknown;
-  metadata?: unknown;
+  metadata: unknown;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
 type RestartProjectBinding = {

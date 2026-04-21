@@ -128,7 +128,7 @@ const isInterruptConfirmationMessage = (
 
 export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const interruptTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const interruptTimeoutRef = useRef<number | null>(null);
   const interruptPendingRef = useRef(false);
   const resendRequestIdRef = useRef(0);
   const previousMessageCountRef = useRef(0);
