@@ -30,6 +30,7 @@ vi.mock("@/lib/realtime/hub", () => ({
     sendToAgentHost: vi.fn().mockReturnValue(true),
     broadcast: vi.fn(),
     notifyTaskStatus: vi.fn(),
+    acknowledgeAgentCommand: vi.fn(),
     acknowledgeTaskStop: vi.fn(),
   },
 }));

@@ -1589,15 +1589,27 @@ export function startDaemon(config = {}, deps = {}) {
       }
     }
 
-    watchdogTimer = setInterval(() => {
+    const runMaintenanceTick = async () => {
       void runDaemonWatchdog();
-      // Auto-update checks (internally throttled)
-      void checkForUpdate().catch(() => {});
-      void tryAutoUpdate().catch(() => {});
+      try {
+        await checkForUpdate();
+      } catch {
+        // ignore non-critical version check failures
+      }
+      try {
+        await tryAutoUpdate();
+      } catch {
+        // ignore non-critical auto-update failures
+      }
+    };
+
+    watchdogTimer = setInterval(() => {
+      void runMaintenanceTick();
     }, DAEMON_WATCHDOG_INTERVAL_MS);
     if (typeof watchdogTimer?.unref === "function") {
       watchdogTimer.unref();
     }
+    void runMaintenanceTick();
   })();
 
   function markBackendHttpSuccess(at = Date.now()) {

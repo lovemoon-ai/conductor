@@ -51,8 +51,13 @@ describe("Daemon", () => {
   let wss;
   let daemon;
   let port;
+  let previousHome;
+  let testHomeDir;
 
   before(async () => {
+    previousHome = process.env.HOME;
+    testHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-daemon-home-"));
+    process.env.HOME = testHomeDir;
     wss = new WebSocketServer({ port: 0 });
     await new Promise((resolve) => wss.on("listening", resolve));
     port = wss.address().port;
@@ -61,6 +66,10 @@ describe("Daemon", () => {
   after(() => {
     if (daemon) daemon.close();
     if (wss) wss.close();
+    restoreEnv("HOME", previousHome);
+    if (testHomeDir) {
+      fs.rmSync(testHomeDir, { recursive: true, force: true });
+    }
   });
 
   it("marks node-pty spawn-helper executable before PTY spawn", () => {
@@ -196,6 +205,7 @@ describe("Daemon", () => {
     const daemonInstance = startDaemon(
       {
         BACKEND_URL: "ws://localhost:0",
+        CONFIG_FILE: "/tmp/test-auto-update-local-missing.yaml",
         WORKSPACE_ROOT: "/tmp/test-auto-update-local",
         CLI_PATH: "/tmp/cli.js",
         DAEMON_NAME: "daemon-auto-update-local",
@@ -260,6 +270,7 @@ describe("Daemon", () => {
     const daemonInstance = startDaemon(
       {
         BACKEND_URL: "ws://localhost:0",
+        CONFIG_FILE: "/tmp/test-auto-update-install-missing.yaml",
         WORKSPACE_ROOT: "/tmp/test-auto-update-install",
         CLI_PATH: "/tmp/cli.js",
         DAEMON_NAME: "daemon-auto-update-install",
@@ -412,6 +423,7 @@ describe("Daemon", () => {
     const daemonInstance = startDaemon(
       {
         BACKEND_URL: "ws://localhost:0",
+        CONFIG_FILE: "/tmp/test-auto-update-restart-fail-missing.yaml",
         WORKSPACE_ROOT: "/tmp/test-auto-update-restart-fail",
         CLI_PATH: "/tmp/cli.js",
         DAEMON_NAME: "daemon-auto-update-restart-fail",
@@ -513,6 +525,7 @@ describe("Daemon", () => {
     const daemonInstance = startDaemon(
       {
         BACKEND_URL: "ws://localhost:0",
+        CONFIG_FILE: "/tmp/test-auto-update-pnpm-missing.yaml",
         WORKSPACE_ROOT: "/tmp/test-auto-update-pnpm",
         CLI_PATH: "/tmp/cli.js",
         DAEMON_NAME: "daemon-auto-update-pnpm",
