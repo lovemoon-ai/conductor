@@ -211,3 +211,65 @@ describe('RealtimeHub ai_manager waiter', () => {
     }
   });
 });
+
+describe('RealtimeHub agent command ack waiter', () => {
+  it('resolves true when any expected host accepts the command', async () => {
+    const hub = new RealtimeHub();
+    const pending = hub.waitForAgentCommandAck('task-1', 'req-1', 5000, {
+      expectedHosts: ['conductor-fire-a', 'conductor-fire-b'],
+      eventType: 'interrupt_turn',
+    });
+
+    hub.acknowledgeAgentCommand('task-1', 'req-1', false, {
+      agentHost: 'conductor-fire-a',
+      eventType: 'interrupt_turn',
+    });
+    hub.acknowledgeAgentCommand('task-1', 'req-1', true, {
+      agentHost: 'conductor-fire-b',
+      eventType: 'interrupt_turn',
+    });
+
+    await expect(pending).resolves.toBe(true);
+  });
+
+  it('resolves false when every expected host rejects the command', async () => {
+    const hub = new RealtimeHub();
+    const pending = hub.waitForAgentCommandAck('task-1', 'req-2', 5000, {
+      expectedHosts: ['conductor-fire-a', 'conductor-fire-b'],
+      eventType: 'interrupt_turn',
+    });
+
+    hub.acknowledgeAgentCommand('task-1', 'req-2', false, {
+      agentHost: 'conductor-fire-a',
+      eventType: 'interrupt_turn',
+    });
+    hub.acknowledgeAgentCommand('task-1', 'req-2', false, {
+      agentHost: 'conductor-fire-b',
+      eventType: 'interrupt_turn',
+    });
+
+    await expect(pending).resolves.toBe(false);
+  });
+
+  it('returns false on timeout after at least one expected host explicitly rejects', async () => {
+    vi.useFakeTimers();
+    try {
+      const hub = new RealtimeHub();
+      const pending = hub.waitForAgentCommandAck('task-1', 'req-3', 1000, {
+        expectedHosts: ['conductor-fire-a', 'conductor-fire-b'],
+        eventType: 'interrupt_turn',
+      });
+
+      hub.acknowledgeAgentCommand('task-1', 'req-3', false, {
+        agentHost: 'conductor-fire-a',
+        eventType: 'interrupt_turn',
+      });
+
+      vi.advanceTimersByTime(1000);
+
+      await expect(pending).resolves.toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

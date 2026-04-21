@@ -609,6 +609,156 @@ describe('ConductorClient', () => {
     await client.close();
   });
 
+  test('interrupt_turn events invoke callback and send command acknowledgements', async () => {
+    const interruptEvents: Array<{ taskId: string; requestId?: string; reason?: string; targetReplyTo: string }> = [];
+
+    const client = await ConductorClient.connect({
+      config: makeConfig(),
+      env: {
+        CONDUCTOR_TASK_CREATE_RETRIES: '0',
+        HOSTNAME: 'test-host',
+      },
+      projectPath,
+      backendApi: backendApi as any,
+      wsClient: wsClient as any,
+      sessionStore,
+      agentHost: 'conductor-fire-test-host-1',
+      onInterruptTurn: (event) => {
+        interruptEvents.push(event);
+      },
+    });
+    await client.createTaskSession({
+      project_id: 'proj1',
+      task_title: 'Hello',
+      task_id: 'task-interrupt-1',
+    });
+
+    await wsClient.emit({
+      type: 'interrupt_turn',
+      payload: {
+        task_id: 'task-interrupt-1',
+        request_id: 'req-interrupt-1',
+        reason: 'user_interrupt',
+        target_reply_to: 'msg-user-1',
+      },
+    });
+
+    expect(interruptEvents).toEqual([
+      {
+        taskId: 'task-interrupt-1',
+        requestId: 'req-interrupt-1',
+        reason: 'user_interrupt',
+        targetReplyTo: 'msg-user-1',
+      },
+    ]);
+    expect(backendApi.commitAgentCommandAckCalls).toContainEqual(
+      expect.objectContaining({
+        agentHost: 'conductor-fire-test-host-1',
+        requestId: 'req-interrupt-1',
+        taskId: 'task-interrupt-1',
+        commandEventType: 'interrupt_turn',
+        accepted: true,
+      }),
+    );
+    expect(backendApi.commitTaskStopAckCalls).toHaveLength(0);
+    await client.close();
+  });
+
+  test('interrupt_turn acknowledgements wait for an async callback result before committing', async () => {
+    let resolveInterrupt: ((accepted: boolean) => void) | null = null;
+
+    const client = await ConductorClient.connect({
+      config: makeConfig(),
+      env: {
+        CONDUCTOR_TASK_CREATE_RETRIES: '0',
+        HOSTNAME: 'test-host',
+      },
+      projectPath,
+      backendApi: backendApi as any,
+      wsClient: wsClient as any,
+      sessionStore,
+      agentHost: 'conductor-fire-test-host-1',
+      onInterruptTurn: () =>
+        new Promise<boolean>((resolve) => {
+          resolveInterrupt = resolve;
+        }),
+    });
+    await client.createTaskSession({
+      project_id: 'proj1',
+      task_title: 'Hello',
+      task_id: 'task-interrupt-pending-1',
+    });
+
+    const emitPromise = wsClient.emit({
+      type: 'interrupt_turn',
+      payload: {
+        task_id: 'task-interrupt-pending-1',
+        request_id: 'req-interrupt-pending-1',
+        reason: 'user_interrupt',
+        target_reply_to: 'msg-user-pending-1',
+      },
+    });
+
+    await Promise.resolve();
+    expect(backendApi.commitAgentCommandAckCalls).toHaveLength(0);
+
+    resolveInterrupt?.(true);
+    await emitPromise;
+
+    expect(backendApi.commitAgentCommandAckCalls).toContainEqual(
+      expect.objectContaining({
+        agentHost: 'conductor-fire-test-host-1',
+        requestId: 'req-interrupt-pending-1',
+        taskId: 'task-interrupt-pending-1',
+        commandEventType: 'interrupt_turn',
+        accepted: true,
+      }),
+    );
+    await client.close();
+  });
+
+  test('interrupt_turn acknowledgements stay rejected when the callback returns false', async () => {
+    const client = await ConductorClient.connect({
+      config: makeConfig(),
+      env: {
+        CONDUCTOR_TASK_CREATE_RETRIES: '0',
+        HOSTNAME: 'test-host',
+      },
+      projectPath,
+      backendApi: backendApi as any,
+      wsClient: wsClient as any,
+      sessionStore,
+      agentHost: 'conductor-fire-test-host-1',
+      onInterruptTurn: () => false,
+    });
+    await client.createTaskSession({
+      project_id: 'proj1',
+      task_title: 'Hello',
+      task_id: 'task-interrupt-2',
+    });
+
+    await wsClient.emit({
+      type: 'interrupt_turn',
+      payload: {
+        task_id: 'task-interrupt-2',
+        request_id: 'req-interrupt-2',
+        reason: 'user_interrupt',
+        target_reply_to: 'msg-user-2',
+      },
+    });
+
+    expect(backendApi.commitAgentCommandAckCalls).toContainEqual(
+      expect.objectContaining({
+        agentHost: 'conductor-fire-test-host-1',
+        requestId: 'req-interrupt-2',
+        taskId: 'task-interrupt-2',
+        commandEventType: 'interrupt_turn',
+        accepted: false,
+      }),
+    );
+    await client.close();
+  });
+
   test('sendTaskStatus commits over HTTP and sendRuntimeStatus stays on websocket', async () => {
     const client = await makeClient();
     const statusResult = await client.sendTaskStatus('task1', { status: 'KILLED', summary: 'bye' });

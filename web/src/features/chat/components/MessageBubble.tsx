@@ -7,6 +7,9 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 interface MessageBubbleProps {
   message: Message;
   onResend?: (content: string) => void;
+  onInterrupt?: () => void;
+  interruptEnabled?: boolean;
+  interruptPending?: boolean;
 }
 
 const formatBytes = (value: number) => {
@@ -22,13 +25,20 @@ const formatBytes = (value: number) => {
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 };
 
-export function MessageBubble({ message, onResend }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  onResend,
+  onInterrupt,
+  interruptEnabled = false,
+  interruptPending = false,
+}: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [isToolbarOpen, setIsToolbarOpen] = useState(false);
   const [isTimestampVisible, setIsTimestampVisible] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const lastTouchEndAtRef = useRef(0);
 
   const prefersTapTimestamp = () => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
@@ -87,6 +97,14 @@ export function MessageBubble({ message, onResend }: MessageBubbleProps) {
     setIsToolbarOpen(false);
   };
 
+  const interruptTurn = () => {
+    if (!interruptEnabled || interruptPending) {
+      return;
+    }
+    onInterrupt?.();
+    setIsToolbarOpen(false);
+  };
+
   useEffect(() => {
     if (!isToolbarOpen) {
       return;
@@ -121,7 +139,16 @@ export function MessageBubble({ message, onResend }: MessageBubbleProps) {
     setIsTimestampVisible(false);
   }, [message.id]);
 
+  const isInteractiveTarget = (target: EventTarget | null) => (
+    target instanceof HTMLElement && Boolean(target.closest('a, button, audio, video, summary'))
+  );
+
   const actionButtonClassName = 'inline-flex h-9 w-9 items-center justify-center rounded-xl text-ink transition-colors hover:bg-border/35';
+  const interruptActionLabel = interruptPending
+    ? 'Interrupt pending'
+    : interruptEnabled
+      ? 'Interrupt current reply'
+      : 'No reply to interrupt';
 
   const toolbarActions = (
     <>
@@ -167,6 +194,27 @@ export function MessageBubble({ message, onResend }: MessageBubbleProps) {
           </svg>
         )}
       </button>
+      {onInterrupt ? (
+        <button
+          type="button"
+          data-testid="message-bubble-interrupt-button"
+          aria-label={interruptActionLabel}
+          title={interruptActionLabel}
+          disabled={!interruptEnabled || interruptPending}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            interruptTurn();
+          }}
+          className={`${actionButtonClassName} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent`}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M8 3h8l5 5v8l-5 5H8l-5-5V8l5-5z" />
+            <path d="M9 9l6 6" />
+            <path d="M15 9l-6 6" />
+          </svg>
+        </button>
+      ) : null}
     </>
   );
 
@@ -196,8 +244,7 @@ export function MessageBubble({ message, onResend }: MessageBubbleProps) {
             tabIndex={0}
             aria-expanded={isToolbarOpen}
             onClick={(event) => {
-              const target = event.target as HTMLElement | null;
-              if (target?.closest('a, button, audio, video, summary')) {
+              if (isInteractiveTarget(event.target)) {
                 return;
               }
               if (prefersTapTimestamp()) {
@@ -205,16 +252,29 @@ export function MessageBubble({ message, onResend }: MessageBubbleProps) {
               }
             }}
             onDoubleClick={(event) => {
-              const target = event.target as HTMLElement | null;
-              if (target?.closest('a, button, audio, video, summary')) {
+              if (isInteractiveTarget(event.target)) {
                 return;
               }
-              setIsToolbarOpen((current) => !current);
+              setIsToolbarOpen(true);
+            }}
+            onTouchEnd={(event) => {
+              if (isInteractiveTarget(event.target)) {
+                lastTouchEndAtRef.current = 0;
+                return;
+              }
+              const now = Date.now();
+              if (now - lastTouchEndAtRef.current <= 320) {
+                lastTouchEndAtRef.current = 0;
+                event.preventDefault();
+                setIsToolbarOpen(true);
+                return;
+              }
+              lastTouchEndAtRef.current = now;
             }}
             onKeyDown={(event) => {
               if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
-                setIsToolbarOpen((current) => !current);
+                setIsToolbarOpen(true);
               }
               if (event.key === 'Escape') {
                 setIsToolbarOpen(false);

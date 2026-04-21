@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useChatStore } from '../store';
 import { useRuntimeStore } from '@/features/realtime';
 import { useTasksStore } from '@/features/tasks';
@@ -9,6 +9,7 @@ import { MessageBubble } from './MessageBubble';
 import { MessageInput } from './MessageInput';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { InlineNotice } from '@/components/common/InlineNotice';
+import { getApiClient } from '@/shared/api/client';
 
 interface ChatViewProps {
   taskId: string;
@@ -18,6 +19,7 @@ interface ChatViewProps {
 const SCROLL_STORAGE_PREFIX = 'conductor-task-scroll:';
 const SCROLL_BOTTOM_THRESHOLD_PX = 40;
 const SCROLL_TOP_LOAD_THRESHOLD_PX = 24;
+const INTERRUPT_CONFIRMATION_TIMEOUT_MS = 5000;
 
 interface StoredScrollState {
   scrollTop: number;
@@ -96,8 +98,38 @@ const getAiRuntimeStatusText = (runtime?: {
   return runtime.statusLine?.trim() || runtime.statusDoneLine?.trim() || null;
 };
 
+const getMessageReplyTarget = (message: { metadata?: Record<string, unknown> | null } | null | undefined) => {
+  const metadata = message?.metadata;
+  if (!metadata || typeof metadata !== 'object') {
+    return '';
+  }
+  if (typeof metadata.reply_to === 'string' && metadata.reply_to.trim()) {
+    return metadata.reply_to.trim();
+  }
+  if (typeof metadata.replyTo === 'string' && metadata.replyTo.trim()) {
+    return metadata.replyTo.trim();
+  }
+  return '';
+};
+
+const isInterruptConfirmationMessage = (
+  message: { metadata?: Record<string, unknown> | null } | null | undefined,
+  replyTo: string,
+) => {
+  if (!replyTo) {
+    return false;
+  }
+  const metadata = message?.metadata;
+  if (!metadata || typeof metadata !== 'object' || metadata.interrupted !== true) {
+    return false;
+  }
+  return getMessageReplyTarget(message) === replyTo;
+};
+
 export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const interruptTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const interruptPendingRef = useRef(false);
   const resendRequestIdRef = useRef(0);
   const previousMessageCountRef = useRef(0);
   const pendingRestoreScrollStateRef = useRef<StoredScrollState | null>(null);
@@ -115,9 +147,13 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   const task = tasks.find((t) => t.id === taskId);
   const isTaskRunning = task?.status === 'running';
   const [composerFeedback, setComposerFeedback] = useState<{
+    code?: 'task_not_ready';
     variant: 'warning' | 'error';
     message: string;
   } | null>(null);
+  const [interruptPending, setInterruptPending] = useState(false);
+  const [interruptTargetReplyTo, setInterruptTargetReplyTo] = useState<string | null>(null);
+  const [pendingInterruptReplyTo, setPendingInterruptReplyTo] = useState<string | null>(null);
   const [resendRequest, setResendRequest] = useState<{
     id: number;
     content: string;
@@ -129,6 +165,19 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   const hasMoreBefore = historyState?.hasMoreBefore ?? false;
   const oldestMessageId = historyState?.oldestMessageId ?? null;
   const aiRuntimeStatusText = getAiRuntimeStatusText(runtime);
+  const runtimeReplyInProgress = Boolean(runtime?.replyInProgress);
+  const runtimeReplyTo =
+    runtimeReplyInProgress && typeof runtime?.replyTo === 'string' ? runtime.replyTo.trim() : '';
+  const activeInterruptReplyTo = runtimeReplyTo || interruptTargetReplyTo || '';
+  const interruptEnabled = Boolean(isTaskRunning && activeInterruptReplyTo);
+
+  const clearInterruptTimeout = useCallback(() => {
+    if (interruptTimeoutRef.current === null) {
+      return;
+    }
+    window.clearTimeout(interruptTimeoutRef.current);
+    interruptTimeoutRef.current = null;
+  }, []);
 
   const persistScrollPosition = (scrollTop?: number) => {
     const container = scrollContainerRef.current;
@@ -202,6 +251,16 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   useEffect(() => {
     fetchMessages(taskId);
   }, [taskId, fetchMessages]);
+
+  useEffect(() => (
+    () => {
+      clearInterruptTimeout();
+    }
+  ), [clearInterruptTimeout]);
+
+  useEffect(() => {
+    interruptPendingRef.current = interruptPending;
+  }, [interruptPending]);
 
   useEffect(() => {
     const previousStatus = previousWebSocketStatusRef.current;
@@ -285,18 +344,61 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   }, [isLoading, messages.length, taskId]);
 
   useEffect(() => {
+    clearInterruptTimeout();
     setComposerFeedback(null);
-  }, [taskId]);
+    setInterruptPending(false);
+    setInterruptTargetReplyTo(null);
+    setPendingInterruptReplyTo(null);
+  }, [clearInterruptTimeout, taskId]);
 
   useEffect(() => {
-    if (isTaskRunning && composerFeedback?.variant === 'warning') {
+    if (isTaskRunning && composerFeedback?.code === 'task_not_ready') {
       setComposerFeedback(null);
     }
-  }, [composerFeedback?.variant, isTaskRunning]);
+  }, [composerFeedback?.code, isTaskRunning]);
+
+  useEffect(() => {
+    if (runtimeReplyTo) {
+      setInterruptTargetReplyTo(runtimeReplyTo);
+      return;
+    }
+    if (!runtimeReplyInProgress) {
+      setInterruptTargetReplyTo(null);
+    }
+  }, [runtimeReplyInProgress, runtimeReplyTo]);
+
+  useEffect(() => {
+    if (!runtimeReplyInProgress) {
+      clearInterruptTimeout();
+      setInterruptPending(false);
+      setPendingInterruptReplyTo(null);
+    }
+  }, [clearInterruptTimeout, runtimeReplyInProgress]);
+
+  useEffect(() => {
+    if (!interruptPending || !pendingInterruptReplyTo) {
+      return;
+    }
+    if (!messages.some((message) => isInterruptConfirmationMessage(message, pendingInterruptReplyTo))) {
+      return;
+    }
+    clearInterruptTimeout();
+    setInterruptPending(false);
+    setPendingInterruptReplyTo(null);
+    setInterruptTargetReplyTo((current) => (current === pendingInterruptReplyTo ? null : current));
+  }, [clearInterruptTimeout, interruptPending, messages, pendingInterruptReplyTo]);
 
   const handleSend = async (content: string) => {
+    if (interruptPending) {
+      setComposerFeedback({
+        variant: 'warning',
+        message: 'Wait for the current interrupt to finish before sending another message.',
+      });
+      return;
+    }
     if (!isTaskRunning) {
       setComposerFeedback({
+        code: 'task_not_ready',
         variant: 'warning',
         message:
           task?.status === 'completed'
@@ -312,7 +414,8 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
       setComposerFeedback(null);
       clearRuntime(taskId);
       forceScrollToBottomRef.current = true;
-      await sendMessage(taskId, { content, role: 'user' });
+      const message = await sendMessage(taskId, { content, role: 'user' });
+      setInterruptTargetReplyTo(message.id);
     } catch {
       setComposerFeedback({
         variant: 'error',
@@ -320,6 +423,49 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
       });
     }
   };
+
+  const handleInterrupt = useCallback(async () => {
+    const targetReplyTo = runtimeReplyTo || interruptTargetReplyTo || '';
+    if (!targetReplyTo) {
+      setComposerFeedback({
+        variant: 'warning',
+        message: 'The current reply is not ready to interrupt yet. Try again in a moment.',
+      });
+      return;
+    }
+
+    try {
+      setComposerFeedback(null);
+      setInterruptPending(true);
+      setPendingInterruptReplyTo(targetReplyTo);
+      setInterruptTargetReplyTo(targetReplyTo);
+      clearInterruptTimeout();
+      const api = getApiClient();
+      await api.post(`/tasks/${taskId}/interrupt`, {
+        target_reply_to: targetReplyTo,
+      });
+      interruptTimeoutRef.current = window.setTimeout(() => {
+        interruptTimeoutRef.current = null;
+        if (!interruptPendingRef.current) {
+          return;
+        }
+        setInterruptPending(false);
+        setPendingInterruptReplyTo(null);
+        setComposerFeedback({
+          variant: 'warning',
+          message: 'Interrupt request was not confirmed. You can try again.',
+        });
+      }, INTERRUPT_CONFIRMATION_TIMEOUT_MS);
+    } catch {
+      clearInterruptTimeout();
+      setInterruptPending(false);
+      setPendingInterruptReplyTo(null);
+      setComposerFeedback({
+        variant: 'error',
+        message: 'Failed to interrupt the current reply. Please try again in a moment.',
+      });
+    }
+  }, [clearInterruptTimeout, interruptTargetReplyTo, runtimeReplyTo, taskId]);
 
   const handleResend = (content: string) => {
     resendRequestIdRef.current += 1;
@@ -383,7 +529,16 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
               </div>
             ) : null}
             {messages.map((message) => (
-              <MessageBubble key={message.id} message={message} onResend={handleResend} />
+              <MessageBubble
+                key={message.id}
+                message={message}
+                onResend={handleResend}
+                onInterrupt={() => {
+                  void handleInterrupt();
+                }}
+                interruptEnabled={interruptEnabled}
+                interruptPending={interruptPending}
+              />
             ))}
           </div>
         )}
@@ -407,7 +562,12 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
       <MessageInput
         taskId={taskId}
         onSend={handleSend}
-        sendDisabled={!isTaskRunning}
+        onInterrupt={() => {
+          void handleInterrupt();
+        }}
+        sendDisabled={!isTaskRunning || interruptPending}
+        interruptEnabled={interruptEnabled}
+        interruptPending={interruptPending}
         autoFocus={autoFocusComposer}
         resendRequest={resendRequest}
       />

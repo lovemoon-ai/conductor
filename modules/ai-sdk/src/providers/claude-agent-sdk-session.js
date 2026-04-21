@@ -780,7 +780,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
   async interruptCurrentTurn() {
     const currentTurn = this.currentTurn;
     if (!currentTurn) {
-      return;
+      return false;
     }
     try {
       await currentTurn.query?.interrupt?.();
@@ -797,6 +797,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
     } catch {
       // best effort
     }
+    return true;
   }
 
   async runTurn(promptText, { useInitialImages = false, onProgress = null } = {}) {

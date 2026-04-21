@@ -93,6 +93,24 @@ async function handleRequest(message) {
   }
 }
 
+async function dispatchMessage(message) {
+  try {
+    if (message?.type === "create") {
+      await handleCreate(message);
+      return;
+    }
+    if (message?.type === "request" || message?.type === "control") {
+      await handleRequest(message);
+    }
+  } catch (error) {
+    send({
+      type: message?.type === "create" ? "create_error" : "response",
+      id: message?.id,
+      error: serializeError(error),
+    });
+  }
+}
+
 async function closeSession() {
   if (!session || typeof session.close !== "function") {
     return;
@@ -132,41 +150,32 @@ process.stdin.on("end", async () => {
 const input = readline.createInterface({ input: process.stdin });
 let workQueue = Promise.resolve();
 input.on("line", (line) => {
+  const normalized = String(line || "").trim();
+  if (!normalized) {
+    return;
+  }
+  let message;
+  try {
+    message = JSON.parse(normalized);
+  } catch (error) {
+    send({
+      type: "event",
+      name: "worker_error",
+      payload: serializeError(error),
+    });
+    return;
+  }
+
+  if (message?.type === "control") {
+    void dispatchMessage(message);
+    return;
+  }
+
   workQueue = workQueue
     .catch(() => {
       // keep queue alive after previous failure
     })
     .then(async () => {
-    const normalized = String(line || "").trim();
-    if (!normalized) {
-      return;
-    }
-    let message;
-    try {
-      message = JSON.parse(normalized);
-    } catch (error) {
-      send({
-        type: "event",
-        name: "worker_error",
-        payload: serializeError(error),
-      });
-      return;
-    }
-
-    try {
-      if (message?.type === "create") {
-        await handleCreate(message);
-        return;
-      }
-      if (message?.type === "request") {
-        await handleRequest(message);
-      }
-    } catch (error) {
-      send({
-        type: message?.type === "create" ? "create_error" : "response",
-        id: message?.id,
-        error: serializeError(error),
-      });
-    }
+      await dispatchMessage(message);
     });
 });

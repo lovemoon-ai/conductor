@@ -134,6 +134,116 @@ describe("/api/tasks/[taskId]/attachments", () => {
     expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
   });
 
+  it("routes user attachments to the runtime fire owner instead of a stale bound fire host", async () => {
+    const attachment = {
+      id: "att-1",
+      name: "diagram.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+      kind: "image",
+      downloadUrl: "/api/tasks/task-1/attachments/att-1",
+    };
+    vi.mocked(writeTaskAttachment).mockResolvedValue(attachment as any);
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "proj-1",
+      agentHost: "daemon-a",
+      executionHost: "conductor-fire-runtime",
+    } as any);
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("conductor-fire-stale");
+    vi.mocked(db.message.create).mockResolvedValue({
+      id: "msg-1",
+      taskId: "task-1",
+      role: "user",
+      content: "see attached",
+      metadata: JSON.stringify({ attachments: [attachment] }),
+      createdAt: new Date("2026-03-10T12:00:00.000Z"),
+    } as any);
+
+    const formData = new FormData();
+    formData.set("file", new File(["data"], "diagram.png", { type: "image/png" }));
+    formData.set("role", "user");
+    formData.set("content", "see attached");
+    const request = new NextRequest("http://localhost:6152/api/tasks/task-1/attachments", {
+      method: "POST",
+      body: formData,
+    });
+
+    const response = await POST(request, {
+      params: Promise.resolve({ taskId: "task-1" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(realtimeHub.broadcast).toHaveBeenCalledWith(
+      "user-1",
+      "proj-1",
+      expect.objectContaining({
+        type: "task_user_message",
+      }),
+    );
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentHost: "conductor-fire-runtime",
+        eventType: "task_user_message",
+      }),
+      expect.objectContaining({
+        agentHost: "conductor-fire-runtime",
+      }),
+    );
+  });
+
+  it("rejects user attachments without a runtime fire owner", async () => {
+    const attachment = {
+      id: "att-1",
+      name: "diagram.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+      kind: "image",
+      downloadUrl: "/api/tasks/task-1/attachments/att-1",
+    };
+    vi.mocked(writeTaskAttachment).mockResolvedValue(attachment as any);
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "proj-1",
+      agentHost: "daemon-a",
+      executionHost: null,
+    } as any);
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("conductor-fire-stale");
+    vi.mocked(db.message.create).mockResolvedValue({
+      id: "msg-1",
+      taskId: "task-1",
+      role: "user",
+      content: "see attached",
+      metadata: JSON.stringify({ attachments: [attachment] }),
+      createdAt: new Date("2026-03-10T12:00:00.000Z"),
+    } as any);
+
+    const formData = new FormData();
+    formData.set("file", new File(["data"], "diagram.png", { type: "image/png" }));
+    formData.set("role", "user");
+    formData.set("content", "see attached");
+    const request = new NextRequest("http://localhost:6152/api/tasks/task-1/attachments", {
+      method: "POST",
+      body: formData,
+    });
+
+    const response = await POST(request, {
+      params: Promise.resolve({ taskId: "task-1" }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data).toEqual({
+      error: "Task missing active fire owner",
+      message: "The task is not connected to an active fire owner. Try again after it reconnects.",
+    });
+    expect(writeTaskAttachment).not.toHaveBeenCalled();
+    expect(db.message.create).not.toHaveBeenCalled();
+    expect(db.task.update).not.toHaveBeenCalled();
+    expect(realtimeHub.broadcast).not.toHaveBeenCalled();
+    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+  });
+
   it("streams a stored attachment back to an authenticated user", async () => {
     const attachment = {
       id: "att-1",

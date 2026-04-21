@@ -67,6 +67,7 @@ export interface ConductorClientConnectOptions {
   onDisconnected?: (event: WebSocketDisconnectEvent) => void;
   onPong?: (event: WebSocketPongEvent) => void;
   onStopTask?: (event: StopTaskEvent) => Promise<void> | void;
+  onInterruptTurn?: (event: InterruptTurnEvent) => Promise<boolean | void> | boolean | void;
 }
 
 interface ConductorClientInit {
@@ -83,6 +84,7 @@ interface ConductorClientInit {
   downstreamCursorStore: DownstreamCursorStore;
   agentHost: string;
   onStopTask?: (event: StopTaskEvent) => Promise<void> | void;
+  onInterruptTurn?: (event: InterruptTurnEvent) => Promise<boolean | void> | boolean | void;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -91,6 +93,13 @@ export interface StopTaskEvent {
   taskId: string;
   requestId?: string;
   reason?: string;
+}
+
+export interface InterruptTurnEvent {
+  taskId: string;
+  requestId?: string;
+  reason?: string;
+  targetReplyTo: string;
 }
 
 export interface FlushPendingUpstreamEventsOptions {
@@ -111,6 +120,7 @@ export class ConductorClient {
   private downstreamCursorStore: DownstreamCursorStore;
   private readonly agentHost: string;
   private readonly onStopTask?: (event: StopTaskEvent) => Promise<void> | void;
+  private readonly onInterruptTurn?: (event: InterruptTurnEvent) => Promise<boolean | void> | boolean | void;
   private deliveryScopeId: string;
   private closed = false;
   private durableOutboxFlushPromise: Promise<void> | null = null;
@@ -130,6 +140,7 @@ export class ConductorClient {
     this.downstreamCursorStore = init.downstreamCursorStore;
     this.agentHost = init.agentHost;
     this.onStopTask = init.onStopTask;
+    this.onInterruptTurn = init.onInterruptTurn;
     this.deliveryScopeId = init.deliveryScopeId;
     this.wsClient.registerHandler(this.handleBackendEvent);
   }
@@ -177,6 +188,7 @@ export class ConductorClient {
       downstreamCursorStore,
       agentHost,
       onStopTask: options.onStopTask,
+      onInterruptTurn: options.onInterruptTurn,
     });
     await client.wsClient.connect();
     if (client.shouldAutoFlushDurableOutbox()) {
@@ -703,6 +715,11 @@ export class ConductorClient {
   }
 
   private readonly handleBackendEvent: WebSocketHandler = async (payload) => {
+    if (typeof payload?.type === 'string' && payload.type === 'interrupt_turn') {
+      await this.handleInterruptTurnCommand(payload);
+      return;
+    }
+
     const command = this.extractDownstreamCommandContext(payload);
     if (command?.eventType === 'stop_task') {
       await this.handleStopTaskCommand(payload, command);
@@ -819,6 +836,52 @@ export class ConductorClient {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[sdk] stop_task callback failed for task ${taskId}: ${message}`);
+      return false;
+    }
+  }
+
+  private async handleInterruptTurnCommand(payload: BackendEnvelope): Promise<void> {
+    const accepted = await this.invokeInterruptTurnHandler(payload);
+    await this.maybeAckInboundCommand(payload, { accepted });
+  }
+
+  private async invokeInterruptTurnHandler(payload: BackendEnvelope): Promise<boolean> {
+    const data =
+      payload?.payload && typeof payload.payload === 'object'
+        ? (payload.payload as Record<string, any>)
+        : null;
+    if (!data) {
+      return false;
+    }
+
+    const taskId = typeof data.task_id === 'string' ? data.task_id.trim() : '';
+    const requestId = typeof data.request_id === 'string' ? data.request_id.trim() : '';
+    const reason = typeof data.reason === 'string' ? data.reason.trim() : '';
+    const targetReplyTo =
+      typeof data.target_reply_to === 'string'
+        ? data.target_reply_to.trim()
+        : typeof data.targetReplyTo === 'string'
+          ? data.targetReplyTo.trim()
+          : '';
+    if (!taskId || !targetReplyTo) {
+      return false;
+    }
+
+    if (!this.onInterruptTurn) {
+      return false;
+    }
+
+    try {
+      const accepted = await this.onInterruptTurn({
+        taskId,
+        requestId: requestId || undefined,
+        reason: reason || undefined,
+        targetReplyTo,
+      });
+      return accepted !== false;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[sdk] interrupt_turn callback failed for task ${taskId}: ${message}`);
       return false;
     }
   }
@@ -1024,7 +1087,7 @@ export class ConductorClient {
     options: { accepted?: boolean } = {},
   ): Promise<void> {
     const eventType = typeof payload?.type === 'string' ? payload.type : '';
-    if (eventType !== 'task_user_message' && eventType !== 'task_action') {
+    if (eventType !== 'task_user_message' && eventType !== 'task_action' && eventType !== 'interrupt_turn') {
       return;
     }
     const data =

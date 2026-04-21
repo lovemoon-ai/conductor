@@ -22,8 +22,11 @@ const PLACEHOLDER_MESSAGES = [
 interface MessageInputProps {
   taskId: string;
   onSend: (content: string) => void;
+  onInterrupt?: () => void;
   disabled?: boolean;
   sendDisabled?: boolean;
+  interruptEnabled?: boolean;
+  interruptPending?: boolean;
   autoFocus?: boolean;
   resendRequest?: {
     id: number;
@@ -48,8 +51,11 @@ const normalizeHistory = (value: unknown): string[] => {
 export function MessageInput({
   taskId,
   onSend,
+  onInterrupt,
   disabled,
   sendDisabled = false,
+  interruptEnabled = false,
+  interruptPending = false,
   autoFocus = false,
   resendRequest = null,
 }: MessageInputProps) {
@@ -259,6 +265,13 @@ export function MessageInput({
     submitContent(content);
   };
 
+  const triggerInterrupt = useCallback(() => {
+    if (!interruptEnabled || interruptPending) {
+      return;
+    }
+    onInterrupt?.();
+  }, [interruptEnabled, interruptPending, onInterrupt]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowUp') {
       if (e.nativeEvent.isComposing || isComposingRef.current || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) {
@@ -303,6 +316,21 @@ export function MessageInput({
       return;
     }
 
+    if (e.key === 'Escape') {
+      if (e.nativeEvent.isComposing || isComposingRef.current) {
+        return;
+      }
+      if (content.trim()) {
+        return;
+      }
+      if (!interruptEnabled || interruptPending) {
+        return;
+      }
+      e.preventDefault();
+      triggerInterrupt();
+      return;
+    }
+
     if (e.key !== 'Enter') return;
     if (e.nativeEvent.isComposing || isComposingRef.current) return;
     if (e.ctrlKey || e.metaKey) {
@@ -327,6 +355,7 @@ export function MessageInput({
       <div className="w-full">
         <div
           ref={composerRef}
+          data-testid="message-input-composer"
           className="w-full min-h-11 rounded-2xl border border-zinc-50 bg-paper px-3 py-3 transition-all dark:border-zinc-700/70 focus-within:border-accent focus-within:shadow-[0_0_0_4px_rgba(228,87,46,0.1)]"
         >
           <div className={isSendOnNextLine ? 'flex flex-col gap-2' : 'flex items-center gap-2'}>

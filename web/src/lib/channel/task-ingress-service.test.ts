@@ -209,6 +209,7 @@ describe('task-ingress-service', () => {
       userId: 'user-1',
       taskId: 'task-1',
       content: 'continue',
+      role: 'user',
       metadata: { source: 'web' },
     });
 
@@ -237,6 +238,90 @@ describe('task-ingress-service', () => {
         agentHost: 'conductor-fire-runtime',
       }),
     );
+  });
+
+  it('ignores a stale bound fire host when an app task has a runtime fire owner', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1',
+      projectId: 'proj-1',
+      agentHost: 'daemon-a',
+      executionHost: 'conductor-fire-runtime',
+    } as any);
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue('conductor-fire-stale');
+
+    await appendUserMessageToTask({
+      userId: 'user-1',
+      taskId: 'task-1',
+      content: 'continue',
+      role: 'user',
+    });
+
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentHost: 'conductor-fire-runtime',
+        eventType: 'task_user_message',
+      }),
+      expect.objectContaining({
+        agentHost: 'conductor-fire-runtime',
+      }),
+    );
+  });
+
+  it('keeps manual fire user messages on the persisted fire owner when the bound host is stale', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1',
+      projectId: 'proj-1',
+      agentHost: 'conductor-fire-manual',
+      executionHost: 'conductor-fire-manual',
+    } as any);
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue('conductor-fire-stale');
+
+    await appendUserMessageToTask({
+      userId: 'user-1',
+      taskId: 'task-1',
+      content: 'continue',
+      role: 'user',
+    });
+
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentHost: 'conductor-fire-manual',
+        eventType: 'task_user_message',
+      }),
+      expect.objectContaining({
+        agentHost: 'conductor-fire-manual',
+      }),
+    );
+  });
+
+  it('rejects a user message for an app task without a runtime fire owner', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1',
+      projectId: 'proj-1',
+      agentHost: 'daemon-a',
+      executionHost: null,
+    } as any);
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue('conductor-fire-stale');
+
+    await expect(
+      appendUserMessageToTask({
+        userId: 'user-1',
+        taskId: 'task-1',
+        content: 'continue',
+        role: 'user',
+      }),
+    ).rejects.toMatchObject({
+      code: 'TASK_MISSING_ACTIVE_FIRE_OWNER',
+      status: 409,
+      details: {
+        error: 'Task missing active fire owner',
+      },
+    });
+
+    expect(db.message.create).not.toHaveBeenCalled();
+    expect(db.task.update).not.toHaveBeenCalled();
+    expect(projectTaskMessage).not.toHaveBeenCalled();
+    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
   });
 
   it('keeps a freshly updated task at the top on a fresh /api/tasks read after message activity', async () => {

@@ -584,6 +584,39 @@ export class FireWatchdog {
   }
 }
 
+export function createPendingRemoteInterruptQueue() {
+  const pending = [];
+
+  return {
+    enqueue(event) {
+      return new Promise((resolve) => {
+        pending.push({ event, resolve });
+      });
+    },
+
+    async flushWith(dispatch) {
+      while (pending.length > 0) {
+        const next = pending.shift();
+        if (!next) {
+          continue;
+        }
+        try {
+          next.resolve(await dispatch(next.event));
+        } catch {
+          next.resolve(false);
+        }
+      }
+    },
+
+    rejectAll() {
+      while (pending.length > 0) {
+        const next = pending.shift();
+        next?.resolve(false);
+      }
+    },
+  };
+}
+
 async function main() {
   syncPwdEnvWithProcessCwdForDaemonLaunch();
   const cliArgs = await parseCliArgs();
@@ -644,6 +677,7 @@ async function main() {
   let reconnectRunner = null;
   let reconnectTaskId = null;
   let pendingRemoteStopEvent = null;
+  const pendingRemoteInterruptQueue = createPendingRemoteInterruptQueue();
   let conductor = null;
   let reconnectResumeInFlight = false;
   let fireShuttingDown = false;
@@ -713,6 +747,21 @@ async function main() {
     pendingRemoteStopEvent = event;
   };
 
+  const handleInterruptTurnCommand = async (event) => {
+    fireWatchdog.onInbound();
+    if (!event || typeof event !== "object") {
+      return false;
+    }
+    const taskId = typeof event.taskId === "string" ? event.taskId : "";
+    if (reconnectTaskId && taskId && taskId !== reconnectTaskId) {
+      return false;
+    }
+    if (reconnectRunner && typeof reconnectRunner.requestInterruptFromRemote === "function") {
+      return await reconnectRunner.requestInterruptFromRemote(event);
+    }
+    return await pendingRemoteInterruptQueue.enqueue(event);
+  };
+
   if (cliArgs.configFile) {
     env.CONDUCTOR_CONFIG = cliArgs.configFile;
   }
@@ -763,6 +812,7 @@ async function main() {
         fireWatchdog.onPong(event);
       },
       onStopTask: handleStopTaskCommand,
+      onInterruptTurn: handleInterruptTurnCommand,
     });
 
     const taskContext = await ensureTaskContext(conductor, {
@@ -860,6 +910,7 @@ async function main() {
       await runner.requestStopFromRemote(pendingRemoteStopEvent);
       pendingRemoteStopEvent = null;
     }
+    await pendingRemoteInterruptQueue.flushWith((event) => runner.requestInterruptFromRemote(event));
 
     const signals = new AbortController();
     let shutdownSignal = null;
@@ -973,6 +1024,7 @@ async function main() {
       }
     }
   } finally {
+    pendingRemoteInterruptQueue.rejectAll();
     fireShuttingDown = true;
     fireWatchdog.stop();
     if (backendSession && typeof backendSession.close === "function") {
@@ -1738,6 +1790,9 @@ export class BridgeRunner {
       os.hostname();
     this.needsReconnectRecovery = false;
     this.remoteStopInfo = null;
+    this.remoteInterruptsByReplyTo = new Map();
+    this.pendingInterruptRetryTimers = new Map();
+    this.activeTurnReplyTo = "";
     this.sessionAnnouncementSent = false;
     this.boundSessionId = "";
     this.errorLoop = null;
@@ -1995,6 +2050,200 @@ export class BridgeRunner {
         log(`Failed to stop backend session for ${this.taskId}: ${error?.message || error}`);
       }
     }
+  }
+
+  normalizeReplyTarget(replyTo) {
+    return typeof replyTo === "string" ? replyTo.trim() : "";
+  }
+
+  isTurnInterruptedError(error) {
+    const reason = typeof error?.reason === "string" ? error.reason.trim().toLowerCase() : "";
+    if (reason === "turn_interrupted" || reason === "turn_cancelled") {
+      return true;
+    }
+    const turnStatus = typeof error?.turnStatus === "string" ? error.turnStatus.trim().toLowerCase() : "";
+    if (
+      turnStatus === "interrupted" ||
+      turnStatus === "cancelled" ||
+      turnStatus === "canceled" ||
+      turnStatus === "aborted"
+    ) {
+      return true;
+    }
+    const name = typeof error?.name === "string" ? error.name.trim().toLowerCase() : "";
+    if (name === "aborterror") {
+      return true;
+    }
+    const message = String(error?.message || error || "").toLowerCase();
+    return (
+      message.includes(" interrupted") ||
+      message.includes("interrupt ") ||
+      message.includes("turn interrupted") ||
+      message.includes("cancelled") ||
+      message.includes("canceled") ||
+      message.includes("aborted")
+    );
+  }
+
+  async requestInterruptFromRemote(event = {}) {
+    const taskId = typeof event.taskId === "string" ? event.taskId.trim() : "";
+    if (taskId && taskId !== this.taskId) {
+      return false;
+    }
+    const requestId = typeof event.requestId === "string" ? event.requestId.trim() : "";
+    const reason = typeof event.reason === "string" ? event.reason.trim() : "";
+    const targetReplyTo = this.normalizeReplyTarget(event.targetReplyTo);
+    if (!targetReplyTo) {
+      return false;
+    }
+    if (this.processedMessageIds.has(targetReplyTo)) {
+      this.copilotLog(`ignore late interrupt_turn for processed replyTo=${targetReplyTo}`);
+      return false;
+    }
+
+    const existing = this.remoteInterruptsByReplyTo.get(targetReplyTo) || {};
+    const interruptInfo = {
+      requestId: requestId || existing.requestId || null,
+      reason: reason || existing.reason || "user_interrupt",
+      issued: Boolean(existing.issued),
+    };
+    this.remoteInterruptsByReplyTo.set(targetReplyTo, interruptInfo);
+    log(
+      `Received interrupt_turn for ${this.taskId} replyTo=${targetReplyTo}${
+        interruptInfo.reason ? ` (${interruptInfo.reason})` : ""
+      }`,
+    );
+    return await this.issueInterruptForReplyTarget(targetReplyTo);
+  }
+
+  async issueInterruptForReplyTarget(replyTo) {
+    const normalizedReplyTo = this.normalizeReplyTarget(replyTo);
+    if (!normalizedReplyTo) {
+      return false;
+    }
+    const interruptInfo = this.remoteInterruptsByReplyTo.get(normalizedReplyTo);
+    if (!interruptInfo) {
+      return false;
+    }
+    if (interruptInfo.issued) {
+      return true;
+    }
+    const supportsTurnInterrupt = typeof this.backendSession?.interruptCurrentTurn === "function";
+    const isActiveTarget = this.runningTurn && normalizedReplyTo === this.activeTurnReplyTo;
+    const isInFlightTarget = this.inFlightMessageIds.has(normalizedReplyTo);
+
+    if (!isActiveTarget && isInFlightTarget) {
+      this.copilotLog(`interrupt arrived after replyTo=${normalizedReplyTo} stopped being interruptible`);
+      return false;
+    }
+
+    if (!isActiveTarget) {
+      if (!supportsTurnInterrupt) {
+        log(`Backend session for ${this.taskId} does not support turn interruption`);
+        return false;
+      }
+      this.copilotLog(`queued interrupt request for future replyTo=${normalizedReplyTo}`);
+      return true;
+    }
+
+    if (!supportsTurnInterrupt) {
+      log(`Backend session for ${this.taskId} does not support turn interruption`);
+      return false;
+    }
+    try {
+      const interrupted = await this.backendSession.interruptCurrentTurn();
+      if (interrupted === false) {
+        interruptInfo.issued = false;
+        this.remoteInterruptsByReplyTo.set(normalizedReplyTo, interruptInfo);
+        if (
+          this.runningTurn &&
+          this.activeTurnReplyTo === normalizedReplyTo &&
+          this.inFlightMessageIds.has(normalizedReplyTo)
+        ) {
+          this.copilotLog(`backend interrupt not ready replyTo=${normalizedReplyTo}; retrying`);
+          this.scheduleInterruptRetryForReplyTarget(normalizedReplyTo);
+          return true;
+        }
+        return false;
+      }
+      interruptInfo.issued = true;
+      this.remoteInterruptsByReplyTo.set(normalizedReplyTo, interruptInfo);
+      this.copilotLog(`requested backend interrupt replyTo=${normalizedReplyTo}`);
+      return true;
+    } catch (error) {
+      interruptInfo.issued = false;
+      this.remoteInterruptsByReplyTo.set(normalizedReplyTo, interruptInfo);
+      log(`Failed to interrupt replyTo=${normalizedReplyTo} for ${this.taskId}: ${error?.message || error}`);
+      return false;
+    }
+  }
+
+  scheduleInterruptRetryForReplyTarget(replyTo) {
+    const normalizedReplyTo = this.normalizeReplyTarget(replyTo);
+    if (!normalizedReplyTo || this.pendingInterruptRetryTimers.has(normalizedReplyTo)) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.pendingInterruptRetryTimers.delete(normalizedReplyTo);
+      const interruptInfo = this.remoteInterruptsByReplyTo.get(normalizedReplyTo);
+      if (
+        !interruptInfo ||
+        interruptInfo.issued ||
+        this.processedMessageIds.has(normalizedReplyTo) ||
+        !this.runningTurn ||
+        this.activeTurnReplyTo !== normalizedReplyTo ||
+        !this.inFlightMessageIds.has(normalizedReplyTo)
+      ) {
+        return;
+      }
+      void this.issueInterruptForReplyTarget(normalizedReplyTo);
+    }, 50);
+    if (typeof timer.unref === "function") {
+      timer.unref();
+    }
+    this.pendingInterruptRetryTimers.set(normalizedReplyTo, timer);
+  }
+
+  clearInterruptRetryForReplyTarget(replyTo) {
+    const normalizedReplyTo = this.normalizeReplyTarget(replyTo);
+    const timer = this.pendingInterruptRetryTimers.get(normalizedReplyTo);
+    if (!timer) {
+      return;
+    }
+    clearTimeout(timer);
+    this.pendingInterruptRetryTimers.delete(normalizedReplyTo);
+  }
+
+  async handleInterruptedTurn(replyTo, interruptInfo) {
+    const normalizedReplyTo = this.normalizeReplyTarget(replyTo);
+    this.clearInterruptRetryForReplyTarget(normalizedReplyTo);
+    this.copilotLog(`turn interrupted replyTo=${normalizedReplyTo || "latest"}`);
+    await this.reportRuntimeStatus(
+      {
+        phase: "interrupted",
+        reply_in_progress: false,
+        status_done_line: "Conversation interrupted",
+      },
+      normalizedReplyTo,
+    );
+    try {
+      await this.conductor.sendMessage(this.taskId, "Conversation interrupted", {
+        backend: this.backendName,
+        reply_to: normalizedReplyTo || undefined,
+        interrupted: true,
+        interruption_request_id: interruptInfo?.requestId || undefined,
+        reason: interruptInfo?.reason || undefined,
+        cli_args: this.cliArgs,
+      });
+    } catch (error) {
+      log(`Failed to send interrupt confirmation for ${this.taskId}: ${error?.message || error}`);
+    }
+    if (normalizedReplyTo) {
+      this.processedMessageIds.add(normalizedReplyTo);
+      this.remoteInterruptsByReplyTo.delete(normalizedReplyTo);
+    }
+    this.resetErrorLoop();
   }
 
   async recoverAfterReconnect() {
@@ -2509,6 +2758,7 @@ export class BridgeRunner {
     }
     this.lastRuntimeStatusSignature = null;
     this.runningTurn = true;
+    this.activeTurnReplyTo = this.normalizeReplyTarget(replyTo);
     const turnStartedAt = Date.now();
     let turnWatchdog = null;
     if (this.isCopilotBackend) {
@@ -2547,12 +2797,15 @@ export class BridgeRunner {
         );
       }
 
-      const result = await this.backendSession.runTurn(content, {
+      const turnPromise = this.backendSession.runTurn(content, {
         useInitialImages,
         onProgress: (payload) => {
           void this.reportRuntimeStatus(payload, replyTo);
         },
       });
+      await this.issueInterruptForReplyTarget(replyTo);
+      const result = await turnPromise;
+      this.activeTurnReplyTo = "";
       this.copilotLog(
         `runTurn completed replyTo=${replyTo || "latest"} elapsedMs=${Date.now() - turnStartedAt} answerLen=${String(
           result.text || "",
@@ -2590,6 +2843,10 @@ export class BridgeRunner {
       }
       await this.syncBackendSessionBinding();
       if (replyTo) {
+        this.clearInterruptRetryForReplyTarget(replyTo);
+        this.remoteInterruptsByReplyTo.delete(replyTo);
+      }
+      if (replyTo) {
         this.processedMessageIds.add(replyTo);
       }
       if (isQueuedInitialPromptMessage) {
@@ -2607,11 +2864,17 @@ export class BridgeRunner {
         this.copilotLog(`sdk_message sent replyTo=${replyTo || "latest"} responseLen=${responseText.length}`);
       }
     } catch (error) {
+      this.activeTurnReplyTo = "";
       const errorMessage = error instanceof Error ? error.message : String(error);
       if (this.stopped && (this.remoteStopInfo || isSessionClosedError(error))) {
         this.copilotLog(
           `turn interrupted by stop_task replyTo=${replyTo || "latest"} elapsedMs=${Date.now() - turnStartedAt}`,
         );
+        return;
+      }
+      const interruptInfo = replyTo ? this.remoteInterruptsByReplyTo.get(replyTo) : null;
+      if (interruptInfo && this.isTurnInterruptedError(error)) {
+        await this.handleInterruptedTurn(replyTo, interruptInfo);
         return;
       }
       if (await this.settleCodexCheckpointUnavailableAfterStream(replyTo, errorMessage)) {
@@ -2670,7 +2933,9 @@ export class BridgeRunner {
       }
       if (replyTo) {
         this.inFlightMessageIds.delete(replyTo);
+        this.clearInterruptRetryForReplyTarget(replyTo);
       }
+      this.activeTurnReplyTo = "";
       this.copilotLog(
         `turn end replyTo=${replyTo || "latest"} elapsedMs=${Date.now() - turnStartedAt} processedIds=${this.processedMessageIds.size}`,
       );
