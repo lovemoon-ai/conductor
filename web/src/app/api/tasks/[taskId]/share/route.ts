@@ -1,14 +1,9 @@
-import { randomBytes } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
-import { SHARED_TASK_KIND_USER } from "@/lib/tasks/shared-task";
+import { generateShareToken, SHARED_TASK_KIND_USER } from "@/lib/tasks/shared-task";
 
 const SHARE_LINK_TTL_DAYS = 7;
-
-function generateToken(): string {
-  return randomBytes(16).toString("base64url");
-}
 
 function buildShareExpiration(from = new Date()): Date {
   return new Date(from.getTime() + SHARE_LINK_TTL_DAYS * 24 * 60 * 60 * 1000);
@@ -57,7 +52,7 @@ export async function POST(
         taskId,
         userId: user.id,
         kind: SHARED_TASK_KIND_USER,
-        token: generateToken(),
+        token: generateShareToken(),
         expiresAt,
       },
     });

@@ -12,7 +12,16 @@ export const SHARED_TASK_KIND_RESUME_HANDOFF = "resume_handoff";
 // than necessary.
 const RESUME_HANDOFF_TTL_MS = 24 * 60 * 60 * 1000;
 
-function generateShareToken(): string {
+/**
+ * Single source of truth for share-token generation. Both user-facing share
+ * links (`/api/tasks/[taskId]/share`) and internal resume-handoff links
+ * (`createInternalResumeHandoffShare`) must mint tokens the same way so the
+ * entropy budget cannot drift between callers.
+ *
+ * 16 bytes → 22-char base64url ≈ 128 bits of entropy. The token is the only
+ * access credential for `/share/<token>/plain`; do not reduce.
+ */
+export function generateShareToken(): string {
   return randomBytes(16).toString("base64url");
 }
 

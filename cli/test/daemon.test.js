@@ -3312,12 +3312,11 @@ describe("Daemon", () => {
     }
   });
 
-  it("restarts same-backend tasks without calling bridge and skips UNKNOWN before running", async () => {
+  it("restarts same-backend tasks in place and skips UNKNOWN before running", async () => {
     let handler;
     let connected = false;
     const spawnCalls = [];
     const sentEvents = [];
-    let bridgeCalls = 0;
 
     const daemonInstance = startDaemon(
       {
@@ -3349,10 +3348,6 @@ describe("Daemon", () => {
           write: () => {},
           end: () => {},
         }),
-        bridgeSessionBetweenBackends: async () => {
-          bridgeCalls += 1;
-          throw new Error("bridge should not be called");
-        },
         fetch: async (url) => {
           if (String(url).includes("/api/projects/")) {
             return {
@@ -3399,7 +3394,6 @@ describe("Daemon", () => {
 
     await waitUntil(() => spawnCalls.length === 1, { message: "same-backend restart to spawn" });
 
-    assert.strictEqual(bridgeCalls, 0);
     assert.strictEqual(spawnCalls.length, 1);
     assert.deepStrictEqual(spawnCalls[0].args, [
       "/tmp/cli.js",

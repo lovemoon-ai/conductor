@@ -3938,6 +3938,22 @@ export function startDaemon(config = {}, deps = {}) {
     }
   }
 
+  // The handoff URL embeds a bearer-style share token in its path. We mask
+  // it before writing to logs so daemon log files / `ps`-visible output don't
+  // leak a 24h read-grant for the entire transcript. The full URL still goes
+  // into the spawned CLI's argv (necessarily — that's how the AI fetches it),
+  // but at least the persistent log surface is safe.
+  function maskHandoffUrlForLogs(url) {
+    if (typeof url !== "string" || !url) {
+      return "";
+    }
+    // .../share/<token>/plain → .../share/<…last4>/plain
+    return url.replace(/\/share\/([^/]+)(\/plain)?$/, (_, token, suffix = "") => {
+      const tail = token.length > 4 ? token.slice(-4) : token;
+      return `/share/<masked:…${tail}>${suffix}`;
+    });
+  }
+
   // Build the initial prompt the successor CLI receives when forking across
   // AI backends. Instead of translating the source backend's JSONL session
   // into the target's native format (brittle; depends on private IR schemas),
@@ -4730,7 +4746,7 @@ export function startDaemon(config = {}, deps = {}) {
 
     log(`Task title: ${title || normalizedTargetTaskId}`);
     if (isForkMode) {
-      log(`Resume via handoff URL: ${normalizedResumeContextUrl}`);
+      log(`Resume via handoff URL: ${maskHandoffUrlForLogs(normalizedResumeContextUrl)}`);
     } else {
       log(`Resume session: ${resolvedResumeSessionId}`);
     }

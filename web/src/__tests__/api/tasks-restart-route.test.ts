@@ -658,6 +658,35 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(forkPayload.payload.resume_context_url).toMatch(
       /\/share\/handoff-token-abc\/plain$/,
     );
+    // Guard against double slash and ensure no scheme-stripping. The base URL
+    // ends with no slash; the helper joins with a single `/share/`.
+    expect(forkPayload.payload.resume_context_url).not.toMatch(/\/\/share\//);
+    expect(forkPayload.payload.resume_context_url).toMatch(
+      /^https?:\/\/[^/]+\/share\//,
+    );
+  });
+
+  it("returns 500 and skips outbox dispatch when minting the resume-handoff share fails", async () => {
+    vi.mocked(db.sharedTask.upsert).mockRejectedValueOnce(new Error("db down"));
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { backend_type: "claude" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(500);
+    expect(data.error).toMatch(/resume context/i);
+    // No outbox event must be enqueued — better to fail loudly than ship an
+    // event the daemon can only reject as "resume_context_url missing".
+    expect(db.agentOutbox.create).not.toHaveBeenCalled();
+    // No successor task must be created either, otherwise the DB would carry
+    // an orphan task with no path to start.
+    expect(db.task.create).not.toHaveBeenCalled();
   });
 
   it("creates a successor task when the source task uses a configured codex alias and switches to claude", async () => {

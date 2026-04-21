@@ -425,8 +425,11 @@ export async function POST(
 
   // Generate a short-lived handoff share so the successor backend can pull the
   // prior conversation as plain text — this replaces brittle JSONL session
-  // translation (ai-bridge) with a semantic resume.
-  let resumeContextUrl: string | null = null;
+  // translation (ai-bridge) with a semantic resume. Fail fast: without this
+  // URL the daemon would only be able to produce a doomed-to-fail successor,
+  // so we surface the real cause to the caller instead of writing a half-baked
+  // outbox event and a confusing "resume_context_url missing" failure later.
+  let resumeContextUrl: string;
   try {
     const { token } = await createInternalResumeHandoffShare({
       taskId: sourceTask.id,
@@ -435,9 +438,14 @@ export async function POST(
     const baseUrl = resolvePublicBackendUrl(request.nextUrl.origin);
     resumeContextUrl = buildResumeHandoffUrl(baseUrl, token);
   } catch (error) {
-    // Non-fatal: the daemon will report a structured error and the user can
-    // retry; we still create the successor task so the DB state is coherent.
     console.error("[restart] failed to mint resume-handoff share", error);
+    return NextResponse.json(
+      {
+        error:
+          "Failed to prepare resume context for the successor backend. Please retry; if this persists, check server logs for the share-link error.",
+      },
+      { status: 500 },
+    );
   }
 
   const createdTask = await db.$transaction(async (tx) => {
@@ -506,7 +514,7 @@ export async function POST(
                 : undefined,
             // Plain-text transcript URL the successor backend should fetch as
             // its resume context (replaces JSONL session translation).
-            resume_context_url: resumeContextUrl ?? undefined,
+            resume_context_url: resumeContextUrl,
             request_id: requestId,
           },
         }),
