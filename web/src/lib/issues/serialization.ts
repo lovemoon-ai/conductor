@@ -29,15 +29,19 @@ type SerializableIssue = {
 };
 
 type SerializableActiveTask = Parameters<typeof serializeTaskResponse>[0] | null | undefined;
+type SerializableLinkedTask = Parameters<typeof serializeTaskResponse>[0] | null | undefined;
 
 export const serializeIssue = (
   issue: SerializableIssue,
   activeTask?: SerializableActiveTask,
+  linkedTask?: SerializableLinkedTask,
 ) => {
   const status = normalizeIssueStatus(issue.status);
   const createdAt = issue.createdAt.toISOString();
   const updatedAt = issue.updatedAt.toISOString();
   const serializedActiveTask = activeTask ? serializeTaskResponse(activeTask) : null;
+  const resolvedLinkedTask = linkedTask ?? activeTask ?? null;
+  const serializedLinkedTask = resolvedLinkedTask ? serializeTaskResponse(resolvedLinkedTask) : null;
 
   return {
     id: issue.id,
@@ -48,10 +52,12 @@ export const serializeIssue = (
     position: issue.position,
     metadata: parseIssueMetadata(issue.metadata),
     activeTask: serializedActiveTask,
+    linkedTask: serializedLinkedTask,
     createdAt,
     updatedAt,
     project_id: issue.projectId,
     active_task: serializedActiveTask,
+    linked_task: serializedLinkedTask,
     created_at: createdAt,
     updated_at: updatedAt,
   };

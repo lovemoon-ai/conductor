@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { db } from '@/lib/db';
+import { serializeTaskResponse } from '@/lib/tasks/serialization';
 import { ACTIVE_ISSUE_TASK_STATUSES, coerceIssueStatus, ISSUE_STATUSES } from '@/lib/issues/config';
 import { serializeIssue } from '@/lib/issues/serialization';
 
@@ -146,22 +147,59 @@ export const getNextIssuePosition = async (projectId: string, status: string): P
     : 0;
 };
 
-export const issueWithActiveTaskInclude = {
-  tasks: {
-    where: {
-      status: {
-        in: [...ACTIVE_ISSUE_TASK_STATUSES],
-      },
-    },
-    orderBy: [
-      { updatedAt: 'desc' as const },
-      { createdAt: 'desc' as const },
-    ],
-    take: 1,
-  },
+type IssueTaskRecord = Parameters<typeof serializeTaskResponse>[0];
+
+const issueTaskOrderBy = [
+  { issueId: 'asc' as const },
+  { updatedAt: 'desc' as const },
+  { createdAt: 'desc' as const },
+];
+
+const mapFirstTaskByIssueId = (tasks: IssueTaskRecord[]) => {
+  const result = new Map<string, IssueTaskRecord>();
+  for (const task of tasks) {
+    if (typeof task.issueId !== 'string' || result.has(task.issueId)) {
+      continue;
+    }
+    result.set(task.issueId, task);
+  }
+  return result;
 };
 
-export const serializeIssueWithActiveTask = (issue: {
+export const loadIssueTaskMaps = async (userId: string, issueIds: string[]) => {
+  const ids = issueIds.filter((issueId) => typeof issueId === 'string' && issueId.trim().length > 0);
+  if (ids.length === 0) {
+    return {
+      activeTaskByIssueId: new Map<string, IssueTaskRecord>(),
+      linkedTaskByIssueId: new Map<string, IssueTaskRecord>(),
+    };
+  }
+
+  const [activeTasks, linkedTasks] = await Promise.all([
+    db.task.findMany({
+      where: {
+        issueId: { in: ids },
+        project: { userId },
+        status: { in: [...ACTIVE_ISSUE_TASK_STATUSES] },
+      },
+      orderBy: issueTaskOrderBy,
+    }),
+    db.task.findMany({
+      where: {
+        issueId: { in: ids },
+        project: { userId },
+      },
+      orderBy: issueTaskOrderBy,
+    }),
+  ]);
+
+  return {
+    activeTaskByIssueId: mapFirstTaskByIssueId(activeTasks as IssueTaskRecord[]),
+    linkedTaskByIssueId: mapFirstTaskByIssueId(linkedTasks as IssueTaskRecord[]),
+  };
+};
+
+export const serializeIssueWithTasks = (issue: {
   id: string;
   projectId: string;
   title: string;
@@ -171,8 +209,10 @@ export const serializeIssueWithActiveTask = (issue: {
   metadata: string | null;
   createdAt: Date;
   updatedAt: Date;
-  tasks?: Array<Parameters<typeof serializeIssue>[1] extends infer T ? T extends object ? any : never : never>;
-}) => serializeIssue(issue, issue.tasks?.[0] ?? null);
+}, tasks?: {
+  activeTask?: IssueTaskRecord | null;
+  linkedTask?: IssueTaskRecord | null;
+}) => serializeIssue(issue, tasks?.activeTask ?? null, tasks?.linkedTask ?? null);
 
 export const buildIssueInitialContent = (issue: {
   title: string;

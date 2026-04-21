@@ -89,6 +89,12 @@ describe('IssueBoard', () => {
       description: 'Expose linked task entry on the card',
       status: 'doing',
       position: 4,
+      linkedTask: {
+        id: 'task-2',
+        title: 'Historical task',
+        status: 'killed',
+        createdAt: '2026-04-14T00:08:00.000Z',
+      },
       createdAt: '2026-04-14T00:10:00.000Z',
       updatedAt: '2026-04-14T00:10:00.000Z',
     },
@@ -120,6 +126,8 @@ describe('IssueBoard', () => {
     expect(openTaskLink).toHaveAttribute('href', '/app/tasks/task-1');
     const issue2DeleteButton = screen.getByRole('button', { name: 'Delete issue Build AI task handoff' });
     expect(openTaskLink.parentElement).toBe(issue2DeleteButton.parentElement);
+    expect(screen.getByRole('link', { name: 'Open last task' })).toHaveAttribute('href', '/app/tasks/task-2');
+    expect(screen.getByText('killed')).toBeInTheDocument();
     expect(screen.queryByText('Active task')).toBeNull();
     expect(screen.queryByText('Implement issue spawn')).toBeNull();
   });
@@ -362,7 +370,7 @@ describe('IssueBoard', () => {
   });
 
   it('keeps the card in target column after drop before async move finishes', async () => {
-    let resolveMove: (() => void) | null = null;
+    let resolveMove: ((value?: void | PromiseLike<void>) => void) | null = null;
     onMoveIssue.mockImplementationOnce(() => new Promise<void>((resolve) => {
       resolveMove = resolve;
     }));
@@ -396,7 +404,5 @@ describe('IssueBoard', () => {
     const doingColumn = document.querySelector('[data-status-column="doing"]');
     expect(todoColumn?.querySelector('[data-issue-id="issue-1"]')).toBeNull();
     expect(doingColumn?.querySelector('[data-issue-id="issue-1"]')).toBeInTheDocument();
-
-    resolveMove?.();
   });
 });

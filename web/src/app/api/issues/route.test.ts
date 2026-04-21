@@ -13,6 +13,9 @@ vi.mock('@/lib/db', () => ({
       aggregate: vi.fn(),
       create: vi.fn(),
     },
+    task: {
+      findMany: vi.fn(),
+    },
     project: {
       findFirst: vi.fn(),
     },
@@ -28,6 +31,7 @@ describe('/api/issues', () => {
     vi.mocked(getActiveSubscriptionUser).mockResolvedValue({
       id: 'user-1',
     } as any);
+    vi.mocked(db.task.findMany).mockResolvedValue([] as any);
   });
 
   it('lists issues scoped to the requested project', async () => {
@@ -67,6 +71,63 @@ describe('/api/issues', () => {
         title: 'Issue board',
         status: 'todo',
         position: 2,
+        linked_task: null,
+      }),
+    ]);
+  });
+
+  it('keeps the latest linked task in list responses even after it stops', async () => {
+    vi.mocked(db.issue.findMany).mockResolvedValue([
+      {
+        id: 'issue-1',
+        projectId: 'project-1',
+        title: 'Persist linked task',
+        description: null,
+        status: 'done',
+        position: 0,
+        metadata: null,
+        createdAt: new Date('2026-04-14T00:00:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:10:00.000Z'),
+      },
+    ] as any);
+    vi.mocked(db.task.findMany)
+      .mockResolvedValueOnce([] as any)
+      .mockResolvedValueOnce([
+        {
+          id: 'task-killed',
+          projectId: 'project-1',
+          issueId: 'issue-1',
+          title: 'Persist linked task',
+          status: 'killed',
+          taskType: 'ai_task',
+          agentHost: 'daemon-a',
+          executionHost: null,
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          sessionFilePath: '/tmp/sess-1.jsonl',
+          launchConfig: null,
+          metadata: null,
+          createdAt: new Date('2026-04-14T00:05:00.000Z'),
+          updatedAt: new Date('2026-04-14T00:10:00.000Z'),
+        },
+      ] as any);
+
+    const response = await GET(createMockRequest({
+      method: 'GET',
+      url: 'http://localhost:6152/api/issues?project_id=project-1',
+    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data).toEqual([
+      expect.objectContaining({
+        id: 'issue-1',
+        active_task: null,
+        linked_task: expect.objectContaining({
+          id: 'task-killed',
+          status: 'killed',
+          issue_id: 'issue-1',
+        }),
       }),
     ]);
   });

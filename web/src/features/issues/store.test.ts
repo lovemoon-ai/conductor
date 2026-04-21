@@ -85,4 +85,110 @@ describe('issues store', () => {
     });
     expect(useIssuesStore.getState().issues).toHaveLength(1);
   });
+
+  it('normalizes linked historical tasks from issue responses', async () => {
+    mockGet.mockResolvedValueOnce([
+      {
+        id: 'issue-1',
+        project_id: 'project-1',
+        title: 'Reopenable issue',
+        status: 'done',
+        position: 0,
+        linked_task: {
+          id: 'task-1',
+          project_id: 'project-1',
+          issue_id: 'issue-1',
+          title: 'Reopenable task',
+          status: 'killed',
+          created_at: '2026-04-19T00:00:00.000Z',
+          updated_at: '2026-04-19T00:01:00.000Z',
+        },
+        created_at: '2026-04-19T00:00:00.000Z',
+      },
+    ]);
+
+    await useIssuesStore.getState().fetchIssues('project-1');
+
+    expect(useIssuesStore.getState().issues[0]).toMatchObject({
+      id: 'issue-1',
+      linkedTask: expect.objectContaining({
+        id: 'task-1',
+        status: 'killed',
+      }),
+      activeTask: null,
+    });
+  });
+
+  it('updates issue-linked task metadata from mutation responses', async () => {
+    mockPatch.mockResolvedValueOnce({
+      issue: {
+        id: 'issue-1',
+        project_id: 'project-1',
+        title: 'Reopenable issue',
+        status: 'doing',
+        position: 0,
+        active_task: {
+          id: 'task-1',
+          project_id: 'project-1',
+          issue_id: 'issue-1',
+          title: 'Reopenable task',
+          status: 'running',
+          created_at: '2026-04-19T00:00:00.000Z',
+          updated_at: '2026-04-19T00:01:00.000Z',
+        },
+        linked_task: {
+          id: 'task-1',
+          project_id: 'project-1',
+          issue_id: 'issue-1',
+          title: 'Reopenable task',
+          status: 'running',
+          created_at: '2026-04-19T00:00:00.000Z',
+          updated_at: '2026-04-19T00:01:00.000Z',
+        },
+        created_at: '2026-04-19T00:00:00.000Z',
+      },
+      active_task: {
+        id: 'task-1',
+        project_id: 'project-1',
+        issue_id: 'issue-1',
+        title: 'Reopenable task',
+        status: 'running',
+        created_at: '2026-04-19T00:00:00.000Z',
+        updated_at: '2026-04-19T00:01:00.000Z',
+      },
+    });
+    useIssuesStore.setState({
+      issues: [
+        {
+          id: 'issue-1',
+          projectId: 'project-1',
+          title: 'Reopenable issue',
+          status: 'done',
+          position: 0,
+          createdAt: '2026-04-19T00:00:00.000Z',
+          linkedTask: {
+            id: 'task-1',
+            projectId: 'project-1',
+            issueId: 'issue-1',
+            title: 'Reopenable task',
+            status: 'killed',
+            createdAt: '2026-04-19T00:00:00.000Z',
+            updatedAt: '2026-04-19T00:01:00.000Z',
+          },
+        },
+      ],
+      isLoading: false,
+      error: null,
+      currentProjectId: 'project-1',
+    });
+
+    const issue = await useIssuesStore.getState().updateIssue('issue-1', { status: 'doing' });
+
+    expect(issue).toMatchObject({
+      id: 'issue-1',
+      status: 'doing',
+      activeTask: expect.objectContaining({ id: 'task-1', status: 'running' }),
+      linkedTask: expect.objectContaining({ id: 'task-1', status: 'running' }),
+    });
+  });
 });

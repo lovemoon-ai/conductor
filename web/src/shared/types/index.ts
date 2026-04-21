@@ -57,6 +57,7 @@ export interface Issue {
   position: number;
   metadata?: Record<string, unknown> | null;
   activeTask?: Task | null;
+  linkedTask?: Task | null;
   createdAt: string;
   updatedAt?: string | null;
 }

@@ -10,6 +10,7 @@ import {
   ISSUE_STATUS_BADGE_CLASSNAMES,
   ISSUE_STATUS_LABELS,
 } from '@/lib/issues/config';
+import { TaskStatusBadge } from '@/features/tasks/components/TaskStatusBadge';
 import { EditIssueDialog } from './EditIssueDialog';
 
 const LONG_PRESS_MS = 500;
@@ -120,6 +121,9 @@ function IssueCardBody({
 }) {
   const description = issue.description?.trim();
   const activeTask = issue.activeTask ?? null;
+  const linkedTask = issue.linkedTask ?? activeTask;
+  const openTask = activeTask ?? linkedTask;
+  const hasHistoricalLinkedTask = !activeTask && Boolean(linkedTask);
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
@@ -241,17 +245,22 @@ function IssueCardBody({
           <p className="mt-2 text-sm text-muted/60">No description</p>
         )}
 
-        {interactive && (activeTask || onDelete) ? (
+        {interactive && (openTask || onDelete) ? (
           <div className="mt-3 flex items-center gap-2" onPointerDown={stopEventPropagation} onClick={stopEventPropagation}>
-            {activeTask ? (
-              <Link
-                href={`/app/tasks/${encodeURIComponent(activeTask.id)}`}
-                onPointerDown={stopEventPropagation}
-                onClick={stopEventPropagation}
-                className="inline-flex rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-border/40"
-              >
-                Open task
-              </Link>
+            {openTask ? (
+              <>
+                <Link
+                  href={`/app/tasks/${encodeURIComponent(openTask.id)}`}
+                  onPointerDown={stopEventPropagation}
+                  onClick={stopEventPropagation}
+                  className="inline-flex rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-border/40"
+                >
+                  {hasHistoricalLinkedTask ? 'Open last task' : 'Open task'}
+                </Link>
+                {hasHistoricalLinkedTask ? (
+                  <TaskStatusBadge status={openTask.status} />
+                ) : null}
+              </>
             ) : null}
 
             {onDelete ? (

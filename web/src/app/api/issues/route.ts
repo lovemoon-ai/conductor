@@ -4,9 +4,9 @@ import { db } from '@/lib/db';
 import {
   getNextIssuePosition,
   issueCreateSchema,
-  issueWithActiveTaskInclude,
+  loadIssueTaskMaps,
   normalizeIssueCreateBody,
-  serializeIssueWithActiveTask,
+  serializeIssueWithTasks,
 } from './shared';
 
 export async function GET(request: NextRequest) {
@@ -22,7 +22,6 @@ export async function GET(request: NextRequest) {
       project: { userId: user.id },
       ...(projectId ? { projectId } : {}),
     },
-    include: issueWithActiveTaskInclude,
     orderBy: [
       { status: 'asc' },
       { position: 'asc' },
@@ -30,7 +29,25 @@ export async function GET(request: NextRequest) {
     ],
   });
 
-  return NextResponse.json(issues.map((issue) => serializeIssueWithActiveTask(issue)));
+  const { activeTaskByIssueId, linkedTaskByIssueId } = await loadIssueTaskMaps(
+    user.id,
+    issues.map((issue: { id: string }) => issue.id),
+  );
+
+  return NextResponse.json(issues.map((issue: {
+    id: string;
+    projectId: string;
+    title: string;
+    description: string | null;
+    status: string;
+    position: number;
+    metadata: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }) => serializeIssueWithTasks(issue, {
+    activeTask: activeTaskByIssueId.get(issue.id) ?? null,
+    linkedTask: linkedTaskByIssueId.get(issue.id) ?? null,
+  })));
 }
 
 export async function POST(request: NextRequest) {
@@ -73,8 +90,7 @@ export async function POST(request: NextRequest) {
       position,
       metadata: input.metadata ? JSON.stringify(input.metadata) : null,
     },
-    include: issueWithActiveTaskInclude,
   });
 
-  return NextResponse.json(serializeIssueWithActiveTask(issue));
+  return NextResponse.json(serializeIssueWithTasks(issue));
 }

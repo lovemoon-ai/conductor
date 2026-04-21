@@ -68,6 +68,9 @@ export const normalizeIssue = (raw: unknown): Issue | null => {
     position,
     metadata: normalizeObject(record.metadata),
     activeTask: record.activeTask || record.active_task ? normalizeTask(record.activeTask ?? record.active_task) : null,
+    linkedTask: record.linkedTask || record.linked_task
+      ? normalizeTask(record.linkedTask ?? record.linked_task)
+      : (record.activeTask || record.active_task ? normalizeTask(record.activeTask ?? record.active_task) : null),
     createdAt:
       pickString(record.createdAt) ?? pickString(record.created_at) ?? new Date().toISOString(),
     updatedAt:
@@ -105,20 +108,22 @@ const sortIssues = (issues: Issue[]): Issue[] => {
 const normalizeIssueMutationResponse = (raw: unknown): {
   issue: Issue | null;
   activeTask: Task | null;
+  linkedTask: Task | null;
   spawnedTask: Task | null;
   killedTask: Task | null;
 } => {
   if (!raw || typeof raw !== 'object') {
-    return { issue: null, activeTask: null, spawnedTask: null, killedTask: null };
+    return { issue: null, activeTask: null, linkedTask: null, spawnedTask: null, killedTask: null };
   }
 
   const record = raw as Record<string, unknown>;
   const issue = normalizeIssue(record.issue ?? raw);
   const activeTask = syncTask(record.activeTask ?? record.active_task, false);
+  const linkedTask = syncTask(record.linkedTask ?? record.linked_task, false);
   const spawnedTask = syncTask(record.spawnedTask ?? record.spawned_task, true);
   const killedTask = syncTask(record.killedTask ?? record.killed_task, false);
 
-  return { issue, activeTask, spawnedTask, killedTask };
+  return { issue, activeTask, linkedTask, spawnedTask, killedTask };
 };
 
 const upsertIssue = (issues: Issue[], issue: Issue): Issue[] => {

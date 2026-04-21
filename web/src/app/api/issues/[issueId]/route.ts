@@ -6,6 +6,12 @@ import {
   createAiTaskArtifacts,
   finalizeAiTaskCreation,
 } from '@/lib/tasks/create-ai-task';
+import {
+  finalizeInplaceTaskRestart,
+  planInplaceTaskRestart,
+  restartTaskInPlace,
+  type PlannedInplaceTaskRestart,
+} from '@/lib/tasks/inplace-restart';
 import { serializeTaskResponse } from '@/lib/tasks/serialization';
 import { normalizeOptionalString, normalizeTaskStatus, type JsonObject } from '@/lib/tasks/task-config';
 import { stopTaskBeforeRelaunch } from '@/lib/tasks/task-stop';
@@ -20,9 +26,9 @@ import {
   buildIssueInitialContent,
   getNextIssuePosition,
   issuePatchSchema,
-  issueWithActiveTaskInclude,
+  loadIssueTaskMaps,
   normalizeIssuePatchBody,
-  serializeIssueWithActiveTask,
+  serializeIssueWithTasks,
 } from '../shared';
 
 const issueSelect = {
@@ -37,8 +43,8 @@ const issueSelect = {
   updatedAt: true,
 };
 
-const issueWithProjectAndActiveTaskInclude = {
-  ...issueWithActiveTaskInclude,
+const issueWithProjectSelect = {
+  ...issueSelect,
   project: {
     select: {
       id: true,
@@ -65,14 +71,19 @@ export async function GET(
       id: issueId,
       project: { userId: user.id },
     },
-    include: issueWithActiveTaskInclude,
+    select: issueSelect,
   });
 
   if (!issue) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
-  return NextResponse.json(serializeIssueWithActiveTask(issue));
+  const { activeTaskByIssueId, linkedTaskByIssueId } = await loadIssueTaskMaps(user.id, [issue.id]);
+
+  return NextResponse.json(serializeIssueWithTasks(issue, {
+    activeTask: activeTaskByIssueId.get(issue.id) ?? null,
+    linkedTask: linkedTaskByIssueId.get(issue.id) ?? null,
+  }));
 }
 
 export async function PATCH(
@@ -89,12 +100,14 @@ export async function PATCH(
       id: issueId,
       project: { userId: user.id },
     },
-    include: issueWithProjectAndActiveTaskInclude,
+    select: issueWithProjectSelect,
   });
 
   if (!existing) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
+
+  const { activeTaskByIssueId, linkedTaskByIssueId } = await loadIssueTaskMaps(user.id, [existing.id]);
 
   const body = await request.json().catch(() => null);
   const parsed = issuePatchSchema.safeParse(normalizeIssuePatchBody(body));
@@ -113,13 +126,19 @@ export async function PATCH(
     : nextStatus !== currentStatus
       ? await getNextIssuePosition(existing.projectId, nextStatus)
       : existing.position;
-  const shouldSpawnTask = currentStatus === 'todo' && nextStatus === 'doing';
+  const shouldEnterDoing = currentStatus !== 'doing' && nextStatus === 'doing';
 
-  let activeTask: Parameters<typeof serializeTaskResponse>[0] | null = existing.tasks[0] ?? null;
+  let activeTask: Parameters<typeof serializeTaskResponse>[0] | null =
+    activeTaskByIssueId.get(existing.id) ?? null;
+  let linkedTask: Parameters<typeof serializeTaskResponse>[0] | null =
+    linkedTaskByIssueId.get(existing.id) ?? activeTask;
+  const shouldRestartLinkedTask = shouldEnterDoing && !activeTask && Boolean(linkedTask);
+  const shouldSpawnTask = shouldEnterDoing && !activeTask && !linkedTask;
   const shouldKillActiveTask = currentStatus === 'doing' && nextStatus === 'done' && Boolean(activeTask);
   let killedTask: Parameters<typeof serializeTaskResponse>[0] | null = null;
   let spawnedTask: Awaited<ReturnType<typeof createAiTaskArtifacts>> | null = null;
   let spawnTaskArgs: Parameters<typeof createAiTaskArtifacts>[0] | null = null;
+  let restartPlan: PlannedInplaceTaskRestart | null = null;
 
   if (shouldSpawnTask && !activeTask) {
     const defaultProject = await db.defaultProject.findUnique({
@@ -199,6 +218,19 @@ export async function PATCH(
     };
   }
 
+  if (shouldRestartLinkedTask && linkedTask) {
+    const connectedAgents = realtimeHub.getAgentsForUser(user.id) as ConnectedAgent[];
+    const restartPlanResult = planInplaceTaskRestart({
+      sourceTask: linkedTask,
+      project: existing.project,
+      connectedAgents,
+    });
+    if (!restartPlanResult.ok) {
+      return NextResponse.json({ error: restartPlanResult.error }, { status: restartPlanResult.status });
+    }
+    restartPlan = restartPlanResult.plan;
+  }
+
   if (shouldKillActiveTask && activeTask) {
     const normalizedTaskStatus = normalizeTaskStatus(activeTask.status);
     const shouldStopTask =
@@ -254,6 +286,7 @@ export async function PATCH(
         );
       }
       activeTask = latestTask;
+      linkedTask = latestTask;
     }
   }
 
@@ -268,14 +301,12 @@ export async function PATCH(
         ? (input.metadata ? JSON.stringify(input.metadata) : null)
         : existing.metadata,
     },
-    include: issueWithActiveTaskInclude,
   };
 
   let updated;
-  if (spawnTaskArgs) {
-    const transactionResult = await db.$transaction(async (tx) => {
-      // Atomically claim the current -> doing transition.
-      // updateMany returns count; if 0, another request already transitioned this issue.
+  if (shouldRestartLinkedTask && linkedTask && restartPlan) {
+    const restartSourceTask = linkedTask;
+    const transactionResult = await db.$transaction(async (tx: any) => {
       const claimed = await tx.issue.updateMany({
         where: {
           id: existing.id,
@@ -287,7 +318,52 @@ export async function PATCH(
       });
 
       if (claimed.count === 0) {
-        // Another concurrent request already claimed the transition — just update remaining fields
+        const updatedIssue = await tx.issue.update(issueUpdateArgs);
+        return {
+          restartedTask: null,
+          updatedIssue,
+          skippedRestart: true,
+        };
+      }
+
+      const restartedTask = await restartTaskInPlace({
+        tx,
+        userId: user.id,
+        sourceTask: restartSourceTask,
+        plan: restartPlan,
+      });
+      const updatedIssue = await tx.issue.update(issueUpdateArgs);
+      return {
+        restartedTask,
+        updatedIssue,
+        skippedRestart: false,
+      };
+    });
+
+    if (!transactionResult.skippedRestart && transactionResult.restartedTask) {
+      activeTask = transactionResult.restartedTask.task;
+      linkedTask = transactionResult.restartedTask.task;
+      await finalizeInplaceTaskRestart({
+        userId: user.id,
+        taskId: transactionResult.restartedTask.task.id,
+        restartAgentHost: transactionResult.restartedTask.restartAgentHost,
+      });
+    }
+
+    updated = transactionResult.updatedIssue;
+  } else if (spawnTaskArgs) {
+    const transactionResult = await db.$transaction(async (tx: any) => {
+      const claimed = await tx.issue.updateMany({
+        where: {
+          id: existing.id,
+          status: existing.status,
+        },
+        data: {
+          status: 'doing',
+        },
+      });
+
+      if (claimed.count === 0) {
         const updatedIssue = await tx.issue.update(issueUpdateArgs);
         return {
           createdTask: null,
@@ -309,6 +385,7 @@ export async function PATCH(
     if (!transactionResult.skippedSpawn && transactionResult.createdTask) {
       spawnedTask = transactionResult.createdTask;
       activeTask = transactionResult.createdTask.task;
+      linkedTask = transactionResult.createdTask.task;
 
       await finalizeAiTaskCreation({
         ...spawnTaskArgs,
@@ -317,7 +394,7 @@ export async function PATCH(
     }
     updated = transactionResult.updatedIssue;
   } else if (shouldKillActiveTask && activeTask) {
-    const transactionResult = await db.$transaction(async (tx) => {
+    const transactionResult = await db.$transaction(async (tx: any) => {
       const updatedIssue = await tx.issue.update(issueUpdateArgs);
       return {
         updatedIssue,
@@ -326,13 +403,18 @@ export async function PATCH(
     });
     updated = transactionResult.updatedIssue;
     killedTask = transactionResult.updatedTask;
+    linkedTask = transactionResult.updatedTask;
     activeTask = null;
   } else {
     updated = await db.issue.update(issueUpdateArgs);
   }
 
-  const serializedIssue = serializeIssueWithActiveTask(updated);
+  const serializedIssue = serializeIssueWithTasks(updated, {
+    activeTask,
+    linkedTask,
+  });
   const serializedActiveTask = activeTask ? serializeTaskResponse(activeTask) : null;
+  const serializedLinkedTask = linkedTask ? serializeTaskResponse(linkedTask) : null;
   const serializedSpawnedTask = spawnedTask ? serializeTaskResponse(spawnedTask.task) : null;
   const serializedKilledTask = killedTask ? serializeTaskResponse(killedTask) : null;
 
@@ -340,6 +422,8 @@ export async function PATCH(
     issue: serializedIssue,
     activeTask: serializedActiveTask,
     active_task: serializedActiveTask,
+    linkedTask: serializedLinkedTask,
+    linked_task: serializedLinkedTask,
     spawnedTask: serializedSpawnedTask,
     spawned_task: serializedSpawnedTask,
     killedTask: serializedKilledTask,
