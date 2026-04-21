@@ -36,6 +36,7 @@ const LEFT_ACTION_WIDTH = 52;
 const RIGHT_ACTION_BUTTON_WIDTH = 72;
 const SWIPE_OPEN_THRESHOLD = 0.45;
 const SWIPE_START_THRESHOLD = 8;
+const DEFAULT_KILLING_TIMEOUT_MS = 60_000;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const copyToClipboard = async (value: string): Promise<boolean> => {
@@ -65,6 +66,8 @@ const normalizeOptionalString = (value: unknown): string | null => {
   const normalized = value.trim();
   return normalized || null;
 };
+const normalizePositiveNumber = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
 const normalizeBoolean = (value: unknown): boolean => {
   if (typeof value === 'boolean') {
     return value;
@@ -187,6 +190,14 @@ export function TaskItem({
   const clearRuntime = useRuntimeStore((state) => state.clearTask);
   const taskMetadata = task.metadata as Record<string, unknown> | null;
   const launchConfig = task.launchConfig as Record<string, unknown> | null;
+  const killingStartedAt =
+    task.status === 'killing'
+      ? normalizeOptionalString(taskMetadata?.killingStartedAt) ?? task.updatedAt ?? task.createdAt
+      : null;
+  const killingTimeoutMs =
+    task.status === 'killing'
+      ? normalizePositiveNumber(taskMetadata?.killingTimeoutMs) ?? DEFAULT_KILLING_TIMEOUT_MS
+      : DEFAULT_KILLING_TIMEOUT_MS;
   const taskType = task.taskType ?? 'ai_task';
   const worktreeBranch = parseTaskWorktreeBranch(task);
   const showRestartAction = taskType === 'ai_task';
@@ -530,8 +541,10 @@ export function TaskItem({
 
     try {
       setIsKillingTask(true);
-      await updateTask(task.id, { status: 'killed' });
-      clearRuntime(task.id);
+      const updatedTask = await updateTask(task.id, { status: 'killed' });
+      if (updatedTask.status === 'killed') {
+        clearRuntime(task.id);
+      }
       setIsKillConfirming(false);
       closeSwipeActions();
     } catch (error) {
@@ -651,6 +664,8 @@ export function TaskItem({
     onClick?: () => void;
     disabled?: boolean;
     labelOverride?: string;
+    statusStartedAt?: string | null;
+    timeoutMs?: number | null;
     title?: string;
     tone?: 'default' | 'danger' | 'warning';
   } = isTaskRunning
@@ -834,7 +849,12 @@ export function TaskItem({
             ) : null}
           </div>
           <div ref={statusBadgeRef}>
-            <TaskStatusBadge status={task.status} {...statusBadgeProps} />
+            <TaskStatusBadge
+              status={task.status}
+              statusStartedAt={killingStartedAt}
+              timeoutMs={killingTimeoutMs}
+              {...statusBadgeProps}
+            />
           </div>
         </div>
       </div>

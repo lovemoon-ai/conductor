@@ -111,11 +111,16 @@ describe('TaskList', () => {
     tasksState = {
       ...tasksState,
       currentProjectFilter: null,
+      tasks: [
+        ...tasksState.tasks,
+        { id: 'task-3', title: 'Task Three', projectId: 'project-1', status: 'killing' },
+      ],
     };
 
     render(<TaskList viewMode="list" runningOnly />);
 
     expect(screen.getByText('Task One:idle')).toBeInTheDocument();
+    expect(screen.getByText('Task Three:idle')).toBeInTheDocument();
     expect(screen.queryByText('Task Two:idle')).toBeNull();
   });
 });

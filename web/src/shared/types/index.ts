@@ -62,7 +62,7 @@ export interface Issue {
 }
 
 // Task Types
-export type TaskStatus = 'init' | 'running' | 'killed' | 'unknown' | 'completed';
+export type TaskStatus = 'init' | 'running' | 'killing' | 'killed' | 'unknown' | 'completed';
 
 export interface PtySession {
   id: string;

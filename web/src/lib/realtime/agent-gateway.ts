@@ -42,7 +42,17 @@ type TaskOwnershipRecord = {
 type AgentEvent =
   | { type: "create_task"; payload: { task_id: string; project_id: string; title: string; prefill?: string } }
   | { type: "sdk_message"; payload: { task_id: string; content: string; metadata?: Record<string, unknown>; message_id?: string } }
-  | { type: "task_status_update"; payload: { task_id: string; status: string; summary?: string; project_id?: string } }
+  | {
+      type: "task_status_update";
+      payload: {
+        task_id: string;
+        status: string;
+        summary?: string;
+        project_id?: string;
+        metadata?: Record<string, unknown> | null;
+        updated_at?: string;
+      };
+    }
   | { type: "task_stop_ack"; payload: { task_id: string; request_id: string; accepted?: boolean } }
   | {
       type: "agent_command_ack";
@@ -309,7 +319,15 @@ export const bindActiveTasksFromResume = async (
     const assignedHost = normalizeOptionalString(task.executionHost) || normalizeOptionalString(task.agentHost);
     const status = normalizeTaskStatus(task.status);
     const allowFireHostClaim = assignedHost !== agentHost && canFireHostClaimTask(task, agentHost);
-    return (assignedHost === agentHost || allowFireHostClaim) && (status === "init" || status === "running" || status === "unknown");
+    return (
+      assignedHost === agentHost ||
+      allowFireHostClaim
+    ) && (
+      status === "init" ||
+      status === "running" ||
+      status === "killing" ||
+      status === "unknown"
+    );
   });
   for (const task of tasksToBind) {
     realtimeHub.bindTaskToAgent(task.id, agentHost);
@@ -906,7 +924,11 @@ export const handleTerminalErrorEvent = async (args: {
   const message = normalizeOptionalString(args.payload.message) || "terminal error";
   const closedAt = new Date().toISOString();
   const currentTaskStatus = normalizeTaskStatus(task.status);
-  const taskWasActive = currentTaskStatus === "init" || currentTaskStatus === "running" || currentTaskStatus === "unknown";
+  const taskWasActive =
+    currentTaskStatus === "init" ||
+    currentTaskStatus === "running" ||
+    currentTaskStatus === "killing" ||
+    currentTaskStatus === "unknown";
   const latestStatusSummary = normalizeOptionalString(task.taskStatusEvents?.[0]?.summary);
   const shouldCreateStatusEvent = taskWasActive && latestStatusSummary !== message;
 

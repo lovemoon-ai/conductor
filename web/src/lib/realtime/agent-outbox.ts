@@ -37,13 +37,24 @@ export type DeliverAgentOutboxOptions = {
   ignoreRetryAt?: boolean;
 };
 
-function isMissingAgentOutboxTableError(error: unknown): boolean {
+export type AgentOutboxDeliveryRow = {
+  id: string;
+  userId: string;
+  agentHost: string | null;
+  taskId: string | null;
+  eventType: string;
+  requestId: string;
+  createdAt: Date;
+  payloadJson: string;
+};
+
+export function isMissingAgentOutboxTableError(error: unknown): boolean {
   const code = (error as any)?.code;
   const message = String((error as any)?.message || "");
   return code === "P2021" && message.includes("agent_outbox");
 }
 
-function warnMissingAgentOutboxTable(error: unknown): void {
+export function warnMissingAgentOutboxTable(error: unknown): void {
   if (warnedMissingAgentOutboxTable) {
     return;
   }
@@ -131,16 +142,7 @@ async function markDeliveryDeferred(
 }
 
 async function tryDeliverRow(
-  row: {
-    id: string;
-    userId: string;
-    agentHost: string | null;
-    taskId: string | null;
-    eventType: string;
-    requestId: string;
-    createdAt: Date;
-    payloadJson: string;
-  },
+  row: AgentOutboxDeliveryRow,
   options: DeliverAgentOutboxOptions,
 ): Promise<boolean> {
   const envelope = safeParseEnvelope(row.payloadJson);
@@ -267,16 +269,7 @@ export async function deliverAgentOutboxForHost(options: DeliverAgentOutboxOptio
   const retryWindowFilter = options.ignoreRetryAt
     ? []
     : [{ OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }] }];
-  let rows: Array<{
-    id: string;
-    userId: string;
-    agentHost: string | null;
-    taskId: string | null;
-    eventType: string;
-    requestId: string;
-    createdAt: Date;
-    payloadJson: string;
-  }> = [];
+  let rows: AgentOutboxDeliveryRow[] = [];
   try {
     rows = await db.agentOutbox.findMany({
       where: {
@@ -321,6 +314,22 @@ export async function deliverAgentOutboxForHost(options: DeliverAgentOutboxOptio
   }
 
   return { attempted, delivered };
+}
+
+export async function deliverAgentOutboxRow(
+  row: AgentOutboxDeliveryRow,
+  options: DeliverAgentOutboxOptions,
+): Promise<{ delivered: boolean }> {
+  try {
+    const delivered = await tryDeliverRow(row, options);
+    return { delivered };
+  } catch (error) {
+    if (isMissingAgentOutboxTableError(error)) {
+      warnMissingAgentOutboxTable(error);
+      return { delivered: false };
+    }
+    throw error;
+  }
 }
 
 export async function acknowledgeAgentCommand(input: {

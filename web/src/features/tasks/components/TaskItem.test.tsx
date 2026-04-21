@@ -188,6 +188,41 @@ describe('TaskItem', () => {
     });
   });
 
+  it('does not clear runtime while the backend reports killing', async () => {
+    updateTaskMock.mockResolvedValue({
+      id: 'task-kill-pending',
+      title: 'Kill Pending Task',
+      status: 'killing',
+      createdAt: new Date().toISOString(),
+    });
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-kill-pending',
+          title: 'Kill Pending Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'running' }));
+    fireEvent.click(screen.getByRole('button', { name: 'killing?' }));
+
+    await waitFor(() => {
+      expect(updateTaskMock).toHaveBeenCalledWith('task-kill-pending', { status: 'killed' });
+    });
+    expect(clearRuntimeMock).not.toHaveBeenCalled();
+  });
+
   it('cancels killing confirmation when clicking elsewhere', () => {
     render(
       <TaskItem

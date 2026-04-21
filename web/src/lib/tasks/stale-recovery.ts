@@ -23,6 +23,7 @@ const normalizeTaskStatus = (value: unknown): string => {
   if (normalized === "completed") return "completed";
   if (normalized === "init") return "init";
   if (normalized === "running") return "running";
+  if (normalized === "killing" || normalized === "stopping") return "killing";
   if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
   return "unknown";
 };

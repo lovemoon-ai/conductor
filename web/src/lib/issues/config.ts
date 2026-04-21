@@ -36,7 +36,7 @@ export const ISSUE_STATUS_FILTER_CLASSNAMES: Record<IssueStatusValue, string> = 
   done: 'border-transparent bg-emerald-100/90 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-100',
 };
 
-export const ACTIVE_ISSUE_TASK_STATUSES = ['init', 'running', 'unknown'] as const;
+export const ACTIVE_ISSUE_TASK_STATUSES = ['init', 'running', 'killing', 'unknown'] as const;
 
 const LEGACY_ISSUE_STATUS_ALIASES: Record<string, IssueStatusValue> = {
   backlog: 'todo',

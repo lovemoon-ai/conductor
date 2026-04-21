@@ -189,8 +189,21 @@ function normalizeTaskStatus(value: unknown): TaskStatus {
   if (normalized === 'init') return 'init';
   if (normalized === 'completed') return 'completed';
   if (normalized === 'running') return 'running';
+  if (normalized === 'killing' || normalized === 'stopping') return 'killing';
   if (normalized === 'killed' || normalized === 'failed' || normalized === 'cancelled') return 'killed';
   return 'unknown';
+}
+
+function normalizeTaskMetadata(value: unknown): Record<string, unknown> | null | undefined {
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function normalizeOptionalTimestamp(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
 function normalizeRuntimeStatus(payload: Record<string, unknown>): TaskRuntimeStatus | null {
@@ -289,10 +302,19 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
       const taskId = normalizeTaskId(payload);
       if (!taskId) break;
       const status = normalizeTaskStatus(payload.status);
+      const metadata = normalizeTaskMetadata(payload.metadata);
+      const updatedAt =
+        normalizeOptionalTimestamp(payload.updated_at) ??
+        normalizeOptionalTimestamp(payload.updatedAt);
       const tasksStore = useTasksStore.getState();
       const task = tasksStore.tasks.find((t) => t.id === taskId);
       if (task) {
-        tasksStore.updateTaskInList({ ...task, status });
+        tasksStore.updateTaskInList({
+          ...task,
+          status,
+          ...(metadata !== undefined ? { metadata } : {}),
+          ...(updatedAt ? { updatedAt } : {}),
+        });
       } else {
         void tasksStore.fetchTask(taskId);
       }

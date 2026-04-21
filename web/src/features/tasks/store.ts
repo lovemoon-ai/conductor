@@ -51,6 +51,9 @@ const normalizeTaskStatus = (value: unknown): Task['status'] => {
   if (normalized === 'running') {
     return 'running';
   }
+  if (normalized === 'killing' || normalized === 'stopping') {
+    return 'killing';
+  }
   if (normalized === 'completed') {
     return 'completed';
   }

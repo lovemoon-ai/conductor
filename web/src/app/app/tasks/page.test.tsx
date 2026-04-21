@@ -232,29 +232,30 @@ describe('TasksPage', () => {
       ...tasksState,
       tasks: [
         { id: 'task-1', projectId: 'project-1', status: 'running' },
+        { id: 'task-killing', projectId: 'project-1', status: 'killing' },
         { id: 'task-2', projectId: 'project-1', status: 'completed' },
       ],
     };
 
     render(<TasksPage />);
 
-    expect(screen.getByRole('heading', { name: 'Tasks(2)' })).toHaveAttribute(
+    expect(screen.getByRole('heading', { name: 'Tasks(3)' })).toHaveAttribute(
       'title',
       'Double-click to show running tasks only.',
     );
     expect(screen.getByText('running-only:no')).toBeInTheDocument();
 
-    fireEvent.doubleClick(screen.getByRole('heading', { name: 'Tasks(2)' }));
+    fireEvent.doubleClick(screen.getByRole('heading', { name: 'Tasks(3)' }));
 
-    expect(screen.getByRole('heading', { name: 'Tasks(1)' })).toHaveAttribute(
+    expect(screen.getByRole('heading', { name: 'Tasks(2)' })).toHaveAttribute(
       'title',
       'Double-click to show all tasks.',
     );
     expect(screen.getByText('running-only:yes')).toBeInTheDocument();
 
-    fireEvent.doubleClick(screen.getByRole('heading', { name: 'Tasks(1)' }));
+    fireEvent.doubleClick(screen.getByRole('heading', { name: 'Tasks(2)' }));
 
-    expect(screen.getByRole('heading', { name: 'Tasks(2)' })).toHaveAttribute(
+    expect(screen.getByRole('heading', { name: 'Tasks(3)' })).toHaveAttribute(
       'title',
       'Double-click to show running tasks only.',
     );

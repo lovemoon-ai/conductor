@@ -298,6 +298,45 @@ describe('websocket runtime status handling', () => {
     expect(fetchTaskSpy).toHaveBeenCalledWith('task-init-1');
   });
 
+  it('merges killing metadata and updatedAt from task_status_update events', () => {
+    useTasksStore.setState({
+      tasks: [
+        {
+          id: 'task-killing-1',
+          title: 'Stopping task',
+          taskType: 'ai_task',
+          status: 'running',
+          metadata: null,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:05.000Z',
+        },
+      ],
+    });
+
+    handleWSMessage({
+      type: 'task_status_update',
+      payload: {
+        task_id: 'task-killing-1',
+        status: 'killing',
+        updated_at: '2024-01-01T00:00:10.000Z',
+        metadata: {
+          killingStartedAt: '2024-01-01T00:00:10.000Z',
+          killingTimeoutMs: 60_000,
+        },
+      },
+    });
+
+    expect(useTasksStore.getState().tasks[0]).toMatchObject({
+      id: 'task-killing-1',
+      status: 'killing',
+      updatedAt: '2024-01-01T00:00:10.000Z',
+      metadata: {
+        killingStartedAt: '2024-01-01T00:00:10.000Z',
+        killingTimeoutMs: 60_000,
+      },
+    });
+  });
+
   it('moves tasks with new assistant messages to the top and refreshes their preview', () => {
     useTasksStore.setState({
       tasks: [

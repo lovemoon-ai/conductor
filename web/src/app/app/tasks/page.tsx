@@ -38,7 +38,9 @@ function TasksPageContent() {
   const requestedTaskId = searchParams.get('taskId');
   const projectVisibleTasks = useMemo(() => filterTasksByProject(tasks, projectId, hiddenProjectIds), [tasks, projectId, hiddenProjectIds]);
   const visibleTasks = useMemo(
-    () => showRunningOnly ? projectVisibleTasks.filter((task) => task.status === 'running') : projectVisibleTasks,
+    () => showRunningOnly
+      ? projectVisibleTasks.filter((task) => task.status === 'running' || task.status === 'killing')
+      : projectVisibleTasks,
     [projectVisibleTasks, showRunningOnly],
   );
   const taskCount = visibleTasks.length;

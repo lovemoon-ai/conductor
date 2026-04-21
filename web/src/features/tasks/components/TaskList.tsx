@@ -70,7 +70,9 @@ export function TaskList({
     [tasks, effectiveProjectFilter, hiddenProjectIds],
   );
   const visibleTasks = useMemo(
-    () => runningOnly ? projectVisibleTasks.filter((task) => task.status === 'running') : projectVisibleTasks,
+    () => runningOnly
+      ? projectVisibleTasks.filter((task) => task.status === 'running' || task.status === 'killing')
+      : projectVisibleTasks,
     [projectVisibleTasks, runningOnly],
   );
 

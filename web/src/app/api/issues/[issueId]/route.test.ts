@@ -17,6 +17,7 @@ vi.mock('@/lib/db', () => ({
       delete: vi.fn(),
     },
     task: {
+      findFirst: vi.fn(),
       update: vi.fn(),
     },
     defaultProject: {
@@ -83,6 +84,23 @@ describe('/api/issues/[issueId]', () => {
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: 4 } } as any);
     vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({ status: 'doing', tasks: [] }) as any);
     vi.mocked(db.issue.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-active',
+      projectId: 'project-1',
+      issueId: 'issue-1',
+      title: 'Existing active task',
+      status: 'killed',
+      taskType: 'ai_task',
+      agentHost: null,
+      executionHost: null,
+      backendType: null,
+      sessionId: null,
+      sessionFilePath: null,
+      launchConfig: null,
+      metadata: null,
+      createdAt: new Date('2026-04-14T00:15:00.000Z'),
+      updatedAt: new Date('2026-04-14T00:25:00.000Z'),
+    } as any);
     vi.mocked(db.task.update).mockResolvedValue({
       id: 'task-active',
       projectId: 'project-1',
@@ -356,7 +374,7 @@ describe('/api/issues/[issueId]', () => {
     expect(data.spawnedTask).toBeNull();
   });
 
-  it('marks the linked active task killed when moving a doing issue to done', async () => {
+  it('waits for the linked active task to stop before moving a doing issue to done', async () => {
     vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue('daemon-a');
     vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
       status: 'doing',
@@ -401,13 +419,13 @@ describe('/api/issues/[issueId]', () => {
       stopTargetHost: 'daemon-a',
       reason: 'issue_done',
     }));
-    expect(db.task.update).toHaveBeenCalledWith({
-      where: { id: 'task-active' },
-      data: {
-        status: 'killed',
-        executionHost: null,
+    expect(db.task.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: 'task-active',
+        project: { userId: 'user-1' },
       },
     });
+    expect(db.task.update).not.toHaveBeenCalled();
     expect(db.issue.update).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: 'done' }),
     }));
@@ -422,6 +440,113 @@ describe('/api/issues/[issueId]', () => {
       status: 'killed',
       execution_host: null,
     }));
+  });
+
+  it('also stops an init linked task before moving a doing issue to done', async () => {
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue('daemon-a');
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      status: 'doing',
+      tasks: [
+        {
+          id: 'task-init',
+          projectId: 'project-1',
+          issueId: 'issue-1',
+          title: 'Existing init task',
+          status: 'init',
+          taskType: 'ai_task',
+          agentHost: 'daemon-a',
+          executionHost: 'daemon-a',
+          backendType: null,
+          sessionId: null,
+          sessionFilePath: null,
+          launchConfig: null,
+          metadata: null,
+          createdAt: new Date('2026-04-14T00:15:00.000Z'),
+          updatedAt: new Date('2026-04-14T00:15:00.000Z'),
+        },
+      ],
+    }) as any);
+    vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({
+      status: 'done',
+      tasks: [],
+    }) as any);
+    vi.mocked(db.task.findFirst).mockResolvedValueOnce({
+      id: 'task-init',
+      projectId: 'project-1',
+      issueId: 'issue-1',
+      title: 'Existing init task',
+      status: 'killed',
+      taskType: 'ai_task',
+      agentHost: 'daemon-a',
+      executionHost: null,
+      backendType: null,
+      sessionId: null,
+      sessionFilePath: null,
+      launchConfig: null,
+      metadata: null,
+      createdAt: new Date('2026-04-14T00:15:00.000Z'),
+      updatedAt: new Date('2026-04-14T00:25:00.000Z'),
+    } as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { status: 'done' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(stopTaskBeforeRelaunch).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'user-1',
+      taskId: 'task-init',
+      projectId: 'project-1',
+      stopTargetHost: 'daemon-a',
+      reason: 'issue_done',
+    }));
+    expect(data.activeTask).toBeNull();
+    expect(data.killedTask).toEqual(expect.objectContaining({
+      id: 'task-init',
+      status: 'killed',
+    }));
+  });
+
+  it('returns 409 when a doing issue task is still active but has no daemon binding', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      status: 'doing',
+      tasks: [
+        {
+          id: 'task-active',
+          projectId: 'project-1',
+          issueId: 'issue-1',
+          title: 'Existing active task',
+          status: 'running',
+          taskType: 'ai_task',
+          agentHost: null,
+          executionHost: null,
+          backendType: null,
+          sessionId: null,
+          sessionFilePath: null,
+          launchConfig: null,
+          metadata: null,
+          createdAt: new Date('2026-04-14T00:15:00.000Z'),
+          updatedAt: new Date('2026-04-14T00:15:00.000Z'),
+        },
+      ],
+    }) as any);
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(null);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { status: 'done' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toBe('Issue task missing active daemon binding');
+    expect(db.issue.update).not.toHaveBeenCalled();
   });
 
   it('does not finalize task side effects when the issue update fails inside the transaction', async () => {

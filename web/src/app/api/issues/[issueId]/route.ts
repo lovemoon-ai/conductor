@@ -201,7 +201,11 @@ export async function PATCH(
 
   if (shouldKillActiveTask && activeTask) {
     const normalizedTaskStatus = normalizeTaskStatus(activeTask.status);
-    const shouldStopTask = normalizedTaskStatus === 'running' || normalizedTaskStatus === 'unknown';
+    const shouldStopTask =
+      normalizedTaskStatus === 'init' ||
+      normalizedTaskStatus === 'running' ||
+      normalizedTaskStatus === 'killing' ||
+      normalizedTaskStatus === 'unknown';
     const stopTargetHost = shouldStopTask
       ? normalizeOptionalString(realtimeHub.getTaskAgentHost(activeTask.id)) ??
         normalizeOptionalString(activeTask.executionHost) ??
@@ -223,6 +227,33 @@ export async function PATCH(
           { status: 409 },
         );
       }
+    }
+
+    if (shouldStopTask && !stopTargetHost) {
+      return NextResponse.json(
+        { error: 'Issue task missing active daemon binding' },
+        { status: 409 },
+      );
+    }
+
+    if (shouldStopTask) {
+      const latestTask = await db.task.findFirst({
+        where: {
+          id: activeTask.id,
+          project: { userId: user.id },
+        },
+      });
+      if (!latestTask) {
+        return NextResponse.json({ error: 'Issue task not found after stop' }, { status: 409 });
+      }
+      const normalizedLatestTaskStatus = normalizeTaskStatus(latestTask.status);
+      if (normalizedLatestTaskStatus !== 'completed' && normalizedLatestTaskStatus !== 'killed') {
+        return NextResponse.json(
+          { error: 'Issue task stop did not reach a terminal state' },
+          { status: 409 },
+        );
+      }
+      activeTask = latestTask;
     }
   }
 
@@ -287,17 +318,10 @@ export async function PATCH(
     updated = transactionResult.updatedIssue;
   } else if (shouldKillActiveTask && activeTask) {
     const transactionResult = await db.$transaction(async (tx) => {
-      const updatedTask = await tx.task.update({
-        where: { id: activeTask!.id },
-        data: {
-          status: 'killed',
-          executionHost: null,
-        },
-      });
       const updatedIssue = await tx.issue.update(issueUpdateArgs);
       return {
         updatedIssue,
-        updatedTask,
+        updatedTask: activeTask,
       };
     });
     updated = transactionResult.updatedIssue;

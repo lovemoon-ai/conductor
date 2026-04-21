@@ -4,7 +4,12 @@ import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
 import { buildTaskDiagnosticsPayload } from "@/lib/diagnostics/task-diagnostics";
 import { realtimeHub } from "@/lib/realtime/hub";
-import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
+import {
+  deliverAgentOutboxRow,
+  enqueueAndAttemptAgentCommand,
+  isMissingAgentOutboxTableError,
+  warnMissingAgentOutboxTable,
+} from "@/lib/realtime/agent-outbox";
 import { serializeTaskResponse } from "@/lib/tasks/serialization";
 import { deleteTaskAttachmentDirectory } from "@/lib/tasks/task-file-storage";
 import {
@@ -46,6 +51,7 @@ import {
 import { stopTaskBeforeRelaunch } from "@/lib/tasks/task-stop";
 
 const DELETE_SNAPSHOT_TRIGGER = "task_delete";
+const KILLING_TIMEOUT_MS = 60_000;
 
 const normalizeHost = (value: unknown): string => {
   if (typeof value !== "string") return "";
@@ -150,6 +156,28 @@ const buildTaskRollbackData = (task: {
   metadata: task.metadata,
 });
 
+const buildLegacyAiTaskWriteData = (task: {
+  projectId: string;
+  title: string;
+  status: string;
+  agentHost: string | null;
+  executionHost: string | null;
+  backendType: string | null;
+  sessionId: string | null;
+  sessionFilePath: string | null;
+  metadata: string | null;
+}) => ({
+  projectId: task.projectId,
+  title: task.title,
+  status: task.status,
+  agentHost: task.agentHost,
+  executionHost: task.executionHost,
+  backendType: task.backendType,
+  sessionId: task.sessionId,
+  sessionFilePath: task.sessionFilePath,
+  metadata: task.metadata,
+});
+
 const buildPtySessionRollbackWrite = (ptySession: {
   taskId: string;
   state: string;
@@ -234,6 +262,57 @@ const rollbackFailedPtyPatchRelaunch = async (args: {
       where: { taskId: args.taskId },
     });
   });
+};
+
+const rollbackFailedAiTaskPatch = async (args: {
+  taskId: string;
+  previousTask: {
+    projectId: string;
+    title: string;
+    taskType?: string | null;
+    status: string;
+    agentHost: string | null;
+    executionHost: string | null;
+    backendType: string | null;
+    sessionId: string | null;
+    sessionFilePath: string | null;
+    launchConfig?: string | null;
+    metadata: string | null;
+  };
+}) => {
+  try {
+    await db.task.update({
+      where: { id: args.taskId },
+      data: buildTaskRollbackData(args.previousTask),
+    });
+  } catch (error) {
+    if (isMissingIssueIdSchemaError(error)) {
+      await db.task.update({
+        where: { id: args.taskId },
+        data: buildTaskRollbackData(args.previousTask),
+        select: taskSelectWithoutIssueId,
+      });
+      return;
+    }
+    if (!isMissingPtySchemaError(error)) {
+      throw error;
+    }
+    await db.task.update({
+      where: { id: args.taskId },
+      data: buildLegacyAiTaskWriteData({
+        projectId: args.previousTask.projectId,
+        title: args.previousTask.title,
+        status: args.previousTask.status,
+        agentHost: args.previousTask.agentHost,
+        executionHost: args.previousTask.executionHost,
+        backendType: args.previousTask.backendType,
+        sessionId: args.previousTask.sessionId,
+        sessionFilePath: args.previousTask.sessionFilePath,
+        metadata: args.previousTask.metadata,
+      }),
+      select: legacyTaskSelect,
+    });
+  }
 };
 
 export async function GET(
@@ -361,14 +440,32 @@ export async function PATCH(
     nextAgentHost = resolvedPtyAgent.agentHost;
   }
 
+  const requestedStatus = hasStatusField
+    ? normalizeTaskStatus(normalizedBody.status)
+    : normalizeTaskStatus(existing.status);
+  const isKillStatusRequest = hasStatusField && requestedStatus === "killed";
+  const shouldEnterKilling =
+    !shouldDispatchPtyTask &&
+    nextTaskType === "ai_task" &&
+    isKillStatusRequest &&
+    (
+      normalizedExistingStatus === "init" ||
+      normalizedExistingStatus === "running" ||
+      normalizedExistingStatus === "unknown"
+    );
+  const shouldKeepKilling =
+    !shouldDispatchPtyTask &&
+    nextTaskType === "ai_task" &&
+    isKillStatusRequest &&
+    normalizedExistingStatus === "killing";
   const nextStatus = shouldDispatchPtyTask
     ? "unknown"
-    : hasStatusField
-      ? normalizeTaskStatus(normalizedBody.status)
-      : existing.status;
-  const shouldStopTask =
-    nextStatus === "killed" &&
-    (normalizedExistingStatus === "running" || normalizedExistingStatus === "unknown");
+    : shouldEnterKilling || shouldKeepKilling
+      ? "killing"
+      : hasStatusField
+        ? requestedStatus
+        : existing.status;
+  const shouldStopTask = shouldEnterKilling;
   const stopTargetHost = shouldDispatchPtyTask || shouldStopTask
     ? normalizeHost(realtimeHub.getTaskAgentHost(taskId)) ||
       normalizeHost(existing.executionHost) ||
@@ -380,28 +477,51 @@ export async function PATCH(
   const shouldStopBeforeRelaunch =
     Boolean(stopTargetHost) &&
     shouldDispatchPtyTask &&
-    (normalizedExistingStatus === "running" || normalizedExistingStatus === "unknown");
+    (normalizedExistingStatus === "running" ||
+      normalizedExistingStatus === "killing" ||
+      normalizedExistingStatus === "unknown");
   const executionHostInput = readPatchField(normalizedBody, "execution_host", "executionHost");
-  const nextExecutionHost =
-    shouldDispatchPtyTask || nextStatus === "completed" || nextStatus === "killed"
+  const nextExecutionHost = shouldStopTask
+    ? stopTargetHost
+    : shouldDispatchPtyTask || nextStatus === "completed" || nextStatus === "killed"
       ? null
       : executionHostInput !== undefined
         ? normalizeOptionalString(executionHostInput)
         : existing.executionHost;
   const existingMetadataObject = parseJsonObject(existing.metadata);
+  const stopTaskRequestId = shouldStopTask ? randomUUID() : null;
+  const killingStartedAt = shouldStopTask ? new Date().toISOString() : null;
+  const stopTaskEnvelope =
+    shouldStopTask && stopTaskRequestId
+      ? {
+          type: "stop_task",
+          payload: {
+            task_id: taskId,
+            project_id: existing.projectId,
+            request_id: stopTaskRequestId,
+            reason: "stopped_from_app",
+          },
+        }
+      : null;
 
-  const nextMetadata = hasMetadataField
-    ? metadataInput == null
-      ? null
-      : JSON.stringify({
-          ...(existingMetadataObject ?? {}),
-          ...(parsedMetadataInput ?? {}),
-        })
-    : existing.metadata;
-  const taskUpdateData = {
+  const nextMetadata = shouldStopTask
+    ? JSON.stringify({
+        ...(hasMetadataField ? parsedMetadataInput ?? {} : existingMetadataObject ?? {}),
+        killingStartedAt,
+        killingTimeoutMs: KILLING_TIMEOUT_MS,
+        killRequestId: stopTaskRequestId,
+      })
+    : hasMetadataField
+      ? metadataInput == null
+        ? null
+        : JSON.stringify({
+            ...(existingMetadataObject ?? {}),
+            ...(parsedMetadataInput ?? {}),
+          })
+      : existing.metadata;
+  const baseAiTaskUpdateData = {
     projectId: nextProjectId,
     title: normalizedBody.title ?? existing.title,
-    taskType: nextTaskType,
     status: nextStatus,
     agentHost: nextAgentHost,
     executionHost: nextExecutionHost,
@@ -414,10 +534,25 @@ export async function PATCH(
       sessionFilePathInput !== undefined
         ? normalizeOptionalString(sessionFilePathInput)
         : existing.sessionFilePath,
+    metadata: nextMetadata,
+  };
+  const legacyAiTaskUpdateData = buildLegacyAiTaskWriteData({
+    projectId: baseAiTaskUpdateData.projectId,
+    title: baseAiTaskUpdateData.title,
+    status: baseAiTaskUpdateData.status,
+    agentHost: baseAiTaskUpdateData.agentHost,
+    executionHost: baseAiTaskUpdateData.executionHost,
+    backendType: baseAiTaskUpdateData.backendType,
+    sessionId: baseAiTaskUpdateData.sessionId,
+    sessionFilePath: baseAiTaskUpdateData.sessionFilePath,
+    metadata: baseAiTaskUpdateData.metadata,
+  });
+  const taskUpdateData = {
+    ...baseAiTaskUpdateData,
+    taskType: nextTaskType,
     launchConfig: hasLaunchConfigField
       ? (nextLaunchConfig ? JSON.stringify(nextLaunchConfig) : null)
       : existing.launchConfig,
-    metadata: nextMetadata,
   };
 
   let task;
@@ -496,26 +631,177 @@ export async function PATCH(
       where: { taskId },
     });
   } else {
-    if (shouldStopTask && stopTargetHost) {
-      const stopResult = await stopTaskBeforeRelaunch({
-        userId: user.id,
-        taskId,
-        projectId: existing.projectId,
-        stopTargetHost,
-        reason: "stopped_from_app",
-        requireActiveHost: true,
-      });
-      if (!stopResult.ok) {
-        return NextResponse.json({ error: stopResult.error }, { status: 409 });
-      }
-    }
-
     try {
-      task = await db.task.update({
-        where: { id: taskId },
-        data: taskUpdateData,
-      });
+      if (shouldStopTask && stopTargetHost && stopTaskRequestId && stopTaskEnvelope) {
+        realtimeHub.bindTaskToAgent(taskId, stopTargetHost);
+        const runStopTaskUpdateTransaction = async (
+          mode: "full" | "issueId" | "legacy",
+          persistOutbox: boolean,
+        ) =>
+          db.$transaction(async (tx) => {
+            const updatedTaskRaw =
+              mode === "full"
+                ? await tx.task.update({
+                    where: { id: taskId },
+                    data: taskUpdateData,
+                  })
+                : mode === "issueId"
+                  ? await tx.task.update({
+                      where: { id: taskId },
+                      data: taskUpdateData,
+                      select: taskSelectWithoutIssueId,
+                    })
+                  : await tx.task.update({
+                      where: { id: taskId },
+                      data: legacyAiTaskUpdateData,
+                      select: legacyTaskSelect,
+                    });
+            const updatedTask =
+              mode === "legacy"
+                ? applyLegacyTaskShape(updatedTaskRaw)
+                : mode === "issueId"
+                  ? { ...updatedTaskRaw, issueId: null }
+                  : updatedTaskRaw;
+            if (!persistOutbox) {
+              return {
+                task: updatedTask,
+                stopOutboxRow: null,
+                useDirectDeliveryFallback: true,
+              };
+            }
+            const stopOutboxRow = await tx.agentOutbox.create({
+              data: {
+                userId: user.id,
+                agentHost: stopTargetHost,
+                taskId,
+                eventType: "stop_task",
+                requestId: stopTaskRequestId,
+                payloadJson: JSON.stringify(stopTaskEnvelope),
+                status: "pending",
+                attemptCount: 0,
+                nextRetryAt: null,
+              },
+            });
+            return {
+              task: updatedTask,
+              stopOutboxRow,
+              useDirectDeliveryFallback: false,
+            };
+          });
+        const runCompatibleStopTaskUpdateTransaction = async () => {
+          try {
+            return await runStopTaskUpdateTransaction("full", true);
+          } catch (error) {
+            if (isMissingAgentOutboxTableError(error)) {
+              warnMissingAgentOutboxTable(error);
+              return runStopTaskUpdateTransaction("full", false);
+            }
+            if (isMissingIssueIdSchemaError(error)) {
+              try {
+                return await runStopTaskUpdateTransaction("issueId", true);
+              } catch (fallbackError) {
+                if (isMissingAgentOutboxTableError(fallbackError)) {
+                  warnMissingAgentOutboxTable(fallbackError);
+                  return runStopTaskUpdateTransaction("issueId", false);
+                }
+                if (!isMissingPtySchemaError(fallbackError)) {
+                  throw fallbackError;
+                }
+              }
+            }
+            if (!isMissingPtySchemaError(error) && !isMissingIssueIdSchemaError(error)) {
+              throw error;
+            }
+            try {
+              return await runStopTaskUpdateTransaction("legacy", true);
+            } catch (legacyError) {
+              if (isMissingAgentOutboxTableError(legacyError)) {
+                warnMissingAgentOutboxTable(legacyError);
+                return runStopTaskUpdateTransaction("legacy", false);
+              }
+              throw legacyError;
+            }
+          }
+        };
+        const stopResult = await runCompatibleStopTaskUpdateTransaction();
+        task = stopResult.task;
+        try {
+          if (stopResult.stopOutboxRow) {
+            await deliverAgentOutboxRow(stopResult.stopOutboxRow, {
+              userId: user.id,
+              agentHost: stopTargetHost,
+              sendToAgentHost: ({ userId: targetUserId, agentHost: targetHost, envelope }) =>
+                realtimeHub.sendToAgentHost(targetUserId, targetHost, envelope),
+              resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),
+            });
+          } else if (stopResult.useDirectDeliveryFallback) {
+            const directStopResult = await enqueueAndAttemptAgentCommand(
+              {
+                userId: user.id,
+                agentHost: stopTargetHost,
+                taskId,
+                eventType: "stop_task",
+                requestId: stopTaskRequestId,
+                envelope: stopTaskEnvelope,
+              },
+              {
+                agentHost: stopTargetHost,
+                sendToAgentHost: ({ userId: targetUserId, agentHost: targetHost, envelope }) =>
+                  realtimeHub.sendToAgentHost(targetUserId, targetHost, envelope),
+                resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),
+              },
+            );
+            if (!directStopResult.delivered) {
+              await rollbackFailedAiTaskPatch({
+                taskId,
+                previousTask: existing,
+              });
+              return NextResponse.json(
+                {
+                  error: `Failed to request task kill: task daemon ${stopTargetHost} is offline`,
+                },
+                { status: 409 },
+              );
+            }
+          }
+        } catch (error) {
+          if (stopResult.useDirectDeliveryFallback) {
+            await rollbackFailedAiTaskPatch({
+              taskId,
+              previousTask: existing,
+            });
+            return NextResponse.json(
+              {
+                error: `Failed to request task kill: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              },
+              { status: 409 },
+            );
+          }
+          console.error(
+            `[tasks] failed to deliver queued stop_task for task ${taskId} to ${stopTargetHost}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      } else {
+        task = await db.task.update({
+          where: { id: taskId },
+          data: taskUpdateData,
+        });
+      }
     } catch (error) {
+      if (shouldStopTask) {
+        return NextResponse.json(
+          {
+            error: `Failed to request task kill: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          },
+          { status: 409 },
+        );
+      }
       if (isMissingIssueIdSchemaError(error)) {
         // taskUpdateData has no issueId field, so we can pass it directly
         const updated = await db.task.update({
@@ -528,23 +814,7 @@ export async function PATCH(
         task = applyLegacyTaskShape(
           await db.task.update({
             where: { id: taskId },
-            data: {
-              projectId: nextProjectId,
-              title: normalizedBody.title ?? existing.title,
-              status: nextStatus,
-              agentHost: nextAgentHost,
-              executionHost: nextExecutionHost,
-              backendType: nextBackendType,
-              sessionId:
-                sessionIdInput !== undefined
-                  ? normalizeOptionalString(sessionIdInput)
-                  : existing.sessionId,
-              sessionFilePath:
-                sessionFilePathInput !== undefined
-                  ? normalizeOptionalString(sessionFilePathInput)
-                  : existing.sessionFilePath,
-              metadata: nextMetadata,
-            },
+            data: legacyAiTaskUpdateData,
             select: legacyTaskSelect,
           }),
         );
@@ -552,6 +822,18 @@ export async function PATCH(
         throw error;
       }
     }
+  }
+  if (shouldEnterKilling) {
+    realtimeHub.broadcast(user.id, task.projectId, {
+      type: "task_status_update",
+      payload: {
+        task_id: task.id,
+        project_id: task.projectId,
+        status: "killing",
+        metadata: parseJsonObject(task.metadata),
+        updated_at: task.updatedAt.toISOString(),
+      },
+    });
   }
   return NextResponse.json(serializeTaskResponse({ ...task, ptySession }));
 }
@@ -611,7 +893,10 @@ export async function DELETE(
   }
 
   const normalizedStatus = normalizeTaskStatus(existing.status);
-  const needsStop = normalizedStatus === "running" || normalizedStatus === "unknown";
+  const needsStop =
+    normalizedStatus === "running" ||
+    normalizedStatus === "killing" ||
+    normalizedStatus === "unknown";
   const boundHost = normalizeHost(realtimeHub.getTaskAgentHost(taskId));
   const worktreeConfig =
     (existing.taskType ?? "ai_task") === "ai_task"

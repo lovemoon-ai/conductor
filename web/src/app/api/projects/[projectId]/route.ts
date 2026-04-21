@@ -336,7 +336,12 @@ export async function DELETE(
     if (worktreeRootKey && taskHost && !cleanupTargets.has(worktreeRootKey)) {
       cleanupTargets.set(worktreeRootKey, { task, agentHost: taskHost });
     }
-    if (normalizeTaskStatus(task.status) === "running" || normalizeTaskStatus(task.status) === "unknown") {
+    const normalizedTaskStatus = normalizeTaskStatus(task.status);
+    if (
+      normalizedTaskStatus === "running" ||
+      normalizedTaskStatus === "killing" ||
+      normalizedTaskStatus === "unknown"
+    ) {
       if (!taskHost) {
         return NextResponse.json({ error: "Task missing daemon binding" }, { status: 409 });
       }

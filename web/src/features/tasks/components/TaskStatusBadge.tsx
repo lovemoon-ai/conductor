@@ -1,10 +1,15 @@
 'use client';
 
+import { useEffect, useMemo, useState } from 'react';
 import type { TaskStatus } from '@/shared/types';
+
+const DEFAULT_KILLING_TIMEOUT_MS = 60_000;
 
 interface TaskStatusBadgeProps {
   status: TaskStatus;
   labelOverride?: string;
+  statusStartedAt?: string | null;
+  timeoutMs?: number | null;
   onClick?: () => void;
   disabled?: boolean;
   title?: string;
@@ -14,6 +19,8 @@ interface TaskStatusBadgeProps {
 export function TaskStatusBadge({
   status,
   labelOverride,
+  statusStartedAt,
+  timeoutMs,
   onClick,
   disabled = false,
   title,
@@ -29,6 +36,11 @@ export function TaskStatusBadge({
       bg: 'bg-green-100 dark:bg-green-900/30',
       text: 'text-green-700 dark:text-green-400',
       label: 'running',
+    },
+    killing: {
+      bg: 'bg-amber-100 dark:bg-amber-900/30',
+      text: 'text-amber-800 dark:text-amber-300',
+      label: 'killing',
     },
     killed: {
       bg: 'bg-slate-100 dark:bg-slate-800',
@@ -48,14 +60,61 @@ export function TaskStatusBadge({
   };
 
   const config = statusConfig[status] || statusConfig.unknown;
-  const label = labelOverride ?? config.label;
+  const killingStartedAtMs = useMemo(() => {
+    if (status !== 'killing' || !statusStartedAt) {
+      return null;
+    }
+    const parsed = Date.parse(statusStartedAt);
+    return Number.isFinite(parsed) ? parsed : null;
+  }, [status, statusStartedAt]);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (status !== 'killing') {
+      return;
+    }
+    setNowMs(Date.now());
+    const interval = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [status, killingStartedAtMs]);
+
+  const effectiveTimeoutMs =
+    typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : DEFAULT_KILLING_TIMEOUT_MS;
+  const killingElapsedMs =
+    status === 'killing'
+      ? Math.max(0, nowMs - (killingStartedAtMs ?? nowMs))
+      : 0;
+  const killingElapsedSeconds = Math.floor(killingElapsedMs / 1000);
+  const killingTimedOut = status === 'killing' && killingElapsedSeconds * 1000 >= effectiveTimeoutMs;
+  const killingDisplaySeconds = Math.min(killingElapsedSeconds, Math.ceil(effectiveTimeoutMs / 1000));
+  const label =
+    labelOverride ??
+    (status === 'killing'
+      ? killingTimedOut
+        ? `killing ${killingDisplaySeconds}s timeout`
+        : `killing ${killingDisplaySeconds}s`
+      : config.label);
+  const resolvedTitle =
+    title ??
+    (status === 'killing'
+      ? killingTimedOut
+        ? `Killing timed out after ${Math.ceil(effectiveTimeoutMs / 1000)}s`
+        : `Killing for ${killingDisplaySeconds}s`
+      : label);
   const toneClassName =
     tone === 'danger'
       ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
       : tone === 'warning'
         ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300'
+      : status === 'killing' && killingTimedOut
+        ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
       : `${config.bg} ${config.text}`;
   const className = `inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium ${toneClassName}`;
+  const shouldPulse = (status === 'running' || status === 'killing') && !labelOverride;
 
   if (onClick) {
     return (
@@ -67,11 +126,11 @@ export function TaskStatusBadge({
           onClick();
         }}
         disabled={disabled}
-        title={title ?? label}
+        title={resolvedTitle}
         aria-label={label}
         className={`${className} transition-colors hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-70`}
       >
-        {status === 'running' && !labelOverride ? (
+        {shouldPulse ? (
           <span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-current animate-pulse" />
         ) : null}
         {label}
@@ -82,9 +141,9 @@ export function TaskStatusBadge({
   return (
     <span
       className={className}
-      title={title ?? label}
+      title={resolvedTitle}
     >
-      {status === 'running' && (
+      {shouldPulse && (
         <span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-current animate-pulse" />
       )}
       {label}

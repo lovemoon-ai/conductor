@@ -29,6 +29,7 @@ const normalizeTaskStatus = (value: unknown): string => {
   if (normalized === "completed") return "completed";
   if (normalized === "init") return "init";
   if (normalized === "running") return "running";
+  if (normalized === "killing" || normalized === "stopping") return "killing";
   if (normalized === "killed" || normalized === "failed" || normalized === "cancelled") return "killed";
   return "unknown";
 };
@@ -324,6 +325,15 @@ export async function commitTaskStatusUpdate(input: {
   const status = normalizeTaskStatus(input.status);
   const summary = normalizeOptionalString(input.summary);
   const statusEventId = normalizeOptionalString(input.statusEventId);
+  const currentStatus = normalizeTaskStatus(task.status);
+  if (currentStatus === "killing" && status !== "completed" && status !== "killed") {
+    return {
+      taskId: task.id,
+      projectId: task.projectId,
+      status: currentStatus,
+      duplicate: false,
+    };
+  }
 
   let duplicate = false;
   if (statusEventId) {

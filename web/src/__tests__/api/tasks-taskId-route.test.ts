@@ -36,6 +36,10 @@ vi.mock("@/lib/realtime/hub", () => ({
 
 vi.mock("@/lib/realtime/agent-outbox", () => ({
   enqueueAndAttemptAgentCommand: vi.fn(),
+  deliverAgentOutboxRow: vi.fn(),
+  isMissingAgentOutboxTableError: (error: unknown) =>
+    (error as any)?.code === "P2021" && String((error as any)?.message || "").includes("agent_outbox"),
+  warnMissingAgentOutboxTable: vi.fn(),
 }));
 
 vi.mock("@/lib/tasks/task-file-storage", () => ({
@@ -81,7 +85,10 @@ vi.mock("@/lib/db", () => ({
 
 const { db } = await import("@/lib/db");
 const { realtimeHub } = await import("@/lib/realtime/hub");
-const { enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
+const {
+  deliverAgentOutboxRow,
+  enqueueAndAttemptAgentCommand,
+} = await import("@/lib/realtime/agent-outbox");
 const { deleteTaskAttachmentDirectory } = await import("@/lib/tasks/task-file-storage");
 
 const prismaError = (code: string, message: string) =>
@@ -161,11 +168,23 @@ describe("/api/tasks/[taskId]", () => {
     } as any);
     vi.mocked(db.ptySession.deleteMany).mockResolvedValue({ count: 0 } as any);
     vi.mocked(db.agentOutbox.findMany).mockResolvedValue([]);
-    vi.mocked(db.agentOutbox.create).mockResolvedValue({ id: "outbox-1" } as any);
+    vi.mocked(db.agentOutbox.create).mockImplementation(async ({ data }: any) => ({
+      id: "outbox-1",
+      userId: data.userId,
+      agentHost: data.agentHost,
+      taskId: data.taskId,
+      eventType: data.eventType,
+      requestId: data.requestId,
+      createdAt: new Date("2024-01-01T00:02:00.000Z"),
+      payloadJson: data.payloadJson,
+    }) as any);
     vi.mocked(enqueueAndAttemptAgentCommand).mockResolvedValue({
       requestId: "req-1",
       delivered: true,
     } as any);
+    vi.mocked(deliverAgentOutboxRow).mockResolvedValue({
+      delivered: true,
+    });
     vi.mocked(db.taskDiagnosticsSnapshot.create).mockResolvedValue({
       id: "snapshot-1",
     } as any);
@@ -1054,9 +1073,9 @@ describe("/api/tasks/[taskId]", () => {
     });
   });
 
-  it("sends stop_task when PATCH marks a running task as killed", async () => {
+  it("sets a running task to killing and queues stop_task when PATCH requests killed", async () => {
     const token = createTestToken("user-1");
-    vi.mocked(db.task.findFirst).mockResolvedValue({
+    const existingTask = {
       id: "task-stop-1",
       projectId: "proj-1",
       title: "Stop Me",
@@ -1072,24 +1091,13 @@ describe("/api/tasks/[taskId]", () => {
       createdAt: new Date("2024-01-01T00:00:00.000Z"),
       updatedAt: new Date("2024-01-01T00:01:00.000Z"),
       ptySession: null,
-    } as any);
-    vi.mocked(db.task.update).mockResolvedValue({
-      id: "task-stop-1",
-      projectId: "proj-1",
-      title: "Stop Me",
-      taskType: "ai_task",
-      status: "killed",
-      agentHost: "daemon-a",
-      executionHost: null,
-      backendType: "codex",
-      sessionId: "session-stop-1",
-      sessionFilePath: "/tmp/session-stop-1.jsonl",
-      launchConfig: null,
-      metadata: null,
-      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
+    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+      ...existingTask,
+      ...data,
       updatedAt: new Date("2024-01-01T00:02:00.000Z"),
-    } as any);
-    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(true);
+    }) as any);
 
     const request = createMockRequest({
       method: "PATCH",
@@ -1102,31 +1110,68 @@ describe("/api/tasks/[taskId]", () => {
     const data = await extractJson(response);
 
     expect(response.status).toBe(200);
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-stop-1", "daemon-a");
     expect(db.task.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: "task-stop-1" },
         data: expect.objectContaining({
-          status: "killed",
-          executionHost: null,
+          status: "killing",
+          executionHost: "daemon-a",
         }),
       }),
     );
-    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+    const taskUpdateData = vi.mocked(db.task.update).mock.calls[0][0].data as any;
+    const metadata = JSON.parse(taskUpdateData.metadata);
+    const outboxData = vi.mocked(db.agentOutbox.create).mock.calls[0][0].data as any;
+    const outboxPayload = JSON.parse(outboxData.payloadJson);
+    expect(metadata).toEqual({
+      killingStartedAt: expect.any(String),
+      killingTimeoutMs: 60_000,
+      killRequestId: outboxData.requestId,
+    });
+    expect(outboxData).toEqual(expect.objectContaining({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      taskId: "task-stop-1",
+      eventType: "stop_task",
+      status: "pending",
+      attemptCount: 0,
+      nextRetryAt: null,
+    }));
+    expect(outboxPayload).toEqual({
+      type: "stop_task",
+      payload: expect.objectContaining({
+        task_id: "task-stop-1",
+        project_id: "proj-1",
+        request_id: outboxData.requestId,
+        reason: "stopped_from_app",
+      }),
+    });
+    expect(deliverAgentOutboxRow).toHaveBeenCalledWith(
       expect.objectContaining({
         taskId: "task-stop-1",
         agentHost: "daemon-a",
         eventType: "stop_task",
-        envelope: expect.objectContaining({
-          type: "stop_task",
-          payload: expect.objectContaining({
-            task_id: "task-stop-1",
-            reason: "stopped_from_app",
-          }),
-        }),
       }),
-      expect.any(Object),
+      expect.objectContaining({
+        userId: "user-1",
+        agentHost: "daemon-a",
+      }),
     );
-    expect(data.status).toBe("killed");
+    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+    expect(realtimeHub.broadcast).toHaveBeenCalledWith("user-1", "proj-1", {
+      type: "task_status_update",
+      payload: {
+        task_id: "task-stop-1",
+        project_id: "proj-1",
+        status: "killing",
+        metadata,
+        updated_at: "2024-01-01T00:02:00.000Z",
+      },
+    });
+    expect(data.status).toBe("killing");
+    expect(data.execution_host).toBe("daemon-a");
+    expect(data.metadata).toEqual(metadata);
   });
 
   it("returns 409 when PATCH tries to kill a running task without any active daemon binding", async () => {
@@ -1166,9 +1211,9 @@ describe("/api/tasks/[taskId]", () => {
     expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
   });
 
-  it("returns 409 when PATCH tries to kill a running task whose bound daemon is offline", async () => {
+  it("keeps the task in killing when the queued stop_task cannot be delivered immediately", async () => {
     const token = createTestToken("user-1");
-    vi.mocked(db.task.findFirst).mockResolvedValue({
+    const existingTask = {
       id: "task-stop-offline-host",
       projectId: "proj-1",
       title: "Stop Me",
@@ -1184,9 +1229,17 @@ describe("/api/tasks/[taskId]", () => {
       createdAt: new Date("2024-01-01T00:00:00.000Z"),
       updatedAt: new Date("2024-01-01T00:01:00.000Z"),
       ptySession: null,
-    } as any);
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
+    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+      ...existingTask,
+      ...data,
+      updatedAt: new Date("2024-01-01T00:02:00.000Z"),
+    }) as any);
     vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("daemon-a");
-    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+    vi.mocked(deliverAgentOutboxRow).mockResolvedValue({
+      delivered: false,
+    });
 
     const request = createMockRequest({
       method: "PATCH",
@@ -1198,60 +1251,52 @@ describe("/api/tasks/[taskId]", () => {
     const response = await PATCH(request, { params: Promise.resolve({ taskId: "task-stop-offline-host" }) });
     const data = await extractJson(response);
 
-    expect(response.status).toBe(409);
-    expect(data.error).toBe("task daemon daemon-a is offline");
+    expect(response.status).toBe(200);
+    expect(data.status).toBe("killing");
+    expect(db.agentOutbox.create).toHaveBeenCalled();
+    expect(deliverAgentOutboxRow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "task-stop-offline-host",
+        agentHost: "daemon-a",
+      }),
+      expect.objectContaining({
+        userId: "user-1",
+        agentHost: "daemon-a",
+      }),
+    );
     expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
-    expect(db.task.update).not.toHaveBeenCalled();
   });
 
-  it("returns success when proactive stop polling detects a later killed status", async () => {
+  it("keeps an already killing task in killing without queuing a duplicate stop_task", async () => {
     const token = createTestToken("user-1");
-    vi.mocked(db.task.findFirst)
-      .mockResolvedValueOnce({
-        id: "task-stop-poll-success",
-        projectId: "proj-1",
-        title: "Stop Me Later",
-        taskType: "ai_task",
-        status: "running",
-        agentHost: "daemon-a",
-        executionHost: "daemon-a",
-        backendType: "codex",
-        sessionId: "session-stop-4",
-        sessionFilePath: "/tmp/session-stop-4.jsonl",
-        launchConfig: null,
-        metadata: null,
-        createdAt: new Date("2024-01-01T00:00:00.000Z"),
-        updatedAt: new Date("2024-01-01T00:01:00.000Z"),
-        ptySession: null,
-      } as any)
-      .mockResolvedValueOnce({
-        id: "task-stop-poll-success",
-        projectId: "proj-1",
-        status: "killed",
-        agentHost: "daemon-a",
-        executionHost: null,
-        createdAt: new Date("2024-01-01T00:00:00.000Z"),
-        updatedAt: new Date("2024-01-01T00:01:05.000Z"),
-      } as any);
-    vi.mocked(db.task.update).mockResolvedValue({
-      id: "task-stop-poll-success",
+    const existingMetadata = {
+      killingStartedAt: "2024-01-01T00:01:00.000Z",
+      killingTimeoutMs: 60_000,
+      killRequestId: "req-existing",
+    };
+    const existingTask = {
+      id: "task-stop-already-killing",
       projectId: "proj-1",
-      title: "Stop Me Later",
+      title: "Stop Me",
       taskType: "ai_task",
-      status: "killed",
+      status: "killing",
       agentHost: "daemon-a",
-      executionHost: null,
+      executionHost: "daemon-a",
       backendType: "codex",
-      sessionId: "session-stop-4",
-      sessionFilePath: "/tmp/session-stop-4.jsonl",
+      sessionId: "session-stop-5",
+      sessionFilePath: "/tmp/session-stop-5.jsonl",
       launchConfig: null,
-      metadata: null,
+      metadata: JSON.stringify(existingMetadata),
       createdAt: new Date("2024-01-01T00:00:00.000Z"),
-      updatedAt: new Date("2024-01-01T00:01:05.000Z"),
-    } as any);
-    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("daemon-a");
-    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(true);
-    vi.mocked(realtimeHub.waitForTaskFinalStatus).mockResolvedValue(null);
+      updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+      ptySession: null,
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
+    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+      ...existingTask,
+      ...data,
+      updatedAt: new Date("2024-01-01T00:02:00.000Z"),
+    }) as any);
 
     const request = createMockRequest({
       method: "PATCH",
@@ -1260,21 +1305,206 @@ describe("/api/tasks/[taskId]", () => {
         status: "killed",
       },
     });
-    const response = await PATCH(request, { params: Promise.resolve({ taskId: "task-stop-poll-success" }) });
+    const response = await PATCH(request, { params: Promise.resolve({ taskId: "task-stop-already-killing" }) });
     const data = await extractJson(response);
 
     expect(response.status).toBe(200);
-    expect(realtimeHub.waitForTaskFinalStatus).toHaveBeenCalledWith("task-stop-poll-success", 5000);
     expect(db.task.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "task-stop-poll-success" },
+        where: { id: "task-stop-already-killing" },
         data: expect.objectContaining({
-          status: "killed",
-          executionHost: null,
+          status: "killing",
+          executionHost: "daemon-a",
+          metadata: JSON.stringify(existingMetadata),
         }),
       }),
     );
-    expect(data.status).toBe("killed");
+    expect(db.agentOutbox.create).not.toHaveBeenCalled();
+    expect(deliverAgentOutboxRow).not.toHaveBeenCalled();
+    expect(data.status).toBe("killing");
+    expect(data.metadata).toEqual(existingMetadata);
+  });
+
+  it("falls back to direct stop delivery when agent_outbox table is missing", async () => {
+    const token = createTestToken("user-1");
+    const existingTask = {
+      id: "task-stop-fallback",
+      projectId: "proj-1",
+      title: "Stop Me",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: "session-stop-fallback",
+      sessionFilePath: "/tmp/session-stop-fallback.jsonl",
+      launchConfig: null,
+      metadata: null,
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+      ptySession: null,
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
+    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+      ...existingTask,
+      ...data,
+      updatedAt: new Date("2024-01-01T00:02:00.000Z"),
+    }) as any);
+    vi.mocked(db.agentOutbox.create).mockRejectedValueOnce(
+      prismaError("P2021", 'The table `agent_outbox` does not exist in the current database.'),
+    );
+
+    const request = createMockRequest({
+      method: "PATCH",
+      token,
+      body: {
+        status: "killed",
+      },
+    });
+    const response = await PATCH(request, { params: Promise.resolve({ taskId: "task-stop-fallback" }) });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.status).toBe("killing");
+    expect(deliverAgentOutboxRow).not.toHaveBeenCalled();
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "task-stop-fallback",
+        agentHost: "daemon-a",
+        eventType: "stop_task",
+      }),
+      expect.objectContaining({
+        agentHost: "daemon-a",
+      }),
+    );
+  });
+
+  it("returns 409 and rolls the task back when direct stop fallback cannot deliver", async () => {
+    const token = createTestToken("user-1");
+    const existingTask = {
+      id: "task-stop-fallback-failed",
+      projectId: "proj-1",
+      title: "Stop Me",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: "session-stop-fallback-failed",
+      sessionFilePath: "/tmp/session-stop-fallback-failed.jsonl",
+      launchConfig: null,
+      metadata: null,
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+      ptySession: null,
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
+    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+      ...existingTask,
+      ...data,
+      updatedAt: new Date("2024-01-01T00:02:00.000Z"),
+    }) as any);
+    vi.mocked(db.agentOutbox.create).mockRejectedValueOnce(
+      prismaError("P2021", 'The table `agent_outbox` does not exist in the current database.'),
+    );
+    vi.mocked(enqueueAndAttemptAgentCommand).mockResolvedValueOnce({
+      requestId: "req-fallback-failed",
+      delivered: false,
+    } as any);
+
+    const response = await PATCH(
+      createMockRequest({
+        method: "PATCH",
+        token,
+        body: { status: "killed" },
+      }),
+      { params: Promise.resolve({ taskId: "task-stop-fallback-failed" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toBe("Failed to request task kill: task daemon daemon-a is offline");
+    expect(deliverAgentOutboxRow).not.toHaveBeenCalled();
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "task-stop-fallback-failed",
+        agentHost: "daemon-a",
+        eventType: "stop_task",
+      }),
+      expect.objectContaining({
+        agentHost: "daemon-a",
+      }),
+    );
+    expect(vi.mocked(db.task.update).mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({
+        where: { id: "task-stop-fallback-failed" },
+        data: expect.objectContaining({
+          status: "running",
+          executionHost: "daemon-a",
+        }),
+      }),
+    );
+    expect(realtimeHub.broadcast).not.toHaveBeenCalledWith(
+      "user-1",
+      "proj-1",
+      expect.objectContaining({
+        type: "task_status_update",
+        payload: expect.objectContaining({
+          task_id: "task-stop-fallback-failed",
+          status: "killing",
+        }),
+      }),
+    );
+  });
+
+  it("moves init tasks into killing before stop dispatch", async () => {
+    const token = createTestToken("user-1");
+    const existingTask = {
+      id: "task-stop-init",
+      projectId: "proj-1",
+      title: "Stop Me Early",
+      taskType: "ai_task",
+      status: "init",
+      agentHost: "daemon-a",
+      executionHost: null,
+      backendType: "codex",
+      sessionId: "session-stop-init",
+      sessionFilePath: "/tmp/session-stop-init.jsonl",
+      launchConfig: null,
+      metadata: null,
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+      ptySession: null,
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
+    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+      ...existingTask,
+      ...data,
+      updatedAt: new Date("2024-01-01T00:02:00.000Z"),
+    }) as any);
+
+    const response = await PATCH(
+      createMockRequest({
+        method: "PATCH",
+        token,
+        body: { status: "killed" },
+      }),
+      { params: Promise.resolve({ taskId: "task-stop-init" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.status).toBe("killing");
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "task-stop-init" },
+        data: expect.objectContaining({
+          status: "killing",
+          executionHost: "daemon-a",
+        }),
+      }),
+    );
+    expect(db.agentOutbox.create).toHaveBeenCalled();
   });
 
   it("should promote a task to pty_task and upsert pty_session via PATCH", async () => {
@@ -1519,6 +1749,87 @@ describe("/api/tasks/[taskId]", () => {
       expect.objectContaining({
         id: "task-legacy-patch-1",
         title: "Legacy Rename",
+        task_type: "ai_task",
+        launch_config: null,
+        pty_session: null,
+      }),
+    );
+  });
+
+  it("falls back to legacy ai_task kill PATCH when PTY task columns are missing", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst)
+      .mockRejectedValueOnce(
+        prismaError("P2022", 'The column `tasks.task_type` does not exist in the current database.'),
+      )
+      .mockResolvedValueOnce({
+        id: "task-legacy-kill-1",
+        projectId: "proj-1",
+        title: "Legacy Task",
+        status: "running",
+        agentHost: "daemon-a",
+        executionHost: "daemon-a",
+        backendType: "codex",
+        sessionId: null,
+        sessionFilePath: null,
+        metadata: null,
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+      } as any);
+    vi.mocked(db.task.update)
+      .mockRejectedValueOnce(
+        prismaError("P2022", 'The column `tasks.launch_config` does not exist in the current database.'),
+      )
+      .mockResolvedValueOnce({
+        id: "task-legacy-kill-1",
+        projectId: "proj-1",
+        title: "Legacy Task",
+        status: "killing",
+        agentHost: "daemon-a",
+        executionHost: "daemon-a",
+        backendType: "codex",
+        sessionId: null,
+        sessionFilePath: null,
+        metadata: JSON.stringify({
+          killingStartedAt: "2024-01-01T00:02:00.000Z",
+          killingTimeoutMs: 60_000,
+          killRequestId: "req-legacy",
+        }),
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2024-01-01T00:02:00.000Z"),
+      } as any);
+
+    const response = await PATCH(
+      createMockRequest({
+        method: "PATCH",
+        token,
+        body: { status: "killed" },
+      }),
+      { params: Promise.resolve({ taskId: "task-legacy-kill-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.task.update).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.not.objectContaining({
+          taskType: expect.anything(),
+          launchConfig: expect.anything(),
+        }),
+        select: expect.objectContaining({
+          id: true,
+          projectId: true,
+          title: true,
+          status: true,
+        }),
+      }),
+    );
+    expect(db.agentOutbox.create).toHaveBeenCalled();
+    expect(data).toEqual(
+      expect.objectContaining({
+        id: "task-legacy-kill-1",
+        status: "killing",
         task_type: "ai_task",
         launch_config: null,
         pty_session: null,
