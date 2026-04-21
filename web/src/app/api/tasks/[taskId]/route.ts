@@ -48,7 +48,10 @@ import {
   resolveTaskWorktreeCleanupHost,
   parseTaskWorktreeLaunchConfig,
 } from "@/lib/tasks/worktree";
-import { stopTaskBeforeRelaunch } from "@/lib/tasks/task-stop";
+import {
+  resolveTaskStopTargetHost,
+  stopTaskBeforeRelaunch,
+} from "@/lib/tasks/task-stop";
 
 const DELETE_SNAPSHOT_TRIGGER = "task_delete";
 const KILLING_TIMEOUT_MS = 60_000;
@@ -467,9 +470,11 @@ export async function PATCH(
         : existing.status;
   const shouldStopTask = shouldEnterKilling;
   const stopTargetHost = shouldDispatchPtyTask || shouldStopTask
-    ? normalizeHost(realtimeHub.getTaskAgentHost(taskId)) ||
-      normalizeHost(existing.executionHost) ||
-      normalizeHost(existing.agentHost)
+    ? resolveTaskStopTargetHost({
+        taskId,
+        executionHost: existing.executionHost,
+        agentHost: existing.agentHost,
+      })
     : "";
   if (shouldStopTask && !stopTargetHost) {
     return NextResponse.json({ error: "Task missing active daemon binding" }, { status: 409 });

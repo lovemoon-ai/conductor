@@ -3196,6 +3196,7 @@ describe("Daemon", () => {
     let connected = false;
     let childExitHandler = null;
     const killCalls = [];
+    const sentEvents = [];
 
     const child = {
       pid: 77777,
@@ -3248,7 +3249,9 @@ describe("Daemon", () => {
             connected = true;
           },
           disconnect: async () => {},
-          sendJson: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
         }),
       },
     );
@@ -3280,6 +3283,16 @@ describe("Daemon", () => {
     if (childExitHandler) {
       childExitHandler(143, "SIGTERM");
     }
+
+    assert.equal(
+      sentEvents.some(
+        (entry) =>
+          entry?.type === "task_status_update" &&
+          entry?.payload?.task_id === "task-stop-1" &&
+          entry?.payload?.status === "KILLED",
+      ),
+      false,
+    );
 
     if (daemonInstance && typeof daemonInstance.close === "function") {
       daemonInstance.close();
@@ -6125,7 +6138,7 @@ describe("Daemon", () => {
     }
   });
 
-  it("reports active tasks as killed before disconnect on daemon close", async () => {
+  it("does not proxy fire child terminal status on daemon close", async () => {
     let handler;
     let connected = false;
     const killCalls = [];
@@ -6235,9 +6248,8 @@ describe("Daemon", () => {
     const disconnectIdx = events.findIndex((event) => event.type === "disconnect");
 
     assert.ok(runningIdx >= 0);
-    assert.ok(killedIdx >= 0);
     assert.ok(disconnectIdx >= 0);
-    assert.ok(killedIdx < disconnectIdx);
+    assert.equal(killedIdx, -1);
   });
 
   it("logs backend connection only for initial connect and true reconnect", (t) => {
@@ -6850,7 +6862,7 @@ describe("Daemon", () => {
 
     const exitCodes = [];
     let handler;
-    let spawnCount = 0;
+    let ptyCreateCount = 0;
     let connected = false;
 
     startDaemon(
@@ -6866,14 +6878,7 @@ describe("Daemon", () => {
           exitCodes.push(code);
         },
         spawn: () => {
-          spawnCount += 1;
-          return {
-            pid: 45678,
-            kill: () => {},
-            on: () => {},
-            stdout: { on: () => {} },
-            stderr: { on: () => {} },
-          };
+          throw new Error("spawn should not be called for create_pty_task");
         },
         mkdirSync: () => {},
         writeFileSync: () => {},
@@ -6895,6 +6900,17 @@ describe("Daemon", () => {
           }
           return { ok: true, json: async () => ({}) };
         },
+        createPty: async () => {
+          ptyCreateCount += 1;
+          return {
+            pid: 45678,
+            write: () => {},
+            resize: () => {},
+            kill: () => {},
+            onData: () => {},
+            onExit: () => {},
+          };
+        },
         createWebSocketClient: () => ({
           registerHandler: (h) => {
             handler = h;
@@ -6912,15 +6928,20 @@ describe("Daemon", () => {
     await waitUntil(() => connected, { message: "sigint-force daemon to connect" });
 
     handler({
-      type: "create_task",
+      type: "create_pty_task",
       payload: {
         task_id: "task-sigint-force-1",
         project_id: "proj-sigint-force-1",
-        backend_type: "codex",
+        pty_session_id: "pty-sigint-force-1",
+        request_id: "req-sigint-force-1",
+        launch_config: {
+          entrypoint_type: "shell",
+          cwd: "/tmp/test-daemon-sigint-force-bound",
+        },
       },
     });
 
-    await waitUntil(() => spawnCount === 1, { message: "task-sigint-force-1 to spawn" });
+    await waitUntil(() => ptyCreateCount === 1, { message: "task-sigint-force-1 to spawn" });
 
     const sigintHandlers = signalHandlers.get("SIGINT") || [];
     assert.strictEqual(sigintHandlers.length, 1);

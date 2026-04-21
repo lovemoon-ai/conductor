@@ -89,6 +89,13 @@ export function shouldRunReconnectRecovery({
   return !runner.shouldSuppressReconnectRecovery();
 }
 
+export function shouldFireReportTaskStatus({ launchedByDaemon = false, phase } = {}) {
+  if (phase === "final") {
+    return true;
+  }
+  return !launchedByDaemon;
+}
+
 // Load allow_cli_list from config file (no defaults - must be configured)
 function loadFireConfigYaml(configFilePath) {
   const home = os.homedir();
@@ -676,7 +683,7 @@ async function main() {
           source: "conductor-fire",
           metadata: { reconnect: true },
         });
-        if (!launchedByDaemon) {
+        if (shouldFireReportTaskStatus({ launchedByDaemon, phase: "reconnect_running" })) {
           await conductor.sendTaskStatus(reconnectTaskId, {
             status: "RUNNING",
             summary: "conductor fire reconnected",
@@ -887,7 +894,7 @@ async function main() {
     process.on("SIGINT", onSigint);
     process.on("SIGTERM", onSigterm);
 
-    if (!launchedByDaemon) {
+    if (shouldFireReportTaskStatus({ launchedByDaemon, phase: "running" })) {
       try {
         await conductor.sendTaskStatus(taskContext.taskId, {
           status: "RUNNING",
@@ -911,7 +918,7 @@ async function main() {
     } finally {
       process.off("SIGINT", onSigint);
       process.off("SIGTERM", onSigterm);
-      if (!launchedByDaemon) {
+      if (shouldFireReportTaskStatus({ launchedByDaemon, phase: "final" })) {
         const remoteStopReason = typeof runner.getRemoteStopReason === "function" ? runner.getRemoteStopReason() : null;
         const remoteStopSummary = typeof runner.getRemoteStopSummary === "function" ? runner.getRemoteStopSummary() : null;
         // When the task was deleted by the user, the DB record is already gone —
@@ -934,10 +941,10 @@ async function main() {
                   status: "KILLED",
                   summary: remoteStopSummary,
                 }
-            : {
-                status: "COMPLETED",
-                summary: "conductor fire exited",
-              };
+              : {
+                  status: "COMPLETED",
+                  summary: "conductor fire exited",
+                };
         if (!taskDeletedByUser) {
           try {
             const statusResult = await conductor.sendTaskStatus(taskContext.taskId, finalStatus);

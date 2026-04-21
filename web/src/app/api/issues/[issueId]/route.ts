@@ -14,7 +14,7 @@ import {
 } from '@/lib/tasks/inplace-restart';
 import { serializeTaskResponse } from '@/lib/tasks/serialization';
 import { normalizeOptionalString, normalizeTaskStatus, type JsonObject } from '@/lib/tasks/task-config';
-import { stopTaskBeforeRelaunch } from '@/lib/tasks/task-stop';
+import { resolveTaskStopTargetHost, stopTaskBeforeRelaunch } from '@/lib/tasks/task-stop';
 import { buildTaskWorktreeLaunchConfig } from '@/lib/tasks/worktree';
 import {
   ConnectedAgent,
@@ -239,9 +239,11 @@ export async function PATCH(
       normalizedTaskStatus === 'killing' ||
       normalizedTaskStatus === 'unknown';
     const stopTargetHost = shouldStopTask
-      ? normalizeOptionalString(realtimeHub.getTaskAgentHost(activeTask.id)) ??
-        normalizeOptionalString(activeTask.executionHost) ??
-        normalizeOptionalString(activeTask.agentHost)
+      ? resolveTaskStopTargetHost({
+          taskId: activeTask.id,
+          executionHost: activeTask.executionHost,
+          agentHost: activeTask.agentHost,
+        }) || null
       : null;
 
     if (shouldStopTask && stopTargetHost) {

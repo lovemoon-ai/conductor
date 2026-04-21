@@ -127,7 +127,6 @@ describe('IssueBoard', () => {
     const issue2DeleteButton = screen.getByRole('button', { name: 'Delete issue Build AI task handoff' });
     expect(openTaskLink.parentElement).toBe(issue2DeleteButton.parentElement);
     expect(screen.getByRole('link', { name: 'Open last task' })).toHaveAttribute('href', '/app/tasks/task-2');
-    expect(screen.getByText('killed')).toBeInTheDocument();
     expect(screen.queryByText('Active task')).toBeNull();
     expect(screen.queryByText('Implement issue spawn')).toBeNull();
   });

@@ -10,7 +10,6 @@ import {
   ISSUE_STATUS_BADGE_CLASSNAMES,
   ISSUE_STATUS_LABELS,
 } from '@/lib/issues/config';
-import { TaskStatusBadge } from '@/features/tasks/components/TaskStatusBadge';
 import { EditIssueDialog } from './EditIssueDialog';
 
 const LONG_PRESS_MS = 500;
@@ -248,19 +247,14 @@ function IssueCardBody({
         {interactive && (openTask || onDelete) ? (
           <div className="mt-3 flex items-center gap-2" onPointerDown={stopEventPropagation} onClick={stopEventPropagation}>
             {openTask ? (
-              <>
-                <Link
-                  href={`/app/tasks/${encodeURIComponent(openTask.id)}`}
-                  onPointerDown={stopEventPropagation}
-                  onClick={stopEventPropagation}
-                  className="inline-flex rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-border/40"
-                >
-                  {hasHistoricalLinkedTask ? 'Open last task' : 'Open task'}
-                </Link>
-                {hasHistoricalLinkedTask ? (
-                  <TaskStatusBadge status={openTask.status} />
-                ) : null}
-              </>
+              <Link
+                href={`/app/tasks/${encodeURIComponent(openTask.id)}`}
+                onPointerDown={stopEventPropagation}
+                onClick={stopEventPropagation}
+                className="inline-flex rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-border/40"
+              >
+                {hasHistoricalLinkedTask ? 'Open last task' : 'Open task'}
+              </Link>
             ) : null}
 
             {onDelete ? (

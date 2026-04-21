@@ -3824,6 +3824,10 @@ export function startDaemon(config = {}, deps = {}) {
     return true;
   }
 
+  function shouldDaemonReportFireChildTerminalStatus(record) {
+    return !Boolean(record?.managedByFireBridge);
+  }
+
   function handleStopTask(payload) {
     const taskId = payload?.task_id;
     if (!taskId) return;
@@ -4326,6 +4330,7 @@ export function startDaemon(config = {}, deps = {}) {
         projectId,
         logPath,
         stopForceKillTimer: null,
+        managedByFireBridge: true,
       });
 
       client
@@ -4395,7 +4400,7 @@ export function startDaemon(config = {}, deps = {}) {
             ? "completed"
             : `exited with code ${code}`;
 
-        if (!suppressExitStatusReport) {
+        if (!suppressExitStatusReport && shouldDaemonReportFireChildTerminalStatus(active)) {
           client
             .sendJson({
               type: "task_status_update",
@@ -4750,6 +4755,7 @@ export function startDaemon(config = {}, deps = {}) {
       projectId: normalizedProjectId,
       logPath,
       stopForceKillTimer: null,
+      managedByFireBridge: true,
     });
 
     client
@@ -4812,7 +4818,7 @@ export function startDaemon(config = {}, deps = {}) {
           ? "completed"
           : `exited with code ${code}`;
 
-      if (!suppressExitStatusReport) {
+      if (!suppressExitStatusReport && shouldDaemonReportFireChildTerminalStatus(active)) {
         client
           .sendJson({
             type: "task_status_update",
@@ -4852,6 +4858,9 @@ export function startDaemon(config = {}, deps = {}) {
       await Promise.allSettled(
         activeEntries.map(async ([taskId, record]) => {
           suppressedExitStatusReports.add(taskId);
+          if (!shouldDaemonReportFireChildTerminalStatus(record)) {
+            return;
+          }
           try {
             await withTimeout(
               client.sendJson({

@@ -1174,6 +1174,80 @@ describe("/api/tasks/[taskId]", () => {
     expect(data.metadata).toEqual(metadata);
   });
 
+  it("prefers a persisted conductor-fire host over a stale daemon binding when PATCH requests killed", async () => {
+    const token = createTestToken("user-1");
+    const existingTask = {
+      id: "task-stop-fire-1",
+      projectId: "proj-1",
+      title: "Stop Me",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "conductor-fire-unknown-host-21937",
+      executionHost: "conductor-fire-unknown-host-21937",
+      backendType: "codex",
+      sessionId: "session-stop-fire-1",
+      sessionFilePath: "/tmp/session-stop-fire-1.jsonl",
+      launchConfig: null,
+      metadata: JSON.stringify({ daemonName: "debug" }),
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+      ptySession: null,
+    };
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("debug");
+    vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
+    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+      ...existingTask,
+      ...data,
+      updatedAt: new Date("2024-01-01T00:02:00.000Z"),
+    }) as any);
+
+    const request = createMockRequest({
+      method: "PATCH",
+      token,
+      body: {
+        status: "killed",
+      },
+    });
+    const response = await PATCH(request, { params: Promise.resolve({ taskId: "task-stop-fire-1" }) });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith(
+      "task-stop-fire-1",
+      "conductor-fire-unknown-host-21937",
+    );
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "task-stop-fire-1" },
+        data: expect.objectContaining({
+          status: "killing",
+          executionHost: "conductor-fire-unknown-host-21937",
+        }),
+      }),
+    );
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          userId: "user-1",
+          agentHost: "conductor-fire-unknown-host-21937",
+          taskId: "task-stop-fire-1",
+          eventType: "stop_task",
+        }),
+      }),
+    );
+    expect(deliverAgentOutboxRow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "task-stop-fire-1",
+        agentHost: "conductor-fire-unknown-host-21937",
+      }),
+      expect.objectContaining({
+        userId: "user-1",
+        agentHost: "conductor-fire-unknown-host-21937",
+      }),
+    );
+    expect(data.execution_host).toBe("conductor-fire-unknown-host-21937");
+  });
+
   it("returns 409 when PATCH tries to kill a running task without any active daemon binding", async () => {
     const token = createTestToken("user-1");
     vi.mocked(db.task.findFirst).mockResolvedValue({

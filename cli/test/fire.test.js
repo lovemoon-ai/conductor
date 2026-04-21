@@ -24,6 +24,7 @@ import {
   resolveFreshSessionBootstrapLockPath,
   resolveProjectId,
   resolveRequestedTaskTitle,
+  shouldFireReportTaskStatus,
   shouldRunReconnectRecovery,
   withFreshSessionBootstrapLock,
   writeFireTaskMarker,
@@ -562,6 +563,21 @@ describe("conductor-fire backends", () => {
         CONDUCTOR_CLI_COMMAND: "",
       }),
       false,
+    );
+  });
+
+  it("still reports final task status from fire after daemon launch", () => {
+    assert.equal(
+      shouldFireReportTaskStatus({ launchedByDaemon: true, phase: "running" }),
+      false,
+    );
+    assert.equal(
+      shouldFireReportTaskStatus({ launchedByDaemon: true, phase: "reconnect_running" }),
+      false,
+    );
+    assert.equal(
+      shouldFireReportTaskStatus({ launchedByDaemon: true, phase: "final" }),
+      true,
     );
   });
 

@@ -35,9 +35,13 @@ vi.mock('@/lib/tasks/create-ai-task', () => ({
   finalizeAiTaskCreation: vi.fn(),
 }));
 
-vi.mock('@/lib/tasks/task-stop', () => ({
-  stopTaskBeforeRelaunch: vi.fn(),
-}));
+vi.mock('@/lib/tasks/task-stop', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('@/lib/tasks/task-stop')>();
+  return {
+    ...mod,
+    stopTaskBeforeRelaunch: vi.fn(),
+  };
+});
 
 vi.mock('@/lib/realtime/agent-outbox', () => ({
   deliverAgentOutboxForHost: vi.fn().mockResolvedValue({ attempted: 1, delivered: 1 }),
@@ -533,6 +537,64 @@ describe('/api/issues/[issueId]', () => {
     expect(data.killedTask).toEqual(expect.objectContaining({
       id: 'task-init',
       status: 'killed',
+    }));
+  });
+
+  it('prefers a persisted conductor-fire host over a stale daemon binding when stopping an issue task', async () => {
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue('debug');
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ status: 'doing' }) as any);
+    mockIssueTasks({
+      activeTasks: [buildTask({
+        id: 'task-fire',
+        title: 'Existing fire task',
+        agentHost: 'conductor-fire-unknown-host-21937',
+        executionHost: 'conductor-fire-unknown-host-21937',
+        metadata: JSON.stringify({ daemonName: 'debug' }),
+      })],
+      linkedTasks: [buildTask({
+        id: 'task-fire',
+        title: 'Existing fire task',
+        agentHost: 'conductor-fire-unknown-host-21937',
+        executionHost: 'conductor-fire-unknown-host-21937',
+        metadata: JSON.stringify({ daemonName: 'debug' }),
+      })],
+    });
+    vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({
+      status: 'done',
+      tasks: [],
+    }) as any);
+    vi.mocked(db.task.findFirst).mockResolvedValueOnce({
+      id: 'task-fire',
+      projectId: 'project-1',
+      issueId: 'issue-1',
+      title: 'Existing fire task',
+      status: 'killed',
+      taskType: 'ai_task',
+      agentHost: 'conductor-fire-unknown-host-21937',
+      executionHost: null,
+      backendType: 'codex',
+      sessionId: 'sess-1',
+      sessionFilePath: '/tmp/sess-1.jsonl',
+      launchConfig: null,
+      metadata: JSON.stringify({ daemonName: 'debug' }),
+      createdAt: new Date('2026-04-14T00:15:00.000Z'),
+      updatedAt: new Date('2026-04-14T00:25:00.000Z'),
+    } as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { status: 'done' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(stopTaskBeforeRelaunch).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'user-1',
+      taskId: 'task-fire',
+      projectId: 'project-1',
+      stopTargetHost: 'conductor-fire-unknown-host-21937',
+      reason: 'issue_done',
     }));
   });
 

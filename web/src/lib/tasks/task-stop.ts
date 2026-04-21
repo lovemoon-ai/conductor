@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { db } from "@/lib/db";
 import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
+import { isConductorFireHost } from "@/lib/subscription/plan-limits";
 import { recoverStaleDisconnectedAgentTasks } from "@/lib/tasks/stale-recovery";
 import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 
@@ -43,6 +44,25 @@ const findTaskForStopConvergence = async (userId: string, taskId: string) =>
     },
   });
 
+export const resolveTaskStopTargetHost = (args: {
+  taskId: string;
+  executionHost?: unknown;
+  agentHost?: unknown;
+}): string => {
+  const boundHost = normalizeHost(realtimeHub.getTaskAgentHost(args.taskId));
+  const executionHost = normalizeHost(args.executionHost);
+  const agentHost = normalizeHost(args.agentHost);
+  const persistedHost = executionHost || agentHost;
+
+  if (executionHost && isConductorFireHost(executionHost)) {
+    return executionHost;
+  }
+  if (!executionHost && agentHost && isConductorFireHost(agentHost)) {
+    return agentHost;
+  }
+  return boundHost || persistedHost;
+};
+
 const waitForTaskStopConvergence = async (args: {
   userId: string;
   taskId: string;
@@ -63,10 +83,11 @@ const waitForTaskStopConvergence = async (args: {
     }
 
     const latestHost =
-      normalizeHost(realtimeHub.getTaskAgentHost(args.taskId)) ||
-      normalizeHost(latestTask.executionHost) ||
-      normalizeHost(latestTask.agentHost) ||
-      args.stopTargetHost;
+      resolveTaskStopTargetHost({
+        taskId: args.taskId,
+        executionHost: latestTask.executionHost,
+        agentHost: latestTask.agentHost,
+      }) || args.stopTargetHost;
     const hostActive = latestHost ? realtimeHub.hasAgentHost(latestHost, args.userId) : false;
 
     if (!hostActive && !recoveryTriggered) {
