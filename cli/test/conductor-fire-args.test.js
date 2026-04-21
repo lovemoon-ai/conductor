@@ -536,6 +536,13 @@ describe("conductor-fire defaults", () => {
     });
   });
 
+  it("loads external providers from comma-delimited AISDK_PROVIDER_PATH env", async () => {
+    await withProviderEnv(`${FIXTURE_EXTERNAL_PROVIDER},${FIXTURE_EXTERNAL_PROVIDER}`, async () => {
+      const supportedBackends = await listRuntimeSupportedBackends();
+      assert.ok(supportedBackends.includes("test-external"));
+    });
+  });
+
   it("parses --resume and keeps default backend from first allow_cli_list entry", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
     const configPath = path.join(tempDir, "config.yaml");

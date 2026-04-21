@@ -188,6 +188,21 @@ describe("ai-sdk client boundary", () => {
     });
   });
 
+  it("loads external providers from comma-delimited AISDK_PROVIDER_PATH", async () => {
+    await withExternalProvider(`${FIXTURE_EXTERNAL_PROVIDER},${FIXTURE_EXTERNAL_PROVIDER}`, async () => {
+      const session = createAiSession("test-external-alias", {
+        cwd: process.cwd(),
+        logger: { log: () => {} },
+      });
+
+      await session.readyPromise;
+      assert.equal(session.getSnapshot().backend, "test-external");
+      assert.equal(session.getSnapshot().provider, "fake-external-provider");
+
+      await session.close();
+    });
+  });
+
   it("loads external providers from config file AISDK_PROVIDER_PATH lists", async () => {
     const tempDir = makeTempDir("ai-sdk-config-provider-");
     const providerPath = path.join(tempDir, "yaml-list-provider.js");

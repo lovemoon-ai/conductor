@@ -28,12 +28,55 @@ function appendProviderModulePaths(parts, value) {
   if (!raw) {
     return;
   }
-  for (const item of raw.split(process.platform === "win32" ? ";" : ":")) {
+  for (const item of splitProviderModulePathString(raw)) {
     const normalized = item.trim();
     if (normalized) {
       parts.push(normalized);
     }
   }
+}
+
+function looksLikeProviderModulePath(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.startsWith("/") ||
+    normalized.startsWith("./") ||
+    normalized.startsWith("../") ||
+    normalized.startsWith("~/") ||
+    normalized.startsWith("file:") ||
+    normalized.includes("/") ||
+    normalized.includes("\\") ||
+    /\.[cm]?[jt]sx?$/i.test(normalized) ||
+    /^[A-Za-z]:[\\/]/.test(normalized)
+  );
+}
+
+function splitProviderModulePathString(raw) {
+  const normalized = String(raw || "").trim();
+  if (!normalized) {
+    return [];
+  }
+
+  const platformParts = normalized
+    .split(path.delimiter)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (platformParts.length > 1 || !normalized.includes(",")) {
+    return platformParts;
+  }
+
+  const commaParts = normalized
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (commaParts.length > 1 && commaParts.every(looksLikeProviderModulePath)) {
+    return commaParts;
+  }
+
+  return platformParts;
 }
 
 function listProviderModulePaths(providerPathEnv) {
