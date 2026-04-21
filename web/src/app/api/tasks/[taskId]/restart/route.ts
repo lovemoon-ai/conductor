@@ -1,10 +1,15 @@
 import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
+import { resolvePublicBackendUrl } from "@/lib/auth/config-utils";
 import { db } from "@/lib/db";
 import { deliverAgentOutboxForHost } from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { serializeTaskResponse } from "@/lib/tasks/serialization";
+import {
+  buildResumeHandoffUrl,
+  createInternalResumeHandoffShare,
+} from "@/lib/tasks/shared-task";
 import {
   applyLegacyTaskShape,
   isMissingAnyNewSchemaError,
@@ -418,6 +423,23 @@ export async function POST(
     ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
   };
 
+  // Generate a short-lived handoff share so the successor backend can pull the
+  // prior conversation as plain text — this replaces brittle JSONL session
+  // translation (ai-bridge) with a semantic resume.
+  let resumeContextUrl: string | null = null;
+  try {
+    const { token } = await createInternalResumeHandoffShare({
+      taskId: sourceTask.id,
+      ownerUserId: user.id,
+    });
+    const baseUrl = resolvePublicBackendUrl(request.nextUrl.origin);
+    resumeContextUrl = buildResumeHandoffUrl(baseUrl, token);
+  } catch (error) {
+    // Non-fatal: the daemon will report a structured error and the user can
+    // retry; we still create the successor task so the DB state is coherent.
+    console.error("[restart] failed to mint resume-handoff share", error);
+  }
+
   const createdTask = await db.$transaction(async (tx) => {
     if (inheritedWorktreeLaunchConfig) {
       await acquireTaskWorktreeMutationLock(
@@ -482,6 +504,9 @@ export async function POST(
               Object.keys(successorLaunchConfig).length > 0
                 ? successorLaunchConfig
                 : undefined,
+            // Plain-text transcript URL the successor backend should fetch as
+            // its resume context (replaces JSONL session translation).
+            resume_context_url: resumeContextUrl ?? undefined,
             request_id: requestId,
           },
         }),

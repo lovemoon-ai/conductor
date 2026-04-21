@@ -34,6 +34,10 @@ vi.mock("@/lib/db", () => ({
     agentOutbox: {
       create: vi.fn(),
     },
+    sharedTask: {
+      deleteMany: vi.fn(),
+      upsert: vi.fn(),
+    },
     user: {
       findUnique: vi.fn(),
     },
@@ -114,6 +118,16 @@ describe("/api/tasks/[taskId]/restart", () => {
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
       { id: "agent-1", host: "daemon-1", supportedBackends: ["codex", "claude", "kimi", "opencode"], capabilities: [] },
     ] as any);
+    vi.mocked(db.sharedTask.deleteMany).mockResolvedValue({ count: 0 } as any);
+    vi.mocked(db.sharedTask.upsert).mockResolvedValue({
+      id: "shared-1",
+      taskId: "task-1",
+      userId: "user-1",
+      kind: "resume_handoff",
+      token: "handoff-token-abc",
+      expiresAt: new Date("2026-03-25T10:00:00.000Z"),
+      createdAt: new Date("2026-03-24T10:00:00.000Z"),
+    } as any);
   });
 
   it("dispatches restart_task for same-backend restart and returns the source task as running", async () => {
@@ -624,6 +638,25 @@ describe("/api/tasks/[taskId]/restart", () => {
           payloadJson: expect.stringContaining('"mode":"fork_to_new_task"'),
         }),
       }),
+    );
+    // Fork restart must mint a resume-handoff share and forward its /plain URL
+    // so the successor backend can pull the transcript itself.
+    expect(db.sharedTask.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          taskId_userId_kind: expect.objectContaining({
+            taskId: "task-1",
+            userId: "user-1",
+            kind: "resume_handoff",
+          }),
+        }),
+      }),
+    );
+    const forkPayloadJson = vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data
+      ?.payloadJson as string;
+    const forkPayload = JSON.parse(forkPayloadJson);
+    expect(forkPayload.payload.resume_context_url).toMatch(
+      /\/share\/handoff-token-abc\/plain$/,
     );
   });
 

@@ -3,7 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import dotenv from "dotenv";
 import yaml from "js-yaml";
@@ -48,7 +48,6 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PACKAGE_ROOT = path.join(__dirname, "..");
-const DEFAULT_AI_BRIDGE_API_SPECIFIER = "@love-moon/ai-bridge/dist/api.js";
 const moduleRequire = createRequire(import.meta.url);
 const CLI_PATH = path.resolve(PACKAGE_ROOT, "bin", "conductor-fire.js");
 const DAEMON_LOG_DIR = path.join(os.homedir(), ".conductor", "logs");
@@ -392,24 +391,6 @@ function normalizeOptionalString(value) {
   }
   const normalized = value.trim();
   return normalized || null;
-}
-
-function resolveImportTarget(specifierOrPath) {
-  const normalized = normalizeOptionalString(specifierOrPath);
-  if (!normalized) {
-    return null;
-  }
-  if (
-    normalized.startsWith("file:") ||
-    normalized.startsWith("node:") ||
-    normalized.startsWith("data:")
-  ) {
-    return normalized;
-  }
-  if (path.isAbsolute(normalized) || normalized.startsWith("./") || normalized.startsWith("../")) {
-    return pathToFileURL(path.resolve(normalized)).href;
-  }
-  return normalized;
 }
 
 function normalizeTerminalResumeStrategy(value) {
@@ -3957,29 +3938,23 @@ export function startDaemon(config = {}, deps = {}) {
     }
   }
 
-  let bridgeSessionHelperPromise = null;
-  async function getBridgeSessionHelper() {
-    if (typeof deps.bridgeSessionBetweenBackends === "function") {
-      return deps.bridgeSessionBetweenBackends;
-    }
-    if (!bridgeSessionHelperPromise) {
-      bridgeSessionHelperPromise = (async () => {
-        try {
-          const bridgeImportTarget =
-            resolveImportTarget(process.env.CONDUCTOR_AI_BRIDGE_API_PATH) ||
-            DEFAULT_AI_BRIDGE_API_SPECIFIER;
-          const bridgeModule = await importOptionalModule(bridgeImportTarget);
-          if (typeof bridgeModule.bridgeSessionBetweenBackends !== "function") {
-            throw new Error("bridgeSessionBetweenBackends is not available");
-          }
-          return bridgeModule.bridgeSessionBetweenBackends;
-        } catch (error) {
-          bridgeSessionHelperPromise = null;
-          throw error;
-        }
-      })();
-    }
-    return bridgeSessionHelperPromise;
+  // Build the initial prompt the successor CLI receives when forking across
+  // AI backends. Instead of translating the source backend's JSONL session
+  // into the target's native format (brittle; depends on private IR schemas),
+  // we hand the target backend a short instruction plus a plain-text URL it
+  // can fetch on its own to catch up. This is the "semantic replay" path.
+  function buildResumeHandoffPrompt({ sourceBackend, targetBackend, resumeContextUrl }) {
+    const fromLabel = sourceBackend ? ` (${sourceBackend})` : "";
+    const toLabel = targetBackend ? ` (${targetBackend})` : "";
+    return [
+      `You are continuing a task that was previously handled by another AI assistant${fromLabel}.`,
+      `You are now${toLabel}.`,
+      "",
+      "Before doing anything else, fetch this URL and read the prior conversation transcript:",
+      `  ${resumeContextUrl}`,
+      "",
+      "The URL returns plain text (title + ordered User/Assistant turns). After reading it, resume the task from where it left off without asking the user to repeat context that is already in the transcript. If the URL is unreachable, briefly say so and ask the user for a short recap before proceeding.",
+    ].join("\n");
   }
 
   function reportRestartFailure({ taskId, projectId, requestId, mode, error, sendAck = true }) {
@@ -4452,6 +4427,7 @@ export function startDaemon(config = {}, deps = {}) {
       source_session_id: sourceSessionId,
       source_session_file_path: sourceSessionFilePath,
       target_backend_type: targetBackendType,
+      resume_context_url: resumeContextUrlRaw,
       request_id: requestIdRaw,
     } = payload || {};
 
@@ -4582,48 +4558,35 @@ export function startDaemon(config = {}, deps = {}) {
       logError(`Failed to report agent_command_ack(restart_task) for ${normalizedTargetTaskId}: ${err?.message || err}`);
     });
 
-    const normalizedSourceBackend = normalizeRuntimeBackendName(sourceBackendType);
-    const configuredSourceBackend = await resolveConfiguredRuntimeBackend(normalizedSourceBackend, ALLOW_CLI_LIST, {
-      configFilePath: config.CONFIG_FILE,
-    });
-    const sourceRuntimeBackend = configuredSourceBackend?.runtimeBackend ||
-      await normalizeRuntimeBackendAlias(normalizedSourceBackend, { configFilePath: config.CONFIG_FILE });
+    const normalizedResumeContextUrl = normalizeOptionalString(resumeContextUrlRaw);
+    const isForkMode =
+      normalizedMode === "bridge_to_new_task" || normalizedMode === "fork_to_new_task";
 
-    let resolvedResumeSessionId = normalizedSourceSessionId;
+    // For fork modes we no longer resume a translated native session; we start
+    // a brand-new CLI and hand it a plain-text transcript URL as its initial
+    // prompt. `resolvedResumeSessionId` is therefore only used for inplace.
+    let resolvedResumeSessionId = isForkMode ? "" : normalizedSourceSessionId;
     let resolvedResumeCwd = "";
+    let resumeHandoffPrompt = "";
     try {
-      if (normalizedMode === "bridge_to_new_task" || normalizedMode === "fork_to_new_task") {
-        const sourceResumeCwd = await resolveRestartCwd({
+      if (isForkMode) {
+        if (!normalizedResumeContextUrl) {
+          throw new Error(
+            "resume_context_url missing from restart payload (expected a /share/<token>/plain URL)",
+          );
+        }
+        resolvedResumeCwd = await resolveRestartCwd({
           taskId: normalizedTargetTaskId,
           projectId: normalizedProjectId,
-          backendType: sourceBackendType,
+          backendType: effectiveBackend,
           launchConfig: targetLaunchConfig,
           sessionId: normalizedSourceSessionId,
           sourceSessionFilePath: sourceSessionFilePath ? String(sourceSessionFilePath) : "",
         });
-        const bridgeSession = await getBridgeSessionHelper();
-        const bridgeResult = await bridgeSession({
-          sourceTool: sourceRuntimeBackend,
-          sourceSessionId: normalizedSourceSessionId,
-          sourceSessionPath: sourceSessionFilePath ? String(sourceSessionFilePath) : undefined,
-          sourceSessionInfo: {
-            tool: sourceRuntimeBackend,
-            sessionId: normalizedSourceSessionId,
-            path: sourceSessionFilePath ? String(sourceSessionFilePath) : undefined,
-            cwd: sourceResumeCwd || undefined,
-          },
-          targetTool: effectiveBackend,
-          targetCwdFallback: sourceResumeCwd || undefined,
-        });
-        resolvedResumeSessionId = bridgeResult.sessionId;
-        resolvedResumeCwd = await resolveRestartCwd({
-          taskId: normalizedTargetTaskId,
-          projectId: normalizedProjectId,
-          preferredCwd: bridgeResult.cwd,
-          launchConfig: targetLaunchConfig,
-          backendType: effectiveBackend,
-          sessionId: bridgeResult.sessionId,
-          sourceSessionFilePath: sourceSessionFilePath ? String(sourceSessionFilePath) : "",
+        resumeHandoffPrompt = buildResumeHandoffPrompt({
+          sourceBackend: sourceBackendType ? String(sourceBackendType) : "",
+          targetBackend: effectiveBackend,
+          resumeContextUrl: normalizedResumeContextUrl,
         });
       } else if (normalizedMode === "resume_inplace") {
         resolvedResumeCwd = await resolveRestartCwd({
@@ -4717,8 +4680,16 @@ export function startDaemon(config = {}, deps = {}) {
     if (selectedBackend) {
       args.push("--backend", selectedBackend);
     }
-    args.push("--resume", resolvedResumeSessionId);
-    args.push("--");
+    if (isForkMode) {
+      // Fork mode starts a brand-new session on the target backend; no --resume.
+      // The prior conversation is delivered as a plain-text URL via the prompt
+      // so the target backend fetches it on its own.
+      args.push("--");
+      args.push(resumeHandoffPrompt);
+    } else {
+      args.push("--resume", resolvedResumeSessionId);
+      args.push("--");
+    }
 
     const env = {
       ...process.env,
@@ -4758,7 +4729,11 @@ export function startDaemon(config = {}, deps = {}) {
     }
 
     log(`Task title: ${title || normalizedTargetTaskId}`);
-    log(`Resume session: ${resolvedResumeSessionId}`);
+    if (isForkMode) {
+      log(`Resume via handoff URL: ${normalizedResumeContextUrl}`);
+    } else {
+      log(`Resume session: ${resolvedResumeSessionId}`);
+    }
     log(`Resume cwd: ${resolvedResumeCwd}`);
     log(`Logs: ${logPath}`);
 
