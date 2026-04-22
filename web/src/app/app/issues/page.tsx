@@ -4,12 +4,24 @@ import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/common/FeedbackProvider';
 import { Header } from '@/components/layout/Header';
-import { CreateIssueDialog, IssueBoard, IssueList, useIssuesStore } from '@/features/issues';
+import { useAgentsStore } from '@/features/agents';
+import {
+  CreateIssueDialog,
+  IssueBoard,
+  IssueList,
+  MoveIssueToDoingDialog,
+  useIssuesStore,
+} from '@/features/issues';
 import { useProjectsStore } from '@/features/projects';
 import { RefreshIcon } from '@/features/tasks';
-import { calculateIssueAppendPosition } from '@/features/issues/components/board-utils';
+import {
+  calculateIssueAppendPosition,
+  calculateIssuePositionFromPlacement,
+  getIssueAppendPlacement,
+  type IssueMovePlacement,
+} from '@/features/issues/components/board-utils';
 import { ISSUE_STATUSES } from '@/lib/issues/config';
-import type { IssueStatus } from '@/shared/types';
+import type { Agent, Issue, IssueStatus, Project } from '@/shared/types';
 
 const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
 const HIDE_DONE_ISSUES_STORAGE_KEY = 'conductor-hide-done-issues';
@@ -42,10 +54,59 @@ const writeStoredHideDoneIssues = (value: boolean) => {
   }
 };
 
+const isConductorFireHost = (host: string | null | undefined): boolean =>
+  typeof host === 'string' && host.startsWith('conductor-fire-');
+
+const pickIssueBackend = (issue: Issue | null): string | null => {
+  if (!issue?.metadata || typeof issue.metadata.backendType !== 'string') {
+    return null;
+  }
+  const backendType = issue.metadata.backendType.trim();
+  return backendType || null;
+};
+
+const getIssueBackendOptions = (project: Project | null, agents: Agent[]): string[] => {
+  if (!project) {
+    return [];
+  }
+
+  const defaultProject = Boolean(project.isDefault);
+  const projectDaemonHost = typeof project.daemonHost === 'string' ? project.daemonHost.trim() : '';
+  if (!defaultProject && !projectDaemonHost) {
+    return [];
+  }
+  const scopedAgents = !defaultProject && projectDaemonHost
+    ? agents.filter((agent) => agent.host === projectDaemonHost)
+    : agents.filter((agent) => !isConductorFireHost(agent.host));
+
+  const seen = new Set<string>();
+  const availableBackends: string[] = [];
+  for (const agent of scopedAgents) {
+    for (const backend of agent.supportedBackends ?? []) {
+      const normalizedBackend = backend.trim();
+      if (!normalizedBackend || seen.has(normalizedBackend)) {
+        continue;
+      }
+      seen.add(normalizedBackend);
+      availableBackends.push(normalizedBackend);
+    }
+  }
+
+  return availableBackends;
+};
+
+type PendingIssueStart = {
+  issueId: string;
+  status: IssueStatus;
+  placement: IssueMovePlacement;
+  availableBackends: string[];
+};
+
 function IssuesPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [pendingIssueStart, setPendingIssueStart] = useState<PendingIssueStart | null>(null);
   const [hasRequestedProjects, setHasRequestedProjects] = useState(false);
   const [hideDoneIssues, setHideDoneIssues] = useState(readStoredHideDoneIssues);
   const [isDesktop, setIsDesktop] = useState(
@@ -53,6 +114,7 @@ function IssuesPageContent() {
   );
   const { pushToast } = useToast();
 
+  const agents = useAgentsStore((state) => state.agents);
   const projects = useProjectsStore((state) => state.projects);
   const hiddenProjectIds = useProjectsStore((state) => state.hiddenProjectIds);
   const isProjectsLoading = useProjectsStore((state) => state.isLoading);
@@ -63,6 +125,7 @@ function IssuesPageContent() {
   const isIssuesLoading = useIssuesStore((state) => state.isLoading);
   const fetchIssues = useIssuesStore((state) => state.fetchIssues);
   const moveIssue = useIssuesStore((state) => state.moveIssue);
+  const updateIssue = useIssuesStore((state) => state.updateIssue);
   const deleteIssue = useIssuesStore((state) => state.deleteIssue);
 
   const projectIdFromUrl = searchParams.get('projectId');
@@ -108,6 +171,11 @@ function IssuesPageContent() {
     : 'Issues';
   const shouldWaitForProjects = !hasRequestedProjects || (isProjectsLoading && projects.length === 0);
   const shouldWaitForProjectResolution = Boolean(projectIdFromUrl) && shouldWaitForProjects;
+  const pendingIssue = useMemo(
+    () => issues.find((issue) => issue.id === pendingIssueStart?.issueId) ?? null,
+    [pendingIssueStart?.issueId, issues],
+  );
+  const pendingIssueInitialBackend = pickIssueBackend(pendingIssue);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -161,15 +229,47 @@ function IssuesPageContent() {
     });
   };
 
-  const handleMoveIssue = async (issueId: string, status: IssueStatus, position: number) => {
+  const handleMoveIssue = async (
+    issueId: string,
+    status: IssueStatus,
+    position: number,
+    placement: IssueMovePlacement = { mode: 'append' },
+  ) => {
+    const issue = issues.find((entry) => entry.id === issueId) ?? null;
+    if (!issue) {
+      return false;
+    }
+
+    const shouldSelectBackend =
+      issue.status === 'todo'
+      && status === 'doing'
+      && !issue.activeTask
+      && !issue.linkedTask;
+
+    if (shouldSelectBackend) {
+      const project = projects.find((entry) => entry.id === issue.projectId) ?? null;
+      const availableBackends = getIssueBackendOptions(project, agents);
+      if (availableBackends.length > 0) {
+        setPendingIssueStart({
+          issueId,
+          status,
+          placement,
+          availableBackends,
+        });
+        return false;
+      }
+    }
+
     try {
       await moveIssue(issueId, status, position);
+      return true;
     } catch (error) {
       pushToast({
         title: 'Issue move failed',
         description: error instanceof Error ? error.message : 'Failed to update issue status.',
         variant: 'error',
       });
+      return false;
     }
   };
 
@@ -181,7 +281,7 @@ function IssuesPageContent() {
 
     const projectIssues = issues.filter((entry) => entry.projectId === issue.projectId);
     const nextPosition = calculateIssueAppendPosition(projectIssues, status, issueId);
-    await handleMoveIssue(issueId, status, nextPosition);
+    await handleMoveIssue(issueId, status, nextPosition, getIssueAppendPlacement());
   };
 
   const handleDeleteIssue = async (issueId: string) => {
@@ -195,6 +295,43 @@ function IssuesPageContent() {
       pushToast({
         title: 'Issue deletion failed',
         description: error instanceof Error ? error.message : 'Failed to delete issue.',
+        variant: 'error',
+      });
+    }
+  };
+
+  const handleConfirmIssueStart = async (backendType: string) => {
+    if (!pendingIssueStart) {
+      return;
+    }
+
+    const issue = issues.find((entry) => entry.id === pendingIssueStart.issueId) ?? null;
+    if (!issue) {
+      setPendingIssueStart(null);
+      return;
+    }
+
+    try {
+      const projectIssues = issues.filter((entry) => entry.projectId === issue.projectId);
+      const nextPosition = calculateIssuePositionFromPlacement(
+        projectIssues,
+        pendingIssueStart.status,
+        pendingIssueStart.placement,
+        issue.id,
+      );
+      await updateIssue(issue.id, {
+        status: pendingIssueStart.status,
+        position: nextPosition,
+        metadata: {
+          ...(issue.metadata ?? {}),
+          backendType,
+        },
+      });
+      setPendingIssueStart(null);
+    } catch (error) {
+      pushToast({
+        title: 'Issue move failed',
+        description: error instanceof Error ? error.message : 'Failed to update issue status.',
         variant: 'error',
       });
     }
@@ -264,6 +401,15 @@ function IssuesPageContent() {
         open={showCreateDialog}
         onClose={() => setShowCreateDialog(false)}
         projectId={resolvedProjectId}
+      />
+
+      <MoveIssueToDoingDialog
+        open={Boolean(pendingIssueStart)}
+        issue={pendingIssue}
+        availableBackends={pendingIssueStart?.availableBackends ?? []}
+        initialBackend={pendingIssueInitialBackend}
+        onClose={() => setPendingIssueStart(null)}
+        onConfirm={handleConfirmIssueStart}
       />
     </>
   );

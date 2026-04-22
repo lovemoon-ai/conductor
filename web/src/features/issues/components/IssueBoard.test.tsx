@@ -305,7 +305,54 @@ describe('IssueBoard', () => {
       });
     });
 
-    expect(onMoveIssue).toHaveBeenCalledWith('issue-1', 'doing', 3);
+    expect(onMoveIssue).toHaveBeenCalledWith('issue-1', 'doing', 3, {
+      mode: 'anchors',
+      anchors: {
+        previousIssueId: 'issue-2',
+        nextIssueId: 'issue-3',
+      },
+    });
+  });
+
+  it('reverts the optimistic drag state when the parent declines the move', async () => {
+    onMoveIssue.mockResolvedValue(false);
+
+    render(
+      <IssueBoard
+        issues={issues}
+        onMoveIssue={onMoveIssue}
+        onStatusChange={onStatusChange}
+        onDeleteIssue={onDeleteIssue}
+      />,
+    );
+
+    await act(async () => {
+      latestDndContextProps?.onDragStart?.({ active: { id: 'issue-1' } });
+    });
+    await act(async () => {
+      latestDndContextProps?.onDragOver?.({
+        active: { id: 'issue-1' },
+        over: { id: 'issue-3' },
+      });
+    });
+    expect(screen.getByRole('heading', { name: /^Todo(?:\(\d+\))?$/ })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /^Doing(?:\(\d+\))?$/ })).toBeInTheDocument();
+
+    await act(async () => {
+      await latestDndContextProps?.onDragEnd?.({
+        active: { id: 'issue-1' },
+        over: { id: 'issue-3' },
+      });
+    });
+
+    expect(onMoveIssue).toHaveBeenCalledWith('issue-1', 'doing', 3, {
+      mode: 'anchors',
+      anchors: {
+        previousIssueId: 'issue-2',
+        nextIssueId: 'issue-3',
+      },
+    });
+    expect(screen.getByRole('button', { name: 'Change status for Plan board UX' })).toBeInTheDocument();
   });
 
   it('calculates drag positions within the dragged issue project only', async () => {
@@ -364,7 +411,48 @@ describe('IssueBoard', () => {
       });
     });
 
-    expect(onMoveIssue).toHaveBeenCalledWith('issue-project-a-todo', 'doing', 3);
+    expect(onMoveIssue).toHaveBeenCalledWith('issue-project-a-todo', 'doing', 3, {
+      mode: 'anchors',
+      anchors: {
+        previousIssueId: null,
+        nextIssueId: 'issue-project-a-doing',
+      },
+    });
+  });
+
+  it('preserves the trailing anchor when dragging to the end of a column', async () => {
+    render(
+      <IssueBoard
+        issues={issues}
+        onMoveIssue={onMoveIssue}
+        onStatusChange={onStatusChange}
+        onDeleteIssue={onDeleteIssue}
+      />,
+    );
+
+    await act(async () => {
+      latestDndContextProps?.onDragStart?.({ active: { id: 'issue-1' } });
+    });
+    await act(async () => {
+      latestDndContextProps?.onDragOver?.({
+        active: { id: 'issue-1' },
+        over: { id: 'doing' },
+      });
+    });
+    await act(async () => {
+      await latestDndContextProps?.onDragEnd?.({
+        active: { id: 'issue-1' },
+        over: { id: 'doing' },
+      });
+    });
+
+    expect(onMoveIssue).toHaveBeenCalledWith('issue-1', 'doing', 5, {
+      mode: 'anchors',
+      anchors: {
+        previousIssueId: 'issue-3',
+        nextIssueId: null,
+      },
+    });
   });
 
   it('does not call onMoveIssue when the issue is dropped onto itself', async () => {

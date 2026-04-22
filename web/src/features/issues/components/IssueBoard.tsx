@@ -24,8 +24,10 @@ import {
   buildIssueColumns,
   calculateIssuePosition,
   findIssueStatus,
+  getIssueMovePlacement,
   moveIssueLocally,
   type IssueBoardColumns,
+  type IssueMovePlacement,
 } from './board-utils';
 
 const collisionDetection: CollisionDetection = (args) => {
@@ -51,7 +53,12 @@ export function IssueBoard({
   dragDisabled?: boolean;
   statusMenuDisabled?: boolean;
   visibleStatuses?: readonly IssueStatus[];
-  onMoveIssue: (issueId: string, status: Issue['status'], position: number) => Promise<void> | void;
+  onMoveIssue: (
+    issueId: string,
+    status: Issue['status'],
+    position: number,
+    placement?: IssueMovePlacement,
+  ) => Promise<boolean | void> | boolean | void;
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
   onDeleteIssue?: (issueId: string) => Promise<void> | void;
 }) {
@@ -124,6 +131,7 @@ export function IssueBoard({
       (issue) => issue.id === activeId || issue.projectId === previousIssue.projectId,
     );
     const nextPosition = calculateIssuePosition(projectScopedNextColumn, activeId);
+    const nextPlacement = getIssueMovePlacement(projectScopedNextColumn, activeId);
     const statusChanged = previousIssue.status !== nextStatus;
     const positionChanged = Math.abs(previousIssue.position - nextPosition) > 1e-9;
 
@@ -131,7 +139,14 @@ export function IssueBoard({
       return;
     }
 
-    await onMoveIssue(activeId, nextStatus, nextPosition);
+    try {
+      const accepted = await onMoveIssue(activeId, nextStatus, nextPosition, nextPlacement);
+      if (accepted === false) {
+        setColumns(buildIssueColumns(issues));
+      }
+    } catch {
+      setColumns(buildIssueColumns(issues));
+    }
   }, [columns, issues, onMoveIssue]);
 
   if (isLoading && issues.length === 0) {

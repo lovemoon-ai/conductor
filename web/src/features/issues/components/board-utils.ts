@@ -2,6 +2,16 @@ import type { Issue, IssueStatus } from '@/shared/types';
 import { ISSUE_STATUSES, normalizeIssueStatus } from '@/lib/issues/config';
 
 export type IssueBoardColumns = Record<IssueStatus, Issue[]>;
+export type IssueMoveAnchors = {
+  previousIssueId: string | null;
+  nextIssueId: string | null;
+};
+export type IssueMovePlacement =
+  | { mode: 'append' }
+  | {
+      mode: 'anchors';
+      anchors: IssueMoveAnchors;
+    };
 
 const toTimestamp = (value: string | null | undefined): number => {
   if (!value) {
@@ -119,6 +129,13 @@ export const calculateIssuePosition = (issues: Issue[], issueId: string): number
   const previousIssue = index > 0 ? issues[index - 1] : null;
   const nextIssue = index < issues.length - 1 ? issues[index + 1] : null;
 
+  return calculateIssuePositionBetween(previousIssue, nextIssue);
+};
+
+const calculateIssuePositionBetween = (
+  previousIssue: Issue | null,
+  nextIssue: Issue | null,
+): number => {
   if (!previousIssue && !nextIssue) {
     return 0;
   }
@@ -141,14 +158,91 @@ export const calculateIssuePosition = (issues: Issue[], issueId: string): number
   return previousIssue.position + 0.5;
 };
 
+const getColumnIssues = (
+  issues: Issue[],
+  status: IssueStatus,
+  excludeIssueId?: string,
+): Issue[] => buildIssueColumns(
+  excludeIssueId ? issues.filter((issue) => issue.id !== excludeIssueId) : issues,
+)[status];
+
+export const getIssueMoveAnchors = (issues: Issue[], issueId: string): IssueMoveAnchors => {
+  const index = issues.findIndex((issue) => issue.id === issueId);
+  if (index === -1) {
+    return {
+      previousIssueId: null,
+      nextIssueId: null,
+    };
+  }
+
+  return {
+    previousIssueId: index > 0 ? issues[index - 1].id : null,
+    nextIssueId: index < issues.length - 1 ? issues[index + 1].id : null,
+  };
+};
+
+export const getIssueAppendPlacement = (): IssueMovePlacement => ({ mode: 'append' });
+
+export const getIssueMovePlacement = (issues: Issue[], issueId: string): IssueMovePlacement => {
+  return {
+    mode: 'anchors',
+    anchors: getIssueMoveAnchors(issues, issueId),
+  };
+};
+
+export const calculateIssuePositionFromPlacement = (
+  issues: Issue[],
+  status: IssueStatus,
+  placement: IssueMovePlacement,
+  excludeIssueId?: string,
+): number => {
+  if (placement.mode === 'append') {
+    return calculateIssueAppendPosition(issues, status, excludeIssueId);
+  }
+
+  const columnIssues = getColumnIssues(issues, status, excludeIssueId);
+  const { previousIssueId, nextIssueId } = placement.anchors;
+  const previousIndex = previousIssueId
+    ? columnIssues.findIndex((issue) => issue.id === previousIssueId)
+    : -1;
+  const nextIndex = nextIssueId
+    ? columnIssues.findIndex((issue) => issue.id === nextIssueId)
+    : -1;
+  const previousIssue = previousIndex >= 0 ? columnIssues[previousIndex] : null;
+  const nextIssue = nextIndex >= 0 ? columnIssues[nextIndex] : null;
+
+  if (previousIssue && nextIssue && previousIndex < nextIndex) {
+    return calculateIssuePositionBetween(previousIssue, nextIssue);
+  }
+  if (previousIssue) {
+    return calculateIssuePositionBetween(
+      previousIssue,
+      columnIssues[previousIndex + 1] ?? null,
+    );
+  }
+  if (nextIssue) {
+    return calculateIssuePositionBetween(
+      columnIssues[nextIndex - 1] ?? null,
+      nextIssue,
+    );
+  }
+
+  if (!previousIssueId && nextIssueId) {
+    return calculateIssuePositionBetween(null, columnIssues[0] ?? null);
+  }
+  if (previousIssueId && !nextIssueId) {
+    return calculateIssuePositionBetween(columnIssues[columnIssues.length - 1] ?? null, null);
+  }
+
+  return calculateIssueAppendPosition(issues, status, excludeIssueId);
+};
+
 export const calculateIssueAppendPosition = (
   issues: Issue[],
   status: IssueStatus,
   excludeIssueId?: string,
 ): number => {
-  const columnIssues = buildIssueColumns(
-    excludeIssueId ? issues.filter((issue) => issue.id !== excludeIssueId) : issues,
-  )[status];
+  const columnIssues = getColumnIssues(issues, status, excludeIssueId);
   const lastIssue = columnIssues[columnIssues.length - 1];
   return lastIssue ? lastIssue.position + 1 : 0;
 };

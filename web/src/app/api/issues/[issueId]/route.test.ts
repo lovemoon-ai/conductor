@@ -282,6 +282,260 @@ describe('/api/issues/[issueId]', () => {
     }));
   });
 
+  it('passes the selected backend through issue metadata when spawning an AI task', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue() as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
+    ] as any);
+    vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+      task: {
+        id: 'task-backend',
+        projectId: 'project-1',
+        issueId: 'issue-1',
+        title: 'Board implementation',
+        status: 'init',
+        taskType: 'ai_task',
+        agentHost: null,
+        executionHost: null,
+        backendType: 'claude',
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: JSON.stringify({ backendType: 'claude' }),
+        createdAt: new Date('2026-04-14T00:20:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+      },
+      initialMessage: null,
+      initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+    } as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: {
+        status: 'doing',
+        metadata: {
+          backendType: 'claude',
+        },
+      },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(createAiTaskArtifacts).toHaveBeenCalledWith(expect.objectContaining({
+      requestedBackendType: 'claude',
+      metadata: expect.objectContaining({
+        backendType: 'claude',
+        initialContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+      }),
+    }), expect.any(Object));
+  });
+
+  it('rejects todo-to-doing spawn when the bound daemon does not support the selected backend', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      project: {
+        id: 'project-1',
+        daemonHost: 'daemon-a',
+        workspacePath: '/repo/app',
+        repoRoot: null,
+        worktreeBranch: null,
+        lastCommit: null,
+      },
+    }) as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['codex'] },
+    ] as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: {
+        status: 'doing',
+        metadata: {
+          backendType: 'claude',
+        },
+      },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data).toEqual({ error: 'Daemon daemon-a does not support backend claude' });
+    expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+  });
+
+  it('allows todo-to-doing spawn on a bound legacy daemon that does not advertise supported backends', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      project: {
+        id: 'project-1',
+        daemonHost: 'daemon-a',
+        workspacePath: '/repo/app',
+        repoRoot: null,
+        worktreeBranch: null,
+        lastCommit: null,
+      },
+    }) as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: [] },
+    ] as any);
+    vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+      task: {
+        id: 'task-legacy-bound',
+        projectId: 'project-1',
+        issueId: 'issue-1',
+        title: 'Board implementation',
+        status: 'init',
+        taskType: 'ai_task',
+        agentHost: 'daemon-a',
+        executionHost: 'daemon-a',
+        backendType: 'claude',
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: JSON.stringify({ backendType: 'claude' }),
+        createdAt: new Date('2026-04-14T00:20:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+      },
+      initialMessage: null,
+      initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+    } as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: {
+        status: 'doing',
+        metadata: {
+          backendType: 'claude',
+        },
+      },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(createAiTaskArtifacts).toHaveBeenCalledWith(expect.objectContaining({
+      agentHost: 'daemon-a',
+      requestedBackendType: 'claude',
+    }), expect.any(Object));
+  });
+
+  it('rejects todo-to-doing spawn when no compatible daemon is online for the selected backend', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue() as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['codex'] },
+    ] as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: {
+        status: 'doing',
+        metadata: {
+          backendType: 'claude',
+        },
+      },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data).toEqual({ error: 'No compatible daemon online for backend claude' });
+    expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+  });
+
+  it('allows todo-to-doing spawn on an unbound legacy daemon that does not advertise supported backends', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue() as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: [] },
+    ] as any);
+    vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+      task: {
+        id: 'task-legacy-unbound',
+        projectId: 'project-1',
+        issueId: 'issue-1',
+        title: 'Board implementation',
+        status: 'init',
+        taskType: 'ai_task',
+        agentHost: 'daemon-a',
+        executionHost: 'daemon-a',
+        backendType: 'claude',
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: JSON.stringify({ backendType: 'claude' }),
+        createdAt: new Date('2026-04-14T00:20:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+      },
+      initialMessage: null,
+      initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+    } as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: {
+        status: 'doing',
+        metadata: {
+          backendType: 'claude',
+        },
+      },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(createAiTaskArtifacts).toHaveBeenCalledWith(expect.objectContaining({
+      agentHost: 'daemon-a',
+      requestedBackendType: 'claude',
+    }), expect.any(Object));
+  });
+
+  it('falls back to a legacy unbound daemon when earlier agents explicitly reject the selected backend', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue() as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['codex'] },
+      { id: 'agent-2', host: 'daemon-b', supportedBackends: [] },
+    ] as any);
+    vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+      task: {
+        id: 'task-legacy-fallback',
+        projectId: 'project-1',
+        issueId: 'issue-1',
+        title: 'Board implementation',
+        status: 'init',
+        taskType: 'ai_task',
+        agentHost: 'daemon-b',
+        executionHost: 'daemon-b',
+        backendType: 'claude',
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: JSON.stringify({ backendType: 'claude' }),
+        createdAt: new Date('2026-04-14T00:20:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+      },
+      initialMessage: null,
+      initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+    } as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: {
+        status: 'doing',
+        metadata: {
+          backendType: 'claude',
+        },
+      },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(createAiTaskArtifacts).toHaveBeenCalledWith(expect.objectContaining({
+      agentHost: 'daemon-b',
+      requestedBackendType: 'claude',
+    }), expect.any(Object));
+  });
+
   it('spawns todo-to-doing tasks in an isolated worktree for git-backed bound projects', async () => {
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
       { id: 'agent-1', host: 'daemon-a' },
