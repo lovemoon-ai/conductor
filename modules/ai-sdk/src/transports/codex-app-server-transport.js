@@ -47,6 +47,7 @@ export class CodexAppServerTransport extends EventEmitter {
     this.command = command;
     this.args = args;
     this.env = options.env && typeof options.env === "object" ? { ...options.env } : {};
+    this.ignoreCodexApiKey = options.ignoreCodexApiKey === true;
     this.child = null;
     this.stdoutReader = null;
     this.stderrReader = null;
@@ -103,13 +104,17 @@ export class CodexAppServerTransport extends EventEmitter {
       return;
     }
     this.log(`[codex-app-server] spawn ${[this.command, ...this.args].join(" ")} (cwd: ${this.cwd})`);
+    const env = {
+      ...process.env,
+      PWD: this.cwd,
+      ...this.env,
+    };
+    if (this.ignoreCodexApiKey) {
+      delete env.CODEX_API_KEY;
+    }
     const child = spawn(this.command, this.args, {
       cwd: this.cwd,
-      env: {
-        ...process.env,
-        PWD: this.cwd,
-        ...this.env,
-      },
+      env,
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child = child;

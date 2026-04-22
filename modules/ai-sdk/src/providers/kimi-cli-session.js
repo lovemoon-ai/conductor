@@ -129,6 +129,16 @@ function buildEmptyTurnResult() {
   };
 }
 
+function injectJsonSchemaPrompt(promptText, jsonSchema) {
+  const schemaText = typeof jsonSchema === "string" ? jsonSchema : JSON.stringify(jsonSchema, null, 2);
+  return `You must respond with valid JSON that strictly conforms to the following JSON Schema. Do not include any markdown formatting or explanation outside the JSON object.
+
+JSON Schema:
+${schemaText}
+
+${promptText}`;
+}
+
 export class KimiCliSession extends EventEmitter {
   constructor(backend, options = {}) {
     super();
@@ -971,12 +981,15 @@ export class KimiCliSession extends EventEmitter {
     }
   }
 
-  async runTurn(promptText, { useInitialImages = false, onProgress = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested || this.closed) {
       throw this.createSessionClosedError();
     }
 
-    const effectivePrompt = this.buildPrompt(promptText, { useInitialImages });
+    let effectivePrompt = this.buildPrompt(promptText, { useInitialImages });
+    if (jsonSchema && typeof jsonSchema === "object" && effectivePrompt) {
+      effectivePrompt = injectJsonSchemaPrompt(effectivePrompt, jsonSchema);
+    }
     if (!effectivePrompt) {
       return buildEmptyTurnResult();
     }

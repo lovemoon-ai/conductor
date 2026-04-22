@@ -15,6 +15,10 @@ description: >-
 
 Use this skill for the public `conductor` command surface in this repo.
 
+Reference docs in this skill:
+
+- `reference/serve-ai.md`: `conductor serve-ai` usage, config fallback, startup commands, and `response_format` / output schema examples.
+
 Use it especially when the user says things like:
 
 - "Just run `conductor fire --backend codex --resume <session-id>`"
@@ -25,6 +29,8 @@ Use it especially when the user says things like:
 - "Use conductor to take over this task"
 - "Help me install and configure conductor, then send this conversation to my phone so I can continue there"
 - "Start this in Conductor so I can continue from the app"
+- "How do I use `conductor serve-ai`?"
+- "How do I start the OpenAI-compatible server and set output schema?"
 
 ## First Decide The Intent
 

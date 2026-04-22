@@ -29,7 +29,26 @@ const FAKE_KIMI_WIRE = path.resolve(
   "fixtures",
   "fake-kimi-wire.js",
 );
+const FAKE_CODEX_EXEC = path.resolve(
+  __dirname,
+  "..",
+  "..",
+  "modules",
+  "ai-sdk",
+  "fixtures",
+  "fake-codex-exec.js",
+);
+const FAKE_KIMI_PRINT = path.resolve(
+  __dirname,
+  "..",
+  "..",
+  "modules",
+  "ai-sdk",
+  "fixtures",
+  "fake-kimi-print.js",
+);
 const DEFAULT_CONDUCTOR_CONFIG = process.env.CONDUCTOR_CONFIG;
+const DEFAULT_CODEX_API_KEY = process.env.CODEX_API_KEY;
 
 let isolatedConfigPath = null;
 
@@ -54,6 +73,11 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.AISDK_PROVIDER_PATH;
+  if (DEFAULT_CODEX_API_KEY === undefined) {
+    delete process.env.CODEX_API_KEY;
+  } else {
+    process.env.CODEX_API_KEY = DEFAULT_CODEX_API_KEY;
+  }
   if (DEFAULT_CONDUCTOR_CONFIG === undefined) {
     delete process.env.CONDUCTOR_CONFIG;
   } else {
@@ -78,6 +102,27 @@ describe("ai-sdk worker boundary", () => {
     assert.equal(session.getSnapshot().provider, "codex-app-server");
 
     await session.close();
+  });
+
+  it("omits CODEX_API_KEY from codex app-server child env when requested", async () => {
+    process.env.CODEX_API_KEY = "sk-bad-codex-key";
+    const session = createAiSession("codex", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_CODEX_APP_SERVER}`,
+      ignoreCodexApiKey: true,
+      logger: { log: () => {} },
+    });
+
+    try {
+      assert.ok(session instanceof RemoteAiSession);
+      await waitFor(() => session.getSnapshot().workerReady === true);
+      assert.equal(session.getSnapshot().provider, "codex-app-server");
+
+      const result = await session.runTurn("[env-check]");
+      assert.equal(result.text, "CODEX_API_KEY=absent\n");
+    } finally {
+      await session.close();
+    }
   });
 
   it("creates worker-backed claude sessions without booting a turn", async () => {
@@ -131,6 +176,155 @@ describe("ai-sdk worker boundary", () => {
     const sessionInfo = await session.ensureSessionInfo();
     assert.equal(sessionInfo.sessionId, session.getSnapshot().sessionId);
     assert.equal(session.threadOptions.model, "kimi");
+
+    await session.close();
+  });
+
+  it("creates worker-backed codex exec sessions when structured output is requested", async () => {
+    const session = createAiSession("codex", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_CODEX_EXEC}`,
+      outputFormat: {
+        type: "json_schema",
+        schema: {
+          type: "object",
+        },
+      },
+      logger: { log: () => {} },
+    });
+
+    assert.ok(session instanceof RemoteAiSession);
+    await waitFor(() => session.getSnapshot().workerReady === true);
+    assert.equal(session.getSnapshot().provider, "codex-exec");
+
+    const result = await session.runTurn("Reply with JSON", {
+      jsonSchema: {
+        type: "object",
+        properties: {
+          ok: { type: "boolean" },
+        },
+        required: ["ok"],
+        additionalProperties: false,
+      },
+    });
+    assert.equal(result.text, "{\"ok\":true}\n");
+
+    await session.close();
+  });
+
+  it("omits CODEX_API_KEY from codex exec child env when requested", async () => {
+    process.env.CODEX_API_KEY = "sk-bad-codex-key";
+    const session = createAiSession("codex", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_CODEX_EXEC}`,
+      ignoreCodexApiKey: true,
+      outputFormat: {
+        type: "json_schema",
+        schema: {
+          type: "object",
+        },
+      },
+      logger: { log: () => {} },
+    });
+
+    try {
+      assert.ok(session instanceof RemoteAiSession);
+      await waitFor(() => session.getSnapshot().workerReady === true);
+      assert.equal(session.getSnapshot().provider, "codex-exec");
+
+      const result = await session.runTurn("Check env", {
+        jsonSchema: {
+          type: "object",
+          properties: {
+            codex_api_key_present: { type: "boolean" },
+          },
+          required: ["codex_api_key_present"],
+          additionalProperties: false,
+        },
+      });
+      assert.deepEqual(JSON.parse(result.text), {
+        codex_api_key_present: false,
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("sends codex exec prompts over stdin for image turns", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-exec-image-"));
+    const imagePath = path.join(tempDir, "pixel.png");
+    fs.writeFileSync(
+      imagePath,
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmh0AAAAASUVORK5CYII=",
+        "base64",
+      ),
+    );
+
+    const session = createAiSession("codex", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_CODEX_EXEC}`,
+      outputFormat: {
+        type: "json_schema",
+        schema: {
+          type: "object",
+        },
+      },
+      initialImages: [imagePath],
+      logger: { log: () => {} },
+    });
+
+    try {
+      assert.ok(session instanceof RemoteAiSession);
+      await waitFor(() => session.getSnapshot().workerReady === true);
+      assert.equal(session.getSnapshot().provider, "codex-exec");
+
+      const result = await session.runTurn("Reply with JSON [images]", {
+        useInitialImages: true,
+        jsonSchema: {
+          type: "object",
+          properties: {
+            ok: { type: "boolean" },
+          },
+          required: ["ok"],
+          additionalProperties: false,
+        },
+      });
+      assert.equal(result.text, "{\"ok\":true} [images:1]\n");
+    } finally {
+      await session.close().catch(() => {});
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates worker-backed kimi print sessions when structured output is requested", async () => {
+    const session = createAiSession("kimi", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_KIMI_PRINT}`,
+      outputFormat: {
+        type: "json_schema",
+        schema: {
+          type: "object",
+        },
+      },
+      logger: { log: () => {} },
+    });
+
+    assert.ok(session instanceof RemoteAiSession);
+    await waitFor(() => session.getSnapshot().workerReady === true);
+    assert.equal(session.getSnapshot().provider, "kimi-cli-print");
+
+    const result = await session.runTurn("Reply with JSON", {
+      jsonSchema: {
+        type: "object",
+        properties: {
+          ok: { type: "boolean" },
+        },
+        required: ["ok"],
+        additionalProperties: false,
+      },
+    });
+    assert.equal(result.text, "Let me inspect the workspace.{\"ok\":true}\n");
 
     await session.close();
   });
