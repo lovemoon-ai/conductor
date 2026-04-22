@@ -949,9 +949,9 @@ describe("/api/tasks/[taskId]/restart", () => {
 
   it("bridges arbitrary custom backends to built-in backends when the daemon supports both (backend-agnostic handoff)", async () => {
     // Previously we rejected this pair because `codex-enterprise` wasn't in a
-    // hardcoded BRIDGEABLE_BACKENDS whitelist. The share-link handoff is
-    // backend-agnostic — any pair the daemon advertises as supported can be
-    // paired, because the successor AI just fetches a plain-text transcript.
+    // hardcoded backend whitelist. The share-link handoff is backend-agnostic
+    // — any pair the daemon advertises as supported can be paired, because
+    // the successor AI just fetches a plain-text transcript.
     vi.mocked(db.task.findFirst).mockResolvedValue(
       buildTask({
         backendType: "codex-enterprise",
