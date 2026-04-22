@@ -121,7 +121,7 @@ describe('AiManagerPanel', () => {
     expect(screen.getByLabelText('Restart daemon on daemon-old')).toBeDisabled();
   });
 
-  it('shows the Copilot login label when quota data includes account info', () => {
+  it('shows the Copilot login label inline with the header when quota data includes account info', () => {
     agentsState.agents = [
       {
         id: 'agent-1',
@@ -152,6 +152,13 @@ describe('AiManagerPanel', () => {
 
     render(<AiManagerPanel initialAgentHost="daemon-a" />);
 
-    expect(screen.getByText('octocat via GITHUB_TOKEN')).toBeInTheDocument();
+    const loginLabel = screen.getByText(/\(octocat via GITHUB_TOKEN\)/);
+    expect(loginLabel).toBeInTheDocument();
+    // The login label should live inside the "Copilot" header row, not in a
+    // separate paragraph below it.
+    expect(loginLabel.tagName).toBe('SPAN');
+    const headerRow = loginLabel.closest('div');
+    expect(headerRow).not.toBeNull();
+    expect(headerRow?.textContent ?? '').toMatch(/^Copilot\s+ALLOWED\s+\(octocat via GITHUB_TOKEN\)/);
   });
 });

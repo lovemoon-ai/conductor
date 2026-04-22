@@ -201,13 +201,13 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
                   {quota.copilot.primary.status.replaceAll('_', ' ')}
                 </span>
               ) : null}
+              {quota?.copilot?.login ? (
+                <span className="ml-2 text-xs font-normal text-muted">
+                  ({quota.copilot.login}
+                  {quota.copilot.loginSource === 'github_token' ? ' via GITHUB_TOKEN' : ''})
+                </span>
+              ) : null}
             </div>
-            {quota?.copilot?.login ? (
-              <p className="text-xs text-muted">
-                {quota.copilot.login}
-                {quota.copilot.loginSource === 'github_token' ? ' via GITHUB_TOKEN' : ''}
-              </p>
-            ) : null}
             {quota?.copilot?.premiumInteractions || !quota?.copilot ? (
               <QuotaBar label="Premium" window={quota?.copilot?.premiumInteractions} />
             ) : null}
