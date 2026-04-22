@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireActiveSubscription } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
+import { realtimeHub } from "@/lib/realtime/hub";
 import {
   compareProjectsForDisplay,
   isMissingProjectSortOrderColumnError,
@@ -81,6 +82,14 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
     }
     throw error;
   }
+
+  realtimeHub.broadcastToApps(user.id, {
+    type: "projects_reordered",
+    payload: {
+      projectIds: requestedIds,
+      project_ids: requestedIds,
+    },
+  });
 
   return NextResponse.json({ ok: true, projectIds: requestedIds, project_ids: requestedIds });
 });

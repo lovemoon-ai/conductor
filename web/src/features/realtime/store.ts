@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { WSConnectionStatus, Message, TaskStatus, TaskRuntimeStatus } from '@/shared/types';
 import { getMessageAttachments } from '@/shared/utils/message-attachments';
 import { useChatStore } from '@/features/chat';
+import { useProjectsStore } from '@/features/projects/store';
 import { useTasksStore } from '@/features/tasks';
 import { useRuntimeStore } from '@/features/realtime/runtime-store';
 import { useTerminalStore } from '@/features/terminal';
@@ -403,6 +404,11 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
       useChatStore.getState().clearMessages(taskId);
       useRuntimeStore.getState().clearTask(taskId);
       useTerminalStore.getState().clearTask(taskId);
+      break;
+    }
+
+    case 'projects_reordered': {
+      void useProjectsStore.getState().fetchProjects();
       break;
     }
 

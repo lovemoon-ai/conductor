@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware';
 import type { AuthSession, AuthUser } from '@/shared/types';
 import { createApiClientWithToken, getApiClient, type ApiClient, resetApiClient } from '@/shared/api/client';
 import { clearStoredJwtToken, getStoredJwtToken, storeJwtToken } from '@/lib/auth/token-storage';
+import { useProjectsStore } from '@/features/projects/store';
 
 export const AUTH_SESSION_STORAGE_KEY = 'conductor-auth';
 export const AUTH_USER_TOKEN_STORAGE_KEY = 'conductor.userToken';
@@ -212,6 +213,7 @@ export const useAuthStore = create<AuthState>()(
 
       logout: () => {
         set({ session: null, isLoading: false, error: null });
+        useProjectsStore.getState().resetState();
         clearStoredJwtToken();
         if (typeof window !== 'undefined') {
           localStorage.removeItem(AUTH_USER_TOKEN_STORAGE_KEY);

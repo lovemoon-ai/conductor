@@ -1,4 +1,20 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { JWT_STORAGE_KEY } from '@/lib/auth/token-storage';
+
+const mockGet = vi.fn();
+const mockPost = vi.fn();
+const mockPatch = vi.fn();
+const mockDelete = vi.fn();
+
+vi.mock('@/shared/api/client', () => ({
+  getApiClient: () => ({
+    get: mockGet,
+    post: mockPost,
+    patch: mockPatch,
+    delete: mockDelete,
+  }),
+}));
+
 import { normalizeProject, useProjectsStore } from './store';
 
 describe('normalizeProject', () => {
@@ -89,6 +105,7 @@ describe('normalizeProject', () => {
 
 describe('useProjectsStore hidden project state', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     window.localStorage.clear();
     useProjectsStore.setState({
       projects: [],
@@ -139,5 +156,91 @@ describe('useProjectsStore hidden project state', () => {
     expect(useProjectsStore.getState().hiddenProjectIds).toEqual(['project-2']);
     expect(useProjectsStore.getState().showHiddenProjects).toBe(true);
     expect(window.localStorage.getItem('conductor-hidden-project-ids')).toBe('["project-2"]');
+  });
+});
+
+describe('useProjectsStore fetchProjects', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    useProjectsStore.setState({
+      projects: [],
+      isLoading: false,
+      error: null,
+      selectedProjectId: null,
+      hiddenProjectIds: [],
+      showHiddenProjects: false,
+    });
+  });
+
+  it('ignores stale fetchProjects responses when a newer refresh finishes first', async () => {
+    let resolveFirst: ((value: unknown) => void) | null = null;
+    let resolveSecond: ((value: unknown) => void) | null = null;
+
+    mockGet.mockImplementation(() => {
+      if (!resolveFirst) {
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      if (!resolveSecond) {
+        return new Promise((resolve) => {
+          resolveSecond = resolve;
+        });
+      }
+      throw new Error('Unexpected extra fetchProjects request');
+    });
+
+    const firstFetch = useProjectsStore.getState().fetchProjects();
+    const secondFetch = useProjectsStore.getState().fetchProjects();
+
+    resolveSecond?.([
+      {
+        id: 'project-new',
+        name: 'Newest Order',
+        sortOrder: 0,
+      },
+    ]);
+    await secondFetch;
+
+    expect(useProjectsStore.getState().projects.map((project) => project.id)).toEqual(['project-new']);
+
+    resolveFirst?.([
+      {
+        id: 'project-old',
+        name: 'Stale Order',
+        sortOrder: 0,
+      },
+    ]);
+    await firstFetch;
+
+    expect(useProjectsStore.getState().projects.map((project) => project.id)).toEqual(['project-new']);
+    expect(useProjectsStore.getState().isLoading).toBe(false);
+    expect(useProjectsStore.getState().error).toBeNull();
+  });
+
+  it('ignores fetchProjects responses after the stored JWT changes', async () => {
+    let resolveFetch: ((value: unknown) => void) | null = null;
+
+    window.localStorage.setItem(JWT_STORAGE_KEY, 'jwt-old');
+    mockGet.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveFetch = resolve;
+    }));
+
+    const pendingFetch = useProjectsStore.getState().fetchProjects();
+
+    window.localStorage.setItem(JWT_STORAGE_KEY, 'jwt-new');
+    resolveFetch?.([
+      {
+        id: 'project-old',
+        name: 'Old Session Project',
+        sortOrder: 0,
+      },
+    ]);
+    await pendingFetch;
+
+    expect(useProjectsStore.getState().projects).toEqual([]);
+    expect(useProjectsStore.getState().isLoading).toBe(false);
+    expect(useProjectsStore.getState().error).toBeNull();
   });
 });

@@ -419,6 +419,21 @@ export class RealtimeHub {
     return sentCount;
   }
 
+  broadcastToApps(userId: string, payload: unknown, projectId?: string) {
+    let sentCount = 0;
+    for (const conn of this.connections.values()) {
+      if (conn.kind !== "app" || conn.userId !== userId) {
+        continue;
+      }
+      if (projectId && !conn.projectIds.includes("*") && !conn.projectIds.includes(projectId)) {
+        continue;
+      }
+      conn.send(payload);
+      sentCount++;
+    }
+    return sentCount;
+  }
+
   broadcast(userId: string, projectId: string, payload: unknown) {
     let sentCount = 0;
     for (const conn of this.connections.values()) {
