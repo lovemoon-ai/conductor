@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with an additional `Commits` section for each released version.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.2.42] - 2026-04-23
+
+### Added
+
+- Issue priority can now be set during issue creation, giving teams a clearer
+  way to distinguish urgent work from routine backlog items.
+- Issues can now carry an explicit backend selection, so issue-driven task
+  creation can target the intended runtime without extra follow-up edits.
+
+### Changed
+
+- Project order now syncs across devices instead of staying local to a single
+  browser, so reorganizing the project list is reflected consistently wherever
+  you sign in.
+- Copilot login is surfaced inline in the quota card header, making the account
+  state easier to see and act on from the main AI manager view.
+- The issue-to-doing flow uses less redundant description copy, reducing noise
+  while moving an issue into active work.
+
+### Fixed
+
+- `${PWD}` timing in `pre_prompt` handling is now surfaced to users more
+  clearly, making task launch context mistakes easier to understand.
+- Copilot install-version detection and quota parsing are more reliable.
+- Issue title hide persistence and task title hide persistence now survive
+  reloads correctly.
+- Mobile task title rename gestures are less error-prone.
+
+### Commits
+
+- `59c6bda` update web/src/app/api/ai-manager/_helpers.ts
+- `a0f03b1` add issue priority
+- `7eb6845` fix issue title hide persistence
+- `7a78f5b` update mobile task rename gesture
+- `cc37797` fix copilot quota parsing
+- `683098e` fix copilot install version
+- `5d24ca5` fix pre_prompt timing and surface it as a user-visible message
+- `ed84022` sync project reorder across devices
+- `6939440` merge project reorder sync
+- `02f8dc8` inline copilot login next to header in quota card
+- `d26b0f7` make copilot login header test robust to jsx whitespace
+- `963134f` add issue backend selection
+- `433d0f9` remove issue doing dialog description
+- `6c743a3` add create issue priority
+- `f79f36f` fix task title hide persistence
+
 ## [0.2.41] - 2026-04-22
 
 ### Fixed
