@@ -1,19 +1,16 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { Issue } from '@/shared/types';
 import { Dialog } from '@/components/common/Dialog';
 
 export function MoveIssueToDoingDialog({
   open,
-  issue,
   availableBackends,
   initialBackend,
   onClose,
   onConfirm,
 }: {
   open: boolean;
-  issue: Issue | null;
   availableBackends: string[];
   initialBackend?: string | null;
   onClose: () => void;
@@ -65,15 +62,6 @@ export function MoveIssueToDoingDialog({
       maxWidthClassName="max-w-lg"
     >
       <div className="space-y-5">
-        <div className="space-y-1">
-          <p className="text-sm font-medium text-ink">
-            {issue?.title ?? 'Issue'}
-          </p>
-          <p className="text-sm text-muted">
-            Starting this issue will create an AI task. Choose which backend should handle it.
-          </p>
-        </div>
-
         <div>
           <label htmlFor="issue-doing-backend" className="mb-2 block text-sm font-medium text-ink">
             Backend

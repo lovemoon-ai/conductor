@@ -155,20 +155,18 @@ vi.mock('@/features/issues', () => ({
   }) => (open ? <div>create-issue-dialog:{projectId ?? 'none'}</div> : null),
   MoveIssueToDoingDialog: ({
     open,
-    issue,
     availableBackends,
     initialBackend,
     onConfirm,
   }: {
     open: boolean;
-    issue: { title: string } | null;
     availableBackends: string[];
     initialBackend?: string | null;
     onConfirm: (backendType: string) => Promise<void> | void;
   }) => (
     open ? (
       <div>
-        <div>move-issue-to-doing:{issue?.title ?? 'none'}:{availableBackends.join(',')}:{initialBackend ?? 'none'}</div>
+        <div>move-issue-to-doing:{availableBackends.join(',')}:{initialBackend ?? 'none'}</div>
         <button type="button" onClick={() => void onConfirm(initialBackend ?? availableBackends[0] ?? '')}>
           confirm-move-issue
         </button>
@@ -502,7 +500,7 @@ describe('IssuesPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'status-issue' }));
 
     expect(moveIssueMock).not.toHaveBeenCalled();
-    expect(screen.getByText('move-issue-to-doing:Fix issue board:claude,codex:codex')).toBeInTheDocument();
+    expect(screen.getByText('move-issue-to-doing:claude,codex:codex')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'confirm-move-issue' }));
 
@@ -551,7 +549,7 @@ describe('IssuesPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'move-issue' }));
     expect(moveIssueMock).not.toHaveBeenCalled();
-    expect(screen.getByText('move-issue-to-doing:Fix issue board:claude,codex:none')).toBeInTheDocument();
+    expect(screen.getByText('move-issue-to-doing:claude,codex:none')).toBeInTheDocument();
 
     issuesState = {
       ...issuesState,

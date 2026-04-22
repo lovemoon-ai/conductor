@@ -405,7 +405,6 @@ function IssuesPageContent() {
 
       <MoveIssueToDoingDialog
         open={Boolean(pendingIssueStart)}
-        issue={pendingIssue}
         availableBackends={pendingIssueStart?.availableBackends ?? []}
         initialBackend={pendingIssueInitialBackend}
         onClose={() => setPendingIssueStart(null)}
