@@ -33,6 +33,7 @@ export interface QuotaWindow {
   remainingPercent: number;
   resetAt?: number;
   resetAfterSeconds?: number;
+  resetOnDate?: string;
   status?: string;
   windowMinutes?: number;
   limit?: number;

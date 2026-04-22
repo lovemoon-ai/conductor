@@ -24,6 +24,8 @@ export interface QuotaWindow {
   resetAfterSeconds?: number;
   /** Unix timestamp (seconds) at which the window resets. */
   resetAt?: number;
+  /** Calendar date when the provider only exposes day-level reset semantics. */
+  resetOnDate?: string;
   /** Status label from the provider (allowed/warning/blocked), if any. */
   status?: string;
   /** Window length in minutes, if known (300 = 5h, 10080 = 7d). */

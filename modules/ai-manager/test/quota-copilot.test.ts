@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import {
   getCopilotQuota,
   parseCopilotQuotaSnapshots,
+  parseCopilotUserQuota,
 } from "../src/quota/copilot.ts";
 
 function withTmp<T>(fn: (dir: string) => Promise<T> | T): Promise<T> {
@@ -75,6 +76,63 @@ test("parseCopilotQuotaSnapshots normalizes SDK quota snapshots", () => {
   assert.equal(q.chat?.remainingPercent, 60);
   assert.equal(q.chat?.status, "overage_allowed");
   assert.ok(q.premiumInteractions?.resetAt);
+  assert.equal(q.premiumInteractions?.resetOnDate, undefined);
+});
+
+test("parseCopilotUserQuota normalizes limited-user Copilot quotas", () => {
+  const q = parseCopilotUserQuota({
+    login: "alice",
+    access_type_sku: "free_limited_copilot",
+    limited_user_quotas: {
+      chat: 470,
+      completions: 4000,
+    },
+    monthly_quotas: {
+      chat: 500,
+      completions: 4000,
+    },
+    limited_user_reset_date: "2026-05-17",
+  });
+
+  assert.equal(q.chat?.remainingPercent, 94);
+  assert.equal(q.chat?.usedPercent, 6);
+  assert.equal(q.chat?.remaining, 470);
+  assert.equal(q.chat?.limit, 500);
+  assert.equal(q.completions?.remainingPercent, 100);
+  assert.equal(q.completions?.remaining, 4000);
+  assert.equal(q.completions?.limit, 4000);
+  assert.equal(q.chat?.resetAt, undefined);
+  assert.equal(q.chat?.resetOnDate, "2026-05-17");
+  assert.equal(q.completions?.resetOnDate, "2026-05-17");
+});
+
+test("parseCopilotUserQuota normalizes snake_case quota snapshots", () => {
+  const q = parseCopilotUserQuota({
+    quota_reset_date_utc: "2026-05-01T00:00:00Z",
+    quota_snapshots: {
+      premium_interactions: {
+        entitlement: 100,
+        remaining: 75,
+        percent_remaining: 75,
+        overage_count: 0,
+        overage_permitted: false,
+      },
+      completions: {
+        entitlement: 1000,
+        remaining: 600,
+        percent_remaining: 60,
+        overage_count: 0,
+        overage_permitted: true,
+      },
+    },
+  });
+
+  assert.equal(q.primary?.remainingPercent, 75);
+  assert.equal(q.premiumInteractions?.remaining, 75);
+  assert.equal(q.completions?.remainingPercent, 60);
+  assert.equal(q.completions?.status, "overage_allowed");
+  assert.ok(q.premiumInteractions?.resetAt);
+  assert.equal(q.premiumInteractions?.resetOnDate, undefined);
 });
 
 test("getCopilotQuota reuses remembered logged-in cache before starting SDK", async () => {
@@ -399,6 +457,56 @@ test("getCopilotQuota ignores GITHUB_TOKEN lookup failures and still returns quo
     } finally {
       restoreEnv("GITHUB_TOKEN", previousGithubToken);
     }
+  });
+});
+
+test("getCopilotQuota falls back to copilot_internal/user when SDK quota snapshots are empty", async () => {
+  await withTmp(async (dir) => {
+    const state = { started: 0, stopped: 0, quotaCalls: 0 };
+    const fetchCalls: Array<{ url: string; headers: Headers }> = [];
+    const result = await getCopilotQuota({
+      cacheDir: dir,
+      ttlSeconds: 0,
+      sdkModule: makeSdk(
+        { quotaSnapshots: {} },
+        state,
+        { isAuthenticated: true, authType: "user", host: "https://github.com", login: "alice" },
+      ),
+      storedTokenResolver: async () => "copilot-token",
+      fetcher: async (input, init) => {
+        fetchCalls.push({
+          url: String(input),
+          headers: new Headers(init?.headers),
+        });
+        return new Response(JSON.stringify({
+          login: "alice",
+          access_type_sku: "free_limited_copilot",
+          limited_user_quotas: {
+            chat: 470,
+            completions: 4000,
+          },
+          monthly_quotas: {
+            chat: 500,
+            completions: 4000,
+          },
+          limited_user_reset_date: "2026-05-17",
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+
+    assert.equal(result.source, "fresh");
+    assert.equal(result.login, "alice");
+    assert.equal(result.chat?.remainingPercent, 94);
+    assert.equal(result.chat?.remaining, 470);
+    assert.equal(result.completions?.remainingPercent, 100);
+    assert.equal(result.error, undefined);
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fetchCalls[0]?.url, "https://api.github.com/copilot_internal/user");
+    assert.equal(fetchCalls[0]?.headers.get("authorization"), "Bearer copilot-token");
+    assert.equal(fetchCalls[0]?.headers.get("user-agent"), "conductor-ai-manager");
   });
 });
 

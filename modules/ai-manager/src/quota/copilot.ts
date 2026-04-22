@@ -1,3 +1,7 @@
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import type { CopilotClientOptions } from "@github/copilot-sdk";
 import type { CopilotQuota, CopilotQuotaSnapshot, QuotaWindow } from "../types.ts";
 import { cacheFile, fingerprintKey, isFresh, readCache, writeCache } from "./cache.ts";
@@ -5,9 +9,13 @@ import { cacheFile, fingerprintKey, isFresh, readCache, writeCache } from "./cac
 const DEFAULT_TTL = 60;
 const DEFAULT_TIMEOUT_MS = 20_000;
 const STOP_TIMEOUT_MS = 5_000;
+const SECURITY_TIMEOUT_MS = 5_000;
 const GITHUB_TOKEN_ENV_KEYS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
 const GITHUB_USER_AGENT = "conductor-ai-manager";
 const GITHUB_API_VERSION = "2022-11-28";
+const COPILOT_KEYCHAIN_SERVICE = "copilot-cli";
+const COPILOT_USER_PATH = "/copilot_internal/user";
+const execFileAsync = promisify(execFile);
 
 interface AccountGetQuotaResult {
   quotaSnapshots?: Record<string, unknown>;
@@ -26,6 +34,30 @@ interface CopilotAuthInfo {
   host?: string;
   login?: string;
   loginSource?: "sdk" | "github_token";
+}
+
+interface CopilotUserQuotaSnapshot {
+  entitlement?: unknown;
+  overage_count?: unknown;
+  overage_permitted?: unknown;
+  percent_remaining?: unknown;
+  quota_id?: unknown;
+  quota_remaining?: unknown;
+  remaining?: unknown;
+  unlimited?: unknown;
+  timestamp_utc?: unknown;
+}
+
+interface CopilotUserResponse {
+  login?: unknown;
+  access_type_sku?: unknown;
+  copilot_plan?: unknown;
+  quota_reset_date?: unknown;
+  quota_reset_date_utc?: unknown;
+  quota_snapshots?: Record<string, unknown>;
+  limited_user_quotas?: Record<string, unknown>;
+  monthly_quotas?: Record<string, unknown>;
+  limited_user_reset_date?: unknown;
 }
 
 interface CopilotClientLike {
@@ -63,6 +95,8 @@ export interface GetCopilotQuotaOptions {
   fetcher?: typeof fetch;
   /** Override SDK module for tests. */
   sdkModule?: CopilotSdkModule;
+  /** Override stored-token lookup for Copilot logged-in users. */
+  storedTokenResolver?: (authInfo: CopilotAuthInfo | undefined) => Promise<string | undefined>;
 }
 
 export async function getCopilotQuota(
@@ -143,7 +177,19 @@ export async function getCopilotQuota(
       quotaTimeoutMs,
       "copilot quota request timed out",
     );
-    const parsed = parseCopilotQuotaSnapshots(payload?.quotaSnapshots);
+    let parsed = parseCopilotQuotaSnapshots(payload?.quotaSnapshots);
+    const userPayload =
+      Object.keys(parsed.snapshots).length > 0
+        ? undefined
+        : await fetchCopilotUserQuota(
+          authInfo,
+          opts,
+          doFetch,
+          safeRemainingTimeoutMs(deadlineStartedAt, timeoutMs),
+        );
+    if (userPayload) {
+      parsed = parseCopilotUserQuota(userPayload);
+    }
     const fresh = applyAuthInfo({
       tool: "copilot",
       fetchedAt: Math.floor(Date.now() / 1000),
@@ -157,7 +203,12 @@ export async function getCopilotQuota(
       }
       return fresh;
     }
-    return await fallbackFromCache(file, ttl, "copilot SDK returned no quota snapshots", authInfo);
+    return await fallbackFromCache(
+      file,
+      ttl,
+      userPayload ? "copilot account did not expose quota data" : "copilot SDK returned no quota snapshots",
+      authInfo,
+    );
   } catch (err: any) {
     authInfo ??= await resolveCopilotAuthInfo(
       null,
@@ -186,24 +237,55 @@ export function parseCopilotQuotaSnapshots(
     }
   }
 
-  const windows = Object.fromEntries(
-    Object.entries(snapshots).map(([key, snapshot]) => [key, windowFromSnapshot(snapshot)]),
-  ) as Record<string, QuotaWindow>;
-
-  return {
+  return buildQuotaFromSnapshots(
     snapshots,
-    primary:
-      windows.premium_interactions ??
-      windows.chat ??
-      windows.completions ??
-      Object.values(windows)[0],
-    chat: windows.chat,
-    completions: windows.completions,
-    premiumInteractions: windows.premium_interactions,
-    raw: rawSnapshots && typeof rawSnapshots === "object"
+    rawSnapshots && typeof rawSnapshots === "object"
       ? (rawSnapshots as Record<string, unknown>)
       : undefined,
-  };
+  );
+}
+
+/** Exported for tests. */
+export function parseCopilotUserQuota(
+  rawUser: unknown,
+): Omit<
+  CopilotQuota,
+  "tool" | "fetchedAt" | "source" | "error" | "login" | "authType" | "host" | "loginSource"
+> {
+  const payload = rawUser && typeof rawUser === "object"
+    ? rawUser as CopilotUserResponse
+    : undefined;
+  const snapshots: Record<string, CopilotQuotaSnapshot> = {};
+  const resetDate = resolveCopilotUserResetDate(payload);
+
+  const directSnapshots = payload?.quota_snapshots;
+  if (directSnapshots && typeof directSnapshots === "object") {
+    for (const [key, value] of Object.entries(directSnapshots)) {
+      const snapshot = normalizeUserSnapshot(value, resetDate);
+      if (snapshot) snapshots[key] = snapshot;
+    }
+  }
+
+  if (Object.keys(snapshots).length === 0) {
+    const monthly = payload?.monthly_quotas;
+    const remaining = payload?.limited_user_quotas;
+    if (monthly && typeof monthly === "object" && remaining && typeof remaining === "object") {
+      const keys = new Set([...Object.keys(monthly), ...Object.keys(remaining)]);
+      for (const key of keys) {
+        const snapshot = snapshotFromMonthlyQuota(
+          (monthly as Record<string, unknown>)[key],
+          (remaining as Record<string, unknown>)[key],
+          resetDate,
+        );
+        if (snapshot) snapshots[key] = snapshot;
+      }
+    }
+  }
+
+  return buildQuotaFromSnapshots(
+    snapshots,
+    payload && typeof payload === "object" ? payload as Record<string, unknown> : undefined,
+  );
 }
 
 function normalizeSnapshot(value: unknown): CopilotQuotaSnapshot | undefined {
@@ -241,6 +323,128 @@ function normalizeSnapshot(value: unknown): CopilotQuotaSnapshot | undefined {
   };
 }
 
+function normalizeUserSnapshot(
+  value: unknown,
+  resetDate: string | undefined,
+): CopilotQuotaSnapshot | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const obj = value as CopilotUserQuotaSnapshot;
+  const unlimited = typeof obj.unlimited === "boolean" ? obj.unlimited : false;
+  const entitlement = toNumber(obj.entitlement);
+  const remaining = toNumber(obj.remaining) ?? toNumber(obj.quota_remaining);
+  const explicitPercent = toNumber(obj.percent_remaining);
+  const remainingPercentage =
+    explicitPercent ??
+    (
+      entitlement !== undefined &&
+        entitlement > 0 &&
+        remaining !== undefined
+        ? round1((Math.max(0, Math.min(entitlement, remaining)) / entitlement) * 100)
+        : unlimited
+        ? 100
+        : undefined
+    );
+
+  let entitlementRequests: number | undefined;
+  let usedRequests: number | undefined;
+
+  if (unlimited) {
+    entitlementRequests = -1;
+    usedRequests = Math.max(0, toNumber(obj.overage_count) ?? 0);
+  } else if (entitlement !== undefined) {
+    entitlementRequests = entitlement;
+    if (remaining !== undefined) {
+      usedRequests = Math.max(0, entitlement - Math.max(0, Math.min(entitlement, remaining)));
+    } else if (remainingPercentage !== undefined) {
+      usedRequests = Math.max(
+        0,
+        entitlement - Math.round((entitlement * normalizePercent(remainingPercentage)) / 100),
+      );
+    }
+  }
+
+  if (
+    remainingPercentage === undefined ||
+    entitlementRequests === undefined ||
+    usedRequests === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    entitlementRequests,
+    usedRequests,
+    remainingPercentage,
+    overage: Math.max(0, toNumber(obj.overage_count) ?? 0),
+    overageAllowedWithExhaustedQuota:
+      typeof obj.overage_permitted === "boolean" ? obj.overage_permitted : false,
+    resetDate,
+    isUnlimitedEntitlement: unlimited,
+  };
+}
+
+function snapshotFromMonthlyQuota(
+  limitValue: unknown,
+  remainingValue: unknown,
+  resetDate: string | undefined,
+): CopilotQuotaSnapshot | undefined {
+  const entitlementRequests = toNumber(limitValue);
+  const remaining = toNumber(remainingValue);
+  if (
+    entitlementRequests === undefined ||
+    remaining === undefined ||
+    entitlementRequests < 0 ||
+    remaining < 0
+  ) {
+    return undefined;
+  }
+
+  const clampedRemaining = Math.max(0, Math.min(entitlementRequests, remaining));
+  return {
+    entitlementRequests,
+    usedRequests: Math.max(0, entitlementRequests - clampedRemaining),
+    remainingPercentage:
+      entitlementRequests === 0 ? 0 : round1((clampedRemaining / entitlementRequests) * 100),
+    overage: 0,
+    overageAllowedWithExhaustedQuota: false,
+    resetDate,
+  };
+}
+
+function resolveCopilotUserResetDate(payload: CopilotUserResponse | undefined): string | undefined {
+  if (!payload) return undefined;
+  return firstString(
+    payload.quota_reset_date_utc,
+    payload.quota_reset_date,
+    payload.limited_user_reset_date,
+  );
+}
+
+function buildQuotaFromSnapshots(
+  snapshots: Record<string, CopilotQuotaSnapshot>,
+  raw?: Record<string, unknown>,
+): Omit<
+  CopilotQuota,
+  "tool" | "fetchedAt" | "source" | "error" | "login" | "authType" | "host" | "loginSource"
+> {
+  const windows = Object.fromEntries(
+    Object.entries(snapshots).map(([key, snapshot]) => [key, windowFromSnapshot(snapshot)]),
+  ) as Record<string, QuotaWindow>;
+
+  return {
+    snapshots,
+    primary:
+      windows.premium_interactions ??
+      windows.chat ??
+      windows.completions ??
+      Object.values(windows)[0],
+    chat: windows.chat,
+    completions: windows.completions,
+    premiumInteractions: windows.premium_interactions,
+    raw,
+  };
+}
+
 function windowFromSnapshot(snapshot: CopilotQuotaSnapshot): QuotaWindow {
   const remainingPercent = normalizePercent(snapshot.remainingPercentage);
   const usedPercent = round1(Math.max(0, Math.min(100, 100 - remainingPercent)));
@@ -249,11 +453,12 @@ function windowFromSnapshot(snapshot: CopilotQuotaSnapshot): QuotaWindow {
   const used = Math.max(0, snapshot.usedRequests);
   const remaining =
     limit !== undefined ? Math.max(0, limit - used) : undefined;
+  const reset = parseResetDate(snapshot.resetDate);
 
   return {
     usedPercent,
     remainingPercent,
-    resetAt: parseResetDate(snapshot.resetDate),
+    ...reset,
     status: unlimited
       ? "unlimited"
       : remainingPercent <= 0
@@ -267,11 +472,35 @@ function windowFromSnapshot(snapshot: CopilotQuotaSnapshot): QuotaWindow {
   };
 }
 
-function parseResetDate(value: string | undefined): number | undefined {
-  if (!value) return undefined;
+function parseResetDate(
+  value: string | undefined,
+): Pick<QuotaWindow, "resetAt" | "resetOnDate"> {
+  if (!value) return {};
+  const dateOnly = normalizeDateOnlyReset(value);
+  if (dateOnly) {
+    return { resetOnDate: dateOnly };
+  }
   const t = Date.parse(value);
-  if (Number.isNaN(t)) return undefined;
-  return Math.floor(t / 1000);
+  if (Number.isNaN(t)) return {};
+  return { resetAt: Math.floor(t / 1000) };
+}
+
+function normalizeDateOnlyReset(value: string): string | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return undefined;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const normalized = new Date(Date.UTC(year, month - 1, day));
+  if (
+    normalized.getUTCFullYear() !== year ||
+    normalized.getUTCMonth() !== month - 1 ||
+    normalized.getUTCDate() !== day
+  ) {
+    return undefined;
+  }
+  return `${match[1]}-${match[2]}-${match[3]}`;
 }
 
 function normalizePercent(value: number): number {
@@ -299,14 +528,12 @@ function round1(n: number): number {
 }
 
 function resolveExplicitAuthCacheKey(opts: GetCopilotQuotaOptions): string | undefined {
-  const token =
-    opts.githubToken ??
-    opts.clientOptions?.githubToken;
+  const token = resolveExplicitGithubToken(opts);
   return token ? `token:${token}` : undefined;
 }
 
 function resolveClientOptions(opts: GetCopilotQuotaOptions): CopilotClientOptions {
-  const explicitGithubToken = opts.githubToken ?? opts.clientOptions?.githubToken;
+  const explicitGithubToken = resolveExplicitGithubToken(opts);
   const baseEnv = opts.clientOptions?.env ?? process.env;
   return {
     logLevel: "none",
@@ -318,6 +545,10 @@ function resolveClientOptions(opts: GetCopilotQuotaOptions): CopilotClientOption
         : opts.clientOptions?.useLoggedInUser ?? true,
     ...(opts.githubToken ? { githubToken: opts.githubToken } : {}),
   };
+}
+
+function resolveExplicitGithubToken(opts: GetCopilotQuotaOptions): string | undefined {
+  return opts.githubToken ?? opts.clientOptions?.githubToken;
 }
 
 function withoutGitHubTokenEnv(
@@ -426,6 +657,148 @@ function resolveGitHubLoginToken(opts: GetCopilotQuotaOptions): string | undefin
   return opts.githubToken ?? opts.clientOptions?.githubToken ?? process.env.GITHUB_TOKEN;
 }
 
+async function fetchCopilotUserQuota(
+  authInfo: CopilotAuthInfo | undefined,
+  opts: GetCopilotQuotaOptions,
+  doFetch: typeof fetch,
+  timeoutMs?: number,
+): Promise<Record<string, unknown> | undefined> {
+  if (!timeoutMs || timeoutMs <= 0) return undefined;
+
+  const token = await resolveCopilotQuotaFetchToken(authInfo, opts);
+  if (!token) return undefined;
+
+  const host = normalizeCopilotAuthHost(authInfo?.host) ?? "https://github.com";
+  const apiOrigin = toCopilotApiOrigin(host);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await doFetch(new URL(COPILOT_USER_PATH, apiOrigin), {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": GITHUB_USER_AGENT,
+      },
+      signal: controller.signal,
+    });
+    if (!response.ok) return undefined;
+    const payload = await response.json().catch(() => null);
+    return payload && typeof payload === "object"
+      ? payload as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function resolveCopilotQuotaFetchToken(
+  authInfo: CopilotAuthInfo | undefined,
+  opts: GetCopilotQuotaOptions,
+): Promise<string | undefined> {
+  const explicitToken = resolveExplicitGithubToken(opts)?.trim();
+  if (explicitToken) return explicitToken;
+  if (!authInfo?.login || authInfo.loginSource === "github_token") return undefined;
+  return await resolveStoredCopilotToken(authInfo, opts);
+}
+
+async function resolveStoredCopilotToken(
+  authInfo: CopilotAuthInfo,
+  opts: GetCopilotQuotaOptions,
+): Promise<string | undefined> {
+  if (opts.storedTokenResolver) {
+    return trimToUndefined(await opts.storedTokenResolver(authInfo));
+  }
+
+  const host = normalizeCopilotAuthHost(authInfo.host) ?? "https://github.com";
+  const login = trimToUndefined(authInfo.login);
+  if (!login) return undefined;
+
+  const env = opts.clientOptions?.env ?? process.env;
+  const fromConfig = await readCopilotTokenFromConfig(host, login, env);
+  if (fromConfig) return fromConfig;
+  if (process.platform !== "darwin") return undefined;
+
+  try {
+    const { stdout } = await execFileAsync(
+      "security",
+      [
+        "find-generic-password",
+        "-s",
+        COPILOT_KEYCHAIN_SERVICE,
+        "-a",
+        `${host}:${login}`,
+        "-w",
+      ],
+      {
+        encoding: "utf8",
+        timeout: SECURITY_TIMEOUT_MS,
+      },
+    );
+    return trimToUndefined(stdout);
+  } catch {
+    return undefined;
+  }
+}
+
+async function readCopilotTokenFromConfig(
+  host: string,
+  login: string,
+  env: Record<string, string | undefined>,
+): Promise<string | undefined> {
+  const configPath = resolveCopilotConfigPath(env);
+  if (!configPath) return undefined;
+  try {
+    const payload = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+    const rawTokens =
+      payload.copilot_tokens ??
+      payload.copilotTokens;
+    if (!rawTokens || typeof rawTokens !== "object") return undefined;
+
+    const tokenMap = rawTokens as Record<string, unknown>;
+    for (const key of tokenLookupKeys(host, login)) {
+      const token = trimToUndefined(tokenMap[key]);
+      if (token) return token;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveCopilotConfigPath(env: Record<string, string | undefined>): string | undefined {
+  const configDir = trimToUndefined(env.COPILOT_CONFIG_DIR);
+  if (configDir) return join(configDir, "config.json");
+  const home = trimToUndefined(env.HOME) ?? trimToUndefined(env.USERPROFILE);
+  return home ? join(home, ".copilot", "config.json") : undefined;
+}
+
+function tokenLookupKeys(host: string, login: string): string[] {
+  const withoutProtocol = host.replace(/^https?:\/\//, "");
+  return [`${host}:${login}`, `${withoutProtocol}:${login}`];
+}
+
+function normalizeCopilotAuthHost(rawHost?: string): string | undefined {
+  const host = trimToUndefined(rawHost);
+  if (!host) return undefined;
+  try {
+    return new URL(host.startsWith("http://") || host.startsWith("https://") ? host : `https://${host}`)
+      .origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function toCopilotApiOrigin(host: string): string {
+  const url = new URL(host);
+  if (!url.hostname.startsWith("api.")) {
+    url.hostname = `api.${url.hostname}`;
+  }
+  return url.origin;
+}
+
 async function lookupGitHubTokenLogin(
   token: string | undefined,
   host: string | undefined,
@@ -462,6 +835,20 @@ function githubUserUrl(host: string): string {
   return host === "github.com"
     ? "https://api.github.com/user"
     : `https://${host}/api/v3/user`;
+}
+
+function trimToUndefined(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const trimmed = trimToUndefined(value);
+    if (trimmed) return trimmed;
+  }
+  return undefined;
 }
 
 function safeRemainingTimeoutMs(startedAtMs: number, timeoutMs: number): number | undefined {

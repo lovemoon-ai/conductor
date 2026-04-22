@@ -12,6 +12,10 @@ const TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
   minute: '2-digit',
   hour12: false,
 });
+const DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  month: '2-digit',
+  day: '2-digit',
+});
 const DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: '2-digit',
   day: '2-digit',
@@ -21,6 +25,10 @@ const DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
 });
 
 function formatReset(window: QuotaWindow): string {
+  if (window.resetOnDate) {
+    const date = parseDateOnly(window.resetOnDate);
+    return `reset ${date ? DATE_FORMATTER.format(date) : window.resetOnDate}`;
+  }
   const epochSeconds =
     window.resetAt ??
     (window.resetAfterSeconds !== undefined
@@ -31,6 +39,24 @@ function formatReset(window: QuotaWindow): string {
   if (Number.isNaN(date.getTime())) return '';
   const sameDay = date.toDateString() === new Date().toDateString();
   return `reset ${sameDay ? TIME_FORMATTER.format(date) : DATE_TIME_FORMATTER.format(date)}`;
+}
+
+function parseDateOnly(value: string): Date | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return undefined;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return undefined;
+  }
+  return date;
 }
 
 function barColor(usedPercent: number, status?: string): string {
