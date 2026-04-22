@@ -22,7 +22,7 @@ export function createAiManagerHandlers(opts = {}) {
       manager.getCurrentCodexAccount().catch(() => null),
     ]);
     const network = {};
-    const tools = ["codex", "claude", "kimi"];
+    const tools = ["codex", "claude", "kimi", "copilot"];
     await Promise.all(
       tools.map(async (tool) => {
         if (install[tool]?.installed) {
@@ -42,32 +42,37 @@ export function createAiManagerHandlers(opts = {}) {
   async function quota(args = {}) {
     const tools = pickToolFilter(args);
     const out = {};
-    if (tools.has("codex")) {
-      try {
-        out.codex = await manager.getCodexQuota({
-          forceRefresh: Boolean(args.forceRefresh),
-        });
-      } catch (err) {
-        out.codex = { tool: "codex", error: errMsg(err), source: "unknown" };
+    const forceRefresh = Boolean(args.forceRefresh);
+    const jobs = [];
+    const addJob = (tool, fetcher) => {
+      if (!tools.has(tool)) {
+        return;
       }
-    }
-    if (tools.has("claude")) {
-      try {
-        out.claude = await manager.getClaudeQuota({
-          forceRefresh: Boolean(args.forceRefresh),
-        });
-      } catch (err) {
-        out.claude = { tool: "claude", error: errMsg(err), source: "unknown" };
-      }
-    }
-    if (tools.has("kimi")) {
-      try {
-        out.kimi = await manager.getKimiQuota({
-          forceRefresh: Boolean(args.forceRefresh),
-        });
-      } catch (err) {
-        out.kimi = { tool: "kimi", error: errMsg(err), source: "unknown" };
-      }
+      jobs.push((async () => {
+        try {
+          return [tool, await fetcher()];
+        } catch (err) {
+          return [tool, { tool, error: errMsg(err), source: "unknown" }];
+        }
+      })());
+    };
+
+    addJob("codex", () => manager.getCodexQuota({
+      forceRefresh,
+    }));
+    addJob("claude", () => manager.getClaudeQuota({
+      forceRefresh,
+    }));
+    addJob("kimi", () => manager.getKimiQuota({
+      forceRefresh,
+    }));
+    addJob("copilot", () => manager.getCopilotQuota({
+      forceRefresh,
+    }));
+
+    const entries = await Promise.all(jobs);
+    for (const [tool, result] of entries) {
+      out[tool] = result;
     }
     return out;
   }
@@ -129,30 +134,29 @@ export async function handleAiManagerRequest(client, handlers, payload) {
     return { error: "missing request_id" };
   }
 
-  const out = await handlers.dispatch({ action, args: payload?.args });
-  await client
-    .sendJson({
-      type: "ai_manager_response",
-      payload: {
-        request_id: requestId,
-        action,
-        result: out.result,
-        error: out.error,
-      },
-    })
-    .catch(() => {});
-  return out;
+  const response = await handlers.dispatch({
+    action,
+    args: payload?.args && typeof payload.args === "object" ? payload.args : {},
+  });
+
+  const outgoing = {
+    type: "ai_manager_response",
+    payload: {
+      request_id: requestId,
+      action,
+      ...(response?.error ? { error: response.error } : { result: response?.result }),
+    },
+  };
+  await client.sendJson(outgoing).catch(() => {});
+  return response;
 }
 
-function pickToolFilter(args) {
-  const t = args?.tool;
-  if (t === "codex") return new Set(["codex"]);
-  if (t === "claude") return new Set(["claude"]);
-  if (t === "kimi") return new Set(["kimi"]);
-  return new Set(["codex", "claude", "kimi"]);
+function pickToolFilter(args = {}) {
+  const tool = typeof args.tool === "string" ? args.tool.trim().toLowerCase() : "";
+  if (tool && ["codex", "claude", "kimi", "copilot"].includes(tool)) return new Set([tool]);
+  return new Set(["codex", "claude", "kimi", "copilot"]);
 }
 
 function errMsg(err) {
-  if (err instanceof Error) return err.message;
-  return String(err);
+  return err?.message ?? String(err);
 }

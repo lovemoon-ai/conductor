@@ -8,7 +8,12 @@ interface ToolStatusRowProps {
   network?: NetworkStatus;
 }
 
-const TOOL_LABEL: Record<Tool, string> = { codex: 'Codex', claude: 'Claude', kimi: 'Kimi' };
+const TOOL_LABEL: Record<Tool, string> = {
+  codex: 'Codex',
+  claude: 'Claude',
+  kimi: 'Kimi',
+  copilot: 'Copilot',
+};
 
 function badge(ok: boolean, text: string) {
   return (

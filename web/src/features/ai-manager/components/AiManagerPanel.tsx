@@ -136,6 +136,7 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
           <ToolStatusRow tool="codex" install={status?.install.codex} network={status?.network.codex} />
           <ToolStatusRow tool="claude" install={status?.install.claude} network={status?.network.claude} />
           <ToolStatusRow tool="kimi" install={status?.install.kimi} network={status?.network.kimi} />
+          <ToolStatusRow tool="copilot" install={status?.install.copilot} network={status?.network.copilot} />
         </div>
         {state?.error.status ? (
           <p className="mt-2 text-xs text-[var(--error)]">{state.error.status}</p>
@@ -143,7 +144,7 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
       </SectionCard>
 
       <SectionCard title="Quota">
-        <div className="grid gap-5 md:grid-cols-3">
+        <div className="grid gap-5 md:grid-cols-4">
           <div className="flex flex-col gap-3">
             <div className="text-sm font-semibold text-ink">
               Codex
@@ -190,6 +191,34 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
             <QuotaBar label="Weekly" window={quota?.kimi?.weekly} />
             {quota?.kimi?.error ? (
               <p className="text-xs text-[var(--error)]">{quota.kimi.error}</p>
+            ) : null}
+          </div>
+          <div className="flex flex-col gap-3">
+            <div className="text-sm font-semibold text-ink">
+              Copilot
+              {quota?.copilot?.primary?.status ? (
+                <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
+                  {quota.copilot.primary.status.replaceAll('_', ' ')}
+                </span>
+              ) : null}
+            </div>
+            {quota?.copilot?.premiumInteractions || !quota?.copilot ? (
+              <QuotaBar label="Premium" window={quota?.copilot?.premiumInteractions} />
+            ) : null}
+            {!quota?.copilot?.premiumInteractions &&
+            quota?.copilot?.primary &&
+            !quota.copilot.chat &&
+            !quota.copilot.completions ? (
+              <QuotaBar label="Primary" window={quota.copilot.primary} />
+            ) : null}
+            {quota?.copilot?.chat ? (
+              <QuotaBar label="Chat" window={quota.copilot.chat} />
+            ) : null}
+            {quota?.copilot?.completions ? (
+              <QuotaBar label="Completions" window={quota.copilot.completions} />
+            ) : null}
+            {quota?.copilot?.error ? (
+              <p className="text-xs text-[var(--error)]">{quota.copilot.error}</p>
             ) : null}
           </div>
         </div>

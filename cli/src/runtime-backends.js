@@ -4,8 +4,10 @@ import { pathToFileURL } from "node:url";
 
 import yaml from "js-yaml";
 
-const BUILT_IN_RUNTIME_BACKENDS = ["codex", "claude", "kimi", "opencode"];
+const BUILT_IN_RUNTIME_BACKENDS = ["codex", "claude", "kimi", "opencode", "copilot"];
 const BUILT_IN_RUNTIME_BACKEND_SET = new Set(BUILT_IN_RUNTIME_BACKENDS);
+const COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKENDS = ["copilot"];
+const COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKEND_SET = new Set(COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKENDS);
 const LEGACY_RUNTIME_BACKEND_ALIASES = new Set([
   "code",
   "claude-code",
@@ -96,7 +98,7 @@ function stripExecutableSuffix(name) {
     .replace(/\.(cmd|bat|exe)$/i, "");
 }
 
-function parseCommandParts(commandLine) {
+export function parseCommandParts(commandLine) {
   const input = String(commandLine || "").trim();
   if (!input) {
     return { command: "", args: [], parts: [] };
@@ -105,25 +107,14 @@ function parseCommandParts(commandLine) {
   const parts = [];
   let current = "";
   let quote = "";
-  let escaping = false;
   let tokenStarted = false;
 
-  for (const char of input) {
-    if (escaping) {
-      current += char;
-      tokenStarted = true;
-      escaping = false;
-      continue;
-    }
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
+    const nextChar = input[index + 1];
 
-    if (char === "\\") {
-      escaping = true;
-      tokenStarted = true;
-      continue;
-    }
-
-    if (quote) {
-      if (char === quote) {
+    if (quote === "'") {
+      if (char === "'") {
         quote = "";
       } else {
         current += char;
@@ -132,8 +123,41 @@ function parseCommandParts(commandLine) {
       continue;
     }
 
+    if (quote === "\"") {
+      if (char === "\"") {
+        quote = "";
+        continue;
+      }
+      if (char === "\\") {
+        if (nextChar === "\"" || nextChar === "\\") {
+          current += nextChar;
+          tokenStarted = true;
+          index += 1;
+          continue;
+        }
+        current += "\\";
+        tokenStarted = true;
+        continue;
+      }
+      current += char;
+      tokenStarted = true;
+      continue;
+    }
+
     if (char === "'" || char === "\"") {
       quote = char;
+      tokenStarted = true;
+      continue;
+    }
+
+    if (char === "\\") {
+      if (nextChar && (/\s/.test(nextChar) || nextChar === "\"" || nextChar === "'" || nextChar === "\\")) {
+        current += nextChar;
+        tokenStarted = true;
+        index += 1;
+        continue;
+      }
+      current += "\\";
       tokenStarted = true;
       continue;
     }
@@ -149,6 +173,10 @@ function parseCommandParts(commandLine) {
 
     current += char;
     tokenStarted = true;
+  }
+
+  if (quote) {
+    throw new Error(`Invalid command line: unterminated ${quote === "\"" ? "double" : "single"} quote`);
   }
 
   if (tokenStarted) {
@@ -262,6 +290,10 @@ async function inferRuntimeBackendFromCommand(commandLine, options = {}) {
 
 export function isBuiltInRuntimeBackend(backend) {
   return BUILT_IN_RUNTIME_BACKEND_SET.has(normalizeRuntimeBackendName(backend));
+}
+
+export function isCommandOptionalBuiltInRuntimeBackend(backend) {
+  return COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKEND_SET.has(normalizeRuntimeBackendName(backend));
 }
 
 function readConfigEnvValue(configFilePath, key) {
@@ -523,6 +555,14 @@ export async function resolveConfiguredRuntimeBackend(backend, allowCliList, opt
     };
   }
 
+  if (!hasConfiguredEntry && isCommandOptionalBuiltInRuntimeBackend(resolvedBackend)) {
+    return {
+      requestedBackend: normalizedBackend,
+      runtimeBackend: resolvedBackend,
+      commandLine: "",
+    };
+  }
+
   if (!hasConfiguredEntry && !isBuiltInRuntimeBackend(resolvedBackend) && await isRuntimeSupportedBackend(resolvedBackend, options)) {
     return {
       requestedBackend: normalizedBackend,
@@ -586,11 +626,21 @@ export async function listAdvertisedBackends(allowCliList, options = {}) {
   const externalBackends = discoveredExternalBackends.filter(
     (backend) => !shadowedExternalBackends.has(backend) && !explicitlyConfiguredBackends.has(backend),
   );
-  const supportedBackends = [...new Set([...advertisedConfiguredBackends, ...externalBackends])];
 
   for (const backend of externalBackends) {
     runtimeBackendMap[backend] = backend;
   }
+
+  const commandOptionalBuiltIns = BUILT_IN_RUNTIME_BACKENDS.filter(
+    (backend) => isCommandOptionalBuiltInRuntimeBackend(backend) && !runtimeBackendMap[backend],
+  );
+  for (const backend of commandOptionalBuiltIns) {
+    runtimeBackendMap[backend] = backend;
+  }
+
+  const supportedBackends = [
+    ...new Set([...advertisedConfiguredBackends, ...externalBackends, ...commandOptionalBuiltIns]),
+  ];
 
   return {
     configuredBackends: advertisedConfiguredBackends,

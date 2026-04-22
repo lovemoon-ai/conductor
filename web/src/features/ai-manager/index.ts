@@ -5,6 +5,7 @@ export type {
   CodexQuota,
   ClaudeQuota,
   KimiQuota,
+  CopilotQuota,
   StatusResponse,
   QuotaResponse,
   AccountsResponse,

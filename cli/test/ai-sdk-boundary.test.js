@@ -55,6 +55,21 @@ describe("ai-sdk boundary", () => {
     await session.close();
   });
 
+  it("creates a copilot session without exposing provider-specific helpers", async () => {
+    const session = aiSdk.createAiSession("copilot", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+    });
+
+    await session.readyPromise;
+    assert.equal(session.threadOptions.model, "copilot");
+    assert.equal(session.usesSessionFileReplyStream(), true);
+    assert.equal(session.getSnapshot().backend, "copilot");
+    assert.equal(session.getSnapshot().provider, "copilot-sdk");
+
+    await session.close();
+  });
+
   it("creates a kimi session without exposing provider-specific helpers", async () => {
     const session = aiSdk.createAiSession("kimi", {
       cwd: process.cwd(),

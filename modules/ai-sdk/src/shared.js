@@ -64,29 +64,14 @@ export function parseCommandParts(commandLine) {
   const parts = [];
   let current = "";
   let quote = "";
-  let escaping = false;
   let tokenStarted = false;
 
-  for (const char of normalized) {
-    if (escaping) {
-      current += char;
-      escaping = false;
-      tokenStarted = true;
-      continue;
-    }
+  for (let index = 0; index < normalized.length; index += 1) {
+    const char = normalized[index];
+    const nextChar = normalized[index + 1];
 
-    if (char === "\\") {
-      if (quote === "'") {
-        current += char;
-      } else {
-        escaping = true;
-      }
-      tokenStarted = true;
-      continue;
-    }
-
-    if (quote) {
-      if (char === quote) {
+    if (quote === "'") {
+      if (char === "'") {
         quote = "";
       } else {
         current += char;
@@ -95,8 +80,41 @@ export function parseCommandParts(commandLine) {
       continue;
     }
 
+    if (quote === "\"") {
+      if (char === "\"") {
+        quote = "";
+        continue;
+      }
+      if (char === "\\") {
+        if (nextChar === "\"" || nextChar === "\\") {
+          current += nextChar;
+          tokenStarted = true;
+          index += 1;
+          continue;
+        }
+        current += "\\";
+        tokenStarted = true;
+        continue;
+      }
+      current += char;
+      tokenStarted = true;
+      continue;
+    }
+
     if (char === "'" || char === "\"") {
       quote = char;
+      tokenStarted = true;
+      continue;
+    }
+
+    if (char === "\\") {
+      if (nextChar && (/\s/.test(nextChar) || nextChar === "\"" || nextChar === "'" || nextChar === "\\")) {
+        current += nextChar;
+        tokenStarted = true;
+        index += 1;
+        continue;
+      }
+      current += "\\";
       tokenStarted = true;
       continue;
     }
@@ -111,11 +129,6 @@ export function parseCommandParts(commandLine) {
     }
 
     current += char;
-    tokenStarted = true;
-  }
-
-  if (escaping) {
-    current += "\\";
     tokenStarted = true;
   }
 
@@ -189,6 +202,14 @@ export function proxyToEnv(envConfig) {
     }
   }
   return env;
+}
+
+export function withoutCopilotGithubTokenEnv(env) {
+  const next = env && typeof env === "object" ? { ...env } : {};
+  for (const key of ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]) {
+    delete next[key];
+  }
+  return next;
 }
 
 export function serializeError(error) {

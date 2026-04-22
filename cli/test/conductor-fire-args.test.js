@@ -59,7 +59,7 @@ describe("conductor-fire defaults", () => {
     const configPath = path.join(tempDir, "config.yaml");
     fs.writeFileSync(
       configPath,
-      "allow_cli_list:\n  copilot: copilot --allow-all-paths --allow-all-tools\n  codex: codex --dangerously-bypass-approvals-and-sandbox\n",
+      "allow_cli_list:\n  copilot: copilot\n  codex: codex --dangerously-bypass-approvals-and-sandbox\n",
       "utf8",
     );
 
@@ -73,7 +73,7 @@ describe("conductor-fire defaults", () => {
       "bug",
     ]);
 
-    assert.equal(args.backend, "codex");
+    assert.equal(args.backend, "copilot");
   });
 
   it("respects explicit --backend even when not first", async () => {
@@ -290,30 +290,69 @@ describe("conductor-fire defaults", () => {
     );
   });
 
-  it("rejects unsupported backends even when they appear in allow_cli_list", async () => {
+  it("accepts built-in copilot when it appears in allow_cli_list", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
     const configPath = path.join(tempDir, "config.yaml");
     fs.writeFileSync(
       configPath,
-      "allow_cli_list:\n  copilot: copilot --allow-all-paths --allow-all-tools\n  codex: codex --dangerously-bypass-approvals-and-sandbox\n",
+      "allow_cli_list:\n  copilot: copilot\n  codex: codex --dangerously-bypass-approvals-and-sandbox\n",
       "utf8",
     );
 
-    await assert.rejects(
-      () =>
-        parseCliArgs([
-          "node",
-          "conductor-fire",
-          "--config-file",
-          configPath,
-          "--backend",
-          "copilot",
-          "--",
-          "fix",
-          "bug",
-        ]),
-      /Unsupported backend "copilot"/,
-    );
+    const args = await parseCliArgs([
+      "node",
+      "conductor-fire",
+      "--config-file",
+      configPath,
+      "--backend",
+      "copilot",
+      "--",
+      "fix",
+      "bug",
+    ]);
+
+    assert.equal(args.backend, "copilot");
+    assert.equal(args.sessionBackend, "copilot");
+  });
+
+  it("accepts built-in copilot even when allow_cli_list is empty", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(configPath, "allow_cli_list: {}\n", "utf8");
+
+    const args = await parseCliArgs([
+      "node",
+      "conductor-fire",
+      "--config-file",
+      configPath,
+      "--backend",
+      "copilot",
+      "--",
+      "fix",
+      "bug",
+    ]);
+
+    assert.equal(args.backend, "copilot");
+    assert.equal(args.sessionBackend, "copilot");
+  });
+
+  it("defaults to built-in copilot when no configured backend entries exist", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(configPath, "allow_cli_list: {}\n", "utf8");
+
+    const args = await parseCliArgs([
+      "node",
+      "conductor-fire",
+      "--config-file",
+      configPath,
+      "--",
+      "fix",
+      "bug",
+    ]);
+
+    assert.equal(args.backend, "copilot");
+    assert.equal(args.sessionBackend, "copilot");
   });
 
   it("falls back to discovered external backends when allow_cli_list has no supported entries", async () => {
@@ -324,7 +363,7 @@ describe("conductor-fire defaults", () => {
         configPath,
         [
           "allow_cli_list:",
-          "  copilot: copilot --allow-all-paths --allow-all-tools",
+          "  qwen: qwen --foo",
           "envs:",
           `  AISDK_PROVIDER_PATH: ${FIXTURE_EXTERNAL_PROVIDER}`,
           "",

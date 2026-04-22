@@ -117,6 +117,20 @@ describe("ai-sdk worker boundary", () => {
     await session.close();
   });
 
+  it("creates worker-backed copilot sessions without booting a turn", async () => {
+    const session = createAiSession("copilot", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+    });
+
+    assert.ok(session instanceof RemoteAiSession);
+    await waitFor(() => session.getSnapshot().workerReady === true);
+    assert.equal(session.getSnapshot().provider, "copilot-sdk");
+    assert.equal(session.threadOptions.model, "copilot");
+
+    await session.close();
+  });
+
   it("creates worker-backed kimi sessions without booting a turn", async () => {
     const session = createAiSession("kimi", {
       cwd: process.cwd(),

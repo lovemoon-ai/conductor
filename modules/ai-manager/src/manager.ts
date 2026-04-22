@@ -6,6 +6,7 @@ import { checkNetwork, checkNetworkAll } from "./network.ts";
 import { getCodexQuota, type GetCodexQuotaOptions } from "./quota/codex.ts";
 import { getClaudeQuota, type GetClaudeQuotaOptions } from "./quota/claude.ts";
 import { getKimiQuota, type GetKimiQuotaOptions } from "./quota/kimi.ts";
+import { getCopilotQuota, type GetCopilotQuotaOptions } from "./quota/copilot.ts";
 import { DEFAULT_CODEX_AUTH, DEFAULT_CONDUCTOR_CONFIG } from "./paths.ts";
 import type {
   AiManagerConfig,
@@ -13,6 +14,7 @@ import type {
   CodexQuota,
   ClaudeQuota,
   KimiQuota,
+  CopilotQuota,
   InstallStatus,
   NetworkStatus,
   SwitchResult,
@@ -98,6 +100,10 @@ export class AiManager {
 
   getKimiQuota(opts?: GetKimiQuotaOptions): Promise<KimiQuota> {
     return getKimiQuota(opts);
+  }
+
+  getCopilotQuota(opts?: GetCopilotQuotaOptions): Promise<CopilotQuota> {
+    return getCopilotQuota(opts);
   }
 
   async listCodexAccounts(): Promise<CodexAccount[]> {

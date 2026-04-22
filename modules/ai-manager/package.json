@@ -1,7 +1,7 @@
 {
   "name": "@love-moon/ai-manager",
   "version": "0.2.39",
-  "description": "Manage local AI CLI tools (codex, claude): install/network health, quota, and codex account switching",
+  "description": "Manage local AI CLI tools (codex, claude, kimi, copilot): install/network health, quota, and codex account switching",
   "publishConfig": {
     "access": "public"
   },
@@ -21,6 +21,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@github/copilot-sdk": "^0.2.2",
     "tslib": "^2.6.2",
     "yaml": "^2.5.1",
     "@types/node": "^20.19.25",

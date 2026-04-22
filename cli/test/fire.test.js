@@ -368,10 +368,11 @@ describe("conductor-fire backends", () => {
         "test-external": "test-external --profile fast",
         "yaml-list-external": "yaml-list-cli",
       });
-      assert.deepEqual(advertisedBackends.supportedBackends, ["test-external", "yaml-list-external"]);
+      assert.deepEqual(advertisedBackends.supportedBackends, ["test-external", "yaml-list-external", "copilot"]);
       assert.deepEqual(advertisedBackends.runtimeBackendMap, {
         "test-external": "test-external",
         "yaml-list-external": "yaml-list-external",
+        "copilot": "copilot",
       });
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -397,10 +398,11 @@ describe("conductor-fire backends", () => {
       }, { configFilePath: configPath });
       const advertisedBackends = await listAdvertisedBackends(allowCliList, { configFilePath: configPath });
 
-      assert.deepEqual(advertisedBackends.supportedBackends, ["my-external"]);
+      assert.deepEqual(advertisedBackends.supportedBackends, ["my-external", "copilot"]);
       assert.deepEqual(advertisedBackends.externalBackends, []);
       assert.deepEqual(advertisedBackends.runtimeBackendMap, {
         "my-external": "test-external",
+        "copilot": "copilot",
       });
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -631,6 +633,57 @@ describe("conductor-fire backends", () => {
     assert.equal(result.resumeContext, null);
     assert.equal(result.runtimeProjectPath, "/tmp/opencode-resume-cwd");
     assert.ok(messages.some((message) => message.includes("CONDUCTOR_RESUME_CWD")));
+  });
+
+  it("preserves the requested backend alias when resolving resume context", async () => {
+    let resolvedBackend = null;
+
+    const result = await bootstrapResumeContextForFire({
+      backend: "copilot-enterprise",
+      resumeSessionId: "session-copilot-alias-1",
+      env: {},
+      resolveResumeContextFn: async (backend, sessionId) => {
+        resolvedBackend = backend;
+        return {
+          provider: "copilot",
+          sessionId,
+          sessionPath: null,
+          cwd: "/tmp/copilot-alias-workspace",
+        };
+      },
+      applyWorkingDirectoryFn: async (targetPath) => targetPath,
+      logger: () => {},
+    });
+
+    assert.equal(resolvedBackend, "copilot-enterprise");
+    assert.equal(result.resumeContext?.provider, "copilot");
+    assert.equal(result.runtimeProjectPath, "/tmp/copilot-alias-workspace");
+  });
+
+  it("falls back to session backend when bootstrapping resume without requested backend", async () => {
+    let resolvedBackend = null;
+
+    const result = await bootstrapResumeContextForFire({
+      backend: "",
+      sessionBackend: "copilot",
+      resumeSessionId: "session-copilot-session-backend-1",
+      env: {},
+      resolveResumeContextFn: async (backend, sessionId) => {
+        resolvedBackend = backend;
+        return {
+          provider: "copilot",
+          sessionId,
+          sessionPath: null,
+          cwd: "/tmp/copilot-session-backend-workspace",
+        };
+      },
+      applyWorkingDirectoryFn: async (targetPath) => targetPath,
+      logger: () => {},
+    });
+
+    assert.equal(resolvedBackend, "copilot");
+    assert.equal(result.resumeContext?.provider, "copilot");
+    assert.equal(result.runtimeProjectPath, "/tmp/copilot-session-backend-workspace");
   });
 
   it("uses resume runtime path basename as default task title", () => {
