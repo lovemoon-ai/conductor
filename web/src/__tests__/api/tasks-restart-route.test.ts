@@ -36,6 +36,7 @@ vi.mock("@/lib/db", () => ({
     },
     sharedTask: {
       deleteMany: vi.fn(),
+      findUnique: vi.fn(),
       upsert: vi.fn(),
     },
     user: {
@@ -119,6 +120,7 @@ describe("/api/tasks/[taskId]/restart", () => {
       { id: "agent-1", host: "daemon-1", supportedBackends: ["codex", "claude", "kimi", "opencode"], capabilities: [] },
     ] as any);
     vi.mocked(db.sharedTask.deleteMany).mockResolvedValue({ count: 0 } as any);
+    vi.mocked(db.sharedTask.findUnique).mockResolvedValue(null as any);
     vi.mocked(db.sharedTask.upsert).mockResolvedValue({
       id: "shared-1",
       taskId: "task-1",
@@ -664,6 +666,114 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(forkPayload.payload.resume_context_url).toMatch(
       /^https?:\/\/[^/]+\/share\//,
     );
+  });
+
+  it("reuses the existing resume-handoff token when it is still fresh enough (double-click safety)", async () => {
+    const now = Date.now();
+    vi.mocked(db.sharedTask.findUnique).mockResolvedValueOnce({
+      id: "shared-existing",
+      taskId: "task-1",
+      userId: "user-1",
+      kind: "resume_handoff",
+      token: "still-fresh-token-xyz",
+      // 20h remaining — well above the 12h reuse window.
+      expiresAt: new Date(now + 20 * 60 * 60 * 1000),
+      createdAt: new Date(now - 4 * 60 * 60 * 1000),
+    } as any);
+    vi.mocked(db.sharedTask.upsert).mockResolvedValueOnce({
+      id: "shared-existing",
+      taskId: "task-1",
+      userId: "user-1",
+      kind: "resume_handoff",
+      token: "still-fresh-token-xyz",
+      expiresAt: new Date(now + 24 * 60 * 60 * 1000),
+      createdAt: new Date(now - 4 * 60 * 60 * 1000),
+    } as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { backend_type: "claude" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    await extractJson(response);
+
+    expect(response.status).toBe(200);
+    const upsertCall = vi.mocked(db.sharedTask.upsert).mock.calls.at(-1)?.[0] as any;
+    // The `update:` branch must not rotate the token when the existing one is
+    // still fresh; it should only bump the expiresAt.
+    expect(upsertCall.update).toEqual({ expiresAt: expect.any(Date) });
+    expect(upsertCall.update).not.toHaveProperty("token");
+  });
+
+  it("rotates the resume-handoff token when the existing token is close to expiry", async () => {
+    const now = Date.now();
+    vi.mocked(db.sharedTask.findUnique).mockResolvedValueOnce({
+      id: "shared-stale",
+      taskId: "task-1",
+      userId: "user-1",
+      kind: "resume_handoff",
+      token: "about-to-expire",
+      // 1h remaining — below the 12h reuse window.
+      expiresAt: new Date(now + 60 * 60 * 1000),
+      createdAt: new Date(now - 23 * 60 * 60 * 1000),
+    } as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { backend_type: "claude" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    await extractJson(response);
+
+    expect(response.status).toBe(200);
+    const upsertCall = vi.mocked(db.sharedTask.upsert).mock.calls.at(-1)?.[0] as any;
+    // Rotation branch: the `update` must include a fresh token.
+    expect(upsertCall.update).toHaveProperty("token");
+    expect(upsertCall.update.token).toEqual(expect.any(String));
+    expect(upsertCall.update.token).not.toBe("about-to-expire");
+  });
+
+  it("refuses fork restart in production when PUBLIC_BACKEND_URL is not configured", async () => {
+    const prevEnv = process.env.NODE_ENV;
+    const prevPublic = process.env.PUBLIC_BACKEND_URL;
+    const prevNextPublic = process.env.NEXT_PUBLIC_URL;
+    const prevBackend = process.env.BACKEND_URL;
+    // Node guards `process.env.NODE_ENV` against `Object.defineProperty`, but
+    // plain assignment works — vitest already swaps it back after the test
+    // run, and we restore it in `finally` to avoid leaking to other tests.
+    (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+    delete process.env.PUBLIC_BACKEND_URL;
+    delete process.env.NEXT_PUBLIC_URL;
+    delete process.env.BACKEND_URL;
+
+    try {
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: { backend_type: "claude" },
+        }),
+        { params: Promise.resolve({ taskId: "task-1" }) },
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(500);
+      expect(data.error).toMatch(/PUBLIC_BACKEND_URL/);
+      expect(db.sharedTask.upsert).not.toHaveBeenCalled();
+      expect(db.agentOutbox.create).not.toHaveBeenCalled();
+      expect(db.task.create).not.toHaveBeenCalled();
+    } finally {
+      (process.env as Record<string, string | undefined>).NODE_ENV = prevEnv;
+      if (prevPublic !== undefined) process.env.PUBLIC_BACKEND_URL = prevPublic;
+      if (prevNextPublic !== undefined) process.env.NEXT_PUBLIC_URL = prevNextPublic;
+      if (prevBackend !== undefined) process.env.BACKEND_URL = prevBackend;
+    }
   });
 
   it("returns 500 and skips outbox dispatch when minting the resume-handoff share fails", async () => {

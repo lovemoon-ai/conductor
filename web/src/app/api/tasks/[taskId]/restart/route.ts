@@ -1,7 +1,10 @@
 import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
-import { resolvePublicBackendUrl } from "@/lib/auth/config-utils";
+import {
+  hasConfiguredPublicBackendUrl,
+  resolvePublicBackendUrl,
+} from "@/lib/auth/config-utils";
 import { db } from "@/lib/db";
 import { deliverAgentOutboxForHost } from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
@@ -429,6 +432,21 @@ export async function POST(
   // URL the daemon would only be able to produce a doomed-to-fail successor,
   // so we surface the real cause to the caller instead of writing a half-baked
   // outbox event and a confusing "resume_context_url missing" failure later.
+  //
+  // In production, the public backend URL MUST come from an env var — falling
+  // back to `request.nextUrl.origin` can yield an internal host (e.g.
+  // `http://127.0.0.1:3000` behind a reverse proxy) that a daemon on a
+  // different machine cannot reach. Refuse rather than ship a broken URL.
+  if (process.env.NODE_ENV === "production" && !hasConfiguredPublicBackendUrl()) {
+    return NextResponse.json(
+      {
+        error:
+          "Server is missing PUBLIC_BACKEND_URL (or NEXT_PUBLIC_URL / BACKEND_URL). A publicly-reachable base URL is required to mint the resume-handoff share link used by cross-backend restart.",
+      },
+      { status: 500 },
+    );
+  }
+
   let resumeContextUrl: string;
   try {
     const { token } = await createInternalResumeHandoffShare({

@@ -12,6 +12,14 @@ export const SHARED_TASK_KIND_RESUME_HANDOFF = "resume_handoff";
 // than necessary.
 const RESUME_HANDOFF_TTL_MS = 24 * 60 * 60 * 1000;
 
+// If a previous handoff token for the same (task, user) still has at least
+// this much life left, reuse it instead of rotating. Rotating a token that
+// just shipped inside an outbox event would invalidate the URL the
+// not-yet-spawned successor is about to fetch — a real race on double-click
+// restarts. Reuse inside the freshness window keeps that window small for
+// the attacker while keeping double-click behavior correct.
+const RESUME_HANDOFF_REUSE_WINDOW_MS = 12 * 60 * 60 * 1000;
+
 /**
  * Single source of truth for share-token generation. Both user-facing share
  * links (`/api/tasks/[taskId]/share`) and internal resume-handoff links
@@ -31,6 +39,12 @@ export function generateShareToken(): string {
  * This replaces low-level JSONL session translation: instead of rewriting
  * the source backend's session file into the target's native format, we
  * hand the target a URL it can pull as plain-text context.
+ *
+ * Token rotation policy: we rotate the token on every restart *unless* the
+ * existing token is still reasonably fresh (>= RESUME_HANDOFF_REUSE_WINDOW_MS
+ * remaining). Reusing inside the freshness window avoids a race where a
+ * double-click restart invalidates the URL that the first restart's outbox
+ * event is about to deliver.
  */
 export async function createInternalResumeHandoffShare(params: {
   taskId: string;
@@ -51,6 +65,21 @@ export async function createInternalResumeHandoffShare(params: {
     },
   });
 
+  const existing = await db.sharedTask.findUnique({
+    where: {
+      taskId_userId_kind: {
+        taskId: params.taskId,
+        userId: params.ownerUserId,
+        kind: SHARED_TASK_KIND_RESUME_HANDOFF,
+      },
+    },
+  });
+
+  const existingRemainingMs =
+    existing?.expiresAt ? existing.expiresAt.getTime() - now.getTime() : 0;
+  const shouldReuseExistingToken =
+    Boolean(existing) && existingRemainingMs >= RESUME_HANDOFF_REUSE_WINDOW_MS;
+
   const shared = await db.sharedTask.upsert({
     where: {
       taskId_userId_kind: {
@@ -59,12 +88,14 @@ export async function createInternalResumeHandoffShare(params: {
         kind: SHARED_TASK_KIND_RESUME_HANDOFF,
       },
     },
-    update: {
-      expiresAt,
-      // Rotate the token every time we refresh, so a leaked handoff URL from a
-      // previous restart cannot be reused indefinitely.
-      token: generateShareToken(),
-    },
+    update: shouldReuseExistingToken
+      ? { expiresAt }
+      : {
+          expiresAt,
+          // Rotate the token when it is close to expiry, so a leaked
+          // handoff URL does not live indefinitely across many restarts.
+          token: generateShareToken(),
+        },
     create: {
       taskId: params.taskId,
       userId: params.ownerUserId,
@@ -81,7 +112,9 @@ export async function createInternalResumeHandoffShare(params: {
 }
 
 export function buildResumeHandoffUrl(baseUrl: string, token: string): string {
-  const trimmed = baseUrl.replace(/\/$/, "");
+  // Strip ALL trailing slashes so a misconfigured env var like
+  // `https://host/` or `https://host///` still yields a clean URL.
+  const trimmed = baseUrl.replace(/\/+$/, "");
   return `${trimmed}/share/${encodeURIComponent(token)}/plain`;
 }
 
@@ -164,6 +197,23 @@ export async function loadSharedTask(token: string): Promise<SharedTaskLookupRes
   };
 }
 
+// Fence markers wrap the conversation body so a consumer (human or AI) can
+// tell where untrusted historical content starts and ends. The strings are
+// deliberately distinctive so they rarely collide with real prose; any
+// occurrence INSIDE a message is neutralized (see stripTranscriptFenceTokens)
+// to prevent a malicious user from "closing" the fence early and injecting
+// post-fence instructions that a cross-backend resume might otherwise honor.
+export const TRANSCRIPT_FENCE_BEGIN = "<<<CONDUCTOR_TRANSCRIPT_BEGIN>>>";
+export const TRANSCRIPT_FENCE_END = "<<<CONDUCTOR_TRANSCRIPT_END>>>";
+
+function stripTranscriptFenceTokens(input: string): string {
+  // Preserve the surrounding text but break up the marker so it cannot be
+  // mistaken for a real fence delimiter by a downstream parser or LLM.
+  return input
+    .replace(/<<<CONDUCTOR_TRANSCRIPT_BEGIN>>>/g, "<<<CONDUCTOR_TRANSCRIPT_BEGIN_>>>")
+    .replace(/<<<CONDUCTOR_TRANSCRIPT_END>>>/g, "<<<CONDUCTOR_TRANSCRIPT_END_>>>");
+}
+
 export function buildSharedPlainText(payload: SharedTaskPayload): string {
   const header = [
     `Title: ${payload.task.title}`,
@@ -171,6 +221,7 @@ export function buildSharedPlainText(payload: SharedTaskPayload): string {
     payload.task.expiresAt ? `Share Expires: ${new Date(payload.task.expiresAt).toISOString()}` : null,
     "",
     "Conversation:",
+    TRANSCRIPT_FENCE_BEGIN,
   ].filter(Boolean);
 
   const body = payload.messages.map((message) => {
@@ -178,8 +229,8 @@ export function buildSharedPlainText(payload: SharedTaskPayload): string {
       message.role === "user" ? "User"
       : message.role === "assistant" ? "Assistant"
       : "System";
-    return `${roleLabel}: ${message.content.trim()}`;
+    return `${roleLabel}: ${stripTranscriptFenceTokens(message.content.trim())}`;
   });
 
-  return [...header, ...body].join("\n\n").trim();
+  return [...header, ...body, TRANSCRIPT_FENCE_END].join("\n\n").trim();
 }

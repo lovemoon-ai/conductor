@@ -3532,6 +3532,18 @@ describe("Daemon", () => {
     assert.ok(/codex/i.test(prompt), "handoff prompt should mention the source backend");
     assert.ok(/claude/i.test(prompt), "handoff prompt should mention the target backend");
     assert.ok(!argsRest.includes("--resume"), "fork mode must not pass --resume");
+    // Prompt-injection defense: the prompt must reference the transcript
+    // fence markers and frame fenced content as historical data, not as
+    // instructions directed at the new assistant.
+    assert.ok(
+      prompt.includes("CONDUCTOR_TRANSCRIPT_BEGIN") &&
+        prompt.includes("CONDUCTOR_TRANSCRIPT_END"),
+      "handoff prompt should reference the transcript fence markers",
+    );
+    assert.ok(
+      /historical|not\s+instructions/i.test(prompt),
+      "handoff prompt should frame fenced content as historical data, not live instructions",
+    );
     assert.strictEqual(spawnCalls[0].opts.cwd, "/tmp/handoff-cwd");
     assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_TASK_ID, "task-successor-1");
     assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_RESUME_CWD, "/tmp/handoff-cwd");
