@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PACKAGE_NAME="${CONDUCTOR_CLI_PACKAGE_NAME:-@love-moon/conductor-cli}"
-NODE_VERSION="${CONDUCTOR_BUNDLED_NODE_VERSION:-20.18.0}"
+NODE_VERSION="${CONDUCTOR_BUNDLED_NODE_VERSION:-23.11.0}"
 HOMEBREW_FORMULA="${CONDUCTOR_HOMEBREW_FORMULA:-lovemoon-ai/tap/conductor}"
 OUTPUT_DIR="${4:-$ROOT_DIR/cli/dist/release}"
 
