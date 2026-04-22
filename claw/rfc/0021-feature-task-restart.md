@@ -16,7 +16,7 @@ Superseded (2026-04-22)
 > token, 7d hard cap) and passes its `/share/<token>/plain` URL to the
 > successor CLI as a prompt. The target AI fetches the transcript itself.
 >
-> **Backend-agnostic as of commit `<follow-up>`.** The old design limited
+> **Backend-agnostic as of commit `815c028` (2026-04-22).** The old design limited
 > cross-backend restart to a hardcoded set (`codex / claude / kimi`)
 > because ai-bridge only knew how to translate those JSONL formats. The
 > share-link handoff has no such constraint: any pair of backends that
