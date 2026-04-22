@@ -2,7 +2,36 @@
 
 ## Status
 
-Proposed
+Superseded (2026-04-22)
+
+> **Superseded by share-link handoff.** The cross-backend path described
+> here (using `@love-moon/ai-bridge` to translate the source backend's
+> JSONL session into the target backend's native session, then
+> `--resume <synthesized-id>`) was retired in commit `34ae838` because
+> it was fragile (schema drift, broken parentUuid chains, silent
+> failures, sticky to the source daemon's local disk).
+>
+> The current implementation mints a short-lived internal share of the
+> source task (`SharedTask.kind = "resume_handoff"`, 24h TTL, rotating
+> token, 7d hard cap) and passes its `/share/<token>/plain` URL to the
+> successor CLI as a prompt. The target AI fetches the transcript itself.
+>
+> **Backend-agnostic as of commit `815c028` (2026-04-22).** The old design limited
+> cross-backend restart to a hardcoded set (`codex / claude / kimi`)
+> because ai-bridge only knew how to translate those JSONL formats. The
+> share-link handoff has no such constraint: any pair of backends that
+> the target daemon advertises as `supportedBackends` can be paired,
+> including `opencode` and any custom provider registered via
+> `AISDK_PROVIDER_PATH`. The only runtime requirement on the target
+> backend is that its CLI can perform an HTTP fetch — a capability every
+> mainstream coding assistant (Claude Code, Codex, Kimi CLI, OpenCode)
+> ships by default. If the fetch fails at runtime, the handoff prompt
+> explicitly tells the target AI to ask the user for a recap, so the
+> failure mode is visible and graceful.
+>
+> The `resume_inplace` (same-backend) flow described below is unchanged
+> and still authoritative. Only the cross-backend translation step is
+> obsolete.
 
 ## Owner
 

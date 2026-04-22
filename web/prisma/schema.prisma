@@ -36,6 +36,7 @@ model User {
   externalAccounts ExternalAccount[]
   channelConversations ChannelConversation[]
   channelProviderConfigs ChannelProviderConfig[]
+  sharedTasks SharedTask[]
   invitedBy User? @relation("UserInvites", fields: [invitedByUserId], references: [id])
   invitedUsers User[] @relation("UserInvites")
 
@@ -276,13 +277,18 @@ model SharedTask {
   taskId    String    @map("task_id")
   userId    String    @map("user_id")
   token     String    @unique
+  /// "user" for human-facing shares; "resume_handoff" for internal transcripts
+  /// that a successor backend fetches during cross-backend restart.
+  kind      String    @default("user")
   expiresAt DateTime? @map("expires_at")
   createdAt DateTime  @default(now()) @map("created_at")
 
   task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([taskId, userId])
+  @@unique([taskId, userId, kind])
   @@index([taskId])
+  @@index([userId])
   @@map("shared_tasks")
 }
 

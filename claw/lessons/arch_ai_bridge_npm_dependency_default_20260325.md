@@ -1,5 +1,12 @@
 # AI bridge local path fallback bug
 
+> **Historical / superseded (2026-04-22).** The `@love-moon/ai-bridge`
+> integration described here was removed in commit `34ae838`. Cross-
+> backend task restart no longer translates JSONL sessions; it now hands
+> the successor backend a `/share/<token>/plain` URL to fetch. See
+> `claw/rfc/0021-feature-task-restart.md` for the current design notes
+> and the supersession banner. The lesson is preserved for context.
+
 ## Symptom
 - The CLI daemon defaulted to a developer-local absolute ai-bridge path.
 - Restart flows that relied on ai-bridge could fail outside the original developer machine unless `CONDUCTOR_AI_BRIDGE_API_PATH` was manually set.

@@ -50,3 +50,19 @@ export const resolvePublicBackendUrl = (fallbackOrigin?: string): string => {
 
   return fallbackOrigin || "http://localhost:6152";
 };
+
+/**
+ * True when the public backend URL is sourced from an explicit env var rather
+ * than from the request origin fallback. Callers that mint URLs which must be
+ * reachable from a different host (e.g. a daemon running on a remote machine)
+ * should refuse to proceed in production unless this returns true, otherwise
+ * the resulting URL may point at an internal `127.0.0.1:3000` that the daemon
+ * cannot reach.
+ */
+export const hasConfiguredPublicBackendUrl = (): boolean => {
+  const configured =
+    process.env.NEXT_PUBLIC_URL ||
+    process.env.PUBLIC_BACKEND_URL ||
+    process.env.BACKEND_URL;
+  return typeof configured === "string" && configured.trim().length > 0;
+};

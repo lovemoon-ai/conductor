@@ -89,17 +89,21 @@ describe("/api/tasks/[taskId]/share", () => {
         where: {
           userId: "user-1",
           taskId: "task-1",
+          kind: "user",
           expiresAt: { lte: new Date("2026-04-10T12:00:00.000Z") },
         },
       });
       expect(db.sharedTask.upsert).toHaveBeenCalledWith({
-        where: { taskId_userId: { taskId: "task-1", userId: "user-1" } },
+        where: {
+          taskId_userId_kind: { taskId: "task-1", userId: "user-1", kind: "user" },
+        },
         update: {
           expiresAt: new Date("2026-04-17T12:00:00.000Z"),
         },
         create: {
           taskId: "task-1",
           userId: "user-1",
+          kind: "user",
           token: expect.any(String),
           expiresAt: new Date("2026-04-17T12:00:00.000Z"),
         },
@@ -181,7 +185,7 @@ describe("/api/tasks/[taskId]/share", () => {
 
       expect(response.status).toBe(204);
       expect(db.sharedTask.deleteMany).toHaveBeenCalledWith({
-        where: { taskId: "task-1", userId: "user-1" },
+        where: { taskId: "task-1", userId: "user-1", kind: "user" },
       });
     });
   });

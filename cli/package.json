@@ -17,7 +17,6 @@
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "@love-moon/ai-bridge": "0.1.4",
     "@love-moon/ai-manager": "0.2.39",
     "@love-moon/ai-sdk": "0.2.39",
     "@love-moon/conductor-sdk": "0.2.39",

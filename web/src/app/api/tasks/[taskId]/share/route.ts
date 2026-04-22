@@ -1,13 +1,9 @@
-import { randomBytes } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
+import { generateShareToken, SHARED_TASK_KIND_USER } from "@/lib/tasks/shared-task";
 
 const SHARE_LINK_TTL_DAYS = 7;
-
-function generateToken(): string {
-  return randomBytes(16).toString("base64url");
-}
 
 function buildShareExpiration(from = new Date()): Date {
   return new Date(from.getTime() + SHARE_LINK_TTL_DAYS * 24 * 60 * 60 * 1000);
@@ -38,17 +34,25 @@ export async function POST(
       where: {
         userId: user.id,
         taskId,
+        kind: SHARED_TASK_KIND_USER,
         expiresAt: { lte: now },
       },
     });
 
     const shared = await db.sharedTask.upsert({
-      where: { taskId_userId: { taskId, userId: user.id } },
+      where: {
+        taskId_userId_kind: {
+          taskId,
+          userId: user.id,
+          kind: SHARED_TASK_KIND_USER,
+        },
+      },
       update: { expiresAt },
       create: {
         taskId,
         userId: user.id,
-        token: generateToken(),
+        kind: SHARED_TASK_KIND_USER,
+        token: generateShareToken(),
         expiresAt,
       },
     });
@@ -75,7 +79,7 @@ export async function DELETE(
   const { taskId } = await params;
 
   const deleted = await db.sharedTask.deleteMany({
-    where: { taskId, userId: user.id },
+    where: { taskId, userId: user.id, kind: SHARED_TASK_KIND_USER },
   });
 
   if (deleted.count === 0) {

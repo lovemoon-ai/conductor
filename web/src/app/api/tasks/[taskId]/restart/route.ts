@@ -1,10 +1,18 @@
 import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
+import {
+  hasConfiguredPublicBackendUrl,
+  resolvePublicBackendUrl,
+} from "@/lib/auth/config-utils";
 import { db } from "@/lib/db";
 import { deliverAgentOutboxForHost } from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { serializeTaskResponse } from "@/lib/tasks/serialization";
+import {
+  buildResumeHandoffUrl,
+  createInternalResumeHandoffShare,
+} from "@/lib/tasks/shared-task";
 import {
   applyLegacyTaskShape,
   isMissingAnyNewSchemaError,
@@ -373,10 +381,6 @@ export async function POST(
   }
   const supportedBackends = Array.isArray(restartAgent.supportedBackends) ? restartAgent.supportedBackends : [];
   const restartAgentCapabilities = Array.isArray(restartAgent.capabilities) ? restartAgent.capabilities : [];
-  const runtimeBackendMap =
-    restartAgent.runtimeBackendMap && typeof restartAgent.runtimeBackendMap === "object"
-      ? restartAgent.runtimeBackendMap
-      : undefined;
   if (!supportedBackends.includes(targetBackend)) {
     return NextResponse.json(
       { error: `Daemon ${restartAgentHost} does not support backend ${targetBackend}` },
@@ -509,10 +513,7 @@ export async function POST(
     );
   }
 
-  if (!isInplaceRestart && !canCreateSuccessorTask(sourceBackend, targetBackend, {
-    sourceRuntimeBackendMap: runtimeBackendMap,
-    targetRuntimeBackendMap: runtimeBackendMap,
-  })) {
+  if (!isInplaceRestart && !canCreateSuccessorTask(sourceBackend, targetBackend)) {
     return NextResponse.json(
       { error: `Backend switch ${sourceBackend} -> ${targetBackend} is not supported` },
       { status: 409 },
@@ -600,6 +601,46 @@ export async function POST(
     ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
   };
 
+  // Generate a short-lived handoff share so the successor backend can pull the
+  // prior conversation as plain text — this replaces brittle JSONL session
+  // translation (ai-bridge) with a semantic resume. Fail fast: without this
+  // URL the daemon would only be able to produce a doomed-to-fail successor,
+  // so we surface the real cause to the caller instead of writing a half-baked
+  // outbox event and a confusing "resume_context_url missing" failure later.
+  //
+  // In production, the public backend URL MUST come from an env var — falling
+  // back to `request.nextUrl.origin` can yield an internal host (e.g.
+  // `http://127.0.0.1:3000` behind a reverse proxy) that a daemon on a
+  // different machine cannot reach. Refuse rather than ship a broken URL.
+  if (process.env.NODE_ENV === "production" && !hasConfiguredPublicBackendUrl()) {
+    return NextResponse.json(
+      {
+        error:
+          "Server is missing PUBLIC_BACKEND_URL (or NEXT_PUBLIC_URL / BACKEND_URL). A publicly-reachable base URL is required to mint the resume-handoff share link used by cross-backend restart.",
+      },
+      { status: 500 },
+    );
+  }
+
+  let resumeContextUrl: string;
+  try {
+    const { token } = await createInternalResumeHandoffShare({
+      taskId: sourceTask.id,
+      ownerUserId: user.id,
+    });
+    const baseUrl = resolvePublicBackendUrl(request.nextUrl.origin);
+    resumeContextUrl = buildResumeHandoffUrl(baseUrl, token);
+  } catch (error) {
+    console.error("[restart] failed to mint resume-handoff share", error);
+    return NextResponse.json(
+      {
+        error:
+          "Failed to prepare resume context for the successor backend. Please retry; if this persists, check server logs for the share-link error.",
+      },
+      { status: 500 },
+    );
+  }
+
   const createdTask = await db.$transaction(async (tx) => {
     if (inheritedWorktreeLaunchConfig) {
       await acquireTaskWorktreeMutationLock(
@@ -664,6 +705,9 @@ export async function POST(
               Object.keys(successorLaunchConfig).length > 0
                 ? successorLaunchConfig
                 : undefined,
+            // Plain-text transcript URL the successor backend should fetch as
+            // its resume context (replaces JSONL session translation).
+            resume_context_url: resumeContextUrl,
             request_id: requestId,
           },
         }),

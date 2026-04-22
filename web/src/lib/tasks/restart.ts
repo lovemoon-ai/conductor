@@ -1,14 +1,6 @@
 import type { TaskStatus, RestartStrategy, RestartResultMode } from "@/shared/types";
 
 export type { RestartStrategy, RestartResultMode } from "@/shared/types";
-export type RestartRuntimeBackendMap = Record<string, string>;
-export type RestartCompatibilityOptions = {
-  sourceRuntimeBackendMap?: RestartRuntimeBackendMap | null;
-  targetRuntimeBackendMap?: RestartRuntimeBackendMap | null;
-};
-export type RestartBackendListOptions = {
-  runtimeBackendMap?: RestartRuntimeBackendMap | null;
-};
 
 export const STOPPED_TASK_STATUSES = new Set<TaskStatus>(["completed", "killed", "unknown"]);
 export const RESTARTABLE_SOURCE_STATUSES = new Set<TaskStatus>([
@@ -17,38 +9,6 @@ export const RESTARTABLE_SOURCE_STATUSES = new Set<TaskStatus>([
   "killed",
   "unknown",
 ]);
-export const BRIDGEABLE_BACKENDS = new Set(["codex", "claude", "kimi"]);
-const RESTART_BACKEND_ALIASES = new Map([
-  ["code", "codex"],
-  ["claude-code", "claude"],
-  ["kimi-cli", "kimi"],
-  ["kimi-code", "kimi"],
-]);
-
-export const normalizeRestartBackend = (
-  backend: string,
-  runtimeBackendMap?: RestartRuntimeBackendMap | null,
-): string => {
-  const normalized = typeof backend === "string" ? backend.trim().toLowerCase() : "";
-  if (!normalized) {
-    return "";
-  }
-  const aliasedBackend = RESTART_BACKEND_ALIASES.get(normalized);
-  if (aliasedBackend) {
-    return aliasedBackend;
-  }
-  const mappedRuntimeBackend =
-    runtimeBackendMap && typeof runtimeBackendMap[normalized] === "string"
-      ? runtimeBackendMap[normalized].trim().toLowerCase()
-      : "";
-  if (mappedRuntimeBackend) {
-    return RESTART_BACKEND_ALIASES.get(mappedRuntimeBackend) ?? mappedRuntimeBackend;
-  }
-  if (BRIDGEABLE_BACKENDS.has(normalized)) {
-    return normalized;
-  }
-  return normalized;
-};
 
 export const normalizeRestartStrategy = (value: unknown): RestartStrategy | null => {
   if (typeof value !== "string") {
@@ -64,23 +24,22 @@ export const normalizeRestartStrategy = (value: unknown): RestartStrategy | null
   return null;
 };
 
-export const canBridgeBackends = (
-  sourceBackend: string,
-  targetBackend: string,
-  options: RestartCompatibilityOptions = {},
-): boolean =>
-  BRIDGEABLE_BACKENDS.has(normalizeRestartBackend(sourceBackend, options.sourceRuntimeBackendMap)) &&
-  BRIDGEABLE_BACKENDS.has(normalizeRestartBackend(targetBackend, options.targetRuntimeBackendMap));
-
+/**
+ * Whether the server is willing to create a successor task across the given
+ * backend pair. Since the share-link handoff is backend-agnostic (the target
+ * AI just fetches a plain-text transcript URL), the only architectural
+ * requirement here is that both backend names are non-empty.
+ *
+ * The ACTUAL per-pair reachability gate lives in the restart route, which
+ * checks `supportedBackends.includes(targetBackend)` against the live
+ * daemon agent. This function is the named extension point if we ever want
+ * to add server-side policy (e.g., "backend X has no webfetch capability,
+ * cannot be a handoff target"); today it's intentionally permissive.
+ */
 export const canCreateSuccessorTask = (
   sourceBackend: string,
   targetBackend: string,
-  options: RestartCompatibilityOptions = {},
-): boolean =>
-  sourceBackend === targetBackend ||
-  normalizeRestartBackend(sourceBackend, options.sourceRuntimeBackendMap) ===
-    normalizeRestartBackend(targetBackend, options.targetRuntimeBackendMap) ||
-  canBridgeBackends(sourceBackend, targetBackend, options);
+): boolean => Boolean(sourceBackend) && Boolean(targetBackend);
 
 export const canInplaceRestart = (
   status: TaskStatus | string,
@@ -88,14 +47,15 @@ export const canInplaceRestart = (
   targetBackend: string,
 ): boolean => STOPPED_TASK_STATUSES.has(status as TaskStatus) && sourceBackend === targetBackend;
 
+/**
+ * Filter the daemon's advertised backend list to those that are valid
+ * successor targets for this source. In practice this just strips empty
+ * strings, but the indirection keeps the UI symmetric with the API route
+ * (both go through `canCreateSuccessorTask`) so a future policy tweak
+ * lands in one place.
+ */
 export const getCompatibleRestartBackends = (
   sourceBackend: string,
   supportedBackends: string[],
-  options: RestartBackendListOptions = {},
 ): string[] =>
-  supportedBackends.filter((backend) =>
-    canCreateSuccessorTask(sourceBackend, backend, {
-      sourceRuntimeBackendMap: options.runtimeBackendMap,
-      targetRuntimeBackendMap: options.runtimeBackendMap,
-    })
-  );
+  supportedBackends.filter((backend) => canCreateSuccessorTask(sourceBackend, backend));
