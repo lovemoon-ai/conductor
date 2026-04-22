@@ -11,7 +11,7 @@ You are the release agent for the conductor repository. The goal is to release a
 - Homebrew CLI archives are produced by `.github/workflows/cli-release-archives.yml` and are triggered by pushing a `vX.Y.Z` tag. Do not push the tag until the npm packages for that exact version are visible on `registry.npmjs.org`, because the archive workflow installs `@love-moon/conductor-cli@X.Y.Z` from npm.
 - The repository tracks `cli/Formula/conductor.rb.template`, not the generated `cli/Formula/conductor.rb`. The generated Formula must be rendered only after release archives and their real sha256 files exist.
 - GitHub Release notes are extracted from the matching `CHANGELOG.md` section by `scripts/extract-changelog-release-notes.sh`; the archive workflow must fail rather than publish generated notes if the changelog section is missing.
-- Updating `lovemoon-ai/homebrew-tap` is part of the archive workflow. The conductor repository must have a `HOMEBREW_TAP_TOKEN` secret with `Contents: Read and write` permission on `lovemoon-ai/homebrew-tap`.
+- `lovemoon-ai/homebrew-tap` is **updated manually** by the release agent after the archive workflow finishes. The conductor workflow only produces `conductor.rb` and attaches it to the GitHub Release; it no longer pushes to the tap and no longer requires a `HOMEBREW_TAP_TOKEN` secret on the conductor repo.
 ## Suggested workflow
 1. First locate the latest `bomp to x.y.z` or `release x.y.z` commit.
 2. Use `git log <last_bump>..HEAD --oneline` to summarize the commits included in this version.
@@ -51,25 +51,61 @@ You are the release agent for the conductor repository. The goal is to release a
      - `conductor-v<x.y.z>-linux-x64.tar.gz`
      - `conductor-v<x.y.z>-linux-x64.tar.gz.sha256`
      - `conductor.rb`
-10. Verify the Homebrew tap update after the archive workflow succeeds:
-   - The workflow should commit the generated `conductor.rb` into `lovemoon-ai/homebrew-tap/Formula/conductor.rb`.
-   - If the workflow cannot update the tap, check that the `HOMEBREW_TAP_TOKEN` secret exists and can write to `lovemoon-ai/homebrew-tap`.
-   - As a manual fallback, use the generated `conductor.rb` from the GitHub Release or workflow artifact.
+10. Manually update the Homebrew tap after the archive workflow succeeds:
+   - Wait until the `Build CLI Release Archives` workflow for `v<x.y.z>` is green AND the GitHub Release has `conductor.rb` plus all 8 archive / sha256 assets.
    - Do not hand-edit `cli/Formula/conductor.rb`; update `cli/Formula/conductor.rb.template` only when the Formula structure changes.
-   - Copy it into the tap repository as `Formula/conductor.rb`.
-   - Commit and push the tap update.
-   - Verify at least the current local platform with `brew install lovemoon-ai/tap/conductor` and `conductor --version`.
+   - Clone (or refresh) the tap with a remote that your SSH key can push to; `lovemoon-ai/homebrew-tap` uses the same GitHub org as the conductor repo, so use the same SSH host alias you use for the conductor remote:
+     ```bash
+     target_version=x.y.z
+     tmp_dir=$(mktemp -d)
+     git clone git@github-dang217:lovemoon-ai/homebrew-tap.git "$tmp_dir/homebrew-tap"
+     cd "$tmp_dir/homebrew-tap"
+     ```
+   - Download the rendered `conductor.rb` from the GitHub Release and drop it in:
+     ```bash
+     curl -fsSL "https://github.com/lovemoon-ai/conductor/releases/download/v$target_version/conductor.rb" \
+       -o Formula/conductor.rb
+     ruby -c Formula/conductor.rb
+     ```
+   - Cross-check the four `sha256` lines in the formula against the `.sha256` files on the GitHub Release (guards against mismatched or stale uploads):
+     ```bash
+     for plat in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+       rb_sha=$(grep -A1 "conductor-v#{version}-$plat\.tar\.gz\"" Formula/conductor.rb | grep sha256 | sed 's/.*"\(.*\)".*/\1/')
+       rel_sha=$(curl -fsSL "https://github.com/lovemoon-ai/conductor/releases/download/v$target_version/conductor-v$target_version-$plat.tar.gz.sha256" | awk '{print $1}')
+       [ "$rb_sha" = "$rel_sha" ] && echo "OK $plat" || { echo "MISMATCH $plat rb=$rb_sha rel=$rel_sha"; exit 1; }
+     done
+     ```
+   - Commit and push to the tap:
+     ```bash
+     git add Formula/conductor.rb
+     git commit -m "conductor $target_version"
+     git push origin main
+     ```
+   - Verify on the remote side (do NOT trust `raw.githubusercontent.com` — that CDN can serve a stale copy; use the GitHub API or the web UI):
+     ```bash
+     curl -fsS -H "Accept: application/vnd.github+json" \
+       "https://api.github.com/repos/lovemoon-ai/homebrew-tap/commits?per_page=1" \
+       | python3 -c "import json,sys; c=json.load(sys.stdin)[0]; print(c['sha'][:7], c['commit']['message'].split(chr(10))[0])"
+     ```
    - Before running `brew install`, make sure no conductor daemon / fire process is still running from a previous brew install — a live daemon that gets its Cellar path removed (by later `brew uninstall` or `brew upgrade`) becomes a zombie: it stays connected but every child spawn fails with `ENOENT`, which breaks kill/restart for every task bound to it.
+   - If `lovemoon-ai/tap` is already tapped locally, Homebrew's cache of the tap clone can be stale; refresh it before `brew install` or the install will pick up the previous version:
+     ```bash
+     tap_path=$(brew --repository lovemoon-ai/tap)
+     (cd "$tap_path" && git fetch origin main && git reset --hard origin/main)
+     ```
+     (If the tap is not tapped yet, a plain `brew install lovemoon-ai/tap/conductor` will clone it fresh and you can skip this.)
+   - Verify at least the current local platform: `brew install lovemoon-ai/tap/conductor` and `conductor --version` should print the new `x.y.z`.
    - Keep brew installed conductor.
 11. After npm and CLI archives are successfully released, press `claw/sop/deploy-to-prod.md` to deploy production:
    - Determine whether `web/package.json` / `web/pnpm-lock.yaml` is involved
    - Determine whether Prisma schema / migrations are involved
    - Perform production deployments and health checks
-12. If the CLI archive workflow or Homebrew tap update fails:
-   - First check whether the exact npm package version exists on `registry.npmjs.org`.
+12. If the CLI archive workflow fails:
+   - First check whether the exact npm package version exists on `registry.npmjs.org` — `@love-moon/conductor-cli@<version>` must be published, because the archive workflow installs it from npm.
    - Check the failed matrix platform logs, especially `node-pty` verification and bundled Node download failures.
    - Make the minimal fix on `origin/main`, then move the tag only if the original tag points at a broken release commit and the user explicitly approves retagging.
-   - Do not declare Homebrew release success until the GitHub Release assets and tap formula both point to the same version.
+   - The archive workflow no longer pushes to `lovemoon-ai/homebrew-tap`; a tap push failure is now impossible from CI. If the manual tap push in step 10 fails, the typical causes are: wrong SSH remote host alias (needs the same alias used for the conductor repo), missing write access on `lovemoon-ai/homebrew-tap`, or a non-fast-forward because someone else updated the tap in parallel — pull with `--ff-only` and retry.
+   - Do not declare Homebrew release success until the GitHub Release assets, the tap formula, and `brew install` + `conductor --version` all point to the same version.
 13. If production deployment fails:
    - First reproduce and locate the failure
    - Make minimal repairs- If the fix involves code changes, submit it first and push it to `origin/main`
@@ -141,7 +177,7 @@ You are the release agent for the conductor repository. The goal is to release a
 2. There is a `release x.y.z` commit on `origin/main`.
 3. There is a `vX.Y.Z` tag on the release commit, and the `Build CLI Release Archives` workflow has succeeded.
 4. The GitHub Release contains all four platform archives, their `.sha256` files, and `conductor.rb`.
-5. The Homebrew tap formula has been updated and verified on at least one local platform.
+5. The Homebrew tap formula has been updated **manually** (a new commit on `lovemoon-ai/homebrew-tap` whose subject is `conductor <x.y.z>`) and verified on at least one local platform with `brew install lovemoon-ai/tap/conductor` + `conductor --version`.
 6. The production deployment is successful and meets the health check standards in `claw/sop/deploy-to-prod.md`.
 7. Final reply includes:- Final release commit hash- Git tag- CLI archive workflow URL/status- Homebrew tap commit hash- Production deployment commit hash- Whether `pnpm -C web install` was executed- Whether database migration was performed- Three local health check status codes-Whether artificial regression has been performed; if not, please explain clearly
 ## Output requirements
