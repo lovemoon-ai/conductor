@@ -143,17 +143,19 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   const runtime = useRuntimeStore((state) => state.byTask[taskId]);
   const clearRuntime = useRuntimeStore((state) => state.clearTask);
   const tasks = useTasksStore((state) => state.tasks);
+  const restartTask = useTasksStore((state) => state.restartTask);
   const websocketStatus = useWebSocketStore((state) => state.status);
   const task = tasks.find((t) => t.id === taskId);
   const isTaskRunning = task?.status === 'running';
   const [composerFeedback, setComposerFeedback] = useState<{
     code?: 'task_not_ready';
-    variant: 'warning' | 'error';
+    variant: 'info' | 'warning' | 'error';
     message: string;
   } | null>(null);
   const [interruptPending, setInterruptPending] = useState(false);
   const [interruptTargetReplyTo, setInterruptTargetReplyTo] = useState<string | null>(null);
   const [pendingInterruptReplyTo, setPendingInterruptReplyTo] = useState<string | null>(null);
+  const [restartPending, setRestartPending] = useState(false);
   const [resendRequest, setResendRequest] = useState<{
     id: number;
     content: string;
@@ -169,7 +171,19 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   const runtimeReplyTo =
     runtimeReplyInProgress && typeof runtime?.replyTo === 'string' ? runtime.replyTo.trim() : '';
   const activeInterruptReplyTo = runtimeReplyTo || interruptTargetReplyTo || '';
-  const interruptEnabled = Boolean(isTaskRunning && activeInterruptReplyTo);
+  const restartEnabled = Boolean(
+    task &&
+    (task.taskType ?? 'ai_task') === 'ai_task' &&
+    task.status === 'running' &&
+    !restartPending &&
+    !interruptPending,
+  );
+  const interruptEnabled = Boolean(isTaskRunning && activeInterruptReplyTo && !restartPending);
+  const showEmptyStateRestart = Boolean(
+    task &&
+    (task.taskType ?? 'ai_task') === 'ai_task' &&
+    task.status === 'running',
+  );
 
   const clearInterruptTimeout = useCallback(() => {
     if (interruptTimeoutRef.current === null) {
@@ -349,6 +363,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     setInterruptPending(false);
     setInterruptTargetReplyTo(null);
     setPendingInterruptReplyTo(null);
+    setRestartPending(false);
   }, [clearInterruptTimeout, taskId]);
 
   useEffect(() => {
@@ -396,6 +411,13 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
       });
       return;
     }
+    if (restartPending) {
+      setComposerFeedback({
+        variant: 'warning',
+        message: 'Wait for the task restart to finish before sending another message.',
+      });
+      return;
+    }
     if (!isTaskRunning) {
       setComposerFeedback({
         code: 'task_not_ready',
@@ -424,7 +446,48 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     }
   };
 
+  const handleRestart = useCallback(async () => {
+    if (interruptPending) {
+      setComposerFeedback({
+        variant: 'warning',
+        message: 'Wait for the current interrupt to finish before restarting the AI session.',
+      });
+      return;
+    }
+    if (!restartEnabled) {
+      return;
+    }
+
+    try {
+      setComposerFeedback({
+        variant: 'info',
+        message: 'Restarting the current AI session…',
+      });
+      setRestartPending(true);
+
+      await restartTask(taskId, {
+        restartMode: 'refresh_session',
+      });
+      clearRuntime(taskId);
+      setComposerFeedback(null);
+    } catch (error) {
+      setComposerFeedback({
+        variant: 'error',
+        message: error instanceof Error ? error.message : 'Failed to restart the AI task. Please try again.',
+      });
+    } finally {
+      setRestartPending(false);
+    }
+  }, [clearRuntime, interruptPending, restartEnabled, restartTask, taskId]);
+
   const handleInterrupt = useCallback(async () => {
+    if (restartPending) {
+      setComposerFeedback({
+        variant: 'warning',
+        message: 'Wait for the task restart to finish before interrupting another reply.',
+      });
+      return;
+    }
     const targetReplyTo = runtimeReplyTo || interruptTargetReplyTo || '';
     if (!targetReplyTo) {
       setComposerFeedback({
@@ -465,7 +528,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
         message: 'Failed to interrupt the current reply. Please try again in a moment.',
       });
     }
-  }, [clearInterruptTimeout, interruptTargetReplyTo, runtimeReplyTo, taskId]);
+  }, [clearInterruptTimeout, interruptTargetReplyTo, restartPending, runtimeReplyTo, taskId]);
 
   const handleResend = (content: string) => {
     resendRequestIdRef.current += 1;
@@ -517,6 +580,19 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
                   ? 'Ask Conductor what to do next, or paste a concrete task to get started.'
                   : 'The conversation history will appear here once the session is ready and messages start flowing.'}
               </p>
+              {showEmptyStateRestart ? (
+                <button
+                  type="button"
+                  data-testid="empty-state-restart"
+                  onClick={() => {
+                    void handleRestart();
+                  }}
+                  disabled={!restartEnabled}
+                  className="mt-5 inline-flex items-center justify-center rounded-xl border border-border bg-paper px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-border/35 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-paper"
+                >
+                  {restartPending ? 'Restarting AI session…' : 'Restart AI session'}
+                </button>
+              ) : null}
             </div>
           </div>
         ) : (
@@ -533,9 +609,14 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
                 key={message.id}
                 message={message}
                 onResend={handleResend}
+                onRestart={() => {
+                  void handleRestart();
+                }}
                 onInterrupt={() => {
                   void handleInterrupt();
                 }}
+                restartEnabled={restartEnabled}
+                restartPending={restartPending}
                 interruptEnabled={interruptEnabled}
                 interruptPending={interruptPending}
               />
@@ -565,7 +646,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
         onInterrupt={() => {
           void handleInterrupt();
         }}
-        sendDisabled={!isTaskRunning || interruptPending}
+        sendDisabled={!isTaskRunning || interruptPending || restartPending}
         interruptEnabled={interruptEnabled}
         interruptPending={interruptPending}
         autoFocus={autoFocusComposer}

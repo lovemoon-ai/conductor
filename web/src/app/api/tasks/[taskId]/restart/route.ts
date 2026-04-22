@@ -37,6 +37,18 @@ import {
 } from "@/lib/tasks/restart";
 
 const appendBackendSuffix = (title: string, backend: string): string => `${title} [${backend}]`;
+const REFRESH_SESSION_ACK_TIMEOUT_MS = 60_000;
+
+const normalizeRestartMode = (value: unknown): "refresh_session" | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "refresh_session" || normalized === "refreshsession") {
+    return "refresh_session";
+  }
+  return null;
+};
 
 const findRestartSourceTask = async (userId: string, taskId: string) =>
   withPtySchemaFallback(
@@ -210,23 +222,38 @@ export async function POST(
   const sourceTaskMetadata = parseJsonObject(sourceTask.metadata);
   const sourceMetadataDaemonHost = normalizeOptionalString(sourceTaskMetadata?.daemonName);
   const sourceExecutionHost = normalizeOptionalString(sourceTask.executionHost);
-  const manualFireDaemonHostCandidates: string[] = [];
-  for (const candidate of [
+  const sourceMetadataDaemonCandidate =
     sourceMetadataDaemonHost && !isConductorFireHost(sourceMetadataDaemonHost)
       ? sourceMetadataDaemonHost
-      : null,
+      : null;
+  const sourceExecutionDaemonHost =
     sourceExecutionHost && !isConductorFireHost(sourceExecutionHost)
       ? sourceExecutionHost
-      : null,
+      : null;
+  const projectDaemonCandidate =
     projectDaemonHost && !isConductorFireHost(projectDaemonHost)
       ? projectDaemonHost
-      : null,
+      : null;
+  const manualFireDaemonHostCandidates: string[] = [];
+  for (const candidate of [
+    sourceMetadataDaemonCandidate,
+    sourceExecutionDaemonHost,
+    projectDaemonCandidate,
   ]) {
     if (candidate && !manualFireDaemonHostCandidates.includes(candidate)) {
       manualFireDaemonHostCandidates.push(candidate);
     }
   }
-  const sourceExecutionDaemonHost = manualFireDaemonHostCandidates[0] ?? null;
+  const refreshSessionManualFireDaemonHostCandidates: string[] = [];
+  for (const candidate of [
+    sourceExecutionDaemonHost,
+    sourceExecutionDaemonHost ? null : sourceMetadataDaemonCandidate,
+  ]) {
+    if (candidate && !refreshSessionManualFireDaemonHostCandidates.includes(candidate)) {
+      refreshSessionManualFireDaemonHostCandidates.push(candidate);
+    }
+  }
+  const preferredManualFireDaemonHost = manualFireDaemonHostCandidates[0] ?? null;
 
   const hasExplicitBackendTarget =
     Object.prototype.hasOwnProperty.call(normalizedBody, "backend_type") ||
@@ -237,6 +264,15 @@ export async function POST(
     return NextResponse.json({ error: "invalid backend_type" }, { status: 400 });
   }
   const targetBackend = requestedBackend ?? sourceBackend;
+  const requestedRestartMode = normalizeRestartMode(
+    normalizedBody.restart_mode ?? normalizedBody.restartMode,
+  );
+  const hasExplicitRestartMode =
+    Object.prototype.hasOwnProperty.call(normalizedBody, "restart_mode") ||
+    Object.prototype.hasOwnProperty.call(normalizedBody, "restartMode");
+  if (hasExplicitRestartMode && !requestedRestartMode) {
+    return NextResponse.json({ error: "invalid restart_mode" }, { status: 400 });
+  }
   const requestedStrategy = normalizeRestartStrategy(normalizedBody.strategy ?? normalizedBody.restart_strategy);
   const hasExplicitStrategy =
     Object.prototype.hasOwnProperty.call(normalizedBody, "strategy") ||
@@ -257,11 +293,22 @@ export async function POST(
   }
 
   let restartAgentHost = isManualFireTask
-    ? manualFireDaemonHostCandidates.find((host) =>
+    ? (requestedRestartMode === "refresh_session"
+      ? refreshSessionManualFireDaemonHostCandidates
+      : manualFireDaemonHostCandidates
+    ).find((host) =>
         connectedAgents.some((agent) => agent.host === host),
-      ) ?? sourceExecutionDaemonHost
+      ) ?? (
+        requestedRestartMode === "refresh_session"
+          ? refreshSessionManualFireDaemonHostCandidates[0]
+          : preferredManualFireDaemonHost
+      )
     : sourceAgentHost;
-  if (projectDaemonHost) {
+  const shouldUseProjectDaemonBinding = Boolean(
+    projectDaemonHost &&
+    !(requestedRestartMode === "refresh_session" && isManualFireTask),
+  );
+  if (shouldUseProjectDaemonBinding && projectDaemonHost) {
     if (
       sourceAgentHost &&
       !isConductorFireHost(sourceAgentHost) &&
@@ -288,7 +335,7 @@ export async function POST(
   if (!restartAgent) {
     return NextResponse.json(
       {
-        error: projectDaemonHost
+        error: shouldUseProjectDaemonBinding
           ? `Project daemon ${restartAgentHost} is offline`
           : isManualFireTask
             ? `Original daemon ${restartAgentHost} is offline`
@@ -298,6 +345,7 @@ export async function POST(
     );
   }
   const supportedBackends = Array.isArray(restartAgent.supportedBackends) ? restartAgent.supportedBackends : [];
+  const restartAgentCapabilities = Array.isArray(restartAgent.capabilities) ? restartAgent.capabilities : [];
   const runtimeBackendMap =
     restartAgent.runtimeBackendMap && typeof restartAgent.runtimeBackendMap === "object"
       ? restartAgent.runtimeBackendMap
@@ -307,6 +355,123 @@ export async function POST(
       { error: `Daemon ${restartAgentHost} does not support backend ${targetBackend}` },
       { status: 409 },
     );
+  }
+
+  const requestId = randomUUID();
+  const now = new Date();
+
+  if (requestedRestartMode === "refresh_session") {
+    if (sourceStatus !== "running") {
+      return NextResponse.json(
+        { error: "Session refresh requires a running ai_task" },
+        { status: 409 },
+      );
+    }
+    if (hasExplicitStrategy) {
+      return NextResponse.json(
+        { error: "restart_mode refresh_session cannot be combined with strategy" },
+        { status: 400 },
+      );
+    }
+    if (targetBackend !== sourceBackend) {
+      return NextResponse.json(
+        { error: "Session refresh must reuse the current backend" },
+        { status: 409 },
+      );
+    }
+    if (!restartAgentCapabilities.includes("refresh_session_inplace")) {
+      return NextResponse.json(
+        { error: `Daemon ${restartAgentHost} does not support AI session refresh` },
+        { status: 409 },
+      );
+    }
+
+    await db.$transaction(async (tx) => {
+      if (inheritedWorktreeLaunchConfig) {
+        await acquireTaskWorktreeMutationLock(
+          tx as any,
+          sourceTask.id,
+        );
+      }
+
+      await tx.agentOutbox.create({
+        data: {
+          userId: user.id,
+          agentHost: restartAgentHost,
+          taskId: sourceTask.id,
+          eventType: "restart_task",
+          requestId,
+          payloadJson: JSON.stringify({
+            type: "restart_task",
+            payload: {
+              mode: "refresh_session_inplace",
+              source_task_id: sourceTask.id,
+              target_task_id: sourceTask.id,
+              project_id: sourceTask.projectId,
+              title: sourceTask.title,
+              source_backend_type: sourceBackend,
+              source_session_id: sourceSessionId,
+              source_session_file_path: sourceTask.sessionFilePath ?? undefined,
+              target_backend_type: sourceBackend,
+              target_launch_config: inheritedWorktreeLaunchConfig ?? undefined,
+              request_id: requestId,
+            },
+          }),
+          status: "pending",
+          attemptCount: 0,
+          nextRetryAt: null,
+        },
+      });
+    });
+
+    const restartAckPromise = realtimeHub.waitForAgentCommandAck(
+      sourceTask.id,
+      requestId,
+      REFRESH_SESSION_ACK_TIMEOUT_MS,
+      {
+        expectedHosts: [restartAgentHost],
+        eventType: "restart_task",
+      },
+    );
+    await deliverAgentOutboxForHost({
+      userId: user.id,
+      agentHost: restartAgentHost,
+      sendToAgentHost: ({ userId: targetUserId, agentHost, envelope }) =>
+        realtimeHub.sendToAgentHost(targetUserId, agentHost, envelope),
+      resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),
+    }).catch(() => {});
+    const restartAcked = await restartAckPromise;
+
+    if (restartAcked !== true) {
+      if (restartAcked === null) {
+        await db.agentOutbox.updateMany({
+          where: {
+            userId: user.id,
+            requestId,
+            status: { in: ["pending", "sent"] },
+          },
+          data: {
+            status: "failed",
+            nextRetryAt: null,
+            lastError: "ack_timeout:restart_task",
+          },
+        });
+      }
+      return NextResponse.json(
+        {
+          error: restartAcked === false
+            ? "AI session refresh was rejected by daemon"
+            : "Timed out waiting for AI session refresh",
+        },
+        { status: restartAcked === false ? 502 : 504 },
+      );
+    }
+
+    return NextResponse.json({
+      mode: "inplace_restart",
+      source_task_id: sourceTask.id,
+      task: serializeTaskResponse(sourceTask),
+    });
   }
 
   const strategy =
@@ -331,11 +496,6 @@ export async function POST(
       { status: 409 },
     );
   }
-
-
-  const requestId = randomUUID();
-  const now = new Date();
-
   if (isInplaceRestart) {
     const updatedTask = await db.$transaction(async (tx) => {
       if (inheritedWorktreeLaunchConfig) {

@@ -89,6 +89,45 @@ describe('MessageBubble', () => {
     expect(screen.queryByRole('button', { name: 'Resend message' })).not.toBeInTheDocument();
   });
 
+  it('calls onRestart from the message action sheet', () => {
+    const onRestart = vi.fn();
+    const { container } = render(
+      <MessageBubble
+        message={makeMessage({ role: 'assistant', content: 'restart this task' })}
+        onRestart={onRestart}
+        restartEnabled
+      />,
+    );
+
+    const bubble = container.querySelector('[role="button"]') as HTMLElement;
+    fireEvent.doubleClick(bubble);
+    expect(screen.getByRole('button', { name: 'Restart AI task' })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('message-bubble-restart-button'));
+
+    expect(onRestart).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('message-bubble-restart-button')).not.toBeInTheDocument();
+  });
+
+  it('disables the restart action while a restart is already pending', () => {
+    const onRestart = vi.fn();
+    const { container } = render(
+      <MessageBubble
+        message={makeMessage({ role: 'assistant', content: 'restart this task' })}
+        onRestart={onRestart}
+        restartEnabled
+        restartPending
+      />,
+    );
+
+    const bubble = container.querySelector('[role="button"]') as HTMLElement;
+    fireEvent.doubleClick(bubble);
+    const restartButton = screen.getByTestId('message-bubble-restart-button');
+
+    expect(restartButton).toBeDisabled();
+    fireEvent.click(restartButton);
+    expect(onRestart).not.toHaveBeenCalled();
+  });
+
   it('calls onInterrupt from the message action sheet', () => {
     const onInterrupt = vi.fn();
     const { container } = render(

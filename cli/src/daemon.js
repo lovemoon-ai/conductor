@@ -1418,6 +1418,8 @@ export function startDaemon(config = {}, deps = {}) {
   const activePtyRtcTransports = new Map();
   const suppressedExitStatusReports = new Set();
   const seenCommandRequestIds = new Set();
+  const completedCommandRequestAckResults = new Map();
+  const refreshSessionRestartTaskIds = new Set();
   let lastConnectedAt = null;
   let lastPongAt = null;
   let lastInboundAt = null;
@@ -1473,7 +1475,7 @@ export function startDaemon(config = {}, deps = {}) {
     "x-conductor-backends": SUPPORTED_BACKENDS.join(","),
     "x-conductor-version": cliVersion,
   };
-  const advertisedCapabilities = ["project_path_validation", "restart_daemon"];
+  const advertisedCapabilities = ["project_path_validation", "restart_daemon", "refresh_session_inplace"];
   if (ptyTaskCapabilityEnabled) {
     advertisedCapabilities.push("pty_task", "terminal_snapshot");
   }
@@ -2284,9 +2286,21 @@ export function startDaemon(config = {}, deps = {}) {
       const first = seenCommandRequestIds.values().next();
       if (!first.done) {
         seenCommandRequestIds.delete(first.value);
+        completedCommandRequestAckResults.delete(first.value);
       }
     }
     return true;
+  }
+
+  function rememberCommandRequestAckResult(requestId, accepted) {
+    if (!requestId) return;
+    completedCommandRequestAckResults.set(String(requestId), Boolean(accepted));
+    if (completedCommandRequestAckResults.size > 2000) {
+      const first = completedCommandRequestAckResults.keys().next();
+      if (!first.done) {
+        completedCommandRequestAckResults.delete(first.value);
+      }
+    }
   }
 
   function sendAgentCommandAck({ requestId, taskId, eventType, accepted = true }) {
@@ -3486,12 +3500,14 @@ export function startDaemon(config = {}, deps = {}) {
         return;
       }
       if (event.type === "restart_task") {
+        const restartMode = event?.payload?.mode ? String(event.payload.mode) : "";
         reportRestartFailure({
           taskId: event?.payload?.target_task_id ? String(event.payload.target_task_id) : "",
           projectId: event?.payload?.project_id ? String(event.payload.project_id) : "",
           requestId: event?.payload?.request_id ? String(event.payload.request_id) : "",
-          mode: event?.payload?.mode ? String(event.payload.mode) : "",
+          mode: restartMode,
           error: new Error("daemon shutting down"),
+          sendStatus: restartMode !== "refresh_session_inplace",
         });
         return;
       }
@@ -3837,7 +3853,7 @@ export function startDaemon(config = {}, deps = {}) {
   }
 
   function shouldDaemonReportFireChildTerminalStatus(record) {
-    return !Boolean(record?.managedByFireBridge);
+    return Boolean(record?.forceDaemonTerminalStatusReport) || !Boolean(record?.managedByFireBridge);
   }
 
   function handleStopTask(payload) {
@@ -3982,12 +3998,17 @@ export function startDaemon(config = {}, deps = {}) {
     return bridgeSessionHelperPromise;
   }
 
-  function reportRestartFailure({ taskId, projectId, requestId, mode, error, sendAck = true }) {
+  function reportRestartFailure({ taskId, projectId, requestId, mode, error, sendAck = true, sendStatus = true }) {
     const prefix =
       mode === "bridge_to_new_task" || mode === "fork_to_new_task"
         ? "new task failed"
+        : mode === "refresh_session_inplace"
+          ? "session refresh failed"
         : "restart failed";
     const summary = `${prefix}: ${error?.message || error}`;
+    if (mode === "refresh_session_inplace") {
+      rememberCommandRequestAckResult(requestId, false);
+    }
     if (sendAck) {
       sendAgentCommandAck({
         requestId,
@@ -3995,6 +4016,9 @@ export function startDaemon(config = {}, deps = {}) {
         eventType: "restart_task",
         accepted: false,
       }).catch(() => {});
+    }
+    if (!sendStatus) {
+      return;
     }
     client
       .sendJson({
@@ -4065,6 +4089,11 @@ export function startDaemon(config = {}, deps = {}) {
     });
     if (worktreeCwd) {
       return worktreeCwd;
+    }
+
+    const configuredCwd = normalizeOptionalString(launchConfig?.cwd);
+    if (configuredCwd) {
+      return configuredCwd;
     }
 
     const boundPath = await getProjectLocalPath(projectId);
@@ -4462,6 +4491,8 @@ export function startDaemon(config = {}, deps = {}) {
     const normalizedProjectId = projectId ? String(projectId) : "";
     const normalizedSourceSessionId = sourceSessionId ? String(sourceSessionId).trim() : "";
     const targetLaunchConfig = normalizeLaunchConfig(payload?.target_launch_config);
+    const isRefreshSessionInplace = normalizedMode === "refresh_session_inplace";
+    const deferAcceptedAckUntilSpawn = isRefreshSessionInplace;
 
     if (
       !normalizedMode ||
@@ -4484,11 +4515,14 @@ export function startDaemon(config = {}, deps = {}) {
       log(
         `Duplicate restart_task ignored for ${normalizedTargetTaskId} (request_id=${requestId})`,
       );
+      if (isRefreshSessionInplace && !completedCommandRequestAckResults.has(requestId)) {
+        return;
+      }
       sendAgentCommandAck({
         requestId,
         taskId: normalizedTargetTaskId,
         eventType: "restart_task",
-        accepted: true,
+        accepted: completedCommandRequestAckResults.get(requestId) ?? true,
       }).catch(() => {});
       return;
     }
@@ -4500,12 +4534,44 @@ export function startDaemon(config = {}, deps = {}) {
         requestId,
         mode: normalizedMode,
         error: new Error("daemon shutting down"),
+        sendStatus: !isRefreshSessionInplace,
       });
       return;
     }
 
+    if (isRefreshSessionInplace) {
+      if (refreshSessionRestartTaskIds.has(normalizedTargetTaskId)) {
+        reportRestartFailure({
+          taskId: normalizedTargetTaskId,
+          projectId: normalizedProjectId,
+          requestId,
+          mode: normalizedMode,
+          error: new Error("session refresh already in progress"),
+          sendStatus: false,
+        });
+        return;
+      }
+      refreshSessionRestartTaskIds.add(normalizedTargetTaskId);
+    }
+
+    let acceptedRestartAckSent = false;
+    let refreshStoppedActiveTask = false;
+    let startupTerminalStatusReported = false;
+    try {
     const activeTarget = activeTaskProcesses.get(normalizedTargetTaskId);
-    if (activeTarget?.child) {
+    if (isRefreshSessionInplace) {
+      if (!activeTarget?.child) {
+        reportRestartFailure({
+          taskId: normalizedTargetTaskId,
+          projectId: normalizedProjectId,
+          requestId,
+          mode: normalizedMode,
+          error: new Error("task is not active on this daemon"),
+          sendStatus: false,
+        });
+        return;
+      }
+    } else if (activeTarget?.child) {
       reportRestartFailure({
         taskId: normalizedTargetTaskId,
         projectId: normalizedProjectId,
@@ -4537,11 +4603,12 @@ export function startDaemon(config = {}, deps = {}) {
         requestId,
         mode: normalizedMode,
         error: new Error(`Unsupported backend: ${selectedBackend}`),
+        sendStatus: !isRefreshSessionInplace,
       });
       return;
     }
 
-    if (normalizedMode === "resume_inplace") {
+    if (normalizedMode === "resume_inplace" || normalizedMode === "refresh_session_inplace") {
       if (normalizedTargetTaskId !== normalizedSourceTaskId) {
         reportRestartFailure({
           taskId: normalizedTargetTaskId,
@@ -4549,6 +4616,7 @@ export function startDaemon(config = {}, deps = {}) {
           requestId,
           mode: normalizedMode,
           error: new Error("In-place restart must reuse the same task"),
+          sendStatus: !isRefreshSessionInplace,
         });
         return;
       }
@@ -4568,19 +4636,23 @@ export function startDaemon(config = {}, deps = {}) {
           requestId,
           mode: normalizedMode,
           error: new Error("In-place restart must reuse the same backend"),
+          sendStatus: !isRefreshSessionInplace,
         });
         return;
       }
     }
 
-    sendAgentCommandAck({
-      requestId,
-      taskId: normalizedTargetTaskId,
-      eventType: "restart_task",
-      accepted: true,
-    }).catch((err) => {
-      logError(`Failed to report agent_command_ack(restart_task) for ${normalizedTargetTaskId}: ${err?.message || err}`);
-    });
+    if (!deferAcceptedAckUntilSpawn) {
+      acceptedRestartAckSent = true;
+      sendAgentCommandAck({
+        requestId,
+        taskId: normalizedTargetTaskId,
+        eventType: "restart_task",
+        accepted: true,
+      }).catch((err) => {
+        logError(`Failed to report agent_command_ack(restart_task) for ${normalizedTargetTaskId}: ${err?.message || err}`);
+      });
+    }
 
     const normalizedSourceBackend = normalizeRuntimeBackendName(sourceBackendType);
     const configuredSourceBackend = await resolveConfiguredRuntimeBackend(normalizedSourceBackend, ALLOW_CLI_LIST, {
@@ -4625,7 +4697,10 @@ export function startDaemon(config = {}, deps = {}) {
           sessionId: bridgeResult.sessionId,
           sourceSessionFilePath: sourceSessionFilePath ? String(sourceSessionFilePath) : "",
         });
-      } else if (normalizedMode === "resume_inplace") {
+      } else if (
+        normalizedMode === "resume_inplace" ||
+        normalizedMode === "refresh_session_inplace"
+      ) {
         resolvedResumeCwd = await resolveRestartCwd({
           taskId: normalizedTargetTaskId,
           projectId: normalizedProjectId,
@@ -4644,7 +4719,8 @@ export function startDaemon(config = {}, deps = {}) {
         requestId,
         mode: normalizedMode,
         error,
-        sendAck: false,
+        sendAck: deferAcceptedAckUntilSpawn,
+        sendStatus: !isRefreshSessionInplace,
       });
       return;
     }
@@ -4656,7 +4732,8 @@ export function startDaemon(config = {}, deps = {}) {
         requestId,
         mode: normalizedMode,
         error: new Error("Could not resolve resume cwd"),
-        sendAck: false,
+        sendAck: deferAcceptedAckUntilSpawn,
+        sendStatus: !isRefreshSessionInplace,
       });
       return;
     }
@@ -4669,7 +4746,10 @@ export function startDaemon(config = {}, deps = {}) {
     );
     log(`CLI command: ${formatBackendLaunchCommand(cliCommand)}`);
 
-    if (normalizedMode !== "resume_inplace") {
+    if (
+      normalizedMode !== "resume_inplace" &&
+      normalizedMode !== "refresh_session_inplace"
+    ) {
       client
         .sendJson({
           type: "task_status_update",
@@ -4691,7 +4771,65 @@ export function startDaemon(config = {}, deps = {}) {
         requestId,
         mode: normalizedMode,
         error: new Error("daemon shutting down"),
-        sendAck: false,
+        sendAck: deferAcceptedAckUntilSpawn,
+        sendStatus: !isRefreshSessionInplace,
+      });
+      return;
+    }
+
+    if (isRefreshSessionInplace) {
+      const stopStarted = stopActiveTaskProcess(normalizedTargetTaskId, {
+        reason: "refresh_session_inplace",
+        suppressExitStatusReport: true,
+      });
+      if (!stopStarted) {
+        reportRestartFailure({
+          taskId: normalizedTargetTaskId,
+          projectId: normalizedProjectId,
+          requestId,
+          mode: normalizedMode,
+          error: new Error("task is not active on this daemon"),
+          sendAck: true,
+          sendStatus: false,
+        });
+        return;
+      }
+      const stopped = await waitForTaskToStop(normalizedTargetTaskId);
+      refreshStoppedActiveTask = true;
+      if (
+        !stopped &&
+        (activeTaskProcesses.has(normalizedTargetTaskId) || activePtySessions.has(normalizedTargetTaskId))
+      ) {
+        const activeRefreshTarget =
+          activeTaskProcesses.get(normalizedTargetTaskId) ||
+          activePtySessions.get(normalizedTargetTaskId) ||
+          null;
+        if (activeRefreshTarget && typeof activeRefreshTarget === "object") {
+          activeRefreshTarget.forceDaemonTerminalStatusReport = true;
+        }
+        suppressedExitStatusReports.delete(normalizedTargetTaskId);
+        reportRestartFailure({
+          taskId: normalizedTargetTaskId,
+          projectId: normalizedProjectId,
+          requestId,
+          mode: normalizedMode,
+          error: new Error("Timed out waiting for the active task to stop"),
+          sendAck: true,
+          sendStatus: false,
+        });
+        return;
+      }
+    }
+
+    if (daemonShuttingDown) {
+      reportRestartFailure({
+        taskId: normalizedTargetTaskId,
+        projectId: normalizedProjectId,
+        requestId,
+        mode: normalizedMode,
+        error: new Error("daemon shutting down"),
+        sendAck: deferAcceptedAckUntilSpawn,
+        sendStatus: !isRefreshSessionInplace || refreshStoppedActiveTask,
       });
       return;
     }
@@ -4708,26 +4846,30 @@ export function startDaemon(config = {}, deps = {}) {
         requestId,
         mode: normalizedMode,
         error: new Error(`Failed to ensure task workspace ${taskDir}: ${err?.message || err}`),
-        sendAck: false,
+        sendAck: deferAcceptedAckUntilSpawn,
       });
       return;
     }
 
+    const shouldResumeSession = true;
     const args = [];
     if (selectedBackend) {
       args.push("--backend", selectedBackend);
     }
-    args.push("--resume", resolvedResumeSessionId);
+    if (shouldResumeSession) {
+      args.push("--resume", resolvedResumeSessionId);
+    }
     args.push("--");
 
     const env = {
       ...process.env,
+      PWD: taskDir,
       CONDUCTOR_PROJECT_ID: normalizedProjectId,
       CONDUCTOR_TASK_ID: normalizedTargetTaskId,
       CONDUCTOR_LAUNCHED_BY_DAEMON: "1",
       ...(cliCommand ? { CONDUCTOR_CLI_COMMAND: cliCommand } : {}),
-      CONDUCTOR_RESUME_CWD: resolvedResumeCwd,
     };
+    env.CONDUCTOR_RESUME_CWD = resolvedResumeCwd;
     if (config.CONFIG_FILE) {
       env.CONDUCTOR_CONFIG = config.CONFIG_FILE;
     }
@@ -4758,30 +4900,21 @@ export function startDaemon(config = {}, deps = {}) {
     }
 
     log(`Task title: ${title || normalizedTargetTaskId}`);
+    if (normalizedMode === "refresh_session_inplace") {
+      log(`Refreshing source session: ${normalizedSourceSessionId}`);
+    }
     log(`Resume session: ${resolvedResumeSessionId}`);
     log(`Resume cwd: ${resolvedResumeCwd}`);
     log(`Logs: ${logPath}`);
 
-    activeTaskProcesses.set(normalizedTargetTaskId, {
+    const activeProcessRecord = {
       child,
       projectId: normalizedProjectId,
       logPath,
       stopForceKillTimer: null,
       managedByFireBridge: true,
-    });
-
-    client
-      .sendJson({
-        type: "task_status_update",
-        payload: {
-          task_id: normalizedTargetTaskId,
-          project_id: normalizedProjectId,
-          status: "RUNNING",
-        },
-      })
-      .catch((err) => {
-        logError(`Failed to report task status (RUNNING) for ${normalizedTargetTaskId}: ${err?.message || err}`);
-      });
+    };
+    activeTaskProcesses.set(normalizedTargetTaskId, activeProcessRecord);
 
     if (child.stdout && typeof child.stdout.pipe === "function" && logStream) {
       child.stdout.pipe(logStream, { end: false });
@@ -4830,7 +4963,13 @@ export function startDaemon(config = {}, deps = {}) {
           ? "completed"
           : `exited with code ${code}`;
 
-      if (!suppressExitStatusReport && shouldDaemonReportFireChildTerminalStatus(active)) {
+      const shouldReportTerminalStatus =
+        !suppressExitStatusReport &&
+        (!acceptedRestartAckSent || shouldDaemonReportFireChildTerminalStatus(active));
+      if (shouldReportTerminalStatus) {
+        if (!acceptedRestartAckSent) {
+          startupTerminalStatusReported = true;
+        }
         client
           .sendJson({
             type: "task_status_update",
@@ -4843,9 +4982,64 @@ export function startDaemon(config = {}, deps = {}) {
           })
           .catch((err) => {
             logError(`Failed to report task status (${status}) for ${normalizedTargetTaskId}: ${err?.message || err}`);
-          });
+        });
       }
     });
+
+    await client
+      .sendJson({
+        type: "task_status_update",
+        payload: {
+          task_id: normalizedTargetTaskId,
+          project_id: normalizedProjectId,
+          status: "RUNNING",
+        },
+      })
+      .catch((err) => {
+        logError(`Failed to report task status (RUNNING) for ${normalizedTargetTaskId}: ${err?.message || err}`);
+      });
+
+    if (deferAcceptedAckUntilSpawn) {
+      const currentActive = activeTaskProcesses.get(normalizedTargetTaskId);
+      if (!currentActive || currentActive.child !== child) {
+        reportRestartFailure({
+          taskId: normalizedTargetTaskId,
+          projectId: normalizedProjectId,
+          requestId,
+          mode: normalizedMode,
+          error: new Error("replacement session exited before startup completed"),
+          sendAck: true,
+          sendStatus: !startupTerminalStatusReported,
+        });
+        return;
+      }
+
+      rememberCommandRequestAckResult(requestId, true);
+      acceptedRestartAckSent = true;
+      await sendAgentCommandAck({
+        requestId,
+        taskId: normalizedTargetTaskId,
+        eventType: "restart_task",
+        accepted: true,
+      }).catch((err) => {
+        logError(`Failed to report agent_command_ack(restart_task) for ${normalizedTargetTaskId}: ${err?.message || err}`);
+      });
+    }
+    } catch (error) {
+      reportRestartFailure({
+        taskId: normalizedTargetTaskId,
+        projectId: normalizedProjectId,
+        requestId,
+        mode: normalizedMode,
+        error,
+        sendAck: !acceptedRestartAckSent,
+        sendStatus: !isRefreshSessionInplace || refreshStoppedActiveTask,
+      });
+    } finally {
+      if (isRefreshSessionInplace) {
+        refreshSessionRestartTaskIds.delete(normalizedTargetTaskId);
+      }
+    }
   }
 
   let closePromise = null;
@@ -4942,7 +5136,7 @@ export function startDaemon(config = {}, deps = {}) {
   return {
     close: () => {
       detachProcessHandlers();
-      void shutdownDaemon();
+      return shutdownDaemon();
     },
   };
 }

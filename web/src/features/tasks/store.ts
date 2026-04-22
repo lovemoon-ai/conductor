@@ -140,213 +140,227 @@ const upsertTask = (tasks: Task[], task: Task, options?: { moveToFront?: boolean
   return next;
 };
 
-export const useTasksStore = create<TasksState>()((set, get) => ({
-  tasks: [],
-  isLoading: false,
-  error: null,
-  currentProjectFilter: null,
-  unreadTaskIds: new Set(),
+export const useTasksStore = create<TasksState>()((set, get) => {
+  const syncTask = (task: Task, options?: { moveToFront?: boolean }) => {
+    set((state) => ({
+      tasks: upsertTask(state.tasks, task, options),
+      error: null,
+    }));
+  };
 
-  fetchTasks: async (projectId, options) => {
-    const requestId = ++fetchTasksRequestSequence;
-    const requestedProjectId = projectId ?? null;
-    set({ isLoading: true, error: null });
-    try {
-      const api = getApiClient();
-      const query = new URLSearchParams();
-      const recoverStale = options?.recoverStale ?? true;
-      if (projectId) {
-        query.set('project_id', projectId);
+  const fetchTaskStrict = async (taskId: string) => {
+    const api = getApiClient();
+    const task = normalizeTask(await api.get<Task>(`/tasks/${taskId}?recover_stale=1`));
+    syncTask(task);
+    return task;
+  };
+
+  return ({
+    tasks: [],
+    isLoading: false,
+    error: null,
+    currentProjectFilter: null,
+    unreadTaskIds: new Set(),
+
+    fetchTasks: async (projectId, options) => {
+      const requestId = ++fetchTasksRequestSequence;
+      const requestedProjectId = projectId ?? null;
+      set({ isLoading: true, error: null });
+      try {
+        const api = getApiClient();
+        const query = new URLSearchParams();
+        const recoverStale = options?.recoverStale ?? true;
+        if (projectId) {
+          query.set('project_id', projectId);
+        }
+        if (recoverStale) {
+          query.set('recover_stale', '1');
+        }
+        const suffix = query.toString() ? `?${query.toString()}` : '';
+        const tasks = await api.get<Task[]>(`/tasks${suffix}`);
+        if (get().currentProjectFilter !== requestedProjectId || requestId !== fetchTasksRequestSequence) {
+          return;
+        }
+        set({ tasks: tasks.map(normalizeTask), isLoading: false });
+      } catch (error) {
+        if (get().currentProjectFilter !== requestedProjectId || requestId !== fetchTasksRequestSequence) {
+          return;
+        }
+        set({
+          isLoading: false,
+          error: error instanceof Error ? error.message : 'Failed to fetch tasks',
+        });
       }
-      if (recoverStale) {
-        query.set('recover_stale', '1');
+    },
+
+    fetchTask: async (taskId) => {
+      try {
+        const task = await fetchTaskStrict(taskId);
+        return task;
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : 'Failed to fetch task',
+        });
+        return null;
       }
-      const suffix = query.toString() ? `?${query.toString()}` : '';
-      const tasks = await api.get<Task[]>(`/tasks${suffix}`);
-      if (get().currentProjectFilter !== requestedProjectId || requestId !== fetchTasksRequestSequence) {
+    },
+
+    createTask: async (input) => {
+      set({ isLoading: true, error: null });
+      try {
+        const api = getApiClient();
+        const incomingTask = normalizeTask(await api.post<Task>('/tasks', input));
+        const task = mergeMutationTask(get().tasks.find((current) => current.id === incomingTask.id), incomingTask);
+        set((state) => ({
+          tasks: upsertTask(state.tasks, task),
+          isLoading: false,
+        }));
+        if (incomingTask.status === 'init') {
+          void get().fetchTask(incomingTask.id);
+        }
+        return task;
+      } catch (error) {
+        set({
+          isLoading: false,
+          error: error instanceof Error ? error.message : 'Failed to create task',
+        });
+        throw error;
+      }
+    },
+
+    updateTask: async (taskId, input) => {
+      try {
+        const api = getApiClient();
+        const task = normalizeTask(await api.patch<Task>(`/tasks/${taskId}`, input));
+        set((state) => ({
+          tasks: upsertTask(state.tasks, task),
+        }));
+        return task;
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : 'Failed to update task',
+        });
+        throw error;
+      }
+    },
+
+    restartTask: async (taskId, input) => {
+      try {
+        const api = getApiClient();
+        const body: Record<string, unknown> = {};
+        if (typeof input?.backendType === 'string' && input.backendType.trim()) {
+          body.backend_type = input.backendType.trim();
+        }
+        if (typeof input?.strategy === 'string' && input.strategy.trim()) {
+          body.strategy = input.strategy.trim();
+        }
+        if (typeof input?.restartMode === 'string' && input.restartMode.trim()) {
+          body.restart_mode = input.restartMode.trim();
+        }
+        const response = await api.post<{
+          mode: RestartTaskResponse['mode'];
+          source_task_id: string;
+          task: Task;
+        }>(`/tasks/${taskId}/restart`, body);
+        const incomingTask = normalizeTask(response.task);
+        const task = mergeMutationTask(get().tasks.find((current) => current.id === incomingTask.id), incomingTask);
+        set((state) => ({
+          tasks: upsertTask(state.tasks, task, { moveToFront: true }),
+        }));
+        if (incomingTask.status === 'init') {
+          void get().fetchTask(incomingTask.id);
+        }
+        return {
+          mode: response.mode,
+          sourceTaskId: response.source_task_id,
+          task,
+        };
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : 'Failed to restart task',
+        });
+        throw error;
+      }
+    },
+
+    cleanupTaskWorktree: async (taskId) => {
+      try {
+        const api = getApiClient();
+        const response = await api.post<{
+          task: Task;
+          cleaned_at: string;
+          removed_path?: string | null;
+          worktree_branch?: string | null;
+        }>(`/tasks/${taskId}/worktree`);
+        const task = normalizeTask(response.task);
+        set((state) => ({
+          tasks: upsertTask(state.tasks, task),
+        }));
+        return {
+          task,
+          cleanedAt: response.cleaned_at,
+          removedPath: response.removed_path ?? null,
+          worktreeBranch: response.worktree_branch ?? null,
+        };
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : 'Failed to remove task worktree',
+        });
+        throw error;
+      }
+    },
+
+    deleteTask: async (taskId) => {
+      try {
+        const api = getApiClient();
+        await api.delete(`/tasks/${taskId}`);
+        set((state) => ({
+          tasks: state.tasks.filter((t) => t.id !== taskId),
+          unreadTaskIds: new Set([...state.unreadTaskIds].filter((id) => id !== taskId)),
+        }));
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : 'Failed to delete task',
+        });
+        throw error;
+      }
+    },
+
+    setProjectFilter: (projectId) => {
+      set({ currentProjectFilter: projectId });
+      get().fetchTasks(projectId ?? undefined);
+    },
+
+    markTaskRead: (taskId) => {
+      set((state) => {
+        const newUnread = new Set(state.unreadTaskIds);
+        newUnread.delete(taskId);
+        return { unreadTaskIds: newUnread };
+      });
+    },
+
+    markTaskUnread: (taskId) => {
+      set((state) => ({
+        unreadTaskIds: new Set([...state.unreadTaskIds, taskId]),
+      }));
+    },
+
+    updateTaskInList: (task, options) => {
+      set((state) => ({
+        tasks: upsertTask(state.tasks, normalizeTask(task), options),
+      }));
+    },
+
+    removeTask: (taskId) => {
+      if (!taskId) {
         return;
       }
-      set({ tasks: tasks.map(normalizeTask), isLoading: false });
-    } catch (error) {
-      if (get().currentProjectFilter !== requestedProjectId || requestId !== fetchTasksRequestSequence) {
-        return;
-      }
-      set({
-        isLoading: false,
-        error: error instanceof Error ? error.message : 'Failed to fetch tasks',
-      });
-    }
-  },
-
-  fetchTask: async (taskId) => {
-    try {
-      const api = getApiClient();
-      const task = normalizeTask(await api.get<Task>(`/tasks/${taskId}?recover_stale=1`));
       set((state) => ({
-        tasks: upsertTask(state.tasks, task),
-        error: null,
-      }));
-      return task;
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : 'Failed to fetch task',
-      });
-      return null;
-    }
-  },
-
-  createTask: async (input) => {
-    set({ isLoading: true, error: null });
-    try {
-      const api = getApiClient();
-      const incomingTask = normalizeTask(await api.post<Task>('/tasks', input));
-      const task = mergeMutationTask(get().tasks.find((current) => current.id === incomingTask.id), incomingTask);
-      set((state) => ({
-        tasks: upsertTask(state.tasks, task),
-        isLoading: false,
-      }));
-      if (incomingTask.status === 'init') {
-        void get().fetchTask(incomingTask.id);
-      }
-      return task;
-    } catch (error) {
-      set({
-        isLoading: false,
-        error: error instanceof Error ? error.message : 'Failed to create task',
-      });
-      throw error;
-    }
-  },
-
-  updateTask: async (taskId, input) => {
-    try {
-      const api = getApiClient();
-      const task = normalizeTask(await api.patch<Task>(`/tasks/${taskId}`, input));
-      set((state) => ({
-        tasks: upsertTask(state.tasks, task),
-      }));
-      return task;
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : 'Failed to update task',
-      });
-      throw error;
-    }
-  },
-
-  restartTask: async (taskId, input) => {
-    try {
-      const api = getApiClient();
-      const body: Record<string, unknown> = {};
-      if (typeof input?.backendType === 'string' && input.backendType.trim()) {
-        body.backend_type = input.backendType.trim();
-      }
-      if (typeof input?.strategy === 'string' && input.strategy.trim()) {
-        body.strategy = input.strategy.trim();
-      }
-      const response = await api.post<{
-        mode: RestartTaskResponse['mode'];
-        source_task_id: string;
-        task: Task;
-      }>(`/tasks/${taskId}/restart`, body);
-      const incomingTask = normalizeTask(response.task);
-      const task = mergeMutationTask(get().tasks.find((current) => current.id === incomingTask.id), incomingTask);
-      set((state) => ({
-        tasks: upsertTask(state.tasks, task, { moveToFront: true }),
-      }));
-      if (incomingTask.status === 'init') {
-        void get().fetchTask(incomingTask.id);
-      }
-      return {
-        mode: response.mode,
-        sourceTaskId: response.source_task_id,
-        task,
-      };
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : 'Failed to restart task',
-      });
-      throw error;
-    }
-  },
-
-  cleanupTaskWorktree: async (taskId) => {
-    try {
-      const api = getApiClient();
-      const response = await api.post<{
-        task: Task;
-        cleaned_at: string;
-        removed_path?: string | null;
-        worktree_branch?: string | null;
-      }>(`/tasks/${taskId}/worktree`);
-      const task = normalizeTask(response.task);
-      set((state) => ({
-        tasks: upsertTask(state.tasks, task),
-      }));
-      return {
-        task,
-        cleanedAt: response.cleaned_at,
-        removedPath: response.removed_path ?? null,
-        worktreeBranch: response.worktree_branch ?? null,
-      };
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : 'Failed to remove task worktree',
-      });
-      throw error;
-    }
-  },
-
-  deleteTask: async (taskId) => {
-    try {
-      const api = getApiClient();
-      await api.delete(`/tasks/${taskId}`);
-      set((state) => ({
-        tasks: state.tasks.filter((t) => t.id !== taskId),
+        tasks: state.tasks.filter((task) => task.id !== taskId),
         unreadTaskIds: new Set([...state.unreadTaskIds].filter((id) => id !== taskId)),
       }));
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : 'Failed to delete task',
-      });
-      throw error;
-    }
-  },
+    },
 
-  setProjectFilter: (projectId) => {
-    set({ currentProjectFilter: projectId });
-    get().fetchTasks(projectId ?? undefined);
-  },
-
-  markTaskRead: (taskId) => {
-    set((state) => {
-      const newUnread = new Set(state.unreadTaskIds);
-      newUnread.delete(taskId);
-      return { unreadTaskIds: newUnread };
-    });
-  },
-
-  markTaskUnread: (taskId) => {
-    set((state) => ({
-      unreadTaskIds: new Set([...state.unreadTaskIds, taskId]),
-    }));
-  },
-
-  updateTaskInList: (task, options) => {
-    set((state) => ({
-      tasks: upsertTask(state.tasks, normalizeTask(task), options),
-    }));
-  },
-
-  removeTask: (taskId) => {
-    if (!taskId) {
-      return;
-    }
-    set((state) => ({
-      tasks: state.tasks.filter((task) => task.id !== taskId),
-      unreadTaskIds: new Set([...state.unreadTaskIds].filter((id) => id !== taskId)),
-    }));
-  },
-
-  clearError: () => set({ error: null }),
-}));
+    clearError: () => set({ error: null }),
+  });
+});

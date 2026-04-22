@@ -233,6 +233,7 @@ export interface UpdateTaskInput {
 export interface RestartTaskInput {
   backendType?: string;
   strategy?: RestartStrategy;
+  restartMode?: "refresh_session";
 }
 
 export interface RestartTaskResponse {

@@ -7,6 +7,9 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 interface MessageBubbleProps {
   message: Message;
   onResend?: (content: string) => void;
+  onRestart?: () => void;
+  restartEnabled?: boolean;
+  restartPending?: boolean;
   onInterrupt?: () => void;
   interruptEnabled?: boolean;
   interruptPending?: boolean;
@@ -28,6 +31,9 @@ const formatBytes = (value: number) => {
 export function MessageBubble({
   message,
   onResend,
+  onRestart,
+  restartEnabled = false,
+  restartPending = false,
   onInterrupt,
   interruptEnabled = false,
   interruptPending = false,
@@ -97,6 +103,14 @@ export function MessageBubble({
     setIsToolbarOpen(false);
   };
 
+  const restartTask = () => {
+    if (!restartEnabled || restartPending) {
+      return;
+    }
+    onRestart?.();
+    setIsToolbarOpen(false);
+  };
+
   const interruptTurn = () => {
     if (!interruptEnabled || interruptPending) {
       return;
@@ -144,6 +158,11 @@ export function MessageBubble({
   );
 
   const actionButtonClassName = 'inline-flex h-9 w-9 items-center justify-center rounded-xl text-ink transition-colors hover:bg-border/35';
+  const restartActionLabel = restartPending
+    ? 'Restart pending'
+    : restartEnabled
+      ? 'Restart AI task'
+      : 'Restart unavailable';
   const interruptActionLabel = interruptPending
     ? 'Interrupt pending'
     : interruptEnabled
@@ -194,6 +213,26 @@ export function MessageBubble({
           </svg>
         )}
       </button>
+      {onRestart ? (
+        <button
+          type="button"
+          data-testid="message-bubble-restart-button"
+          aria-label={restartActionLabel}
+          title={restartActionLabel}
+          disabled={!restartEnabled || restartPending}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            restartTask();
+          }}
+          className={`${actionButtonClassName} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent`}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 3v4" />
+            <path d="M17.66 6.34A8 8 0 1 1 12 4" />
+          </svg>
+        </button>
+      ) : null}
       {onInterrupt ? (
         <button
           type="button"

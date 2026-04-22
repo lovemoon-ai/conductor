@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGet = vi.fn();
 const mockPost = vi.fn();
+const mockPatch = vi.fn();
 
 vi.mock('@/shared/api/client', () => ({
   getApiClient: () => ({
     get: mockGet,
     post: mockPost,
+    patch: mockPatch,
   }),
 }));
 
@@ -182,6 +184,61 @@ describe('tasks store', () => {
       id: 'task-1',
       status: 'running',
       updatedAt: '2024-01-01T00:02:00.000Z',
+    });
+  });
+
+  it('refreshes an existing task session through restart mode and syncs returned metadata', async () => {
+    useTasksStore.setState({
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Refreshable task',
+          taskType: 'ai_task',
+          status: 'running',
+          agentHost: 'old-daemon',
+          executionHost: 'old-daemon',
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    mockPost.mockResolvedValueOnce({
+      mode: 'inplace_restart',
+      source_task_id: 'task-1',
+      task: {
+        id: 'task-1',
+        title: 'Refreshable task',
+        task_type: 'ai_task',
+        status: 'running',
+        agent_host: 'new-daemon',
+        execution_host: 'new-daemon',
+        backend_type: 'codex',
+        session_id: 'sess-1',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:03:00.000Z',
+      },
+    });
+
+    const result = await useTasksStore.getState().restartTask('task-1', {
+      restartMode: 'refresh_session',
+    });
+
+    expect(mockPost).toHaveBeenCalledWith('/tasks/task-1/restart', {
+      restart_mode: 'refresh_session',
+    });
+    expect(result.task).toMatchObject({
+      id: 'task-1',
+      status: 'running',
+      agentHost: 'new-daemon',
+      executionHost: 'new-daemon',
+      sessionId: 'sess-1',
+    });
+    expect(useTasksStore.getState().tasks[0]).toMatchObject({
+      id: 'task-1',
+      agentHost: 'new-daemon',
+      executionHost: 'new-daemon',
     });
   });
 

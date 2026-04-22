@@ -7,6 +7,17 @@ const useRuntimeStoreMock = vi.fn();
 const useTasksStoreMock = vi.fn();
 const useWebSocketStoreMock = vi.fn();
 const apiPostMock = vi.fn().mockResolvedValue({ delivered: true });
+const restartTaskMock = vi.fn().mockResolvedValue({
+  mode: 'inplace_restart',
+  sourceTaskId: 'task-1',
+  task: {
+    id: 'task-1',
+    status: 'running',
+    taskType: 'ai_task',
+    createdAt: '2026-03-07T12:00:00.000Z',
+    updatedAt: '2026-03-07T12:00:01.000Z',
+  },
+});
 
 vi.mock('../store', () => ({
   useChatStore: () => useChatStoreMock(),
@@ -30,6 +41,7 @@ vi.mock('@/features/realtime', () => ({
 vi.mock('@/features/tasks', () => ({
   useTasksStore: (selector: (state: {
     tasks: Array<Record<string, unknown>>;
+    restartTask: typeof restartTaskMock;
   }) => unknown) => useTasksStoreMock(selector),
 }));
 
@@ -37,13 +49,19 @@ vi.mock('./MessageBubble', () => ({
   MessageBubble: ({
     message,
     onResend,
+    onRestart,
     onInterrupt,
+    restartEnabled,
+    restartPending,
     interruptEnabled,
     interruptPending,
   }: {
     message: { id: string; content: string };
     onResend?: (content: string) => void;
+    onRestart?: () => void;
     onInterrupt?: () => void;
+    restartEnabled?: boolean;
+    restartPending?: boolean;
     interruptEnabled?: boolean;
     interruptPending?: boolean;
   }) => (
@@ -52,9 +70,14 @@ vi.mock('./MessageBubble', () => ({
       <button type="button" data-testid={`resend-${message.id}`} onClick={() => onResend?.(message.content)}>
         resend
       </button>
+      <button type="button" data-testid={`message-restart-${message.id}`} onClick={() => onRestart?.()}>
+        restart message
+      </button>
       <button type="button" data-testid={`message-interrupt-${message.id}`} onClick={() => onInterrupt?.()}>
         interrupt message
       </button>
+      <div data-testid={`message-restart-enabled-${message.id}`}>{String(Boolean(restartEnabled))}</div>
+      <div data-testid={`message-restart-pending-${message.id}`}>{String(Boolean(restartPending))}</div>
       <div data-testid={`message-interrupt-enabled-${message.id}`}>{String(Boolean(interruptEnabled))}</div>
       <div data-testid={`message-interrupt-pending-${message.id}`}>{String(Boolean(interruptPending))}</div>
     </div>
@@ -165,7 +188,9 @@ describe('ChatView', () => {
     tasks: Array<{
       id: string;
       status: string;
+      taskType?: string;
     }>;
+    restartTask: typeof restartTaskMock;
   };
   let runtimeState: {
     byTask: Record<string, unknown>;
@@ -183,6 +208,18 @@ describe('ChatView', () => {
     clearRuntimeMock.mockClear();
     apiPostMock.mockClear();
     apiPostMock.mockResolvedValue({ delivered: true });
+    restartTaskMock.mockClear();
+    restartTaskMock.mockResolvedValue({
+      mode: 'inplace_restart',
+      sourceTaskId: 'task-1',
+      task: {
+        id: 'task-1',
+        status: 'running',
+        taskType: 'ai_task',
+        createdAt: '2026-03-07T12:00:00.000Z',
+        updatedAt: '2026-03-07T12:00:01.000Z',
+      },
+    });
 
     chatState = {
       messagesByTask: {},
@@ -196,8 +233,10 @@ describe('ChatView', () => {
         {
           id: 'task-1',
           status: 'running',
+          taskType: 'ai_task',
         },
       ],
+      restartTask: restartTaskMock,
     };
     runtimeState = {
       byTask: {},
@@ -318,8 +357,10 @@ describe('ChatView', () => {
         {
           id: 'task-1',
           status: 'unknown',
+          taskType: 'ai_task',
         },
       ],
+      restartTask: restartTaskMock,
     };
     useTasksStoreMock.mockImplementation((selector) => selector(tasksState));
 
@@ -331,6 +372,7 @@ describe('ChatView', () => {
     });
     expect(alertSpy).not.toHaveBeenCalled();
     expect(screen.getByTestId('send-disabled')).toHaveTextContent('true');
+    expect(screen.queryByTestId(/^message-restart-enabled-/)).not.toBeInTheDocument();
   });
 
   it('routes a message resend action into the composer request', () => {
@@ -345,6 +387,148 @@ describe('ChatView', () => {
     fireEvent.click(screen.getByTestId('resend-1'));
 
     expect(screen.getByTestId('resend-request')).toHaveTextContent('repeat this prompt');
+  });
+
+  it('restarts the current task from the message action sheet path', async () => {
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [makeMessage('msg-user-1', 'restart this task')] },
+    };
+    useChatStoreMock.mockImplementation(() => chatState);
+
+    render(<ChatView taskId="task-1" />);
+
+    expect(screen.getByTestId('message-restart-enabled-msg-user-1')).toHaveTextContent('true');
+    fireEvent.click(screen.getByTestId('message-restart-msg-user-1'));
+
+    await waitFor(() => {
+      expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+        restartMode: 'refresh_session',
+      });
+    });
+    await waitFor(() => {
+      expect(clearRuntimeMock).toHaveBeenCalledWith('task-1');
+    });
+  });
+
+  it('shows restart session action in the empty state for a running task', async () => {
+    render(<ChatView taskId="task-1" />);
+
+    expect(screen.getByText('No messages yet')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('empty-state-restart'));
+
+    await waitFor(() => {
+      expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+        restartMode: 'refresh_session',
+      });
+    });
+  });
+
+  it('disables message restart for non-running tasks', () => {
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [makeMessage('msg-user-1', 'restart this task')] },
+    };
+    tasksState = {
+      tasks: [
+        {
+          id: 'task-1',
+          status: 'unknown',
+          taskType: 'ai_task',
+        },
+      ],
+      restartTask: restartTaskMock,
+    };
+    useChatStoreMock.mockImplementation(() => chatState);
+    useTasksStoreMock.mockImplementation((selector) => selector(tasksState));
+
+    render(<ChatView taskId="task-1" />);
+
+    expect(screen.getByTestId('message-restart-enabled-msg-user-1')).toHaveTextContent('false');
+  });
+
+  it('disables restart while an interrupt request is pending', async () => {
+    let resolveInterrupt: (() => void) | null = null;
+    apiPostMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveInterrupt = () => {
+            resolve({ delivered: true });
+          };
+        }),
+    );
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [makeMessage('msg-user-1', 'restart this task')] },
+    };
+    runtimeState = {
+      byTask: {
+        'task-1': {
+          replyInProgress: true,
+          replyTo: 'msg-user-1',
+        },
+      },
+      clearTask: clearRuntimeMock,
+    };
+    useChatStoreMock.mockImplementation(() => chatState);
+    useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+
+    render(<ChatView taskId="task-1" />);
+
+    fireEvent.click(screen.getByTestId('interrupt-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('interrupt-pending')).toHaveTextContent('true');
+    });
+    expect(screen.getByTestId('message-restart-enabled-msg-user-1')).toHaveTextContent('false');
+
+    fireEvent.click(screen.getByTestId('message-restart-msg-user-1'));
+
+    expect(restartTaskMock).not.toHaveBeenCalled();
+    expect(screen.getByText('Wait for the current interrupt to finish before restarting the AI session.')).toBeInTheDocument();
+
+    resolveInterrupt?.();
+  });
+
+  it('blocks sends while a restart is already in progress', async () => {
+    let resolveRestart: (() => void) | null = null;
+    restartTaskMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRestart = () => {
+            resolve({
+              mode: 'inplace_restart',
+              sourceTaskId: 'task-1',
+              task: {
+                id: 'task-1',
+                status: 'running',
+                taskType: 'ai_task',
+                createdAt: '2026-03-07T12:00:00.000Z',
+                updatedAt: '2026-03-07T12:00:01.000Z',
+              },
+            });
+          };
+        }),
+    );
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [makeMessage('msg-user-1', 'restart this task')] },
+    };
+    useChatStoreMock.mockImplementation(() => chatState);
+
+    render(<ChatView taskId="task-1" />);
+    fireEvent.click(screen.getByTestId('message-restart-msg-user-1'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('message-restart-pending-msg-user-1')).toHaveTextContent('true');
+    });
+    expect(screen.getByTestId('send-disabled')).toHaveTextContent('true');
+    expect(screen.getByText('Restarting the current AI session…')).toBeInTheDocument();
+
+    resolveRestart?.();
+    await waitFor(() => {
+      expect(screen.getByTestId('message-restart-pending-msg-user-1')).toHaveTextContent('false');
+    });
   });
 
   it('shows the simplified status chips row', () => {

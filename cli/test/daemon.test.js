@@ -3434,6 +3434,1153 @@ describe("Daemon", () => {
     daemonInstance.close();
   });
 
+  it("refreshes a running task session in place by stopping the old child and spawning a fresh one", async () => {
+    let handler;
+    let connected = false;
+    const spawnCalls = [];
+    const sentEvents = [];
+    const killCalls = [];
+    const childExitHandlers = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-refresh-session",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "refresh-session-daemon",
+      },
+      {
+        spawn: (_cmd, args, opts) => {
+          const childIndex = spawnCalls.length;
+          let exitHandler = null;
+          const child = {
+            pid: 62000 + childIndex,
+            kill: (signal) => {
+              killCalls.push(signal);
+            },
+            on: (event, cb) => {
+              if (event === "exit") {
+                exitHandler = cb;
+                childExitHandlers[childIndex] = cb;
+              }
+            },
+            stdout: { on: () => {}, pipe: () => {} },
+            stderr: { on: () => {}, pipe: () => {} },
+          };
+          spawnCalls.push({ args, opts, child });
+          return child;
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return {
+              ok: true,
+              json: async () => ({ metadata: { localPaths: { default: "/tmp/refresh-session-cwd" } } }),
+            };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {
+            connected = true;
+          },
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
+        }),
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+    await waitUntil(() => connected, {
+      timeoutMs: 5000,
+      message: "refresh-session daemon to connect",
+    });
+
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "task-refresh-1",
+        project_id: "proj-refresh-1",
+        backend_type: "codex",
+        request_id: "req-create-refresh-1",
+      },
+    });
+
+    await waitUntil(() => spawnCalls.length === 1, { message: "refresh-session initial spawn" });
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (entry) =>
+            entry.type === "task_status_update" &&
+            entry.payload?.task_id === "task-refresh-1" &&
+            entry.payload?.status === "RUNNING",
+        ),
+      { message: "refresh-session initial running" },
+    );
+
+    sentEvents.length = 0;
+
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "refresh_session_inplace",
+        source_task_id: "task-refresh-1",
+        target_task_id: "task-refresh-1",
+        project_id: "proj-refresh-1",
+        title: "Refresh task session",
+        source_backend_type: "codex",
+        source_session_id: "sess-refresh-1",
+        target_backend_type: "codex",
+        request_id: "req-refresh-1",
+      },
+    });
+
+    await waitUntil(() => killCalls.length === 1, { message: "refresh-session old child stop" });
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "refresh_session_inplace",
+        source_task_id: "task-refresh-1",
+        target_task_id: "task-refresh-1",
+        project_id: "proj-refresh-1",
+        title: "Concurrent refresh task session",
+        source_backend_type: "codex",
+        source_session_id: "sess-refresh-1",
+        target_backend_type: "codex",
+        request_id: "req-refresh-2",
+      },
+    });
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (entry) =>
+            entry.type === "agent_command_ack" &&
+            entry.payload?.request_id === "req-refresh-2",
+        ),
+      { message: "refresh-session concurrent rejected ack" },
+    );
+    expectEvent(
+      sentEvents.filter((entry) => entry.payload?.request_id === "req-refresh-2"),
+      "agent_command_ack",
+      (payload) => {
+        assert.strictEqual(payload.request_id, "req-refresh-2");
+        assert.strictEqual(payload.event_type, "restart_task");
+        assert.strictEqual(payload.accepted, false);
+      },
+    );
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "refresh_session_inplace",
+        source_task_id: "task-refresh-1",
+        target_task_id: "task-refresh-1",
+        project_id: "proj-refresh-1",
+        title: "Refresh task session",
+        source_backend_type: "codex",
+        source_session_id: "sess-refresh-1",
+        target_backend_type: "codex",
+        request_id: "req-refresh-1",
+      },
+    });
+    assert.ok(
+      !sentEvents.some(
+        (entry) =>
+          entry.type === "agent_command_ack" &&
+          entry.payload?.request_id === "req-refresh-1",
+      ),
+      "did not expect restart ack before the refreshed child is running",
+    );
+    assert.ok(typeof childExitHandlers[0] === "function");
+    childExitHandlers[0](143, "SIGTERM");
+
+    await waitUntil(() => spawnCalls.length === 2, { message: "refresh-session restart spawn" });
+
+    assert.deepStrictEqual(killCalls, ["SIGTERM"]);
+    assert.deepStrictEqual(spawnCalls[1].args, [
+      "/tmp/cli.js",
+      "--backend",
+      "codex",
+      "--resume",
+      "sess-refresh-1",
+      "--",
+    ]);
+    assert.strictEqual(spawnCalls[1].opts.cwd, "/tmp/refresh-session-cwd");
+    assert.strictEqual(spawnCalls[1].opts.env.CONDUCTOR_TASK_ID, "task-refresh-1");
+    assert.strictEqual(spawnCalls[1].opts.env.CONDUCTOR_RESUME_CWD, "/tmp/refresh-session-cwd");
+    expectEvent(
+      sentEvents.filter((entry) => entry.payload?.request_id === "req-refresh-1"),
+      "agent_command_ack",
+      (payload) => {
+        assert.strictEqual(payload.request_id, "req-refresh-1");
+        assert.strictEqual(payload.event_type, "restart_task");
+        assert.strictEqual(payload.accepted, true);
+      },
+    );
+    expectEvent(sentEvents, "task_status_update", (payload) => {
+      assert.strictEqual(payload.task_id, "task-refresh-1");
+      assert.strictEqual(payload.status, "RUNNING");
+    });
+    const runningIndex = sentEvents.findIndex(
+      (entry) =>
+        entry.type === "task_status_update" &&
+        entry.payload?.task_id === "task-refresh-1" &&
+        entry.payload?.status === "RUNNING",
+    );
+    const ackIndex = sentEvents.findIndex(
+      (entry) =>
+        entry.type === "agent_command_ack" &&
+        entry.payload?.request_id === "req-refresh-1",
+    );
+    assert.ok(ackIndex > runningIndex, "expected refresh ack after RUNNING status");
+    assert.ok(
+      !sentEvents.some(
+        (entry) =>
+          entry.type === "task_status_update" &&
+          entry.payload?.task_id === "task-refresh-1" &&
+          entry.payload?.status === "KILLED",
+      ),
+      "did not expect KILLED during session refresh handoff",
+    );
+    assert.ok(
+      !sentEvents.some(
+        (entry) =>
+          entry.type === "task_status_update" &&
+          entry.payload?.task_id === "task-refresh-1" &&
+          entry.payload?.status === "INIT",
+      ),
+      "did not expect INIT during session refresh handoff",
+    );
+
+    daemonInstance.close();
+  });
+
+  it("does not mark a running task killed when session refresh fails before stopping the child", async () => {
+    let handler;
+    let connected = false;
+    const spawnCalls = [];
+    const sentEvents = [];
+    const killCalls = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-refresh-prestop-failure",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "refresh-prestop-failure-daemon",
+      },
+      {
+        spawn: (_cmd, args, opts) => {
+          const child = {
+            pid: 63000 + spawnCalls.length,
+            kill: (signal) => {
+              killCalls.push(signal);
+            },
+            on: () => {},
+            stdout: { on: () => {}, pipe: () => {} },
+            stderr: { on: () => {}, pipe: () => {} },
+          };
+          spawnCalls.push({ args, opts, child });
+          return child;
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return {
+              ok: true,
+              json: async () => ({ metadata: { localPaths: { default: "/tmp/refresh-prestop-cwd" } } }),
+            };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {
+            connected = true;
+          },
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
+        }),
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+    await waitUntil(() => connected, {
+      timeoutMs: 5000,
+      message: "refresh-prestop daemon to connect",
+    });
+
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "task-refresh-prestop-1",
+        project_id: "proj-refresh-prestop-1",
+        backend_type: "codex",
+        request_id: "req-create-refresh-prestop-1",
+      },
+    });
+
+    await waitUntil(() => spawnCalls.length === 1, { message: "refresh-prestop initial spawn" });
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (entry) =>
+            entry.type === "task_status_update" &&
+            entry.payload?.task_id === "task-refresh-prestop-1" &&
+            entry.payload?.status === "RUNNING",
+        ),
+      { message: "refresh-prestop initial running" },
+    );
+
+    sentEvents.length = 0;
+
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "refresh_session_inplace",
+        source_task_id: "task-refresh-prestop-1",
+        target_task_id: "task-refresh-prestop-1",
+        project_id: "proj-refresh-prestop-1",
+        title: "Refresh prestop failure",
+        source_backend_type: "claude",
+        source_session_id: "sess-refresh-prestop-1",
+        target_backend_type: "codex",
+        request_id: "req-refresh-prestop-1",
+      },
+    });
+
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (entry) =>
+            entry.type === "agent_command_ack" &&
+            entry.payload?.request_id === "req-refresh-prestop-1",
+        ),
+      { message: "refresh-prestop rejected ack" },
+    );
+    expectEvent(sentEvents, "agent_command_ack", (payload) => {
+      assert.strictEqual(payload.request_id, "req-refresh-prestop-1");
+      assert.strictEqual(payload.event_type, "restart_task");
+      assert.strictEqual(payload.accepted, false);
+    });
+    assert.deepStrictEqual(killCalls, []);
+    assert.strictEqual(spawnCalls.length, 1);
+    assert.ok(
+      !sentEvents.some(
+        (entry) =>
+          entry.type === "task_status_update" &&
+          entry.payload?.task_id === "task-refresh-prestop-1" &&
+          entry.payload?.status === "KILLED",
+      ),
+      "did not expect KILLED when session refresh fails before stopping the child",
+    );
+
+    daemonInstance.close();
+  });
+
+  it("does not mark refresh session killed when restart arrives during daemon shutdown", async () => {
+    let handler;
+    let connected = false;
+    const sentEvents = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-refresh-shutdown",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "refresh-shutdown-daemon",
+      },
+      {
+        spawn: () => {
+          throw new Error("spawn should not be called during shutdown rejection");
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {
+            connected = true;
+          },
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
+        }),
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+    await waitUntil(() => connected, {
+      timeoutMs: 5000,
+      message: "refresh-shutdown daemon to connect",
+    });
+
+    const closePromise = daemonInstance.close();
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "refresh_session_inplace",
+        source_task_id: "task-refresh-shutdown-1",
+        target_task_id: "task-refresh-shutdown-1",
+        project_id: "proj-refresh-shutdown-1",
+        title: "Refresh during shutdown",
+        source_backend_type: "codex",
+        source_session_id: "sess-refresh-shutdown-1",
+        target_backend_type: "codex",
+        request_id: "req-refresh-shutdown-1",
+      },
+    });
+
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (entry) =>
+            entry.type === "agent_command_ack" &&
+            entry.payload?.request_id === "req-refresh-shutdown-1",
+        ),
+      { message: "refresh-shutdown rejected ack" },
+    );
+    expectEvent(sentEvents, "agent_command_ack", (payload) => {
+      assert.strictEqual(payload.request_id, "req-refresh-shutdown-1");
+      assert.strictEqual(payload.event_type, "restart_task");
+      assert.strictEqual(payload.accepted, false);
+    });
+    assert.ok(
+      !sentEvents.some(
+        (entry) =>
+          entry.type === "task_status_update" &&
+          entry.payload?.task_id === "task-refresh-shutdown-1" &&
+          entry.payload?.status === "KILLED",
+      ),
+      "did not expect KILLED when refresh is rejected during daemon shutdown",
+    );
+
+    await closePromise;
+  });
+
+  it("rejects refresh if daemon shutdown starts while waiting for the old child to stop", async () => {
+    let handler;
+    let connected = false;
+    const spawnCalls = [];
+    const sentEvents = [];
+    const killCalls = [];
+    const childExitHandlers = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-refresh-shutdown-during-wait",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "refresh-shutdown-during-wait-daemon",
+      },
+      {
+        spawn: (_cmd, args, opts) => {
+          const childIndex = spawnCalls.length;
+          const child = {
+            pid: 63500 + childIndex,
+            kill: (signal) => {
+              killCalls.push(signal);
+            },
+            on: (event, cb) => {
+              if (event === "exit") {
+                childExitHandlers[childIndex] = cb;
+              }
+            },
+            stdout: { on: () => {}, pipe: () => {} },
+            stderr: { on: () => {}, pipe: () => {} },
+          };
+          spawnCalls.push({ args, opts, child });
+          return child;
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return {
+              ok: true,
+              json: async () => ({ metadata: { localPaths: { default: "/tmp/refresh-shutdown-during-wait-cwd" } } }),
+            };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {
+            connected = true;
+          },
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
+        }),
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+    await waitUntil(() => connected, {
+      timeoutMs: 5000,
+      message: "refresh-shutdown-during-wait daemon to connect",
+    });
+
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "task-refresh-shutdown-during-wait-1",
+        project_id: "proj-refresh-shutdown-during-wait-1",
+        backend_type: "codex",
+        request_id: "req-create-refresh-shutdown-during-wait-1",
+      },
+    });
+
+    await waitUntil(() => spawnCalls.length === 1, { message: "refresh-shutdown-during-wait initial spawn" });
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (entry) =>
+            entry.type === "task_status_update" &&
+            entry.payload?.task_id === "task-refresh-shutdown-during-wait-1" &&
+            entry.payload?.status === "RUNNING",
+        ),
+      { message: "refresh-shutdown-during-wait initial running" },
+    );
+
+    sentEvents.length = 0;
+
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "refresh_session_inplace",
+        source_task_id: "task-refresh-shutdown-during-wait-1",
+        target_task_id: "task-refresh-shutdown-during-wait-1",
+        project_id: "proj-refresh-shutdown-during-wait-1",
+        title: "Refresh while shutting down",
+        source_backend_type: "codex",
+        source_session_id: "sess-refresh-shutdown-during-wait-1",
+        target_backend_type: "codex",
+        request_id: "req-refresh-shutdown-during-wait-1",
+      },
+    });
+
+    await waitUntil(() => killCalls.length >= 1, { message: "refresh-shutdown-during-wait old child stop" });
+    const closePromise = daemonInstance.close();
+    await closePromise;
+
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (entry) =>
+            entry.type === "agent_command_ack" &&
+            entry.payload?.request_id === "req-refresh-shutdown-during-wait-1",
+        ),
+      { message: "refresh-shutdown-during-wait rejected ack" },
+    );
+    expectEvent(sentEvents, "agent_command_ack", (payload) => {
+      assert.strictEqual(payload.request_id, "req-refresh-shutdown-during-wait-1");
+      assert.strictEqual(payload.event_type, "restart_task");
+      assert.strictEqual(payload.accepted, false);
+    });
+    expectEvent(sentEvents, "task_status_update", (payload) => {
+      assert.strictEqual(payload.task_id, "task-refresh-shutdown-during-wait-1");
+      assert.strictEqual(payload.status, "KILLED");
+      assert.match(payload.summary, /session refresh failed: daemon shutting down/);
+    });
+    assert.strictEqual(spawnCalls.length, 1);
+  });
+
+  it("nacks and marks killed when session refresh spawn fails after stopping the old child", async () => {
+    let handler;
+    let connected = false;
+    const spawnCalls = [];
+    const sentEvents = [];
+    const killCalls = [];
+    const childExitHandlers = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-refresh-spawn-failure",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "refresh-spawn-failure-daemon",
+      },
+      {
+        spawn: (_cmd, args, opts) => {
+          const childIndex = spawnCalls.length;
+          if (childIndex > 0) {
+            throw new Error("spawn exploded");
+          }
+          let exitHandler = null;
+          const child = {
+            pid: 64000,
+            kill: (signal) => {
+              killCalls.push(signal);
+            },
+            on: (event, cb) => {
+              if (event === "exit") {
+                exitHandler = cb;
+                childExitHandlers[childIndex] = cb;
+              }
+            },
+            stdout: { on: () => {}, pipe: () => {} },
+            stderr: { on: () => {}, pipe: () => {} },
+          };
+          spawnCalls.push({ args, opts, child });
+          return child;
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return {
+              ok: true,
+              json: async () => ({ metadata: { localPaths: { default: "/tmp/refresh-spawn-failure-cwd" } } }),
+            };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {
+            connected = true;
+          },
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
+        }),
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+    await waitUntil(() => connected, {
+      timeoutMs: 5000,
+      message: "refresh-spawn-failure daemon to connect",
+    });
+
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "task-refresh-spawn-failure-1",
+        project_id: "proj-refresh-spawn-failure-1",
+        backend_type: "codex",
+        request_id: "req-create-refresh-spawn-failure-1",
+      },
+    });
+
+    await waitUntil(() => spawnCalls.length === 1, { message: "refresh-spawn-failure initial spawn" });
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (entry) =>
+            entry.type === "task_status_update" &&
+            entry.payload?.task_id === "task-refresh-spawn-failure-1" &&
+            entry.payload?.status === "RUNNING",
+        ),
+      { message: "refresh-spawn-failure initial running" },
+    );
+
+    sentEvents.length = 0;
+
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "refresh_session_inplace",
+        source_task_id: "task-refresh-spawn-failure-1",
+        target_task_id: "task-refresh-spawn-failure-1",
+        project_id: "proj-refresh-spawn-failure-1",
+        title: "Refresh spawn failure",
+        source_backend_type: "codex",
+        source_session_id: "sess-refresh-spawn-failure-1",
+        target_backend_type: "codex",
+        request_id: "req-refresh-spawn-failure-1",
+      },
+    });
+
+    await waitUntil(() => killCalls.length === 1, { message: "refresh-spawn-failure old child stop" });
+    assert.ok(typeof childExitHandlers[0] === "function");
+    childExitHandlers[0](143, "SIGTERM");
+
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (entry) =>
+            entry.type === "agent_command_ack" &&
+            entry.payload?.request_id === "req-refresh-spawn-failure-1",
+        ),
+      { message: "refresh-spawn-failure rejected ack" },
+    );
+    expectEvent(sentEvents, "agent_command_ack", (payload) => {
+      assert.strictEqual(payload.request_id, "req-refresh-spawn-failure-1");
+      assert.strictEqual(payload.event_type, "restart_task");
+      assert.strictEqual(payload.accepted, false);
+    });
+    expectEvent(sentEvents, "task_status_update", (payload) => {
+      assert.strictEqual(payload.task_id, "task-refresh-spawn-failure-1");
+      assert.strictEqual(payload.status, "KILLED");
+      assert.match(payload.summary, /session refresh failed: spawn exploded/);
+    });
+
+    daemonInstance.close();
+  });
+
+  it("nacks refresh when the replacement child exits before startup ack completes", async () => {
+    let handler;
+    let connected = false;
+    const spawnCalls = [];
+    const sentEvents = [];
+    const killCalls = [];
+    const childExitHandlers = [];
+    let resolveReplacementRunningStatus = null;
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-refresh-fast-exit",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "refresh-fast-exit-daemon",
+      },
+      {
+        spawn: (_cmd, args, opts) => {
+          const childIndex = spawnCalls.length;
+          const child = {
+            pid: 64500 + childIndex,
+            kill: (signal) => {
+              killCalls.push(signal);
+            },
+            on: (event, cb) => {
+              if (event === "exit") {
+                childExitHandlers[childIndex] = cb;
+              }
+            },
+            stdout: { on: () => {}, pipe: () => {} },
+            stderr: { on: () => {}, pipe: () => {} },
+          };
+          spawnCalls.push({ args, opts, child });
+          if (childIndex === 1) {
+            setTimeout(() => {
+              childExitHandlers[childIndex]?.(1, null);
+            }, 0);
+          }
+          return child;
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return {
+              ok: true,
+              json: async () => ({ metadata: { localPaths: { default: "/tmp/refresh-fast-exit-cwd" } } }),
+            };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {
+            connected = true;
+          },
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+            if (
+              payload?.type === "task_status_update" &&
+              payload.payload?.task_id === "task-refresh-fast-exit-1" &&
+              payload.payload?.status === "RUNNING" &&
+              spawnCalls.length === 2
+            ) {
+              await new Promise((resolve) => {
+                resolveReplacementRunningStatus = resolve;
+              });
+            }
+          },
+        }),
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+    await waitUntil(() => connected, {
+      timeoutMs: 5000,
+      message: "refresh-fast-exit daemon to connect",
+    });
+
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "task-refresh-fast-exit-1",
+        project_id: "proj-refresh-fast-exit-1",
+        backend_type: "codex",
+        request_id: "req-create-refresh-fast-exit-1",
+      },
+    });
+
+    await waitUntil(() => spawnCalls.length === 1, { message: "refresh-fast-exit initial spawn" });
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (entry) =>
+            entry.type === "task_status_update" &&
+            entry.payload?.task_id === "task-refresh-fast-exit-1" &&
+            entry.payload?.status === "RUNNING",
+        ),
+      { message: "refresh-fast-exit initial running" },
+    );
+
+    sentEvents.length = 0;
+
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "refresh_session_inplace",
+        source_task_id: "task-refresh-fast-exit-1",
+        target_task_id: "task-refresh-fast-exit-1",
+        project_id: "proj-refresh-fast-exit-1",
+        title: "Refresh fast exit",
+        source_backend_type: "codex",
+        source_session_id: "sess-refresh-fast-exit-1",
+        target_backend_type: "codex",
+        request_id: "req-refresh-fast-exit-1",
+      },
+    });
+
+    await waitUntil(() => killCalls.length === 1, { message: "refresh-fast-exit old child stop" });
+    assert.ok(typeof childExitHandlers[0] === "function");
+    childExitHandlers[0](143, "SIGTERM");
+
+    await waitUntil(() => spawnCalls.length === 2, { message: "refresh-fast-exit replacement spawn" });
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (entry) =>
+            entry.type === "task_status_update" &&
+            entry.payload?.task_id === "task-refresh-fast-exit-1" &&
+            entry.payload?.status === "KILLED",
+        ),
+      { message: "refresh-fast-exit terminal status before ack" },
+    );
+    assert.ok(
+      !sentEvents.some(
+        (entry) =>
+          entry.type === "agent_command_ack" &&
+          entry.payload?.request_id === "req-refresh-fast-exit-1",
+      ),
+      "did not expect refresh ack before delayed RUNNING send resolves",
+    );
+
+    resolveReplacementRunningStatus?.();
+
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (entry) =>
+            entry.type === "agent_command_ack" &&
+            entry.payload?.request_id === "req-refresh-fast-exit-1",
+        ),
+      { message: "refresh-fast-exit rejected ack" },
+    );
+    expectEvent(sentEvents, "agent_command_ack", (payload) => {
+      assert.strictEqual(payload.request_id, "req-refresh-fast-exit-1");
+      assert.strictEqual(payload.event_type, "restart_task");
+      assert.strictEqual(payload.accepted, false);
+    });
+    const fastExitTerminalStatus = sentEvents.find(
+      (entry) =>
+        entry.type === "task_status_update" &&
+        entry.payload?.task_id === "task-refresh-fast-exit-1" &&
+        entry.payload?.status === "KILLED",
+    );
+    assert.ok(fastExitTerminalStatus, "expected terminal KILLED status after replacement exited early");
+    assert.match(fastExitTerminalStatus.payload.summary, /exited with code 1/);
+    assert.ok(
+      !sentEvents.some(
+        (entry) =>
+          entry.type === "agent_command_ack" &&
+          entry.payload?.request_id === "req-refresh-fast-exit-1" &&
+          entry.payload?.accepted === true,
+      ),
+      "did not expect an accepted refresh ack after the replacement exited early",
+    );
+
+    await daemonInstance.close();
+  });
+
+  it("reports terminal status if a refresh stop times out and the old child exits later", async () => {
+    const previousGraceMs = process.env.CONDUCTOR_DAEMON_FORCE_STOP_GRACE_MS;
+    const previousPollInterval = process.env.CONDUCTOR_DAEMON_FORCE_STOP_POLL_INTERVAL_MS;
+    let handler;
+    let connected = false;
+    const spawnCalls = [];
+    const sentEvents = [];
+    const killCalls = [];
+    const childExitHandlers = [];
+
+    try {
+      process.env.CONDUCTOR_DAEMON_FORCE_STOP_GRACE_MS = "20";
+      process.env.CONDUCTOR_DAEMON_FORCE_STOP_POLL_INTERVAL_MS = "5";
+
+      const daemonInstance = startDaemon(
+        {
+          BACKEND_URL: "ws://localhost:0",
+          BACKEND_HTTP: "http://localhost:6152",
+          WORKSPACE_ROOT: "/tmp/test-ws-refresh-stop-timeout",
+          CLI_PATH: "/tmp/cli.js",
+          NAME: "refresh-stop-timeout-daemon",
+        },
+        {
+          spawn: (_cmd, args, opts) => {
+            const childIndex = spawnCalls.length;
+            const child = {
+              pid: 65000 + childIndex,
+              kill: (signal) => {
+                killCalls.push(signal);
+              },
+              on: (event, cb) => {
+                if (event === "exit") {
+                  childExitHandlers[childIndex] = cb;
+                }
+              },
+              stdout: { on: () => {}, pipe: () => {} },
+              stderr: { on: () => {}, pipe: () => {} },
+            };
+            spawnCalls.push({ args, opts, child });
+            return child;
+          },
+          mkdirSync: () => {},
+          writeFileSync: () => {},
+          existsSync: () => false,
+          readFileSync: () => "",
+          unlinkSync: () => {},
+          renameSync: () => {},
+          createWriteStream: () => ({
+            on: () => {},
+            write: () => {},
+            end: () => {},
+          }),
+          fetch: async (url) => {
+            if (String(url).includes("/api/projects/")) {
+              return {
+                ok: true,
+                json: async () => ({ metadata: { localPaths: { default: "/tmp/refresh-stop-timeout-cwd" } } }),
+              };
+            }
+            if (String(url).endsWith("/api/tasks")) {
+              return { ok: true, json: async () => [] };
+            }
+            return { ok: true, json: async () => ({}) };
+          },
+          createWebSocketClient: () => ({
+            registerHandler: (nextHandler) => {
+              handler = nextHandler;
+            },
+            connect: async () => {
+              connected = true;
+            },
+            disconnect: async () => {},
+            sendJson: async (payload) => {
+              sentEvents.push(payload);
+            },
+          }),
+        },
+      );
+
+      assert.ok(typeof handler === "function");
+      await waitUntil(() => connected, {
+        timeoutMs: 5000,
+        message: "refresh-stop-timeout daemon to connect",
+      });
+
+      handler({
+        type: "create_task",
+        payload: {
+          task_id: "task-refresh-stop-timeout-1",
+          project_id: "proj-refresh-stop-timeout-1",
+          backend_type: "codex",
+          request_id: "req-create-refresh-stop-timeout-1",
+        },
+      });
+
+      await waitUntil(() => spawnCalls.length === 1, { message: "refresh-stop-timeout initial spawn" });
+      await waitUntil(
+        () =>
+          sentEvents.some(
+            (entry) =>
+              entry.type === "task_status_update" &&
+              entry.payload?.task_id === "task-refresh-stop-timeout-1" &&
+              entry.payload?.status === "RUNNING",
+          ),
+        { message: "refresh-stop-timeout initial running" },
+      );
+
+      sentEvents.length = 0;
+
+      handler({
+        type: "restart_task",
+        payload: {
+          mode: "refresh_session_inplace",
+          source_task_id: "task-refresh-stop-timeout-1",
+          target_task_id: "task-refresh-stop-timeout-1",
+          project_id: "proj-refresh-stop-timeout-1",
+          title: "Refresh stop timeout",
+          source_backend_type: "codex",
+          source_session_id: "sess-refresh-stop-timeout-1",
+          target_backend_type: "codex",
+          request_id: "req-refresh-stop-timeout-1",
+        },
+      });
+
+      await waitUntil(() => killCalls.length === 1, { message: "refresh-stop-timeout old child stop" });
+      await waitUntil(
+        () =>
+          sentEvents.some(
+            (entry) =>
+              entry.type === "agent_command_ack" &&
+              entry.payload?.request_id === "req-refresh-stop-timeout-1",
+          ),
+        { message: "refresh-stop-timeout rejected ack" },
+      );
+      expectEvent(sentEvents, "agent_command_ack", (payload) => {
+        assert.strictEqual(payload.request_id, "req-refresh-stop-timeout-1");
+        assert.strictEqual(payload.event_type, "restart_task");
+        assert.strictEqual(payload.accepted, false);
+      });
+      assert.strictEqual(spawnCalls.length, 1);
+      assert.ok(
+        !sentEvents.some(
+          (entry) =>
+            entry.type === "task_status_update" &&
+            entry.payload?.task_id === "task-refresh-stop-timeout-1" &&
+            entry.payload?.status === "KILLED",
+        ),
+        "did not expect KILLED before the timed-out child actually exits",
+      );
+
+      assert.ok(typeof childExitHandlers[0] === "function");
+      childExitHandlers[0](143, "SIGTERM");
+
+      await waitUntil(
+        () =>
+          sentEvents.some(
+            (entry) =>
+              entry.type === "task_status_update" &&
+              entry.payload?.task_id === "task-refresh-stop-timeout-1" &&
+              entry.payload?.status === "KILLED",
+          ),
+        { message: "refresh-stop-timeout delayed terminal status" },
+      );
+      expectEvent(
+        sentEvents.filter((entry) => entry.type === "task_status_update"),
+        "task_status_update",
+        (payload) => {
+          assert.strictEqual(payload.task_id, "task-refresh-stop-timeout-1");
+          assert.strictEqual(payload.status, "KILLED");
+          assert.match(payload.summary, /killed by signal SIGTERM/);
+        },
+      );
+
+      daemonInstance.close();
+    } finally {
+      restoreEnv("CONDUCTOR_DAEMON_FORCE_STOP_GRACE_MS", previousGraceMs);
+      restoreEnv("CONDUCTOR_DAEMON_FORCE_STOP_POLL_INTERVAL_MS", previousPollInterval);
+    }
+  });
+
   it("bridges cross-backend restarts and launches the successor task", async () => {
     let handler;
     let connected = false;
@@ -4161,7 +5308,7 @@ describe("Daemon", () => {
       assert.ok(typeof handler === "function");
       assert.strictEqual(
         webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-        "project_path_validation,restart_daemon,pty_task,terminal_snapshot",
+        "project_path_validation,restart_daemon,refresh_session_inplace,pty_task,terminal_snapshot",
       );
 
       handler({
@@ -4191,7 +5338,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,restart_daemon,pty_task,terminal_snapshot",
+      "project_path_validation,restart_daemon,refresh_session_inplace,pty_task,terminal_snapshot",
     );
 
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -4464,7 +5611,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,restart_daemon",
+      "project_path_validation,restart_daemon,refresh_session_inplace",
     );
 
     handler({

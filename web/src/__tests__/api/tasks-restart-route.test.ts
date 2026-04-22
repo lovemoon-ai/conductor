@@ -9,6 +9,7 @@ vi.mock("@/lib/realtime/hub", () => ({
     getTaskAgentHost: vi.fn().mockReturnValue(null),
     bindTaskToAgent: vi.fn(),
     sendToAgentHost: vi.fn().mockReturnValue(true),
+    waitForAgentCommandAck: vi.fn().mockResolvedValue(true),
   },
 }));
 
@@ -33,6 +34,7 @@ vi.mock("@/lib/db", () => ({
     },
     agentOutbox: {
       create: vi.fn(),
+      updateMany: vi.fn(),
     },
     user: {
       findUnique: vi.fn(),
@@ -111,9 +113,16 @@ describe("/api/tasks/[taskId]/restart", () => {
       createdAt: new Date("2026-03-24T10:10:00.000Z"),
       updatedAt: new Date("2026-03-24T10:10:00.000Z"),
     }) as any);
+    vi.mocked(db.agentOutbox.updateMany).mockResolvedValue({ count: 1 } as any);
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
-      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex", "claude", "kimi", "opencode"], capabilities: [] },
+      {
+        id: "agent-1",
+        host: "daemon-1",
+        supportedBackends: ["codex", "claude", "kimi", "opencode"],
+        capabilities: ["refresh_session_inplace"],
+      },
     ] as any);
+    vi.mocked(realtimeHub.waitForAgentCommandAck).mockResolvedValue(true);
   });
 
   it("dispatches restart_task for same-backend restart and returns the source task as running", async () => {
@@ -148,6 +157,128 @@ describe("/api/tasks/[taskId]/restart", () => {
         agentHost: "daemon-1",
       }),
     );
+  });
+
+  it("refreshes a running task session in place without mutating task ownership or status", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ status: "running" }) as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { restart_mode: "refresh_session" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("inplace_restart");
+    expect(data.task.status).toBe("running");
+    expect(data.task.agent_host).toBe("daemon-1");
+    expect(data.task.execution_host).toBe("daemon-1");
+    expect(db.task.update).not.toHaveBeenCalled();
+    expect(realtimeHub.bindTaskToAgent).not.toHaveBeenCalled();
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          taskId: "task-1",
+          eventType: "restart_task",
+          payloadJson: expect.stringContaining('"mode":"refresh_session_inplace"'),
+        }),
+      }),
+    );
+    expect(realtimeHub.waitForAgentCommandAck).toHaveBeenCalledWith(
+      "task-1",
+      expect.any(String),
+      60_000,
+      {
+        expectedHosts: ["daemon-1"],
+        eventType: "restart_task",
+      },
+    );
+  });
+
+  it("returns 502 when daemon rejects session refresh", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ status: "running" }) as any);
+    vi.mocked(db.task.update).mockImplementation(async ({ where, data }: any) => ({
+      ...buildTask({ status: "running" }),
+      id: where.id,
+      ...data,
+      createdAt: new Date("2026-03-24T10:00:00.000Z"),
+      updatedAt: new Date("2026-03-24T10:10:00.000Z"),
+    }) as any);
+    vi.mocked(realtimeHub.waitForAgentCommandAck).mockResolvedValue(false);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { restart_mode: "refresh_session" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(502);
+    expect(data.error).toContain("rejected");
+  });
+
+  it("marks refresh outbox command failed when daemon ack times out", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ status: "running" }) as any);
+    vi.mocked(realtimeHub.waitForAgentCommandAck).mockResolvedValue(null);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { restart_mode: "refresh_session" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(504);
+    expect(data.error).toContain("Timed out");
+    expect(db.agentOutbox.updateMany).toHaveBeenCalledWith({
+      where: {
+        userId: "user-1",
+        requestId: expect.any(String),
+        status: { in: ["pending", "sent"] },
+      },
+      data: {
+        status: "failed",
+        nextRetryAt: null,
+        lastError: "ack_timeout:restart_task",
+      },
+    });
+  });
+
+  it("returns 409 when daemon does not advertise session refresh support", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ status: "running" }) as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      {
+        id: "agent-1",
+        host: "daemon-1",
+        supportedBackends: ["codex"],
+        capabilities: [],
+      },
+    ] as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { restart_mode: "refresh_session" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toContain("does not support AI session refresh");
+    expect(db.agentOutbox.create).not.toHaveBeenCalled();
+    expect(realtimeHub.waitForAgentCommandAck).not.toHaveBeenCalled();
   });
 
   it("allows in-place restart for tasks in unknown status", async () => {
@@ -344,8 +475,8 @@ describe("/api/tasks/[taskId]/restart", () => {
 
   it("restarts a stopped conductor-fire task in place on an online daemon", async () => {
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
-      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
-      { id: "agent-2", host: "daemon-2", supportedBackends: ["codex", "claude"], capabilities: [] },
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: ["refresh_session_inplace"] },
+      { id: "agent-2", host: "daemon-2", supportedBackends: ["codex", "claude"], capabilities: ["refresh_session_inplace"] },
     ] as any);
     vi.mocked(db.task.findFirst).mockResolvedValue(
       buildTask({ agentHost: "conductor-fire-debug-1", executionHost: "daemon-2" }) as any,
@@ -391,7 +522,7 @@ describe("/api/tasks/[taskId]/restart", () => {
 
   it("returns 409 when a conductor-fire task's original execution daemon is offline", async () => {
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
-      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex", "claude"], capabilities: [] },
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex", "claude"], capabilities: ["refresh_session_inplace"] },
     ] as any);
     vi.mocked(db.task.findFirst).mockResolvedValue(
       buildTask({ agentHost: "conductor-fire-debug-1", executionHost: "daemon-2" }) as any,
@@ -419,7 +550,7 @@ describe("/api/tasks/[taskId]/restart", () => {
 
   it("restarts a stopped conductor-fire task using metadata daemonName when executionHost is unavailable", async () => {
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
-      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex", "claude"], capabilities: [] },
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex", "claude"], capabilities: ["refresh_session_inplace"] },
     ] as any);
     vi.mocked(db.task.findFirst).mockResolvedValue(
       buildTask({
@@ -514,6 +645,221 @@ describe("/api/tasks/[taskId]/restart", () => {
 
     expect(response.status).toBe(200);
     expect(data.mode).toBe("successor_new_task");
+  });
+
+  it("allows running conductor-fire task to refresh its session on the original daemon", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        status: "running",
+        agentHost: "conductor-fire-debug-1",
+        executionHost: "daemon-1",
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { restart_mode: "refresh_session" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("inplace_restart");
+    expect(data.task.agent_host).toBe("conductor-fire-debug-1");
+    expect(data.task.execution_host).toBe("daemon-1");
+    expect(db.task.update).not.toHaveBeenCalled();
+    expect(realtimeHub.bindTaskToAgent).not.toHaveBeenCalled();
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentHost: "daemon-1",
+          payloadJson: expect.stringContaining('"mode":"refresh_session_inplace"'),
+        }),
+      }),
+    );
+    expect(realtimeHub.waitForAgentCommandAck).toHaveBeenCalledWith(
+      "task-1",
+      expect.any(String),
+      60_000,
+      {
+        expectedHosts: ["daemon-1"],
+        eventType: "restart_task",
+      },
+    );
+  });
+
+  it("refreshes running conductor-fire task using metadata daemonName when executionHost is still a fire host", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        status: "running",
+        agentHost: "conductor-fire-debug-1",
+        executionHost: "conductor-fire-debug-1",
+        metadata: JSON.stringify({ daemonName: "daemon-1" }),
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { restart_mode: "refresh_session" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("inplace_restart");
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentHost: "daemon-1",
+          payloadJson: expect.stringContaining('"mode":"refresh_session_inplace"'),
+        }),
+      }),
+    );
+    expect(realtimeHub.waitForAgentCommandAck).toHaveBeenCalledWith(
+      "task-1",
+      expect.any(String),
+      60_000,
+      {
+        expectedHosts: ["daemon-1"],
+        eventType: "restart_task",
+      },
+    );
+  });
+
+  it("refreshes running conductor-fire task on its execution daemon instead of project binding", async () => {
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: ["refresh_session_inplace"] },
+      { id: "agent-2", host: "daemon-2", supportedBackends: ["codex"], capabilities: ["refresh_session_inplace"] },
+    ] as any);
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        status: "running",
+        agentHost: "conductor-fire-debug-1",
+        executionHost: "daemon-1",
+      }) as any,
+    );
+    vi.mocked(db.project.findFirst).mockResolvedValue({
+      id: "proj-1",
+      userId: "user-1",
+      daemonHost: "daemon-2",
+      workspacePath: "/repo/project",
+    } as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { restart_mode: "refresh_session" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("inplace_restart");
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentHost: "daemon-1",
+          payloadJson: expect.stringContaining('"mode":"refresh_session_inplace"'),
+        }),
+      }),
+    );
+    expect(realtimeHub.waitForAgentCommandAck).toHaveBeenCalledWith(
+      "task-1",
+      expect.any(String),
+      60_000,
+      {
+        expectedHosts: ["daemon-1"],
+        eventType: "restart_task",
+      },
+    );
+  });
+
+  it("refreshes running conductor-fire task on executionHost when metadata daemonName disagrees", async () => {
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: ["refresh_session_inplace"] },
+      { id: "agent-2", host: "daemon-2", supportedBackends: ["codex"], capabilities: ["refresh_session_inplace"] },
+    ] as any);
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        status: "running",
+        agentHost: "conductor-fire-debug-1",
+        executionHost: "daemon-2",
+        metadata: JSON.stringify({ daemonName: "daemon-1" }),
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { restart_mode: "refresh_session" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("inplace_restart");
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentHost: "daemon-2",
+          payloadJson: expect.stringContaining('"mode":"refresh_session_inplace"'),
+        }),
+      }),
+    );
+    expect(realtimeHub.waitForAgentCommandAck).toHaveBeenCalledWith(
+      "task-1",
+      expect.any(String),
+      60_000,
+      {
+        expectedHosts: ["daemon-2"],
+        eventType: "restart_task",
+      },
+    );
+  });
+
+  it("returns 409 when only the project daemon is online for a running conductor-fire refresh", async () => {
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: ["refresh_session_inplace"] },
+    ] as any);
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        status: "running",
+        agentHost: "conductor-fire-debug-1",
+        executionHost: "daemon-2",
+        metadata: JSON.stringify({ daemonName: "daemon-3" }),
+      }) as any,
+    );
+    vi.mocked(db.project.findFirst).mockResolvedValue({
+      id: "proj-1",
+      userId: "user-1",
+      daemonHost: "daemon-1",
+      workspacePath: "/repo/project",
+    } as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { restart_mode: "refresh_session" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toContain("Original daemon daemon-2 is offline");
+    expect(db.agentOutbox.create).not.toHaveBeenCalled();
+    expect(realtimeHub.waitForAgentCommandAck).not.toHaveBeenCalled();
   });
 
   it("returns 409 when a running conductor-fire task tries inplace restart", async () => {
