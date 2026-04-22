@@ -2,6 +2,7 @@
 
 import { Suspense, useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useToast } from '@/components/common/FeedbackProvider';
 import { Header } from '@/components/layout/Header';
 import {
   RefreshIcon,
@@ -12,19 +13,24 @@ import { TaskDetailPane } from '@/features/tasks';
 import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
 import { filterTasksByProject } from '@/features/tasks';
+import { useUserPreferencesStore } from '@/features/user-preferences/store';
 
 const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
 
 function TasksPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { pushToast } = useToast();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
-  const [showRunningOnly, setShowRunningOnly] = useState(false);
   const viewMode = 'list' as const;
   const [isDesktop, setIsDesktop] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const previousRequestedTaskIdRef = useRef<string | null>(null);
   const shouldHonorIncomingTaskIdRef = useRef(false);
+  const showRunningOnly = useUserPreferencesStore((state) => state.taskListRunningOnly);
+  const taskListPreferencesError = useUserPreferencesStore((state) => state.taskListPreferencesError);
+  const hydrateTaskListPreferences = useUserPreferencesStore((state) => state.hydrateTaskListPreferences);
+  const setTaskListRunningOnly = useUserPreferencesStore((state) => state.setTaskListRunningOnly);
   const setProjectFilter = useTasksStore((state) => state.setProjectFilter);
   const fetchTasks = useTasksStore((state) => state.fetchTasks);
   const isLoading = useTasksStore((state) => state.isLoading);
@@ -72,6 +78,21 @@ function TasksPageContent() {
     mediaQuery.addListener(updateViewport);
     return () => mediaQuery.removeListener(updateViewport);
   }, []);
+
+  useEffect(() => {
+    void hydrateTaskListPreferences();
+  }, [hydrateTaskListPreferences]);
+
+  useEffect(() => {
+    if (!taskListPreferencesError) {
+      return;
+    }
+    pushToast({
+      title: 'Task view preference not saved',
+      description: taskListPreferencesError,
+      variant: 'error',
+    });
+  }, [pushToast, taskListPreferencesError]);
 
   useEffect(() => {
     if (!projectIdFromUrl || !hiddenProjectIdSet.has(projectIdFromUrl)) {
@@ -152,7 +173,7 @@ function TasksPageContent() {
   };
 
   const handleTitleDoubleClick = () => {
-    setShowRunningOnly((value) => !value);
+    void setTaskListRunningOnly(!showRunningOnly);
   };
 
   const handleSelectTask = (taskId: string) => {

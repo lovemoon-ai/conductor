@@ -446,6 +446,16 @@ export class RealtimeHub {
     console.log(`[realtimeHub] broadcast: userId=${userId}, projectId=${projectId}, sentTo=${sentCount} connections`);
   }
 
+  broadcastToUser(userId: string, payload: unknown) {
+    let sentCount = 0;
+    for (const conn of this.connections.values()) {
+      if (conn.kind !== "app" || conn.userId !== userId) continue;
+      conn.send(payload);
+      sentCount++;
+    }
+    return sentCount;
+  }
+
   sendToAgent(taskId: string, payload: unknown): boolean {
     const agentHost = this.taskToAgent.get(taskId);
     if (!agentHost) return false;

@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import TasksPage from './page';
+import { useUserPreferencesStore } from '@/features/user-preferences/store';
+
+const apiClientMock = vi.hoisted(() => ({
+  get: vi.fn(),
+  patch: vi.fn(),
+}));
+const pushToastMock = vi.hoisted(() => vi.fn());
 
 const setProjectFilterMock = vi.fn();
 const setSelectedProjectIdMock = vi.fn();
@@ -27,6 +34,14 @@ vi.mock('next/navigation', () => ({
     get: (key: string) => searchParamsState.get(key),
     toString: () => searchParamsState.toString(),
   }),
+}));
+
+vi.mock('@/shared/api/client', () => ({
+  getApiClient: () => apiClientMock,
+}));
+
+vi.mock('@/components/common/FeedbackProvider', () => ({
+  useToast: () => ({ pushToast: pushToastMock }),
 }));
 
 vi.mock('@/features/tasks', async () => {
@@ -144,6 +159,19 @@ describe('TasksPage', () => {
     fetchTasksMock.mockReset();
     replaceMock.mockReset();
     headerMock.mockReset();
+    pushToastMock.mockReset();
+    apiClientMock.get.mockReset();
+    apiClientMock.patch.mockReset();
+    apiClientMock.get.mockResolvedValue({ tasksRunningOnly: false });
+    apiClientMock.patch.mockImplementation(async (_path: string, body: { tasksRunningOnly?: boolean }) => ({
+      tasksRunningOnly: body.tasksRunningOnly === true,
+    }));
+    useUserPreferencesStore.setState({
+      taskListRunningOnly: false,
+      taskListPreferencesHydrated: false,
+      taskListPreferencesLoading: false,
+      taskListPreferencesError: null,
+    });
 
     tasksState = {
       setProjectFilter: setProjectFilterMock,
@@ -247,6 +275,9 @@ describe('TasksPage', () => {
 
     fireEvent.doubleClick(screen.getByRole('heading', { name: 'Tasks(3)' }));
 
+    expect(apiClientMock.patch).toHaveBeenCalledWith('/user-preferences/task-list', {
+      tasksRunningOnly: true,
+    });
     expect(screen.getByRole('heading', { name: 'Tasks(2)' })).toHaveAttribute(
       'title',
       'Double-click to show all tasks.',
@@ -255,11 +286,67 @@ describe('TasksPage', () => {
 
     fireEvent.doubleClick(screen.getByRole('heading', { name: 'Tasks(2)' }));
 
+    expect(apiClientMock.patch).toHaveBeenLastCalledWith('/user-preferences/task-list', {
+      tasksRunningOnly: false,
+    });
     expect(screen.getByRole('heading', { name: 'Tasks(3)' })).toHaveAttribute(
       'title',
       'Double-click to show running tasks only.',
     );
     expect(screen.getByText('running-only:no')).toBeInTheDocument();
+  });
+
+  it('rolls back the running-only preference and shows a toast when persistence fails', async () => {
+    apiClientMock.patch.mockRejectedValueOnce(new Error('server unavailable'));
+    tasksState = {
+      ...tasksState,
+      tasks: [
+        { id: 'task-1', projectId: 'project-1', status: 'running' },
+        { id: 'task-2', projectId: 'project-1', status: 'completed' },
+      ],
+    };
+
+    render(<TasksPage />);
+
+    fireEvent.doubleClick(screen.getByRole('heading', { name: 'Tasks(2)' }));
+
+    expect(apiClientMock.patch).toHaveBeenCalledWith('/user-preferences/task-list', {
+      tasksRunningOnly: true,
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Tasks(2)' })).toHaveAttribute(
+        'title',
+        'Double-click to show running tasks only.',
+      );
+    });
+    expect(screen.getByText('running-only:no')).toBeInTheDocument();
+    expect(pushToastMock).toHaveBeenCalledWith({
+      title: 'Task view preference not saved',
+      description: 'server unavailable',
+      variant: 'error',
+    });
+  });
+
+  it('hydrates the running-only title preference from the server', async () => {
+    apiClientMock.get.mockResolvedValueOnce({ tasksRunningOnly: true });
+    tasksState = {
+      ...tasksState,
+      tasks: [
+        { id: 'task-1', projectId: 'project-1', status: 'running' },
+        { id: 'task-2', projectId: 'project-1', status: 'completed' },
+      ],
+    };
+
+    render(<TasksPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Tasks(1)' })).toHaveAttribute(
+        'title',
+        'Double-click to show all tasks.',
+      );
+    });
+    expect(apiClientMock.get).toHaveBeenCalledWith('/user-preferences/task-list');
+    expect(screen.getByText('running-only:yes')).toBeInTheDocument();
   });
 
   it('keeps inline selection when clicking a new task with an existing taskId in the URL', () => {

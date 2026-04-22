@@ -6,6 +6,7 @@ import { useProjectsStore } from '@/features/projects/store';
 import { useTasksStore } from '@/features/tasks';
 import { useRuntimeStore } from '@/features/realtime/runtime-store';
 import { useTerminalStore } from '@/features/terminal';
+import { useUserPreferencesStore } from '@/features/user-preferences/store';
 
 interface WebSocketState {
   status: WSConnectionStatus;
@@ -207,6 +208,22 @@ function normalizeOptionalTimestamp(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
+function normalizeUserPreferencePayload(payload: Record<string, unknown>): { tasksRunningOnly: boolean } | null {
+  const scope = typeof payload.scope === 'string' ? payload.scope : null;
+  if (scope && scope !== 'task_list') {
+    return null;
+  }
+
+  const preferences =
+    payload.preferences && typeof payload.preferences === 'object' && !Array.isArray(payload.preferences)
+      ? (payload.preferences as Record<string, unknown>)
+      : payload;
+  const tasksRunningOnly = Object.prototype.hasOwnProperty.call(preferences, 'tasksRunningOnly')
+    ? preferences.tasksRunningOnly
+    : preferences.tasks_running_only;
+  return typeof tasksRunningOnly === 'boolean' ? { tasksRunningOnly } : null;
+}
+
 function normalizeRuntimeStatus(payload: Record<string, unknown>): TaskRuntimeStatus | null {
   const taskId = normalizeTaskId(payload);
   if (!taskId) return null;
@@ -324,6 +341,14 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
       }
       if (task?.taskType === 'pty_task' || useTerminalStore.getState().byTask[taskId]) {
         useTerminalStore.getState().markTaskStatus(taskId, status);
+      }
+      break;
+    }
+
+    case 'user_preference_update': {
+      const preferences = normalizeUserPreferencePayload(payload);
+      if (preferences) {
+        useUserPreferencesStore.getState().applyTaskListPreferences(preferences);
       }
       break;
     }

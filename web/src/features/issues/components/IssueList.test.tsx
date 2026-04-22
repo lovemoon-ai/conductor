@@ -65,24 +65,4 @@ describe('IssueList', () => {
     expect(screen.queryByText('Build AI task handoff')).toBeNull();
     expect(screen.getByText('No issues in Done.')).toBeInTheDocument();
   });
-
-  it('hides filtered statuses when visible statuses are restricted', () => {
-    render(<IssueList issues={issues} visibleStatuses={['todo', 'doing']} />);
-
-    expect(screen.getByRole('button', { name: 'Todo(1)' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Doing(1)' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Done' })).toBeNull();
-  });
-
-  it('resets the selected status when visible statuses remove it', () => {
-    const { rerender } = render(<IssueList issues={issues} />);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
-    expect(screen.getByText('No issues in Done.')).toBeInTheDocument();
-
-    rerender(<IssueList issues={issues} visibleStatuses={['todo', 'doing']} />);
-
-    expect(screen.queryByRole('button', { name: 'Done' })).toBeNull();
-    expect(screen.getByText('Plan board UX')).toBeInTheDocument();
-  });
 });

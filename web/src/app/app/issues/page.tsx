@@ -20,39 +20,9 @@ import {
   getIssueAppendPlacement,
   type IssueMovePlacement,
 } from '@/features/issues/components/board-utils';
-import { ISSUE_STATUSES } from '@/lib/issues/config';
 import type { Agent, Issue, IssueStatus, Project } from '@/shared/types';
 
 const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
-const HIDE_DONE_ISSUES_STORAGE_KEY = 'conductor-hide-done-issues';
-
-const readStoredHideDoneIssues = (): boolean => {
-  if (typeof window === 'undefined') {
-    return false;
-  }
-
-  try {
-    return window.localStorage.getItem(HIDE_DONE_ISSUES_STORAGE_KEY) === '1';
-  } catch {
-    return false;
-  }
-};
-
-const writeStoredHideDoneIssues = (value: boolean) => {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  try {
-    if (value) {
-      window.localStorage.setItem(HIDE_DONE_ISSUES_STORAGE_KEY, '1');
-    } else {
-      window.localStorage.removeItem(HIDE_DONE_ISSUES_STORAGE_KEY);
-    }
-  } catch {
-    // Ignore storage failures; the preference still works until the page reloads.
-  }
-};
 
 const isConductorFireHost = (host: string | null | undefined): boolean =>
   typeof host === 'string' && host.startsWith('conductor-fire-');
@@ -108,7 +78,6 @@ function IssuesPageContent() {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [pendingIssueStart, setPendingIssueStart] = useState<PendingIssueStart | null>(null);
   const [hasRequestedProjects, setHasRequestedProjects] = useState(false);
-  const [hideDoneIssues, setHideDoneIssues] = useState(readStoredHideDoneIssues);
   const [isDesktop, setIsDesktop] = useState(
     typeof window !== 'undefined' ? window.matchMedia(DESKTOP_MEDIA_QUERY).matches : false,
   );
@@ -150,21 +119,11 @@ function IssuesPageContent() {
     () => projects.find((project) => project.id === resolvedProjectId) ?? null,
     [projects, resolvedProjectId],
   );
-  const visibleStatuses = useMemo(
-    () => (hideDoneIssues ? ISSUE_STATUSES.filter((status) => status !== 'done') : ISSUE_STATUSES),
-    [hideDoneIssues],
-  );
-  const visibleIssues = useMemo(() => {
-    const projectScopedIssues = resolvedProjectId
+  const visibleIssues = useMemo(() => (
+    resolvedProjectId
       ? issues
-      : issues.filter((issue) => !hiddenProjectIdSet.has(issue.projectId));
-
-    if (!hideDoneIssues) {
-      return projectScopedIssues;
-    }
-
-    return projectScopedIssues.filter((issue) => issue.status !== 'done');
-  }, [hiddenProjectIdSet, hideDoneIssues, issues, resolvedProjectId]);
+      : issues.filter((issue) => !hiddenProjectIdSet.has(issue.projectId))
+  ), [hiddenProjectIdSet, issues, resolvedProjectId]);
   const issueCount = visibleIssues.length;
   const title = currentProject
     ? `${currentProject.name} (${issueCount} ${issueCount === 1 ? 'issue' : 'issues'})`
@@ -221,14 +180,6 @@ function IssuesPageContent() {
     void fetchIssues(resolvedProjectId);
   };
 
-  const handleTitleDoubleClick = () => {
-    setHideDoneIssues((value) => {
-      const nextValue = !value;
-      writeStoredHideDoneIssues(nextValue);
-      return nextValue;
-    });
-  };
-
   const handleMoveIssue = async (
     issueId: string,
     status: IssueStatus,
@@ -274,12 +225,12 @@ function IssuesPageContent() {
   };
 
   const handleStatusChange = async (issueId: string, status: IssueStatus) => {
-    const issue = issues.find((entry) => entry.id === issueId);
+    const issue = visibleIssues.find((entry) => entry.id === issueId);
     if (!issue || issue.status === status) {
       return;
     }
 
-    const projectIssues = issues.filter((entry) => entry.projectId === issue.projectId);
+    const projectIssues = visibleIssues.filter((entry) => entry.projectId === issue.projectId);
     const nextPosition = calculateIssueAppendPosition(projectIssues, status, issueId);
     await handleMoveIssue(issueId, status, nextPosition, getIssueAppendPlacement());
   };
@@ -342,10 +293,6 @@ function IssuesPageContent() {
       <Header
         title={title}
         compact
-        onTitleDoubleClick={handleTitleDoubleClick}
-        titleDoubleClickHint={hideDoneIssues
-          ? 'Double-click to show done issues.'
-          : 'Double-click to hide done issues.'}
         actions={
           <div className="flex items-center gap-2">
             <button
@@ -380,7 +327,6 @@ function IssuesPageContent() {
         ) : !isDesktop ? (
           <IssueList
             issues={visibleIssues}
-            visibleStatuses={visibleStatuses}
             onStatusChange={handleStatusChange}
             onDeleteIssue={handleDeleteIssue}
           />
@@ -389,7 +335,6 @@ function IssuesPageContent() {
             issues={visibleIssues}
             isLoading={isIssuesLoading}
             dragDisabled={!resolvedProjectId}
-            visibleStatuses={visibleStatuses}
             onMoveIssue={handleMoveIssue}
             onStatusChange={handleStatusChange}
             onDeleteIssue={handleDeleteIssue}

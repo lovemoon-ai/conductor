@@ -5,6 +5,7 @@ import { useProjectsStore } from '@/features/projects/store';
 import { useRuntimeStore } from './runtime-store';
 import { useTasksStore } from '@/features/tasks';
 import { clearAllTerminalOutputSnapshots, getTerminalOutputSnapshot, useTerminalStore } from '@/features/terminal';
+import { useUserPreferencesStore } from '@/features/user-preferences/store';
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
@@ -188,6 +189,12 @@ describe('websocket runtime status handling', () => {
       ws: null,
       reconnectAttempts: 0,
     });
+    useUserPreferencesStore.setState({
+      taskListRunningOnly: false,
+      taskListPreferencesHydrated: false,
+      taskListPreferencesLoading: false,
+      taskListPreferencesError: null,
+    });
   });
 
   it('stores runtime status from task_runtime_status events', () => {
@@ -216,6 +223,21 @@ describe('websocket runtime status handling', () => {
     expect(runtime.sessionId).toBe('session-1');
     expect(runtime.tokenUsagePercent).toBe(26);
     expect(runtime.contextUsagePercent).toBe(5);
+  });
+
+  it('applies task list preferences from user_preference_update events', () => {
+    handleWSMessage({
+      type: 'user_preference_update',
+      payload: {
+        scope: 'task_list',
+        preferences: {
+          tasks_running_only: true,
+        },
+      },
+    });
+
+    expect(useUserPreferencesStore.getState().taskListRunningOnly).toBe(true);
+    expect(useUserPreferencesStore.getState().taskListPreferencesHydrated).toBe(true);
   });
 
   it('preserves stable runtime details across partial task_runtime_status updates', () => {
@@ -287,7 +309,7 @@ describe('websocket runtime status handling', () => {
   });
 
   it('fetches task detail when a task status arrives before the task exists in the store', () => {
-    const fetchTaskSpy = vi.spyOn(useTasksStore.getState(), 'fetchTask').mockResolvedValue(null);
+    const fetchTaskSpy = vi.mocked(useTasksStore.getState().fetchTask);
 
     handleWSMessage({
       type: 'task_status_update',

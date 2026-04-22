@@ -67,6 +67,43 @@ describe('RealtimeHub terminal writer leases', () => {
 });
 
 describe('RealtimeHub connected agents metadata', () => {
+  it('broadcasts user preference updates only to app connections for that user', () => {
+    const hub = new RealtimeHub();
+    const appSend = vi.fn();
+    const otherUserSend = vi.fn();
+    const agentSend = vi.fn();
+    hub.register({
+      id: 'app-1',
+      kind: 'app',
+      userId: 'user-1',
+      projectIds: [],
+      send: appSend,
+      close: vi.fn(),
+    });
+    hub.register({
+      id: 'app-2',
+      kind: 'app',
+      userId: 'user-2',
+      projectIds: [],
+      send: otherUserSend,
+      close: vi.fn(),
+    });
+    hub.register({
+      id: 'agent-1',
+      kind: 'agent',
+      userId: 'user-1',
+      projectIds: ['*'],
+      host: 'daemon-a',
+      send: agentSend,
+      close: vi.fn(),
+    });
+
+    expect(hub.broadcastToUser('user-1', { type: 'user_preference_update' })).toBe(1);
+    expect(appSend).toHaveBeenCalledWith({ type: 'user_preference_update' });
+    expect(otherUserSend).not.toHaveBeenCalled();
+    expect(agentSend).not.toHaveBeenCalled();
+  });
+
   it('preserves optional agent version metadata', () => {
     const hub = new RealtimeHub();
     hub.register({

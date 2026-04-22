@@ -32,6 +32,7 @@ model User {
   projects Project[]
   defaultProject DefaultProject? @relation("UserDefaultProject")
   tokens   UserToken[]
+  preferences UserPreference[]
   orders   Order[]
   externalAccounts ExternalAccount[]
   channelConversations ChannelConversation[]
@@ -64,6 +65,21 @@ model UserToken {
 
   @@index([tokenPrefix])
   @@map("user_tokens")
+}
+
+model UserPreference {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  key       String
+  value     String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, key])
+  @@index([userId])
+  @@map("user_preferences")
 }
 
 model Project {

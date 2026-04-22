@@ -15,7 +15,7 @@ import {
   type DragOverEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
-import type { Issue, IssueStatus } from '@/shared/types';
+import type { Issue } from '@/shared/types';
 import { ISSUE_STATUSES } from '@/lib/issues/config';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { IssueCardOverlay } from './IssueCard';
@@ -43,7 +43,6 @@ export function IssueBoard({
   isLoading = false,
   dragDisabled = false,
   statusMenuDisabled = false,
-  visibleStatuses,
   onMoveIssue,
   onStatusChange,
   onDeleteIssue,
@@ -52,7 +51,6 @@ export function IssueBoard({
   isLoading?: boolean;
   dragDisabled?: boolean;
   statusMenuDisabled?: boolean;
-  visibleStatuses?: readonly IssueStatus[];
   onMoveIssue: (
     issueId: string,
     status: Issue['status'],
@@ -63,10 +61,6 @@ export function IssueBoard({
   onDeleteIssue?: (issueId: string) => Promise<void> | void;
 }) {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-  const statusOptions = useMemo(
-    () => (visibleStatuses && visibleStatuses.length > 0 ? [...visibleStatuses] : [...ISSUE_STATUSES]),
-    [visibleStatuses],
-  );
   const effectiveDragDisabled = isLoading || dragDisabled;
   const effectiveStatusMenuDisabled = isLoading || statusMenuDisabled;
   const [columns, setColumns] = useState<IssueBoardColumns>(() => buildIssueColumns(issues));
@@ -167,7 +161,7 @@ export function IssueBoard({
       onDragEnd={handleDragEnd}
     >
       <div className="flex h-full min-h-0 gap-4 overflow-x-auto pb-2 webapp-scrollbar">
-        {statusOptions.map((status) => (
+        {ISSUE_STATUSES.map((status) => (
           <div key={status} className="min-h-0 w-[18.5rem] min-w-[18.5rem] lg:w-[19rem] xl:flex-1">
             <IssueColumn
               status={status}
