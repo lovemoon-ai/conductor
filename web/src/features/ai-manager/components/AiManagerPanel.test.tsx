@@ -159,6 +159,8 @@ describe('AiManagerPanel', () => {
     expect(loginLabel.tagName).toBe('SPAN');
     const headerRow = loginLabel.closest('div');
     expect(headerRow).not.toBeNull();
-    expect(headerRow?.textContent ?? '').toMatch(/^Copilot\s+ALLOWED\s+\(octocat via GITHUB_TOKEN\)/);
+    // JSX collapses the whitespace around sibling expressions, so textContent
+    // is concatenated directly. Allow zero whitespace but still assert order.
+    expect(headerRow?.textContent ?? '').toMatch(/^Copilot\s*ALLOWED\s*\(octocat via GITHUB_TOKEN\)/);
   });
 });
