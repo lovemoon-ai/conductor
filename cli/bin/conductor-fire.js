@@ -69,9 +69,20 @@ const CLI_NAME = (process.env.CONDUCTOR_CLI_NAME || path.basename(process.argv[1
   "",
 );
 
-export function buildConductorConnectHeaders(version = pkgJson.version) {
+export function buildConductorConnectHeaders(
+  version = pkgJson.version,
+  options = {},
+) {
+  const backends = Array.isArray(options.backends)
+    ? options.backends.map((entry) => String(entry || "").trim()).filter(Boolean)
+    : [];
+  const capabilities = Array.isArray(options.capabilities)
+    ? options.capabilities.map((entry) => String(entry || "").trim()).filter(Boolean)
+    : [];
   return {
     "x-conductor-version": version,
+    ...(backends.length > 0 ? { "x-conductor-backends": backends.join(",") } : {}),
+    ...(capabilities.length > 0 ? { "x-conductor-capabilities": capabilities.join(",") } : {}),
   };
 }
 
@@ -678,6 +689,7 @@ async function main() {
   let reconnectTaskId = null;
   let pendingRemoteStopEvent = null;
   const pendingRemoteInterruptQueue = createPendingRemoteInterruptQueue();
+  const completedRefreshSessionRequests = new Map();
   let conductor = null;
   let reconnectResumeInFlight = false;
   let fireShuttingDown = false;
@@ -762,6 +774,41 @@ async function main() {
     return await pendingRemoteInterruptQueue.enqueue(event);
   };
 
+  const rememberCompletedRefreshSessionRequest = (requestId, accepted) => {
+    if (!requestId) {
+      return accepted;
+    }
+    completedRefreshSessionRequests.set(requestId, accepted);
+    while (completedRefreshSessionRequests.size > 20) {
+      const oldest = completedRefreshSessionRequests.keys().next();
+      if (oldest.done) {
+        break;
+      }
+      completedRefreshSessionRequests.delete(oldest.value);
+    }
+    return accepted;
+  };
+
+  const handleRefreshSessionCommand = async (event) => {
+    fireWatchdog.onInbound();
+    if (!event || typeof event !== "object") {
+      return false;
+    }
+    const taskId = typeof event.taskId === "string" ? event.taskId : "";
+    const requestId = typeof event.requestId === "string" ? event.requestId.trim() : "";
+    if (reconnectTaskId && taskId && taskId !== reconnectTaskId) {
+      return false;
+    }
+    if (requestId && completedRefreshSessionRequests.has(requestId)) {
+      return completedRefreshSessionRequests.get(requestId) === true;
+    }
+    if (reconnectRunner && typeof reconnectRunner.requestRefreshSessionFromRemote === "function") {
+      const accepted = await reconnectRunner.requestRefreshSessionFromRemote(event);
+      return rememberCompletedRefreshSessionRequest(requestId, accepted !== false);
+    }
+    return rememberCompletedRefreshSessionRequest(requestId, false);
+  };
+
   if (cliArgs.configFile) {
     env.CONDUCTOR_CONFIG = cliArgs.configFile;
   }
@@ -796,7 +843,10 @@ async function main() {
     conductor = await ConductorClient.connect({
       projectPath: runtimeProjectPath,
       extraEnv: env,
-      extraHeaders: buildConductorConnectHeaders(),
+      extraHeaders: buildConductorConnectHeaders(pkgJson.version, {
+        backends: [cliArgs.backend],
+        capabilities: ["refresh_session_inplace"],
+      }),
       configFile: cliArgs.configFile,
       onConnected: (event) => {
         fireWatchdog.onConnected(event);
@@ -813,6 +863,7 @@ async function main() {
       },
       onStopTask: handleStopTaskCommand,
       onInterruptTurn: handleInterruptTurnCommand,
+      onRefreshSession: handleRefreshSessionCommand,
     });
 
     const taskContext = await ensureTaskContext(conductor, {
@@ -852,7 +903,10 @@ async function main() {
       }
     }
 
-    const resolvedResumeSessionId = cliArgs.resumeSessionId;
+    let nextResumeSessionId = cliArgs.resumeSessionId;
+    let nextInitialPrompt =
+      taskContext.shouldProcessInitialPrompt ? cliArgs.initialPrompt : "";
+    let pendingRefreshSessionRequest = null;
 
     const sessionCommandLine = resolveAiSessionCommandLine(
       cliArgs.backend,
@@ -867,19 +921,6 @@ async function main() {
       env: process.env,
     });
 
-    backendSession = createAiSession(cliArgs.sessionBackend || cliArgs.backend, {
-      initialImages: cliArgs.initialImages,
-      cwd: runtimeProjectPath,
-      resumeSessionId: resolvedResumeSessionId,
-      configFile: cliArgs.configFile,
-      ...(cliArgs.sessionOptions || {}),
-      ...(sessionCommandLine ? { commandLine: sessionCommandLine } : {}),
-      logger: { log },
-      ...(resolvedPrePrompt ? { prePrompt: resolvedPrePrompt } : {}),
-      sessionStoreKey: taskContext.taskId ? `task-${taskContext.taskId}` : undefined,
-      resumePersistedSession: Boolean(!resolvedResumeSessionId && taskContext.taskId),
-    });
-
     log(`Using backend: ${cliArgs.backend}`);
 
     try {
@@ -891,26 +932,6 @@ async function main() {
     } catch (error) {
       log(`Failed to report agent resume: ${error?.message || error}`);
     }
-
-    const runner = new BridgeRunner({
-      backendSession,
-      conductor,
-      taskId: taskContext.taskId,
-      pollIntervalMs: Math.max(cliArgs.pollIntervalMs, 500),
-      initialPrompt: taskContext.shouldProcessInitialPrompt ? cliArgs.initialPrompt : "",
-      initialPromptDelivery: taskContext.initialPromptDelivery || "none",
-      includeInitialImages: Boolean(cliArgs.initialPrompt && cliArgs.initialImages.length),
-      cliArgs: cliArgs.rawBackendArgs,
-      backendName: cliArgs.backend,
-      resumeSessionId: resolvedResumeSessionId,
-      daemonName: resolvedDaemonName,
-    });
-    reconnectRunner = runner;
-    if (pendingRemoteStopEvent) {
-      await runner.requestStopFromRemote(pendingRemoteStopEvent);
-      pendingRemoteStopEvent = null;
-    }
-    await pendingRemoteInterruptQueue.flushWith((event) => runner.requestInterruptFromRemote(event));
 
     const signals = new AbortController();
     let shutdownSignal = null;
@@ -955,68 +976,148 @@ async function main() {
       }
     }
 
-    let runnerError = null;
     try {
-      if (!resolvedResumeSessionId && String(cliArgs.sessionBackend || cliArgs.backend).trim().toLowerCase() === "codex") {
-        await withFreshSessionBootstrapLock(cliArgs.sessionBackend || cliArgs.backend, runtimeProjectPath, async () => {
-          await runner.announceBackendSession();
+      while (true) {
+        const currentRefreshSessionRequest = pendingRefreshSessionRequest;
+        let runnerError = null;
+
+        backendSession = createAiSession(cliArgs.sessionBackend || cliArgs.backend, {
+          initialImages: cliArgs.initialImages,
+          cwd: runtimeProjectPath,
+          resumeSessionId: nextResumeSessionId,
+          configFile: cliArgs.configFile,
+          ...(cliArgs.sessionOptions || {}),
+          ...(sessionCommandLine ? { commandLine: sessionCommandLine } : {}),
+          logger: { log },
+          ...(resolvedPrePrompt ? { prePrompt: resolvedPrePrompt } : {}),
+          sessionStoreKey: taskContext.taskId ? `task-${taskContext.taskId}` : undefined,
+          resumePersistedSession: Boolean(!nextResumeSessionId && taskContext.taskId),
         });
+
+        const runner = new BridgeRunner({
+          backendSession,
+          conductor,
+          taskId: taskContext.taskId,
+          pollIntervalMs: Math.max(cliArgs.pollIntervalMs, 500),
+          initialPrompt: nextInitialPrompt,
+          initialPromptDelivery: taskContext.initialPromptDelivery || "none",
+          includeInitialImages: Boolean(nextInitialPrompt && cliArgs.initialImages.length),
+          cliArgs: cliArgs.rawBackendArgs,
+          backendName: cliArgs.backend,
+          resumeSessionId: nextResumeSessionId,
+          daemonName: resolvedDaemonName,
+        });
+        reconnectRunner = runner;
+        if (pendingRemoteStopEvent) {
+          await runner.requestStopFromRemote(pendingRemoteStopEvent);
+          pendingRemoteStopEvent = null;
+        }
+        await pendingRemoteInterruptQueue.flushWith((event) => runner.requestInterruptFromRemote(event));
+
+        try {
+          if (currentRefreshSessionRequest) {
+            await runner.announceBackendSession();
+            currentRefreshSessionRequest.resolve(true);
+            pendingRefreshSessionRequest = null;
+          } else if (
+            !nextResumeSessionId &&
+            String(cliArgs.sessionBackend || cliArgs.backend).trim().toLowerCase() === "codex"
+          ) {
+            await withFreshSessionBootstrapLock(
+              cliArgs.sessionBackend || cliArgs.backend,
+              runtimeProjectPath,
+              async () => {
+                await runner.announceBackendSession();
+              },
+            );
+          }
+          await runner.start(signals.signal);
+        } catch (error) {
+          runnerError = error;
+          if (currentRefreshSessionRequest) {
+            currentRefreshSessionRequest.resolve(false);
+            pendingRefreshSessionRequest = null;
+          }
+        }
+
+        const refreshSessionRequest =
+          typeof runner.getRefreshSessionRequest === "function"
+            ? runner.getRefreshSessionRequest()
+            : null;
+        if (!runnerError && !shutdownSignal && refreshSessionRequest) {
+          const refreshedSessionId =
+            refreshSessionRequest.sessionId ||
+            (typeof runner.boundSessionId === "string" ? runner.boundSessionId.trim() : "") ||
+            nextResumeSessionId;
+          if (refreshedSessionId) {
+            nextResumeSessionId = refreshedSessionId;
+            nextInitialPrompt = "";
+            pendingRefreshSessionRequest = refreshSessionRequest;
+            continue;
+          }
+          runnerError = new Error("refresh_session requires a bound session id");
+        }
+        if (refreshSessionRequest && refreshSessionRequest !== pendingRefreshSessionRequest) {
+          refreshSessionRequest.resolve(false);
+        }
+
+        if (shouldFireReportTaskStatus({ launchedByDaemon, phase: "final" })) {
+          const remoteStopReason = typeof runner.getRemoteStopReason === "function" ? runner.getRemoteStopReason() : null;
+          const remoteStopSummary = typeof runner.getRemoteStopSummary === "function" ? runner.getRemoteStopSummary() : null;
+          // When the task was deleted by the user, the DB record is already gone —
+          // attempting to send a final status update would fail with 500 and the
+          // SDK durable outbox would retry forever, preventing the process from
+          // exiting.
+          const taskDeletedByUser = remoteStopReason === "deleted_by_user";
+          const finalStatus = shutdownSignal
+            ? {
+                status: "KILLED",
+                summary: `terminated by ${shutdownSignal}`,
+              }
+            : runnerError
+              ? {
+                  status: "KILLED",
+                  summary: `conductor fire failed: ${runnerError?.message || runnerError}`,
+                }
+              : remoteStopSummary
+                ? {
+                    status: "KILLED",
+                    summary: remoteStopSummary,
+                  }
+                : {
+                    status: "COMPLETED",
+                    summary: "conductor fire exited",
+                  };
+          if (!taskDeletedByUser) {
+            try {
+              const statusResult = await conductor.sendTaskStatus(taskContext.taskId, finalStatus);
+              if (statusResult?.pending && typeof conductor.flushPendingUpstreamEvents === "function") {
+                await conductor.flushPendingUpstreamEvents({
+                  timeoutMs: 5_000,
+                  retryIntervalMs: 250,
+                });
+              }
+            } catch (error) {
+              log(`Failed to report task status (${finalStatus.status}): ${error?.message || error}`);
+            }
+          } else {
+            log(`Skipping final status report: task was deleted by user`);
+            // Also clear any pending durable outbox retries (e.g. task_stop_ack)
+            // that would keep failing against the deleted task.
+            if (typeof conductor.clearDurableOutboxTimer === "function") {
+              conductor.clearDurableOutboxTimer();
+            }
+          }
+        }
+
+        if (runnerError) {
+          throw runnerError;
+        }
+        break;
       }
-      await runner.start(signals.signal);
-    } catch (error) {
-      runnerError = error;
-      throw error;
     } finally {
       process.off("SIGINT", onSigint);
       process.off("SIGTERM", onSigterm);
-      if (shouldFireReportTaskStatus({ launchedByDaemon, phase: "final" })) {
-        const remoteStopReason = typeof runner.getRemoteStopReason === "function" ? runner.getRemoteStopReason() : null;
-        const remoteStopSummary = typeof runner.getRemoteStopSummary === "function" ? runner.getRemoteStopSummary() : null;
-        // When the task was deleted by the user, the DB record is already gone —
-        // attempting to send a final status update would fail with 500 and the
-        // SDK durable outbox would retry forever, preventing the process from
-        // exiting.
-        const taskDeletedByUser = remoteStopReason === "deleted_by_user";
-        const finalStatus = shutdownSignal
-          ? {
-              status: "KILLED",
-              summary: `terminated by ${shutdownSignal}`,
-            }
-          : runnerError
-            ? {
-                status: "KILLED",
-                summary: `conductor fire failed: ${runnerError?.message || runnerError}`,
-              }
-            : remoteStopSummary
-              ? {
-                  status: "KILLED",
-                  summary: remoteStopSummary,
-                }
-              : {
-                  status: "COMPLETED",
-                  summary: "conductor fire exited",
-                };
-        if (!taskDeletedByUser) {
-          try {
-            const statusResult = await conductor.sendTaskStatus(taskContext.taskId, finalStatus);
-            if (statusResult?.pending && typeof conductor.flushPendingUpstreamEvents === "function") {
-              await conductor.flushPendingUpstreamEvents({
-                timeoutMs: 5_000,
-                retryIntervalMs: 250,
-              });
-            }
-          } catch (error) {
-            log(`Failed to report task status (${finalStatus.status}): ${error?.message || error}`);
-          }
-        } else {
-          log(`Skipping final status report: task was deleted by user`);
-          // Also clear any pending durable outbox retries (e.g. task_stop_ack)
-          // that would keep failing against the deleted task.
-          if (typeof conductor.clearDurableOutboxTimer === "function") {
-            conductor.clearDurableOutboxTimer();
-          }
-        }
-      }
       if (shutdownSignal === "SIGINT") {
         process.exitCode = 130;
       } else if (shutdownSignal === "SIGTERM") {
@@ -1790,6 +1891,7 @@ export class BridgeRunner {
       os.hostname();
     this.needsReconnectRecovery = false;
     this.remoteStopInfo = null;
+    this.refreshSessionRequest = null;
     this.remoteInterruptsByReplyTo = new Map();
     this.pendingInterruptRetryTimers = new Map();
     this.activeTurnReplyTo = "";
@@ -2009,7 +2111,11 @@ export class BridgeRunner {
   }
 
   shouldSuppressReconnectRecovery() {
-    return this.stopped || Boolean(this.remoteStopInfo);
+    return this.stopped || Boolean(this.remoteStopInfo) || Boolean(this.refreshSessionRequest);
+  }
+
+  getRefreshSessionRequest() {
+    return this.refreshSessionRequest;
   }
 
   getRemoteStopReason() {
@@ -2050,6 +2156,54 @@ export class BridgeRunner {
         log(`Failed to stop backend session for ${this.taskId}: ${error?.message || error}`);
       }
     }
+  }
+
+  async requestRefreshSessionFromRemote(event = {}) {
+    const taskId = typeof event.taskId === "string" ? event.taskId.trim() : "";
+    if (taskId && taskId !== this.taskId) {
+      return false;
+    }
+    const requestId = typeof event.requestId === "string" ? event.requestId.trim() : "";
+    const sessionId = typeof event.sessionId === "string" ? event.sessionId.trim() : "";
+    const sessionFilePath =
+      typeof event.sessionFilePath === "string" && event.sessionFilePath.trim()
+        ? event.sessionFilePath.trim()
+        : "";
+    if (!sessionId) {
+      return false;
+    }
+    if (this.refreshSessionRequest) {
+      if (
+        requestId &&
+        this.refreshSessionRequest.requestId &&
+        this.refreshSessionRequest.requestId === requestId
+      ) {
+        return await this.refreshSessionRequest.promise;
+      }
+      return false;
+    }
+
+    let resolveRefresh;
+    const promise = new Promise((resolve) => {
+      resolveRefresh = resolve;
+    });
+    this.refreshSessionRequest = {
+      requestId: requestId || null,
+      sessionId,
+      sessionFilePath: sessionFilePath || null,
+      promise,
+      resolve: resolveRefresh,
+    };
+    log(`Received refresh_session for ${this.taskId}; rebuilding backend session in-process`);
+    this.stopped = true;
+    if (typeof this.backendSession?.close === "function") {
+      try {
+        await this.backendSession.close();
+      } catch (error) {
+        log(`Failed to close backend session for refresh ${this.taskId}: ${error?.message || error}`);
+      }
+    }
+    return await promise;
   }
 
   normalizeReplyTarget(replyTo) {

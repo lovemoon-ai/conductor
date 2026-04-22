@@ -50,6 +50,9 @@ const normalizeRestartMode = (value: unknown): "refresh_session" | null => {
   return null;
 };
 
+const uniqueHosts = (hosts: Array<string | null>): string[] =>
+  hosts.filter((value, index, array): value is string => Boolean(value) && array.indexOf(value) === index);
+
 const findRestartSourceTask = async (userId: string, taskId: string) =>
   withPtySchemaFallback(
     "tasks.taskId.restart.findSource",
@@ -222,9 +225,22 @@ export async function POST(
   const sourceTaskMetadata = parseJsonObject(sourceTask.metadata);
   const sourceMetadataDaemonHost = normalizeOptionalString(sourceTaskMetadata?.daemonName);
   const sourceExecutionHost = normalizeOptionalString(sourceTask.executionHost);
+  const boundTaskHost = normalizeOptionalString(realtimeHub.getTaskAgentHost(sourceTask.id));
+  const boundFireHost =
+    boundTaskHost && isConductorFireHost(boundTaskHost)
+      ? boundTaskHost
+      : null;
   const sourceMetadataDaemonCandidate =
     sourceMetadataDaemonHost && !isConductorFireHost(sourceMetadataDaemonHost)
       ? sourceMetadataDaemonHost
+      : null;
+  const sourceExecutionFireHost =
+    sourceExecutionHost && isConductorFireHost(sourceExecutionHost)
+      ? sourceExecutionHost
+      : null;
+  const sourceAgentFireHost =
+    sourceAgentHost && isConductorFireHost(sourceAgentHost)
+      ? sourceAgentHost
       : null;
   const sourceExecutionDaemonHost =
     sourceExecutionHost && !isConductorFireHost(sourceExecutionHost)
@@ -244,15 +260,19 @@ export async function POST(
       manualFireDaemonHostCandidates.push(candidate);
     }
   }
-  const refreshSessionManualFireDaemonHostCandidates: string[] = [];
-  for (const candidate of [
-    sourceExecutionDaemonHost,
-    sourceExecutionDaemonHost ? null : sourceMetadataDaemonCandidate,
-  ]) {
-    if (candidate && !refreshSessionManualFireDaemonHostCandidates.includes(candidate)) {
-      refreshSessionManualFireDaemonHostCandidates.push(candidate);
-    }
-  }
+  const refreshSessionFireHostCandidates = uniqueHosts([
+    boundFireHost && (
+      sourceExecutionFireHost
+        ? boundFireHost === sourceExecutionFireHost
+        : sourceAgentFireHost
+          ? boundFireHost === sourceAgentFireHost
+          : true
+    )
+      ? boundFireHost
+      : null,
+    sourceExecutionFireHost,
+    sourceAgentFireHost,
+  ]);
   const preferredManualFireDaemonHost = manualFireDaemonHostCandidates[0] ?? null;
 
   const hasExplicitBackendTarget =
@@ -292,20 +312,23 @@ export async function POST(
     );
   }
 
-  let restartAgentHost = isManualFireTask
-    ? (requestedRestartMode === "refresh_session"
-      ? refreshSessionManualFireDaemonHostCandidates
-      : manualFireDaemonHostCandidates
-    ).find((host) =>
+  const isRefreshSessionRequest = requestedRestartMode === "refresh_session";
+  let restartAgentHost = isRefreshSessionRequest
+    ? (
+      refreshSessionFireHostCandidates.find((host) =>
         connectedAgents.some((agent) => agent.host === host),
-      ) ?? (
-        requestedRestartMode === "refresh_session"
-          ? refreshSessionManualFireDaemonHostCandidates[0]
-          : preferredManualFireDaemonHost
+      ) ?? refreshSessionFireHostCandidates[0]
+    )
+    : isManualFireTask
+      ? (
+        manualFireDaemonHostCandidates.find((host) =>
+          connectedAgents.some((agent) => agent.host === host),
+        ) ?? preferredManualFireDaemonHost
       )
-    : sourceAgentHost;
+      : sourceAgentHost;
   const shouldUseProjectDaemonBinding = Boolean(
     projectDaemonHost &&
+    !isRefreshSessionRequest &&
     !(requestedRestartMode === "refresh_session" && isManualFireTask),
   );
   if (shouldUseProjectDaemonBinding && projectDaemonHost) {
@@ -324,7 +347,9 @@ export async function POST(
   if (!restartAgentHost) {
     return NextResponse.json(
       {
-        error: isManualFireTask
+        error: isRefreshSessionRequest
+          ? "Task missing active fire session host"
+          : isManualFireTask
           ? "Task missing original daemon binding"
           : `No compatible daemon online for backend ${targetBackend}`,
       },
@@ -335,7 +360,9 @@ export async function POST(
   if (!restartAgent) {
     return NextResponse.json(
       {
-        error: shouldUseProjectDaemonBinding
+        error: isRefreshSessionRequest
+          ? `Fire host ${restartAgentHost} is offline`
+          : shouldUseProjectDaemonBinding
           ? `Project daemon ${restartAgentHost} is offline`
           : isManualFireTask
             ? `Original daemon ${restartAgentHost} is offline`
@@ -399,21 +426,16 @@ export async function POST(
           userId: user.id,
           agentHost: restartAgentHost,
           taskId: sourceTask.id,
-          eventType: "restart_task",
+          eventType: "refresh_session",
           requestId,
           payloadJson: JSON.stringify({
-            type: "restart_task",
+            type: "refresh_session",
             payload: {
-              mode: "refresh_session_inplace",
-              source_task_id: sourceTask.id,
-              target_task_id: sourceTask.id,
+              task_id: sourceTask.id,
               project_id: sourceTask.projectId,
-              title: sourceTask.title,
-              source_backend_type: sourceBackend,
-              source_session_id: sourceSessionId,
-              source_session_file_path: sourceTask.sessionFilePath ?? undefined,
-              target_backend_type: sourceBackend,
-              target_launch_config: inheritedWorktreeLaunchConfig ?? undefined,
+              reason: "refresh_session_inplace",
+              session_id: sourceSessionId,
+              session_file_path: sourceTask.sessionFilePath ?? undefined,
               request_id: requestId,
             },
           }),
@@ -430,7 +452,7 @@ export async function POST(
       REFRESH_SESSION_ACK_TIMEOUT_MS,
       {
         expectedHosts: [restartAgentHost],
-        eventType: "restart_task",
+        eventType: "refresh_session",
       },
     );
     await deliverAgentOutboxForHost({
@@ -453,7 +475,7 @@ export async function POST(
           data: {
             status: "failed",
             nextRetryAt: null,
-            lastError: "ack_timeout:restart_task",
+            lastError: "ack_timeout:refresh_session",
           },
         });
       }

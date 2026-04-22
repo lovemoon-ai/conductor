@@ -68,6 +68,7 @@ export interface ConductorClientConnectOptions {
   onPong?: (event: WebSocketPongEvent) => void;
   onStopTask?: (event: StopTaskEvent) => Promise<void> | void;
   onInterruptTurn?: (event: InterruptTurnEvent) => Promise<boolean | void> | boolean | void;
+  onRefreshSession?: (event: RefreshSessionEvent) => Promise<boolean | void> | boolean | void;
 }
 
 interface ConductorClientInit {
@@ -85,6 +86,7 @@ interface ConductorClientInit {
   agentHost: string;
   onStopTask?: (event: StopTaskEvent) => Promise<void> | void;
   onInterruptTurn?: (event: InterruptTurnEvent) => Promise<boolean | void> | boolean | void;
+  onRefreshSession?: (event: RefreshSessionEvent) => Promise<boolean | void> | boolean | void;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -100,6 +102,14 @@ export interface InterruptTurnEvent {
   requestId?: string;
   reason?: string;
   targetReplyTo: string;
+}
+
+export interface RefreshSessionEvent {
+  taskId: string;
+  requestId?: string;
+  reason?: string;
+  sessionId: string;
+  sessionFilePath?: string;
 }
 
 export interface FlushPendingUpstreamEventsOptions {
@@ -121,6 +131,7 @@ export class ConductorClient {
   private readonly agentHost: string;
   private readonly onStopTask?: (event: StopTaskEvent) => Promise<void> | void;
   private readonly onInterruptTurn?: (event: InterruptTurnEvent) => Promise<boolean | void> | boolean | void;
+  private readonly onRefreshSession?: (event: RefreshSessionEvent) => Promise<boolean | void> | boolean | void;
   private deliveryScopeId: string;
   private closed = false;
   private durableOutboxFlushPromise: Promise<void> | null = null;
@@ -141,6 +152,7 @@ export class ConductorClient {
     this.agentHost = init.agentHost;
     this.onStopTask = init.onStopTask;
     this.onInterruptTurn = init.onInterruptTurn;
+    this.onRefreshSession = init.onRefreshSession;
     this.deliveryScopeId = init.deliveryScopeId;
     this.wsClient.registerHandler(this.handleBackendEvent);
   }
@@ -189,6 +201,7 @@ export class ConductorClient {
       agentHost,
       onStopTask: options.onStopTask,
       onInterruptTurn: options.onInterruptTurn,
+      onRefreshSession: options.onRefreshSession,
     });
     await client.wsClient.connect();
     if (client.shouldAutoFlushDurableOutbox()) {
@@ -715,6 +728,21 @@ export class ConductorClient {
   }
 
   private readonly handleBackendEvent: WebSocketHandler = async (payload) => {
+    if (typeof payload?.type === 'string' && payload.type === 'refresh_session') {
+      void this.handleRefreshSessionCommand(payload).catch((error) => {
+        const data =
+          payload?.payload && typeof payload.payload === 'object'
+            ? (payload.payload as Record<string, any>)
+            : null;
+        const taskId = typeof data?.task_id === 'string' ? data.task_id.trim() : '';
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `[sdk] refresh_session dispatch failed${taskId ? ` for task ${taskId}` : ''}: ${message}`,
+        );
+      });
+      return;
+    }
+
     if (typeof payload?.type === 'string' && payload.type === 'interrupt_turn') {
       await this.handleInterruptTurnCommand(payload);
       return;
@@ -845,6 +873,11 @@ export class ConductorClient {
     await this.maybeAckInboundCommand(payload, { accepted });
   }
 
+  private async handleRefreshSessionCommand(payload: BackendEnvelope): Promise<void> {
+    const accepted = await this.invokeRefreshSessionHandler(payload);
+    await this.maybeAckInboundCommand(payload, { accepted });
+  }
+
   private async invokeInterruptTurnHandler(payload: BackendEnvelope): Promise<boolean> {
     const data =
       payload?.payload && typeof payload.payload === 'object'
@@ -882,6 +915,54 @@ export class ConductorClient {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[sdk] interrupt_turn callback failed for task ${taskId}: ${message}`);
+      return false;
+    }
+  }
+
+  private async invokeRefreshSessionHandler(payload: BackendEnvelope): Promise<boolean> {
+    const data =
+      payload?.payload && typeof payload.payload === 'object'
+        ? (payload.payload as Record<string, any>)
+        : null;
+    if (!data) {
+      return false;
+    }
+
+    const taskId = typeof data.task_id === 'string' ? data.task_id.trim() : '';
+    const requestId = typeof data.request_id === 'string' ? data.request_id.trim() : '';
+    const reason = typeof data.reason === 'string' ? data.reason.trim() : '';
+    const sessionId =
+      typeof data.session_id === 'string'
+        ? data.session_id.trim()
+        : typeof data.sessionId === 'string'
+          ? data.sessionId.trim()
+          : '';
+    const sessionFilePath =
+      typeof data.session_file_path === 'string'
+        ? data.session_file_path.trim()
+        : typeof data.sessionFilePath === 'string'
+          ? data.sessionFilePath.trim()
+          : '';
+    if (!taskId || !sessionId) {
+      return false;
+    }
+
+    if (!this.onRefreshSession) {
+      return false;
+    }
+
+    try {
+      const accepted = await this.onRefreshSession({
+        taskId,
+        requestId: requestId || undefined,
+        reason: reason || undefined,
+        sessionId,
+        sessionFilePath: sessionFilePath || undefined,
+      });
+      return accepted !== false;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[sdk] refresh_session callback failed for task ${taskId}: ${message}`);
       return false;
     }
   }
@@ -1087,7 +1168,12 @@ export class ConductorClient {
     options: { accepted?: boolean } = {},
   ): Promise<void> {
     const eventType = typeof payload?.type === 'string' ? payload.type : '';
-    if (eventType !== 'task_user_message' && eventType !== 'task_action' && eventType !== 'interrupt_turn') {
+    if (
+      eventType !== 'task_user_message' &&
+      eventType !== 'task_action' &&
+      eventType !== 'interrupt_turn' &&
+      eventType !== 'refresh_session'
+    ) {
       return;
     }
     const data =

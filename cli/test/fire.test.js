@@ -666,10 +666,63 @@ describe("conductor-fire backends", () => {
     assert.equal(detectTaskId({ cwd: tempDir, env: {} }), nextTaskId);
   });
 
-  it("builds conductor websocket headers with the CLI version", () => {
-    assert.deepEqual(buildConductorConnectHeaders("0.2.21"), {
+  it("builds conductor websocket headers with refresh-session capability metadata", () => {
+    assert.deepEqual(
+      buildConductorConnectHeaders("0.2.21", {
+        backends: ["codex"],
+        capabilities: ["refresh_session_inplace"],
+      }),
+      {
       "x-conductor-version": "0.2.21",
+        "x-conductor-backends": "codex",
+        "x-conductor-capabilities": "refresh_session_inplace",
+      },
+    );
+  });
+
+  it("stops the current backend session and reuses the same refresh promise for duplicate request ids", async () => {
+    const closeCalls = [];
+    const runner = new BridgeRunner({
+      backendSession: {
+        close: async () => {
+          closeCalls.push("close");
+        },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async () => ({}),
+      },
+      taskId: "task-refresh-control-1",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+      resumeSessionId: "sess-refresh-control-1",
     });
+
+    const firstPromise = runner.requestRefreshSessionFromRemote({
+      taskId: "task-refresh-control-1",
+      requestId: "req-refresh-control-1",
+      sessionId: "sess-refresh-control-1",
+      sessionFilePath: "/tmp/sess-refresh-control-1.jsonl",
+    });
+    const secondPromise = runner.requestRefreshSessionFromRemote({
+      taskId: "task-refresh-control-1",
+      requestId: "req-refresh-control-1",
+      sessionId: "sess-refresh-control-1",
+      sessionFilePath: "/tmp/sess-refresh-control-1.jsonl",
+    });
+
+    assert.deepEqual(closeCalls, ["close"]);
+    assert.equal(runner.stopped, true);
+    assert.equal(runner.getRefreshSessionRequest().sessionId, "sess-refresh-control-1");
+    runner.getRefreshSessionRequest().resolve(true);
+
+    assert.equal(await firstPromise, true);
+    assert.equal(await secondPromise, true);
   });
 
   it("keeps explicit cli title even when resume runtime path is provided", () => {

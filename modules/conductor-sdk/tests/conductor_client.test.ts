@@ -759,6 +759,181 @@ describe('ConductorClient', () => {
     await client.close();
   });
 
+  test('refresh_session events invoke callback and send command acknowledgements', async () => {
+    const refreshEvents: Array<{
+      taskId: string;
+      requestId?: string;
+      reason?: string;
+      sessionId: string;
+      sessionFilePath?: string;
+    }> = [];
+
+    const client = await ConductorClient.connect({
+      config: makeConfig(),
+      env: {
+        CONDUCTOR_TASK_CREATE_RETRIES: '0',
+        HOSTNAME: 'test-host',
+      },
+      projectPath,
+      backendApi: backendApi as any,
+      wsClient: wsClient as any,
+      sessionStore,
+      agentHost: 'conductor-fire-test-host-1',
+      onRefreshSession: (event) => {
+        refreshEvents.push(event);
+      },
+    });
+    await client.createTaskSession({
+      project_id: 'proj1',
+      task_title: 'Hello',
+      task_id: 'task-refresh-1',
+    });
+
+    await wsClient.emit({
+      type: 'refresh_session',
+      payload: {
+        task_id: 'task-refresh-1',
+        request_id: 'req-refresh-1',
+        reason: 'refresh_session_inplace',
+        session_id: 'sess-refresh-1',
+        session_file_path: '/tmp/sess-refresh-1.jsonl',
+      },
+    });
+
+    expect(refreshEvents).toEqual([
+      {
+        taskId: 'task-refresh-1',
+        requestId: 'req-refresh-1',
+        reason: 'refresh_session_inplace',
+        sessionId: 'sess-refresh-1',
+        sessionFilePath: '/tmp/sess-refresh-1.jsonl',
+      },
+    ]);
+    expect(backendApi.commitAgentCommandAckCalls).toContainEqual(
+      expect.objectContaining({
+        agentHost: 'conductor-fire-test-host-1',
+        requestId: 'req-refresh-1',
+        taskId: 'task-refresh-1',
+        commandEventType: 'refresh_session',
+        accepted: true,
+      }),
+    );
+    await client.close();
+  });
+
+  test('refresh_session dispatch stays non-blocking while the refresh callback is still pending', async () => {
+    const refreshEvents: Array<{ taskId: string; sessionId: string }> = [];
+    const interruptEvents: Array<{ taskId: string; requestId?: string; targetReplyTo: string }> = [];
+    let resolveRefresh: ((accepted: boolean) => void) | null = null;
+    let notifyRefreshStarted: (() => void) | null = null;
+    const refreshStarted = new Promise<void>((resolve) => {
+      notifyRefreshStarted = resolve;
+    });
+
+    const client = await ConductorClient.connect({
+      config: makeConfig(),
+      env: {
+        CONDUCTOR_TASK_CREATE_RETRIES: '0',
+        HOSTNAME: 'test-host',
+      },
+      projectPath,
+      backendApi: backendApi as any,
+      wsClient: wsClient as any,
+      sessionStore,
+      agentHost: 'conductor-fire-test-host-1',
+      onRefreshSession: async (event) => {
+        refreshEvents.push({
+          taskId: event.taskId,
+          sessionId: event.sessionId,
+        });
+        notifyRefreshStarted?.();
+        return await new Promise<boolean>((resolve) => {
+          resolveRefresh = resolve;
+        });
+      },
+      onInterruptTurn: (event) => {
+        interruptEvents.push({
+          taskId: event.taskId,
+          requestId: event.requestId,
+          targetReplyTo: event.targetReplyTo,
+        });
+        return true;
+      },
+    });
+    await client.createTaskSession({
+      project_id: 'proj1',
+      task_title: 'Hello',
+      task_id: 'task-refresh-2',
+    });
+
+    const refreshEmitPromise = wsClient.emit({
+      type: 'refresh_session',
+      payload: {
+        task_id: 'task-refresh-2',
+        request_id: 'req-refresh-2',
+        session_id: 'sess-refresh-2',
+      },
+    });
+    await refreshStarted;
+
+    expect(
+      await Promise.race([
+        refreshEmitPromise.then(() => 'resolved'),
+        new Promise<string>((resolve) => setTimeout(() => resolve('timeout'), 25)),
+      ]),
+    ).toBe('resolved');
+    expect(refreshEvents).toEqual([
+      {
+        taskId: 'task-refresh-2',
+        sessionId: 'sess-refresh-2',
+      },
+    ]);
+    expect(backendApi.commitAgentCommandAckCalls).not.toContainEqual(
+      expect.objectContaining({
+        requestId: 'req-refresh-2',
+        commandEventType: 'refresh_session',
+      }),
+    );
+
+    await wsClient.emit({
+      type: 'interrupt_turn',
+      payload: {
+        task_id: 'task-refresh-2',
+        request_id: 'req-interrupt-after-refresh',
+        target_reply_to: 'reply-after-refresh',
+      },
+    });
+
+    expect(interruptEvents).toEqual([
+      {
+        taskId: 'task-refresh-2',
+        requestId: 'req-interrupt-after-refresh',
+        targetReplyTo: 'reply-after-refresh',
+      },
+    ]);
+    expect(backendApi.commitAgentCommandAckCalls).toContainEqual(
+      expect.objectContaining({
+        requestId: 'req-interrupt-after-refresh',
+        taskId: 'task-refresh-2',
+        commandEventType: 'interrupt_turn',
+        accepted: true,
+      }),
+    );
+
+    resolveRefresh?.(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(backendApi.commitAgentCommandAckCalls).toContainEqual(
+      expect.objectContaining({
+        requestId: 'req-refresh-2',
+        taskId: 'task-refresh-2',
+        commandEventType: 'refresh_session',
+        accepted: true,
+      }),
+    );
+    await client.close();
+  });
+
   test('sendTaskStatus commits over HTTP and sendRuntimeStatus stays on websocket', async () => {
     const client = await makeClient();
     const statusResult = await client.sendTaskStatus('task1', { status: 'KILLED', summary: 'bye' });
