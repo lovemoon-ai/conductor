@@ -134,6 +134,22 @@ describe('IssueBoard', () => {
     expect(screen.queryByText('Implement issue spawn')).toBeNull();
   });
 
+  it('renders only the requested status columns when visibility is restricted', () => {
+    render(
+      <IssueBoard
+        issues={issues}
+        visibleStatuses={['todo', 'doing']}
+        onMoveIssue={onMoveIssue}
+        onStatusChange={onStatusChange}
+        onDeleteIssue={onDeleteIssue}
+      />,
+    );
+
+    expect(screen.getByRole('heading', { name: /^Todo(?:\(\d+\))?$/ })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /^Doing(?:\(\d+\))?$/ })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /^Done(?:\(\d+\))?$/ })).toBeNull();
+  });
+
   it('opens the status menu and forwards status updates', async () => {
     render(
       <IssueBoard

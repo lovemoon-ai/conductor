@@ -55,6 +55,7 @@ vi.mock('@/features/issues', () => ({
     issues,
     isLoading,
     dragDisabled,
+    visibleStatuses,
     onMoveIssue,
     onStatusChange,
     onDeleteIssue,
@@ -62,6 +63,7 @@ vi.mock('@/features/issues', () => ({
     issues: typeof issuesState.issues;
     isLoading?: boolean;
     dragDisabled?: boolean;
+    visibleStatuses?: Array<'todo' | 'doing' | 'done'>;
     onMoveIssue: (issueId: string, status: 'todo' | 'doing' | 'done', position: number) => void;
     onStatusChange?: (issueId: string, status: 'todo' | 'doing' | 'done') => void;
     onDeleteIssue?: (issueId: string) => Promise<void> | void;
@@ -69,11 +71,15 @@ vi.mock('@/features/issues', () => ({
     <div>
       <div>issue-board:{issues.length}:{isLoading ? 'loading' : 'ready'}</div>
       <div>drag:{dragDisabled ? 'disabled' : 'enabled'}</div>
+      <div>statuses:{visibleStatuses?.join(',') ?? 'todo,doing,done'}</div>
       <button type="button" onClick={() => onMoveIssue('issue-1', 'doing', 1.5)}>
         move-issue
       </button>
       <button type="button" onClick={() => onStatusChange?.('issue-1', 'doing')}>
         status-issue
+      </button>
+      <button type="button" onClick={() => onStatusChange?.('issue-1', 'done')}>
+        status-issue-done
       </button>
       <button type="button" onClick={() => void onDeleteIssue?.('issue-1')}>
         delete-issue
@@ -82,9 +88,11 @@ vi.mock('@/features/issues', () => ({
   ),
   IssueList: ({
     issues,
+    visibleStatuses,
   }: {
     issues: typeof issuesState.issues;
-  }) => <div>issue-list:{issues.length}</div>,
+    visibleStatuses?: Array<'todo' | 'doing' | 'done'>;
+  }) => <div>issue-list:{issues.length}:{visibleStatuses?.join(',') ?? 'todo,doing,done'}</div>,
   CreateIssueDialog: ({
     open,
     projectId,
@@ -104,12 +112,16 @@ vi.mock('@/components/layout/Header', () => ({
   Header: ({
     title,
     actions,
+    onTitleDoubleClick,
+    titleDoubleClickHint,
   }: {
     title?: string;
     actions?: React.ReactNode;
+    onTitleDoubleClick?: () => void;
+    titleDoubleClickHint?: string;
   }) => (
     <div>
-      <h1>{title}</h1>
+      <h1 onDoubleClick={onTitleDoubleClick} title={titleDoubleClickHint}>{title}</h1>
       <div>{actions}</div>
     </div>
   ),
@@ -117,6 +129,7 @@ vi.mock('@/components/layout/Header', () => ({
 
 describe('IssuesPage', () => {
   beforeEach(() => {
+    window.localStorage.clear();
     searchParamsState = new URLSearchParams();
     isDesktopViewport = true;
     fetchProjectsMock.mockReset();
@@ -188,6 +201,7 @@ describe('IssuesPage', () => {
     expect(screen.getByRole('heading', { name: 'Issues' })).toBeInTheDocument();
     expect(screen.getByText('issue-board:2:ready')).toBeInTheDocument();
     expect(screen.getByText('drag:disabled')).toBeInTheDocument();
+    expect(screen.getByText('statuses:todo,doing,done')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create issue' })).not.toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Create issue' }));
@@ -249,8 +263,60 @@ describe('IssuesPage', () => {
 
     render(<IssuesPage />);
 
-    expect(screen.getByText('issue-list:2')).toBeInTheDocument();
+    expect(screen.getByText('issue-list:2:todo,doing,done')).toBeInTheDocument();
     expect(screen.queryByText('issue-board:2:ready')).toBeNull();
+  });
+
+  it('persists hidden done issues when double-clicking the Issues title', () => {
+    issuesState = {
+      ...issuesState,
+      issues: [
+        {
+          id: 'issue-1',
+          projectId: 'project-default',
+          title: 'Open issue',
+          status: 'todo',
+          position: 0,
+          createdAt: '2026-04-14T00:00:00.000Z',
+        },
+        {
+          id: 'issue-2',
+          projectId: 'project-default',
+          title: 'Closed issue',
+          status: 'done',
+          position: 1,
+          createdAt: '2026-04-14T00:10:00.000Z',
+        },
+      ],
+    };
+
+    const { unmount } = render(<IssuesPage />);
+
+    expect(screen.getByRole('heading', { name: 'Issues' })).toHaveAttribute(
+      'title',
+      'Double-click to hide done issues.',
+    );
+    expect(screen.getByText('issue-board:2:ready')).toBeInTheDocument();
+    expect(screen.getByText('statuses:todo,doing,done')).toBeInTheDocument();
+
+    fireEvent.doubleClick(screen.getByRole('heading', { name: 'Issues' }));
+
+    expect(screen.getByRole('heading', { name: 'Issues' })).toHaveAttribute(
+      'title',
+      'Double-click to show done issues.',
+    );
+    expect(screen.getByText('issue-board:1:ready')).toBeInTheDocument();
+    expect(screen.getByText('statuses:todo,doing')).toBeInTheDocument();
+
+    unmount();
+    render(<IssuesPage />);
+
+    expect(screen.getByRole('heading', { name: 'Issues' })).toHaveAttribute(
+      'title',
+      'Double-click to show done issues.',
+    );
+    expect(screen.getByText('issue-board:1:ready')).toBeInTheDocument();
+    expect(screen.getByText('statuses:todo,doing')).toBeInTheDocument();
   });
 
   it('deletes issues through board callback and shows success toast', async () => {
@@ -297,6 +363,37 @@ describe('IssuesPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'status-issue' }));
 
     expect(moveIssueMock).toHaveBeenCalledWith('issue-1', 'doing', 0);
+  });
+
+  it('keeps hidden done issues in append-position calculations when completing an issue', async () => {
+    issuesState = {
+      ...issuesState,
+      issues: [
+        {
+          id: 'issue-1',
+          projectId: 'project-default',
+          title: 'Visible todo',
+          status: 'todo',
+          position: 0,
+          createdAt: '2026-04-14T00:00:00.000Z',
+        },
+        {
+          id: 'issue-2',
+          projectId: 'project-default',
+          title: 'Hidden done',
+          status: 'done',
+          position: 5,
+          createdAt: '2026-04-14T00:10:00.000Z',
+        },
+      ],
+    };
+
+    render(<IssuesPage />);
+
+    fireEvent.doubleClick(screen.getByRole('heading', { name: 'Issues' }));
+    fireEvent.click(screen.getByRole('button', { name: 'status-issue-done' }));
+
+    expect(moveIssueMock).toHaveBeenCalledWith('issue-1', 'done', 6);
   });
 
   it('clears an invalid projectId and fetches all issues', () => {
