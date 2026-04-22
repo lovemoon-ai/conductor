@@ -4,7 +4,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { Dialog } from '@/components/common/Dialog';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { useToast } from '@/components/common/FeedbackProvider';
-import { DEFAULT_ISSUE_PRIORITY, ISSUE_STATUS_LABELS } from '@/lib/issues/config';
+import {
+  DEFAULT_ISSUE_PRIORITY,
+  ISSUE_PRIORITIES,
+  ISSUE_PRIORITY_LABELS,
+  ISSUE_STATUS_LABELS,
+  type IssuePriorityValue,
+} from '@/lib/issues/config';
 import { useIssuesStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
 
@@ -21,6 +27,7 @@ export function CreateIssueDialog({
 }) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [priority, setPriority] = useState<IssuePriorityValue>(DEFAULT_ISSUE_PRIORITY);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(projectId);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -44,6 +51,7 @@ export function CreateIssueDialog({
     }
     setTitle('');
     setDescription('');
+    setPriority(DEFAULT_ISSUE_PRIORITY);
     clearError();
   }, [clearError, open]);
 
@@ -89,7 +97,7 @@ export function CreateIssueDialog({
         title: title.trim(),
         description: description.trim() ? description.trim() : null,
         status: DEFAULT_STATUS,
-        priority: DEFAULT_ISSUE_PRIORITY,
+        priority,
       });
       pushToast({
         title: 'Issue created',
@@ -162,6 +170,22 @@ export function CreateIssueDialog({
             placeholder="Add context, acceptance criteria, or raw requirement notes"
             className="min-h-32 w-full resize-y webapp-input"
           />
+        </div>
+
+        <div>
+          <label htmlFor="create-issue-priority" className="mb-2 block text-sm font-medium text-ink">Priority</label>
+          <select
+            id="create-issue-priority"
+            value={priority}
+            onChange={(event) => setPriority(event.target.value as IssuePriorityValue)}
+            className="w-full webapp-input"
+          >
+            {ISSUE_PRIORITIES.map((value) => (
+              <option key={value} value={value}>
+                {ISSUE_PRIORITY_LABELS[value]}
+              </option>
+            ))}
+          </select>
         </div>
 
         {error ? (

@@ -80,6 +80,10 @@ describe('CreateIssueDialog', () => {
     fireEvent.change(screen.getByPlaceholderText('Summarize the issue'), {
       target: { value: 'Ship all-project issue creation' },
     });
+    expect(screen.getByLabelText('Priority')).toHaveValue('P1');
+    fireEvent.change(screen.getByLabelText('Priority'), {
+      target: { value: 'P0' },
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Create Issue' }));
 
     await waitFor(() => {
@@ -88,7 +92,7 @@ describe('CreateIssueDialog', () => {
         title: 'Ship all-project issue creation',
         description: null,
         status: 'todo',
-        priority: 'P1',
+        priority: 'P0',
       });
     });
     expect(pushToastMock).toHaveBeenCalledWith({
