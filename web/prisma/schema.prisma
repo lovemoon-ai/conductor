@@ -36,6 +36,7 @@ model User {
   externalAccounts ExternalAccount[]
   channelConversations ChannelConversation[]
   channelProviderConfigs ChannelProviderConfig[]
+  sharedTasks SharedTask[]
   invitedBy User? @relation("UserInvites", fields: [invitedByUserId], references: [id])
   invitedUsers User[] @relation("UserInvites")
 
@@ -283,9 +284,11 @@ model SharedTask {
   createdAt DateTime  @default(now()) @map("created_at")
 
   task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([taskId, userId, kind])
   @@index([taskId])
+  @@index([userId])
   @@map("shared_tasks")
 }
 

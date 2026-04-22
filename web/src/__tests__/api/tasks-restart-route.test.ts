@@ -708,6 +708,37 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(upsertCall.update).not.toHaveProperty("token");
   });
 
+  it("enforces a hard cap on resume-handoff token age by deleting rows older than the max-age cutoff", async () => {
+    // Arrange: deleteMany is how the hard-age cap is enforced; after it runs,
+    // findUnique returning null means the upsert `create` branch is taken,
+    // minting a fresh token + fresh createdAt. We just need to assert the
+    // deleteMany where-clause disjunction contains both the expiry condition
+    // and the age cutoff.
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { backend_type: "claude" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    await extractJson(response);
+
+    expect(response.status).toBe(200);
+    const deleteCall = vi.mocked(db.sharedTask.deleteMany).mock.calls.at(-1)?.[0] as any;
+    expect(deleteCall?.where?.OR).toEqual([
+      { expiresAt: { lte: expect.any(Date) } },
+      { createdAt: { lte: expect.any(Date) } },
+    ]);
+    // The createdAt cutoff must be ~7 days ago so tokens cannot be renewed
+    // indefinitely across many restarts.
+    const cutoff = deleteCall.where.OR[1].createdAt.lte as Date;
+    const ageMs = Date.now() - cutoff.getTime();
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    expect(ageMs).toBeGreaterThanOrEqual(sevenDaysMs - 5_000);
+    expect(ageMs).toBeLessThanOrEqual(sevenDaysMs + 5_000);
+  });
+
   it("rotates the resume-handoff token when the existing token is close to expiry", async () => {
     const now = Date.now();
     vi.mocked(db.sharedTask.findUnique).mockResolvedValueOnce({

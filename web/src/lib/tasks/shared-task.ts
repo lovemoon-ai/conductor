@@ -20,6 +20,13 @@ const RESUME_HANDOFF_TTL_MS = 24 * 60 * 60 * 1000;
 // the attacker while keeping double-click behavior correct.
 const RESUME_HANDOFF_REUSE_WINDOW_MS = 12 * 60 * 60 * 1000;
 
+// Hard cap on token lifetime across reuses. The reuse window above keeps a
+// token valid as long as the user keeps restarting inside it — without this
+// cap, a leaked token would remain valid indefinitely under active use. Any
+// row whose `createdAt` is older than this gets deleted; the subsequent
+// upsert creates a fresh row with a fresh token and fresh `createdAt`.
+const RESUME_HANDOFF_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 /**
  * Single source of truth for share-token generation. Both user-facing share
  * links (`/api/tasks/[taskId]/share`) and internal resume-handoff links
@@ -54,14 +61,20 @@ export async function createInternalResumeHandoffShare(params: {
   const now = params.now ?? new Date();
   const expiresAt = new Date(now.getTime() + RESUME_HANDOFF_TTL_MS);
 
-  // Clean up any previously-expired internal share for this task+user so the
-  // upsert below never hits a stale unique-constraint row.
+  // Clean up any previously-expired OR too-old-to-reuse internal share for
+  // this task+user so the upsert below never hits a stale unique-constraint
+  // row. The second clause enforces RESUME_HANDOFF_MAX_AGE_MS: even under
+  // continuous active use, a single token's end-to-end lifetime is bounded.
+  const maxAgeCutoff = new Date(now.getTime() - RESUME_HANDOFF_MAX_AGE_MS);
   await db.sharedTask.deleteMany({
     where: {
       taskId: params.taskId,
       userId: params.ownerUserId,
       kind: SHARED_TASK_KIND_RESUME_HANDOFF,
-      expiresAt: { lte: now },
+      OR: [
+        { expiresAt: { lte: now } },
+        { createdAt: { lte: maxAgeCutoff } },
+      ],
     },
   });
 
@@ -214,9 +227,18 @@ function stripTranscriptFenceTokens(input: string): string {
     .replace(/<<<CONDUCTOR_TRANSCRIPT_END>>>/g, "<<<CONDUCTOR_TRANSCRIPT_END_>>>");
 }
 
+function sanitizeHeaderText(input: string): string {
+  // Header fields (title) sit ABOVE the fence. If we let an attacker-supplied
+  // title carry a newline plus a forged fence marker, they can inject content
+  // that the "treat fenced content as data" framing does not cover. Collapse
+  // whitespace to keep everything on one line, then run the fence stripper so
+  // any literal marker tokens are neutralized.
+  return stripTranscriptFenceTokens(input.replace(/[\r\n\t]+/g, " ").trim());
+}
+
 export function buildSharedPlainText(payload: SharedTaskPayload): string {
   const header = [
-    `Title: ${payload.task.title}`,
+    `Title: ${sanitizeHeaderText(payload.task.title)}`,
     `Created: ${new Date(payload.task.createdAt).toISOString()}`,
     payload.task.expiresAt ? `Share Expires: ${new Date(payload.task.expiresAt).toISOString()}` : null,
     "",
