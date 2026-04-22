@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { TaskItem } from './TaskItem';
 
@@ -95,6 +95,10 @@ describe('TaskItem', () => {
     confirmMock.mockReset();
     pushToastMock.mockReset();
     apiPostMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('shows backend labels without daemon labels in task list item', () => {
@@ -436,7 +440,9 @@ describe('TaskItem', () => {
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   });
 
-  it('opens the task when clicking the list preview text', () => {
+  it('opens the task when clicking the list preview text', async () => {
+    vi.useFakeTimers();
+
     runtimeByTask = {
       'task-8': {
         statusLine: 'Thinking...',
@@ -465,7 +471,147 @@ describe('TaskItem', () => {
 
     fireEvent.click(screen.getByText('Thinking...'));
 
+    expect(pushMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(501);
+    });
+
     expect(pushMock).toHaveBeenCalledWith('/app/tasks/task-8');
+  });
+
+  it('cancels a pending route open when another task card is clicked', async () => {
+    vi.useFakeTimers();
+
+    render(
+      <>
+        <TaskItem
+          task={{
+            id: 'task-a',
+            title: 'Task A',
+            status: 'running',
+            projectId: null,
+            agentHost: 'daemon-a',
+            createdAt: new Date().toISOString(),
+            updatedAt: null,
+          }}
+          isUnread={false}
+          isSelected={false}
+          selectionMode={false}
+          onToggleSelect={() => {}}
+        />
+        <TaskItem
+          task={{
+            id: 'task-b',
+            title: 'Task B',
+            status: 'running',
+            projectId: null,
+            agentHost: 'daemon-a',
+            createdAt: new Date().toISOString(),
+            updatedAt: null,
+          }}
+          isUnread={false}
+          isSelected={false}
+          selectionMode={false}
+          onToggleSelect={() => {}}
+        />
+      </>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /task a/i }));
+    await vi.advanceTimersByTimeAsync(250);
+    fireEvent.pointerDown(screen.getByRole('button', { name: /task b/i }), {
+      pointerId: 1,
+      clientX: 160,
+      pointerType: 'mouse',
+      button: 0,
+    });
+    fireEvent.click(screen.getByRole('button', { name: /task b/i }));
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(pushMock).not.toHaveBeenCalledWith('/app/tasks/task-a');
+
+    await vi.advanceTimersByTimeAsync(251);
+
+    expect(pushMock).toHaveBeenCalledTimes(1);
+    expect(pushMock).toHaveBeenCalledWith('/app/tasks/task-b');
+  });
+
+  it('keeps double-click rename available on route-opening cards before navigation fires', async () => {
+    vi.useFakeTimers();
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-slow-double-click',
+          title: 'Slow Double Click Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    const taskCard = screen.getByRole('button', { name: /slow double click task/i });
+
+    fireEvent.click(taskCard, { detail: 1 });
+    await vi.advanceTimersByTimeAsync(450);
+
+    expect(pushMock).not.toHaveBeenCalled();
+
+    fireEvent.click(taskCard, { detail: 2 });
+
+    expect(screen.getByRole('textbox')).toHaveValue('Slow Double Click Task');
+
+    await vi.advanceTimersByTimeAsync(600);
+
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('cancels a pending route open when a nested status control is pressed', async () => {
+    vi.useFakeTimers();
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-status-interrupt',
+          title: 'Status Interrupt Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /status interrupt task/i }));
+    await vi.advanceTimersByTimeAsync(250);
+
+    const statusButton = screen.getByRole('button', { name: 'running' });
+    fireEvent.pointerDown(statusButton, {
+      pointerId: 1,
+      clientX: 160,
+      pointerType: 'mouse',
+      button: 0,
+    });
+    fireEvent.click(statusButton);
+
+    expect(screen.getByRole('button', { name: 'killing?' })).toBeInTheDocument();
+
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(pushMock).not.toHaveBeenCalled();
   });
 
   it('opens new task from the swipe-left action menu', async () => {
@@ -651,10 +797,53 @@ describe('TaskItem', () => {
       />
     );
 
-    fireEvent.doubleClick(screen.getByRole('button', { name: /desktop full page task/i }));
+    const taskCard = screen.getByRole('button', { name: /desktop full page task/i });
+
+    fireEvent.doubleClick(taskCard);
 
     expect(markTaskReadMock).toHaveBeenCalledWith('task-11');
     expect(pushMock).toHaveBeenCalledWith('/app/tasks/task-11');
+    expect(onOpenTaskMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps desktop title editing on long press', async () => {
+    vi.useFakeTimers();
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-desktop-rename',
+          title: 'Desktop Rename Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        isActive
+        selectionMode={false}
+        onToggleSelect={() => {}}
+        onOpenTask={onOpenTaskMock}
+        desktopListPaneMode
+      />
+    );
+
+    fireEvent.pointerDown(screen.getByText('Desktop Rename Task'), {
+      pointerId: 1,
+      clientX: 140,
+      clientY: 24,
+      pointerType: 'mouse',
+      button: 0,
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(501);
+    });
+
+    expect(screen.getByRole('textbox')).toHaveValue('Desktop Rename Task');
+    expect(pushMock).not.toHaveBeenCalled();
     expect(onOpenTaskMock).not.toHaveBeenCalled();
   });
 

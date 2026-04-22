@@ -1,7 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+import type {
+  CSSProperties,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+} from 'react';
 import { useRouter } from 'next/navigation';
 import type { Task } from '@/shared/types';
 import { TaskStatusBadge } from './TaskStatusBadge';
@@ -37,6 +41,41 @@ const RIGHT_ACTION_BUTTON_WIDTH = 72;
 const SWIPE_OPEN_THRESHOLD = 0.45;
 const SWIPE_START_THRESHOLD = 8;
 const DEFAULT_KILLING_TIMEOUT_MS = 60_000;
+const ROUTE_OPEN_DELAY_MS = 500;
+
+interface PendingTaskOpenState {
+  ownerId: string;
+  timeoutId: ReturnType<typeof setTimeout>;
+}
+
+let pendingTaskOpenState: PendingTaskOpenState | null = null;
+
+const clearPendingTaskOpenState = (ownerId?: string) => {
+  if (!pendingTaskOpenState) {
+    return;
+  }
+  if (ownerId && pendingTaskOpenState.ownerId !== ownerId) {
+    return;
+  }
+  clearTimeout(pendingTaskOpenState.timeoutId);
+  pendingTaskOpenState = null;
+};
+
+const schedulePendingTaskOpenState = (
+  ownerId: string,
+  callback: () => void,
+  delayMs: number,
+) => {
+  clearPendingTaskOpenState();
+  const timeoutId = setTimeout(() => {
+    if (pendingTaskOpenState?.ownerId !== ownerId) {
+      return;
+    }
+    pendingTaskOpenState = null;
+    callback();
+  }, delayMs);
+  pendingTaskOpenState = { ownerId, timeoutId };
+};
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const copyToClipboard = async (value: string): Promise<boolean> => {
@@ -202,6 +241,7 @@ export function TaskItem({
   const worktreeBranch = parseTaskWorktreeBranch(task);
   const showRestartAction = taskType === 'ai_task';
   const showShareAction = taskType === 'ai_task';
+  const useMobileRenameBehavior = !desktopListPaneMode;
   const rightActionWidth = RIGHT_ACTION_BUTTON_WIDTH * (
     1 +
     (showRestartAction ? 1 : 0) +
@@ -296,8 +336,9 @@ export function TaskItem({
       if (longPressTimerRef.current) {
         clearTimeout(longPressTimerRef.current);
       }
+      clearPendingTaskOpenState(task.id);
     }
-  ), []);
+  ), [task.id]);
 
   const clearLongPress = useCallback(() => {
     if (longPressTimerRef.current) {
@@ -306,7 +347,12 @@ export function TaskItem({
     }
   }, []);
 
+  const clearPendingOpenTask = useCallback(() => {
+    clearPendingTaskOpenState();
+  }, []);
+
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    clearPendingOpenTask();
     if (isInteractiveTarget(event.target)) {
       return;
     }
@@ -328,7 +374,7 @@ export function TaskItem({
         // ignore capture failures
       }
     }
-  }, []);
+  }, [clearPendingOpenTask]);
 
   const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current || pointerIdRef.current !== event.pointerId) {
@@ -338,10 +384,9 @@ export function TaskItem({
     const nextOffset = clamp(startOffsetRef.current + delta, -rightActionWidth, LEFT_ACTION_WIDTH);
     if (Math.abs(nextOffset - startOffsetRef.current) > SWIPE_START_THRESHOLD) {
       didSwipeRef.current = true;
-      clearLongPress();
     }
     setSwipeOffsetValue(nextOffset);
-  }, [clearLongPress, setSwipeOffsetValue]);
+  }, [setSwipeOffsetValue]);
 
   const finalizeSwipe = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current || pointerIdRef.current !== event.pointerId) {
@@ -382,42 +427,43 @@ export function TaskItem({
     return false;
   }, [closeSwipeActions]);
 
-  const handleTitlePointerDown = useCallback((e: ReactPointerEvent<HTMLHeadingElement>) => {
-    if (selectionMode) {
+  const handleTitlePointerDown = useCallback((event: ReactPointerEvent<HTMLHeadingElement>) => {
+    if (useMobileRenameBehavior || selectionMode) {
       return;
     }
     clearLongPress();
-    longPressStartXRef.current = e.clientX;
-    longPressStartYRef.current = e.clientY;
+    longPressStartXRef.current = event.clientX;
+    longPressStartYRef.current = event.clientY;
     longPressTimerRef.current = setTimeout(() => {
       longPressTimerRef.current = null;
       longPressFiredRef.current = true;
       setEditTitle(task.title);
       setIsEditing(true);
     }, 500);
-  }, [clearLongPress, selectionMode, task.title]);
+  }, [clearLongPress, selectionMode, task.title, useMobileRenameBehavior]);
 
   const handleTitlePointerUp = useCallback(() => {
     clearLongPress();
   }, [clearLongPress]);
 
-  const handleTitlePointerMove = useCallback((e: ReactPointerEvent<HTMLHeadingElement>) => {
+  const handleTitlePointerMove = useCallback((event: ReactPointerEvent<HTMLHeadingElement>) => {
     if (!longPressTimerRef.current) {
       return;
     }
-    const dx = e.clientX - longPressStartXRef.current;
-    const dy = e.clientY - longPressStartYRef.current;
+    const dx = event.clientX - longPressStartXRef.current;
+    const dy = event.clientY - longPressStartYRef.current;
     if (dx * dx + dy * dy > 100) {
       clearLongPress();
     }
   }, [clearLongPress]);
 
   const openTaskPage = useCallback(() => {
+    clearPendingOpenTask();
     markTaskRead(task.id);
     router.push(`/app/tasks/${task.id}`);
-  }, [markTaskRead, router, task.id]);
+  }, [clearPendingOpenTask, markTaskRead, router, task.id]);
 
-  const openTaskDetail = () => {
+  const openTaskDetail = useCallback(() => {
     if (longPressFiredRef.current) {
       longPressFiredRef.current = false;
       return;
@@ -439,7 +485,81 @@ export function TaskItem({
       return;
     }
     openTaskPage();
-  };
+  }, [isEditing, markTaskRead, onOpenTask, onToggleSelect, openTaskPage, selectionMode, task.id]);
+
+  const beginTitleEdit = useCallback(() => {
+    clearPendingOpenTask();
+    setEditTitle(task.title);
+    setIsEditing(true);
+  }, [clearPendingOpenTask, task.title]);
+
+  const handleCardClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (isInteractiveTarget(event.target)) {
+      return;
+    }
+    if (consumeTap()) {
+      return;
+    }
+    if (!useMobileRenameBehavior) {
+      openTaskDetail();
+      return;
+    }
+    if (selectionMode) {
+      openTaskDetail();
+      return;
+    }
+    if (event.detail >= 2) {
+      beginTitleEdit();
+      return;
+    }
+    if (isEditing) {
+      return;
+    }
+
+    clearPendingOpenTask();
+    schedulePendingTaskOpenState(task.id, openTaskDetail, ROUTE_OPEN_DELAY_MS);
+  }, [
+    beginTitleEdit,
+    clearPendingOpenTask,
+    consumeTap,
+    isEditing,
+    openTaskDetail,
+    selectionMode,
+    task.id,
+    useMobileRenameBehavior,
+  ]);
+
+  const handleCardDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    if (isInteractiveTarget(event.target)) {
+      return;
+    }
+    if (consumeTap()) {
+      return;
+    }
+    if (isEditing) {
+      return;
+    }
+    if (useMobileRenameBehavior) {
+      if (selectionMode) {
+        return;
+      }
+      beginTitleEdit();
+      return;
+    }
+    if (selectionMode || !desktopListPaneMode) {
+      return;
+    }
+    openTaskPage();
+  }, [
+    beginTitleEdit,
+    consumeTap,
+    desktopListPaneMode,
+    isEditing,
+    openTaskPage,
+    selectionMode,
+    useMobileRenameBehavior,
+  ]);
 
   const handleRename = async () => {
     if (renamingRef.current) {
@@ -764,25 +884,8 @@ export function TaskItem({
       </div>
 
       <div
-        onClick={() => {
-          if (consumeTap()) {
-            return;
-          }
-          openTaskDetail();
-        }}
-        onDoubleClick={(e) => {
-          e.preventDefault();
-          if (isEditing) {
-            return;
-          }
-          if (consumeTap()) {
-            return;
-          }
-          if (selectionMode || !desktopListPaneMode) {
-            return;
-          }
-          openTaskPage();
-        }}
+        onClick={handleCardClick}
+        onDoubleClick={handleCardDoubleClick}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={finalizeSwipe}
@@ -829,7 +932,7 @@ export function TaskItem({
                 />
               ) : (
                 <h3
-                  className="truncate text-base font-medium text-ink select-none"
+                  className="truncate text-base font-medium text-ink"
                   onPointerDown={handleTitlePointerDown}
                   onPointerUp={handleTitlePointerUp}
                   onPointerMove={handleTitlePointerMove}
