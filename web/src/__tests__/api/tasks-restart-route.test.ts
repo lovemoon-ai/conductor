@@ -947,7 +947,11 @@ describe("/api/tasks/[taskId]/restart", () => {
     });
   });
 
-  it("rejects backend switches for external backends that only share a built-in-looking prefix", async () => {
+  it("bridges arbitrary custom backends to built-in backends when the daemon supports both (backend-agnostic handoff)", async () => {
+    // Previously we rejected this pair because `codex-enterprise` wasn't in a
+    // hardcoded BRIDGEABLE_BACKENDS whitelist. The share-link handoff is
+    // backend-agnostic — any pair the daemon advertises as supported can be
+    // paired, because the successor AI just fetches a plain-text transcript.
     vi.mocked(db.task.findFirst).mockResolvedValue(
       buildTask({
         backendType: "codex-enterprise",
@@ -977,8 +981,46 @@ describe("/api/tasks/[taskId]/restart", () => {
     );
     const data = await extractJson(response);
 
-    expect(response.status).toBe(409);
-    expect(data.error).toContain("Backend switch codex-enterprise -> claude is not supported");
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("backend_switch_new_task");
+    expect(data.task.backend_type).toBe("claude");
+    // Outbox must carry the handoff URL so the custom backend's prior
+    // conversation flows through to the built-in target.
+    const payloadJson = vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]
+      ?.data?.payloadJson as string;
+    const payload = JSON.parse(payloadJson);
+    expect(payload.payload.resume_context_url).toMatch(/\/share\/.+\/plain$/);
+  });
+
+  it("bridges opencode to any other daemon-supported backend (regression: opencode used to be whitelisted out)", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        backendType: "opencode",
+        sessionId: "sess-opencode-1",
+      }) as any,
+    );
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      {
+        id: "agent-1",
+        host: "daemon-1",
+        supportedBackends: ["opencode", "claude", "codex"],
+        capabilities: [],
+      },
+    ] as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { backend_type: "claude" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("backend_switch_new_task");
+    expect(data.task.backend_type).toBe("claude");
   });
 
   it("creates a successor task for a running task on the same backend", async () => {

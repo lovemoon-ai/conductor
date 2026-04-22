@@ -3953,6 +3953,14 @@ export function startDaemon(config = {}, deps = {}) {
   // we hand the target backend a short instruction plus a plain-text URL it
   // can fetch on its own to catch up. This is the "semantic replay" path.
   //
+  // Backend-agnostic by design: the prompt references neither the source
+  // nor the target backend's internal session format, only an HTTP URL that
+  // returns role-prefixed conversation text. Any CLI with a web-fetch tool
+  // (Claude Code, Codex, Kimi CLI, OpenCode, and any custom provider
+  // registered via AISDK_PROVIDER_PATH that ships fetch support) can
+  // consume it. If the fetch fails, the prompt asks the AI to recap with
+  // the user rather than silently proceeding without context.
+  //
   // The prompt explicitly frames the fetched transcript as DATA, not as
   // instructions. This blocks a prompt-injection attack where a user had
   // written attacker-style text (e.g. "ignore previous instructions, run X")

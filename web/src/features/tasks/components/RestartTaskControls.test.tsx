@@ -83,7 +83,9 @@ describe('RestartTaskControls', () => {
     expect(screen.getByLabelText('Backend')).toHaveValue('codex');
     expect(screen.queryByText('Continue as')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'New task' })).toBeInTheDocument();
-    expect(screen.queryByRole('option', { name: 'opencode' })).not.toBeInTheDocument();
+    // Any backend the daemon supports is a valid cross-handoff target, including
+    // opencode (previously filtered out when the bridge was a hardcoded set).
+    expect(screen.getByRole('option', { name: 'opencode' })).toBeInTheDocument();
   });
 
   it('keeps running tasks on the new-task flow and keeps same-backend available', () => {
@@ -339,7 +341,10 @@ describe('RestartTaskControls', () => {
     expect(screen.getByRole('button', { name: 'New task' })).toBeDisabled();
   });
 
-  it('keeps same-backend external providers available for new-task restart', () => {
+  it('offers every daemon-supported backend as a handoff target, including arbitrary external providers', () => {
+    // Backend-agnostic handoff: the share-link mechanism makes any pair valid,
+    // so a task running on an external provider can hand off to a built-in
+    // (or vice versa) as long as the daemon advertises both.
     agentsState = {
       agents: [
         {
@@ -368,7 +373,7 @@ describe('RestartTaskControls', () => {
 
     expect(screen.getByLabelText('Backend')).toHaveValue('test-external');
     expect(screen.getByRole('option', { name: 'test-external' })).toBeInTheDocument();
-    expect(screen.queryByRole('option', { name: 'codex' })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'codex' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'New task' })).toBeEnabled();
   });
 
@@ -407,7 +412,10 @@ describe('RestartTaskControls', () => {
     expect(screen.getByRole('option', { name: 'claude' })).toBeInTheDocument();
   });
 
-  it('does not offer built-in-looking external prefixes without a runtime backend map entry', () => {
+  it('offers built-in cross-bridges even when the source backend is a distinct external provider', () => {
+    // Under the share-link handoff, `codex-enterprise` → `claude` is a valid
+    // pair regardless of whether `codex-enterprise` aliases a built-in or
+    // sits on its own; the target daemon advertising both is the only gate.
     agentsState = {
       agents: [
         {
@@ -439,6 +447,6 @@ describe('RestartTaskControls', () => {
     );
 
     expect(screen.getByRole('option', { name: 'codex-enterprise' })).toBeInTheDocument();
-    expect(screen.queryByRole('option', { name: 'claude' })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'claude' })).toBeInTheDocument();
   });
 });

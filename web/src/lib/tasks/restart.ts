@@ -17,7 +17,14 @@ export const RESTARTABLE_SOURCE_STATUSES = new Set<TaskStatus>([
   "killed",
   "unknown",
 ]);
-export const BRIDGEABLE_BACKENDS = new Set(["codex", "claude", "kimi"]);
+// Historical name — kept as an export for backwards compat with any external
+// consumer that imported it, but no longer used as a gate. The handoff path
+// is now backend-agnostic: any two backends that the target daemon advertises
+// as `supportedBackends` can be paired. Cross-backend restart ships the prior
+// conversation as plain text at /share/<token>/plain, so the target AI only
+// needs to be able to fetch the URL (a capability every mainstream coding
+// assistant CLI has). See claw/rfc/0021-feature-task-restart.md.
+export const BRIDGEABLE_BACKENDS = new Set(["codex", "claude", "kimi", "opencode"]);
 const RESTART_BACKEND_ALIASES = new Map([
   ["code", "codex"],
   ["claude-code", "claude"],
@@ -44,9 +51,6 @@ export const normalizeRestartBackend = (
   if (mappedRuntimeBackend) {
     return RESTART_BACKEND_ALIASES.get(mappedRuntimeBackend) ?? mappedRuntimeBackend;
   }
-  if (BRIDGEABLE_BACKENDS.has(normalized)) {
-    return normalized;
-  }
   return normalized;
 };
 
@@ -64,13 +68,32 @@ export const normalizeRestartStrategy = (value: unknown): RestartStrategy | null
   return null;
 };
 
+/**
+ * Whether a cross-backend handoff is architecturally supported. Since the
+ * handoff mechanism is backend-agnostic (the target AI just fetches a
+ * plain-text transcript URL), the only hard requirements are:
+ *
+ *   1. Both backend names resolve (non-empty after normalization).
+ *   2. The target daemon advertises support for the target backend — the
+ *      restart route enforces this independently via the online-agent
+ *      `supportedBackends` check, so this function does not duplicate it.
+ *
+ * Backend identity (codex vs claude vs kimi vs opencode vs any custom
+ * AISDK_PROVIDER_PATH provider) is not gated here. A bespoke provider that
+ * has no web-fetch capability will surface at runtime as "target AI says it
+ * can't reach the URL" — see the handoff prompt in
+ * `cli/src/daemon.js::buildResumeHandoffPrompt`, which asks the target AI
+ * to fall back to a recap if the fetch fails.
+ */
 export const canBridgeBackends = (
   sourceBackend: string,
   targetBackend: string,
   options: RestartCompatibilityOptions = {},
-): boolean =>
-  BRIDGEABLE_BACKENDS.has(normalizeRestartBackend(sourceBackend, options.sourceRuntimeBackendMap)) &&
-  BRIDGEABLE_BACKENDS.has(normalizeRestartBackend(targetBackend, options.targetRuntimeBackendMap));
+): boolean => {
+  const source = normalizeRestartBackend(sourceBackend, options.sourceRuntimeBackendMap);
+  const target = normalizeRestartBackend(targetBackend, options.targetRuntimeBackendMap);
+  return Boolean(source) && Boolean(target);
+};
 
 export const canCreateSuccessorTask = (
   sourceBackend: string,
