@@ -2723,3 +2723,115 @@ describe("conductor-fire backends", () => {
     });
   });
 });
+
+describe("pre_prompt delivery", () => {
+  it("sends pre_prompt as a user-visible synthetic message and triggers a runTurn before any real message", async () => {
+    const runTurnCalls = [];
+    const sentMessages = [];
+    let receiveCount = 0;
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        runTurn: async (content, options = {}) => {
+          runTurnCalls.push({ content, options });
+          return {
+            text: "pre_prompt ack reply",
+            usage: null,
+            items: [],
+            metadata: {},
+          };
+        },
+        threadId: "thread-preprompt",
+        threadOptions: { model: "claude" },
+      },
+      conductor: {
+        receiveMessages: async () => {
+          receiveCount += 1;
+          // Stop after pre_prompt handling completes; no real user messages exist.
+          runner.stopped = true;
+          return { messages: [] };
+        },
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-pre-prompt",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      initialPromptDelivery: "none",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "claude",
+      prePrompt: "follow repo guidelines strictly",
+      shouldProcessPrePrompt: true,
+    });
+
+    await runner.start();
+
+    assert.equal(runTurnCalls.length, 1);
+    assert.equal(runTurnCalls[0].content, "follow repo guidelines strictly");
+    assert.equal(runTurnCalls[0].options.useInitialImages, false);
+
+    const userBubble = sentMessages.find((entry) => entry.metadata?.pre_prompt === true);
+    assert.ok(userBubble, "pre_prompt must be surfaced as a visible message");
+    assert.equal(userBubble.content, "follow repo guidelines strictly");
+    assert.equal(userBubble.metadata.role, "user");
+    assert.equal(userBubble.metadata.visible_as, "user");
+    assert.equal(userBubble.metadata.origin, "pre_prompt");
+
+    const replyBubble = sentMessages.find((entry) => entry.metadata?.pre_prompt_response === true);
+    assert.ok(replyBubble, "pre_prompt AI reply must be surfaced");
+    assert.match(replyBubble.content, /pre_prompt ack reply/);
+
+    assert.equal(runner.shouldProcessPrePrompt, false, "pre_prompt must not be re-processed");
+    assert.ok(receiveCount >= 1, "main loop should still run after pre_prompt");
+  });
+
+  it("does not process pre_prompt when shouldProcessPrePrompt is false (e.g. reconnect)", async () => {
+    const runTurnCalls = [];
+    const sentMessages = [];
+
+    const runner = new BridgeRunner({
+      backendSession: {
+        runTurn: async (content, options = {}) => {
+          runTurnCalls.push({ content, options });
+          return { text: "", usage: null, items: [], metadata: {} };
+        },
+        threadId: "thread-preprompt-skip",
+        threadOptions: { model: "claude" },
+      },
+      conductor: {
+        receiveMessages: async () => {
+          runner.stopped = true;
+          return { messages: [] };
+        },
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-pre-prompt-skip",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      initialPromptDelivery: "none",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "claude",
+      prePrompt: "should be skipped",
+      shouldProcessPrePrompt: false,
+    });
+
+    await runner.start();
+
+    assert.equal(runTurnCalls.length, 0);
+    assert.equal(
+      sentMessages.filter((entry) => entry.metadata?.pre_prompt === true).length,
+      0,
+    );
+  });
+});

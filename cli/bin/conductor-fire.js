@@ -848,6 +848,10 @@ async function main() {
     let nextInitialPrompt =
       taskContext.shouldProcessInitialPrompt ? cliArgs.initialPrompt : "";
     let pendingRefreshSessionRequest = null;
+    // Only the first iteration should deliver the configured pre_prompt; any
+    // subsequent refresh-session rebuild must skip it so users don't see the
+    // pre_prompt bubble duplicated.
+    let nextShouldProcessPrePrompt = Boolean(taskContext.shouldProcessPrePrompt);
 
     const sessionCommandLine = resolveAiSessionCommandLine(
       cliArgs.backend,
@@ -930,7 +934,6 @@ async function main() {
           ...(cliArgs.sessionOptions || {}),
           ...(sessionCommandLine ? { commandLine: sessionCommandLine } : {}),
           logger: { log },
-          ...(resolvedPrePrompt ? { prePrompt: resolvedPrePrompt } : {}),
           sessionStoreKey: taskContext.taskId ? `task-${taskContext.taskId}` : undefined,
           resumePersistedSession: Boolean(!nextResumeSessionId && taskContext.taskId),
         });
@@ -947,6 +950,8 @@ async function main() {
           backendName: cliArgs.backend,
           resumeSessionId: nextResumeSessionId,
           daemonName: resolvedDaemonName,
+          prePrompt: resolvedPrePrompt || "",
+          shouldProcessPrePrompt: Boolean(resolvedPrePrompt) && nextShouldProcessPrePrompt,
         });
         reconnectRunner = runner;
         if (pendingRemoteStopEvent) {
@@ -993,6 +998,7 @@ async function main() {
           if (refreshedSessionId) {
             nextResumeSessionId = refreshedSessionId;
             nextInitialPrompt = "";
+            nextShouldProcessPrePrompt = false;
             pendingRefreshSessionRequest = refreshSessionRequest;
             continue;
           }
@@ -1467,6 +1473,9 @@ async function ensureTaskContext(conductor, opts) {
       appUrl: null,
       shouldProcessInitialPrompt: Boolean(opts.initialPrompt),
       initialPromptDelivery: opts.initialPrompt ? "synthetic" : "none",
+      // Daemon provided the task id, so this fire process is the first attach
+      // for that task — it should inject the configured pre_prompt once.
+      shouldProcessPrePrompt: true,
     };
   }
 
@@ -1493,6 +1502,9 @@ async function ensureTaskContext(conductor, opts) {
     appUrl: session.app_url || null,
     shouldProcessInitialPrompt: Boolean(opts.initialPrompt),
     initialPromptDelivery: opts.initialPrompt ? "queued" : "none",
+    // Newly created task — pre_prompt should run exactly once right after
+    // the backend session is announced, before any real user message.
+    shouldProcessPrePrompt: true,
   };
 }
 
@@ -1789,6 +1801,8 @@ export class BridgeRunner {
     backendName,
     resumeSessionId,
     daemonName,
+    prePrompt,
+    shouldProcessPrePrompt,
   }) {
     this.backendSession = backendSession;
     this.conductor = conductor;
@@ -1818,6 +1832,9 @@ export class BridgeRunner {
       this.initialPromptDelivery === "queued" && typeof initialPrompt === "string" && initialPrompt.trim()
         ? initialPrompt.trim()
         : "";
+    this.prePrompt =
+      typeof prePrompt === "string" && prePrompt.trim() ? prePrompt.trim() : "";
+    this.shouldProcessPrePrompt = Boolean(shouldProcessPrePrompt) && Boolean(this.prePrompt);
     this.sessionStreamReplyCounts = new Map();
     this.lastRuntimeStatusSignature = null;
     this.lastRuntimeStatusPayload = null;
@@ -2025,6 +2042,17 @@ export class BridgeRunner {
     await this.announceBackendSession();
     if (this.stopped) {
       return;
+    }
+
+    if (this.shouldProcessPrePrompt) {
+      this.copilotLog(
+        `processing pre_prompt via synthetic attach flow contentLen=${this.prePrompt.length}`,
+      );
+      this.shouldProcessPrePrompt = false;
+      await this.handlePrePromptMessage(this.prePrompt);
+      if (this.stopped) {
+        return;
+      }
     }
 
     if (this.initialPrompt && this.initialPromptDelivery === "synthetic") {
@@ -3049,6 +3077,51 @@ export class BridgeRunner {
   }
 
   async handleSyntheticMessage(content, { includeImages }) {
+    return this.runSyntheticTurn({
+      content,
+      replyTarget: "initial",
+      includeImages: Boolean(includeImages),
+      logTag: "synthetic",
+      introLabel: "初始提示",
+      errorLabel: "初始提示",
+    });
+  }
+
+  async handlePrePromptMessage(content) {
+    const text = typeof content === "string" ? content.trim() : "";
+    if (!text) {
+      return;
+    }
+    return this.runSyntheticTurn({
+      content: text,
+      replyTarget: "pre_prompt",
+      includeImages: false,
+      logTag: "pre_prompt",
+      introLabel: "pre_prompt",
+      errorLabel: "pre_prompt",
+      surfaceUserMessage: {
+        content: text,
+        metadata: {
+          pre_prompt: true,
+          role: "user",
+          visible_as: "user",
+          origin: "pre_prompt",
+        },
+      },
+      replyMetadata: { pre_prompt_response: true },
+    });
+  }
+
+  async runSyntheticTurn({
+    content,
+    replyTarget,
+    includeImages,
+    logTag,
+    introLabel,
+    errorLabel,
+    surfaceUserMessage,
+    replyMetadata,
+  }) {
     this.lastRuntimeStatusSignature = null;
     this.runningTurn = true;
     const startedAt = Date.now();
@@ -3056,28 +3129,48 @@ export class BridgeRunner {
       this.useSessionFileReplyStream &&
       typeof this.backendSession?.setSessionReplyTarget === "function"
     ) {
-      this.backendSession.setSessionReplyTarget("initial");
+      this.backendSession.setSessionReplyTarget(replyTarget);
     }
-    this.copilotLog(`synthetic turn start includeImages=${Boolean(includeImages)} contentLen=${String(content || "").length}`);
+    this.copilotLog(
+      `${logTag} turn start includeImages=${Boolean(includeImages)} contentLen=${String(content || "").length}`,
+    );
+    if (surfaceUserMessage) {
+      try {
+        await this.conductor.sendMessage(this.taskId, surfaceUserMessage.content, {
+          backend: this.backendName,
+          thread_id: this.backendSession?.threadId,
+          cli_args: this.cliArgs,
+          synthetic: true,
+          ...(surfaceUserMessage.metadata || {}),
+        });
+        this.copilotLog(
+          `${logTag} message surfaced to task len=${surfaceUserMessage.content.length}`,
+        );
+      } catch (error) {
+        log(`Failed to surface ${logTag} message: ${error?.message || error}`);
+      }
+    }
     try {
       const result = await this.backendSession.runTurn(content, {
-        useInitialImages: includeImages,
+        useInitialImages: Boolean(includeImages),
         onProgress: (payload) => {
-          void this.reportRuntimeStatus(payload, "initial");
+          void this.reportRuntimeStatus(payload, replyTarget);
         },
       });
       this.copilotLog(
-        `synthetic runTurn completed elapsedMs=${Date.now() - startedAt} answerLen=${String(result.text || "").trim().length}`,
+        `${logTag} runTurn completed elapsedMs=${Date.now() - startedAt} answerLen=${String(result.text || "").trim().length}`,
       );
       if (!this.useSessionFileReplyStream) {
         const backendLabel = this.backendName.charAt(0).toUpperCase() + this.backendName.slice(1);
-        const intro = `${backendLabel} 已根据初始提示给出回复：`;
+        const intro = `${backendLabel} 已根据${introLabel}给出回复：`;
         const replyText =
-          result.text || extractAgentTextFromItems(result.items) || extractAgentTextFromMetadata(result.metadata);
+          result.text ||
+          extractAgentTextFromItems(result.items) ||
+          extractAgentTextFromMetadata(result.metadata);
         const text = replyText ? `${intro}\n\n${replyText}` : intro;
         logBackendReply(this.backendName, replyText || "(无文本输出)", {
           usage: result.usage,
-          replyTo: "initial",
+          replyTo: replyTarget,
         });
         await this.conductor.sendMessage(this.taskId, text, {
           model: this.backendSession.threadOptions?.model || this.backendName,
@@ -3086,27 +3179,32 @@ export class BridgeRunner {
           thread_id: this.backendSession.threadId,
           cli_args: this.cliArgs,
           synthetic: true,
+          ...(replyMetadata || {}),
         });
-        this.copilotLog(`synthetic sdk_message sent responseLen=${text.length}`);
+        this.copilotLog(`${logTag} sdk_message sent responseLen=${text.length}`);
       } else {
-        this.copilotLog("synthetic session_file turn settled");
+        this.copilotLog(`${logTag} session_file turn settled`);
       }
       await this.syncBackendSessionBinding();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       if (this.stopped && (this.remoteStopInfo || isSessionClosedError(error))) {
-        this.copilotLog(`synthetic turn interrupted by stop_task elapsedMs=${Date.now() - startedAt}`);
+        this.copilotLog(`${logTag} turn interrupted by stop_task elapsedMs=${Date.now() - startedAt}`);
         return;
       }
-      if (await this.settleCodexCheckpointUnavailableAfterStream("initial", errorMessage, { markProcessed: false })) {
+      if (
+        await this.settleCodexCheckpointUnavailableAfterStream(replyTarget, errorMessage, {
+          markProcessed: false,
+        })
+      ) {
         return;
       }
       this.copilotLog(
-        `synthetic turn failed elapsedMs=${Date.now() - startedAt} error="${sanitizeForLog(errorMessage, 200)}"`,
+        `${logTag} turn failed elapsedMs=${Date.now() - startedAt} error="${sanitizeForLog(errorMessage, 200)}"`,
       );
-      await this.reportError(`初始提示执行失败: ${errorMessage}`);
+      await this.reportError(`${errorLabel}执行失败: ${errorMessage}`);
     } finally {
-      this.copilotLog(`synthetic turn end elapsedMs=${Date.now() - startedAt}`);
+      this.copilotLog(`${logTag} turn end elapsedMs=${Date.now() - startedAt}`);
       this.runningTurn = false;
     }
   }
