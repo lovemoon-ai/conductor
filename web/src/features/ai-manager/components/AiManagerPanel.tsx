@@ -138,7 +138,7 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
           <ToolStatusRow tool="kimi" install={status?.install.kimi} network={status?.network.kimi} />
           <ToolStatusRow tool="copilot" install={status?.install.copilot} network={status?.network.copilot} />
         </div>
-        {state?.error.status ? (
+        {state?.error?.status ? (
           <p className="mt-2 text-xs text-[var(--error)]">{state.error.status}</p>
         ) : null}
       </SectionCard>
@@ -202,6 +202,12 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
                 </span>
               ) : null}
             </div>
+            {quota?.copilot?.login ? (
+              <p className="text-xs text-muted">
+                {quota.copilot.login}
+                {quota.copilot.loginSource === 'github_token' ? ' via GITHUB_TOKEN' : ''}
+              </p>
+            ) : null}
             {quota?.copilot?.premiumInteractions || !quota?.copilot ? (
               <QuotaBar label="Premium" window={quota?.copilot?.premiumInteractions} />
             ) : null}
@@ -222,7 +228,7 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
             ) : null}
           </div>
         </div>
-        {state?.error.quota ? (
+        {state?.error?.quota ? (
           <p className="mt-2 text-xs text-[var(--error)]">{state.error.quota}</p>
         ) : null}
       </SectionCard>
@@ -231,8 +237,8 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
         <CodexAccountSwitcher
           agentHost={host}
           accounts={accounts}
-          loading={state?.loading.accounts ?? false}
-          errorMessage={state?.error.accounts}
+          loading={state?.loading?.accounts ?? false}
+          errorMessage={state?.error?.accounts}
         />
       </SectionCard>
 

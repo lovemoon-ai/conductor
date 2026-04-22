@@ -310,6 +310,98 @@ test("getCopilotQuota does not fallback to previous account cache when auth lack
   });
 });
 
+test("getCopilotQuota uses GITHUB_TOKEN to enrich login info when SDK auth lacks login", async () => {
+  await withTmp(async (dir) => {
+    const previousGithubToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = "github-login-token";
+
+    try {
+      const state = { started: 0, stopped: 0, quotaCalls: 0 };
+      const fetchCalls: Array<{ url: string; headers: Headers }> = [];
+      const result = await getCopilotQuota({
+        cacheDir: dir,
+        ttlSeconds: 0,
+        sdkModule: makeSdk(
+          {
+            quotaSnapshots: {
+              chat: {
+                entitlementRequests: 10,
+                usedRequests: 4,
+                remainingPercentage: 60,
+                overage: 0,
+                overageAllowedWithExhaustedQuota: false,
+              },
+            },
+          },
+          state,
+          { isAuthenticated: true, authType: "user", host: "github.com" },
+        ),
+        fetcher: async (input, init) => {
+          fetchCalls.push({
+            url: String(input),
+            headers: new Headers(init?.headers),
+          });
+          return new Response(JSON.stringify({ login: "octocat" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        },
+      });
+
+      assert.equal(result.source, "fresh");
+      assert.equal(result.login, "octocat");
+      assert.equal(result.loginSource, "github_token");
+      assert.equal(result.authType, "user");
+      assert.equal(fetchCalls.length, 1);
+      assert.equal(fetchCalls[0]?.url, "https://api.github.com/user");
+      assert.equal(fetchCalls[0]?.headers.get("authorization"), "Bearer github-login-token");
+      assert.equal(fetchCalls[0]?.headers.get("user-agent"), "conductor-ai-manager");
+    } finally {
+      restoreEnv("GITHUB_TOKEN", previousGithubToken);
+    }
+  });
+});
+
+test("getCopilotQuota ignores GITHUB_TOKEN lookup failures and still returns quota", async () => {
+  await withTmp(async (dir) => {
+    const previousGithubToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = "github-login-token";
+
+    try {
+      const state = { started: 0, stopped: 0, quotaCalls: 0 };
+      const result = await getCopilotQuota({
+        cacheDir: dir,
+        ttlSeconds: 0,
+        sdkModule: makeSdk(
+          {
+            quotaSnapshots: {
+              completions: {
+                entitlementRequests: 20,
+                usedRequests: 5,
+                remainingPercentage: 75,
+                overage: 0,
+                overageAllowedWithExhaustedQuota: false,
+              },
+            },
+          },
+          state,
+          { isAuthenticated: true, authType: "user", host: "github.com" },
+        ),
+        fetcher: async () => {
+          throw new Error("lookup failed");
+        },
+      });
+
+      assert.equal(result.source, "fresh");
+      assert.equal(result.login, undefined);
+      assert.equal(result.loginSource, undefined);
+      assert.equal(result.completions?.remainingPercent, 75);
+    } finally {
+      restoreEnv("GITHUB_TOKEN", previousGithubToken);
+    }
+  });
+});
+
 test("getCopilotQuota fetches through SDK RPC and returns cached quota", async () => {
   await withTmp(async (dir) => {
     const state = { started: 0, stopped: 0 };

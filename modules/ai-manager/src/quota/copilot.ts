@@ -6,22 +6,33 @@ const DEFAULT_TTL = 60;
 const DEFAULT_TIMEOUT_MS = 20_000;
 const STOP_TIMEOUT_MS = 5_000;
 const GITHUB_TOKEN_ENV_KEYS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
+const GITHUB_USER_AGENT = "conductor-ai-manager";
+const GITHUB_API_VERSION = "2022-11-28";
 
 interface AccountGetQuotaResult {
   quotaSnapshots?: Record<string, unknown>;
+}
+
+interface CopilotAuthStatus {
+  isAuthenticated: boolean;
+  authType?: string;
+  host?: string;
+  login?: string;
+  statusMessage?: string;
+}
+
+interface CopilotAuthInfo {
+  authType?: string;
+  host?: string;
+  login?: string;
+  loginSource?: "sdk" | "github_token";
 }
 
 interface CopilotClientLike {
   start(): Promise<void>;
   stop(): Promise<Error[]>;
   forceStop?: () => Promise<void>;
-  getAuthStatus?: () => Promise<{
-    isAuthenticated: boolean;
-    authType?: string;
-    host?: string;
-    login?: string;
-    statusMessage?: string;
-  }>;
+  getAuthStatus?: () => Promise<CopilotAuthStatus>;
   rpc: {
     account: {
       getQuota(): Promise<AccountGetQuotaResult>;
@@ -48,6 +59,8 @@ export interface GetCopilotQuotaOptions {
   githubToken?: string;
   /** SDK client options. Useful for enterprise hosts or tests. */
   clientOptions?: CopilotClientOptions;
+  /** Override global fetch for GitHub login lookup tests. */
+  fetcher?: typeof fetch;
   /** Override SDK module for tests. */
   sdkModule?: CopilotSdkModule;
 }
@@ -58,9 +71,11 @@ export async function getCopilotQuota(
   const ttl = opts.ttlSeconds ?? DEFAULT_TTL;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const deadlineStartedAt = Date.now();
+  const doFetch: typeof fetch = opts.fetcher ?? fetch;
   const preStartCacheKey = resolveExplicitAuthCacheKey(opts);
   let file = preStartCacheKey ? cachePathForIdentity(preStartCacheKey, opts.cacheDir) : undefined;
   let canWriteQuotaCache = Boolean(preStartCacheKey);
+  let authInfo: CopilotAuthInfo | undefined;
 
   if (!file) {
     const rememberedCacheKey = await readRememberedAuthCacheKey(opts.cacheDir);
@@ -95,6 +110,12 @@ export async function getCopilotQuota(
       client,
       authTimeoutMs,
     );
+    authInfo = await resolveCopilotAuthInfo(
+      authStatus,
+      opts,
+      doFetch,
+      safeRemainingTimeoutMs(deadlineStartedAt, timeoutMs),
+    );
     const authCacheKey = preStartCacheKey ?? authStatusToCacheKey(authStatus);
     file = authCacheKey ? cachePathForIdentity(authCacheKey, opts.cacheDir) : file;
     canWriteQuotaCache = Boolean(authCacheKey);
@@ -108,7 +129,7 @@ export async function getCopilotQuota(
     if (file && !opts.forceRefresh && ttl > 0) {
       const cached = await readCache<CopilotQuota>(file);
       if (isFresh(cached, ttl) && cached) {
-        return { ...cached.value, source: "cached" };
+        return applyAuthInfo({ ...cached.value, source: "cached" }, authInfo);
       }
     }
 
@@ -123,12 +144,12 @@ export async function getCopilotQuota(
       "copilot quota request timed out",
     );
     const parsed = parseCopilotQuotaSnapshots(payload?.quotaSnapshots);
-    const fresh: CopilotQuota = {
+    const fresh = applyAuthInfo({
       tool: "copilot",
       fetchedAt: Math.floor(Date.now() / 1000),
       source: "fresh",
       ...parsed,
-    };
+    }, authInfo);
 
     if (Object.keys(fresh.snapshots).length > 0) {
       if (file && canWriteQuotaCache) {
@@ -136,9 +157,15 @@ export async function getCopilotQuota(
       }
       return fresh;
     }
-    return await fallbackFromCache(file, ttl, "copilot SDK returned no quota snapshots");
+    return await fallbackFromCache(file, ttl, "copilot SDK returned no quota snapshots", authInfo);
   } catch (err: any) {
-    return await fallbackFromCache(file, ttl, err?.message ?? String(err));
+    authInfo ??= await resolveCopilotAuthInfo(
+      null,
+      opts,
+      doFetch,
+      safeRemainingTimeoutMs(deadlineStartedAt, timeoutMs),
+    );
+    return await fallbackFromCache(file, ttl, err?.message ?? String(err), authInfo);
   } finally {
     await stopClient(client);
   }
@@ -147,7 +174,10 @@ export async function getCopilotQuota(
 /** Exported for tests. */
 export function parseCopilotQuotaSnapshots(
   rawSnapshots: unknown,
-): Omit<CopilotQuota, "tool" | "fetchedAt" | "source" | "error"> {
+): Omit<
+  CopilotQuota,
+  "tool" | "fetchedAt" | "source" | "error" | "login" | "authType" | "host" | "loginSource"
+> {
   const snapshots: Record<string, CopilotQuotaSnapshot> = {};
   if (rawSnapshots && typeof rawSnapshots === "object") {
     for (const [key, value] of Object.entries(rawSnapshots as Record<string, unknown>)) {
@@ -301,18 +331,10 @@ function withoutGitHubTokenEnv(
 }
 
 function authStatusToCacheKey(
-  status:
-    | {
-        isAuthenticated: boolean;
-        authType?: string;
-        host?: string;
-        login?: string;
-        statusMessage?: string;
-      }
-    | null,
+  status: CopilotAuthStatus | null,
 ): string | undefined {
   if (!status?.isAuthenticated) return undefined;
-  const host = status.host || process.env.GH_HOST || "github.com";
+  const host = resolveKnownGitHubHost(status.host) ?? "github.com";
   const authType = status.authType || "unknown";
   const login = typeof status.login === "string" ? status.login.trim() : "";
   if (!login) return undefined;
@@ -320,12 +342,7 @@ function authStatusToCacheKey(
 }
 
 function shouldClearRememberedAuthCacheKey(
-  status:
-    | {
-        isAuthenticated: boolean;
-        login?: string;
-      }
-    | null,
+  status: Pick<CopilotAuthStatus, "isAuthenticated" | "login"> | null,
 ): boolean {
   if (!status) return false;
   if (!status.isAuthenticated) return true;
@@ -358,13 +375,98 @@ async function clearRememberedAuthCacheKey(dir?: string): Promise<void> {
 async function getClientAuthStatus(
   client: CopilotClientLike,
   timeoutMs: number,
-): Promise<Awaited<ReturnType<NonNullable<CopilotClientLike["getAuthStatus"]>>> | null> {
+): Promise<CopilotAuthStatus | null> {
   if (typeof client.getAuthStatus !== "function") return null;
   try {
     return await withTimeout(client.getAuthStatus(), timeoutMs, "copilot auth status timed out");
   } catch {
     return null;
   }
+}
+
+async function resolveCopilotAuthInfo(
+  status: CopilotAuthStatus | null,
+  opts: GetCopilotQuotaOptions,
+  doFetch: typeof fetch,
+  timeoutMs?: number,
+): Promise<CopilotAuthInfo | undefined> {
+  const token = resolveGitHubLoginToken(opts)?.trim();
+  const host = resolveKnownGitHubHost(status?.host) ?? (token ? "github.com" : undefined);
+  const authType = status?.authType;
+  const login = typeof status?.login === "string" ? status.login.trim() : "";
+  if (login) {
+    return {
+      authType,
+      host,
+      login,
+      loginSource: "sdk",
+    };
+  }
+
+  const fallbackLogin = await lookupGitHubTokenLogin(token, host, doFetch, timeoutMs);
+  if (!fallbackLogin) {
+    return authType || host ? { authType, host } : undefined;
+  }
+
+  return {
+    authType: authType ?? "token",
+    host,
+    login: fallbackLogin,
+    loginSource: "github_token",
+  };
+}
+
+function resolveKnownGitHubHost(rawHost?: string): string | undefined {
+  const host = typeof rawHost === "string" ? rawHost.trim() : "";
+  const envHost = typeof process.env.GH_HOST === "string" ? process.env.GH_HOST.trim() : "";
+  return host || envHost || undefined;
+}
+
+function resolveGitHubLoginToken(opts: GetCopilotQuotaOptions): string | undefined {
+  return opts.githubToken ?? opts.clientOptions?.githubToken ?? process.env.GITHUB_TOKEN;
+}
+
+async function lookupGitHubTokenLogin(
+  token: string | undefined,
+  host: string | undefined,
+  doFetch: typeof fetch,
+  timeoutMs?: number,
+): Promise<string | undefined> {
+  if (!token || !timeoutMs || timeoutMs <= 0) return undefined;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await doFetch(githubUserUrl(host ?? "github.com"), {
+      method: "GET",
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": GITHUB_USER_AGENT,
+        "X-GitHub-Api-Version": GITHUB_API_VERSION,
+      },
+      signal: controller.signal,
+    });
+    if (!response.ok) return undefined;
+    const payload = await response.json().catch(() => null) as { login?: unknown } | null;
+    const login = typeof payload?.login === "string" ? payload.login.trim() : "";
+    return login || undefined;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function githubUserUrl(host: string): string {
+  return host === "github.com"
+    ? "https://api.github.com/user"
+    : `https://${host}/api/v3/user`;
+}
+
+function safeRemainingTimeoutMs(startedAtMs: number, timeoutMs: number): number | undefined {
+  const remaining = timeoutMs - (Date.now() - startedAtMs);
+  return remaining > 0 ? remaining : undefined;
 }
 
 async function withTimeout<T>(
@@ -402,19 +504,20 @@ async function fallbackFromCache(
   file: string | undefined,
   ttl: number,
   error: string,
+  authInfo?: CopilotAuthInfo,
 ): Promise<CopilotQuota> {
   if (!file) {
-    return emptyQuota("unknown", error);
+    return applyAuthInfo(emptyQuota("unknown", error), authInfo);
   }
   const cached = await readCache<CopilotQuota>(file);
   if (cached) {
-    return {
+    return applyAuthInfo({
       ...cached.value,
       source: isFresh(cached, ttl) ? "cached" : "stale",
       error,
-    };
+    }, authInfo);
   }
-  return emptyQuota("unknown", error);
+  return applyAuthInfo(emptyQuota("unknown", error), authInfo);
 }
 
 function emptyQuota(source: CopilotQuota["source"], error?: string): CopilotQuota {
@@ -424,5 +527,16 @@ function emptyQuota(source: CopilotQuota["source"], error?: string): CopilotQuot
     error,
     fetchedAt: Math.floor(Date.now() / 1000),
     snapshots: {},
+  };
+}
+
+function applyAuthInfo(quota: CopilotQuota, authInfo?: CopilotAuthInfo): CopilotQuota {
+  if (!authInfo) return quota;
+  return {
+    ...quota,
+    ...(authInfo.authType ? { authType: authInfo.authType } : {}),
+    ...(authInfo.host ? { host: authInfo.host } : {}),
+    ...(authInfo.login ? { login: authInfo.login } : {}),
+    ...(authInfo.loginSource ? { loginSource: authInfo.loginSource } : {}),
   };
 }

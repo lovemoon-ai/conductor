@@ -75,6 +75,29 @@ const readPatchField = (
   return undefined;
 };
 
+const readPatchBody = async (
+  request: NextRequest,
+): Promise<{ body: Record<string, any> } | { error: NextResponse<{ error: string }> }> => {
+  const rawBody = await request.text();
+  if (!rawBody.trim()) {
+    return { body: {} };
+  }
+
+  try {
+    const parsed = JSON.parse(rawBody);
+    return {
+      body:
+        parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, any>)
+          : {},
+    };
+  } catch {
+    return {
+      error: NextResponse.json({ error: "invalid JSON body" }, { status: 400 }),
+    };
+  }
+};
+
 const findTaskDetail = async (userId: string, taskId: string) =>
   withPtySchemaFallback(
     "tasks.taskId.GET",
@@ -348,11 +371,11 @@ export async function PATCH(
   const user = userResult;
 
   const { taskId } = await params;
-  const body = await request.json();
-  const normalizedBody =
-    body && typeof body === "object" && !Array.isArray(body)
-      ? (body as Record<string, any>)
-      : {};
+  const parsedBody = await readPatchBody(request);
+  if ("error" in parsedBody) {
+    return parsedBody.error;
+  }
+  const normalizedBody = parsedBody.body;
 
   const existing = await findTaskForPatch(user.id, taskId);
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });

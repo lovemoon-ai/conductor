@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { NextRequest } from "next/server";
 import { DELETE, GET, PATCH } from "@/app/api/tasks/[taskId]/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
 import * as authService from "@/lib/auth/service";
@@ -1006,6 +1007,83 @@ describe("/api/tasks/[taskId]", () => {
     expect(data.session_id).toBe("session-5");
     expect(data.session_file_path).toBe("/tmp/session-5.jsonl");
     expect(data.task_type).toBe("ai_task");
+  });
+
+  it("treats an empty PATCH body as a no-op instead of throwing", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-5-empty",
+      projectId: "proj-1",
+      title: "Task 5 Empty",
+      status: "running",
+      taskType: "ai_task",
+      launchConfig: null,
+      ptySession: null,
+      issueId: null,
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: "session-5-empty",
+      sessionFilePath: "/tmp/session-5-empty.jsonl",
+      metadata: null,
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:00:00.000Z"),
+    } as any);
+    vi.mocked(db.task.update).mockResolvedValue({
+      id: "task-5-empty",
+      projectId: "proj-1",
+      title: "Task 5 Empty",
+      status: "running",
+      taskType: "ai_task",
+      launchConfig: null,
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: "session-5-empty",
+      sessionFilePath: "/tmp/session-5-empty.jsonl",
+      metadata: null,
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+    } as any);
+
+    const response = await PATCH(
+      createMockRequest({
+        method: "PATCH",
+        token,
+      }),
+      { params: Promise.resolve({ taskId: "task-5-empty" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "task-5-empty" },
+      }),
+    );
+    expect(data.id).toBe("task-5-empty");
+    expect(data.status).toBe("running");
+  });
+
+  it("returns 400 when PATCH receives malformed JSON", async () => {
+    const token = createTestToken("user-1");
+    const request = new NextRequest("http://localhost:6152/api/tasks/task-5-bad-json", {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: "{",
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ taskId: "task-5-bad-json" }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: "invalid JSON body" });
+    expect(db.task.findFirst).not.toHaveBeenCalled();
   });
 
   it("merges metadata when PATCH adds daemon binding for a manual fire task", async () => {

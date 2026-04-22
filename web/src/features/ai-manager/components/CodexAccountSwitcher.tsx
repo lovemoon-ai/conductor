@@ -14,8 +14,8 @@ interface Props {
 
 export function CodexAccountSwitcher({ agentHost, accounts, loading, errorMessage }: Props) {
   const switchAccount = useAiManagerStore((s) => s.switchAccount);
-  const switching = useAiManagerStore((s) => s.byHost[agentHost]?.loading.switching ?? false);
-  const switchError = useAiManagerStore((s) => s.byHost[agentHost]?.error.switching);
+  const switching = useAiManagerStore((s) => s.byHost[agentHost]?.loading?.switching ?? false);
+  const switchError = useAiManagerStore((s) => s.byHost[agentHost]?.error?.switching);
   const [pending, setPending] = useState<CodexAccount | null>(null);
 
   if (loading && accounts.length === 0) {
