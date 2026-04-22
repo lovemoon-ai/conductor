@@ -739,6 +739,43 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(ageMs).toBeLessThanOrEqual(sevenDaysMs + 5_000);
   });
 
+  it("end-to-end: when the age-cap delete wipes the existing row, the upsert take the create branch and returns a fresh token", async () => {
+    // Simulate the flow: deleteMany reports it removed 1 row (the aged-out
+    // one), then findUnique returns null (no row left), then upsert is
+    // exercised in its `create` branch. The URL in the outbox must reflect
+    // the newly-minted token, not some stale value.
+    vi.mocked(db.sharedTask.deleteMany).mockResolvedValueOnce({ count: 1 } as any);
+    vi.mocked(db.sharedTask.findUnique).mockResolvedValueOnce(null as any);
+    vi.mocked(db.sharedTask.upsert).mockResolvedValueOnce({
+      id: "shared-fresh",
+      taskId: "task-1",
+      userId: "user-1",
+      kind: "resume_handoff",
+      token: "freshly-minted-token-xyz",
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      createdAt: new Date(),
+    } as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { backend_type: "claude" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    await extractJson(response);
+
+    expect(response.status).toBe(200);
+    // Outbox payload must carry the fresh token the upsert returned, not
+    // the mocked default ("handoff-token-abc" from beforeEach).
+    const payloadJson = vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data
+      ?.payloadJson as string;
+    const payload = JSON.parse(payloadJson);
+    expect(payload.payload.resume_context_url).toContain("freshly-minted-token-xyz");
+    expect(payload.payload.resume_context_url).not.toContain("handoff-token-abc");
+  });
+
   it("rotates the resume-handoff token when the existing token is close to expiry", async () => {
     const now = Date.now();
     vi.mocked(db.sharedTask.findUnique).mockResolvedValueOnce({

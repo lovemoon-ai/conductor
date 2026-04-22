@@ -1,7 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 
-import { maskErrorForLogs, maskHandoffUrlForLogs } from "../src/daemon.js";
+// Import directly from the extracted module so this test file doesn't
+// transitively load daemon.js (which needs @love-moon/conductor-sdk
+// build artifacts that are not available in every test environment).
+import { maskErrorForLogs, maskHandoffUrlForLogs } from "../src/handoff-log-mask.js";
 
 describe("maskHandoffUrlForLogs", () => {
   it("masks the token in a bare handoff URL", () => {
@@ -91,11 +94,23 @@ describe("maskErrorForLogs", () => {
     assert.ok(!masked.message.includes("SECRETTOKEN"));
   });
 
-  it("preserves the stack trace", () => {
-    const err = new Error("bad: http://h/share/SECRETTOKEN/plain");
-    const originalStack = err.stack;
+  it("masks handoff URLs embedded in the stack trace too", () => {
+    // Contract: the clone's `.stack` must not leak the raw token. We build a
+    // synthetic stack string that contains the URL so we can assert the
+    // masker ran, independent of whether V8's own stack happens to include
+    // argument strings on this platform.
+    const err = new Error("bad: http://h/share/SECRETTOKEN1/plain");
+    err.stack = `Error: something\n    at fn (http://h/share/STACKTOK99/plain)\n    at main`;
     const masked = maskErrorForLogs(err);
-    assert.strictEqual(masked.stack, originalStack);
+    assert.ok(
+      !masked.stack.includes("SECRETTOKEN1"),
+      "message-side token must not leak via stack",
+    );
+    assert.ok(
+      !masked.stack.includes("STACKTOK99"),
+      "stack-embedded token must be masked",
+    );
+    assert.ok(masked.stack.includes("<masked:…"));
   });
 
   it("returns plain strings masked in place (no Error wrapping)", () => {

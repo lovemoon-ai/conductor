@@ -127,6 +127,41 @@ describe("buildSharedPlainText", () => {
     expect(titleLine).toContain("<<<CONDUCTOR_TRANSCRIPT_END_>>>");
     expect(titleLine).not.toMatch(/<<<CONDUCTOR_TRANSCRIPT_END>>>/);
   });
+
+  it("collapses non-ASCII line separators (U+2028/U+2029/NEL/VT/FF) in the title", () => {
+    // LLM tokenizers and markdown/HTML renderers treat U+2028 / U+2029 as
+    // hard line breaks. Covering only ASCII \\r\\n\\t would leave a real
+    // escape-above-the-fence attack surface.
+    // Use escape sequences rather than raw code points so this test file is
+    // safe to grep/diff/open in editors that normalize line separators.
+    const exotic: Array<[string, string]> = [
+      ["U+2028 LS", "\u2028"],
+      ["U+2029 PS", "\u2029"],
+      ["U+0085 NEL", "\u0085"],
+      ["U+000B VT", "\u000b"],
+      ["U+000C FF", "\u000c"],
+    ];
+    for (const [label, ch] of exotic) {
+      const title = `safe${ch}${ch}INJECTED [${label}]`;
+      const payload: SharedTaskPayload = {
+        task: {
+          id: "task-exotic",
+          title,
+          status: "running",
+          taskType: "ai_task",
+          createdAt: "2026-04-22T00:00:00.000Z",
+          expiresAt: null,
+        },
+        messages: [],
+      };
+      const out = buildSharedPlainText(payload);
+      const titleLine =
+        out.split("\n").find((l) => l.startsWith("Title: ")) ?? "";
+      expect(titleLine).not.toContain(ch);
+      expect(titleLine).toContain("safe");
+      expect(titleLine).toContain("INJECTED");
+    }
+  });
 });
 
 describe("buildResumeHandoffUrl", () => {

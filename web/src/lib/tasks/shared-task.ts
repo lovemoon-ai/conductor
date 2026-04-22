@@ -227,13 +227,28 @@ function stripTranscriptFenceTokens(input: string): string {
     .replace(/<<<CONDUCTOR_TRANSCRIPT_END>>>/g, "<<<CONDUCTOR_TRANSCRIPT_END_>>>");
 }
 
+// Any code point that *could* be rendered as a line break by a downstream
+// consumer — Markdown renderer, HTML layout, an LLM's own tokenizer. Plain
+// ASCII \r/\n/\t is not enough: U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH
+// SEPARATOR) are treated as hard breaks by many renderers, and NEL/VT/FF show
+// up in legacy text. Collapsing all of them into a single space keeps the
+// attacker-supplied header value strictly one logical line.
+//
+// Built via `new RegExp` with `\u` string escapes: writing raw U+2028 or
+// U+2029 inside a regex literal would terminate the literal on that line and
+// silently turn this defense into a syntax error on refactor.
+const HEADER_BREAK_CHARS = new RegExp(
+  "[\\r\\n\\t\\v\\f\\u0085\\u2028\\u2029]+",
+  "g",
+);
+
 function sanitizeHeaderText(input: string): string {
   // Header fields (title) sit ABOVE the fence. If we let an attacker-supplied
-  // title carry a newline plus a forged fence marker, they can inject content
-  // that the "treat fenced content as data" framing does not cover. Collapse
-  // whitespace to keep everything on one line, then run the fence stripper so
-  // any literal marker tokens are neutralized.
-  return stripTranscriptFenceTokens(input.replace(/[\r\n\t]+/g, " ").trim());
+  // title carry a line break plus a forged fence / section-header marker,
+  // they can inject content that the "treat fenced content as data" framing
+  // does not cover. Collapse all line-break code points to spaces, then run
+  // the fence stripper so any literal marker tokens are neutralized too.
+  return stripTranscriptFenceTokens(input.replace(HEADER_BREAK_CHARS, " ").trim());
 }
 
 export function buildSharedPlainText(payload: SharedTaskPayload): string {

@@ -4,6 +4,14 @@
 -- so we rebuild the table in place. The transaction wrapper is implicit
 -- under Prisma's migrate runner.
 
+-- Pre-flight: drop any orphan rows whose user_id no longer references an
+-- existing user. Without this, the INSERT ... SELECT below would hard-fail
+-- under foreign_keys=ON because the new table enforces the FK. Orphans
+-- should be rare (users are seldom deleted) but this is a cheap safety net
+-- for any deployment where the old user-less constraint was relied on.
+DELETE FROM "shared_tasks"
+WHERE "user_id" NOT IN (SELECT "id" FROM "users");
+
 PRAGMA foreign_keys=OFF;
 
 CREATE TABLE "shared_tasks_new" (
