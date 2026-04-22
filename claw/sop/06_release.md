@@ -59,6 +59,7 @@ You are the release agent for the conductor repository. The goal is to release a
    - Copy it into the tap repository as `Formula/conductor.rb`.
    - Commit and push the tap update.
    - Verify at least the current local platform with `brew install lovemoon-ai/tap/conductor` and `conductor --version`.
+   - After verification, run `brew uninstall conductor` to clean up the test install and avoid polluting the local environment (the locally built `conductor` from `make install-cli` should remain the primary binary for development).
 11. After npm and CLI archives are successfully released, press `claw/sop/deploy-to-prod.md` to deploy production:
    - Determine whether `web/package.json` / `web/pnpm-lock.yaml` is involved
    - Determine whether Prisma schema / migrations are involved
