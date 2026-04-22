@@ -10,8 +10,10 @@ import { deliverAgentOutboxForHost } from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { serializeTaskResponse } from "@/lib/tasks/serialization";
 import {
+  buildHandoffNoticeContent,
   buildResumeHandoffUrl,
   createInternalResumeHandoffShare,
+  HANDOFF_NOTICE_METADATA,
 } from "@/lib/tasks/shared-task";
 import {
   applyLegacyTaskShape,
@@ -668,6 +670,27 @@ export async function POST(
         metadata: JSON.stringify(successorMetadata),
       },
     });
+
+    // Seed the successor task's chat with a short human-friendly notice so
+    // the user does not stare at an empty conversation while the new AI
+    // fetches the transcript URL. Failure here is non-fatal: the AI will
+    // still start correctly; the user just won't see the notice bubble.
+    await tx.message
+      .create({
+        data: {
+          taskId: successorTaskId,
+          role: "sdk",
+          content: buildHandoffNoticeContent({
+            sourceTitle: sourceTask.title,
+            sourceBackend,
+            targetBackend,
+          }),
+          metadata: JSON.stringify(HANDOFF_NOTICE_METADATA),
+        },
+      })
+      .catch((error) => {
+        console.error("[restart] failed to insert handoff notice message", error);
+      });
 
     await tx.task.update({
       where: { id: sourceTask.id },

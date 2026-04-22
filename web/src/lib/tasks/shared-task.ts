@@ -131,6 +131,33 @@ export function buildResumeHandoffUrl(baseUrl: string, token: string): string {
   return `${trimmed}/share/${encodeURIComponent(token)}/plain`;
 }
 
+/**
+ * Human-friendly notice written into the successor task's chat when a
+ * cross-backend handoff is initiated. This is NOT what the target AI
+ * receives as its prompt — that lives in the daemon's
+ * `buildResumeHandoffPrompt`. The goal here is just to tell the user
+ * looking at the empty new-task chat: "this task is resuming from X,
+ * the new backend is reading prior history now."
+ *
+ * Persisted with `role="sdk"` and `metadata.synthetic=true` so:
+ *   - it renders as an assistant-style bubble in the UI (no pretend-AI styling),
+ *   - it is filtered out of `/share/<token>/plain` transcripts so subsequent
+ *     handoffs do not redundantly forward this UI-only notice.
+ */
+export function buildHandoffNoticeContent(params: {
+  sourceTitle: string;
+  sourceBackend: string;
+  targetBackend: string;
+}): string {
+  const title = params.sourceTitle?.trim() || "previous task";
+  return `▶ Resumed from "${title}" — ${params.sourceBackend} → ${params.targetBackend}. The new assistant is reading the prior conversation transcript now.`;
+}
+
+export const HANDOFF_NOTICE_METADATA = Object.freeze({
+  synthetic: true,
+  kind: "handoff_notice" as const,
+});
+
 export interface SharedTaskPayload {
   task: {
     id: string;

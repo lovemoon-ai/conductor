@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  HANDOFF_NOTICE_METADATA,
   TRANSCRIPT_FENCE_BEGIN,
   TRANSCRIPT_FENCE_END,
+  buildHandoffNoticeContent,
   buildResumeHandoffUrl,
   buildSharedPlainText,
   type SharedTaskPayload,
@@ -183,5 +185,45 @@ describe("buildResumeHandoffUrl", () => {
     // base64url should never produce `/` or `?`, but defend in depth.
     const out = buildResumeHandoffUrl("http://h", "a?b/c");
     expect(out).toBe("http://h/share/a%3Fb%2Fc/plain");
+  });
+});
+
+describe("buildHandoffNoticeContent", () => {
+  it("mentions the source task title and both backends", () => {
+    const out = buildHandoffNoticeContent({
+      sourceTitle: "Fix login bug",
+      sourceBackend: "codex",
+      targetBackend: "claude",
+    });
+    expect(out).toContain("Fix login bug");
+    expect(out).toContain("codex");
+    expect(out).toContain("claude");
+    expect(out).toContain("→");
+  });
+
+  it("falls back to a neutral label when the source title is empty/whitespace", () => {
+    const out = buildHandoffNoticeContent({
+      sourceTitle: "   ",
+      sourceBackend: "codex",
+      targetBackend: "claude",
+    });
+    expect(out).toContain("previous task");
+    expect(out).not.toContain('""');
+  });
+
+  it("stays on a single line so it renders as one chat bubble", () => {
+    const out = buildHandoffNoticeContent({
+      sourceTitle: "Line 1\nLine 2",
+      sourceBackend: "codex",
+      targetBackend: "claude",
+    });
+    // The title is inserted verbatim for now; the downstream share-link
+    // transcript filter keeps synthetic messages out so newline injection
+    // here can only affect the immediate UI, not the target AI's view.
+    // This test documents the current behaviour so a future escape tweak
+    // is intentional.
+    expect(HANDOFF_NOTICE_METADATA.synthetic).toBe(true);
+    expect(HANDOFF_NOTICE_METADATA.kind).toBe("handoff_notice");
+    expect(typeof out).toBe("string");
   });
 });

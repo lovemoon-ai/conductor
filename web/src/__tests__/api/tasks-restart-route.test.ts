@@ -41,6 +41,9 @@ vi.mock("@/lib/db", () => ({
       findUnique: vi.fn(),
       upsert: vi.fn(),
     },
+    message: {
+      create: vi.fn(),
+    },
     user: {
       findUnique: vi.fn(),
     },
@@ -98,8 +101,10 @@ describe("/api/tasks/[taskId]/restart", () => {
       callback({
         task: db.task,
         agentOutbox: db.agentOutbox,
+        message: db.message,
       }),
     );
+    vi.mocked(db.message.create).mockResolvedValue({ id: "msg-handoff" } as any);
     vi.mocked(db.task.update).mockImplementation(async ({ where, data }: any) => ({
       ...buildTask(),
       id: where.id,
@@ -1491,6 +1496,53 @@ describe("/api/tasks/[taskId]/restart", () => {
       ?.data?.payloadJson as string;
     const payload = JSON.parse(payloadJson);
     expect(payload.payload.resume_context_url).toMatch(/\/share\/.+\/plain$/);
+  });
+
+  it("seeds the successor task's chat with a synthetic handoff-notice message so the UI shows context", async () => {
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { backend_type: "claude" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("backend_switch_new_task");
+
+    expect(db.message.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          taskId: data.task.id,
+          role: "sdk",
+          content: expect.stringContaining("Fix login bug"),
+        }),
+      }),
+    );
+    const messageCall = vi.mocked(db.message.create).mock.calls.at(-1)?.[0] as any;
+    expect(messageCall?.data?.content).toMatch(/codex/);
+    expect(messageCall?.data?.content).toMatch(/claude/);
+    // metadata carries the synthetic flag so this notice does NOT leak into
+    // any downstream `/share/<token>/plain` transcript.
+    const metadata = JSON.parse(messageCall.data.metadata);
+    expect(metadata).toEqual({ synthetic: true, kind: "handoff_notice" });
+  });
+
+  it("does not seed a handoff-notice message for inplace restart (same backend)", async () => {
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: {},
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.message.create).not.toHaveBeenCalled();
   });
 
   it("bridges opencode to any other daemon-supported backend (regression: opencode used to be whitelisted out)", async () => {
