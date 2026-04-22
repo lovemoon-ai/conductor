@@ -1,4 +1,4 @@
-export type Tool = "codex" | "claude" | "kimi";
+export type Tool = "codex" | "claude" | "kimi" | "copilot";
 
 export interface InstallStatus {
   installed: boolean;
@@ -78,6 +78,31 @@ export interface KimiQuota {
   fiveHour: QuotaWindow;
   weekly: QuotaWindow;
   parallelLimit?: number;
+  fetchedAt: number;
+  source: "fresh" | "cached" | "stale" | "unknown";
+  raw?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface CopilotQuotaSnapshot {
+  entitlementRequests: number;
+  usedRequests: number;
+  remainingPercentage: number;
+  overage: number;
+  overageAllowedWithExhaustedQuota: boolean;
+  resetDate?: string;
+  isUnlimitedEntitlement?: boolean;
+  usageAllowedWithExhaustedQuota?: boolean;
+}
+
+export interface CopilotQuota {
+  tool: "copilot";
+  /** Best single quota window to show when callers do not care about quota type. */
+  primary?: QuotaWindow;
+  chat?: QuotaWindow;
+  completions?: QuotaWindow;
+  premiumInteractions?: QuotaWindow;
+  snapshots: Record<string, CopilotQuotaSnapshot>;
   fetchedAt: number;
   source: "fresh" | "cached" | "stale" | "unknown";
   raw?: Record<string, unknown>;

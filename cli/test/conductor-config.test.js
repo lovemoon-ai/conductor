@@ -15,7 +15,7 @@ const CONFIG_CLI_PATH = path.resolve(__dirname, "..", "bin", "conductor-config.j
 
 function createFakeCliBinDir() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-bin-"));
-  for (const name of ["codex", "claude", "kimi", "opencode"]) {
+  for (const name of ["codex", "claude", "kimi", "opencode", "copilot"]) {
     const filePath = path.join(tempDir, name);
     fs.writeFileSync(filePath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   }
@@ -122,10 +122,10 @@ describe("conductor-config", () => {
     assert.equal(typeof allowCliList.claude, "string");
     assert.equal(typeof allowCliList.kimi, "string");
     assert.equal(typeof allowCliList.opencode, "string");
-    assert.equal(typeof allowCliList.copilot, "undefined");
+    assert.equal(typeof allowCliList.copilot, "string");
   });
 
-  it("prompts to install opencode when no local coding CLI is detected", async () => {
+  it("treats builtin copilot as available even when no PATH CLI is installed", async () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-home-"));
     const env = {
       ...process.env,
@@ -133,22 +133,16 @@ describe("conductor-config", () => {
       PATH: "",
     };
 
-    const { code, stdout, stderr } = await runInteractiveProcess(process.execPath, [CONFIG_CLI_PATH, "--manual"], {
+    const output = execFileSync(process.execPath, [CONFIG_CLI_PATH, "--manual"], {
       env,
-      prompts: [
-        { waitFor: "Do you want to install opencode now? (Y/n): ", reply: "n\n" },
-        { waitFor: "Do you want to continue creating the config anyway? (y/N): ", reply: "y\n" },
-        { waitFor: "Enter Conductor token: ", reply: "test-token\n" },
-      ],
-    });
+      input: "test-token\n",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).toString();
 
     const configPath = path.join(tempHome, ".conductor", "config.yaml");
     const configContent = fs.readFileSync(configPath, "utf8");
-    assert.equal(code, 0, stderr);
-    assert.match(stdout, /Do you want to install opencode now\? \(Y\/n\):/);
-    assert.match(configContent, /# No CLI detected\. Add your installed CLI here:/);
-    assert.match(configContent, /# opencode runs via ai-sdk server mode with permission=allow/);
-    assert.match(configContent, /# opencode: opencode/);
+    assert.doesNotMatch(output, /No coding CLI detected/);
+    assert.match(configContent, /copilot: copilot/);
   });
 
   it("authorizes the device in the browser flow and writes backend/websocket config", async () => {

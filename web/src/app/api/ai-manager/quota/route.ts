@@ -10,7 +10,9 @@ export async function GET(request: NextRequest) {
   const tool = params.get("tool");
   const forceRefresh = params.get("forceRefresh") === "1";
   const args: Record<string, unknown> = { forceRefresh };
-  if (tool === "codex" || tool === "claude" || tool === "kimi") args.tool = tool;
+  if (tool === "codex" || tool === "claude" || tool === "kimi" || tool === "copilot") {
+    args.tool = tool;
+  }
 
-  return callAgent(ctx, "quota", args, 20_000);
+  return callAgent(ctx, "quota", args, 30_000);
 }

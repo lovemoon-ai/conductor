@@ -29,7 +29,9 @@ import {
 import {
   filterRuntimeSupportedAllowCliList,
   isBuiltInRuntimeBackend,
+  isCommandOptionalBuiltInRuntimeBackend,
   listAdvertisedBackends,
+  parseCommandParts,
   resolveConfiguredRuntimeBackend,
   normalizeRuntimeBackendAlias,
   normalizeRuntimeBackendName,
@@ -166,70 +168,8 @@ export function resolveConfiguredPrePrompt({ configFilePath, backend, sessionBac
   return undefined;
 }
 
-function parseCommandParts(commandLine) {
-  const input = String(commandLine || "").trim();
-  if (!input) {
-    return [];
-  }
-
-  const parts = [];
-  let current = "";
-  let quote = "";
-  let escaping = false;
-  let tokenStarted = false;
-
-  for (const char of input) {
-    if (escaping) {
-      current += char;
-      tokenStarted = true;
-      escaping = false;
-      continue;
-    }
-
-    if (char === "\\") {
-      escaping = true;
-      tokenStarted = true;
-      continue;
-    }
-
-    if (quote) {
-      if (char === quote) {
-        quote = "";
-      } else {
-        current += char;
-      }
-      tokenStarted = true;
-      continue;
-    }
-
-    if (char === "'" || char === "\"") {
-      quote = char;
-      tokenStarted = true;
-      continue;
-    }
-
-    if (/\s/.test(char)) {
-      if (tokenStarted) {
-        parts.push(current);
-        current = "";
-        tokenStarted = false;
-      }
-      continue;
-    }
-
-    current += char;
-    tokenStarted = true;
-  }
-
-  if (tokenStarted) {
-    parts.push(current);
-  }
-
-  return parts;
-}
-
 function extractModelOptionFromCommandLine(commandLine) {
-  const parts = parseCommandParts(commandLine);
+  const { parts } = parseCommandParts(commandLine);
   for (let index = 0; index < parts.length; index += 1) {
     const token = String(parts[index] || "").trim();
     if (!token) {
@@ -675,7 +615,8 @@ async function main() {
   let resumeContext = null;
   if (cliArgs.resumeSessionId) {
     const bootstrap = await bootstrapResumeContextForFire({
-      backend: cliArgs.sessionBackend || cliArgs.backend,
+      backend: cliArgs.backend,
+      sessionBackend: cliArgs.sessionBackend,
       configFile: cliArgs.configFile,
       resumeSessionId: cliArgs.resumeSessionId,
     });
@@ -1343,6 +1284,12 @@ Environment:
   const requestedBackend = conductorArgs.backend
     ? normalizeRuntimeBackendName(conductorArgs.backend)
     : supportedBackends[0] || externalBackends[0];
+  if ((conductorArgs.listBackends || listBackendsWithoutSeparator) && discoveryError) {
+    throw discoveryError;
+  }
+  if (!conductorArgs.backend && discoveryError && isCommandOptionalBuiltInRuntimeBackend(requestedBackend)) {
+    throw discoveryError;
+  }
   const configuredBackend = await resolveConfiguredRuntimeBackend(requestedBackend, allowCliList, {
     configFilePath: configFileFromArgs,
   });
@@ -1367,7 +1314,9 @@ Environment:
   const isAllowedExternalBackend =
     !isBuiltInRuntimeBackend(sessionBackend) &&
     advertisedExternalBackends.has(sessionBackend);
-  if (backend && shouldRequireBackend && !hasConfiguredEntry && !isAllowedExternalBackend) {
+  const isCommandOptionalBuiltInBackend =
+    isCommandOptionalBuiltInRuntimeBackend(sessionBackend || backend);
+  if (backend && shouldRequireBackend && !hasConfiguredEntry && !isAllowedExternalBackend && !isCommandOptionalBuiltInBackend) {
     throw new Error(
       `Unsupported backend "${backend}". Supported backends: ${[...runtimeSupportedBackends].join(", ") || "none configured"}.`,
     );
@@ -1719,6 +1668,7 @@ export async function resolveResumeContext(backend, sessionId, options = {}) {
 
 export async function bootstrapResumeContextForFire({
   backend,
+  sessionBackend,
   configFile,
   resumeSessionId,
   env = process.env,
@@ -1742,7 +1692,8 @@ export async function bootstrapResumeContextForFire({
     return { resumeContext, runtimeProjectPath };
   }
 
-  resumeContext = await resolveResumeContextFn(backend, resumeSessionId, {
+  const resumeLookupBackend = backend || sessionBackend;
+  resumeContext = await resolveResumeContextFn(resumeLookupBackend, resumeSessionId, {
     configFilePath: configFile,
   });
   const sessionLocation = resumeContext.sessionPath ? ` at ${resumeContext.sessionPath}` : "";

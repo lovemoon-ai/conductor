@@ -1,14 +1,14 @@
 # @love-moon/ai-manager
 
-Manage local AI CLI tools (codex, claude, kimi) for conductor. Runs inside the
+Manage local AI CLI tools (codex, claude, kimi, copilot) for conductor. Runs inside the
 daemon process so it can read local credential files, query the Keychain, and
 make outbound requests over the host's network/VPN.
 
 ## Features
 
-- **Install status** — detect whether `codex`, `claude`, and `kimi` are on PATH and report a normalized semver
-- **Network reachability** — probe `chatgpt.com`, `api.anthropic.com`, `api.kimi.com` (VPN sanity check)
-- **Quota** — pull 5h / weekly usage for all three tools via authenticated probes against each provider's own rate-limit channel; results are cached on disk with a TTL
+- **Install status** — detect whether `codex`, `claude`, and `kimi` are on PATH, and whether the bundled Copilot SDK is available
+- **Network reachability** — probe `chatgpt.com`, `api.anthropic.com`, `api.kimi.com`, `api.githubcopilot.com` (VPN sanity check)
+- **Quota** — pull usage for all tools via authenticated probes against each provider's own rate-limit channel; results are cached on disk with a TTL
 - **Codex account switching** — list configured `~/.codex/auth.json` profiles and atomically swap between them
 
 ## Config
@@ -36,6 +36,7 @@ command, so we hit the same channel the official CLI uses.
 | codex  | `POST chatgpt.com/backend-api/codex/responses` rate-limit headers    | `tokens.access_token` from `~/.codex/auth.json`; model resolved from `~/.codex/config.toml`                 |
 | claude | `POST api.anthropic.com/v1/messages` rate-limit headers              | `ANTHROPIC_API_KEY` env, then macOS Keychain entry `Claude Code-credentials`, then `~/.claude/.credentials.json` |
 | kimi   | `GET api.kimi.com/coding/v1/usages`                                  | `~/.kimi/credentials/kimi-code.json`; expired access tokens are refreshed automatically and persisted back   |
+| copilot | `@github/copilot-sdk` RPC `account.getQuota`                        | SDK logged-in auth discovery: stored Copilot login or `gh` auth; explicit tokens are only used when passed through API options |
 
 For codex the body stream is aborted as soon as headers arrive, so the probe
 costs at most one token of quota. Quota responses are cached at
@@ -51,7 +52,7 @@ const m = new AiManager();
 
 // 1) install
 await m.checkInstall("codex");
-await m.checkInstallAll(); // { codex, claude, kimi }
+await m.checkInstallAll(); // { codex, claude, kimi, copilot }
 
 // 2) network
 await m.checkNetwork("kimi");
@@ -61,6 +62,7 @@ await m.checkNetworkAll();
 await m.getCodexQuota();
 await m.getClaudeQuota();
 await m.getKimiQuota();
+await m.getCopilotQuota();
 //   { fiveHour, weekly, source: 'fresh'|'cached'|'stale'|'unknown', ... }
 
 // 4) codex accounts

@@ -10,7 +10,6 @@ import { fileURLToPath } from "node:url";
 import {
   findClaudeSessionPath,
   findCodexSessionPath,
-  findCopilotSessionPath,
   findKimiSessionPath,
   findSessionPath,
   resolveResumeContext,
@@ -42,6 +41,53 @@ async function withClearedProviderEnv(fn) {
       process.env.AISDK_PROVIDER_PATH = previousProviderPath;
     }
   }
+}
+
+function createCopilotResumeSdkModule({ sessions = [], listSessions = null, stopError = null } = {}) {
+  const state = {
+    startCalls: 0,
+    stopCalls: 0,
+    forceStopCalls: 0,
+    listSessionsCalls: 0,
+    clientOptions: [],
+  };
+
+  class FakeCopilotClient {
+    constructor(options = {}) {
+      state.clientOptions.push(options);
+    }
+
+    async start() {
+      state.startCalls += 1;
+    }
+
+    async stop() {
+      state.stopCalls += 1;
+      if (stopError) {
+        throw stopError;
+      }
+      return [];
+    }
+
+    async forceStop() {
+      state.forceStopCalls += 1;
+    }
+
+    async listSessions() {
+      state.listSessionsCalls += 1;
+      if (typeof listSessions === "function") {
+        return await listSessions();
+      }
+      return sessions;
+    }
+  }
+
+  return {
+    sdkModule: {
+      CopilotClient: FakeCopilotClient,
+    },
+    state,
+  };
 }
 
 describe("fire resume resolver", () => {
@@ -92,24 +138,6 @@ describe("fire resume resolver", () => {
 
     assert.equal(await findClaudeSessionPath(projectSessionId, { homeDir: tmpRoot }), historyPath);
     assert.equal(await findClaudeSessionPath(taskSessionId, { homeDir: tmpRoot }), taskDir);
-  });
-
-  it("finds copilot session path from session-state file and directory", async () => {
-    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "fire-resume-"));
-    const stateDir = path.join(tmpRoot, ".copilot", "session-state");
-    await fsp.mkdir(stateDir, { recursive: true });
-
-    const fileSessionId = "38395aba-10fe-4a9e-863e-c7ed750e0809";
-    const filePath = path.join(stateDir, `${fileSessionId}.jsonl`);
-    await fsp.writeFile(filePath, "", "utf8");
-
-    const dirSessionId = "ff9c50e7-3bc9-4cb1-8271-bc0e2afcad6b";
-    const sessionDir = path.join(stateDir, dirSessionId);
-    await fsp.mkdir(sessionDir, { recursive: true });
-    await fsp.writeFile(path.join(sessionDir, "events.jsonl"), "", "utf8");
-
-    assert.equal(await findCopilotSessionPath(fileSessionId, { homeDir: tmpRoot }), filePath);
-    assert.equal(await findCopilotSessionPath(dirSessionId, { homeDir: tmpRoot }), sessionDir);
   });
 
   it("finds kimi session path from hashed ~/.kimi/sessions directories", async () => {
@@ -206,25 +234,136 @@ describe("fire resume resolver", () => {
     assert.equal(resolved.debugMetadata?.cwdSource, "session");
   });
 
-  it("resolves copilot resume context with cwd from workspace.yaml", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-resume-"));
+  it("resolves copilot resume context with cwd from Copilot SDK session metadata", async () => {
     const sessionId = "38395aba-10fe-4a9e-863e-c7ed750e0809";
-    const workspaceDir = path.join(tempDir, "workspace-copilot");
-    fs.mkdirSync(workspaceDir, { recursive: true });
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-resume-copilot-"));
+    const harness = createCopilotResumeSdkModule({
+      sessions: [
+        {
+          sessionId,
+          context: {
+            cwd: workspaceDir,
+            repository: "owner/repo",
+          },
+        },
+      ],
+    });
 
-    const sessionDir = path.join(tempDir, ".copilot", "session-state", sessionId);
-    fs.mkdirSync(sessionDir, { recursive: true });
+    const resolved = await resolveResumeContext("copilot", sessionId, {
+      copilotSdkModule: harness.sdkModule,
+      commandLine: "copilot --allow-all-paths --allow-all-tools --trace",
+      env: { PATH: "" },
+    });
+    assert.equal(resolved.provider, "copilot");
+    assert.equal(resolved.sessionPath, null);
+    assert.equal(resolved.cwd, workspaceDir);
+    assert.equal(resolved.debugMetadata?.cwdSource, "sdk_list_sessions");
+    assert.equal(harness.state.startCalls, 1);
+    assert.equal(harness.state.stopCalls, 1);
+    assert.equal(harness.state.clientOptions[0]?.cliPath, undefined);
+    assert.deepEqual(harness.state.clientOptions[0]?.cliArgs, ["--trace"]);
+  });
+
+  it("uses the SDK-managed Copilot CLI for resume when only the default command is configured", async () => {
+    const sessionId = "copilot-session-default-command";
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-resume-copilot-default-"));
+    const harness = createCopilotResumeSdkModule({
+      sessions: [
+        {
+          sessionId,
+          context: {
+            cwd: workspaceDir,
+          },
+        },
+      ],
+    });
+
+    const resolved = await resolveResumeContext("copilot", sessionId, {
+      copilotSdkModule: harness.sdkModule,
+      commandLine: "copilot --allow-all-paths --allow-all-tools",
+    });
+    assert.equal(resolved.provider, "copilot");
+    assert.equal(resolved.cwd, workspaceDir);
+    assert.equal(harness.state.clientOptions[0]?.cliPath, undefined);
+    assert.equal(harness.state.clientOptions[0]?.cliArgs, undefined);
+  });
+
+  it("parses quoted Windows Copilot command paths during resume lookup", async () => {
+    const sessionId = "copilot-session-windows-command";
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-resume-copilot-windows-"));
+    const harness = createCopilotResumeSdkModule({
+      sessions: [
+        {
+          sessionId,
+          context: {
+            cwd: workspaceDir,
+          },
+        },
+      ],
+    });
+
+    const resolved = await resolveResumeContext("copilot", sessionId, {
+      copilotSdkModule: harness.sdkModule,
+      commandLine: "\"C:\\Program Files\\GitHub\\copilot.exe\" --trace",
+    });
+    assert.equal(resolved.provider, "copilot");
+    assert.equal(resolved.cwd, workspaceDir);
+    assert.equal(harness.state.clientOptions[0]?.cliPath, "C:\\Program Files\\GitHub\\copilot.exe");
+    assert.deepEqual(harness.state.clientOptions[0]?.cliArgs, ["--trace"]);
+  });
+
+  it("preserves configured Copilot alias commands during resume lookup", async () => {
+    const sessionId = "copilot-session-configured-alias";
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-resume-copilot-alias-"));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fire-resume-copilot-config-"));
+    const configPath = path.join(tempDir, "config.yaml");
     fs.writeFileSync(
-      path.join(sessionDir, "workspace.yaml"),
-      `id: ${sessionId}\ncwd: ${workspaceDir}\n`,
+      configPath,
+      "allow_cli_list:\n  copilot-enterprise: env GITHUB_TOKEN=test-token copilot --trace\n",
       "utf8",
     );
+    const harness = createCopilotResumeSdkModule({
+      sessions: [
+        {
+          sessionId,
+          context: {
+            cwd: workspaceDir,
+          },
+        },
+      ],
+    });
 
-    const resolved = await resolveResumeContext("copilot", sessionId, { homeDir: tempDir });
+    const resolved = await resolveResumeContext("copilot-enterprise", sessionId, {
+      copilotSdkModule: harness.sdkModule,
+      configFilePath: configPath,
+      env: { PATH: "" },
+    });
     assert.equal(resolved.provider, "copilot");
-    assert.equal(resolved.sessionPath, sessionDir);
     assert.equal(resolved.cwd, workspaceDir);
-    assert.equal(resolved.debugMetadata?.cwdSource, "session");
+    assert.equal(harness.state.clientOptions[0]?.cliPath, undefined);
+    assert.deepEqual(harness.state.clientOptions[0]?.cliArgs, ["--trace"]);
+    assert.equal(harness.state.clientOptions[0]?.env?.GITHUB_TOKEN, undefined);
+    assert.equal(harness.state.clientOptions[0]?.useLoggedInUser, true);
+  });
+
+  it("times out Copilot resume SDK lookup and force-stops on cleanup failure", async () => {
+    const harness = createCopilotResumeSdkModule({
+      listSessions: () => new Promise(() => {}),
+      stopError: new Error("stop failed"),
+    });
+
+    await assert.rejects(
+      () => resolveResumeContext("copilot", "copilot-session-hangs", {
+        copilotSdkModule: harness.sdkModule,
+        copilotResumeTimeoutMs: 10,
+      }),
+      /copilot resume lookup timed out/,
+    );
+
+    assert.equal(harness.state.startCalls, 1);
+    assert.equal(harness.state.listSessionsCalls, 1);
+    assert.equal(harness.state.stopCalls, 1);
+    assert.equal(harness.state.forceStopCalls, 1);
   });
 
   it("resolves kimi resume context from the current working directory hash", async () => {

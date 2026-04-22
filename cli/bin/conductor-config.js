@@ -37,6 +37,11 @@ const DEFAULT_CLIs = {
     execArgs: "",
     description: "OpenCode CLI (Conductor runs opencode serve with permission=allow)"
   },
+  copilot: {
+    command: "copilot",
+    execArgs: "",
+    description: "GitHub Copilot (built in via SDK)"
+  },
 };
 
 const backendUrl =
@@ -61,6 +66,13 @@ let promptInterface = null;
 
 function colorize(text, color) {
   return `${COLORS[color] || ""}${text}${COLORS.reset}`;
+}
+
+function isBuiltInCopilotAvailable() {
+  return Boolean(
+    packageJson?.dependencies?.["@github/copilot-sdk"] ||
+    packageJson?.optionalDependencies?.["@github/copilot-sdk"],
+  );
 }
 
 function buildConfigEntryLines(cli, info, { commented = false } = {}) {
@@ -276,6 +288,10 @@ function detectInstalledCLIs() {
 
   for (const [key, info] of Object.entries(DEFAULT_CLIs)) {
     if (!RUNTIME_SUPPORTED_BACKENDS.includes(key)) {
+      continue;
+    }
+    if (key === "copilot" && isBuiltInCopilotAvailable()) {
+      detected.push(key);
       continue;
     }
     if (isCommandAvailable(info.command)) {

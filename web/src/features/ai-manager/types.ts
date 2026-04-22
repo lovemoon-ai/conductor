@@ -1,7 +1,7 @@
 // Mirror of @love-moon/ai-manager response shapes (loose; daemon may add fields).
 // We intentionally avoid importing the SDK directly so frontend bundles stay small.
 
-export type Tool = 'codex' | 'claude' | 'kimi';
+export type Tool = 'codex' | 'claude' | 'kimi' | 'copilot';
 
 export interface InstallStatus {
   installed: boolean;
@@ -85,10 +85,34 @@ export interface KimiQuota {
   error?: string;
 }
 
+export interface CopilotQuotaSnapshot {
+  entitlementRequests: number;
+  usedRequests: number;
+  remainingPercentage: number;
+  overage: number;
+  overageAllowedWithExhaustedQuota: boolean;
+  resetDate?: string;
+  isUnlimitedEntitlement?: boolean;
+  usageAllowedWithExhaustedQuota?: boolean;
+}
+
+export interface CopilotQuota {
+  tool: 'copilot';
+  primary?: QuotaWindow;
+  chat?: QuotaWindow;
+  completions?: QuotaWindow;
+  premiumInteractions?: QuotaWindow;
+  snapshots: Record<string, CopilotQuotaSnapshot>;
+  fetchedAt?: number;
+  source: 'fresh' | 'cached' | 'stale' | 'unknown';
+  error?: string;
+}
+
 export interface QuotaResponse {
   codex?: CodexQuota;
   claude?: ClaudeQuota;
   kimi?: KimiQuota;
+  copilot?: CopilotQuota;
 }
 
 export interface AccountsResponse {

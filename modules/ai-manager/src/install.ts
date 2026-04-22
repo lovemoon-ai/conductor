@@ -50,6 +50,10 @@ export async function checkInstall(
   tool: Tool,
   opts: { timeoutMs?: number } = {},
 ): Promise<InstallStatus> {
+  if (tool === "copilot") {
+    return checkCopilotSdkInstall();
+  }
+
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const bin = tool; // codex / claude
   const path = await which(bin, timeoutMs);
@@ -78,10 +82,23 @@ function extractSemver(line: string): string | undefined {
 export async function checkInstallAll(opts?: {
   timeoutMs?: number;
 }): Promise<Record<Tool, InstallStatus>> {
-  const [codex, claude, kimi] = await Promise.all([
+  const [codex, claude, kimi, copilot] = await Promise.all([
     checkInstall("codex", opts),
     checkInstall("claude", opts),
     checkInstall("kimi", opts),
+    checkInstall("copilot", opts),
   ]);
-  return { codex, claude, kimi };
+  return { codex, claude, kimi, copilot };
+}
+
+async function checkCopilotSdkInstall(): Promise<InstallStatus> {
+  try {
+    await import("@github/copilot-sdk");
+    return { installed: true, path: "@github/copilot-sdk", version: "sdk" };
+  } catch (err: any) {
+    return {
+      installed: false,
+      error: `@github/copilot-sdk not available: ${err?.message ?? err}`,
+    };
+  }
 }

@@ -210,6 +210,7 @@ const DEFAULT_CLI_LIST = {
   codex: "codex --dangerously-bypass-approvals-and-sandbox",
   claude: "claude --dangerously-skip-permissions",
   opencode: "opencode",
+  copilot: "copilot",
 };
 
 const LEGACY_RUNTIME_BACKEND_ALIASES = new Set(["code", "claude-code", "open-code", "open_code", "kimi-cli", "kimi-code"]);

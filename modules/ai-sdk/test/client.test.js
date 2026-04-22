@@ -94,6 +94,20 @@ describe("ai-sdk client boundary", () => {
     await session.close();
   });
 
+  it("supports copilot sdk sessions", async () => {
+    const session = createAiSession("copilot", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+    });
+
+    assert.ok(session instanceof RemoteAiSession);
+    await session.readyPromise;
+    assert.equal(session.getSnapshot().backend, "copilot");
+    assert.equal(session.getSnapshot().provider, "copilot-sdk");
+
+    await session.close();
+  });
+
   it("supports kimi cli wire sessions", async () => {
     const session = createAiSession("kimi-cli", {
       cwd: process.cwd(),
