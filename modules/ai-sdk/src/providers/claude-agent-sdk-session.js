@@ -620,6 +620,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       "systemPrompt",
       "thinking",
       "tools",
+      "outputFormat",
     ];
     for (const key of passthroughKeys) {
       const value = this.options[key];
@@ -800,7 +801,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
     return true;
   }
 
-  async runTurn(promptText, { useInitialImages = false, onProgress = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested) {
       throw this.createSessionClosedError();
     }
@@ -849,6 +850,11 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       abortController.abort();
       currentTurn.query?.close?.();
     });
+
+    const previousOutputFormat = this.options.outputFormat;
+    if (jsonSchema && typeof jsonSchema === "object") {
+      this.options.outputFormat = { type: "json_schema", schema: jsonSchema };
+    }
 
     try {
       await this.emitWorkingStatus(
@@ -904,10 +910,17 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         });
       }
 
+      const structuredOutput =
+        jsonSchema && resultMessage.structured_output && typeof resultMessage.structured_output === "object"
+          ? resultMessage.structured_output
+          : null;
+
       const responseText =
-        normalizeText(resultMessage.result) ||
-        currentTurn.fullText ||
-        extractAssistantText(currentTurn.items.find((item) => item?.type === "assistant")?.message);
+        structuredOutput !== null
+          ? JSON.stringify(structuredOutput)
+          : normalizeText(resultMessage.result) ||
+            currentTurn.fullText ||
+            extractAssistantText(currentTurn.items.find((item) => item?.type === "assistant")?.message);
 
       if (!currentTurn.emittedAssistantMessage && responseText) {
         await this.emitAssistantMessage(responseText);
@@ -942,6 +955,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
             ? Number(resultMessage.total_cost_usd)
             : undefined,
           modelUsage: resultMessage.modelUsage ? { ...resultMessage.modelUsage } : undefined,
+          structuredOutput: structuredOutput !== null ? structuredOutput : undefined,
         },
       };
     } catch (error) {
@@ -965,6 +979,13 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       this.maybeEmitAuthRequired(error?.message || "", error?.message || "");
       throw error;
     } finally {
+      if (jsonSchema && typeof jsonSchema === "object") {
+        if (previousOutputFormat !== undefined) {
+          this.options.outputFormat = previousOutputFormat;
+        } else {
+          delete this.options.outputFormat;
+        }
+      }
       this.activeReplyTarget = "";
       if (this.currentTurn === currentTurn) {
         this.currentTurn = null;

@@ -1306,7 +1306,7 @@ export class OpencodeSdkSession extends EventEmitter {
     return true;
   }
 
-  async runTurn(promptText, { useInitialImages = false, onProgress = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested) {
       throw this.createSessionClosedError();
     }
@@ -1398,6 +1398,9 @@ export class OpencodeSdkSession extends EventEmitter {
                   typeof this.options.variant === "string" && this.options.variant.trim()
                     ? this.options.variant.trim()
                     : undefined,
+                format: jsonSchema && typeof jsonSchema === "object"
+                  ? { type: "json_schema", schema: jsonSchema }
+                  : undefined,
                 parts: [
                   {
                     type: "text",

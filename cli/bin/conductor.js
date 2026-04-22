@@ -11,6 +11,7 @@
  *   diagnose - Diagnose a task in production/backend
  *   send-file - Upload a local file into a task session
  *   channel  - Connect user-owned chat channel providers
+ *   serve-ai - Start an OpenAI-compatible local AI server
  */
 
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -34,7 +35,7 @@ export function runConductorCli(args = argv, deps = {}) {
   const processArgv = deps.processArgv || process.argv;
   const fsExistsSync = deps.existsSync || fs.existsSync;
   const checkForUpdates = deps.maybeCheckForUpdates || maybeCheckForUpdates;
-  const validSubcommands = ["fire", "daemon", "config", "update", "diagnose", "send-file", "channel"];
+  const validSubcommands = ["fire", "daemon", "config", "update", "diagnose", "send-file", "channel", "serve-ai"];
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     showHelp(consoleImpl);
@@ -115,6 +116,7 @@ Subcommands:
   diagnose  Diagnose a task and print likely root cause
   send-file Upload a local file into a task session
   channel   Connect user-owned chat channel providers
+  serve-ai  Start an OpenAI-compatible local AI server
 
 Options:
   -h, --help     Show this help message
@@ -127,6 +129,7 @@ Examples:
   conductor diagnose <task-id>
   conductor send-file ./screenshot.png
   conductor channel connect feishu
+  conductor serve-ai --port 8787
   conductor config
   conductor update
 
@@ -138,6 +141,7 @@ For subcommand-specific help:
   conductor diagnose --help
   conductor send-file --help
   conductor channel --help
+  conductor serve-ai --help
 
 Version: ${pkgJson.version}
 `);

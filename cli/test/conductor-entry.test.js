@@ -44,6 +44,38 @@ describe("conductor entry", () => {
     }
   });
 
+  it("routes serve-ai like other first-class subcommands", async () => {
+    const originalArgv = process.argv;
+    const env = {};
+    const importedPaths = [];
+
+    try {
+      const result = runConductorCli(["serve-ai", "--help"], {
+        env,
+        processArgv: ["node", "/mock/bin/conductor.js", "serve-ai", "--help"],
+        existsSync: () => true,
+        maybeCheckForUpdates: () => Promise.resolve(),
+        importModule: async (subcommandPath) => {
+          importedPaths.push(subcommandPath);
+        },
+        console: {
+          log: () => {},
+          error: () => {},
+        },
+      });
+
+      assert.deepStrictEqual(result, { shouldExit: false, exitCode: 0 });
+      assert.strictEqual(importedPaths.length, 1);
+      assert.match(importedPaths[0], /bin\/conductor-serve-ai\.js$/);
+      assert.strictEqual(env.CONDUCTOR_CLI_NAME, "conductor serve-ai");
+      assert.strictEqual(env.CONDUCTOR_SUBCOMMAND, "serve-ai");
+      assert.strictEqual(env.CONDUCTOR_SUBCOMMAND_ARGS_JSON, JSON.stringify(["--help"]));
+      assert.deepStrictEqual(process.argv, ["node", importedPaths[0], "--help"]);
+    } finally {
+      process.argv = originalArgv;
+    }
+  });
+
   it("returns help/version/unknown-command exits without update checks", () => {
     let checkCalls = 0;
     let importCalls = 0;

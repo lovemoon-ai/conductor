@@ -66,6 +66,26 @@ describe("ai-sdk client boundary", () => {
     await session.close();
   });
 
+  it("switches codex sessions to exec when structured output is requested", async () => {
+    const session = createAiSession("codex", {
+      cwd: process.cwd(),
+      outputFormat: {
+        type: "json_schema",
+        schema: {
+          type: "object",
+        },
+      },
+      logger: { log: () => {} },
+    });
+
+    assert.ok(session instanceof RemoteAiSession);
+    await session.readyPromise;
+    assert.equal(session.getSnapshot().backend, "codex");
+    assert.equal(session.getSnapshot().provider, "codex-exec");
+
+    await session.close();
+  });
+
   it("supports claude agent-sdk sessions", async () => {
     const session = createAiSession("claude-code", {
       cwd: process.cwd(),
@@ -118,6 +138,26 @@ describe("ai-sdk client boundary", () => {
     await session.readyPromise;
     assert.equal(session.getSnapshot().backend, "kimi");
     assert.equal(session.getSnapshot().provider, "kimi-cli-wire");
+
+    await session.close();
+  });
+
+  it("switches kimi sessions to print mode when structured output is requested", async () => {
+    const session = createAiSession("kimi", {
+      cwd: process.cwd(),
+      outputFormat: {
+        type: "json_schema",
+        schema: {
+          type: "object",
+        },
+      },
+      logger: { log: () => {} },
+    });
+
+    assert.ok(session instanceof RemoteAiSession);
+    await session.readyPromise;
+    assert.equal(session.getSnapshot().backend, "kimi");
+    assert.equal(session.getSnapshot().provider, "kimi-cli-print");
 
     await session.close();
   });

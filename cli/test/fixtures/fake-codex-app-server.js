@@ -70,6 +70,7 @@ function startTurn(id, params = {}) {
   const turnId = `turn-fake-${nextTurnId++}`;
   const promptText = extractPromptText(params);
   const useMultiMessageScenario = promptText.includes("[multi-message]");
+  const useEnvCheckScenario = promptText.includes("[env-check]");
   const useSlowProgressScenario = promptText.includes("[slow-progress]");
   const useSlowStallScenario = promptText.includes("[slow-stall]");
   const primaryMessageId = `msg-${turnId}-1`;
@@ -212,7 +213,13 @@ function startTurn(id, params = {}) {
       threadId: params.threadId,
       turnId,
       itemId: primaryMessageId,
-      delta: useMultiMessageScenario ? "开始计时 2 分钟。" : "OK ",
+      delta: useMultiMessageScenario
+        ? "开始计时 2 分钟。"
+        : useEnvCheckScenario
+          ? process.env.CODEX_API_KEY
+            ? "CODEX_API_KEY=present\n"
+            : "CODEX_API_KEY=absent\n"
+          : "OK ",
     });
   }, 15);
   setTimeout(() => {
@@ -224,7 +231,7 @@ function startTurn(id, params = {}) {
     });
   }, 20);
   setTimeout(() => {
-    if (!useMultiMessageScenario) {
+    if (!useMultiMessageScenario && !useEnvCheckScenario) {
       notification("item/agentMessage/delta", {
         threadId: params.threadId,
         turnId,
@@ -234,7 +241,7 @@ function startTurn(id, params = {}) {
     }
   }, 25);
   setTimeout(() => {
-    if (!useMultiMessageScenario) {
+    if (!useMultiMessageScenario && !useEnvCheckScenario) {
       notification("item/agentMessage/delta", {
         threadId: params.threadId,
         turnId,
@@ -244,7 +251,7 @@ function startTurn(id, params = {}) {
     }
   }, 30);
   setTimeout(() => {
-    if (!useMultiMessageScenario) {
+    if (!useMultiMessageScenario && !useEnvCheckScenario) {
       notification("item/agentMessage/delta", {
         threadId: params.threadId,
         turnId,

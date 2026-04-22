@@ -92,4 +92,52 @@ describe("claude agent-sdk session", () => {
 
     await session.close();
   });
+
+  it("returns structured_output as JSON text when jsonSchema is requested", async () => {
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      sdkModule: {
+        query: () => ({
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "result",
+              subtype: "success",
+              session_id: "claude-session-structured",
+              usage: { input_tokens: 1, output_tokens: 1 },
+              result: "",
+              structured_output: {
+                backend: "claude",
+                ok: true,
+              },
+            };
+          },
+          close: () => {},
+        }),
+      },
+    });
+
+    const result = await session.runTurn("hello", {
+      jsonSchema: {
+        type: "object",
+        properties: {
+          backend: { type: "string" },
+          ok: { type: "boolean" },
+        },
+        required: ["backend", "ok"],
+        additionalProperties: false,
+      },
+    });
+
+    assert.deepEqual(JSON.parse(result.text), {
+      backend: "claude",
+      ok: true,
+    });
+    assert.deepEqual(result.metadata?.structuredOutput, {
+      backend: "claude",
+      ok: true,
+    });
+
+    await session.close();
+  });
 });

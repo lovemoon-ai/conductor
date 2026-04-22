@@ -53,6 +53,16 @@ function buildTurnInput(promptText) {
   ];
 }
 
+function injectJsonSchemaPrompt(promptText, jsonSchema) {
+  const schemaText = typeof jsonSchema === "string" ? jsonSchema : JSON.stringify(jsonSchema, null, 2);
+  return `You must respond with valid JSON that strictly conforms to the following JSON Schema. Do not include any markdown formatting or explanation outside the JSON object.
+
+JSON Schema:
+${schemaText}
+
+${promptText}`;
+}
+
 function normalizeItemId(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -249,7 +259,11 @@ export class CodexAppServerSession extends EventEmitter {
     const extraEnv = envConfig && typeof envConfig === "object" ? { ...envConfig, ...proxyEnv } : proxyEnv;
     this.transport = new CodexAppServerTransport({
       cwd: this.cwd,
-      env: extraEnv,
+      env: {
+        ...extraEnv,
+        ...(options.env && typeof options.env === "object" ? options.env : {}),
+      },
+      ignoreCodexApiKey: options.ignoreCodexApiKey === true,
       logger: {
         log: (message) => {
           this.writeLog(message);
@@ -970,12 +984,15 @@ export class CodexAppServerSession extends EventEmitter {
     return false;
   }
 
-  async runTurn(promptText, { useInitialImages = false } = {}) {
+  async runTurn(promptText, { useInitialImages = false, jsonSchema = null } = {}) {
     if (this.closeRequested) {
       throw this.createSessionClosedError();
     }
 
-    const effectivePrompt = this.buildPrompt(promptText, { useInitialImages });
+    let effectivePrompt = this.buildPrompt(promptText, { useInitialImages });
+    if (jsonSchema && typeof jsonSchema === "object" && effectivePrompt) {
+      effectivePrompt = injectJsonSchemaPrompt(effectivePrompt, jsonSchema);
+    }
     if (!effectivePrompt) {
       return {
         text: "",
