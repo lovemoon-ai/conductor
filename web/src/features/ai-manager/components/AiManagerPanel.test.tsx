@@ -120,4 +120,38 @@ describe('AiManagerPanel', () => {
 
     expect(screen.getByLabelText('Restart daemon on daemon-old')).toBeDisabled();
   });
+
+  it('shows the Copilot login label when quota data includes account info', () => {
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-a',
+        supportedBackends: ['copilot'],
+        capabilities: ['restart_daemon'],
+      },
+    ];
+    aiManagerState.selectedHost = 'daemon-a';
+    aiManagerState.byHost = {
+      'daemon-a': {
+        quota: {
+          copilot: {
+            tool: 'copilot',
+            source: 'fresh',
+            login: 'octocat',
+            loginSource: 'github_token',
+            primary: {
+              usedPercent: 0,
+              remainingPercent: 100,
+              status: 'allowed',
+            },
+            snapshots: {},
+          },
+        },
+      },
+    };
+
+    render(<AiManagerPanel initialAgentHost="daemon-a" />);
+
+    expect(screen.getByText('octocat via GITHUB_TOKEN')).toBeInTheDocument();
+  });
 });

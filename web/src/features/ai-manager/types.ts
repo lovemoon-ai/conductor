@@ -102,6 +102,10 @@ export interface CopilotQuota {
   chat?: QuotaWindow;
   completions?: QuotaWindow;
   premiumInteractions?: QuotaWindow;
+  login?: string;
+  authType?: string;
+  host?: string;
+  loginSource?: 'sdk' | 'github_token';
   snapshots: Record<string, CopilotQuotaSnapshot>;
   fetchedAt?: number;
   source: 'fresh' | 'cached' | 'stale' | 'unknown';
