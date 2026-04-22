@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# CONDUCTOR_SERVE_AI_MODEL=codex scripts/test-ai-serve.sh
+# CONDUCTOR_SERVE_AI_MODEL=claude scripts/test-ai-serve.sh
+# CONDUCTOR_SERVE_AI_MODEL=kimi scripts/test-ai-serve.sh
+
 BASE_URL="${CONDUCTOR_SERVE_AI_BASE_URL:-http://127.0.0.1:8787}"
 MODEL="${CONDUCTOR_SERVE_AI_MODEL:-}"
 API_KEY="${CONDUCTOR_SERVE_AI_API_KEY:-}"
