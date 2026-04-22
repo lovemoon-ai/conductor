@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { Project, CreateProjectInput, UpdateProjectInput } from '@/shared/types';
 import { getApiClient } from '@/shared/api/client';
+import { getStoredJwtToken } from '@/lib/auth/token-storage';
 
 const SELECTED_PROJECT_STORAGE_KEY = 'conductor-selected-project-id';
 const HIDDEN_PROJECTS_STORAGE_KEY = 'conductor-hidden-project-ids';
@@ -174,6 +175,8 @@ const normalizeProjectList = (raw: unknown): Project[] => {
     .filter((project): project is Project => project !== null);
 };
 
+let fetchProjectsRequestSequence = 0;
+
 interface ProjectsState {
   projects: Project[];
   isLoading: boolean;
@@ -192,6 +195,7 @@ interface ProjectsState {
   hideProject: (projectId: string) => void;
   unhideProject: (projectId: string) => void;
   toggleShowHiddenProjects: () => void;
+  resetState: () => void;
   clearError: () => void;
 }
 
@@ -204,11 +208,20 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
   showHiddenProjects: readStoredShowHiddenProjects(),
 
   fetchProjects: async () => {
+    const requestId = ++fetchProjectsRequestSequence;
+    const requestJwtToken = getStoredJwtToken();
     set({ isLoading: true, error: null });
     try {
       const api = getApiClient();
       const raw = await api.get<unknown>('/projects');
       const projects = normalizeProjectList(raw);
+      const currentJwtToken = getStoredJwtToken();
+      if (requestId !== fetchProjectsRequestSequence || requestJwtToken !== currentJwtToken) {
+        if (requestId === fetchProjectsRequestSequence && requestJwtToken !== currentJwtToken) {
+          set({ isLoading: false });
+        }
+        return;
+      }
       const currentSelectedProjectId = get().selectedProjectId;
       const projectIds = new Set(projects.map((project) => project.id));
       const hiddenProjectIds = get().hiddenProjectIds.filter((projectId) => projectIds.has(projectId));
@@ -226,6 +239,13 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
       }
       set({ projects, selectedProjectId, hiddenProjectIds, isLoading: false });
     } catch (error) {
+      const currentJwtToken = getStoredJwtToken();
+      if (requestId !== fetchProjectsRequestSequence || requestJwtToken !== currentJwtToken) {
+        if (requestId === fetchProjectsRequestSequence && requestJwtToken !== currentJwtToken) {
+          set({ isLoading: false });
+        }
+        return;
+      }
       set({
         isLoading: false,
         error: error instanceof Error ? error.message : 'Failed to fetch projects',
@@ -373,6 +393,17 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
       showHiddenProjects: nextShowHiddenProjects,
       selectedProjectId: shouldClearSelectedProject ? null : state.selectedProjectId,
     }));
+  },
+
+  resetState: () => {
+    fetchProjectsRequestSequence += 1;
+    writeStoredSelectedProjectId(null);
+    set({
+      projects: [],
+      isLoading: false,
+      error: null,
+      selectedProjectId: null,
+    });
   },
 
   clearError: () => set({ error: null }),

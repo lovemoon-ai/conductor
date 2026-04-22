@@ -7,6 +7,7 @@ const {
   mockClearStoredJwtToken,
   mockGetStoredJwtToken,
   mockStoreJwtToken,
+  mockResetProjectsState,
 } = vi.hoisted(() => ({
   mockApiGet: vi.fn(),
   mockApiPost: vi.fn(),
@@ -18,6 +19,7 @@ const {
   mockStoreJwtToken: vi.fn((token: string) => {
     localStorage.setItem("conductor.jwt", token);
   }),
+  mockResetProjectsState: vi.fn(),
 }));
 
 vi.mock('@/shared/api/client', () => ({
@@ -38,6 +40,14 @@ vi.mock("@/lib/auth/token-storage", () => ({
   storeJwtToken: mockStoreJwtToken,
 }));
 
+vi.mock("@/features/projects/store", () => ({
+  useProjectsStore: {
+    getState: () => ({
+      resetState: mockResetProjectsState,
+    }),
+  },
+}));
+
 import { AUTH_SESSION_STORAGE_KEY, AUTH_USER_TOKEN_STORAGE_KEY, useAuthStore } from "./store";
 
 describe("useAuthStore", () => {
@@ -48,6 +58,7 @@ describe("useAuthStore", () => {
     mockClearStoredJwtToken.mockReset();
     mockGetStoredJwtToken.mockReset();
     mockStoreJwtToken.mockReset();
+    mockResetProjectsState.mockReset();
     localStorage.clear();
     mockClearStoredJwtToken.mockImplementation(() => {
       localStorage.removeItem("conductor.jwt");
@@ -292,5 +303,6 @@ describe("useAuthStore", () => {
     expect(localStorage.getItem(AUTH_USER_TOKEN_STORAGE_KEY)).toBeNull();
     expect(mockClearStoredJwtToken).toHaveBeenCalledTimes(1);
     expect(mockResetApiClient).toHaveBeenCalledTimes(1);
+    expect(mockResetProjectsState).toHaveBeenCalledTimes(1);
   });
 });

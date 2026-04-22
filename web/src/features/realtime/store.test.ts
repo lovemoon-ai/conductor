@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleWSMessage, resolveAppWebSocketUrl, useWebSocketStore } from './store';
 import { useChatStore } from '@/features/chat';
+import { useProjectsStore } from '@/features/projects/store';
 import { useRuntimeStore } from './runtime-store';
 import { useTasksStore } from '@/features/tasks';
 import { clearAllTerminalOutputSnapshots, getTerminalOutputSnapshot, useTerminalStore } from '@/features/terminal';
@@ -177,6 +178,7 @@ describe('websocket runtime status handling', () => {
       currentProjectFilter: null,
       unreadTaskIds: new Set(),
     });
+    vi.spyOn(useTasksStore.getState(), 'fetchTask').mockResolvedValue(null);
     clearAllTerminalOutputSnapshots();
     useTerminalStore.setState({
       byTask: {},
@@ -709,6 +711,19 @@ describe('websocket runtime status handling', () => {
     expect(useChatStore.getState().messagesByTask['task-delete-1']).toBeUndefined();
     expect(useRuntimeStore.getState().byTask['task-delete-1']).toBeUndefined();
     expect(useTerminalStore.getState().byTask['task-delete-1']).toBeUndefined();
+  });
+
+  it('refreshes projects when a projects_reordered event arrives', () => {
+    const fetchProjectsSpy = vi.spyOn(useProjectsStore.getState(), 'fetchProjects').mockResolvedValue(undefined);
+
+    handleWSMessage({
+      type: 'projects_reordered',
+      payload: {
+        project_ids: ['project-b', 'project-a'],
+      },
+    });
+
+    expect(fetchProjectsSpy).toHaveBeenCalledTimes(1);
   });
 
   it('updates terminal writer access from realtime events', () => {

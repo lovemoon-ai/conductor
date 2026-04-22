@@ -25,7 +25,14 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
+vi.mock("@/lib/realtime/hub", () => ({
+  realtimeHub: {
+    broadcastToApps: vi.fn(),
+  },
+}));
+
 const { db } = await import("@/lib/db");
+const { realtimeHub } = await import("@/lib/realtime/hub");
 
 const missingSortOrderColumnError = () =>
   new Prisma.PrismaClientKnownRequestError(
@@ -42,6 +49,7 @@ describe("/api/projects/reorder", () => {
     vi.mocked(db.project.findMany).mockReset();
     vi.mocked(db.project.update).mockReset();
     vi.mocked(db.$transaction).mockReset();
+    vi.mocked(realtimeHub.broadcastToApps).mockReset();
     vi.mocked(db.user.findUnique).mockResolvedValue({
       id: "user-1",
       email: "test@example.com",
@@ -104,6 +112,13 @@ describe("/api/projects/reorder", () => {
     expect(db.project.update).toHaveBeenNthCalledWith(3, {
       where: { id: "project-b" },
       data: { sortOrder: 2 },
+    });
+    expect(realtimeHub.broadcastToApps).toHaveBeenCalledWith("user-1", {
+      type: "projects_reordered",
+      payload: {
+        projectIds: ["project-c", "project-a", "project-b"],
+        project_ids: ["project-c", "project-a", "project-b"],
+      },
     });
   });
 
