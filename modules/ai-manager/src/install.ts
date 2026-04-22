@@ -1,7 +1,11 @@
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import type { InstallStatus, Tool } from "./types.ts";
 
 const DEFAULT_TIMEOUT_MS = 3000;
+const require = createRequire(import.meta.url);
 
 function execCapture(
   cmd: string,
@@ -93,12 +97,41 @@ export async function checkInstallAll(opts?: {
 
 async function checkCopilotSdkInstall(): Promise<InstallStatus> {
   try {
-    await import("@github/copilot-sdk");
-    return { installed: true, path: "@github/copilot-sdk", version: "sdk" };
+    const entryPath = require.resolve("@github/copilot-sdk");
+    const version = await findPackageVersionForEntry(entryPath, "@github/copilot-sdk");
+    return {
+      installed: true,
+      path: "@github/copilot-sdk",
+      version: version ?? "installed",
+    };
   } catch (err: any) {
     return {
       installed: false,
       error: `@github/copilot-sdk not available: ${err?.message ?? err}`,
     };
+  }
+}
+
+/** Exported for tests. */
+export async function findPackageVersionForEntry(
+  entryPath: string,
+  packageName: string,
+): Promise<string | undefined> {
+  let dir = dirname(entryPath);
+  while (true) {
+    const pkgPath = join(dir, "package.json");
+    try {
+      const payload = JSON.parse(await readFile(pkgPath, "utf8")) as Record<string, unknown>;
+      if (payload.name === packageName) {
+        const version = typeof payload.version === "string" ? payload.version.trim() : "";
+        return version || undefined;
+      }
+    } catch {
+      // Walk upward until we hit the package root or filesystem root.
+    }
+
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
   }
 }
