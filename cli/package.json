@@ -1,7 +1,7 @@
 {
   "name": "@love-moon/conductor-cli",
-  "version": "0.2.40",
-  "gitCommitId": "e08f8b6",
+  "version": "0.2.41",
+  "gitCommitId": "89ac834",
   "type": "module",
   "bin": {
     "conductor": "bin/conductor.js"
@@ -17,9 +17,9 @@
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "@love-moon/ai-manager": "0.2.40",
-    "@love-moon/ai-sdk": "0.2.40",
-    "@love-moon/conductor-sdk": "0.2.40",
+    "@love-moon/ai-manager": "0.2.41",
+    "@love-moon/ai-sdk": "0.2.41",
+    "@love-moon/conductor-sdk": "0.2.41",
     "@github/copilot-sdk": "^0.2.2",
     "chrome-launcher": "^1.2.1",
     "chrome-remote-interface": "^0.33.0",

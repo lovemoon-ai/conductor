@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with an additional `Commits` section for each released version.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.2.41] - 2026-04-22
+
+### Fixed
+
+- Homebrew / release-archive CLI no longer crashes with
+  `ERR_UNKNOWN_BUILTIN_MODULE: node:sea` on startup. The bundled `@github/copilot`
+  SDK introduced in 0.2.40 imports `node:sea` at the top of its entrypoint, but
+  the release archive still shipped Node.js 20.11.0 which does not expose that
+  builtin. Bumped the bundled Node to 20.18.0 (same Iron LTS line) so `node:sea`
+  is available and Copilot-bound tasks start cleanly.
+
+### Changed
+
+- `scripts/build-cli-release.sh` and `.github/workflows/cli-release-archives.yml`
+  now pin the bundled / CI Node runtime to `20.18.0` (was `20.11.0`).
+
+### Commits
+
+- `89ac834` bump bundled node to 20.18.0
+- `85987e3` stop pushing to homebrew-tap from release workflow
+- `f6aecfe` keep brew installed conductor in claw/sop/06_release.md
+
 ## [0.2.40] - 2026-04-22
 
 ### Added

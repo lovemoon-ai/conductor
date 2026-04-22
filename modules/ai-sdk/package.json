@@ -1,6 +1,6 @@
 {
   "name": "@love-moon/ai-sdk",
-  "version": "0.2.40",
+  "version": "0.2.41",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -26,5 +26,5 @@
     "@types/node": "^22.10.2",
     "typescript": "^5.6.3"
   },
-  "gitCommitId": "e08f8b6"
+  "gitCommitId": "89ac834"
 }
