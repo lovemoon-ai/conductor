@@ -6,6 +6,91 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with an additional `Commits` section for each released version.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.2.40] - 2026-04-22
+
+### Added
+
+- Cross-backend task restart via share-link handoff. Restarting a task against a
+  different daemon / backend now exchanges a short-lived, masked, fenced handoff
+  token so the successor task continues with the original context. Replaces the
+  previous `ai-bridge` restart path with a backend-agnostic flow that works
+  across all supported backends.
+- Handoff-notice seed: the successor chat on a cross-backend restart now begins
+  with a message that explicitly announces continuation from the source task,
+  so users are not confused by a "fresh" looking chat.
+- Builtin Copilot SDK bundled inside `@love-moon/ai-sdk`: no separate install
+  step is required to use Copilot as a session provider, and local Copilot
+  login tokens take precedence over other credential sources.
+- `conductor serve-ai` — a new CLI subcommand that runs a local OpenAI-compatible
+  HTTP server backed by any configured AI provider (codex / copilot / kimi /
+  claude-agent-sdk), with image input, structured output, and per-backend
+  response normalization.
+- Chat empty state now shows a "restart session" entry so users can re-enter a
+  stalled task without going back to the task list.
+
+### Changed
+
+- Cross-backend restart path is fully backend-agnostic: internal backend-alias
+  maps were removed in favor of the share-link handoff token.
+- Copilot session close honors a force-stop timeout, preventing hung shutdowns
+  when the underlying process stops responding.
+- Copilot streaming output is no longer fragmented into many tiny message
+  bubbles in the UI.
+- Fire refresh-session restart is more reliable when the in-process fire
+  rebuild path is used.
+- `install-cli.sh` and `uninstall-cli.sh` were refactored for clearer behaviour
+  around the system `conductor` binary and the dev-only `conductor-dev` shim.
+- `scripts/test-ai-serve.sh` model default and override flags are clearer; the
+  Codex API key precedence now matches the documented rules.
+
+### Fixed
+
+- Fire / daemon refresh-session restart reliability across in-process rebuild.
+- Task patch API accepts an empty JSON body instead of rejecting no-op updates.
+- Web build type error in the task restart route.
+- Share-link handoff hardening: title fence, token age cap, Postgres + FK
+  integrity, production guard, idempotent migration, log masking, and token
+  single-use reuse protection.
+
+### Removed
+
+- Legacy `ai-bridge` path for cross-backend task restart.
+- `RESTART_BACKEND_ALIASES` and related backend-alias dead code.
+
+### Security
+
+- Share-link handoff tokens now have an age cap, single-use reuse protection,
+  production-mode guard, and are masked in logs. The related migration is
+  idempotent to avoid duplicate token rows on replays.
+
+### Commits
+
+- `34ae838` replace ai-bridge with share-link handoff for cross-backend task restart
+- `459e1dd` address review feedback on share-link handoff refactor
+- `091d3e4` harden share-link handoff: fence, mask, token reuse, prod guard, idempotent migration
+- `7663d39` close remaining review findings: title fence, token age cap, postgres + FK
+- `a64b4c2` close fourth-pass review findings
+- `815c028` make cross-backend restart handoff fully backend-agnostic
+- `6fb244f` drop RESTART_BACKEND_ALIASES and friends: all dead code under backend-agnostic handoff
+- `2a9fa6e` seed successor-task chat with a handoff-notice message on cross-backend restart
+- `8b76964` merge share-link handoff refactor for cross-backend task restart
+- `5872c84` docs: fill in the placeholder commit SHA in RFC 0021 banner
+- `f000bf2` add builtin copilot sdk
+- `aa3ca7d` merge builtin copilot sdk
+- `dfd52c3` update copilot login fallback and task patch
+- `91e8dac` merge copilot login fallback and task patch
+- `90688bb` add serve-ai server
+- `a7067f6` merge serve-ai into main
+- `5314cc1` fix serve-ai test script model default
+- `2b9733c` merge serve-ai test script fix into main
+- `166ce25` update scripts/test-ai-serve.sh
+- `598479a` fix refresh session restart
+- `eb66bc3` fix fire refresh session
+- `68920d3` refactor install-cli and uninstall-cli.sh
+- `53475db` fix web build types
+- `5e6eb18` update claw/sop/06_release.md
+- `dfc3981` add claw/issues/stable_fire_host_kill_fallback_20260421.md
+
 ## [0.2.39] - 2026-04-21
 
 ### Added
