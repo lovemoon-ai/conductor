@@ -5,6 +5,7 @@ import type { Issue } from '@/shared/types';
 import { Dialog } from '@/components/common/Dialog';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { useToast } from '@/components/common/FeedbackProvider';
+import { DEFAULT_ISSUE_PRIORITY, ISSUE_PRIORITIES, ISSUE_PRIORITY_LABELS } from '@/lib/issues/config';
 import { useIssuesStore } from '../store';
 
 export function EditIssueDialog({
@@ -18,6 +19,7 @@ export function EditIssueDialog({
 }) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [priority, setPriority] = useState<Issue['priority']>(DEFAULT_ISSUE_PRIORITY);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -30,6 +32,7 @@ export function EditIssueDialog({
     }
     setTitle(issue.title);
     setDescription(issue.description ?? '');
+    setPriority(issue.priority);
     setLocalError(null);
   }, [issue, open]);
 
@@ -55,8 +58,9 @@ export function EditIssueDialog({
     const previousDescription = issue.description?.trim() ?? '';
     const titleChanged = nextTitle !== issue.title;
     const descriptionChanged = nextDescription !== previousDescription;
+    const priorityChanged = priority !== issue.priority;
 
-    if (!titleChanged && !descriptionChanged) {
+    if (!titleChanged && !descriptionChanged && !priorityChanged) {
       onClose();
       return;
     }
@@ -67,6 +71,7 @@ export function EditIssueDialog({
       await updateIssue(issue.id, {
         ...(titleChanged ? { title: nextTitle } : {}),
         ...(descriptionChanged ? { description: nextDescription ? nextDescription : null } : {}),
+        ...(priorityChanged ? { priority } : {}),
       });
       pushToast({
         title: 'Issue updated',
@@ -108,6 +113,22 @@ export function EditIssueDialog({
             placeholder="Add context, acceptance criteria, or raw requirement notes"
             className="min-h-32 w-full resize-y webapp-input"
           />
+        </div>
+
+        <div>
+          <label htmlFor="edit-issue-priority" className="mb-2 block text-sm font-medium text-ink">Priority</label>
+          <select
+            id="edit-issue-priority"
+            value={priority}
+            onChange={(event) => setPriority(event.target.value as Issue['priority'])}
+            className="w-full webapp-input"
+          >
+            {ISSUE_PRIORITIES.map((value) => (
+              <option key={value} value={value}>
+                {ISSUE_PRIORITY_LABELS[value]}
+              </option>
+            ))}
+          </select>
         </div>
 
         {localError ? (

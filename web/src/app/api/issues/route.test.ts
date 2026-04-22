@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET, POST } from './route';
 import { createMockRequest, extractJson } from '@/__tests__/helpers';
@@ -25,6 +26,15 @@ vi.mock('@/lib/db', () => ({
 const { getActiveSubscriptionUser } = await import('@/lib/auth/middleware');
 const { db } = await import('@/lib/db');
 
+const missingPriorityColumnError = () =>
+  new Prisma.PrismaClientKnownRequestError(
+    'The column `issues.priority` does not exist in the current database.',
+    {
+      code: 'P2022',
+      clientVersion: 'test',
+    },
+  );
+
 describe('/api/issues', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -42,6 +52,7 @@ describe('/api/issues', () => {
         title: 'Issue board',
         description: 'Build the board UI',
         status: 'todo',
+        priority: 'P0',
         position: 2,
         metadata: null,
         tasks: [],
@@ -70,8 +81,42 @@ describe('/api/issues', () => {
         project_id: 'project-1',
         title: 'Issue board',
         status: 'todo',
+        priority: 'P0',
         position: 2,
         linked_task: null,
+      }),
+    ]);
+  });
+
+  it('falls back to default priority when the priority column is missing in list queries', async () => {
+    vi.mocked(db.issue.findMany)
+      .mockRejectedValueOnce(missingPriorityColumnError())
+      .mockResolvedValueOnce([
+        {
+          id: 'issue-legacy',
+          projectId: 'project-1',
+          title: 'Legacy issue',
+          description: null,
+          status: 'todo',
+          position: 0,
+          metadata: null,
+          createdAt: new Date('2026-04-14T00:00:00.000Z'),
+          updatedAt: new Date('2026-04-14T00:10:00.000Z'),
+        },
+      ] as any);
+
+    const response = await GET(createMockRequest({
+      method: 'GET',
+      url: 'http://localhost:6152/api/issues?project_id=project-1',
+    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(vi.mocked(db.issue.findMany)).toHaveBeenCalledTimes(2);
+    expect(data).toEqual([
+      expect.objectContaining({
+        id: 'issue-legacy',
+        priority: 'P1',
       }),
     ]);
   });
@@ -195,6 +240,7 @@ describe('/api/issues', () => {
       title: 'Ship issue nav',
       description: null,
       status: 'todo',
+      priority: 'P1',
       position: 5,
       metadata: null,
       tasks: [],
@@ -223,6 +269,7 @@ describe('/api/issues', () => {
         projectId: 'project-1',
         title: 'Ship issue nav',
         status: 'todo',
+        priority: 'P1',
         position: 5,
       }),
     }));
@@ -230,6 +277,7 @@ describe('/api/issues', () => {
       id: 'issue-2',
       projectId: 'project-1',
       project_id: 'project-1',
+      priority: 'P1',
       position: 5,
     }));
   });
@@ -266,5 +314,65 @@ describe('/api/issues', () => {
         position: 0,
       }),
     }));
+  });
+
+  it('creates issues with default priority when the priority column is missing', async () => {
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
+    vi.mocked(db.issue.create)
+      .mockRejectedValueOnce(missingPriorityColumnError())
+      .mockResolvedValueOnce({
+        id: 'issue-compat',
+        projectId: 'project-1',
+        title: 'Compat issue',
+        description: null,
+        status: 'todo',
+        position: 0,
+        metadata: null,
+        createdAt: new Date('2026-04-14T00:20:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+      } as any);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: {
+        projectId: 'project-1',
+        title: 'Compat issue',
+      },
+    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(vi.mocked(db.issue.create)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(db.issue.create).mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      data: expect.objectContaining({
+        priority: 'P1',
+      }),
+    }));
+    expect((vi.mocked(db.issue.create).mock.calls[1]?.[0] as { data: Record<string, unknown> }).data).not.toHaveProperty('priority');
+    expect(data).toEqual(expect.objectContaining({
+      id: 'issue-compat',
+      priority: 'P1',
+    }));
+  });
+
+  it('returns a migration error when creating a non-default priority issue without the priority column', async () => {
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
+    vi.mocked(db.issue.create).mockRejectedValueOnce(missingPriorityColumnError());
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: {
+        projectId: 'project-1',
+        title: 'Blocked issue',
+        priority: 'P0',
+      },
+    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toContain("Issue priority is unavailable");
+    expect(vi.mocked(db.issue.create)).toHaveBeenCalledTimes(1);
   });
 });

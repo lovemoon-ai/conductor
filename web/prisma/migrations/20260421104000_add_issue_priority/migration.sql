@@ -1,0 +1,1 @@
+ALTER TABLE "issues" ADD COLUMN "priority" TEXT NOT NULL DEFAULT 'P1';

@@ -1,7 +1,16 @@
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { serializeTaskResponse } from '@/lib/tasks/serialization';
-import { ACTIVE_ISSUE_TASK_STATUSES, coerceIssueStatus, ISSUE_STATUSES } from '@/lib/issues/config';
+import {
+  ACTIVE_ISSUE_TASK_STATUSES,
+  coerceIssuePriority,
+  coerceIssueStatus,
+  DEFAULT_ISSUE_PRIORITY,
+  ISSUE_PRIORITIES,
+  ISSUE_STATUSES,
+  normalizeIssuePriority,
+} from '@/lib/issues/config';
 import { serializeIssue } from '@/lib/issues/serialization';
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
@@ -53,6 +62,13 @@ const normalizeOptionalIssueStatus = (value: unknown): string | undefined => {
   return coerceIssueStatus(value) ?? normalizeOptionalString(value) ?? undefined;
 };
 
+const normalizeOptionalIssuePriority = (value: unknown): string | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  return coerceIssuePriority(value) ?? normalizeOptionalString(value)?.toUpperCase() ?? undefined;
+};
+
 const normalizeMetadata = (value: unknown): Record<string, unknown> | null | undefined => {
   if (value === undefined) {
     return undefined;
@@ -66,7 +82,76 @@ const normalizeMetadata = (value: unknown): Record<string, unknown> | null | und
   return value as Record<string, unknown>;
 };
 
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+export const isMissingIssuePriorityColumnError = (error: unknown): boolean =>
+  error instanceof Prisma.PrismaClientKnownRequestError &&
+  error.code === 'P2022' &&
+  (errorMessage(error).includes('issues.priority') ||
+    errorMessage(error).includes('issues`.`priority') ||
+    errorMessage(error).includes('`priority`') ||
+    errorMessage(error).includes(' priority '));
+
+const warnedIssuePriorityContexts = new Set<string>();
+
+export const ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE =
+  "Issue priority is unavailable until the database schema is updated. Run 'pnpm -C web db:push'.";
+
+export const warnMissingIssuePrioritySchema = (context: string, error: unknown): void => {
+  if (warnedIssuePriorityContexts.has(context)) {
+    return;
+  }
+  warnedIssuePriorityContexts.add(context);
+  console.warn(
+    `[issue-priority-compat] ${context}: issues.priority column is missing, falling back to default priority behavior. ${ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE} (${errorMessage(error)})`,
+  );
+};
+
+export const withIssuePrioritySchemaFallback = async <T>(
+  context: string,
+  run: () => Promise<T>,
+  fallback: () => Promise<T>,
+): Promise<{ result: T; prioritySchemaAvailable: boolean }> => {
+  try {
+    return {
+      result: await run(),
+      prioritySchemaAvailable: true,
+    };
+  } catch (error) {
+    if (!isMissingIssuePriorityColumnError(error)) {
+      throw error;
+    }
+    warnMissingIssuePrioritySchema(context, error);
+    return {
+      result: await fallback(),
+      prioritySchemaAvailable: false,
+    };
+  }
+};
+
+export const issueSerializationSelect = {
+  id: true,
+  projectId: true,
+  title: true,
+  description: true,
+  status: true,
+  position: true,
+  metadata: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.IssueSelect;
+
+export const issueSerializationWithPrioritySelect = {
+  ...issueSerializationSelect,
+  priority: true,
+} satisfies Prisma.IssueSelect;
+
+export const isDefaultIssuePriority = (value: unknown): boolean =>
+  normalizeIssuePriority(value) === DEFAULT_ISSUE_PRIORITY;
+
 const issueStatusSchema = z.enum(ISSUE_STATUSES);
+const issuePrioritySchema = z.enum(ISSUE_PRIORITIES);
 const issueMetadataSchema = z.record(z.string(), z.unknown());
 
 export const issueCreateSchema = z.object({
@@ -74,6 +159,7 @@ export const issueCreateSchema = z.object({
   title: z.string().trim().min(1),
   description: z.string().trim().nullable().optional(),
   status: issueStatusSchema.default('todo'),
+  priority: issuePrioritySchema.default(DEFAULT_ISSUE_PRIORITY),
   position: z.number().finite().optional(),
   metadata: issueMetadataSchema.nullable().optional(),
 });
@@ -82,6 +168,7 @@ export const issuePatchSchema = z.object({
   title: z.string().trim().min(1).optional(),
   description: z.string().trim().nullable().optional(),
   status: issueStatusSchema.optional(),
+  priority: issuePrioritySchema.optional(),
   position: z.number().finite().optional(),
   metadata: issueMetadataSchema.nullable().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
@@ -98,6 +185,7 @@ export const normalizeIssueCreateBody = (body: unknown) => {
     title: normalizeOptionalString(record.title) ?? '',
     description: hasOwn(record, 'description') ? normalizeOptionalString(record.description) : undefined,
     status: normalizeOptionalIssueStatus(record.status),
+    priority: normalizeOptionalIssuePriority(record.priority),
     position: hasOwn(record, 'position')
       ? (normalizeOptionalFiniteNumber(record.position) ?? record.position)
       : undefined,
@@ -121,6 +209,9 @@ export const normalizeIssuePatchBody = (body: unknown) => {
   }
   if (hasOwn(record, 'status')) {
     normalized.status = normalizeOptionalIssueStatus(record.status) ?? '';
+  }
+  if (hasOwn(record, 'priority')) {
+    normalized.priority = normalizeOptionalIssuePriority(record.priority) ?? '';
   }
   if (hasOwn(record, 'position')) {
     normalized.position = normalizeOptionalFiniteNumber(record.position) ?? record.position;
@@ -205,6 +296,7 @@ export const serializeIssueWithTasks = (issue: {
   title: string;
   description: string | null;
   status: string;
+  priority?: string | null;
   position: number;
   metadata: string | null;
   createdAt: Date;

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Dialog } from '@/components/common/Dialog';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { useToast } from '@/components/common/FeedbackProvider';
-import { ISSUE_STATUS_LABELS } from '@/lib/issues/config';
+import { DEFAULT_ISSUE_PRIORITY, ISSUE_STATUS_LABELS } from '@/lib/issues/config';
 import { useIssuesStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
 
@@ -89,6 +89,7 @@ export function CreateIssueDialog({
         title: title.trim(),
         description: description.trim() ? description.trim() : null,
         status: DEFAULT_STATUS,
+        priority: DEFAULT_ISSUE_PRIORITY,
       });
       pushToast({
         title: 'Issue created',

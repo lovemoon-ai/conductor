@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DELETE, GET, PATCH } from './route';
 import { createMockRequest, extractJson } from '@/__tests__/helpers';
@@ -63,12 +64,22 @@ const { stopTaskBeforeRelaunch } = await import('@/lib/tasks/task-stop');
 const { realtimeHub } = await import('@/lib/realtime/hub');
 const { deliverAgentOutboxForHost } = await import('@/lib/realtime/agent-outbox');
 
+const missingPriorityColumnError = () =>
+  new Prisma.PrismaClientKnownRequestError(
+    'The column `issues.priority` does not exist in the current database.',
+    {
+      code: 'P2022',
+      clientVersion: 'test',
+    },
+  );
+
 const buildExistingIssue = (overrides: Record<string, unknown> = {}) => ({
   id: 'issue-1',
   projectId: 'project-1',
   title: 'Board implementation',
   description: 'Hook issue board into the app shell',
   status: 'todo',
+  priority: 'P1',
   position: 1,
   metadata: null,
   createdAt: new Date('2026-04-14T00:00:00.000Z'),
@@ -169,6 +180,50 @@ describe('/api/issues/[issueId]', () => {
         status: 'killed',
         issue_id: 'issue-1',
       }),
+    }));
+  });
+
+  it('returns persisted non-default priority on issue detail', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      status: 'done',
+      priority: 'P0',
+    }) as any);
+    mockIssueTasks({
+      activeTasks: [],
+      linkedTasks: [],
+    });
+
+    const response = await GET(createMockRequest({ method: 'GET' }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data).toEqual(expect.objectContaining({
+      id: 'issue-1',
+      priority: 'P0',
+    }));
+  });
+
+  it('falls back to default priority on issue detail when the priority column is missing', async () => {
+    vi.mocked(db.issue.findFirst)
+      .mockRejectedValueOnce(missingPriorityColumnError())
+      .mockResolvedValueOnce(buildExistingIssue({ priority: undefined }) as any);
+    mockIssueTasks({
+      activeTasks: [],
+      linkedTasks: [],
+    });
+
+    const response = await GET(createMockRequest({ method: 'GET' }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(vi.mocked(db.issue.findFirst)).toHaveBeenCalledTimes(2);
+    expect(data).toEqual(expect.objectContaining({
+      id: 'issue-1',
+      priority: 'P1',
     }));
   });
 
@@ -399,6 +454,74 @@ describe('/api/issues/[issueId]', () => {
     expect(createAiTaskArtifacts).not.toHaveBeenCalled();
   });
 
+  it('updates issue priority through PATCH', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue() as any);
+    vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({ priority: 'P0' }) as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { priority: 'P0' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.issue.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        priority: 'P0',
+      }),
+    }));
+    expect(data.issue).toEqual(expect.objectContaining({
+      id: 'issue-1',
+      priority: 'P0',
+    }));
+  });
+
+  it('updates non-priority fields when the priority column is missing', async () => {
+    vi.mocked(db.issue.findFirst)
+      .mockRejectedValueOnce(missingPriorityColumnError())
+      .mockResolvedValueOnce(buildExistingIssue({ priority: undefined }) as any);
+    vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({
+      title: 'Retitled issue',
+      priority: undefined,
+    }) as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { title: 'Retitled issue' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect((vi.mocked(db.issue.update).mock.calls[0]?.[0] as { data: Record<string, unknown> }).data).not.toHaveProperty('priority');
+    expect(data.issue).toEqual(expect.objectContaining({
+      id: 'issue-1',
+      title: 'Retitled issue',
+      priority: 'P1',
+    }));
+  });
+
+  it('returns a migration error when updating to a non-default priority without the priority column', async () => {
+    vi.mocked(db.issue.findFirst)
+      .mockRejectedValueOnce(missingPriorityColumnError())
+      .mockResolvedValueOnce(buildExistingIssue({ priority: undefined }) as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { priority: 'P0' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toContain("Issue priority is unavailable");
+    expect(db.issue.update).not.toHaveBeenCalled();
+  });
+
   it('does not spawn a duplicate task when an active linked task already exists', async () => {
     vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue() as any);
     mockIssueTasks({
@@ -536,6 +659,50 @@ describe('/api/issues/[issueId]', () => {
     expect(data.activeTask).toBeNull();
     expect(data.killedTask).toEqual(expect.objectContaining({
       id: 'task-init',
+      status: 'killed',
+    }));
+  });
+
+  it('moves a doing issue to done without writing priority when the priority column is missing', async () => {
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue('daemon-a');
+    vi.mocked(db.issue.findFirst)
+      .mockRejectedValueOnce(missingPriorityColumnError())
+      .mockResolvedValueOnce(buildExistingIssue({
+        status: 'doing',
+        priority: undefined,
+      }) as any);
+    mockIssueTasks({
+      activeTasks: [buildTask()],
+      linkedTasks: [buildTask()],
+    });
+    vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({
+      status: 'done',
+      priority: undefined,
+      tasks: [],
+    }) as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { status: 'done' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(vi.mocked(db.issue.findFirst)).toHaveBeenCalledTimes(2);
+    expect(stopTaskBeforeRelaunch).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-active',
+      stopTargetHost: 'daemon-a',
+    }));
+    expect((vi.mocked(db.issue.update).mock.calls[0]?.[0] as { data: Record<string, unknown> }).data).not.toHaveProperty('priority');
+    expect(data.issue).toEqual(expect.objectContaining({
+      id: 'issue-1',
+      status: 'done',
+      priority: 'P1',
+    }));
+    expect(data.killedTask).toEqual(expect.objectContaining({
+      id: 'task-active',
       status: 'killed',
     }));
   });

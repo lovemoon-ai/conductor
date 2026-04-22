@@ -3,10 +3,17 @@ import { getActiveSubscriptionUser } from '@/lib/auth/middleware';
 import { db } from '@/lib/db';
 import {
   getNextIssuePosition,
+  ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE,
+  isDefaultIssuePriority,
   issueCreateSchema,
+  issueSerializationSelect,
+  issueSerializationWithPrioritySelect,
+  isMissingIssuePriorityColumnError,
   loadIssueTaskMaps,
   normalizeIssueCreateBody,
   serializeIssueWithTasks,
+  warnMissingIssuePrioritySchema,
+  withIssuePrioritySchemaFallback,
 } from './shared';
 
 export async function GET(request: NextRequest) {
@@ -17,17 +24,29 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const projectId = searchParams.get('project_id')?.trim() || null;
 
-  const issues = await db.issue.findMany({
+  const listQuery = {
     where: {
       project: { userId: user.id },
       ...(projectId ? { projectId } : {}),
     },
     orderBy: [
-      { status: 'asc' },
-      { position: 'asc' },
-      { updatedAt: 'desc' },
+      { status: 'asc' as const },
+      { position: 'asc' as const },
+      { updatedAt: 'desc' as const },
     ],
-  });
+  };
+
+  const { result: issues } = await withIssuePrioritySchemaFallback(
+    'issues.list',
+    () => db.issue.findMany({
+      ...listQuery,
+      select: issueSerializationWithPrioritySelect,
+    }),
+    () => db.issue.findMany({
+      ...listQuery,
+      select: issueSerializationSelect,
+    }),
+  );
 
   const { activeTaskByIssueId, linkedTaskByIssueId } = await loadIssueTaskMaps(
     user.id,
@@ -40,6 +59,7 @@ export async function GET(request: NextRequest) {
     title: string;
     description: string | null;
     status: string;
+    priority?: string | null;
     position: number;
     metadata: string | null;
     createdAt: Date;
@@ -81,16 +101,45 @@ export async function POST(request: NextRequest) {
     ? input.position
     : await getNextIssuePosition(input.projectId, input.status);
 
-  const issue = await db.issue.create({
-    data: {
-      projectId: input.projectId,
-      title: input.title,
-      description: input.description ?? null,
-      status: input.status,
-      position,
-      metadata: input.metadata ? JSON.stringify(input.metadata) : null,
-    },
-  });
+  const issueData = {
+    projectId: input.projectId,
+    title: input.title,
+    description: input.description ?? null,
+    status: input.status,
+    priority: input.priority,
+    position,
+    metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+  };
+
+  let issue;
+  try {
+    issue = await db.issue.create({
+      data: issueData,
+      select: issueSerializationWithPrioritySelect,
+    });
+  } catch (error) {
+    if (!isMissingIssuePriorityColumnError(error)) {
+      throw error;
+    }
+    if (!isDefaultIssuePriority(input.priority)) {
+      return NextResponse.json(
+        { error: ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE },
+        { status: 409 },
+      );
+    }
+    warnMissingIssuePrioritySchema('issues.create', error);
+    issue = await db.issue.create({
+      data: {
+        projectId: issueData.projectId,
+        title: issueData.title,
+        description: issueData.description,
+        status: issueData.status,
+        position: issueData.position,
+        metadata: issueData.metadata,
+      },
+      select: issueSerializationSelect,
+    });
+  }
 
   return NextResponse.json(serializeIssueWithTasks(issue));
 }

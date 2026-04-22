@@ -164,6 +164,7 @@ describe('issues store', () => {
           projectId: 'project-1',
           title: 'Reopenable issue',
           status: 'done',
+          priority: 'P1',
           position: 0,
           createdAt: '2026-04-19T00:00:00.000Z',
           linkedTask: {

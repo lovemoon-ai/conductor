@@ -88,6 +88,7 @@ describe('CreateIssueDialog', () => {
         title: 'Ship all-project issue creation',
         description: null,
         status: 'todo',
+        priority: 'P1',
       });
     });
     expect(pushToastMock).toHaveBeenCalledWith({

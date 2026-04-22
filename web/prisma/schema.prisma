@@ -102,6 +102,7 @@ model Issue {
   title       String
   description String?
   status      String   @default("backlog")
+  priority    String   @default("P1")
   position    Float    @default(0)
   metadata    String?
   createdAt   DateTime @default(now()) @map("created_at")

@@ -1,4 +1,4 @@
-import { normalizeIssueStatus } from '@/lib/issues/config';
+import { normalizeIssuePriority, normalizeIssueStatus } from '@/lib/issues/config';
 import { serializeTaskResponse } from '@/lib/tasks/serialization';
 
 const parseIssueMetadata = (value: string | null): Record<string, unknown> | null => {
@@ -22,6 +22,7 @@ type SerializableIssue = {
   title: string;
   description: string | null;
   status: string;
+  priority?: string | null;
   position: number;
   metadata: string | null;
   createdAt: Date;
@@ -37,6 +38,7 @@ export const serializeIssue = (
   linkedTask?: SerializableLinkedTask,
 ) => {
   const status = normalizeIssueStatus(issue.status);
+  const priority = normalizeIssuePriority(issue.priority);
   const createdAt = issue.createdAt.toISOString();
   const updatedAt = issue.updatedAt.toISOString();
   const serializedActiveTask = activeTask ? serializeTaskResponse(activeTask) : null;
@@ -49,6 +51,7 @@ export const serializeIssue = (
     title: issue.title,
     description: issue.description,
     status,
+    priority,
     position: issue.position,
     metadata: parseIssueMetadata(issue.metadata),
     activeTask: serializedActiveTask,

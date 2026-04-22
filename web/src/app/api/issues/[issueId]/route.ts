@@ -21,27 +21,23 @@ import {
   pickDefaultAgentHost,
 } from '@/lib/tasks/pty-runtime';
 import { realtimeHub } from '@/lib/realtime/hub';
-import { normalizeIssueStatus } from '@/lib/issues/config';
+import { normalizeIssuePriority, normalizeIssueStatus } from '@/lib/issues/config';
 import {
   buildIssueInitialContent,
   getNextIssuePosition,
+  ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE,
+  isDefaultIssuePriority,
   issuePatchSchema,
+  issueSerializationSelect,
+  issueSerializationWithPrioritySelect,
   loadIssueTaskMaps,
   normalizeIssuePatchBody,
   serializeIssueWithTasks,
+  withIssuePrioritySchemaFallback,
 } from '../shared';
 
-const issueSelect = {
-  id: true,
-  projectId: true,
-  title: true,
-  description: true,
-  status: true,
-  position: true,
-  metadata: true,
-  createdAt: true,
-  updatedAt: true,
-};
+const issueSelect = issueSerializationSelect;
+const issueSelectWithPriority = issueSerializationWithPrioritySelect;
 
 const issueWithProjectSelect = {
   ...issueSelect,
@@ -57,6 +53,11 @@ const issueWithProjectSelect = {
   },
 };
 
+const issueWithProjectSelectWithPriority = {
+  ...issueSelectWithPriority,
+  project: issueWithProjectSelect.project,
+};
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ issueId: string }> },
@@ -66,13 +67,23 @@ export async function GET(
   const user = userResult;
 
   const { issueId } = await params;
-  const issue = await db.issue.findFirst({
-    where: {
-      id: issueId,
-      project: { userId: user.id },
-    },
-    select: issueSelect,
-  });
+  const { result: issue } = await withIssuePrioritySchemaFallback(
+    'issues.detail',
+    () => db.issue.findFirst({
+      where: {
+        id: issueId,
+        project: { userId: user.id },
+      },
+      select: issueSelectWithPriority,
+    }),
+    () => db.issue.findFirst({
+      where: {
+        id: issueId,
+        project: { userId: user.id },
+      },
+      select: issueSelect,
+    }),
+  );
 
   if (!issue) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
@@ -95,13 +106,23 @@ export async function PATCH(
   const user = userResult;
 
   const { issueId } = await params;
-  const existing = await db.issue.findFirst({
-    where: {
-      id: issueId,
-      project: { userId: user.id },
-    },
-    select: issueWithProjectSelect,
-  });
+  const { result: existing, prioritySchemaAvailable } = await withIssuePrioritySchemaFallback(
+    'issues.patch.load',
+    () => db.issue.findFirst({
+      where: {
+        id: issueId,
+        project: { userId: user.id },
+      },
+      select: issueWithProjectSelectWithPriority,
+    }),
+    () => db.issue.findFirst({
+      where: {
+        id: issueId,
+        project: { userId: user.id },
+      },
+      select: issueWithProjectSelect,
+    }),
+  );
 
   if (!existing) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
@@ -120,7 +141,15 @@ export async function PATCH(
 
   const input = parsed.data;
   const currentStatus = normalizeIssueStatus(existing.status);
+  const currentPriority = normalizeIssuePriority(existing.priority);
   const nextStatus = input.status ?? currentStatus;
+  const nextPriority = input.priority ?? currentPriority;
+  if (!prioritySchemaAvailable && input.priority !== undefined && !isDefaultIssuePriority(input.priority)) {
+    return NextResponse.json(
+      { error: ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE },
+      { status: 409 },
+    );
+  }
   const nextPosition = typeof input.position === 'number'
     ? input.position
     : nextStatus !== currentStatus
@@ -292,18 +321,31 @@ export async function PATCH(
     }
   }
 
+  const issueUpdateData = {
+    title: input.title ?? existing.title,
+    description: input.description !== undefined ? input.description : existing.description,
+    status: nextStatus,
+    position: nextPosition,
+    metadata: input.metadata !== undefined
+      ? (input.metadata ? JSON.stringify(input.metadata) : null)
+      : existing.metadata,
+  };
   const issueUpdateArgs = {
     where: { id: existing.id },
     data: {
-      title: input.title ?? existing.title,
-      description: input.description !== undefined ? input.description : existing.description,
-      status: nextStatus,
-      position: nextPosition,
-      metadata: input.metadata !== undefined
-        ? (input.metadata ? JSON.stringify(input.metadata) : null)
-        : existing.metadata,
+      ...issueUpdateData,
+      priority: nextPriority,
     },
+    select: issueSelectWithPriority,
   };
+  const issueUpdateArgsWithoutPriority = {
+    where: { id: existing.id },
+    data: issueUpdateData,
+    select: issueSelect,
+  };
+  const effectiveIssueUpdateArgs = prioritySchemaAvailable
+    ? issueUpdateArgs
+    : issueUpdateArgsWithoutPriority;
 
   let updated;
   if (shouldRestartLinkedTask && linkedTask && restartPlan) {
@@ -320,7 +362,7 @@ export async function PATCH(
       });
 
       if (claimed.count === 0) {
-        const updatedIssue = await tx.issue.update(issueUpdateArgs);
+        const updatedIssue = await tx.issue.update(effectiveIssueUpdateArgs);
         return {
           restartedTask: null,
           updatedIssue,
@@ -334,7 +376,7 @@ export async function PATCH(
         sourceTask: restartSourceTask,
         plan: restartPlan,
       });
-      const updatedIssue = await tx.issue.update(issueUpdateArgs);
+      const updatedIssue = await tx.issue.update(effectiveIssueUpdateArgs);
       return {
         restartedTask,
         updatedIssue,
@@ -366,7 +408,7 @@ export async function PATCH(
       });
 
       if (claimed.count === 0) {
-        const updatedIssue = await tx.issue.update(issueUpdateArgs);
+        const updatedIssue = await tx.issue.update(effectiveIssueUpdateArgs);
         return {
           createdTask: null,
           updatedIssue,
@@ -376,7 +418,7 @@ export async function PATCH(
 
       // We own the transition — safe to spawn the task
       const createdTask = await createAiTaskArtifacts(spawnTaskArgs!, tx);
-      const updatedIssue = await tx.issue.update(issueUpdateArgs);
+      const updatedIssue = await tx.issue.update(effectiveIssueUpdateArgs);
       return {
         createdTask,
         updatedIssue,
@@ -397,7 +439,7 @@ export async function PATCH(
     updated = transactionResult.updatedIssue;
   } else if (shouldKillActiveTask && activeTask) {
     const transactionResult = await db.$transaction(async (tx: any) => {
-      const updatedIssue = await tx.issue.update(issueUpdateArgs);
+      const updatedIssue = await tx.issue.update(effectiveIssueUpdateArgs);
       return {
         updatedIssue,
         updatedTask: activeTask,
@@ -408,7 +450,7 @@ export async function PATCH(
     linkedTask = transactionResult.updatedTask;
     activeTask = null;
   } else {
-    updated = await db.issue.update(issueUpdateArgs);
+    updated = await db.issue.update(effectiveIssueUpdateArgs);
   }
 
   const serializedIssue = serializeIssueWithTasks(updated, {

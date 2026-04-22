@@ -6,6 +6,16 @@ export const ISSUE_STATUSES = [
 
 export type IssueStatusValue = (typeof ISSUE_STATUSES)[number];
 
+export const ISSUE_PRIORITIES = [
+  'P0',
+  'P1',
+  'P2',
+] as const;
+
+export type IssuePriorityValue = (typeof ISSUE_PRIORITIES)[number];
+
+export const DEFAULT_ISSUE_PRIORITY: IssuePriorityValue = 'P1';
+
 export const ISSUE_STATUS_LABELS: Record<IssueStatusValue, string> = {
   todo: 'Todo',
   doing: 'Doing',
@@ -57,4 +67,22 @@ export const normalizeIssueStatus = (value: unknown): IssueStatusValue => {
 
 export const isIssueStatus = (value: unknown): value is IssueStatusValue => {
   return typeof value === 'string' && ISSUE_STATUSES.includes(value.trim().toLowerCase() as IssueStatusValue);
+};
+
+export const ISSUE_PRIORITY_LABELS: Record<IssuePriorityValue, string> = {
+  P0: 'P0 (Highest)',
+  P1: 'P1',
+  P2: 'P2 (Lowest)',
+};
+
+export const coerceIssuePriority = (value: unknown): IssuePriorityValue | null => {
+  const normalized = typeof value === 'string' ? value.trim().toUpperCase() : '';
+  if (ISSUE_PRIORITIES.includes(normalized as IssuePriorityValue)) {
+    return normalized as IssuePriorityValue;
+  }
+  return null;
+};
+
+export const normalizeIssuePriority = (value: unknown): IssuePriorityValue => {
+  return coerceIssuePriority(value) ?? DEFAULT_ISSUE_PRIORITY;
 };
