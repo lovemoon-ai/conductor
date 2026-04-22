@@ -44,9 +44,11 @@
 ## E2E Test in Local Development
 1. Start the server locally: `cd web && unset http_proxy && unset_https_proxy && unset_all_proxy && pnpm build && pnpm start`
 2. Use `chrome-devtools` MCP to open `http://localhost:6152/`, then use `env:CONDUCTOR_PHONE` to complete sign-in
-3. Update the CLI locally: `make install-cli`
-4. Start the Conductor daemon and connect it to the local server: `conductor daemon --config-file ~/.conductor/config-dev.yaml`
-5. Start Conductor fire and connect it to the local server: `conductor fire --config-file ~/.conductor/config-dev.yaml -- "hi"`
+3. Build the local dev CLI: `make install-cli` (produces `./bin/conductor-dev`; does not touch system PATH)
+4. Start the Conductor daemon and connect it to the local server: `./bin/conductor-dev daemon --config-file ~/.conductor/config-dev.yaml`
+5. Start Conductor fire and connect it to the local server: `./bin/conductor-dev fire --config-file ~/.conductor/config-dev.yaml -- "hi"`
+
+Note: the system-wide `conductor` on PATH is reserved for the formal release (brew or the public `install.sh`). The dev shim at `./bin/conductor-dev` is intentionally not added to PATH, so the system `conductor` and its daemon stay decoupled from in-progress dev builds.
 
 ## How to review code
 Refer to `claw/sop/04_review-code.md`.

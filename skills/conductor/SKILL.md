@@ -98,7 +98,7 @@ curl -fsSL https://conductor-ai.top/install.sh | bash
 conductor --version
 ```
 
-If the user is developing this repo itself, the local developer path is `scripts/install-cli.sh`.
+If the user is developing this repo itself, the local developer path is `make install-cli`, which builds the CLI in place and writes a shim to `./bin/conductor-dev`. That shim is intentionally not added to the system PATH, so the system-wide `conductor` keeps coming from brew / the public install.sh.
 
 ### Send A File Back To The Task
 
