@@ -36,7 +36,7 @@ export async function authorize(
     );
   }
   if (!realtimeHub.hasAgentHost(agentHost, userResult.id)) {
-    return NextResponse.json({ error: "agent not connected for this user" }, { status: 404 });
+    return NextResponse.json({ error: "daemon not connected for this user" }, { status: 404 });
   }
   return { userId: userResult.id, agentHost };
 }
