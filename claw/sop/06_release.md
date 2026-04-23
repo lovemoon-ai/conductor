@@ -87,15 +87,8 @@ You are the release agent for the conductor repository. The goal is to release a
        "https://api.github.com/repos/lovemoon-ai/homebrew-tap/commits?per_page=1" \
        | python3 -c "import json,sys; c=json.load(sys.stdin)[0]; print(c['sha'][:7], c['commit']['message'].split(chr(10))[0])"
      ```
-   - Before running `brew install`, make sure no conductor daemon / fire process is still running from a previous brew install — a live daemon that gets its Cellar path removed (by later `brew uninstall` or `brew upgrade`) becomes a zombie: it stays connected but every child spawn fails with `ENOENT`, which breaks kill/restart for every task bound to it.
-   - If `lovemoon-ai/tap` is already tapped locally, Homebrew's cache of the tap clone can be stale; refresh it before `brew install` or the install will pick up the previous version:
-     ```bash
-     tap_path=$(brew --repository lovemoon-ai/tap)
-     (cd "$tap_path" && git fetch origin main && git reset --hard origin/main)
-     ```
-     (If the tap is not tapped yet, a plain `brew install lovemoon-ai/tap/conductor` will clone it fresh and you can skip this.)
-   - Verify at least the current local platform: `brew install lovemoon-ai/tap/conductor` and `conductor --version` should print the new `x.y.z`.
-   - Keep brew installed conductor.
+   - Skip local `brew install lovemoon-ai/tap/conductor` verification in this SOP. Do not upgrade or reinstall the Homebrew `conductor` formula on a machine that is currently running a live `conductor daemon`, because Homebrew may replace/remove the old Cellar path while that daemon is still serving tasks.
+   - If you need an extra Homebrew smoke test later, run it manually on a clean verification host or an isolated environment that is not serving real tasks.
 11. After npm and CLI archives are successfully released, press `claw/sop/deploy-to-prod.md` to deploy production:
    - Determine whether `web/package.json` / `web/pnpm-lock.yaml` is involved
    - Determine whether Prisma schema / migrations are involved
@@ -105,7 +98,7 @@ You are the release agent for the conductor repository. The goal is to release a
    - Check the failed matrix platform logs, especially `node-pty` verification and bundled Node download failures.
    - Make the minimal fix on `origin/main`, then move the tag only if the original tag points at a broken release commit and the user explicitly approves retagging.
    - The archive workflow no longer pushes to `lovemoon-ai/homebrew-tap`; a tap push failure is now impossible from CI. If the manual tap push in step 10 fails, the typical causes are: wrong SSH remote host alias (needs the same alias used for the conductor repo), missing write access on `lovemoon-ai/homebrew-tap`, or a non-fast-forward because someone else updated the tap in parallel — pull with `--ff-only` and retry.
-   - Do not declare Homebrew release success until the GitHub Release assets, the tap formula, and `brew install` + `conductor --version` all point to the same version.
+   - Do not declare Homebrew release success until the GitHub Release assets and the tap formula both point to the same version. Local `brew install` verification is optional and must not interrupt a live daemon host.
 13. If production deployment fails:
    - First reproduce and locate the failure
    - Make minimal repairs- If the fix involves code changes, submit it first and push it to `origin/main`
@@ -163,8 +156,8 @@ You are the release agent for the conductor repository. The goal is to release a
 - `npm view @love-moon/conductor-cli@<version> version --registry=https://registry.npmjs.org`
 - `gh run list --workflow "Build CLI Release Archives" --limit 5`
 - `gh release view v<version> --json tagName,assets`
-- `brew install lovemoon-ai/tap/conductor`
-- `conductor --version`
+- Optional on a clean verification host: `brew install lovemoon-ai/tap/conductor`
+- Optional on a clean verification host: `conductor --version`
 
 ## Common judgment rules
 - `npm publish failed ... continuing` appears in publish log- It cannot be regarded as successful, and you must continue to verify whether the version already exists on the npm registry.- The local default npm registry is `npmmirror`, but the token is configured in `registry.npmjs.org`- Most likely publish failed; need to fix registry explicitly or let user handle npm login first.- Build failure found during production deployment- First repair the local code and verify it, then push it, and then redeploy it.- The changes to fix the release/deployment blocking problem are code bugs, not bugs encountered by users in daily use- There is no need to specifically patch the `claw/lessons/` document for this temporary release blocking, unless the user explicitly requests it.- There are changes in the workspace that are not related to this release.- Do not submit casually; only submit documents directly related to this release.
@@ -177,7 +170,7 @@ You are the release agent for the conductor repository. The goal is to release a
 2. There is a `release x.y.z` commit on `origin/main`.
 3. There is a `vX.Y.Z` tag on the release commit, and the `Build CLI Release Archives` workflow has succeeded.
 4. The GitHub Release contains all four platform archives, their `.sha256` files, and `conductor.rb`.
-5. The Homebrew tap formula has been updated **manually** (a new commit on `lovemoon-ai/homebrew-tap` whose subject is `conductor <x.y.z>`) and verified on at least one local platform with `brew install lovemoon-ai/tap/conductor` + `conductor --version`.
+5. The Homebrew tap formula has been updated **manually** (a new commit on `lovemoon-ai/homebrew-tap` whose subject is `conductor <x.y.z>`).
 6. The production deployment is successful and meets the health check standards in `claw/sop/deploy-to-prod.md`.
 7. Final reply includes:- Final release commit hash- Git tag- CLI archive workflow URL/status- Homebrew tap commit hash- Production deployment commit hash- Whether `pnpm -C web install` was executed- Whether database migration was performed- Three local health check status codes-Whether artificial regression has been performed; if not, please explain clearly
 ## Output requirements
