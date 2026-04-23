@@ -877,6 +877,94 @@ describe('ChatView', () => {
     expect(screen.getByText('Interrupt request was not confirmed. You can try again.')).toBeInTheDocument();
   });
 
+  it('auto-dismisses the composer feedback notice after 5 seconds', async () => {
+    vi.useFakeTimers();
+    apiPostMock.mockRejectedValueOnce(new Error('network down'));
+    runtimeState = {
+      byTask: {
+        'task-1': {
+          replyInProgress: true,
+          replyTo: 'msg-user-1',
+          statusLine: 'Thinking',
+        },
+      },
+      clearTask: clearRuntimeMock,
+    };
+    useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+
+    render(<ChatView taskId="task-1" />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('interrupt-button'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      screen.getByText('Failed to interrupt the current reply. Please try again in a moment.'),
+    ).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+
+    expect(
+      screen.queryByText('Failed to interrupt the current reply. Please try again in a moment.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not auto-dismiss the in-flight "Restarting the current AI session…" notice', async () => {
+    vi.useFakeTimers();
+    let resolveRestart: (() => void) | null = null;
+    restartTaskMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRestart = () => {
+            resolve({
+              mode: 'inplace_restart',
+              sourceTaskId: 'task-1',
+              task: {
+                id: 'task-1',
+                status: 'running',
+                taskType: 'ai_task',
+                createdAt: '2026-03-07T12:00:00.000Z',
+                updatedAt: '2026-03-07T12:00:01.000Z',
+              },
+            });
+          };
+        }),
+    );
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [makeMessage('msg-user-1', 'restart this task')] },
+    };
+    useChatStoreMock.mockImplementation(() => chatState);
+
+    render(<ChatView taskId="task-1" />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('message-restart-msg-user-1'));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Restarting the current AI session…')).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+
+    // Still visible because progress notices must not auto-dismiss.
+    expect(screen.getByText('Restarting the current AI session…')).toBeInTheDocument();
+
+    await act(async () => {
+      resolveRestart?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText('Restarting the current AI session…')).not.toBeInTheDocument();
+  });
+
   it('keeps the pending interrupt target stable and blocks new sends until it settles', async () => {
     vi.useFakeTimers();
     runtimeState = {
