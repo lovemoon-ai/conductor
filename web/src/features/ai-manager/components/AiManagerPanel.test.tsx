@@ -17,6 +17,7 @@ let agentsState = {
     host: string;
     supportedBackends?: string[];
     capabilities?: string[];
+    version?: string;
   }>,
   fetchAgents: fetchAgentsMock,
 };
@@ -119,6 +120,66 @@ describe('AiManagerPanel', () => {
     render(<AiManagerPanel initialAgentHost="daemon-old" />);
 
     expect(screen.getByLabelText('Restart daemon on daemon-old')).toBeDisabled();
+  });
+
+  it('renders supported backends and daemon CLI version in the info card', () => {
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-a',
+        supportedBackends: ['codex', 'claude'],
+        capabilities: ['restart_daemon'],
+        version: '1.2.3',
+      },
+    ];
+    aiManagerState.selectedHost = 'daemon-a';
+
+    render(<AiManagerPanel initialAgentHost="daemon-a" />);
+
+    const backendsTerm = screen.getByText('Supported backends');
+    const backendsValue = backendsTerm.parentElement?.querySelector('dd');
+    expect(backendsValue?.textContent).toBe('codex, claude');
+
+    const versionTerm = screen.getByText('Daemon CLI version');
+    const versionValue = versionTerm.parentElement?.querySelector('dd');
+    expect(versionValue?.textContent).toBe('1.2.3');
+  });
+
+  it('falls back to "unknown" when the daemon CLI version is absent', () => {
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-legacy',
+        supportedBackends: ['codex'],
+        capabilities: ['restart_daemon'],
+        // version intentionally omitted (legacy daemon without x-conductor-version header)
+      },
+    ];
+    aiManagerState.selectedHost = 'daemon-legacy';
+
+    render(<AiManagerPanel initialAgentHost="daemon-legacy" />);
+
+    const versionTerm = screen.getByText('Daemon CLI version');
+    const versionValue = versionTerm.parentElement?.querySelector('dd');
+    expect(versionValue?.textContent).toBe('unknown');
+  });
+
+  it('renders an em-dash when the daemon advertises no supported backends', () => {
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-empty',
+        supportedBackends: [],
+        capabilities: ['restart_daemon'],
+      },
+    ];
+    aiManagerState.selectedHost = 'daemon-empty';
+
+    render(<AiManagerPanel initialAgentHost="daemon-empty" />);
+
+    const backendsTerm = screen.getByText('Supported backends');
+    const backendsValue = backendsTerm.parentElement?.querySelector('dd');
+    expect(backendsValue?.textContent).toBe('—');
   });
 
   it('shows the Copilot login label inline with the header when quota data includes account info', () => {

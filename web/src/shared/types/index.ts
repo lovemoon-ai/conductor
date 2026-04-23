@@ -141,6 +141,7 @@ export interface Agent {
   supportedBackends?: string[];
   runtimeBackendMap?: Record<string, string>;
   capabilities?: string[];
+  version?: string;
 }
 
 // WebSocket Types

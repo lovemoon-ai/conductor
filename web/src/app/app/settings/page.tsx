@@ -105,11 +105,6 @@ export default function SettingsPage() {
                       <div className="w-2 h-2 bg-success rounded-full animate-pulse shrink-0" />
                       <div className="min-w-0 flex-1">
                         <p className="font-medium text-sm truncate">{agent.host}</p>
-                        {agent.supportedBackends && agent.supportedBackends.length > 0 && (
-                          <p className="text-xs text-muted mt-0.5 truncate">
-                            {agent.supportedBackends.join(', ')}
-                          </p>
-                        )}
                       </div>
                       <svg className="w-4 h-4 text-muted shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
