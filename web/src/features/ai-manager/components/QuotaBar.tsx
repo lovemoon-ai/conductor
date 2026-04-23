@@ -84,9 +84,9 @@ export function QuotaBar({ label, window }: QuotaBarProps) {
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-baseline justify-between">
-        <span className="text-sm font-medium text-ink">{label}</span>
-        <span className="text-xs text-muted">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="shrink-0 text-sm font-medium text-ink">{label}</span>
+        <span className="min-w-0 truncate text-right text-xs text-muted">
           剩 {remaining.toFixed(0)}%{reset ? ` · ${reset}` : ''}
         </span>
       </div>

@@ -176,7 +176,11 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
 
       <SectionCard title="Quota">
         <div className="grid gap-5 md:grid-cols-4">
-          <div className="flex flex-col gap-3">
+          {/* `min-w-0` keeps the grid item from adopting its content's intrinsic
+              width on narrow viewports (grid items default to min-width: auto).
+              Without it, a long account email propagates outward and forces the
+              column wider than the viewport on mobile. */}
+          <div className="flex min-w-0 flex-col gap-3">
             <div className="text-sm font-semibold text-ink">Codex</div>
             <CodexAccountSwitcher
               agentHost={host}

@@ -62,11 +62,15 @@ export function CodexAccountSwitcher({
             }`}
           >
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 text-sm font-medium text-ink">
-                  <span className="truncate">{primary}</span>
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-ink">
+                  {/* `min-w-0` is required on flex children for `truncate` to
+                      actually shrink; without it the default `min-width: auto`
+                      forces the row to expand to the email's full width,
+                      overflowing the card border on narrow viewports. */}
+                  <span className="min-w-0 truncate">{primary}</span>
                   {plan ? (
-                    <span className="rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
+                    <span className="shrink-0 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
                       {plan}
                     </span>
                   ) : null}
@@ -85,7 +89,7 @@ export function CodexAccountSwitcher({
                 type="button"
                 disabled={isCurrent || switching}
                 onClick={() => setPending(acct)}
-                className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
+                className="shrink-0 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isCurrent ? 'Active' : 'Use'}
               </button>
