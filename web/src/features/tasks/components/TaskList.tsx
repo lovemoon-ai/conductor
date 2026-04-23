@@ -78,13 +78,19 @@ export function TaskList({
 
   const showProjectInfo = !effectiveProjectFilter;
   const projectMap = useMemo(() => {
-    if (!showProjectInfo) return null;
-    const map = new Map<string, { name: string; daemonHost: string | null }>();
+    const map = new Map<
+      string,
+      { name: string; daemonHost: string | null; isDefault: boolean }
+    >();
     for (const project of projects) {
-      map.set(project.id, { name: project.name, daemonHost: project.daemonHost ?? null });
+      map.set(project.id, {
+        name: project.name,
+        daemonHost: project.daemonHost ?? null,
+        isDefault: project.isDefault ?? false,
+      });
     }
     return map;
-  }, [projects, showProjectInfo]);
+  }, [projects]);
   const currentProjectName = effectiveProjectFilter
     ? projects.find((project) => project.id === effectiveProjectFilter)?.name
     : null;
@@ -288,7 +294,9 @@ export function TaskList({
       ) : null}
 
       <div className="space-y-3">
-        {visibleTasks.map((task) => (
+        {visibleTasks.map((task) => {
+          const projectEntry = projectMap.get(task.projectId ?? '');
+          return (
           <div
             key={task.id}
             ref={setItemWrapperRef(task.id)}
@@ -304,11 +312,13 @@ export function TaskList({
               onOpenTask={onOpenTask}
               desktopListPaneMode={desktopListPaneMode}
               showProjectInfo={showProjectInfo}
-              projectName={projectMap?.get(task.projectId ?? '')?.name ?? null}
-              projectDaemonHost={projectMap?.get(task.projectId ?? '')?.daemonHost ?? null}
+              projectName={showProjectInfo ? projectEntry?.name ?? null : null}
+              projectDaemonHost={showProjectInfo ? projectEntry?.daemonHost ?? null : null}
+              isDefaultProject={projectEntry?.isDefault ?? false}
             />
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
