@@ -8,6 +8,76 @@ import { useAiManagerStore } from '@/features/ai-manager';
 import { SETTINGS_ROOT_PATH, useSettingsNavStore } from '@/features/settings';
 import { RefreshIcon } from '@/features/tasks';
 
+// ---------- Daemon-page scroll persistence ----------
+//
+// Why this is so defensive:
+//  - On iOS Safari the inner `<div overflow-y-auto>` and the document element
+//    can both act as scroll containers depending on viewport / URL-bar state,
+//    and we don't know in advance which one will see the user's scroll.
+//  - Next.js App Router + browser history may apply their own scroll reset
+//    shortly after our layout effects run.
+//  - The store-held `byHost` data may still be warm, so AiManagerPanel's
+//    content height can reach "tall" on the first render, OR it may grow
+//    across several renders as quota/accounts responses arrive. Either way
+//    we need to retry until we land close to the saved position.
+//
+// Storage: zustand slice for in-memory + sessionStorage for durability across
+// unexpected remounts or zustand state drops. `sessionStorage` is the same
+// mechanism the chat view uses, proven to survive `<Link>` navigation.
+
+const SCROLL_STORAGE_PREFIX = 'conductor-daemon-scroll:';
+
+function scrollStorageKey(host: string): string {
+  return `${SCROLL_STORAGE_PREFIX}${host}`;
+}
+
+function readStoredScrollTop(host: string): number {
+  if (typeof window === 'undefined') return 0;
+  try {
+    const raw = window.sessionStorage.getItem(scrollStorageKey(host));
+    if (!raw) return 0;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeStoredScrollTop(host: string, scrollTop: number): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(scrollStorageKey(host), String(Math.max(0, Math.floor(scrollTop))));
+  } catch {
+    // storage quota / disabled — ignore
+  }
+}
+
+function currentScrollTop(div: HTMLElement | null): number {
+  const divTop = div?.scrollTop ?? 0;
+  const docTop =
+    (typeof window !== 'undefined' ? window.scrollY : 0) ||
+    (typeof document !== 'undefined' ? document.documentElement.scrollTop : 0) ||
+    (typeof document !== 'undefined' ? document.body.scrollTop : 0) ||
+    0;
+  return Math.max(divTop, docTop);
+}
+
+function applyScrollTop(div: HTMLElement | null, target: number): void {
+  if (div) {
+    const divMax = Math.max(0, div.scrollHeight - div.clientHeight);
+    if (divMax > 0) div.scrollTop = Math.min(target, divMax);
+  }
+  if (typeof document !== 'undefined' && typeof window !== 'undefined') {
+    const docMax = Math.max(
+      0,
+      document.documentElement.scrollHeight - document.documentElement.clientHeight,
+    );
+    if (docMax > 0) {
+      window.scrollTo({ top: Math.min(target, docMax), left: 0 });
+    }
+  }
+}
+
 function AiManagerPageInner() {
   const router = useRouter();
   const pathname = usePathname();
@@ -70,34 +140,35 @@ function AiManagerPageInner() {
     void fetchQuota(host, { forceRefresh: true });
   }, [agentHost, selectedHost, fetchQuota]);
 
-  // Persist the scrollTop of the daemon page body per host. We save on every
-  // scroll (cheap — writes to an in-memory zustand slice), plus a final
-  // snapshot on unmount / host-change, plus on visibility/pagehide so we don't
-  // lose state when the browser tab goes to the background on mobile.
+  // Persist scrollTop per host. Listens on both the inner div AND window so we
+  // capture whichever element the OS/browser actually scrolls — iOS Safari in
+  // particular can scroll the document when `h-screen` disagrees with the
+  // visual viewport. Writes go to zustand (fast in-memory) AND sessionStorage
+  // (durable across any unexpected remount path).
   useEffect(() => {
     const host = agentHost ?? selectedHost;
-    const el = scrollContainerRef.current;
-    if (!host || !el) return;
+    if (!host) return;
     const save = () => {
-      useSettingsNavStore.getState().setScrollForHost(host, el.scrollTop);
+      const top = currentScrollTop(scrollContainerRef.current);
+      useSettingsNavStore.getState().setScrollForHost(host, top);
+      writeStoredScrollTop(host, top);
     };
-    el.addEventListener('scroll', save, { passive: true });
+    const div = scrollContainerRef.current;
+    div?.addEventListener('scroll', save, { passive: true });
+    window.addEventListener('scroll', save, { passive: true });
     window.addEventListener('pagehide', save);
     document.addEventListener('visibilitychange', save);
     return () => {
-      // Capture a final position on unmount / host change in case the user
-      // navigated away mid-scroll (scroll events fire asynchronously).
       save();
-      el.removeEventListener('scroll', save);
+      div?.removeEventListener('scroll', save);
+      window.removeEventListener('scroll', save);
       window.removeEventListener('pagehide', save);
       document.removeEventListener('visibilitychange', save);
     };
   }, [agentHost, selectedHost]);
 
-  // Mark "should restore" whenever we arrive at a new host. A separate effect
-  // (below) consumes this flag across as many renders as needed to land the
-  // scrollTop, because the panel's content height grows in stages as status /
-  // quota / accounts data arrives.
+  // Mark "should restore" on arrival at a new host. Consumed by the restore
+  // effect below.
   useLayoutEffect(() => {
     const host = agentHost ?? selectedHost;
     if (!host) return;
@@ -105,36 +176,64 @@ function AiManagerPageInner() {
     pendingRestoreHostRef.current = host;
   }, [agentHost, selectedHost]);
 
-  // Attempt to restore scrollTop on every render where there's a pending host.
-  // Dependency includes `hostState` so this re-fires each time the per-host
-  // store slice changes (status/quota/accounts arrive), retrying the restore
-  // until scrollHeight is tall enough to accommodate the saved position. Once
-  // we land the exact saved value — or we're clamped by a genuinely shorter
-  // page — we clear the pending flag. useLayoutEffect so no flash-of-top.
+  // Restore scrollTop. This has three layers of defence because the actual
+  // behavior on mobile has proven fragile:
+  //
+  //   1. Synchronous useLayoutEffect — fast path, fires before paint. Depends
+  //      on `hostState` so it re-runs as quota/accounts responses arrive and
+  //      content grows taller.
+  //
+  //   2. rAF-driven retry loop — runs after paint for up to ~1s. Overrides
+  //      any late scroll reset from Next.js's router, browser back-forward
+  //      restoration, or iOS inertial scrolling. Gives up once we've landed
+  //      within 2px of target or content simply isn't tall enough.
+  //
+  //   3. Both div AND window scrollTop are written on every attempt — we
+  //      don't care which one is the real scroller on this device.
   useLayoutEffect(() => {
     const host = pendingRestoreHostRef.current;
     if (!host) return;
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    const saved = useSettingsNavStore.getState().getScrollForHost(host);
+
+    // Prefer sessionStorage (survives more) but fall back to zustand.
+    const savedFromStorage = readStoredScrollTop(host);
+    const savedFromStore = useSettingsNavStore.getState().getScrollForHost(host);
+    const saved = Math.max(savedFromStorage, savedFromStore);
+
     if (saved <= 0) {
-      // Nothing to restore; mark done so we don't keep re-running on future renders.
       pendingRestoreHostRef.current = null;
       return;
     }
-    const max = Math.max(0, el.scrollHeight - el.clientHeight);
-    if (max <= 0) {
-      // Content isn't scrollable yet — wait for a later render once data arrives.
-      return;
-    }
-    const target = Math.min(saved, max);
-    el.scrollTop = target;
-    // If we hit the exact saved position, we're done. If `max < saved` we've
-    // only reached the bottom of what's currently rendered; keep the pending
-    // flag and let a later data-arrival render try again.
-    if (max >= saved) {
+
+    applyScrollTop(scrollContainerRef.current, saved);
+
+    const currentAfter = currentScrollTop(scrollContainerRef.current);
+    const landed = currentAfter >= saved - 2;
+    if (landed) {
       pendingRestoreHostRef.current = null;
     }
+
+    // Post-paint retry loop — runs regardless of `landed` because Next.js or
+    // browser history scroll-restore can clobber us after commit but before
+    // our next layoutEffect gets a chance.
+    let raf = 0;
+    let attempts = 0;
+    const maxAttempts = 60; // ~1s at 60fps
+    const tick = () => {
+      attempts += 1;
+      applyScrollTop(scrollContainerRef.current, saved);
+      const got = currentScrollTop(scrollContainerRef.current);
+      if (got >= saved - 2) {
+        pendingRestoreHostRef.current = null;
+        return;
+      }
+      if (attempts < maxAttempts) {
+        raf = requestAnimationFrame(tick);
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, [agentHost, selectedHost, hostState]);
 
   const handleRefresh = () => {
