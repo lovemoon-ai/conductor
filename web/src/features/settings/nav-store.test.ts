@@ -110,3 +110,55 @@ describe('useSettingsNavStore', () => {
     expect(useSettingsNavStore.getState().lastPath).toBeNull();
   });
 });
+
+describe('useSettingsNavStore scroll memory', () => {
+  beforeEach(() => {
+    useSettingsNavStore.getState().reset();
+  });
+
+  it('returns 0 when no scroll has been recorded for a host', () => {
+    expect(useSettingsNavStore.getState().getScrollForHost('host-1')).toBe(0);
+  });
+
+  it('remembers the scroll position for a host', () => {
+    useSettingsNavStore.getState().setScrollForHost('host-1', 420);
+    expect(useSettingsNavStore.getState().getScrollForHost('host-1')).toBe(420);
+  });
+
+  it('tracks scroll positions independently per host', () => {
+    useSettingsNavStore.getState().setScrollForHost('host-a', 100);
+    useSettingsNavStore.getState().setScrollForHost('host-b', 800);
+    expect(useSettingsNavStore.getState().getScrollForHost('host-a')).toBe(100);
+    expect(useSettingsNavStore.getState().getScrollForHost('host-b')).toBe(800);
+  });
+
+  it('clamps negative scrollTop values (rubber-band overscroll) to 0', () => {
+    // Some browsers briefly report scrollTop < 0 on touch/trackpad overscroll.
+    useSettingsNavStore.getState().setScrollForHost('host-1', -25);
+    expect(useSettingsNavStore.getState().getScrollForHost('host-1')).toBe(0);
+  });
+
+  it('floors fractional scrollTop values to an integer', () => {
+    useSettingsNavStore.getState().setScrollForHost('host-1', 123.9);
+    expect(useSettingsNavStore.getState().getScrollForHost('host-1')).toBe(123);
+  });
+
+  it('ignores empty host keys', () => {
+    useSettingsNavStore.getState().setScrollForHost('', 100);
+    expect(useSettingsNavStore.getState().scrollByHost).toEqual({});
+  });
+
+  it('getScrollForHost returns 0 for an empty host key', () => {
+    expect(useSettingsNavStore.getState().getScrollForHost('')).toBe(0);
+  });
+
+  it('reset() clears all remembered scroll positions', () => {
+    useSettingsNavStore.getState().setScrollForHost('host-a', 100);
+    useSettingsNavStore.getState().setScrollForHost('host-b', 200);
+
+    useSettingsNavStore.getState().reset();
+
+    expect(useSettingsNavStore.getState().scrollByHost).toEqual({});
+    expect(useSettingsNavStore.getState().getScrollForHost('host-a')).toBe(0);
+  });
+});

@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useRef } from 'react';
+import { Suspense, useEffect, useLayoutEffect, useRef } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Header } from '@/components/layout/Header';
 import { AiManagerPanel } from '@/features/ai-manager';
@@ -22,6 +22,18 @@ function AiManagerPageInner() {
   // Track whether the URL host has already been force-refreshed this mount, so
   // we only do it once per "arrive at this daemon" event (not on every render).
   const lastForceRefreshedHostRef = useRef<string | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  // Host we've already restored scroll for this mount — prevents double-restore
+  // when subsequent renders arrive (e.g. when quota/accounts finish loading).
+  const restoredScrollHostRef = useRef<string | null>(null);
+  // True once the selected host has some primary content available (status).
+  // We wait for this before restoring so scrollTop isn't silently clamped to
+  // the (small) height of the loading state.
+  const hostContentReady = useAiManagerStore((s) => {
+    const host = agentHost ?? selectedHost;
+    if (!host) return false;
+    return s.byHost[host]?.status != null;
+  });
   const isLoading = useAiManagerStore((s) => {
     const host = selectedHost ?? agentHost;
     if (!host) return false;
@@ -58,6 +70,42 @@ function AiManagerPageInner() {
     void fetchQuota(host, { forceRefresh: true });
   }, [agentHost, selectedHost, fetchQuota]);
 
+  // Persist the scrollTop of the daemon page body per host. We save on every
+  // scroll (cheap — writes to an in-memory zustand slice), and one final time
+  // on unmount / host-change. This lets the user bounce to Tasks/Issues and
+  // return with their position preserved.
+  useEffect(() => {
+    const host = agentHost ?? selectedHost;
+    const el = scrollContainerRef.current;
+    if (!host || !el) return;
+    const { setScrollForHost } = useSettingsNavStore.getState();
+    const handleScroll = () => {
+      setScrollForHost(host, el.scrollTop);
+    };
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      // Capture a final position on unmount / host change in case the user
+      // navigated away mid-scroll (scroll events fire asynchronously).
+      setScrollForHost(host, el.scrollTop);
+      el.removeEventListener('scroll', handleScroll);
+    };
+  }, [agentHost, selectedHost]);
+
+  // Restore the remembered scroll position once the host's content is ready.
+  // useLayoutEffect so the user doesn't see a flash-of-top before the jump.
+  useLayoutEffect(() => {
+    const host = agentHost ?? selectedHost;
+    if (!host || !hostContentReady) return;
+    if (restoredScrollHostRef.current === host) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const saved = useSettingsNavStore.getState().getScrollForHost(host);
+    if (saved > 0) {
+      el.scrollTop = saved;
+    }
+    restoredScrollHostRef.current = host;
+  }, [agentHost, selectedHost, hostContentReady]);
+
   const handleRefresh = () => {
     const host = selectedHost ?? agentHost;
     if (!host) return;
@@ -88,7 +136,10 @@ function AiManagerPageInner() {
           </button>
         }
       />
-      <div className="flex-1 overflow-y-auto p-4 webapp-scrollbar">
+      <div
+        ref={scrollContainerRef}
+        className="flex-1 overflow-y-auto p-4 webapp-scrollbar"
+      >
         <AiManagerPanel initialAgentHost={agentHost} />
       </div>
     </>
