@@ -9,6 +9,7 @@ describe('normalizeAgent', () => {
       supportedBackends: ['codex', 'claude'],
       runtimeBackendMap: { codex: 'codex' },
       capabilities: ['pty_task'],
+      version: '1.2.3',
     });
     expect(agent).toMatchObject({
       id: 'agent-1',
@@ -16,6 +17,7 @@ describe('normalizeAgent', () => {
       supportedBackends: ['codex', 'claude'],
       runtimeBackendMap: { codex: 'codex' },
       capabilities: ['pty_task'],
+      version: '1.2.3',
     });
   });
 

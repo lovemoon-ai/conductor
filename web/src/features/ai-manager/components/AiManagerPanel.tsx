@@ -80,6 +80,8 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
   const host = selectedHost ?? visibleDaemons[0]?.host ?? '';
   const selectedDaemon = visibleDaemons.find((daemon) => daemon.host === host) ?? null;
   const supportsRestart = selectedDaemon?.capabilities?.includes('restart_daemon') ?? false;
+  const supportedBackends = selectedDaemon?.supportedBackends ?? [];
+  const daemonVersion = selectedDaemon?.version ?? null;
   const isRestarting = restartingHost === host;
   const state = byHost[host];
   const status = state?.status ?? null;
@@ -146,6 +148,21 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
   return (
     <div className="flex flex-col gap-4">
       <SectionCard title={host}>
+        <dl className="flex flex-col gap-3 text-sm">
+          <div className="flex items-start justify-between gap-4">
+            <dt className="text-muted">Supported backends</dt>
+            <dd className="text-right font-mono text-ink">
+              {supportedBackends.length > 0 ? supportedBackends.join(', ') : '—'}
+            </dd>
+          </div>
+          <div className="flex items-start justify-between gap-4">
+            <dt className="text-muted">Daemon CLI version</dt>
+            <dd className="text-right font-mono text-ink">{daemonVersion ?? 'unknown'}</dd>
+          </div>
+        </dl>
+      </SectionCard>
+
+      <SectionCard title="AI tools">
         <div className="flex flex-col divide-y divide-border">
           <ToolStatusRow tool="codex" install={status?.install.codex} network={status?.network.codex} />
           <ToolStatusRow tool="claude" install={status?.install.claude} network={status?.network.claude} />

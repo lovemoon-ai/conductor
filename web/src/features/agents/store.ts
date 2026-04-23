@@ -38,6 +38,7 @@ export const normalizeAgent = (raw: unknown): Agent | null => {
     runtimeBackendMap:
       pickStringRecord(record.runtimeBackendMap) ?? pickStringRecord(record.runtime_backend_map),
     capabilities: pickStringArray(record.capabilities),
+    version: pickString(record.version),
   };
 };
 
