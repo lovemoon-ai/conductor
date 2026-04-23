@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
     }),
   );
 
-  const { activeTaskByIssueId, linkedTaskByIssueId } = await loadIssueTaskMaps(
+  const { activeTaskByIssueId, linkedTaskByIssueId, tasksByIssueId } = await loadIssueTaskMaps(
     user.id,
     issues.map((issue: { id: string }) => issue.id),
   );
@@ -67,6 +67,7 @@ export async function GET(request: NextRequest) {
   }) => serializeIssueWithTasks(issue, {
     activeTask: activeTaskByIssueId.get(issue.id) ?? null,
     linkedTask: linkedTaskByIssueId.get(issue.id) ?? null,
+    tasks: tasksByIssueId.get(issue.id) ?? null,
   })));
 }
 
