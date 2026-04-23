@@ -20,6 +20,7 @@ const SCROLL_STORAGE_PREFIX = 'conductor-task-scroll:';
 const SCROLL_BOTTOM_THRESHOLD_PX = 40;
 const SCROLL_TOP_LOAD_THRESHOLD_PX = 24;
 const INTERRUPT_CONFIRMATION_TIMEOUT_MS = 5000;
+const COMPOSER_FEEDBACK_AUTO_DISMISS_MS = 5000;
 
 interface StoredScrollState {
   scrollTop: number;
@@ -148,7 +149,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   const task = tasks.find((t) => t.id === taskId);
   const isTaskRunning = task?.status === 'running';
   const [composerFeedback, setComposerFeedback] = useState<{
-    code?: 'task_not_ready';
+    code?: 'task_not_ready' | 'restarting';
     variant: 'info' | 'warning' | 'error';
     message: string;
   } | null>(null);
@@ -373,6 +374,24 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   }, [composerFeedback?.code, isTaskRunning]);
 
   useEffect(() => {
+    if (!composerFeedback) {
+      return;
+    }
+    // Skip progress-style notices (e.g. "Restarting the current AI session…")
+    // that must persist until the underlying operation completes. Those notices
+    // are cleared explicitly in their own finally/catch paths.
+    if (composerFeedback.code === 'restarting') {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setComposerFeedback(null);
+    }, COMPOSER_FEEDBACK_AUTO_DISMISS_MS);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [composerFeedback]);
+
+  useEffect(() => {
     if (runtimeReplyTo) {
       setInterruptTargetReplyTo(runtimeReplyTo);
       return;
@@ -460,6 +479,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
 
     try {
       setComposerFeedback({
+        code: 'restarting',
         variant: 'info',
         message: 'Restarting the current AI session…',
       });
