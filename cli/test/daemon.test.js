@@ -1362,6 +1362,7 @@ describe("Daemon", () => {
     };
 
     const symlinkCalls = [];
+    const gitLsFilesPaths = [];
     let daemonInstance = null;
 
     wss.once("connection", (ws) => {
@@ -1383,6 +1384,16 @@ describe("Daemon", () => {
       {
         spawn: (cmd, args, opts) => {
           if (cmd === "git") {
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            if (args[2] === "ls-files") {
+              assert.strictEqual(opts.cwd, "/tmp/repo");
+              gitLsFilesPaths.push(args[4]);
+              setImmediate(() => child.emit("close", 0));
+              return child;
+            }
             assert.deepStrictEqual(args, [
               "-C",
               "/tmp/repo",
@@ -1393,10 +1404,6 @@ describe("Daemon", () => {
               "/tmp/repo/.conductor/worktrees/task-worktree-links",
               "main",
             ]);
-            const child = new EventEmitter();
-            child.stdout = new EventEmitter();
-            child.stderr = new EventEmitter();
-            child.kill = () => {};
             setImmediate(() => child.emit("close", 0));
             return child;
           }
@@ -1446,6 +1453,10 @@ describe("Daemon", () => {
     );
 
     setTimeout(() => {
+      assert.deepStrictEqual(gitLsFilesPaths, [
+        "node_modules",
+        "packages/shared/.env.local",
+      ]);
       assert.deepStrictEqual(symlinkCalls, [
         [
           "../../../node_modules",
@@ -1480,6 +1491,7 @@ describe("Daemon", () => {
     };
 
     const symlinkCalls = [];
+    const gitLsFilesPaths = [];
     let daemonInstance = null;
 
     wss.once("connection", (ws) => {
@@ -1501,6 +1513,16 @@ describe("Daemon", () => {
       {
         spawn: (cmd, args, opts) => {
           if (cmd === "git") {
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            if (args[2] === "ls-files") {
+              assert.strictEqual(opts.cwd, "/tmp/repo");
+              gitLsFilesPaths.push(args[4]);
+              setImmediate(() => child.emit("close", 0));
+              return child;
+            }
             assert.deepStrictEqual(args, [
               "-C",
               "/tmp/repo",
@@ -1511,10 +1533,6 @@ describe("Daemon", () => {
               "/tmp/repo/.conductor/worktrees/task-worktree-legacy-links",
               "main",
             ]);
-            const child = new EventEmitter();
-            child.stdout = new EventEmitter();
-            child.stderr = new EventEmitter();
-            child.kill = () => {};
             setImmediate(() => child.emit("close", 0));
             return child;
           }
@@ -1566,6 +1584,12 @@ describe("Daemon", () => {
     );
 
     setTimeout(() => {
+      assert.deepStrictEqual(gitLsFilesPaths, [
+        "web/node_modules",
+        "cli/node_modules",
+        "web/.env",
+        "Makefile",
+      ]);
       assert.deepStrictEqual(symlinkCalls, [
         [
           "../../../../web/node_modules",
@@ -1582,6 +1606,141 @@ describe("Daemon", () => {
         [
           "../../../Makefile",
           "/tmp/repo/.conductor/worktrees/task-worktree-legacy-links/Makefile",
+        ],
+      ]);
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+      done();
+    }, 500);
+  });
+
+  it("skips configured symlinks when the path is tracked by git", (t, done) => {
+    const taskPayload = {
+      task_id: "task-worktree-tracked-links",
+      project_id: "proj-git",
+      backend_type: "codex",
+      launch_config: {
+        worktree: true,
+        worktreeId: "task-worktree-tracked-links",
+        worktreeBranch: "conductor/task/task-worktree-tracked-links",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/tmp/repo",
+        projectWorkspacePath: "/tmp/repo",
+        projectRelativePath: ".",
+      },
+    };
+
+    const symlinkCalls = [];
+    const gitLsFilesPaths = [];
+    const lstatCalls = [];
+    let daemonInstance = null;
+
+    wss.once("connection", (ws) => {
+      ws.send(
+        JSON.stringify({
+          type: "create_task",
+          payload: taskPayload,
+        }),
+      );
+    });
+
+    daemonInstance = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree-tracked-symlink",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree-tracked-symlink",
+      },
+      {
+        spawn: (cmd, args, opts) => {
+          if (cmd === "git") {
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            if (args[2] === "ls-files") {
+              assert.strictEqual(opts.cwd, "/tmp/repo");
+              gitLsFilesPaths.push(args[4]);
+              setImmediate(() => {
+                if (args[4] === "data") {
+                  child.stdout.emit("data", "data/places.json\n");
+                }
+                child.emit("close", 0);
+              });
+              return child;
+            }
+            assert.deepStrictEqual(args, [
+              "-C",
+              "/tmp/repo",
+              "worktree",
+              "add",
+              "-b",
+              "conductor/task/task-worktree-tracked-links",
+              "/tmp/repo/.conductor/worktrees/task-worktree-tracked-links",
+              "main",
+            ]);
+            setImmediate(() => child.emit("close", 0));
+            return child;
+          }
+
+          assert.strictEqual(cmd, process.execPath);
+          assert.strictEqual(opts.cwd, "/tmp/repo/.conductor/worktrees/task-worktree-tracked-links");
+          return {
+            pid: 24687,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => {
+          if (filePath === "/tmp/repo/.conductor/settings.yaml") {
+            return true;
+          }
+          if (filePath === "/tmp/repo/.conductor/worktrees/task-worktree-tracked-links/data") {
+            return true;
+          }
+          return false;
+        },
+        lstatSync: (filePath) => {
+          lstatCalls.push(filePath);
+          throw new Error(`unexpected lstat for ${filePath}`);
+        },
+        readlinkSync: () => {
+          throw new Error("unexpected readlink");
+        },
+        symlinkSync: (targetPath, linkPath) => {
+          symlinkCalls.push([targetPath, linkPath]);
+        },
+        readFileSync: (filePath) => {
+          assert.strictEqual(filePath, "/tmp/repo/.conductor/settings.yaml");
+          return [
+            "worktree:",
+            "  symlink:",
+            "    - data",
+            "    - user_data",
+            "",
+          ].join("\n");
+        },
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.deepStrictEqual(gitLsFilesPaths, ["data", "user_data"]);
+      assert.deepStrictEqual(lstatCalls, []);
+      assert.deepStrictEqual(symlinkCalls, [
+        [
+          "../../../user_data",
+          "/tmp/repo/.conductor/worktrees/task-worktree-tracked-links/user_data",
         ],
       ]);
       if (daemonInstance && typeof daemonInstance.close === "function") {

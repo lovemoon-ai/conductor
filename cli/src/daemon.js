@@ -783,6 +783,10 @@ export function startDaemon(config = {}, deps = {}) {
     return resolvedPath;
   }
 
+  function normalizeGitPathspec(relativePath) {
+    return String(relativePath || "").split(path.sep).join("/");
+  }
+
   const PROJECT_SETTINGS_TEMPLATE = [
     "worktree:",
     "  sync_branch: false",
@@ -843,7 +847,30 @@ export function startDaemon(config = {}, deps = {}) {
     };
   }
 
-  function ensureTaskWorktreeSymlinks({ projectWorkspacePath, finalCwd }) {
+  async function isGitTrackedWorktreePath({ projectRepoRoot, sourcePath }) {
+    const relativeToRepo = path.relative(projectRepoRoot, sourcePath);
+    if (
+      !relativeToRepo ||
+      relativeToRepo === "." ||
+      relativeToRepo.startsWith("..") ||
+      path.isAbsolute(relativeToRepo)
+    ) {
+      return false;
+    }
+
+    try {
+      const { stdout } = await runSpawnProcess(
+        "git",
+        ["-C", projectRepoRoot, "ls-files", "--", normalizeGitPathspec(relativeToRepo)],
+        { cwd: projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
+      );
+      return stdout.trim().length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  async function ensureTaskWorktreeSymlinks({ projectRepoRoot, projectWorkspacePath, finalCwd }) {
     const { symlinkPaths } = readProjectWorktreeSettings(projectWorkspacePath);
     for (const configuredPath of symlinkPaths) {
       const sourcePath = resolveProjectScopedPath(
@@ -851,6 +878,11 @@ export function startDaemon(config = {}, deps = {}) {
         configuredPath,
         `worktree.symlink entry ${configuredPath}`,
       );
+      // Git-tracked files and directories should come from the checked-out
+      // worktree itself rather than being overwritten by project-local symlinks.
+      if (await isGitTrackedWorktreePath({ projectRepoRoot, sourcePath })) {
+        continue;
+      }
       const linkPath = resolveProjectScopedPath(
         finalCwd,
         configuredPath,
@@ -1069,7 +1101,8 @@ export function startDaemon(config = {}, deps = {}) {
     }
 
     mkdirSyncFn(finalCwd, { recursive: true });
-    ensureTaskWorktreeSymlinks({
+    await ensureTaskWorktreeSymlinks({
+      projectRepoRoot: worktreeConfig.projectRepoRoot,
       projectWorkspacePath: worktreeConfig.projectWorkspacePath,
       finalCwd,
     });
