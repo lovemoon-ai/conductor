@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useState, useEffect, useMemo, useRef } from 'react';
+import { Suspense, useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/common/FeedbackProvider';
 import { Header } from '@/components/layout/Header';
@@ -14,6 +14,7 @@ import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
 import { filterTasksByProject } from '@/features/tasks';
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
+import { parseTaskType, type TaskType } from '@/lib/tasks/task-config';
 
 const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
 
@@ -42,12 +43,20 @@ function TasksPageContent() {
   const hiddenProjectIdSet = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
   const projectId = projectIdFromUrl && !hiddenProjectIdSet.has(projectIdFromUrl) ? projectIdFromUrl : null;
   const requestedTaskId = searchParams.get('taskId');
+  const taskTypeFilterParam = searchParams.get('taskType');
+  const taskTypeFilter: TaskType | null = parseTaskType(taskTypeFilterParam);
   const projectVisibleTasks = useMemo(() => filterTasksByProject(tasks, projectId, hiddenProjectIds), [tasks, projectId, hiddenProjectIds]);
-  const visibleTasks = useMemo(
+  const runningFilteredTasks = useMemo(
     () => showRunningOnly
       ? projectVisibleTasks.filter((task) => task.status === 'running' || task.status === 'killing')
       : projectVisibleTasks,
     [projectVisibleTasks, showRunningOnly],
+  );
+  const visibleTasks = useMemo(
+    () => taskTypeFilter
+      ? runningFilteredTasks.filter((task) => (task.taskType ?? 'ai_task') === taskTypeFilter)
+      : runningFilteredTasks,
+    [runningFilteredTasks, taskTypeFilter],
   );
   const taskCount = visibleTasks.length;
   const currentProjectName = projectId
@@ -172,6 +181,49 @@ function TasksPageContent() {
     fetchTasks(projectId ?? undefined, { recoverStale: true });
   };
 
+  const replaceTaskRoute = useCallback(
+    (mutate: (params: URLSearchParams) => void) => {
+      const nextSearchParams = new URLSearchParams(searchParams.toString());
+      mutate(nextSearchParams);
+      const nextQuery = nextSearchParams.toString();
+      router.replace(nextQuery ? `/app/tasks?${nextQuery}` : '/app/tasks', { scroll: false });
+    },
+    [router, searchParams],
+  );
+
+  const handleFilterByTaskType = useCallback(
+    (nextType: TaskType) => {
+      replaceTaskRoute((params) => {
+        if (taskTypeFilter === nextType) {
+          params.delete('taskType');
+        } else {
+          params.set('taskType', nextType);
+        }
+      });
+    },
+    [replaceTaskRoute, taskTypeFilter],
+  );
+
+  const handleFilterByProject = useCallback(
+    (nextProjectId: string) => {
+      replaceTaskRoute((params) => {
+        if (projectId === nextProjectId) {
+          params.delete('projectId');
+        } else {
+          params.set('projectId', nextProjectId);
+        }
+        params.delete('taskId');
+      });
+    },
+    [projectId, replaceTaskRoute],
+  );
+
+  const handleClearTagFilters = useCallback(() => {
+    replaceTaskRoute((params) => {
+      params.delete('taskType');
+    });
+  }, [replaceTaskRoute]);
+
   const handleTitleDoubleClick = () => {
     void setTaskListRunningOnly(!showRunningOnly);
   };
@@ -235,6 +287,10 @@ function TasksPageContent() {
                 desktopListPaneMode
                 projectFilter={projectId}
                 runningOnly={showRunningOnly}
+                taskTypeFilter={taskTypeFilter}
+                onFilterByTaskType={handleFilterByTaskType}
+                onFilterByProject={handleFilterByProject}
+                onClearTagFilters={handleClearTagFilters}
               />
             </div>
             <div className="hidden min-h-0 min-w-0 flex-1 overflow-hidden rounded-[24px] border border-border bg-paper shadow-sm md:flex md:flex-col">
@@ -250,7 +306,15 @@ function TasksPageContent() {
           </div>
         ) : (
           <div className="h-full overflow-y-auto webapp-scrollbar">
-            <TaskList viewMode={viewMode} projectFilter={projectId} runningOnly={showRunningOnly} />
+            <TaskList
+              viewMode={viewMode}
+              projectFilter={projectId}
+              runningOnly={showRunningOnly}
+              taskTypeFilter={taskTypeFilter}
+              onFilterByTaskType={handleFilterByTaskType}
+              onFilterByProject={handleFilterByProject}
+              onClearTagFilters={handleClearTagFilters}
+            />
           </div>
         )}
       </div>

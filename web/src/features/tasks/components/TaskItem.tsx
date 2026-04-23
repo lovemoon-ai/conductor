@@ -8,6 +8,7 @@ import type {
 } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Task } from '@/shared/types';
+import type { TaskType } from '@/lib/tasks/task-config';
 import { TaskStatusBadge } from './TaskStatusBadge';
 import { RestartTaskControls } from './RestartTaskControls';
 import { useTasksStore } from '../store';
@@ -28,6 +29,10 @@ interface TaskItemProps {
   showProjectInfo?: boolean;
   projectName?: string | null;
   projectDaemonHost?: string | null;
+  activeTaskTypeFilter?: TaskType | null;
+  activeProjectFilter?: string | null;
+  onFilterByTaskType?: (taskType: TaskType) => void;
+  onFilterByProject?: (projectId: string) => void;
 }
 
 interface ShareDialogState {
@@ -192,6 +197,10 @@ export function TaskItem({
   showProjectInfo = false,
   projectName = null,
   projectDaemonHost = null,
+  activeTaskTypeFilter = null,
+  activeProjectFilter = null,
+  onFilterByTaskType,
+  onFilterByProject,
 }: TaskItemProps) {
   const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
@@ -720,17 +729,50 @@ export function TaskItem({
     touchAction: 'pan-y',
   }), [isSwiping, swipeOffset]);
 
+  const isTaskTypeFilterActive = activeTaskTypeFilter === taskType;
+  const taskTypeBaseClass = taskType === 'pty_task'
+    ? 'bg-[var(--ink)] text-[var(--paper)]'
+    : 'bg-[var(--paper)] text-muted';
+  const taskTypeActiveClass = 'ring-1 ring-[var(--accent)] ring-offset-1 ring-offset-transparent';
+  const taskTypeChipLabel = taskType === 'pty_task' ? 'PTY' : 'AI';
+  const taskTypeChipTitle = onFilterByTaskType
+    ? isTaskTypeFilterActive
+      ? `Click to clear ${taskTypeChipLabel} filter`
+      : `Click to show only ${taskTypeChipLabel} tasks`
+    : undefined;
+  const projectId = task.projectId ?? null;
+  const isProjectFilterActive = Boolean(projectId) && activeProjectFilter === projectId;
+  const projectChipTitle = onFilterByProject && projectId
+    ? isProjectFilterActive
+      ? `Click to clear project filter`
+      : `Click to show only ${projectName ?? 'this project'}`
+    : projectName ?? undefined;
+  const projectChipBaseClass = 'flex max-w-[10rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted';
+  const projectChipActiveClass = 'ring-1 ring-[var(--accent)] ring-offset-1 ring-offset-transparent';
+
   const metadataChips = (
     <>
-      <span
-        className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium ${
-          taskType === 'pty_task'
-            ? 'bg-[var(--ink)] text-[var(--paper)]'
-            : 'bg-[var(--paper)] text-muted'
-        }`}
-      >
-        {taskType === 'pty_task' ? 'PTY' : 'AI'}
-      </span>
+      {onFilterByTaskType ? (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onFilterByTaskType(taskType);
+          }}
+          title={taskTypeChipTitle}
+          className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium transition-colors hover:opacity-80 ${taskTypeBaseClass} ${
+            isTaskTypeFilterActive ? taskTypeActiveClass : ''
+          }`}
+        >
+          {taskTypeChipLabel}
+        </button>
+      ) : (
+        <span
+          className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium ${taskTypeBaseClass}`}
+        >
+          {taskTypeChipLabel}
+        </span>
+      )}
       {backend ? (
         <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
           {backend}
@@ -745,12 +787,25 @@ export function TaskItem({
         </span>
       ) : null}
       {showProjectInfo && projectName ? (
-        <span
-          title={projectName}
-          className="flex max-w-[10rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted"
-        >
-          {projectName}
-        </span>
+        onFilterByProject && projectId ? (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onFilterByProject(projectId);
+            }}
+            title={projectChipTitle}
+            className={`${projectChipBaseClass} transition-colors hover:text-ink ${
+              isProjectFilterActive ? projectChipActiveClass : ''
+            }`}
+          >
+            {projectName}
+          </button>
+        ) : (
+          <span title={projectName} className={projectChipBaseClass}>
+            {projectName}
+          </span>
+        )
       ) : null}
       {showProjectInfo && projectDaemonHost ? (
         <span

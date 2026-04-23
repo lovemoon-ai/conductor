@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { TaskType } from '@/lib/tasks/task-config';
 import { useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
 import { filterTasksByProject } from '../utils/task-filter';
@@ -44,6 +45,10 @@ interface TaskListProps {
   desktopListPaneMode?: boolean;
   projectFilter?: string | null;
   runningOnly?: boolean;
+  taskTypeFilter?: TaskType | null;
+  onFilterByTaskType?: (taskType: TaskType) => void;
+  onFilterByProject?: (projectId: string) => void;
+  onClearTagFilters?: () => void;
 }
 
 export function TaskList({
@@ -52,6 +57,10 @@ export function TaskList({
   desktopListPaneMode = false,
   projectFilter,
   runningOnly = false,
+  taskTypeFilter = null,
+  onFilterByTaskType,
+  onFilterByProject,
+  onClearTagFilters,
 }: TaskListProps) {
   const { tasks, isLoading, unreadTaskIds, currentProjectFilter, deleteTask } = useTasksStore();
   const projects = useProjectsStore((state) => state.projects);
@@ -69,11 +78,17 @@ export function TaskList({
     () => filterTasksByProject(tasks, effectiveProjectFilter, hiddenProjectIds),
     [tasks, effectiveProjectFilter, hiddenProjectIds],
   );
-  const visibleTasks = useMemo(
+  const runningFilteredTasks = useMemo(
     () => runningOnly
       ? projectVisibleTasks.filter((task) => task.status === 'running' || task.status === 'killing')
       : projectVisibleTasks,
     [projectVisibleTasks, runningOnly],
+  );
+  const visibleTasks = useMemo(
+    () => taskTypeFilter
+      ? runningFilteredTasks.filter((task) => (task.taskType ?? 'ai_task') === taskTypeFilter)
+      : runningFilteredTasks,
+    [runningFilteredTasks, taskTypeFilter],
   );
 
   const showProjectInfo = !effectiveProjectFilter;
@@ -226,6 +241,29 @@ export function TaskList({
     }
   };
 
+  const taskTypeFilterLabel = taskTypeFilter === 'pty_task'
+    ? 'PTY'
+    : taskTypeFilter === 'ai_task'
+      ? 'AI'
+      : null;
+  const hasTagFilter = Boolean(taskTypeFilterLabel);
+  const tagFilterBar = hasTagFilter && onClearTagFilters ? (
+    <div className="flex flex-wrap items-center gap-2">
+      {taskTypeFilterLabel ? (
+        <button
+          type="button"
+          onClick={onClearTagFilters}
+          title="Clear filter"
+          className="inline-flex items-center gap-1 rounded bg-[var(--accent)]/10 px-2 py-0.5 text-xs font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20"
+        >
+          <span>{taskTypeFilterLabel}</span>
+          <span aria-hidden="true">✕</span>
+          <span className="sr-only">Clear {taskTypeFilterLabel} filter</span>
+        </button>
+      ) : null}
+    </div>
+  ) : null;
+
   if (isLoading && visibleTasks.length === 0) {
     return (
       <div className="flex h-64 items-center justify-center">
@@ -235,26 +273,41 @@ export function TaskList({
   }
 
   if (visibleTasks.length === 0) {
+    const filterSuffix = taskTypeFilterLabel ? ` matching ${taskTypeFilterLabel}` : '';
     return (
-      <EmptyState
-        className="h-72"
-        icon={<EmptyIcon />}
-        title={runningOnly ? 'No running tasks' : 'No tasks yet'}
-        description={
-          runningOnly
-            ? currentProjectName
-              ? `No running tasks found in ${currentProjectName}.`
-              : 'No running tasks right now.'
-            : currentProjectName
-            ? `No tasks found in ${currentProjectName}. Switch projects or create a new task to start work here.`
-            : 'Create your first task to start building with Conductor.'
-        }
-      />
+      <div className={tagFilterBar ? 'space-y-3' : ''}>
+        {tagFilterBar}
+        <EmptyState
+          className="h-72"
+          icon={<EmptyIcon />}
+          title={
+            hasTagFilter
+              ? `No tasks${filterSuffix}`
+              : runningOnly
+                ? 'No running tasks'
+                : 'No tasks yet'
+          }
+          description={
+            hasTagFilter
+              ? currentProjectName
+                ? `No tasks${filterSuffix} in ${currentProjectName}. Adjust the tag filter to see more.`
+                : `No tasks${filterSuffix}. Adjust the tag filter to see more.`
+              : runningOnly
+                ? currentProjectName
+                  ? `No running tasks found in ${currentProjectName}.`
+                  : 'No running tasks right now.'
+                : currentProjectName
+                  ? `No tasks found in ${currentProjectName}. Switch projects or create a new task to start work here.`
+                  : 'Create your first task to start building with Conductor.'
+          }
+        />
+      </div>
     );
   }
 
   return (
-    <div className={hasToolbarContent ? 'space-y-4' : ''}>
+    <div className={hasToolbarContent || tagFilterBar ? 'space-y-4' : ''}>
+      {tagFilterBar}
       {hasToolbarContent ? (
         <div className="flex flex-col gap-3 rounded-2xl bg-panel/80 p-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap items-center gap-2">
@@ -306,6 +359,10 @@ export function TaskList({
               showProjectInfo={showProjectInfo}
               projectName={projectMap?.get(task.projectId ?? '')?.name ?? null}
               projectDaemonHost={projectMap?.get(task.projectId ?? '')?.daemonHost ?? null}
+              activeTaskTypeFilter={taskTypeFilter}
+              activeProjectFilter={effectiveProjectFilter ?? null}
+              onFilterByTaskType={onFilterByTaskType}
+              onFilterByProject={onFilterByProject}
             />
           </div>
         ))}
