@@ -103,6 +103,35 @@ describe('BackendApiClient', () => {
     expect(task.sessionFilePath).toBe('/tmp/session-1.jsonl');
   });
 
+  test('getTask sends GET request and parses task summary', async () => {
+    const fetchImpl: FetchFn = async (url, init) => {
+      expect(String(url)).toBe('https://backend.local/tasks/task-1');
+      expect(init?.method).toBe('GET');
+      return new Response(
+        JSON.stringify({
+          id: 'task-1',
+          project_id: 'proj-1',
+          title: 'Task 1',
+          status: 'running',
+          backend_type: 'codex',
+          session_id: 'session-1',
+          session_file_path: '/tmp/session-1.jsonl',
+          created_at: '2026-04-23T09:00:00.000Z',
+          updated_at: '2026-04-23T09:01:00.000Z',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+    const client = new BackendApiClient(makeConfig(), { fetchImpl });
+    const task = await client.getTask('task-1');
+    expect(task.id).toBe('task-1');
+    expect(task.projectId).toBe('proj-1');
+    expect(task.backendType).toBe('codex');
+    expect(task.sessionId).toBe('session-1');
+    expect(task.createdAt).toBe('2026-04-23T09:00:00.000Z');
+    expect(task.updatedAt).toBe('2026-04-23T09:01:00.000Z');
+  });
+
   test('commitAgentEvents posts agent upstream payload', async () => {
     const fetchImpl: FetchFn = async (url, init) => {
       expect(String(url)).toBe('https://backend.local/agent/events');

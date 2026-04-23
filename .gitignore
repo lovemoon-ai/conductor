@@ -42,3 +42,5 @@ Makefile
 web/next-env.d.ts
 .claude/worktrees
 /bin/
+
+.codex

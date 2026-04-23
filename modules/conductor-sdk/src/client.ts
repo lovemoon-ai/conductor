@@ -31,6 +31,7 @@ type BackendApiLike = Pick<
   | 'listProjects'
   | 'createProject'
   | 'listTasks'
+  | 'getTask'
   | 'createTask'
   | 'updateTask'
   | 'commitSdkMessage'
@@ -539,6 +540,25 @@ export class ConductorClient {
         created_at: task.created_at ?? task.createdAt ?? null,
         updated_at: task.updated_at ?? task.updatedAt ?? null,
       })),
+    };
+  }
+
+  async getTask(taskId: string): Promise<Record<string, any>> {
+    const normalizedTaskId = String(taskId || '').trim();
+    if (!normalizedTaskId) {
+      throw new Error('task_id is required');
+    }
+    const task = await this.backendApi.getTask(normalizedTaskId);
+    return {
+      id: task.id,
+      project_id: task.projectId,
+      title: task.title,
+      status: task.status,
+      backend_type: task.backendType ?? null,
+      session_id: task.sessionId ?? null,
+      session_file_path: task.sessionFilePath ?? null,
+      created_at: task.createdAt ?? null,
+      updated_at: task.updatedAt ?? null,
     };
   }
 
