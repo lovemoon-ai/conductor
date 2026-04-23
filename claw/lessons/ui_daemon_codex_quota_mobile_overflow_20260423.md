@@ -31,8 +31,11 @@
   `Use / Active` button so only the email (the unbounded content) shrinks.
   The outer text column now also carries `flex-1` for explicit horizontal
   budget sharing with the button.
-- `AiManagerPanel.tsx`: added `min-w-0` to the Codex grid-item wrapper so
-  the grid cell can shrink below its content's intrinsic width on mobile.
+- `AiManagerPanel.tsx`: added `min-w-0` to **every** grid-item wrapper in
+  the Quota card (Codex, Claude, Kimi, Copilot). Fixing only the reported
+  column would have left latent overflow risk in the other three — e.g. a
+  long Copilot GitHub login, or a long Kimi membership label — so the fix
+  is applied uniformly across all four tracks.
 - `QuotaBar.tsx`: added `gap-2` to the header row, `shrink-0` to the left
   label, and `min-w-0 truncate text-right` to the right "remaining + reset"
   label — so it clips gracefully instead of pushing the row wide.

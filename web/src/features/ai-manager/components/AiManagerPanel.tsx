@@ -175,11 +175,13 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
       </SectionCard>
 
       <SectionCard title="Quota">
+        {/* `min-w-0` on every grid item keeps the cell from adopting its
+            content's intrinsic width on narrow viewports (grid items default
+            to min-width: auto, same trap as flex items). Without it, a long
+            Codex email, long Copilot login, or long reset-time label can push
+            the column past the viewport on mobile and bleed through the
+            SectionCard border. */}
         <div className="grid gap-5 md:grid-cols-4">
-          {/* `min-w-0` keeps the grid item from adopting its content's intrinsic
-              width on narrow viewports (grid items default to min-width: auto).
-              Without it, a long account email propagates outward and forces the
-              column wider than the viewport on mobile. */}
           <div className="flex min-w-0 flex-col gap-3">
             <div className="text-sm font-semibold text-ink">Codex</div>
             <CodexAccountSwitcher
@@ -193,7 +195,7 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
               <p className="text-xs text-[var(--error)]">{unattributedCodexError}</p>
             ) : null}
           </div>
-          <div className="flex flex-col gap-3">
+          <div className="flex min-w-0 flex-col gap-3">
             <div className="text-sm font-semibold text-ink">
               Claude
               {quota?.claude?.overallStatus ? (
@@ -211,7 +213,7 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
               <p className="text-xs text-[var(--error)]">{quota.claude.error}</p>
             ) : null}
           </div>
-          <div className="flex flex-col gap-3">
+          <div className="flex min-w-0 flex-col gap-3">
             <div className="text-sm font-semibold text-ink">
               Kimi
               {quota?.kimi?.membership ? (
@@ -226,7 +228,7 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
               <p className="text-xs text-[var(--error)]">{quota.kimi.error}</p>
             ) : null}
           </div>
-          <div className="flex flex-col gap-3">
+          <div className="flex min-w-0 flex-col gap-3">
             <div className="text-sm font-semibold text-ink">
               Copilot
               {quota?.copilot?.primary?.status ? (
