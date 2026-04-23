@@ -6,6 +6,12 @@ import { usePathname } from 'next/navigation';
 import { useState } from 'react';
 import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
+import {
+  AI_MANAGER_PATH_PREFIX,
+  SETTINGS_ROOT_PATH,
+  resolveSettingsHref,
+  useSettingsNavStore,
+} from '@/features/settings';
 
 type NavIconProps = {
   active: boolean;
@@ -98,6 +104,7 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
   const pathname = usePathname();
   const unreadCount = useTasksStore((state) => state.unreadTaskIds.size);
   const selectedProjectId = useProjectsStore((state) => state.selectedProjectId);
+  const lastSettingsPath = useSettingsNavStore((state) => state.lastPath);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const iconRailClassName = 'flex h-10 w-[52px] shrink-0 items-center justify-center';
   const tasksHref = selectedProjectId
@@ -106,12 +113,19 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
   const issuesHref = selectedProjectId
     ? `/app/issues?projectId=${encodeURIComponent(selectedProjectId)}`
     : '/app/issues';
+  const settingsHref = resolveSettingsHref(pathname, lastSettingsPath);
 
   const navItems = [
-    { href: '/app/projects', activePath: '/app/projects', label: 'Projects', Icon: ProjectsIcon, badge: null },
-    { href: issuesHref, activePath: '/app/issues', label: 'Issues', Icon: IssuesIcon, badge: null },
-    { href: tasksHref, activePath: '/app/tasks', label: 'Tasks', Icon: TasksIcon, badge: unreadCount > 0 ? unreadCount : null },
-    { href: '/app/settings', activePath: '/app/settings', label: 'Settings', Icon: SettingsIcon, badge: null },
+    { href: '/app/projects', activePaths: ['/app/projects'], label: 'Projects', Icon: ProjectsIcon, badge: null },
+    { href: issuesHref, activePaths: ['/app/issues'], label: 'Issues', Icon: IssuesIcon, badge: null },
+    { href: tasksHref, activePaths: ['/app/tasks'], label: 'Tasks', Icon: TasksIcon, badge: unreadCount > 0 ? unreadCount : null },
+    {
+      href: settingsHref,
+      activePaths: [SETTINGS_ROOT_PATH, AI_MANAGER_PATH_PREFIX],
+      label: 'Settings',
+      Icon: SettingsIcon,
+      badge: null,
+    },
   ];
 
   return (
@@ -176,13 +190,13 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
       >
         <div className="space-y-0.5">
           {navItems.map((item) => {
-            const isActive = pathname.startsWith(item.activePath);
+            const isActive = item.activePaths.some((path) => pathname.startsWith(path));
             const tooltipId = `sidebar-tooltip-${item.label.toLowerCase()}`;
-            const isTooltipVisible = collapsed && activeTooltip === item.href;
+            const isTooltipVisible = collapsed && activeTooltip === item.label;
 
             return (
               <Link
-                key={item.href}
+                key={item.label}
                 href={item.href}
                 aria-label={item.label}
                 aria-current={isActive ? 'page' : undefined}
@@ -190,22 +204,22 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
                 title={collapsed ? item.label : undefined}
                 onMouseEnter={() => {
                   if (collapsed) {
-                    setActiveTooltip(item.href);
+                    setActiveTooltip(item.label);
                   }
                 }}
                 onMouseLeave={() => {
                   if (collapsed) {
-                    setActiveTooltip((current) => (current === item.href ? null : current));
+                    setActiveTooltip((current) => (current === item.label ? null : current));
                   }
                 }}
                 onFocus={() => {
                   if (collapsed) {
-                    setActiveTooltip(item.href);
+                    setActiveTooltip(item.label);
                   }
                 }}
                 onBlur={() => {
                   if (collapsed) {
-                    setActiveTooltip((current) => (current === item.href ? null : current));
+                    setActiveTooltip((current) => (current === item.label ? null : current));
                   }
                 }}
                 className={`relative flex h-10 items-center rounded-xl text-[15px] transition-colors ${
