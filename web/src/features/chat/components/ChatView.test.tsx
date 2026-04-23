@@ -1068,6 +1068,135 @@ describe('ChatView', () => {
     expect(screen.queryByText('Interrupt request was not confirmed. You can try again.')).not.toBeInTheDocument();
   });
 
+  it('keeps the scroll-to-bottom button hidden when the user is already at the latest message', () => {
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [makeMessage('1'), makeMessage('2'), makeMessage('3')] },
+    };
+
+    const view = render(<ChatView taskId="task-1" />);
+    const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+    const metrics = mockScrollMetrics(scrollContainer, {
+      clientHeight: 200,
+      scrollHeight: 1000,
+      scrollTop: 800,
+    });
+
+    fireEvent.scroll(scrollContainer);
+
+    expect(screen.queryByTestId('scroll-to-bottom')).not.toBeInTheDocument();
+    expect(metrics.getScrollTop()).toBe(800);
+  });
+
+  it('shows the scroll-to-bottom button after the user scrolls up', () => {
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [makeMessage('1'), makeMessage('2'), makeMessage('3')] },
+    };
+
+    const view = render(<ChatView taskId="task-1" />);
+    const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+    const metrics = mockScrollMetrics(scrollContainer, {
+      clientHeight: 200,
+      scrollHeight: 1000,
+      scrollTop: 0,
+    });
+
+    metrics.setScrollTop(300);
+    fireEvent.scroll(scrollContainer);
+
+    expect(screen.getByTestId('scroll-to-bottom')).toBeInTheDocument();
+  });
+
+  it('scrolls back to the latest message and hides itself when the button is clicked', () => {
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [makeMessage('1'), makeMessage('2'), makeMessage('3')] },
+    };
+
+    const view = render(<ChatView taskId="task-1" />);
+    const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+    const metrics = mockScrollMetrics(scrollContainer, {
+      clientHeight: 200,
+      scrollHeight: 1000,
+      scrollTop: 0,
+    });
+
+    metrics.setScrollTop(300);
+    fireEvent.scroll(scrollContainer);
+
+    const button = screen.getByTestId('scroll-to-bottom');
+    fireEvent.click(button);
+
+    expect(metrics.getScrollTop()).toBe(800);
+    expect(screen.queryByTestId('scroll-to-bottom')).not.toBeInTheDocument();
+  });
+
+  it('does not show the scroll-to-bottom button when content is not overflowing', () => {
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [makeMessage('1'), makeMessage('2')] },
+    };
+
+    const view = render(<ChatView taskId="task-1" />);
+    const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+    mockScrollMetrics(scrollContainer, {
+      clientHeight: 400,
+      scrollHeight: 420,
+      scrollTop: 0,
+    });
+
+    fireEvent.scroll(scrollContainer);
+
+    expect(screen.queryByTestId('scroll-to-bottom')).not.toBeInTheDocument();
+  });
+
+  it('hides the scroll-to-bottom button when switching to a different task', () => {
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [makeMessage('1'), makeMessage('2'), makeMessage('3')] },
+    };
+
+    const view = render(<ChatView taskId="task-1" />);
+    const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+    const metrics = mockScrollMetrics(scrollContainer, {
+      clientHeight: 200,
+      scrollHeight: 1000,
+      scrollTop: 0,
+    });
+
+    metrics.setScrollTop(300);
+    fireEvent.scroll(scrollContainer);
+    expect(screen.getByTestId('scroll-to-bottom')).toBeInTheDocument();
+
+    tasksState = {
+      tasks: [
+        {
+          id: 'task-2',
+          status: 'running',
+          taskType: 'ai_task',
+        },
+      ],
+      restartTask: restartTaskMock,
+    };
+    useTasksStoreMock.mockImplementation((selector) => selector(tasksState));
+    chatState = {
+      ...chatState,
+      messagesByTask: {},
+      loadingTasks: new Set(['task-2']),
+    };
+    useChatStoreMock.mockImplementation(() => chatState);
+    // Mimic the real DOM of an empty task-2: no overflow, at top.
+    // Otherwise the stale mocked metrics would still look scrollable
+    // to the useEffect cleanup that fires on taskId change.
+    metrics.setScrollTop(0);
+    metrics.setScrollHeight(200);
+
+    view.rerender(<ChatView taskId="task-2" />);
+
+    expect(screen.queryByTestId('scroll-to-bottom')).not.toBeInTheDocument();
+  });
+
   it('clears pending interrupt state once runtime confirms the reply has stopped', async () => {
     vi.useFakeTimers();
     runtimeState = {
