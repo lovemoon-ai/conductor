@@ -78,7 +78,23 @@ export function createAiManagerHandlers(opts = {}) {
   }
 
   async function listAccounts() {
-    return { accounts: await manager.listCodexAccounts() };
+    const accounts = await manager.listCodexAccounts();
+    // Enrich each account with its on-disk cached quota so the web UI can
+    // restore inactive-account snapshots across page refreshes. The cache is
+    // read without any network call, so missing/empty caches just leave the
+    // field undefined and cost effectively nothing. We swallow per-account
+    // errors because one broken auth.json shouldn't fail the whole list.
+    const enriched = await Promise.all(
+      accounts.map(async (acct) => {
+        try {
+          const cachedQuota = await manager.readCachedCodexQuota(acct.path);
+          return cachedQuota ? { ...acct, cachedQuota } : acct;
+        } catch {
+          return acct;
+        }
+      }),
+    );
+    return { accounts: enriched };
   }
 
   async function switchAccount(args = {}) {

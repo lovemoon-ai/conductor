@@ -3,7 +3,7 @@ import { loadAiManagerConfig } from "./config.ts";
 import { getCurrentCodexAccount, listCodexAccounts, switchCodexAccount } from "./account.ts";
 import { checkInstall, checkInstallAll } from "./install.ts";
 import { checkNetwork, checkNetworkAll } from "./network.ts";
-import { getCodexQuota, type GetCodexQuotaOptions } from "./quota/codex.ts";
+import { getCodexQuota, readCachedCodexQuota, type GetCodexQuotaOptions } from "./quota/codex.ts";
 import { getClaudeQuota, type GetClaudeQuotaOptions } from "./quota/claude.ts";
 import { getKimiQuota, type GetKimiQuotaOptions } from "./quota/kimi.ts";
 import { getCopilotQuota, type GetCopilotQuotaOptions } from "./quota/copilot.ts";
@@ -92,6 +92,16 @@ export class AiManager {
 
   getCodexQuota(opts?: GetCodexQuotaOptions): Promise<CodexQuota> {
     return getCodexQuota({ codexAuthPath: this.codexAuthPath, ...opts });
+  }
+
+  /**
+   * Read the last-cached codex quota for a specific auth file path, without
+   * any network call. Enables `list_accounts` to return a "last known"
+   * snapshot per account so the web UI can restore inactive-account quotas
+   * across page refreshes.
+   */
+  readCachedCodexQuota(authPath: string): Promise<CodexQuota | null> {
+    return readCachedCodexQuota(authPath);
   }
 
   getClaudeQuota(opts?: GetClaudeQuotaOptions): Promise<ClaudeQuota> {

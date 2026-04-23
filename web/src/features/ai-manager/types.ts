@@ -26,6 +26,13 @@ export interface CodexAccount {
   planType?: string;
   lastRefresh?: string;
   isCurrent: boolean;
+  /**
+   * Last-known quota snapshot surfaced by the daemon from its on-disk cache.
+   * Seeded into the store by `fetchAccounts` so inactive-account quotas
+   * survive a full page refresh. Missing when the daemon has never fetched a
+   * live quota for this account.
+   */
+  cachedQuota?: CodexQuota;
 }
 
 export interface QuotaWindow {

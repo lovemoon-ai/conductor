@@ -177,10 +177,27 @@ export const useAiManagerStore = create<AiManagerState>()((set, get) => ({
         `/ai-manager/accounts?agentHost=${encodeURIComponent(host)}`,
       );
       const cur = get().byHost[host] ?? emptyHostState();
+      // Seed per-account cached quotas from the daemon's on-disk snapshot.
+      // This is what makes inactive-account quotas survive a page refresh:
+      // the in-memory `codexQuotaByAccount` map is empty on first load, but
+      // the daemon already knows every account's last-fetched quota. We only
+      // seed entries that aren't already present in memory — the live poll's
+      // fresh data always wins over the disk snapshot.
+      const codexQuotaByAccount = { ...cur.codexQuotaByAccount };
+      for (const acct of data.accounts) {
+        if (acct.cachedQuota && !codexQuotaByAccount[acct.name]) {
+          codexQuotaByAccount[acct.name] = acct.cachedQuota;
+        }
+      }
       set({
         byHost: {
           ...get().byHost,
-          [host]: { ...cur, accounts: data, loading: { ...cur.loading, accounts: false } },
+          [host]: {
+            ...cur,
+            accounts: data,
+            codexQuotaByAccount,
+            loading: { ...cur.loading, accounts: false },
+          },
         },
       });
     } catch (err) {

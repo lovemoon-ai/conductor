@@ -125,6 +125,14 @@ export interface CodexAccount {
   planType?: string;
   lastRefresh?: string;
   isCurrent: boolean;
+  /**
+   * Last-known quota snapshot for this account read from the daemon's on-disk
+   * cache. Populated by `list_accounts` so web clients can restore an
+   * inactive account's bars across page refreshes without a network call.
+   * Absent when the daemon has never successfully fetched quota for this
+   * account.
+   */
+  cachedQuota?: CodexQuota;
 }
 
 export interface SwitchResult {

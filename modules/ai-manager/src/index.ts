@@ -14,7 +14,11 @@ export {
 } from "./account.ts";
 export { checkInstall, checkInstallAll } from "./install.ts";
 export { checkNetwork, checkNetworkAll } from "./network.ts";
-export { getCodexQuota, type GetCodexQuotaOptions } from "./quota/codex.ts";
+export {
+  getCodexQuota,
+  readCachedCodexQuota,
+  type GetCodexQuotaOptions,
+} from "./quota/codex.ts";
 export {
   getClaudeQuota,
   resolveClaudeCredential,

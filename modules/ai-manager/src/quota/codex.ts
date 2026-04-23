@@ -187,6 +187,30 @@ async function fallbackFromCache(
   return emptyQuota("unknown", error);
 }
 
+/**
+ * Read the on-disk quota cache for a given codex auth.json without triggering
+ * any network call. Returns whatever snapshot was last written (regardless of
+ * age) or `null` if nothing has been cached for this identity yet. Used by the
+ * daemon's `list_accounts` handler to surface "last known" quota for inactive
+ * accounts so the web UI can restore them across page refreshes.
+ */
+export async function readCachedCodexQuota(
+  codexAuthPath: string,
+  opts: { cacheDir?: string } = {},
+): Promise<CodexQuota | null> {
+  try {
+    const authInfo = await parseAuthFile(codexAuthPath);
+    if (!authInfo.identityFingerprint) return null;
+    const fp = fingerprintKey(["codex", authInfo.identityFingerprint]);
+    const file = cacheFile("codex", fp, opts.cacheDir);
+    const entry = await readCache<CodexQuota>(file);
+    if (!entry) return null;
+    return { ...entry.value, source: "cached", fetchedAt: entry.fetchedAt };
+  } catch {
+    return null;
+  }
+}
+
 function emptyQuota(source: CodexQuota["source"], error?: string): CodexQuota {
   return {
     tool: "codex",

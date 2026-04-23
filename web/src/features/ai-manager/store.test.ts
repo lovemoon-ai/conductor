@@ -1,6 +1,28 @@
-import { describe, expect, it } from 'vitest';
-import { resolveCodexAccountName } from './store';
-import type { CodexAccount, CodexQuota, StatusResponse } from './types';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { resolveCodexAccountName, useAiManagerStore } from './store';
+import type {
+  AccountsResponse,
+  CodexAccount,
+  CodexQuota,
+  StatusResponse,
+} from './types';
+
+const apiGetMock = vi.fn();
+
+vi.mock('@/shared/api/client', () => ({
+  ApiRequestError: class MockApiRequestError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.name = 'ApiRequestError';
+      this.status = status;
+    }
+  },
+  getApiClient: () => ({
+    get: apiGetMock,
+    post: vi.fn(),
+  }),
+}));
 
 function makeAccount(overrides: Partial<CodexAccount> = {}): CodexAccount {
   return {
@@ -104,5 +126,100 @@ describe('resolveCodexAccountName', () => {
   it('handles missing accounts list and missing status', () => {
     const quota = makeQuota({ email: 'ghost@example.com' });
     expect(resolveCodexAccountName(quota, undefined, null)).toBeUndefined();
+  });
+});
+
+describe('fetchAccounts seeds codexQuotaByAccount from daemon cache', () => {
+  beforeEach(() => {
+    apiGetMock.mockReset();
+    useAiManagerStore.setState({ selectedHost: null, byHost: {} });
+  });
+
+  it('restores inactive-account quota snapshots on page refresh', async () => {
+    // This simulates what happens on page load: the store is empty, the
+    // daemon already has on-disk caches for each account, and `list_accounts`
+    // surfaces them via `cachedQuota`. The store should seed
+    // codexQuotaByAccount so the UI can render inactive accounts' bars
+    // immediately — without waiting for each to become active.
+    const aliceCache = makeQuota({
+      accountId: 'acc-alice',
+      email: 'alice@example.com',
+      source: 'cached',
+      plan: 'PLUS',
+      fiveHour: { usedPercent: 42, remainingPercent: 58 },
+    });
+    const bobCache = makeQuota({
+      accountId: 'acc-bob',
+      email: 'bob@example.com',
+      source: 'cached',
+      plan: 'PRO',
+      weekly: { usedPercent: 20, remainingPercent: 80 },
+    });
+    const payload: AccountsResponse = {
+      accounts: [
+        makeAccount({
+          name: 'alice',
+          email: 'alice@example.com',
+          accountId: 'acc-alice',
+          isCurrent: true,
+          cachedQuota: aliceCache,
+        }),
+        makeAccount({
+          name: 'bob',
+          email: 'bob@example.com',
+          accountId: 'acc-bob',
+          isCurrent: false,
+          cachedQuota: bobCache,
+        }),
+      ],
+    };
+    apiGetMock.mockResolvedValueOnce(payload);
+
+    await useAiManagerStore.getState().fetchAccounts('daemon-a');
+
+    const state = useAiManagerStore.getState().byHost['daemon-a'];
+    expect(state.codexQuotaByAccount.alice?.plan).toBe('PLUS');
+    expect(state.codexQuotaByAccount.alice?.fiveHour.usedPercent).toBe(42);
+    expect(state.codexQuotaByAccount.bob?.plan).toBe('PRO');
+    expect(state.codexQuotaByAccount.bob?.weekly.remainingPercent).toBe(80);
+  });
+
+  it('does not overwrite a live-refreshed in-memory entry with a stale cache', async () => {
+    // Guard: if the user has already seen a fresh poll-update for an account,
+    // a subsequent fetchAccounts should NOT clobber that fresher in-memory
+    // snapshot with whatever the daemon happens to have on disk. The in-memory
+    // value wins; the cache only fills holes.
+    useAiManagerStore.setState({
+      byHost: {
+        'daemon-a': {
+          status: null,
+          quota: null,
+          accounts: null,
+          codexQuotaByAccount: {
+            alice: makeQuota({
+              plan: 'LIVE',
+              source: 'fresh',
+              fiveHour: { usedPercent: 99, remainingPercent: 1 },
+            }),
+          },
+          loading: { status: false, quota: false, accounts: false, switching: false },
+          error: {},
+        },
+      },
+    });
+    apiGetMock.mockResolvedValueOnce({
+      accounts: [
+        makeAccount({
+          name: 'alice',
+          cachedQuota: makeQuota({ plan: 'STALE', source: 'cached' }),
+        }),
+      ],
+    });
+
+    await useAiManagerStore.getState().fetchAccounts('daemon-a');
+
+    const state = useAiManagerStore.getState().byHost['daemon-a'];
+    expect(state.codexQuotaByAccount.alice?.plan).toBe('LIVE');
+    expect(state.codexQuotaByAccount.alice?.fiveHour.usedPercent).toBe(99);
   });
 });
