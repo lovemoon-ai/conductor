@@ -28,26 +28,50 @@ export function isSettingsAreaPath(pathname: string): boolean {
 interface SettingsNavState {
   /** Most recent Settings-area path (including query string), or null if the user hasn't visited yet. */
   lastPath: string | null;
+  /**
+   * Last known scrollTop of the AI Manager page body, keyed by agent host.
+   * Transient — not persisted across reloads. Callers are expected to read/write
+   * through `getScrollForHost` / `setScrollForHost` imperatively (via
+   * `getState()`) rather than subscribing, to avoid a re-render on every
+   * scroll event.
+   */
+  scrollByHost: Record<string, number>;
   setLastPath(path: string): void;
+  setScrollForHost(host: string, scrollTop: number): void;
+  getScrollForHost(host: string): number;
   reset(): void;
 }
 
 export const useSettingsNavStore = create<SettingsNavState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       lastPath: null,
+      scrollByHost: {},
       setLastPath(path) {
         // Guard against garbage — we only care about Settings-area paths.
         if (!path.startsWith('/')) return;
         set({ lastPath: path });
       },
+      setScrollForHost(host, scrollTop) {
+        if (!host) return;
+        // Clamp negatives (some browsers report rubber-band overscroll as <0).
+        const normalized = Math.max(0, Math.floor(scrollTop));
+        set({ scrollByHost: { ...get().scrollByHost, [host]: normalized } });
+      },
+      getScrollForHost(host) {
+        if (!host) return 0;
+        return get().scrollByHost[host] ?? 0;
+      },
       reset() {
-        set({ lastPath: null });
+        set({ lastPath: null, scrollByHost: {} });
       },
     }),
     {
       name: 'conductor-settings-nav',
       storage: createJSONStorage(() => localStorage),
+      // Only `lastPath` survives a reload. `scrollByHost` is transient —
+      // persisting it would bloat storage and a full reload is a natural
+      // "reset scroll" boundary anyway.
       partialize: (state) => ({ lastPath: state.lastPath }),
     },
   ),
