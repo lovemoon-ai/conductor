@@ -1,6 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { Message } from '@/shared/types';
+import { useChatStore } from '../store';
 
 const SEND_BUTTON_SIZE_PX = 32;
 const COMPOSER_HORIZONTAL_PADDING_PX = 24;
@@ -9,8 +11,7 @@ const SEND_BUTTON_SAFETY_GAP_PX = 12;
 const INPUT_SCROLL_THRESHOLD_RATIO = 0.75;
 
 const DRAFT_STORAGE_PREFIX = 'conductor-task-draft:';
-const HISTORY_STORAGE_PREFIX = 'conductor-task-history:';
-const MAX_HISTORY_ITEMS = 5;
+const MAX_HISTORY_ITEMS = 200;
 const PLACEHOLDER_ROTATION_MS = 3200;
 const PLACEHOLDER_MESSAGES = [
   'Type a message...',
@@ -35,17 +36,38 @@ interface MessageInputProps {
 }
 
 const getDraftStorageKey = (taskId: string) => `${DRAFT_STORAGE_PREFIX}${taskId}`;
-const getHistoryStorageKey = (taskId: string) => `${HISTORY_STORAGE_PREFIX}${taskId}`;
 
-const normalizeHistory = (value: unknown): string[] => {
-  if (!Array.isArray(value)) {
-    return [];
+// Derive the "previous prompt" history for ArrowUp/ArrowDown from the chat
+// store's message log. This walks the persisted chat history from newest to
+// oldest, keeping only user-authored messages, deduplicating by content so
+// repeated prompts collapse into a single history entry, then reverses so
+// that the last item is the most-recent prompt (matching the existing
+// cursor logic which starts at `length - 1`).
+//
+// Because it reads from the shared chat store rather than an input-local
+// session buffer, prompts sent by the same task from another signed-in web
+// client (delivered via the REST page load or a websocket push) are also
+// reachable via ArrowUp.
+const deriveSentHistoryFromMessages = (messages: Message[]): string[] => {
+  const seen = new Set<string>();
+  const reversed: string[] = [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (!message || message.role !== 'user') {
+      continue;
+    }
+    const trimmed = (message.content ?? '').trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    reversed.push(trimmed);
+    if (reversed.length >= MAX_HISTORY_ITEMS) {
+      break;
+    }
   }
-  return value
-    .filter((item): item is string => typeof item === 'string')
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .slice(-MAX_HISTORY_ITEMS);
+  reversed.reverse();
+  return reversed;
 };
 
 export function MessageInput({
@@ -62,14 +84,24 @@ export function MessageInput({
   const [content, setContent] = useState('');
   const [isSendOnNextLine, setIsSendOnNextLine] = useState(false);
   const [isInputScrollable, setIsInputScrollable] = useState(false);
-  const [sentHistory, setSentHistory] = useState<string[]>([]);
+  const taskMessages = useChatStore((state) => state.messagesByTask[taskId]);
+  const sentHistory = useMemo(
+    () => deriveSentHistoryFromMessages(taskMessages ?? []),
+    [taskMessages],
+  );
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
   const composerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const isComposingRef = useRef(false);
   const skipStoreEffectRef = useRef(true);
-  const historyCursorRef = useRef<number | null>(null);
+  // Track which history entry is currently displayed by content rather than
+  // by numeric index. `sentHistory` is derived from `messagesByTask[taskId]`,
+  // so it can grow (websocket push of another user prompt) or shift
+  // (pagination prepend of older messages) while the user is mid-browse; a
+  // content cursor lets each keypress re-anchor to the same prompt even if
+  // its position in the list changed since the previous keypress.
+  const historyCursorRef = useRef<string | null>(null);
   const historyDraftRef = useRef('');
   const lastResendRequestIdRef = useRef<number | null>(null);
 
@@ -86,21 +118,12 @@ export function MessageInput({
   }, [taskId]);
 
   useEffect(() => {
+    // Reset the history browsing cursor and the stashed draft whenever the
+    // active task changes. The actual list of previous prompts is derived
+    // from the chat store, so there is no per-task buffer to rehydrate here.
     historyCursorRef.current = null;
     historyDraftRef.current = '';
     setPlaceholderIndex(0);
-    if (typeof window === 'undefined') return;
-    const key = getHistoryStorageKey(taskId);
-    try {
-      const rawHistory = window.sessionStorage.getItem(key);
-      if (!rawHistory) {
-        setSentHistory([]);
-        return;
-      }
-      setSentHistory(normalizeHistory(JSON.parse(rawHistory)));
-    } catch {
-      setSentHistory([]);
-    }
   }, [taskId]);
 
   useEffect(() => {
@@ -146,20 +169,6 @@ export function MessageInput({
       // ignore storage errors
     }
   }, [content, taskId]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const key = getHistoryStorageKey(taskId);
-    try {
-      if (sentHistory.length === 0) {
-        window.sessionStorage.removeItem(key);
-        return;
-      }
-      window.sessionStorage.setItem(key, JSON.stringify(sentHistory.slice(-MAX_HISTORY_ITEMS)));
-    } catch {
-      // ignore storage errors
-    }
-  }, [sentHistory, taskId]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -234,10 +243,10 @@ export function MessageInput({
     if (!nextContent.trim() || disabled || sendDisabled) return false;
     const trimmedContent = nextContent.trim();
     onSend(trimmedContent);
-    setSentHistory((previous) => {
-      const deduped = previous.filter((item) => item !== trimmedContent);
-      return [...deduped, trimmedContent].slice(-MAX_HISTORY_ITEMS);
-    });
+    // The prompt will show up in the ArrowUp history as soon as it lands in
+    // the chat store (either via the optimistic insert in `sendMessage` or
+    // when the server echoes it back), so no local bookkeeping is needed
+    // here beyond resetting the browsing cursor.
     historyCursorRef.current = null;
     historyDraftRef.current = '';
     setContent('');
@@ -282,13 +291,31 @@ export function MessageInput({
         return;
       }
       e.preventDefault();
+      let nextHistory: string;
       if (historyCursorRef.current === null) {
+        // Starting a new browsing session — stash the current draft and jump
+        // to the most recent prompt.
         historyDraftRef.current = content;
-        historyCursorRef.current = sentHistory.length - 1;
-      } else if (historyCursorRef.current > 0) {
-        historyCursorRef.current -= 1;
+        nextHistory = sentHistory[sentHistory.length - 1];
+      } else {
+        // Re-locate the previously shown prompt against the *current*
+        // `sentHistory` (it may have grown or shifted since the last
+        // keypress) and step one entry older. `lastIndexOf` prefers the
+        // newest occurrence if duplicates appeared transiently.
+        const currentIndex = sentHistory.lastIndexOf(historyCursorRef.current);
+        if (currentIndex === -1) {
+          // The anchored prompt is no longer present (e.g. history was
+          // cleared). Re-anchor to the newest entry rather than getting
+          // stuck.
+          nextHistory = sentHistory[sentHistory.length - 1];
+        } else if (currentIndex > 0) {
+          nextHistory = sentHistory[currentIndex - 1];
+        } else {
+          // Already at the oldest entry — stay put.
+          nextHistory = sentHistory[0];
+        }
       }
-      const nextHistory = sentHistory[historyCursorRef.current] ?? sentHistory[sentHistory.length - 1] ?? '';
+      historyCursorRef.current = nextHistory;
       setContent(nextHistory);
       moveCaretToEnd(nextHistory);
       return;
@@ -303,16 +330,19 @@ export function MessageInput({
         return;
       }
       e.preventDefault();
-      if (historyCursorRef.current < sentHistory.length - 1) {
-        historyCursorRef.current += 1;
-        const nextHistory = sentHistory[historyCursorRef.current] ?? '';
-        setContent(nextHistory);
-        moveCaretToEnd(nextHistory);
-      } else {
+      const currentIndex = sentHistory.lastIndexOf(historyCursorRef.current);
+      if (currentIndex === -1 || currentIndex >= sentHistory.length - 1) {
+        // Either the anchored prompt is gone, or we're already at/past the
+        // newest — exit browsing mode and restore the stashed draft.
         historyCursorRef.current = null;
         setContent(historyDraftRef.current);
         moveCaretToEnd(historyDraftRef.current);
+        return;
       }
+      const nextHistory = sentHistory[currentIndex + 1];
+      historyCursorRef.current = nextHistory;
+      setContent(nextHistory);
+      moveCaretToEnd(nextHistory);
       return;
     }
 
