@@ -65,6 +65,10 @@ export async function recoverStaleDisconnectedAgentTasks(
 
     const normalizedStatus = normalizeTaskStatus(task.status);
     if (isTerminalTaskStatus(normalizedStatus)) continue;
+    // Skip init tasks: they may be waiting for a restart_task message
+    // to be delivered via agentOutbox (e.g. branch/fork creates a successor
+    // task with status "init" that the daemon hasn't started yet).
+    if (normalizedStatus === "init") continue;
     if (realtimeHub.hasAgentHost(recoveryHost, userId)) continue;
 
     const recoveryTimeoutMs = isConductorFireHost(recoveryHost)

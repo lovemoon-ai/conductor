@@ -2163,6 +2163,10 @@ export function startDaemon(config = {}, deps = {}) {
       const staleTasks = tasks.filter((task) => {
         const status = String(task?.status || "").trim().toLowerCase();
         const agentHost = String(task?.agent_host || "").trim();
+        // Skip init tasks: they may be waiting for a restart_task outbox
+        // delivery (e.g. branch/fork creates a successor with status "init"
+        // that the daemon hasn't started processing yet).
+        if (status === "init") return false;
         return agentHost === AGENT_NAME && (status === "unknown" || status === "running");
       });
 
@@ -2197,6 +2201,10 @@ export function startDaemon(config = {}, deps = {}) {
     }
   }
 
+  // Grace period: tasks created within this window are excluded from
+  // reconcile to avoid racing with restart_task outbox delivery.
+  const RECONCILE_GRACE_PERIOD_MS = 60_000;
+
   async function reconcileAssignedTasks() {
     try {
       const response = await fetchFn(`${BACKEND_HTTP}/api/tasks`, {
@@ -2219,6 +2227,16 @@ export function startDaemon(config = {}, deps = {}) {
       const assigned = tasks.filter((task) => {
         const agentHost = String(task?.agent_host || "").trim();
         const status = String(task?.status || "").trim().toLowerCase();
+        // Skip init tasks: they may be waiting for a restart_task outbox
+        // delivery (e.g. branch/fork creates a successor with status "init"
+        // that the daemon hasn't started processing yet).
+        if (status === "init") return false;
+        // Skip recently-created tasks to avoid racing with restart_task
+        // delivery: a successor task may have been promoted to "running"
+        // via shouldPromoteInitTask but its conductor-fire process is
+        // still being spawned.
+        const createdAtMs = task?.created_at ? new Date(task.created_at).getTime() : 0;
+        if (createdAtMs && Date.now() - createdAtMs < RECONCILE_GRACE_PERIOD_MS) return false;
         return agentHost === AGENT_NAME && (status === "unknown" || status === "running");
       });
 
