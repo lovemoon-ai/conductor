@@ -23,16 +23,16 @@ function AiManagerPageInner() {
   // we only do it once per "arrive at this daemon" event (not on every render).
   const lastForceRefreshedHostRef = useRef<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  // Host we've already restored scroll for this mount — prevents double-restore
-  // when subsequent renders arrive (e.g. when quota/accounts finish loading).
-  const restoredScrollHostRef = useRef<string | null>(null);
-  // True once the selected host has some primary content available (status).
-  // We wait for this before restoring so scrollTop isn't silently clamped to
-  // the (small) height of the loading state.
-  const hostContentReady = useAiManagerStore((s) => {
+  // Flag set when we arrive at a new host and still want to restore scroll.
+  // Cleared once we've consumed the saved position (or given up).
+  const pendingRestoreHostRef = useRef<string | null>(null);
+  // Subscribe to the whole per-host state so the restore useLayoutEffect fires
+  // again each time a piece of data (status/quota/accounts) arrives, giving it
+  // chances to retry as content height grows. Identity-compare is enough here;
+  // we don't care about the contents, only "something changed".
+  const hostState = useAiManagerStore((s) => {
     const host = agentHost ?? selectedHost;
-    if (!host) return false;
-    return s.byHost[host]?.status != null;
+    return host ? s.byHost[host] : undefined;
   });
   const isLoading = useAiManagerStore((s) => {
     const host = selectedHost ?? agentHost;
@@ -71,40 +71,71 @@ function AiManagerPageInner() {
   }, [agentHost, selectedHost, fetchQuota]);
 
   // Persist the scrollTop of the daemon page body per host. We save on every
-  // scroll (cheap — writes to an in-memory zustand slice), and one final time
-  // on unmount / host-change. This lets the user bounce to Tasks/Issues and
-  // return with their position preserved.
+  // scroll (cheap — writes to an in-memory zustand slice), plus a final
+  // snapshot on unmount / host-change, plus on visibility/pagehide so we don't
+  // lose state when the browser tab goes to the background on mobile.
   useEffect(() => {
     const host = agentHost ?? selectedHost;
     const el = scrollContainerRef.current;
     if (!host || !el) return;
-    const { setScrollForHost } = useSettingsNavStore.getState();
-    const handleScroll = () => {
-      setScrollForHost(host, el.scrollTop);
+    const save = () => {
+      useSettingsNavStore.getState().setScrollForHost(host, el.scrollTop);
     };
-    el.addEventListener('scroll', handleScroll, { passive: true });
+    el.addEventListener('scroll', save, { passive: true });
+    window.addEventListener('pagehide', save);
+    document.addEventListener('visibilitychange', save);
     return () => {
       // Capture a final position on unmount / host change in case the user
       // navigated away mid-scroll (scroll events fire asynchronously).
-      setScrollForHost(host, el.scrollTop);
-      el.removeEventListener('scroll', handleScroll);
+      save();
+      el.removeEventListener('scroll', save);
+      window.removeEventListener('pagehide', save);
+      document.removeEventListener('visibilitychange', save);
     };
   }, [agentHost, selectedHost]);
 
-  // Restore the remembered scroll position once the host's content is ready.
-  // useLayoutEffect so the user doesn't see a flash-of-top before the jump.
+  // Mark "should restore" whenever we arrive at a new host. A separate effect
+  // (below) consumes this flag across as many renders as needed to land the
+  // scrollTop, because the panel's content height grows in stages as status /
+  // quota / accounts data arrives.
   useLayoutEffect(() => {
     const host = agentHost ?? selectedHost;
-    if (!host || !hostContentReady) return;
-    if (restoredScrollHostRef.current === host) return;
+    if (!host) return;
+    if (pendingRestoreHostRef.current === host) return;
+    pendingRestoreHostRef.current = host;
+  }, [agentHost, selectedHost]);
+
+  // Attempt to restore scrollTop on every render where there's a pending host.
+  // Dependency includes `hostState` so this re-fires each time the per-host
+  // store slice changes (status/quota/accounts arrive), retrying the restore
+  // until scrollHeight is tall enough to accommodate the saved position. Once
+  // we land the exact saved value — or we're clamped by a genuinely shorter
+  // page — we clear the pending flag. useLayoutEffect so no flash-of-top.
+  useLayoutEffect(() => {
+    const host = pendingRestoreHostRef.current;
+    if (!host) return;
     const el = scrollContainerRef.current;
     if (!el) return;
     const saved = useSettingsNavStore.getState().getScrollForHost(host);
-    if (saved > 0) {
-      el.scrollTop = saved;
+    if (saved <= 0) {
+      // Nothing to restore; mark done so we don't keep re-running on future renders.
+      pendingRestoreHostRef.current = null;
+      return;
     }
-    restoredScrollHostRef.current = host;
-  }, [agentHost, selectedHost, hostContentReady]);
+    const max = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (max <= 0) {
+      // Content isn't scrollable yet — wait for a later render once data arrives.
+      return;
+    }
+    const target = Math.min(saved, max);
+    el.scrollTop = target;
+    // If we hit the exact saved position, we're done. If `max < saved` we've
+    // only reached the bottom of what's currently rendered; keep the pending
+    // flag and let a later data-arrival render try again.
+    if (max >= saved) {
+      pendingRestoreHostRef.current = null;
+    }
+  }, [agentHost, selectedHost, hostState]);
 
   const handleRefresh = () => {
     const host = selectedHost ?? agentHost;
