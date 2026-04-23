@@ -85,6 +85,20 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
   const status = state?.status ?? null;
   const quota = state?.quota ?? null;
   const accounts = state?.accounts?.accounts ?? [];
+  const codexQuotaByAccount = state?.codexQuotaByAccount ?? {};
+
+  // Surface codex errors that couldn't be pinned to an individual account card.
+  // `resolveCodexAccountName` returns undefined (store.ts) when the daemon
+  // returns an error payload without identity fields and we also can't fall
+  // back to status.currentCodexAccount; in that case no per-account card
+  // renders the error, so we need a column-level fallback. We also check
+  // whether the last fetch's error is already being shown on some card; if so,
+  // we skip the fallback to avoid duplicating it.
+  const codexLastError = quota?.codex?.error;
+  const codexErrorAlreadyOnCard =
+    Boolean(codexLastError) &&
+    Object.values(codexQuotaByAccount).some((q) => q?.error === codexLastError);
+  const unattributedCodexError = codexLastError && !codexErrorAlreadyOnCard ? codexLastError : null;
 
   const handleRestartDaemon = async () => {
     if (!host || !supportsRestart || isRestarting) {
@@ -146,18 +160,16 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
       <SectionCard title="Quota">
         <div className="grid gap-5 md:grid-cols-4">
           <div className="flex flex-col gap-3">
-            <div className="text-sm font-semibold text-ink">
-              Codex
-              {quota?.codex?.plan ? (
-                <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
-                  {quota.codex.plan}
-                </span>
-              ) : null}
-            </div>
-            <QuotaBar label="5h" window={quota?.codex?.fiveHour} />
-            <QuotaBar label="Weekly" window={quota?.codex?.weekly} />
-            {quota?.codex?.error ? (
-              <p className="text-xs text-[var(--error)]">{quota.codex.error}</p>
+            <div className="text-sm font-semibold text-ink">Codex</div>
+            <CodexAccountSwitcher
+              agentHost={host}
+              accounts={accounts}
+              codexQuotaByAccount={codexQuotaByAccount}
+              loading={state?.loading?.accounts ?? false}
+              errorMessage={state?.error?.accounts}
+            />
+            {unattributedCodexError ? (
+              <p className="text-xs text-[var(--error)]">{unattributedCodexError}</p>
             ) : null}
           </div>
           <div className="flex flex-col gap-3">
@@ -231,15 +243,6 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
         {state?.error?.quota ? (
           <p className="mt-2 text-xs text-[var(--error)]">{state.error.quota}</p>
         ) : null}
-      </SectionCard>
-
-      <SectionCard title="Codex accounts">
-        <CodexAccountSwitcher
-          agentHost={host}
-          accounts={accounts}
-          loading={state?.loading?.accounts ?? false}
-          errorMessage={state?.error?.accounts}
-        />
       </SectionCard>
 
       <SectionCard title="Danger zone">

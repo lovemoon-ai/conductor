@@ -161,6 +161,9 @@ describe('AiManagerPanel', () => {
     expect(headerRow).not.toBeNull();
     // JSX collapses the whitespace around sibling expressions, so textContent
     // is concatenated directly. Allow zero whitespace but still assert order.
-    expect(headerRow?.textContent ?? '').toMatch(/^Copilot\s*ALLOWED\s*\(octocat via GITHUB_TOKEN\)/);
+    // The `uppercase` Tailwind class on the status pill is a visual-only
+    // transform and does not affect textContent, so we match case-insensitively
+    // — what we actually care about is the structure/order.
+    expect(headerRow?.textContent ?? '').toMatch(/^Copilot\s*allowed\s*\(octocat via GITHUB_TOKEN\)/i);
   });
 });
