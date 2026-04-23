@@ -28,6 +28,7 @@ interface TaskItemProps {
   showProjectInfo?: boolean;
   projectName?: string | null;
   projectDaemonHost?: string | null;
+  isDefaultProject?: boolean;
 }
 
 interface ShareDialogState {
@@ -192,6 +193,7 @@ export function TaskItem({
   showProjectInfo = false,
   projectName = null,
   projectDaemonHost = null,
+  isDefaultProject = false,
 }: TaskItemProps) {
   const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
@@ -722,6 +724,15 @@ export function TaskItem({
 
   const metadataChips = (
     <>
+      {isDefaultProject ? (
+        <span
+          title="Task in the default demo project"
+          aria-label="Demo"
+          className="flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+        >
+          Demo
+        </span>
+      ) : null}
       <span
         className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium ${
           taskType === 'pty_task'

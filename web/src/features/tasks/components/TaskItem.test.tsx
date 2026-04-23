@@ -126,6 +126,51 @@ describe('TaskItem', () => {
     expect(screen.getByText('AI')).toBeInTheDocument();
   });
 
+  it('shows the Demo chip when the task belongs to the default project', () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-demo-1',
+          title: 'Demo Task',
+          status: 'running',
+          projectId: 'project-default',
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+        isDefaultProject
+      />
+    );
+
+    expect(screen.getByText('Demo')).toBeInTheDocument();
+  });
+
+  it('omits the Demo chip for non-default projects', () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-regular-1',
+          title: 'Regular Task',
+          status: 'running',
+          projectId: 'project-regular',
+          agentHost: 'daemon-a',
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    expect(screen.queryByText('Demo')).not.toBeInTheDocument();
+  });
+
   it('shows the worktree branch on the task card metadata row', () => {
     render(
       <TaskItem
