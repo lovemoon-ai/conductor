@@ -567,6 +567,12 @@ export function startDaemon(config = {}, deps = {}) {
   let shutdownSignalHandled = false;
   let forcedSignalExitHandled = false;
   let processHandlersAttached = false;
+  // Mirrors the later `daemonShuttingDown` flag but is declared up front so
+  // process-level error handlers registered below can safely read it even if
+  // they fire before the main daemon state is initialized. `shutdownDaemon`
+  // flips this alongside `daemonShuttingDown` to signal that late WebSocket
+  // errors should be treated as benign.
+  let daemonShutdownInProgress = false;
 
   const removeProcessListener = (eventName, handler) => {
     if (typeof process.off === "function") {
@@ -1372,6 +1378,7 @@ export function startDaemon(config = {}, deps = {}) {
       return;
     }
     shutdownSignalHandled = true;
+    daemonShutdownInProgress = true;
     void (async () => {
       try {
         log(`Received ${signal}, shutting down...`);
@@ -1390,10 +1397,36 @@ export function startDaemon(config = {}, deps = {}) {
   const onSigTerm = () => {
     handleSignal("SIGTERM");
   };
+  const isBenignShutdownError = (err) => {
+    if (!err) return false;
+    const message = (err instanceof Error ? err.message : String(err)) || "";
+    // These errors are expected when the WebSocket is torn down while a
+    // previously queued send is still in flight (e.g., during restart_daemon).
+    // Silencing them prevents a benign late rejection from aborting the
+    // in-progress restart/respawn flow.
+    return (
+      message.includes("WebSocket not connected") ||
+      message.includes("WebSocket is not open") ||
+      message.includes("WebSocket is closed")
+    );
+  };
   const onUncaughtException = (err) => {
+    if (daemonShutdownInProgress && isBenignShutdownError(err)) {
+      logError(`Ignored benign error during shutdown: ${err?.message || err}`);
+      return;
+    }
     logError(`Uncaught exception: ${err}`);
     cleanupLock();
     exitFn(1);
+  };
+  const onUnhandledRejection = (reason) => {
+    if (daemonShutdownInProgress && isBenignShutdownError(reason)) {
+      logError(`Ignored benign rejection during shutdown: ${reason?.message || reason}`);
+      return;
+    }
+    // Fall through to the same handling as uncaughtException so we keep a
+    // single, predictable exit path when an unexpected rejection escapes.
+    onUncaughtException(reason instanceof Error ? reason : new Error(String(reason)));
   };
   const detachProcessHandlers = () => {
     if (!processHandlersAttached) {
@@ -1404,12 +1437,14 @@ export function startDaemon(config = {}, deps = {}) {
     removeProcessListener("SIGINT", onSigInt);
     removeProcessListener("SIGTERM", onSigTerm);
     removeProcessListener("uncaughtException", onUncaughtException);
+    removeProcessListener("unhandledRejection", onUnhandledRejection);
   };
 
   process.on("exit", cleanupLock);
   process.on("SIGINT", onSigInt);
   process.on("SIGTERM", onSigTerm);
   process.on("uncaughtException", onUncaughtException);
+  process.on("unhandledRejection", onUnhandledRejection);
   processHandlersAttached = true;
 
   if (config.CLEAN_ALL) {
@@ -1706,6 +1741,7 @@ export function startDaemon(config = {}, deps = {}) {
     );
     if (watchdogHealAttempts > DAEMON_WATCHDOG_MAX_SELF_HEALS) {
       daemonShuttingDown = true;
+      daemonShutdownInProgress = true;
       logError("[watchdog] Self-heal budget exceeded; exiting daemon for supervisor restart");
       void requestShutdown("watchdog self-heal budget exceeded")
         .catch((error) => {
@@ -5107,6 +5143,7 @@ export function startDaemon(config = {}, deps = {}) {
 
     closePromise = (async () => {
       daemonShuttingDown = true;
+      daemonShutdownInProgress = true;
       if (watchdogTimer) {
         clearInterval(watchdogTimer);
         watchdogTimer = null;

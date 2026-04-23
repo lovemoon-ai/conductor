@@ -177,12 +177,26 @@ export class ConductorWebSocketClient {
   }
 
   async sendJson(payload: Record<string, any>): Promise<void> {
+    // Once disconnect() has flipped `stop`, sending is a no-op. Callers
+    // commonly queue sends via fire-and-forget helpers (`.catch(() => {})`),
+    // but late rejections that slip through were being promoted to
+    // unhandledRejection / uncaughtException and crashed the daemon during
+    // restart. Treat a send-after-disconnect as a silent no-op instead.
+    if (this.stop) {
+      return;
+    }
     await this.ensureConnection();
+    if (this.stop) {
+      return;
+    }
     await this.sendWithReconnect(JSON.stringify(payload));
   }
 
   private async ensureConnection(): Promise<void> {
     if (this.conn && !this.isConnectionClosed(this.conn)) {
+      return;
+    }
+    if (this.stop) {
       return;
     }
     await this.openConnection(true);
@@ -357,9 +371,18 @@ export class ConductorWebSocketClient {
     let attemptedReconnect = false;
     // Loop at most twice: initial send, then one reconnect + retry
     while (true) {
+      if (this.stop) {
+        // `disconnect()` has been called; swallow the send to avoid raising
+        // "WebSocket not connected" from an already-silenced client. Any
+        // send queued before disconnect() finishes is best-effort.
+        return;
+      }
       const conn = this.conn;
       if (!conn || this.isConnectionClosed(conn)) {
         await this.openConnection(true);
+      }
+      if (this.stop) {
+        return;
       }
       if (!this.conn || this.isConnectionClosed(this.conn)) {
         throw new Error('WebSocket not connected');
