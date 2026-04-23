@@ -155,8 +155,13 @@ export const useAiManagerStore = create<AiManagerState>()((set, get) => ({
         agentHost: host,
         name,
       });
-      // refresh accounts + status so the UI reflects the new current account
-      await Promise.all([get().fetchAccounts(host), get().fetchStatus(host)]);
+      // refresh accounts + status + quota so the UI reflects the new current account.
+      // Quota is force-refreshed because plan/limits change with the account.
+      await Promise.all([
+        get().fetchAccounts(host),
+        get().fetchStatus(host),
+        get().fetchQuota(host, { forceRefresh: true }),
+      ]);
       const cur = get().byHost[host] ?? emptyHostState();
       set({
         byHost: {

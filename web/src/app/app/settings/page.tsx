@@ -4,6 +4,7 @@ import { Header } from '@/components/layout/Header';
 import { useAgentsStore } from '@/features/agents';
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { SETTINGS_ROOT_PATH, useSettingsNavStore } from '@/features/settings';
 
 function formatBuildTimeInBeijing(rawBuildTime: string) {
   if (!rawBuildTime || rawBuildTime === 'unknown') {
@@ -32,6 +33,7 @@ function formatBuildTimeInBeijing(rawBuildTime: string) {
 export default function SettingsPage() {
   const { agents, fetchAgents, error: agentsError, errorStatus: agentsErrorStatus } = useAgentsStore();
   const router = useRouter();
+  const setLastSettingsPath = useSettingsNavStore((state) => state.setLastPath);
   const cliVersion = process.env.NEXT_PUBLIC_CLI_VERSION || 'unknown';
   const gitCommitId = process.env.NEXT_PUBLIC_GIT_COMMIT_ID || 'unknown';
   const buildTime = process.env.NEXT_PUBLIC_BUILD_TIME || 'unknown';
@@ -40,6 +42,12 @@ export default function SettingsPage() {
   useEffect(() => {
     fetchAgents();
   }, [fetchAgents]);
+
+  // Remember this as the most recent Settings-area path so the sidebar
+  // Settings item returns here by default.
+  useEffect(() => {
+    setLastSettingsPath(SETTINGS_ROOT_PATH);
+  }, [setLastSettingsPath]);
 
   const visibleDaemons = agents.filter((agent) => !agent.host.startsWith('conductor-fire-'));
   const isDaemonAuthError = agentsErrorStatus === 401;

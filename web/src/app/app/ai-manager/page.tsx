@@ -1,13 +1,16 @@
 'use client';
 
-import { Suspense, useEffect } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { Suspense, useEffect, useRef } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Header } from '@/components/layout/Header';
 import { AiManagerPanel } from '@/features/ai-manager';
 import { useAiManagerStore } from '@/features/ai-manager';
+import { SETTINGS_ROOT_PATH, useSettingsNavStore } from '@/features/settings';
 import { RefreshIcon } from '@/features/tasks';
 
 function AiManagerPageInner() {
+  const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const agentHost = searchParams.get('agentHost') ?? undefined;
 
@@ -15,6 +18,10 @@ function AiManagerPageInner() {
   const setSelectedHost = useAiManagerStore((s) => s.setSelectedHost);
   const fetchAll = useAiManagerStore((s) => s.fetchAll);
   const fetchQuota = useAiManagerStore((s) => s.fetchQuota);
+  const setLastSettingsPath = useSettingsNavStore((s) => s.setLastPath);
+  // Track whether the URL host has already been force-refreshed this mount, so
+  // we only do it once per "arrive at this daemon" event (not on every render).
+  const lastForceRefreshedHostRef = useRef<string | null>(null);
   const isLoading = useAiManagerStore((s) => {
     const host = selectedHost ?? agentHost;
     if (!host) return false;
@@ -30,6 +37,27 @@ function AiManagerPageInner() {
     }
   }, [agentHost, selectedHost, setSelectedHost]);
 
+  // Remember this Settings-area URL (pathname + query) so the sidebar Settings
+  // item restores the user to this daemon when they come back from Issues/Tasks.
+  useEffect(() => {
+    const search = searchParams.toString();
+    const path = search ? `${pathname}?${search}` : pathname;
+    setLastSettingsPath(path);
+  }, [pathname, searchParams, setLastSettingsPath]);
+
+  // Auto-refresh when we arrive at (or switch to) a specific host. We only
+  // force-refresh quota here — status/accounts and the initial quota fetch are
+  // handled by AiManagerPanel on selectedHost change, so calling fetchAll here
+  // would double-request. Using a ref-guard keeps this to exactly one
+  // force-refresh per "arrive at this daemon" event.
+  useEffect(() => {
+    const host = agentHost ?? selectedHost;
+    if (!host) return;
+    if (lastForceRefreshedHostRef.current === host) return;
+    lastForceRefreshedHostRef.current = host;
+    void fetchQuota(host, { forceRefresh: true });
+  }, [agentHost, selectedHost, fetchQuota]);
+
   const handleRefresh = () => {
     const host = selectedHost ?? agentHost;
     if (!host) return;
@@ -37,11 +65,17 @@ function AiManagerPageInner() {
     void fetchQuota(host, { forceRefresh: true });
   };
 
+  const handleBackToSettings = () => {
+    router.push(SETTINGS_ROOT_PATH);
+  };
+
   return (
     <>
       <Header
         title="Settings - Daemon"
         compact
+        showBack
+        onBack={handleBackToSettings}
         actions={
           <button
             onClick={handleRefresh}

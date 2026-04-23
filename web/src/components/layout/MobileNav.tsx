@@ -4,6 +4,12 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
+import {
+  AI_MANAGER_PATH_PREFIX,
+  SETTINGS_ROOT_PATH,
+  resolveSettingsHref,
+  useSettingsNavStore,
+} from '@/features/settings';
 
 type NavIconProps = {
   active: boolean;
@@ -58,35 +64,37 @@ export function MobileNav() {
   const pathname = usePathname();
   const unreadCount = useTasksStore((state) => state.unreadTaskIds.size);
   const selectedProjectId = useProjectsStore((state) => state.selectedProjectId);
+  const lastSettingsPath = useSettingsNavStore((state) => state.lastPath);
   const tasksHref = selectedProjectId
     ? `/app/tasks?projectId=${encodeURIComponent(selectedProjectId)}`
     : '/app/tasks';
   const issuesHref = selectedProjectId
     ? `/app/issues?projectId=${encodeURIComponent(selectedProjectId)}`
     : '/app/issues';
+  const settingsHref = resolveSettingsHref(pathname, lastSettingsPath);
 
   const navItems = [
     {
       href: '/app/projects',
-      activePath: '/app/projects',
+      activePaths: ['/app/projects'],
       label: 'Projects',
       Icon: ProjectsIcon,
     },
     {
       href: issuesHref,
-      activePath: '/app/issues',
+      activePaths: ['/app/issues'],
       label: 'Issues',
       Icon: IssuesIcon,
     },
     {
       href: tasksHref,
-      activePath: '/app/tasks',
+      activePaths: ['/app/tasks'],
       label: 'Tasks',
       Icon: TasksIcon,
     },
     {
-      href: '/app/settings',
-      activePath: '/app/settings',
+      href: settingsHref,
+      activePaths: [SETTINGS_ROOT_PATH, AI_MANAGER_PATH_PREFIX],
       label: 'Settings',
       Icon: SettingsIcon,
     },
@@ -95,10 +103,11 @@ export function MobileNav() {
   return (
     <nav className="fixed bottom-0 inset-x-0 z-40 h-16 bg-panel/95 backdrop-blur border-t border-border flex items-center justify-around md:hidden safe-area-bottom">
       {navItems.map((item) => {
-        const isActive = pathname.startsWith(item.activePath);
+        const isActive = item.activePaths.some((path) => pathname.startsWith(path));
+        const showTasksBadge = item.activePaths.includes('/app/tasks');
         return (
           <Link
-            key={item.href}
+            key={item.label}
             href={item.href}
             className={`flex flex-col items-center gap-0.5 px-6 py-2 relative transition-colors ${
               isActive ? 'text-accent' : 'text-muted'
@@ -106,7 +115,7 @@ export function MobileNav() {
           >
             <div className="relative">
               <item.Icon active={isActive} />
-              {item.activePath === '/app/tasks' && unreadCount > 0 && (
+              {showTasksBadge && unreadCount > 0 && (
                 <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-error rounded-full border-2 border-panel" />
               )}
             </div>
