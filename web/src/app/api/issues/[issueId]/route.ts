@@ -268,7 +268,9 @@ export async function PATCH(
   const nextMetadata = input.metadata !== undefined ? input.metadata : existingMetadata;
   const requestedBackendType = normalizeBackendType(nextMetadata?.backendType);
   const currentStatus = normalizeIssueStatus(existing.status);
-  const currentPriority = normalizeIssuePriority(existing.priority);
+  const currentPriority = normalizeIssuePriority(
+    'priority' in existing ? existing.priority : undefined,
+  );
   const nextStatus = input.status ?? currentStatus;
   const nextPriority = input.priority ?? currentPriority;
   if (!prioritySchemaAvailable && input.priority !== undefined && !isDefaultIssuePriority(input.priority)) {
