@@ -15,6 +15,7 @@ import {
   buildConductorConnectHeaders,
   BridgeRunner,
   createPendingRemoteInterruptQueue,
+  ensureTaskContext,
   FireWatchdog,
   formatFatalError,
   injectResolvedTaskId,
@@ -865,6 +866,47 @@ describe("conductor-fire backends", () => {
         process.env.CONDUCTOR_DAEMON_NAME = previousDaemonName;
       }
     }
+  });
+
+  it("verifies CONDUCTOR_TASK_ID exists before attaching to an existing task", async () => {
+    const conductor = {
+      getTaskCalls: [],
+      async getTask(taskId) {
+        this.getTaskCalls.push(taskId);
+        return { id: taskId };
+      },
+      async createTaskSession() {
+        throw new Error("createTaskSession should not be called");
+      },
+    };
+
+    const context = await ensureTaskContext(conductor, {
+      providedTaskId: "task-existing-1",
+      initialPrompt: "hi",
+    });
+
+    assert.equal(context.taskId, "task-existing-1");
+    assert.equal(context.initialPromptDelivery, "synthetic");
+    assert.deepEqual(conductor.getTaskCalls, ["task-existing-1"]);
+  });
+
+  it("fails fast when CONDUCTOR_TASK_ID points to a missing task", async () => {
+    const conductor = {
+      async getTask() {
+        const error = new Error("Backend responded with 404");
+        error.statusCode = 404;
+        throw error;
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        ensureTaskContext(conductor, {
+          providedTaskId: "task-missing-1",
+          initialPrompt: "hi",
+        }),
+      /CONDUCTOR_TASK_ID points to missing task task-missing-1/,
+    );
   });
 
   it("releases fresh-session lock after bootstrap finishes", async () => {

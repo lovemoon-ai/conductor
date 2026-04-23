@@ -57,6 +57,7 @@ class FakeBackendApi {
     sessionFilePath?: string | null;
     metadata?: Record<string, unknown>;
   }> = [];
+  getTaskCalls: string[] = [];
   commitSdkMessageCalls: Array<{
     agentHost: string;
     taskId: string;
@@ -177,6 +178,25 @@ class FakeBackendApi {
       backend_type: params.backendType ?? null,
       session_id: params.sessionId ?? null,
       session_file_path: params.sessionFilePath ?? null,
+    };
+  }
+
+  async getTask(taskId: string) {
+    this.getTaskCalls.push(taskId);
+    const task = this.tasks.find((entry) => entry.id === taskId);
+    if (!task) {
+      throw new BackendApiError('Backend responded with 404', 404, { error: 'Not found' });
+    }
+    return {
+      id: task.id,
+      projectId: task.project_id,
+      title: task.title,
+      status: task.status,
+      backendType: task.backend_type ?? null,
+      sessionId: task.session_id ?? null,
+      sessionFilePath: task.session_file_path ?? null,
+      createdAt: null,
+      updatedAt: null,
     };
   }
 
@@ -485,6 +505,34 @@ describe('ConductorClient', () => {
         metadata: { daemonName: 'mac-studio' },
       }),
     );
+    await client.close();
+  });
+
+  test('getTask returns normalized task payload', async () => {
+    const client = await makeClient();
+    await client.createTaskSession({
+      project_id: 'proj1',
+      task_title: 'Hello',
+      task_id: 'task-get-1',
+      backend_type: 'codex',
+      session_id: 'session-get-1',
+      session_file_path: '/tmp/session-get-1.jsonl',
+    });
+
+    const task = await client.getTask('task-get-1');
+
+    expect(backendApi.getTaskCalls).toEqual(['task-get-1']);
+    expect(task).toEqual({
+      id: 'task-get-1',
+      project_id: 'proj1',
+      title: 'Hello',
+      status: 'running',
+      backend_type: 'codex',
+      session_id: 'session-get-1',
+      session_file_path: '/tmp/session-get-1.jsonl',
+      created_at: null,
+      updated_at: null,
+    });
     await client.close();
   });
 

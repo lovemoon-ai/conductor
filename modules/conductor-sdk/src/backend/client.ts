@@ -228,6 +228,12 @@ export class BackendApiClient {
     return TaskSummary.fromJSON(payload);
   }
 
+  async getTask(taskId: string): Promise<TaskSummary> {
+    const response = await this.request('GET', `/tasks/${taskId}`);
+    const payload = await this.parseJson(response);
+    return TaskSummary.fromJSON(payload);
+  }
+
   async updateTask(
     taskId: string,
     params: {

@@ -1466,10 +1466,28 @@ function buildEnv() {
   return env;
 }
 
-async function ensureTaskContext(conductor, opts) {
-  if (opts.providedTaskId) {
+function isBackendNotFoundError(error) {
+  return Boolean(error && typeof error === "object" && Number(error.statusCode) === 404);
+}
+
+export async function ensureTaskContext(conductor, opts) {
+  const providedTaskId =
+    typeof opts.providedTaskId === "string" ? opts.providedTaskId.trim() : "";
+  if (providedTaskId) {
+    if (typeof conductor.getTask === "function") {
+      try {
+        await conductor.getTask(providedTaskId);
+      } catch (error) {
+        if (isBackendNotFoundError(error)) {
+          throw new Error(
+            `CONDUCTOR_TASK_ID points to missing task ${providedTaskId}; unset CONDUCTOR_TASK_ID or use an existing task id`,
+          );
+        }
+        throw error;
+      }
+    }
     return {
-      taskId: opts.providedTaskId,
+      taskId: providedTaskId,
       appUrl: null,
       shouldProcessInitialPrompt: Boolean(opts.initialPrompt),
       initialPromptDelivery: opts.initialPrompt ? "synthetic" : "none",
