@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { createPortal } from 'react-dom';
 
 interface DialogProps {
   open: boolean;
@@ -10,6 +11,10 @@ interface DialogProps {
   maxWidthClassName?: string;
   children: React.ReactNode;
 }
+
+const stopPointerPropagation = (event: ReactPointerEvent) => {
+  event.stopPropagation();
+};
 
 export function Dialog({
   open,
@@ -22,25 +27,37 @@ export function Dialog({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const descriptionId = useId();
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
     const dialog = dialogRef.current;
     if (!dialog) return;
 
     if (open) {
-      dialog.showModal();
-    } else {
+      if (!dialog.open) {
+        dialog.showModal();
+      }
+    } else if (dialog.open) {
       dialog.close();
     }
-  }, [open]);
+  }, [mounted, open]);
 
-  return (
+  const dialogNode = (
     <dialog
       ref={dialogRef}
       aria-labelledby={titleId}
       aria-describedby={description ? descriptionId : undefined}
       className={`fixed inset-0 m-auto w-[calc(100%-2rem)] ${maxWidthClassName} rounded-2xl border border-border bg-panel p-0 shadow-2xl backdrop:bg-ink/60 backdrop:backdrop-blur-sm`}
       onClose={onClose}
+      onPointerDown={stopPointerPropagation}
+      onPointerMove={stopPointerPropagation}
+      onPointerUp={stopPointerPropagation}
+      onClick={(event) => event.stopPropagation()}
     >
       <div className="flex items-start justify-between gap-4 border-b border-border p-5">
         <div className="min-w-0">
@@ -65,4 +82,10 @@ export function Dialog({
       <div className="p-5">{children}</div>
     </dialog>
   );
+
+  if (!mounted || typeof document === 'undefined') {
+    return null;
+  }
+
+  return createPortal(dialogNode, document.body);
 }

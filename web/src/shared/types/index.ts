@@ -60,6 +60,7 @@ export interface Issue {
   metadata?: Record<string, unknown> | null;
   activeTask?: Task | null;
   linkedTask?: Task | null;
+  tasks?: Task[] | null;
   createdAt: string;
   updatedAt?: string | null;
 }

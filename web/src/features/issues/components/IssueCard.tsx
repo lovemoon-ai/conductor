@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type SyntheticEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type SyntheticEvent } from 'react';
 import { CSS } from '@dnd-kit/utilities';
 import { useSortable } from '@dnd-kit/sortable';
 import type { Issue } from '@/shared/types';
@@ -10,10 +10,6 @@ import {
   ISSUE_STATUS_BADGE_CLASSNAMES,
   ISSUE_STATUS_LABELS,
 } from '@/lib/issues/config';
-import { EditIssueDialog } from './EditIssueDialog';
-
-const LONG_PRESS_MS = 500;
-const LONG_PRESS_MOVE_THRESHOLD_SQ = 25;
 
 const stopEventPropagation = (event: SyntheticEvent) => {
   event.stopPropagation();
@@ -61,7 +57,13 @@ function IssueStatusMenu({
   };
 
   return (
-    <div ref={menuRef} className="relative shrink-0" onPointerDown={stopEventPropagation} onClick={stopEventPropagation}>
+    <div
+      ref={menuRef}
+      className="relative shrink-0"
+      onPointerDown={stopEventPropagation}
+      onClick={stopEventPropagation}
+      onDoubleClick={stopEventPropagation}
+    >
       <button
         type="button"
         aria-label={`Change status for ${issue.title}`}
@@ -108,6 +110,7 @@ function IssueCardBody({
   statusAttributes,
   onStatusChange,
   onDelete,
+  onOpenDetails,
 }: {
   issue: Issue;
   elevated?: boolean;
@@ -117,6 +120,7 @@ function IssueCardBody({
   statusAttributes?: Record<string, unknown>;
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
   onDelete?: (issueId: string) => Promise<void> | void;
+  onOpenDetails?: (issue: Issue) => void;
 }) {
   const description = issue.description?.trim();
   const activeTask = issue.activeTask ?? null;
@@ -125,48 +129,7 @@ function IssueCardBody({
   const hasHistoricalLinkedTask = !activeTask && Boolean(linkedTask);
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const deleteActionRef = useRef<HTMLButtonElement>(null);
-  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressStartXRef = useRef(0);
-  const longPressStartYRef = useRef(0);
-
-  const clearLongPress = useCallback(() => {
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => clearLongPress, [clearLongPress]);
-
-  const handleTitlePointerDown = useCallback((event: ReactPointerEvent<HTMLHeadingElement>) => {
-    if (!interactive) {
-      return;
-    }
-    clearLongPress();
-    longPressStartXRef.current = event.clientX;
-    longPressStartYRef.current = event.clientY;
-    longPressTimerRef.current = setTimeout(() => {
-      longPressTimerRef.current = null;
-      setIsEditDialogOpen(true);
-    }, LONG_PRESS_MS);
-  }, [clearLongPress, interactive]);
-
-  const handleTitlePointerMove = useCallback((event: ReactPointerEvent<HTMLHeadingElement>) => {
-    if (!longPressTimerRef.current) {
-      return;
-    }
-    const dx = event.clientX - longPressStartXRef.current;
-    const dy = event.clientY - longPressStartYRef.current;
-    if (dx * dx + dy * dy > LONG_PRESS_MOVE_THRESHOLD_SQ) {
-      clearLongPress();
-    }
-  }, [clearLongPress]);
-
-  const handleTitlePointerEnd = useCallback(() => {
-    clearLongPress();
-  }, [clearLongPress]);
 
   useEffect(() => {
     if (!isConfirmingDelete || isDeleting) {
@@ -202,6 +165,15 @@ function IssueCardBody({
     }
   };
 
+  const handleDoubleClick = useCallback((event: SyntheticEvent) => {
+    if (!interactive || !onOpenDetails) {
+      return;
+    }
+    event.stopPropagation();
+    event.preventDefault();
+    onOpenDetails(issue);
+  }, [interactive, issue, onOpenDetails]);
+
   return (
     <article
       className={[
@@ -210,6 +182,7 @@ function IssueCardBody({
         interactive && !disabled ? 'cursor-grab active:cursor-grabbing' : '',
       ].join(' ')}
       data-issue-id={issue.id}
+      onDoubleClick={interactive ? handleDoubleClick : undefined}
       {...statusAttributes}
     >
       <div className="min-w-0">
@@ -219,11 +192,6 @@ function IssueCardBody({
               'min-w-0 flex-1 text-sm font-semibold text-ink',
               interactive ? 'select-none' : '',
             ].join(' ')}
-            onPointerDown={interactive ? handleTitlePointerDown : undefined}
-            onPointerMove={interactive ? handleTitlePointerMove : undefined}
-            onPointerUp={interactive ? handleTitlePointerEnd : undefined}
-            onPointerCancel={interactive ? handleTitlePointerEnd : undefined}
-            onPointerLeave={interactive ? handleTitlePointerEnd : undefined}
           >
             {issue.title}
           </h3>
@@ -237,7 +205,10 @@ function IssueCardBody({
         </div>
 
         {description ? (
-          <p className="mt-2 whitespace-pre-wrap break-words text-sm text-muted/90">
+          <p
+            className="mt-2 whitespace-pre-wrap break-words text-sm text-muted/90 line-clamp-3"
+            title={description}
+          >
             {description}
           </p>
         ) : (
@@ -245,12 +216,18 @@ function IssueCardBody({
         )}
 
         {interactive && (openTask || onDelete) ? (
-          <div className="mt-3 flex items-center gap-2" onPointerDown={stopEventPropagation} onClick={stopEventPropagation}>
+          <div
+            className="mt-3 flex items-center gap-2"
+            onPointerDown={stopEventPropagation}
+            onClick={stopEventPropagation}
+            onDoubleClick={stopEventPropagation}
+          >
             {openTask ? (
               <Link
                 href={`/app/tasks/${encodeURIComponent(openTask.id)}`}
                 onPointerDown={stopEventPropagation}
                 onClick={stopEventPropagation}
+                onDoubleClick={stopEventPropagation}
                 className="inline-flex rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-border/40"
               >
                 {hasHistoricalLinkedTask ? 'Open last task' : 'Open task'}
@@ -283,13 +260,6 @@ function IssueCardBody({
           </div>
         ) : null}
       </div>
-      {interactive ? (
-        <EditIssueDialog
-          open={isEditDialogOpen}
-          onClose={() => setIsEditDialogOpen(false)}
-          issue={issue}
-        />
-      ) : null}
     </article>
   );
 }
@@ -300,12 +270,14 @@ export function IssueCard({
   statusMenuDisabled = false,
   onStatusChange,
   onDelete,
+  onOpenDetails,
 }: {
   issue: Issue;
   disabled?: boolean;
   statusMenuDisabled?: boolean;
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
   onDelete?: (issueId: string) => Promise<void> | void;
+  onOpenDetails?: (issue: Issue) => void;
 }) {
   const {
     attributes,
@@ -334,6 +306,7 @@ export function IssueCard({
         statusMenuDisabled={statusMenuDisabled}
         onStatusChange={onStatusChange}
         onDelete={onDelete}
+        onOpenDetails={onOpenDetails}
         statusAttributes={{ ...attributes, ...listeners }}
       />
     </div>

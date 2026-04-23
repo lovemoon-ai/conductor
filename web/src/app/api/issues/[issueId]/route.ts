@@ -213,11 +213,12 @@ export async function GET(
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
-  const { activeTaskByIssueId, linkedTaskByIssueId } = await loadIssueTaskMaps(user.id, [issue.id]);
+  const { activeTaskByIssueId, linkedTaskByIssueId, tasksByIssueId } = await loadIssueTaskMaps(user.id, [issue.id]);
 
   return NextResponse.json(serializeIssueWithTasks(issue, {
     activeTask: activeTaskByIssueId.get(issue.id) ?? null,
     linkedTask: linkedTaskByIssueId.get(issue.id) ?? null,
+    tasks: tasksByIssueId.get(issue.id) ?? null,
   }));
 }
 
@@ -252,7 +253,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
-  const { activeTaskByIssueId, linkedTaskByIssueId } = await loadIssueTaskMaps(user.id, [existing.id]);
+  const { activeTaskByIssueId, linkedTaskByIssueId, tasksByIssueId } = await loadIssueTaskMaps(user.id, [existing.id]);
 
   const body = await request.json().catch(() => null);
   const parsed = issuePatchSchema.safeParse(normalizeIssuePatchBody(body));
@@ -588,9 +589,29 @@ export async function PATCH(
     updated = await db.issue.update(effectiveIssueUpdateArgs);
   }
 
+  const existingTasks = tasksByIssueId.get(existing.id) ?? [];
+  type IssueTaskEntry = typeof existingTasks[number];
+  const getTaskSortTime = (task: IssueTaskEntry): number =>
+    (task.updatedAt instanceof Date ? task.updatedAt : task.createdAt).getTime();
+  const tasksById = new Map<string, IssueTaskEntry>();
+  for (const task of existingTasks) {
+    if (task && typeof task.id === 'string') {
+      tasksById.set(task.id, task);
+    }
+  }
+  for (const extra of [activeTask, linkedTask, spawnedTask?.task ?? null, killedTask]) {
+    if (extra && typeof extra.id === 'string') {
+      tasksById.set(extra.id, extra as IssueTaskEntry);
+    }
+  }
+  const nextTasks = Array.from(tasksById.values()).sort(
+    (left, right) => getTaskSortTime(right) - getTaskSortTime(left),
+  );
+
   const serializedIssue = serializeIssueWithTasks(updated, {
     activeTask,
     linkedTask,
+    tasks: nextTasks,
   });
   const serializedActiveTask = activeTask ? serializeTaskResponse(activeTask) : null;
   const serializedLinkedTask = linkedTask ? serializeTaskResponse(linkedTask) : null;

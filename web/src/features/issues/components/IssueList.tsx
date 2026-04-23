@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Issue } from '@/shared/types';
 import {
   ISSUE_STATUSES,
@@ -9,6 +9,7 @@ import {
 } from '@/lib/issues/config';
 import { buildIssueColumns } from './board-utils';
 import { IssueCard } from './IssueCard';
+import { IssueDetailsDialog } from './IssueDetailsDialog';
 
 const getDefaultVisibleStatus = (issues: Issue[]): Issue['status'] => {
   const columns = buildIssueColumns(issues);
@@ -28,6 +29,20 @@ export function IssueList({
   const defaultVisibleStatus = useMemo(() => getDefaultVisibleStatus(issues), [issues]);
   const [visibleStatus, setVisibleStatus] = useState<Issue['status']>(defaultVisibleStatus);
   const [hasCustomizedFilter, setHasCustomizedFilter] = useState(false);
+  const [detailsIssueId, setDetailsIssueId] = useState<string | null>(null);
+
+  const handleOpenDetails = useCallback((issue: Issue) => {
+    setDetailsIssueId(issue.id);
+  }, []);
+
+  const handleCloseDetails = useCallback(() => {
+    setDetailsIssueId(null);
+  }, []);
+
+  const detailsIssue = useMemo(
+    () => (detailsIssueId ? issues.find((issue) => issue.id === detailsIssueId) ?? null : null),
+    [detailsIssueId, issues],
+  );
 
   useEffect(() => {
     if (!hasCustomizedFilter) {
@@ -77,6 +92,7 @@ export function IssueList({
               disabled
               onStatusChange={onStatusChange}
               onDelete={onDeleteIssue}
+              onOpenDetails={handleOpenDetails}
             />
           ))}
         </div>
@@ -85,6 +101,12 @@ export function IssueList({
           No issues in {ISSUE_STATUS_LABELS[visibleStatus]}.
         </div>
       )}
+
+      <IssueDetailsDialog
+        open={Boolean(detailsIssue)}
+        onClose={handleCloseDetails}
+        issue={detailsIssue}
+      />
     </div>
   );
 }

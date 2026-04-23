@@ -257,12 +257,29 @@ const mapFirstTaskByIssueId = (tasks: IssueTaskRecord[]) => {
   return result;
 };
 
+const groupTasksByIssueId = (tasks: IssueTaskRecord[]) => {
+  const result = new Map<string, IssueTaskRecord[]>();
+  for (const task of tasks) {
+    if (typeof task.issueId !== 'string') {
+      continue;
+    }
+    const existing = result.get(task.issueId);
+    if (existing) {
+      existing.push(task);
+      continue;
+    }
+    result.set(task.issueId, [task]);
+  }
+  return result;
+};
+
 export const loadIssueTaskMaps = async (userId: string, issueIds: string[]) => {
   const ids = issueIds.filter((issueId) => typeof issueId === 'string' && issueId.trim().length > 0);
   if (ids.length === 0) {
     return {
       activeTaskByIssueId: new Map<string, IssueTaskRecord>(),
       linkedTaskByIssueId: new Map<string, IssueTaskRecord>(),
+      tasksByIssueId: new Map<string, IssueTaskRecord[]>(),
     };
   }
 
@@ -287,6 +304,7 @@ export const loadIssueTaskMaps = async (userId: string, issueIds: string[]) => {
   return {
     activeTaskByIssueId: mapFirstTaskByIssueId(activeTasks as IssueTaskRecord[]),
     linkedTaskByIssueId: mapFirstTaskByIssueId(linkedTasks as IssueTaskRecord[]),
+    tasksByIssueId: groupTasksByIssueId(linkedTasks as IssueTaskRecord[]),
   };
 };
 
@@ -304,7 +322,13 @@ export const serializeIssueWithTasks = (issue: {
 }, tasks?: {
   activeTask?: IssueTaskRecord | null;
   linkedTask?: IssueTaskRecord | null;
-}) => serializeIssue(issue, tasks?.activeTask ?? null, tasks?.linkedTask ?? null);
+  tasks?: IssueTaskRecord[] | null;
+}) => serializeIssue(
+  issue,
+  tasks?.activeTask ?? null,
+  tasks?.linkedTask ?? null,
+  tasks?.tasks ?? null,
+);
 
 export const buildIssueInitialContent = (issue: {
   title: string;

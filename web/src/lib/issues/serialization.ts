@@ -31,11 +31,13 @@ type SerializableIssue = {
 
 type SerializableActiveTask = Parameters<typeof serializeTaskResponse>[0] | null | undefined;
 type SerializableLinkedTask = Parameters<typeof serializeTaskResponse>[0] | null | undefined;
+type SerializableTaskList = Parameters<typeof serializeTaskResponse>[0][] | null | undefined;
 
 export const serializeIssue = (
   issue: SerializableIssue,
   activeTask?: SerializableActiveTask,
   linkedTask?: SerializableLinkedTask,
+  tasks?: SerializableTaskList,
 ) => {
   const status = normalizeIssueStatus(issue.status);
   const priority = normalizeIssuePriority(issue.priority);
@@ -44,6 +46,9 @@ export const serializeIssue = (
   const serializedActiveTask = activeTask ? serializeTaskResponse(activeTask) : null;
   const resolvedLinkedTask = linkedTask ?? activeTask ?? null;
   const serializedLinkedTask = resolvedLinkedTask ? serializeTaskResponse(resolvedLinkedTask) : null;
+  const serializedTasks = Array.isArray(tasks)
+    ? tasks.map((task) => serializeTaskResponse(task))
+    : null;
 
   return {
     id: issue.id,
@@ -56,6 +61,7 @@ export const serializeIssue = (
     metadata: parseIssueMetadata(issue.metadata),
     activeTask: serializedActiveTask,
     linkedTask: serializedLinkedTask,
+    tasks: serializedTasks,
     createdAt,
     updatedAt,
     project_id: issue.projectId,

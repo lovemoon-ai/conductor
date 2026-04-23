@@ -45,6 +45,19 @@ const syncTask = (raw: unknown, moveToFront = false): Task | null => {
   return task;
 };
 
+const normalizeTaskList = (value: unknown): Task[] | null => {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const normalized: Task[] = [];
+  for (const entry of value) {
+    if (entry && typeof entry === 'object') {
+      normalized.push(normalizeTask(entry));
+    }
+  }
+  return normalized;
+};
+
 export const normalizeIssue = (raw: unknown): Issue | null => {
   if (!raw || typeof raw !== 'object') {
     return null;
@@ -72,6 +85,7 @@ export const normalizeIssue = (raw: unknown): Issue | null => {
     linkedTask: record.linkedTask || record.linked_task
       ? normalizeTask(record.linkedTask ?? record.linked_task)
       : (record.activeTask || record.active_task ? normalizeTask(record.activeTask ?? record.active_task) : null),
+    tasks: normalizeTaskList(record.tasks),
     createdAt:
       pickString(record.createdAt) ?? pickString(record.created_at) ?? new Date().toISOString(),
     updatedAt:

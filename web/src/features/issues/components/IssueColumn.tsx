@@ -17,6 +17,7 @@ export function IssueColumn({
   statusMenuDisabled = false,
   onStatusChange,
   onDeleteIssue,
+  onOpenDetails,
 }: {
   status: IssueStatus;
   issues: Issue[];
@@ -24,6 +25,7 @@ export function IssueColumn({
   statusMenuDisabled?: boolean;
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
   onDeleteIssue?: (issueId: string) => Promise<void> | void;
+  onOpenDetails?: (issue: Issue) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
@@ -52,6 +54,7 @@ export function IssueColumn({
                 statusMenuDisabled={statusMenuDisabled}
                 onStatusChange={onStatusChange}
                 onDelete={onDeleteIssue}
+                onOpenDetails={onOpenDetails}
               />
             ))
           ) : (

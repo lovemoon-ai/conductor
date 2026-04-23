@@ -20,6 +20,7 @@ import { ISSUE_STATUSES } from '@/lib/issues/config';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { IssueCardOverlay } from './IssueCard';
 import { IssueColumn } from './IssueColumn';
+import { IssueDetailsDialog } from './IssueDetailsDialog';
 import {
   buildIssueColumns,
   calculateIssuePosition,
@@ -65,6 +66,20 @@ export function IssueBoard({
   const effectiveStatusMenuDisabled = isLoading || statusMenuDisabled;
   const [columns, setColumns] = useState<IssueBoardColumns>(() => buildIssueColumns(issues));
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
+  const [detailsIssueId, setDetailsIssueId] = useState<string | null>(null);
+
+  const handleOpenDetails = useCallback((issue: Issue) => {
+    setDetailsIssueId(issue.id);
+  }, []);
+
+  const handleCloseDetails = useCallback(() => {
+    setDetailsIssueId(null);
+  }, []);
+
+  const detailsIssue = useMemo(
+    () => (detailsIssueId ? issues.find((issue) => issue.id === detailsIssueId) ?? null : null),
+    [detailsIssueId, issues],
+  );
 
   useEffect(() => {
     if (activeIssueId !== null) {
@@ -170,6 +185,7 @@ export function IssueBoard({
               statusMenuDisabled={effectiveStatusMenuDisabled}
               onStatusChange={onStatusChange}
               onDeleteIssue={onDeleteIssue}
+              onOpenDetails={handleOpenDetails}
             />
           </div>
         ))}
@@ -178,6 +194,12 @@ export function IssueBoard({
       <DragOverlay>
         {activeIssue ? <IssueCardOverlay issue={activeIssue} /> : null}
       </DragOverlay>
+
+      <IssueDetailsDialog
+        open={Boolean(detailsIssue)}
+        onClose={handleCloseDetails}
+        issue={detailsIssue}
+      />
     </DndContext>
   );
 }
