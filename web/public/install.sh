@@ -9,7 +9,7 @@ NC='\033[0m'
 
 PACKAGE_NAME="@love-moon/conductor-cli"
 CONDUCTOR_HOME="${HOME}/.conductor"
-NODE_VERSION="20.11.0"
+NODE_VERSION="23.11.0"
 NODE_CMD="node"
 NPM_CMD="npm"
 INSTALL_USE_SUDO=""
