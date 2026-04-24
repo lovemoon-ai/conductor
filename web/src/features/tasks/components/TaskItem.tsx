@@ -29,11 +29,12 @@ interface TaskItemProps {
   showProjectInfo?: boolean;
   projectName?: string | null;
   projectDaemonHost?: string | null;
-  isDefaultProject?: boolean;
   activeTaskTypeFilter?: TaskType | null;
   activeProjectFilter?: string | null;
+  activeDaemonHostFilter?: string | null;
   onFilterByTaskType?: (taskType: TaskType) => void;
   onFilterByProject?: (projectId: string) => void;
+  onFilterByDaemonHost?: (daemonHost: string) => void;
 }
 
 interface ShareDialogState {
@@ -198,11 +199,12 @@ export function TaskItem({
   showProjectInfo = false,
   projectName = null,
   projectDaemonHost = null,
-  isDefaultProject = false,
   activeTaskTypeFilter = null,
   activeProjectFilter = null,
+  activeDaemonHostFilter = null,
   onFilterByTaskType,
   onFilterByProject,
+  onFilterByDaemonHost,
 }: TaskItemProps) {
   const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
@@ -751,18 +753,17 @@ export function TaskItem({
     : projectName ?? undefined;
   const projectChipBaseClass = 'flex max-w-[10rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted';
   const projectChipActiveClass = 'ring-1 ring-[var(--accent)] ring-offset-1 ring-offset-transparent';
+  const isDaemonHostFilterActive = Boolean(projectDaemonHost) && activeDaemonHostFilter === projectDaemonHost;
+  const daemonChipBaseClass = 'flex max-w-[10rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted';
+  const daemonChipActiveClass = 'ring-1 ring-[var(--accent)] ring-offset-1 ring-offset-transparent';
+  const daemonChipTitle = onFilterByDaemonHost && projectDaemonHost
+    ? isDaemonHostFilterActive
+      ? `Click to clear daemon filter`
+      : `Click to show only tasks on ${projectDaemonHost}`
+    : projectDaemonHost ?? undefined;
 
   const metadataChips = (
     <>
-      {isDefaultProject ? (
-        <span
-          title="Task in the default demo project"
-          aria-label="Demo"
-          className="flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
-        >
-          Demo
-        </span>
-      ) : null}
       {onFilterByTaskType ? (
         <button
           type="button"
@@ -819,12 +820,25 @@ export function TaskItem({
         )
       ) : null}
       {showProjectInfo && projectDaemonHost ? (
-        <span
-          title={projectDaemonHost}
-          className="flex max-w-[10rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted"
-        >
-          {projectDaemonHost}
-        </span>
+        onFilterByDaemonHost ? (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onFilterByDaemonHost(projectDaemonHost);
+            }}
+            title={daemonChipTitle}
+            className={`${daemonChipBaseClass} transition-colors hover:text-ink ${
+              isDaemonHostFilterActive ? daemonChipActiveClass : ''
+            }`}
+          >
+            {projectDaemonHost}
+          </button>
+        ) : (
+          <span title={projectDaemonHost} className={daemonChipBaseClass}>
+            {projectDaemonHost}
+          </span>
+        )
       ) : null}
     </>
   );

@@ -45,6 +45,15 @@ function TasksPageContent() {
   const requestedTaskId = searchParams.get('taskId');
   const taskTypeFilterParam = searchParams.get('taskType');
   const taskTypeFilter: TaskType | null = parseTaskType(taskTypeFilterParam);
+  const daemonHostFilterParam = searchParams.get('daemonHost');
+  const daemonHostFilter = daemonHostFilterParam && daemonHostFilterParam.trim() ? daemonHostFilterParam : null;
+  const projectDaemonHostMap = useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const project of projects) {
+      map.set(project.id, project.daemonHost ?? null);
+    }
+    return map;
+  }, [projects]);
   const projectVisibleTasks = useMemo(() => filterTasksByProject(tasks, projectId, hiddenProjectIds), [tasks, projectId, hiddenProjectIds]);
   const runningFilteredTasks = useMemo(
     () => showRunningOnly
@@ -52,11 +61,20 @@ function TasksPageContent() {
       : projectVisibleTasks,
     [projectVisibleTasks, showRunningOnly],
   );
-  const visibleTasks = useMemo(
+  const typeFilteredTasks = useMemo(
     () => taskTypeFilter
       ? runningFilteredTasks.filter((task) => (task.taskType ?? 'ai_task') === taskTypeFilter)
       : runningFilteredTasks,
     [runningFilteredTasks, taskTypeFilter],
+  );
+  const visibleTasks = useMemo(
+    () => daemonHostFilter
+      ? typeFilteredTasks.filter((task) => {
+          const host = task.projectId ? projectDaemonHostMap.get(task.projectId) ?? null : null;
+          return host === daemonHostFilter;
+        })
+      : typeFilteredTasks,
+    [typeFilteredTasks, daemonHostFilter, projectDaemonHostMap],
   );
   const taskCount = visibleTasks.length;
   const currentProjectName = projectId
@@ -218,11 +236,18 @@ function TasksPageContent() {
     [projectId, replaceTaskRoute],
   );
 
-  const handleClearTagFilters = useCallback(() => {
-    replaceTaskRoute((params) => {
-      params.delete('taskType');
-    });
-  }, [replaceTaskRoute]);
+  const handleFilterByDaemonHost = useCallback(
+    (nextDaemonHost: string) => {
+      replaceTaskRoute((params) => {
+        if (daemonHostFilter === nextDaemonHost) {
+          params.delete('daemonHost');
+        } else {
+          params.set('daemonHost', nextDaemonHost);
+        }
+      });
+    },
+    [daemonHostFilter, replaceTaskRoute],
+  );
 
   const handleTitleDoubleClick = () => {
     void setTaskListRunningOnly(!showRunningOnly);
@@ -288,9 +313,10 @@ function TasksPageContent() {
                 projectFilter={projectId}
                 runningOnly={showRunningOnly}
                 taskTypeFilter={taskTypeFilter}
+                daemonHostFilter={daemonHostFilter}
                 onFilterByTaskType={handleFilterByTaskType}
                 onFilterByProject={handleFilterByProject}
-                onClearTagFilters={handleClearTagFilters}
+                onFilterByDaemonHost={handleFilterByDaemonHost}
               />
             </div>
             <div className="hidden min-h-0 min-w-0 flex-1 overflow-hidden rounded-[24px] border border-border bg-paper shadow-sm md:flex md:flex-col">
@@ -311,9 +337,10 @@ function TasksPageContent() {
               projectFilter={projectId}
               runningOnly={showRunningOnly}
               taskTypeFilter={taskTypeFilter}
+              daemonHostFilter={daemonHostFilter}
               onFilterByTaskType={handleFilterByTaskType}
               onFilterByProject={handleFilterByProject}
-              onClearTagFilters={handleClearTagFilters}
+              onFilterByDaemonHost={handleFilterByDaemonHost}
             />
           </div>
         )}

@@ -46,9 +46,10 @@ interface TaskListProps {
   projectFilter?: string | null;
   runningOnly?: boolean;
   taskTypeFilter?: TaskType | null;
+  daemonHostFilter?: string | null;
   onFilterByTaskType?: (taskType: TaskType) => void;
   onFilterByProject?: (projectId: string) => void;
-  onClearTagFilters?: () => void;
+  onFilterByDaemonHost?: (daemonHost: string) => void;
 }
 
 export function TaskList({
@@ -58,9 +59,10 @@ export function TaskList({
   projectFilter,
   runningOnly = false,
   taskTypeFilter = null,
+  daemonHostFilter = null,
   onFilterByTaskType,
   onFilterByProject,
-  onClearTagFilters,
+  onFilterByDaemonHost,
 }: TaskListProps) {
   const { tasks, isLoading, unreadTaskIds, currentProjectFilter, deleteTask } = useTasksStore();
   const projects = useProjectsStore((state) => state.projects);
@@ -84,7 +86,7 @@ export function TaskList({
       : projectVisibleTasks,
     [projectVisibleTasks, runningOnly],
   );
-  const visibleTasks = useMemo(
+  const typeFilteredTasks = useMemo(
     () => taskTypeFilter
       ? runningFilteredTasks.filter((task) => (task.taskType ?? 'ai_task') === taskTypeFilter)
       : runningFilteredTasks,
@@ -95,17 +97,25 @@ export function TaskList({
   const projectMap = useMemo(() => {
     const map = new Map<
       string,
-      { name: string; daemonHost: string | null; isDefault: boolean }
+      { name: string; daemonHost: string | null }
     >();
     for (const project of projects) {
       map.set(project.id, {
         name: project.name,
         daemonHost: project.daemonHost ?? null,
-        isDefault: project.isDefault ?? false,
       });
     }
     return map;
   }, [projects]);
+  const visibleTasks = useMemo(
+    () => daemonHostFilter
+      ? typeFilteredTasks.filter((task) => {
+          const host = task.projectId ? projectMap.get(task.projectId)?.daemonHost ?? null : null;
+          return host === daemonHostFilter;
+        })
+      : typeFilteredTasks,
+    [typeFilteredTasks, daemonHostFilter, projectMap],
+  );
   const currentProjectName = effectiveProjectFilter
     ? projects.find((project) => project.id === effectiveProjectFilter)?.name
     : null;
@@ -252,19 +262,47 @@ export function TaskList({
     : taskTypeFilter === 'ai_task'
       ? 'AI'
       : null;
-  const hasTagFilter = Boolean(taskTypeFilterLabel);
-  const tagFilterBar = hasTagFilter && onClearTagFilters ? (
+  const hasProjectTagFilter = Boolean(effectiveProjectFilter) && Boolean(onFilterByProject);
+  const hasDaemonTagFilter = Boolean(daemonHostFilter) && Boolean(onFilterByDaemonHost);
+  const hasTagFilter = Boolean(taskTypeFilterLabel) || hasProjectTagFilter || hasDaemonTagFilter;
+  const pillClassName =
+    'inline-flex items-center gap-1 rounded bg-[var(--accent)]/10 px-2 py-0.5 text-xs font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20';
+  const tagFilterBar = hasTagFilter ? (
     <div className="flex flex-wrap items-center gap-2">
-      {taskTypeFilterLabel ? (
+      {taskTypeFilterLabel && onFilterByTaskType && taskTypeFilter ? (
         <button
           type="button"
-          onClick={onClearTagFilters}
-          title="Clear filter"
-          className="inline-flex items-center gap-1 rounded bg-[var(--accent)]/10 px-2 py-0.5 text-xs font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20"
+          onClick={() => onFilterByTaskType(taskTypeFilter)}
+          title={`Clear ${taskTypeFilterLabel} filter`}
+          className={pillClassName}
         >
           <span>{taskTypeFilterLabel}</span>
           <span aria-hidden="true">✕</span>
           <span className="sr-only">Clear {taskTypeFilterLabel} filter</span>
+        </button>
+      ) : null}
+      {hasProjectTagFilter && effectiveProjectFilter && onFilterByProject ? (
+        <button
+          type="button"
+          onClick={() => onFilterByProject(effectiveProjectFilter)}
+          title={currentProjectName ? `Clear project filter (${currentProjectName})` : 'Clear project filter'}
+          className={pillClassName}
+        >
+          <span>project</span>
+          <span aria-hidden="true">✕</span>
+          <span className="sr-only">Clear project filter</span>
+        </button>
+      ) : null}
+      {hasDaemonTagFilter && daemonHostFilter && onFilterByDaemonHost ? (
+        <button
+          type="button"
+          onClick={() => onFilterByDaemonHost(daemonHostFilter)}
+          title={`Clear daemon filter (${daemonHostFilter})`}
+          className={pillClassName}
+        >
+          <span className="max-w-[10rem] truncate">{daemonHostFilter}</span>
+          <span aria-hidden="true">✕</span>
+          <span className="sr-only">Clear daemon filter</span>
         </button>
       ) : null}
     </div>
@@ -279,7 +317,13 @@ export function TaskList({
   }
 
   if (visibleTasks.length === 0) {
-    const filterSuffix = taskTypeFilterLabel ? ` matching ${taskTypeFilterLabel}` : '';
+    const filterSummary = [
+      taskTypeFilterLabel,
+      hasDaemonTagFilter ? `daemon ${daemonHostFilter}` : null,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join(' + ');
+    const filterSuffix = filterSummary ? ` matching ${filterSummary}` : '';
     return (
       <div className={tagFilterBar ? 'space-y-3' : ''}>
         {tagFilterBar}
@@ -367,11 +411,12 @@ export function TaskList({
               showProjectInfo={showProjectInfo}
               projectName={showProjectInfo ? projectEntry?.name ?? null : null}
               projectDaemonHost={showProjectInfo ? projectEntry?.daemonHost ?? null : null}
-              isDefaultProject={projectEntry?.isDefault ?? false}
               activeTaskTypeFilter={taskTypeFilter}
               activeProjectFilter={effectiveProjectFilter ?? null}
+              activeDaemonHostFilter={daemonHostFilter}
               onFilterByTaskType={onFilterByTaskType}
               onFilterByProject={onFilterByProject}
+              onFilterByDaemonHost={onFilterByDaemonHost}
             />
           </div>
           );
