@@ -19,6 +19,11 @@ interface ChatViewProps {
 const SCROLL_STORAGE_PREFIX = 'conductor-task-scroll:';
 const SCROLL_BOTTOM_THRESHOLD_PX = 40;
 const SCROLL_TOP_LOAD_THRESHOLD_PX = 24;
+// Minimum overflow distance (scrollHeight - clientHeight) before the floating
+// "jump to latest" button becomes useful. Kept distinct from the near-bottom
+// threshold above because these are two unrelated decisions that only happen
+// to share a numeric value today.
+const SCROLL_TO_BOTTOM_BUTTON_MIN_OVERFLOW_PX = 40;
 const INTERRUPT_CONFIRMATION_TIMEOUT_MS = 5000;
 const COMPOSER_FEEDBACK_AUTO_DISMISS_MS = 5000;
 
@@ -161,6 +166,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     id: number;
     content: string;
   } | null>(null);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
   const messages = messagesByTask[taskId] || [];
   const historyState = historyStateByTask[taskId];
@@ -204,8 +210,10 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
       ? clampScrollTop(container, scrollTop)
       : clampScrollTop(container, container.scrollTop);
     const stickToBottom = isNearBottom(container);
+    const canScroll = getMaxScrollTop(container) > SCROLL_TO_BOTTOM_BUTTON_MIN_OVERFLOW_PX;
 
     shouldStickToBottomRef.current = stickToBottom;
+    setShowScrollToBottom(canScroll && !stickToBottom);
     writeStoredScrollState(taskId, {
       scrollTop: nextScrollTop,
       stickToBottom,
@@ -221,6 +229,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     const nextScrollTop = getMaxScrollTop(container);
     container.scrollTop = nextScrollTop;
     shouldStickToBottomRef.current = true;
+    setShowScrollToBottom(false);
     writeStoredScrollState(taskId, {
       scrollTop: nextScrollTop,
       stickToBottom: true,
@@ -296,6 +305,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     shouldRestoreScrollRef.current = true;
     forceScrollToBottomRef.current = false;
     previousMessageCountRef.current = messages.length;
+    setShowScrollToBottom(false);
   }, [taskId]);
 
   useEffect(() => (
@@ -579,70 +589,96 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
 
   return (
     <div className="flex h-full flex-col bg-paper">
-      <div
-        ref={scrollContainerRef}
-        className="webapp-scrollbar flex-1 overflow-y-auto px-4 py-5 md:px-6"
-        onScroll={handleScroll}
-      >
-        {isLoading && messages.length === 0 ? (
-          <div className="flex h-full items-center justify-center">
-            <LoadingSpinner size="lg" />
-          </div>
-        ) : messages.length === 0 ? (
-          <div className="flex h-full items-center justify-center">
-            <div className="w-full max-w-3xl rounded-3xl border border-dashed border-border bg-panel/70 px-8 py-10 text-center shadow-sm">
-              <svg className="mx-auto mb-4 h-14 w-14 opacity-35" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-              <p className="text-lg font-semibold text-ink">No messages yet</p>
-              <p className="mt-2 text-sm text-muted">
-                {isTaskRunning
-                  ? 'Ask Conductor what to do next, or paste a concrete task to get started.'
-                  : 'The conversation history will appear here once the session is ready and messages start flowing.'}
-              </p>
-              {showEmptyStateRestart ? (
-                <button
-                  type="button"
-                  data-testid="empty-state-restart"
-                  onClick={() => {
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollContainerRef}
+          className="webapp-scrollbar h-full overflow-y-auto px-4 py-5 md:px-6"
+          onScroll={handleScroll}
+        >
+          {isLoading && messages.length === 0 ? (
+            <div className="flex h-full items-center justify-center">
+              <LoadingSpinner size="lg" />
+            </div>
+          ) : messages.length === 0 ? (
+            <div className="flex h-full items-center justify-center">
+              <div className="w-full max-w-3xl rounded-3xl border border-dashed border-border bg-panel/70 px-8 py-10 text-center shadow-sm">
+                <svg className="mx-auto mb-4 h-14 w-14 opacity-35" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+                <p className="text-lg font-semibold text-ink">No messages yet</p>
+                <p className="mt-2 text-sm text-muted">
+                  {isTaskRunning
+                    ? 'Ask Conductor what to do next, or paste a concrete task to get started.'
+                    : 'The conversation history will appear here once the session is ready and messages start flowing.'}
+                </p>
+                {showEmptyStateRestart ? (
+                  <button
+                    type="button"
+                    data-testid="empty-state-restart"
+                    onClick={() => {
+                      void handleRestart();
+                    }}
+                    disabled={!restartEnabled}
+                    className="mt-5 inline-flex items-center justify-center rounded-xl border border-border bg-paper px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-border/35 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-paper"
+                  >
+                    {restartPending ? 'Restarting AI session…' : 'Restart AI session'}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {hasMoreBefore ? (
+                <div className="flex justify-center pb-1 text-xs text-muted">
+                  <span className="rounded-full border border-border bg-panel/80 px-3 py-1.5">
+                    {isLoading ? 'Loading older messages…' : 'Scroll to top to load older messages'}
+                  </span>
+                </div>
+              ) : null}
+              {messages.map((message) => (
+                <MessageBubble
+                  key={message.id}
+                  message={message}
+                  onResend={handleResend}
+                  onRestart={() => {
                     void handleRestart();
                   }}
-                  disabled={!restartEnabled}
-                  className="mt-5 inline-flex items-center justify-center rounded-xl border border-border bg-paper px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-border/35 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-paper"
-                >
-                  {restartPending ? 'Restarting AI session…' : 'Restart AI session'}
-                </button>
-              ) : null}
+                  onInterrupt={() => {
+                    void handleInterrupt();
+                  }}
+                  restartEnabled={restartEnabled}
+                  restartPending={restartPending}
+                  interruptEnabled={interruptEnabled}
+                  interruptPending={interruptPending}
+                />
+              ))}
             </div>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {hasMoreBefore ? (
-              <div className="flex justify-center pb-1 text-xs text-muted">
-                <span className="rounded-full border border-border bg-panel/80 px-3 py-1.5">
-                  {isLoading ? 'Loading older messages…' : 'Scroll to top to load older messages'}
-                </span>
-              </div>
-            ) : null}
-            {messages.map((message) => (
-              <MessageBubble
-                key={message.id}
-                message={message}
-                onResend={handleResend}
-                onRestart={() => {
-                  void handleRestart();
-                }}
-                onInterrupt={() => {
-                  void handleInterrupt();
-                }}
-                restartEnabled={restartEnabled}
-                restartPending={restartPending}
-                interruptEnabled={interruptEnabled}
-                interruptPending={interruptPending}
-              />
-            ))}
-          </div>
-        )}
+          )}
+        </div>
+        {showScrollToBottom ? (
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            aria-label="Scroll to latest message"
+            data-testid="scroll-to-bottom"
+            className="absolute bottom-4 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-panel/80 text-ink shadow-md backdrop-blur-sm transition-colors hover:bg-border/50"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-4 w-4"
+              aria-hidden
+            >
+              <path d="M12 5v14" />
+              <path d="m19 12-7 7-7-7" />
+            </svg>
+          </button>
+        ) : null}
       </div>
       <div className="border-t border-border bg-paper/40 px-4 py-3 md:px-6">
         <div className="w-full space-y-3">
