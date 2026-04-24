@@ -136,7 +136,7 @@ export function ProjectItem({
   const taskStatusCounts = projectRecord.taskStatusCounts as Record<string, number> | undefined;
   const runningCount = taskStatusCounts?.running ?? 0;
   const killedCount = taskStatusCounts?.killed ?? 0;
-  const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isUnavailable || isPendingBinding || isHidden || runningCount > 0 || killedCount > 0;
+  const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isUnavailable || isPendingBinding || runningCount > 0 || killedCount > 0;
   const projectTitleId = `project-title-${project.id}`;
   const canHide = Boolean(onHide) && !isHidden;
   const canUnhide = Boolean(onUnhide) && isHidden;
@@ -513,7 +513,13 @@ export function ProjectItem({
             onKeyDown={handleDragHandleKeyDown}
           >
             <svg className={`w-5 h-5 ${isDefault ? 'text-white' : 'text-accent'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                strokeDasharray={isHidden ? '3 2' : undefined}
+                d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+              />
             </svg>
           </div>
           <div className="flex-1">
@@ -576,11 +582,6 @@ export function ProjectItem({
                 ) : isPendingBinding ? (
                   <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted">
                     Binding pending
-                  </span>
-                ) : null}
-                {isHidden ? (
-                  <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted">
-                    Hidden
                   </span>
                 ) : null}
                 {runningCount > 0 ? (
