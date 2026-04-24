@@ -12,6 +12,7 @@ import type { TaskType } from '@/lib/tasks/task-config';
 import { TaskStatusBadge } from './TaskStatusBadge';
 import { RestartTaskControls } from './RestartTaskControls';
 import { useTasksStore } from '../store';
+import { getStableTaskBackend } from '../utils/task-filter';
 import { useRuntimeStore } from '@/features/realtime';
 import { getApiClient } from '@/shared/api/client';
 import { Dialog } from '@/components/common/Dialog';
@@ -32,9 +33,11 @@ interface TaskItemProps {
   activeTaskTypeFilter?: TaskType | null;
   activeProjectFilter?: string | null;
   activeDaemonHostFilter?: string | null;
+  activeBackendFilter?: string | null;
   onFilterByTaskType?: (taskType: TaskType) => void;
   onFilterByProject?: (projectId: string) => void;
   onFilterByDaemonHost?: (daemonHost: string) => void;
+  onFilterByBackend?: (backend: string) => void;
 }
 
 interface ShareDialogState {
@@ -202,9 +205,11 @@ export function TaskItem({
   activeTaskTypeFilter = null,
   activeProjectFilter = null,
   activeDaemonHostFilter = null,
+  activeBackendFilter = null,
   onFilterByTaskType,
   onFilterByProject,
   onFilterByDaemonHost,
+  onFilterByBackend,
 }: TaskItemProps) {
   const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
@@ -260,10 +265,8 @@ export function TaskItem({
     (showRestartAction ? 1 : 0) +
     (showShareAction ? 1 : 0)
   );
-  const backend = task.backendType
-    || (typeof taskMetadata?.backendType === 'string' ? taskMetadata.backendType : undefined)
-    || (typeof launchConfig?.toolPreset === 'string' ? launchConfig.toolPreset : undefined)
-    || runtime?.backend;
+  const stableBackend = getStableTaskBackend(task);
+  const backend = stableBackend ?? runtime?.backend ?? null;
   const runtimeText = runtime?.statusLine || runtime?.statusDoneLine || runtime?.replyPreview || runtime?.state || null;
 
   const isTaskRunning = task.status === 'running';
@@ -753,6 +756,14 @@ export function TaskItem({
     : projectName ?? undefined;
   const projectChipBaseClass = 'flex max-w-[10rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted';
   const projectChipActiveClass = 'ring-1 ring-[var(--accent)] ring-offset-1 ring-offset-transparent';
+  const backendChipBaseClass = 'flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]';
+  const backendChipActiveClass = 'ring-1 ring-[var(--accent)] ring-offset-1 ring-offset-transparent';
+  const isBackendFilterActive = Boolean(stableBackend) && activeBackendFilter === stableBackend;
+  const backendChipTitle = onFilterByBackend && stableBackend
+    ? isBackendFilterActive
+      ? `Click to clear backend filter`
+      : `Click to show only ${stableBackend} tasks`
+    : undefined;
   const isDaemonHostFilterActive = Boolean(projectDaemonHost) && activeDaemonHostFilter === projectDaemonHost;
   const daemonChipBaseClass = 'flex max-w-[10rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted';
   const daemonChipActiveClass = 'ring-1 ring-[var(--accent)] ring-offset-1 ring-offset-transparent';
@@ -786,9 +797,25 @@ export function TaskItem({
         </span>
       )}
       {backend ? (
-        <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
-          {backend}
-        </span>
+        onFilterByBackend && stableBackend ? (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onFilterByBackend(stableBackend);
+            }}
+            title={backendChipTitle}
+            className={`${backendChipBaseClass} transition-colors hover:bg-[var(--accent)]/20 ${
+              isBackendFilterActive ? backendChipActiveClass : ''
+            }`}
+          >
+            {backend}
+          </button>
+        ) : (
+          <span className={backendChipBaseClass}>
+            {backend}
+          </span>
+        )
       ) : null}
       {worktreeBranch ? (
         <span

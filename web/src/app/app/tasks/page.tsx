@@ -12,7 +12,7 @@ import { CreateTaskDialog } from '@/features/tasks';
 import { TaskDetailPane } from '@/features/tasks';
 import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
-import { filterTasksByProject } from '@/features/tasks';
+import { filterTasksByProject, getStableTaskBackend } from '@/features/tasks';
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
 import { parseTaskType, type TaskType } from '@/lib/tasks/task-config';
 
@@ -47,6 +47,8 @@ function TasksPageContent() {
   const taskTypeFilter: TaskType | null = parseTaskType(taskTypeFilterParam);
   const daemonHostFilterParam = searchParams.get('daemonHost');
   const daemonHostFilter = daemonHostFilterParam && daemonHostFilterParam.trim() ? daemonHostFilterParam : null;
+  const backendFilterParam = searchParams.get('backend');
+  const backendFilter = backendFilterParam && backendFilterParam.trim() ? backendFilterParam : null;
   const projectDaemonHostMap = useMemo(() => {
     const map = new Map<string, string | null>();
     for (const project of projects) {
@@ -67,7 +69,7 @@ function TasksPageContent() {
       : runningFilteredTasks,
     [runningFilteredTasks, taskTypeFilter],
   );
-  const visibleTasks = useMemo(
+  const daemonFilteredTasks = useMemo(
     () => daemonHostFilter
       ? typeFilteredTasks.filter((task) => {
           const host = task.projectId ? projectDaemonHostMap.get(task.projectId) ?? null : null;
@@ -75,6 +77,12 @@ function TasksPageContent() {
         })
       : typeFilteredTasks,
     [typeFilteredTasks, daemonHostFilter, projectDaemonHostMap],
+  );
+  const visibleTasks = useMemo(
+    () => backendFilter
+      ? daemonFilteredTasks.filter((task) => getStableTaskBackend(task) === backendFilter)
+      : daemonFilteredTasks,
+    [daemonFilteredTasks, backendFilter],
   );
   const taskCount = visibleTasks.length;
   const currentProjectName = projectId
@@ -249,6 +257,19 @@ function TasksPageContent() {
     [daemonHostFilter, replaceTaskRoute],
   );
 
+  const handleFilterByBackend = useCallback(
+    (nextBackend: string) => {
+      replaceTaskRoute((params) => {
+        if (backendFilter === nextBackend) {
+          params.delete('backend');
+        } else {
+          params.set('backend', nextBackend);
+        }
+      });
+    },
+    [backendFilter, replaceTaskRoute],
+  );
+
   const handleTitleDoubleClick = () => {
     void setTaskListRunningOnly(!showRunningOnly);
   };
@@ -314,9 +335,11 @@ function TasksPageContent() {
                 runningOnly={showRunningOnly}
                 taskTypeFilter={taskTypeFilter}
                 daemonHostFilter={daemonHostFilter}
+                backendFilter={backendFilter}
                 onFilterByTaskType={handleFilterByTaskType}
                 onFilterByProject={handleFilterByProject}
                 onFilterByDaemonHost={handleFilterByDaemonHost}
+                onFilterByBackend={handleFilterByBackend}
               />
             </div>
             <div className="hidden min-h-0 min-w-0 flex-1 overflow-hidden rounded-[24px] border border-border bg-paper shadow-sm md:flex md:flex-col">
@@ -338,9 +361,11 @@ function TasksPageContent() {
               runningOnly={showRunningOnly}
               taskTypeFilter={taskTypeFilter}
               daemonHostFilter={daemonHostFilter}
+              backendFilter={backendFilter}
               onFilterByTaskType={handleFilterByTaskType}
               onFilterByProject={handleFilterByProject}
               onFilterByDaemonHost={handleFilterByDaemonHost}
+              onFilterByBackend={handleFilterByBackend}
             />
           </div>
         )}

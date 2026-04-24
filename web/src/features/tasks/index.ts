@@ -1,5 +1,5 @@
 export { useTasksStore } from './store';
-export { filterTasksByProject } from './utils/task-filter';
+export { filterTasksByProject, getStableTaskBackend } from './utils/task-filter';
 export {
   TaskList,
   RefreshIcon,

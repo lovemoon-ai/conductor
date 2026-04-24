@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { TaskType } from '@/lib/tasks/task-config';
 import { useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
-import { filterTasksByProject } from '../utils/task-filter';
+import { filterTasksByProject, getStableTaskBackend } from '../utils/task-filter';
 import { TaskItem } from './TaskItem';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { EmptyState } from '@/components/common/EmptyState';
@@ -47,9 +47,11 @@ interface TaskListProps {
   runningOnly?: boolean;
   taskTypeFilter?: TaskType | null;
   daemonHostFilter?: string | null;
+  backendFilter?: string | null;
   onFilterByTaskType?: (taskType: TaskType) => void;
   onFilterByProject?: (projectId: string) => void;
   onFilterByDaemonHost?: (daemonHost: string) => void;
+  onFilterByBackend?: (backend: string) => void;
 }
 
 export function TaskList({
@@ -60,9 +62,11 @@ export function TaskList({
   runningOnly = false,
   taskTypeFilter = null,
   daemonHostFilter = null,
+  backendFilter = null,
   onFilterByTaskType,
   onFilterByProject,
   onFilterByDaemonHost,
+  onFilterByBackend,
 }: TaskListProps) {
   const { tasks, isLoading, unreadTaskIds, currentProjectFilter, deleteTask } = useTasksStore();
   const projects = useProjectsStore((state) => state.projects);
@@ -107,7 +111,7 @@ export function TaskList({
     }
     return map;
   }, [projects]);
-  const visibleTasks = useMemo(
+  const daemonFilteredTasks = useMemo(
     () => daemonHostFilter
       ? typeFilteredTasks.filter((task) => {
           const host = task.projectId ? projectMap.get(task.projectId)?.daemonHost ?? null : null;
@@ -115,6 +119,12 @@ export function TaskList({
         })
       : typeFilteredTasks,
     [typeFilteredTasks, daemonHostFilter, projectMap],
+  );
+  const visibleTasks = useMemo(
+    () => backendFilter
+      ? daemonFilteredTasks.filter((task) => getStableTaskBackend(task) === backendFilter)
+      : daemonFilteredTasks,
+    [daemonFilteredTasks, backendFilter],
   );
   const currentProjectName = effectiveProjectFilter
     ? projects.find((project) => project.id === effectiveProjectFilter)?.name
@@ -264,7 +274,8 @@ export function TaskList({
       : null;
   const hasProjectTagFilter = Boolean(effectiveProjectFilter) && Boolean(onFilterByProject);
   const hasDaemonTagFilter = Boolean(daemonHostFilter) && Boolean(onFilterByDaemonHost);
-  const hasTagFilter = Boolean(taskTypeFilterLabel) || hasProjectTagFilter || hasDaemonTagFilter;
+  const hasBackendTagFilter = Boolean(backendFilter) && Boolean(onFilterByBackend);
+  const hasTagFilter = Boolean(taskTypeFilterLabel) || hasProjectTagFilter || hasDaemonTagFilter || hasBackendTagFilter;
   const pillClassName =
     'inline-flex items-center gap-1 rounded bg-[var(--accent)]/10 px-2 py-0.5 text-xs font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20';
   const tagFilterBar = hasTagFilter ? (
@@ -305,6 +316,18 @@ export function TaskList({
           <span className="sr-only">Clear daemon filter</span>
         </button>
       ) : null}
+      {hasBackendTagFilter && backendFilter && onFilterByBackend ? (
+        <button
+          type="button"
+          onClick={() => onFilterByBackend(backendFilter)}
+          title={`Clear backend filter (${backendFilter})`}
+          className={pillClassName}
+        >
+          <span className="max-w-[10rem] truncate">{backendFilter}</span>
+          <span aria-hidden="true">✕</span>
+          <span className="sr-only">Clear backend filter</span>
+        </button>
+      ) : null}
     </div>
   ) : null;
 
@@ -319,6 +342,7 @@ export function TaskList({
   if (visibleTasks.length === 0) {
     const filterSummary = [
       taskTypeFilterLabel,
+      hasBackendTagFilter && backendFilter ? backendFilter : null,
       hasDaemonTagFilter ? `daemon ${daemonHostFilter}` : null,
     ]
       .filter((value): value is string => Boolean(value))
@@ -414,9 +438,11 @@ export function TaskList({
               activeTaskTypeFilter={taskTypeFilter}
               activeProjectFilter={effectiveProjectFilter ?? null}
               activeDaemonHostFilter={daemonHostFilter}
+              activeBackendFilter={backendFilter}
               onFilterByTaskType={onFilterByTaskType}
               onFilterByProject={onFilterByProject}
               onFilterByDaemonHost={onFilterByDaemonHost}
+              onFilterByBackend={onFilterByBackend}
             />
           </div>
           );
