@@ -1,0 +1,22 @@
+{
+  "name": "conductor-release-workspace",
+  "private": true,
+  "packageManager": "npm@11.5.1",
+  "workspaces": [
+    "cli",
+    "modules/ai-sdk",
+    "modules/ai-manager",
+    "modules/conductor-sdk"
+  ],
+  "scripts": {
+    "changeset": "changeset",
+    "release:status": "node ./scripts/release-packages.mjs status",
+    "release:version": "changeset version",
+    "release:verify": "bash ./scripts/release-verify.sh",
+    "release:publish": "node ./scripts/release-packages.mjs publish",
+    "release:dispatch-cli-archive": "bash ./scripts/dispatch-cli-release-archive.sh"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.7"
+  }
+}

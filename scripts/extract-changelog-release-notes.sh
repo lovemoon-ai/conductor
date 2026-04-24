@@ -8,8 +8,8 @@ usage() {
   cat <<'EOF'
 Usage: extract-changelog-release-notes.sh <version> [output_path]
 
-Extracts the CHANGELOG.md section for <version> and writes the release notes.
-The version may be passed as 1.2.3 or v1.2.3.
+Extracts the changelog section for <version> from CHANGELOG_PATH and writes
+the release notes. The version may be passed as 1.2.3 or v1.2.3.
 EOF
 }
 
@@ -68,7 +68,7 @@ if ! notes="$(
     }
   ' "$CHANGELOG_PATH"
 )"; then
-  printf 'CHANGELOG.md does not contain a release section for version %s\n' "$VERSION" >&2
+  printf '%s does not contain a release section for version %s\n' "$CHANGELOG_PATH" "$VERSION" >&2
   exit 1
 fi
 
@@ -92,7 +92,7 @@ notes="$(
 )"
 
 if [[ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]]; then
-  printf 'CHANGELOG.md release section for version %s is empty\n' "$VERSION" >&2
+  printf '%s release section for version %s is empty\n' "$CHANGELOG_PATH" "$VERSION" >&2
   exit 1
 fi
 

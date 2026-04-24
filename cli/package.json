@@ -2,6 +2,10 @@
   "name": "@love-moon/conductor-cli",
   "version": "0.2.42",
   "gitCommitId": "f79f36f",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lovemoon-ai/conductor.git"
+  },
   "type": "module",
   "bin": {
     "conductor": "bin/conductor.js"
@@ -11,7 +15,8 @@
     "src"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "test": "node --test test/*.test.js"

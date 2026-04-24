@@ -59,3 +59,24 @@ For a minimal self-hosted setup:
 ## Development
 
 See [`web/README.md`](./web/README.md) for local setup.
+
+## Releases
+
+Web deploys and npm releases are separate tracks. Web-only changes deploy the
+`web/` app with a deploy identifier such as the commit SHA; they do not require
+an npm version.
+
+Published npm packages use changesets. For user-visible changes under `cli/` or
+the published `modules/*` packages, run:
+
+```bash
+npm run changeset
+```
+
+Commit the generated `.changeset/*.md` file with the PR. After merge, the
+`Release Packages` workflow opens a `version packages` PR. Merging that PR
+publishes the affected npm packages through npm trusted publishing. If the CLI
+package is released, the workflow also dispatches the CLI archive release.
+
+See [`claw/sop/06_release.md`](./claw/sop/06_release.md) for the full release
+process.

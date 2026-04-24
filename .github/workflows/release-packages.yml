@@ -1,0 +1,92 @@
+name: Release Packages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".changeset/**"
+      - ".github/workflows/release-packages.yml"
+      - ".github/workflows/cli-release-archives.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "cli/**"
+      - "modules/ai-sdk/**"
+      - "modules/ai-manager/**"
+      - "modules/conductor-sdk/**"
+      - "scripts/release-packages.mjs"
+      - "scripts/release-verify.sh"
+      - "scripts/dispatch-cli-release-archive.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: release-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Upgrade npm for trusted publishing
+        shell: bash
+        run: npm install --global "npm@^11.5.1"
+
+      - name: Show tool versions
+        shell: bash
+        run: |
+          node --version
+          npm --version
+
+      - name: Install release workspace dependencies
+        shell: bash
+        run: npm ci
+
+      - name: Version packages
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          version: npm run release:version
+          commit: version packages
+          title: version packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Detect unpublished package versions
+        if: steps.changesets.outputs.hasChangesets == 'false'
+        id: release_status
+        shell: bash
+        run: npm run release:status
+
+      - name: Verify release workspace
+        if: steps.changesets.outputs.hasChangesets == 'false' && steps.release_status.outputs.pending_count != '0'
+        shell: bash
+        run: npm run release:verify
+
+      - name: Publish npm packages
+        if: steps.changesets.outputs.hasChangesets == 'false' && steps.release_status.outputs.pending_count != '0'
+        id: publish
+        env:
+          NPM_CONFIG_PROVENANCE: "true"
+        shell: bash
+        run: npm run release:publish
+
+      - name: Trigger CLI archive workflow
+        if: steps.publish.outputs.cli_version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: npm run release:dispatch-cli-archive -- "${{ steps.publish.outputs.cli_version }}"

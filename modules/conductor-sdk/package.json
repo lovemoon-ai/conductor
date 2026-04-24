@@ -1,6 +1,10 @@
 {
   "name": "@love-moon/conductor-sdk",
   "version": "0.2.42",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lovemoon-ai/conductor.git"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -8,7 +12,8 @@
     "dist"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

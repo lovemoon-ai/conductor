@@ -125,6 +125,8 @@ jobs:
 
       - name: Extract release notes
         shell: bash
+        env:
+          CHANGELOG_PATH: cli/CHANGELOG.md
         run: |
           set -euo pipefail
           chmod +x ./scripts/extract-changelog-release-notes.sh
