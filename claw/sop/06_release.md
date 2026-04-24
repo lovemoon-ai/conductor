@@ -37,6 +37,30 @@ npm run changeset
 Select the affected package(s), choose `patch`, `minor`, or `major`, and commit
 the generated `.changeset/*.md` file with the feature.
 
+### AI / Author decision rule
+
+The agent or author should decide whether to run `npm run changeset` from the
+actual diff. This decision should be automatic; do not wait for a separate user
+instruction just to create the changeset.
+
+Run `npm run changeset` on the feature branch when the diff changes shipped
+behavior for any published package:
+
+- `cli/**`
+- `modules/ai-sdk/**`
+- `modules/ai-manager/**`
+- `modules/conductor-sdk/**`
+
+Skip `npm run changeset` when the diff is release-neutral, for example:
+
+- `web/**` only
+- docs-only changes
+- test-only changes that do not change published runtime behavior
+- release infrastructure changes that should not create a package release
+
+If the impact is unclear, inspect the changed files and package boundaries
+first. Only ask the user when the release intent is genuinely ambiguous.
+
 No changeset is needed for:
 
 - web-only changes under `web/`
