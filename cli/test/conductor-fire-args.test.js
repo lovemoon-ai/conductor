@@ -126,38 +126,6 @@ describe("conductor-fire defaults", () => {
     );
   });
 
-  it("accepts configured remote built-in backends", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
-    const configPath = path.join(tempDir, "config.yaml");
-    fs.writeFileSync(
-      configPath,
-      [
-        "allow_cli_list:",
-        "  codex-remote:",
-        "  claude-remote:",
-        "envs:",
-        "  CONDUCTOR_REMOTE_AI_URL: http://127.0.0.1:8787",
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-
-    const args = await parseCliArgs([
-      "node",
-      "conductor-fire",
-      "--config-file",
-      configPath,
-      "--backend",
-      "claude-remote",
-      "--",
-      "fix",
-      "bug",
-    ]);
-
-    assert.equal(args.backend, "claude-remote");
-    assert.equal(args.sessionBackend, "claude-remote");
-  });
-
   it("accepts configured codex aliases and resolves them to the codex provider backend", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
     const configPath = path.join(tempDir, "config.yaml");

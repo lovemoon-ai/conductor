@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 
 import { loadEnvConfig } from "./shared.js";
 
-const BUILT_IN_BACKENDS = new Set(["codex", "codex-remote", "claude", "claude-remote", "copilot", "kimi", "opencode"]);
+const BUILT_IN_BACKENDS = new Set(["codex", "claude", "copilot", "kimi", "opencode"]);
 
 const registryPromises = new Map();
 let externalProviderImportNonce = 0;

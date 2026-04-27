@@ -110,18 +110,12 @@ export function buildServeAiConfigYaml({
     "  kimi: kimi",
     "  claude: claude",
     "  opencode: opencode",
-    "  # Remote-provider entries are commandless local client targets.",
-    "  # A target serve-ai host must still allow codex/claude explicitly above.",
-    "  # codex-remote:",
-    "  # claude-remote:",
     "",
     "# Optional extra environment variables for AI SDK / backend CLIs.",
     "# envs:",
     "#   http_proxy: http://127.0.0.1:7890",
     "#   https_proxy: http://127.0.0.1:7890",
     "#   AISDK_PROVIDER_PATH: /abs/path/to/provider.js",
-    "#   CONDUCTOR_REMOTE_AI_URL: http://remote-host:8787",
-    "#   CONDUCTOR_REMOTE_AI_API_KEY: local-dev-key",
     "",
   );
 
