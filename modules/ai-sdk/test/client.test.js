@@ -1,6 +1,7 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,6 +41,163 @@ function withExternalProvider(providerPath, fn) {
       }
       resetExternalProviderRegistryForTests();
     });
+}
+
+async function readJsonRequest(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  return raw ? JSON.parse(raw) : {};
+}
+
+async function startFakeRemoteAgentServer(options = {}) {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    void (async () => {
+      const body = await readJsonRequest(req);
+      calls.push({
+        method: req.method,
+        path: req.url,
+        authorization: req.headers.authorization || "",
+        body,
+      });
+
+      if (req.method === "POST" && req.url === "/internal/agent/sessions") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          sessionId: "agent-remote-1",
+          backend: "codex",
+          snapshot: {
+            backend: "codex",
+            provider: "codex-app-server",
+            sessionId: "thread-remote-1",
+            remoteOnlySecret: "do-not-copy",
+            sessionInfo: {
+              backend: "codex",
+              sessionId: "thread-remote-1",
+              model: "gpt-remote",
+              modelProvider: "codex",
+            },
+          },
+        }));
+        return;
+      }
+
+      if (req.method === "POST" && req.url === "/internal/agent/sessions/agent-remote-1/request") {
+        const result = body.method === "ensureSessionInfo"
+          ? {
+              backend: "codex",
+              sessionId: "thread-remote-1",
+              model: "gpt-remote",
+              modelProvider: "codex",
+            }
+          : body.method === "getSessionUsageSummary"
+            ? { sessionId: "thread-remote-1", usage: null }
+            : null;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          result,
+          snapshot: {
+            backend: "codex",
+            provider: "codex-app-server",
+            sessionId: "thread-remote-1",
+            remoteOnlySecret: "do-not-copy",
+          },
+        }));
+        return;
+      }
+
+      if (req.method === "POST" && req.url === "/internal/agent/sessions/agent-remote-1/run-turn") {
+        res.writeHead(200, { "content-type": "application/x-ndjson" });
+        if (options.runTurnError) {
+          res.write(`${JSON.stringify({
+            type: "error",
+            error: options.runTurnError,
+          })}\n`);
+          res.end();
+          return;
+        }
+        res.write(`${JSON.stringify({
+          type: "event",
+          name: "working_status",
+          payload: {
+            phase: "remote_phase",
+            status_line: "remote is working",
+          },
+        })}\n`);
+        res.write(`${JSON.stringify({
+          type: "progress",
+          payload: {
+            phase: "remote_progress",
+            status_line: "remote progress",
+          },
+        })}\n`);
+        res.write(`${JSON.stringify({
+          type: "result",
+          result: {
+            text: `remote:${body.promptText}`,
+            usage: null,
+            sessionId: "thread-remote-1",
+          },
+          snapshot: {
+            backend: "codex",
+            provider: "codex-app-server",
+            sessionId: "thread-remote-1",
+            remoteOnlySecret: "do-not-copy",
+          },
+        })}\n`);
+        res.end();
+        return;
+      }
+
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "not found" } }));
+    })().catch((error) => {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: error?.message || String(error) } }));
+    });
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  return {
+    calls,
+    url: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+  };
+}
+
+async function startLegacyServeAiServer() {
+  const server = http.createServer((req, res) => {
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "route_not_found",
+        message: `route not found: ${req.method} ${req.url}`,
+      },
+    }));
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+  };
 }
 
 afterEach(() => {
@@ -160,6 +318,148 @@ describe("ai-sdk client boundary", () => {
     assert.equal(session.getSnapshot().provider, "kimi-cli-print");
 
     await session.close();
+  });
+
+  it("supports codex remote sessions over conductor serve-ai agent API", async (t) => {
+    const remote = await startFakeRemoteAgentServer();
+    let session = null;
+    const logs = [];
+    t.after(async () => {
+      await session?.close?.().catch(() => {});
+      await remote.close().catch(() => {});
+    });
+
+    session = createAiSession("codex-remote", {
+      cwd: "/local/workspace",
+      remoteCwd: "/remote/workspace",
+      remoteBaseUrl: remote.url,
+      remoteApiKey: "agent-key",
+      outputFormat: {
+        type: "json_schema",
+        schema: {
+          type: "object",
+        },
+      },
+      logger: { log: (message) => logs.push(message) },
+    });
+
+    assert.ok(session instanceof RemoteAiSession);
+    await session.readyPromise;
+    assert.equal(session.getSnapshot().backend, "codex-remote");
+    assert.equal(session.getSnapshot().provider, "codex-remote");
+    assert.equal(session.getSnapshot().remoteSnapshot, undefined);
+    assert.equal(session.getSnapshot().remoteOnlySecret, undefined);
+    assert.ok(logs.some((message) => String(message).includes("remoteCwd is ignored")));
+
+    const workingStatuses = [];
+    const progressEvents = [];
+    session.setWorkingStatusHandler((payload) => {
+      workingStatuses.push(payload);
+    });
+
+    const sessionInfo = await session.ensureSessionInfo();
+    assert.equal(sessionInfo.backend, "codex-remote");
+    assert.equal(sessionInfo.remoteBackend, "codex");
+    assert.equal(sessionInfo.sessionId, "thread-remote-1");
+
+    const result = await session.runTurn("hello", {
+      onProgress: (payload) => {
+        progressEvents.push(payload);
+      },
+    });
+    assert.equal(result.text, "remote:hello");
+    assert.equal(workingStatuses[0].status_line, "remote is working");
+    assert.equal(progressEvents[0].status_line, "remote progress");
+
+    const createCall = remote.calls.find((call) => call.path === "/internal/agent/sessions");
+    assert.equal(createCall.authorization, "Bearer agent-key");
+    assert.equal(createCall.body.backend, "codex");
+    assert.equal(createCall.body.options.cwd, undefined);
+    assert.equal(createCall.body.options.outputFormat, undefined);
+    assert.equal(createCall.body.options.jsonSchema, undefined);
+
+    const runTurnCall = remote.calls.find((call) => call.path === "/internal/agent/sessions/agent-remote-1/run-turn");
+    assert.equal(runTurnCall.body.options.jsonSchema.type, "object");
+
+    await session.close();
+    session = null;
+  });
+
+  it("supports claude remote sessions over conductor serve-ai agent API", async (t) => {
+    const remote = await startFakeRemoteAgentServer();
+    let session = null;
+    t.after(async () => {
+      await session?.close?.().catch(() => {});
+      await remote.close().catch(() => {});
+    });
+
+    session = createAiSession("claude-remote", {
+      remoteBaseUrl: remote.url,
+      logger: { log: () => {} },
+    });
+
+    await session.readyPromise;
+    assert.equal(session.getSnapshot().backend, "claude-remote");
+    assert.equal(session.getSnapshot().provider, "claude-remote");
+
+    const sessionInfo = await session.ensureSessionInfo();
+    assert.equal(sessionInfo.backend, "claude-remote");
+    assert.equal(sessionInfo.remoteBackend, "claude");
+
+    const createCall = remote.calls.find((call) => call.path === "/internal/agent/sessions");
+    assert.equal(createCall.body.backend, "claude");
+
+    await session.close();
+    session = null;
+  });
+
+  it("rethrows remote agent NDJSON errors", async (t) => {
+    const remote = await startFakeRemoteAgentServer({
+      runTurnError: {
+        name: "Error",
+        message: "agent failed",
+        code: "agent_failed",
+      },
+    });
+    let session = null;
+    t.after(async () => {
+      await session?.close?.().catch(() => {});
+      await remote.close().catch(() => {});
+    });
+
+    session = createAiSession("codex-remote", {
+      remoteBaseUrl: remote.url,
+      logger: { log: () => {} },
+    });
+
+    await session.readyPromise;
+    await assert.rejects(
+      () => session.runTurn("hello"),
+      (error) => error?.message === "agent failed" && error?.code === "agent_failed",
+    );
+
+    await session.close();
+    session = null;
+  });
+
+  it("surfaces old serve-ai servers without the internal agent API", async (t) => {
+    const remote = await startLegacyServeAiServer();
+    let session = null;
+    t.after(async () => {
+      await session?.close?.().catch(() => {});
+      await remote.close().catch(() => {});
+    });
+
+    session = createAiSession("codex-remote", {
+      remoteBaseUrl: remote.url,
+      logger: { log: () => {} },
+    });
+
+    await session.readyPromise;
+    await assert.rejects(
+      () => session.ensureSessionInfo(),
+      /route not found: POST \/internal\/agent\/sessions|HTTP 404/,
+    );
   });
 
   it("preserves codex model metadata when thread info is replayed from notifications", () => {
@@ -393,6 +693,23 @@ describe("ai-sdk client boundary", () => {
 
       const result = await turnPromise;
       assert.equal(result.text, "external:hello");
+
+      await session.close();
+    });
+  });
+
+  it("keeps a stable session object when disableWorker is requested explicitly", async () => {
+    await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      const session = createAiSession("test-external-alias", {
+        cwd: process.cwd(),
+        disableWorker: true,
+        logger: { log: () => {} },
+      });
+
+      assert.equal(typeof session.then, "undefined");
+      assert.equal(typeof session.runTurn, "function");
+      await session.readyPromise;
+      assert.equal(session.getSnapshot().backend, "test-external");
 
       await session.close();
     });

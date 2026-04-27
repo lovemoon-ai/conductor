@@ -24,7 +24,7 @@ async function main() {
     .scriptName(CLI_NAME)
     .command(
       "$0",
-      "Start an OpenAI-compatible AI server",
+      "Start an OpenAI-compatible AI server and internal agent provider endpoint",
       (cmd) =>
         cmd
           .option("host", {
@@ -62,7 +62,7 @@ async function main() {
         });
 
         process.stdout.write(
-          `OpenAI-compatible server listening at ${server.url} (default model: ${args.backend || "auto"})\n`,
+          `OpenAI-compatible and internal agent server listening at ${server.url} (default model: ${args.backend || "auto"})\n`,
         );
         process.stdout.write(
           `Config source: ${server.configSource} (${server.configPath})\n`,

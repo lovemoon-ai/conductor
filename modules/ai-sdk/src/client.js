@@ -661,7 +661,7 @@ class LocalAiSessionProxy extends EventEmitter {
 }
 
 export function createAiSession(backend, options = {}) {
-  if (process.env.CONDUCTOR_AI_SDK_DISABLE_WORKER === "1") {
+  if (options?.disableWorker === true || process.env.CONDUCTOR_AI_SDK_DISABLE_WORKER === "1") {
     return new LocalAiSessionProxy(backend, options);
   }
   return new RemoteAiSession(backend, options);

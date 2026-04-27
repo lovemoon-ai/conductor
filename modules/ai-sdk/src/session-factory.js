@@ -1,6 +1,8 @@
 import { CodexAppServerSession } from "./providers/codex-app-server-session.js";
 import { CodexExecSession } from "./providers/codex-exec-session.js";
+import { CodexRemoteSession } from "./providers/codex-remote-session.js";
 import { ClaudeAgentSdkSession } from "./providers/claude-agent-sdk-session.js";
+import { ClaudeRemoteSession } from "./providers/claude-remote-session.js";
 import { CopilotSdkSession } from "./providers/copilot-sdk-session.js";
 import { KimiCliSession } from "./providers/kimi-cli-session.js";
 import { KimiPrintSession } from "./providers/kimi-print-session.js";
@@ -12,7 +14,9 @@ import {
 
 export const DEFAULT_PROVIDER_VARIANT = "codex-app-server";
 export const CODEX_EXEC_PROVIDER_VARIANT = "codex-exec";
+export const CODEX_REMOTE_PROVIDER_VARIANT = "codex-remote";
 export const CLAUDE_PROVIDER_VARIANT = "claude-agent-sdk";
+export const CLAUDE_REMOTE_PROVIDER_VARIANT = "claude-remote";
 export const COPILOT_PROVIDER_VARIANT = "copilot-sdk";
 export const KIMI_PROVIDER_VARIANT = "kimi-cli-wire";
 export const KIMI_PRINT_PROVIDER_VARIANT = "kimi-cli-print";
@@ -45,8 +49,14 @@ function normalizeBuiltInBackendName(backend) {
   if (normalized === "code") {
     return "codex";
   }
+  if (normalized === "code-remote") {
+    return "codex-remote";
+  }
   if (normalized === "claude-code") {
     return "claude";
+  }
+  if (normalized === "claude-code-remote") {
+    return "claude-remote";
   }
   if (normalized === "open-code" || normalized === "open_code") {
     return "opencode";
@@ -59,7 +69,7 @@ function normalizeBuiltInBackendName(backend) {
 
 export async function normalizeBackend(backend, options = {}) {
   const normalized = normalizeBuiltInBackendName(backend);
-  if (normalized === "codex" || normalized === "claude" || normalized === "copilot" || normalized === "kimi" || normalized === "opencode") {
+  if (normalized === "codex" || normalized === "codex-remote" || normalized === "claude" || normalized === "claude-remote" || normalized === "copilot" || normalized === "kimi" || normalized === "opencode") {
     return normalized;
   }
   return await resolveExternalBackend(normalized, options);
@@ -67,7 +77,7 @@ export async function normalizeBackend(backend, options = {}) {
 
 export async function isSupportedBackend(backend, options = {}) {
   const normalized = await normalizeBackend(backend, options);
-  if (normalized === "codex" || normalized === "claude" || normalized === "copilot" || normalized === "kimi" || normalized === "opencode") {
+  if (normalized === "codex" || normalized === "codex-remote" || normalized === "claude" || normalized === "claude-remote" || normalized === "copilot" || normalized === "kimi" || normalized === "opencode") {
     return true;
   }
   const descriptor = await getExternalProviderDescriptor(normalized, options);
@@ -76,8 +86,14 @@ export async function isSupportedBackend(backend, options = {}) {
 
 export async function providerVariantForBackend(backend, options = {}) {
   const normalized = await normalizeBackend(backend, options);
+  if (normalized === "codex-remote") {
+    return CODEX_REMOTE_PROVIDER_VARIANT;
+  }
   if (normalized === "claude") {
     return CLAUDE_PROVIDER_VARIANT;
+  }
+  if (normalized === "claude-remote") {
+    return CLAUDE_REMOTE_PROVIDER_VARIANT;
   }
   if (normalized === "copilot") {
     return COPILOT_PROVIDER_VARIANT;
@@ -100,7 +116,7 @@ export async function providerVariantForBackend(backend, options = {}) {
 
 export async function assertSupportedBackend(backend, options = {}) {
   const normalized = await normalizeBackend(backend, options);
-  if (normalized === "codex" || normalized === "claude" || normalized === "copilot" || normalized === "kimi" || normalized === "opencode") {
+  if (normalized === "codex" || normalized === "codex-remote" || normalized === "claude" || normalized === "claude-remote" || normalized === "copilot" || normalized === "kimi" || normalized === "opencode") {
     return normalized;
   }
   const descriptor = await getExternalProviderDescriptor(normalized, options);
@@ -108,14 +124,20 @@ export async function assertSupportedBackend(backend, options = {}) {
     return normalized;
   }
   throw new Error(
-    `Unsupported AI SDK backend "${backend}". Built-in backends are codex app-server/exec, claude agent-sdk, copilot sdk, kimi cli wire/print, and opencode sdk. Set AISDK_PROVIDER_PATH to load external providers.`,
+    `Unsupported AI SDK backend "${backend}". Built-in backends are codex app-server/exec/remote, claude agent-sdk/remote, copilot sdk, kimi cli wire/print, and opencode sdk. Set AISDK_PROVIDER_PATH to load external providers.`,
   );
 }
 
 export async function createLocalAiSession(backend, options = {}) {
   const normalized = await assertSupportedBackend(backend, options);
+  if (normalized === "codex-remote") {
+    return new CodexRemoteSession(normalized, options);
+  }
   if (normalized === "claude") {
     return new ClaudeAgentSdkSession(normalized, options);
+  }
+  if (normalized === "claude-remote") {
+    return new ClaudeRemoteSession(normalized, options);
   }
   if (normalized === "copilot") {
     return new CopilotSdkSession(normalized, options);
@@ -144,7 +166,9 @@ export async function createLocalAiSession(backend, options = {}) {
 
 export { CodexAppServerSession };
 export { CodexExecSession };
+export { CodexRemoteSession };
 export { ClaudeAgentSdkSession };
+export { ClaudeRemoteSession };
 export { CopilotSdkSession };
 export { KimiCliSession };
 export { KimiPrintSession };
