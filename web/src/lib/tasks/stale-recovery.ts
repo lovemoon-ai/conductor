@@ -47,6 +47,15 @@ const STALE_DAEMON_TASK_RECOVERY_TIMEOUT_MS = parsePositiveInt(
   120_000,
 );
 
+// Captured at module load so the recovery path can refuse to kill tasks just
+// because the in-memory realtimeHub registry is empty after a fresh Web boot,
+// a websocket dropout, or load-balanced traffic landing on an instance the
+// agent never connected to. Without this, recover_stale=1 (which fires on any
+// task list/detail refresh) would mark a perfectly healthy Codex/fire session
+// as `killed` even though it keeps generating messages — the "split-brain"
+// stale-recovery bug. See claw/lessons/stable_recover_stale_split_brain_kill_20260425.md
+const WEB_INSTANCE_STARTED_AT = Date.now();
+
 export async function recoverStaleDisconnectedAgentTasks(
   userId: string,
   tasks: RecoverableTaskRecord[],
@@ -82,7 +91,21 @@ export async function recoverStaleDisconnectedAgentTasks(
     const lastActivityMs = (
       task.updatedAt instanceof Date ? task.updatedAt : task.createdAt
     )?.getTime?.();
-    const offlineSince = typeof disconnectAt === "number" ? disconnectAt : lastActivityMs;
+    // When this Web instance has no record of the agent ever
+    // connecting/disconnecting (fresh boot, websocket flap, or another
+    // instance is the one actually holding the agent socket), do NOT trust
+    // the persisted `task.updatedAt` alone — that timestamp predates this
+    // process and cannot prove the agent is dead. Floor the offline-since
+    // clock at the instance start time so the agent always gets at least
+    // `recoveryTimeoutMs` after boot to reconnect before we declare the task
+    // killed. This prevents a recover_stale list refresh right after a Web
+    // restart from issuing "split-brain" kills against still-running Codex
+    // sessions.
+    const fallbackOfflineSince = Number.isFinite(lastActivityMs)
+      ? Math.max(Number(lastActivityMs), WEB_INSTANCE_STARTED_AT)
+      : WEB_INSTANCE_STARTED_AT;
+    const offlineSince =
+      typeof disconnectAt === "number" ? disconnectAt : fallbackOfflineSince;
     if (!Number.isFinite(offlineSince)) continue;
     if (now - Number(offlineSince) < recoveryTimeoutMs) continue;
 

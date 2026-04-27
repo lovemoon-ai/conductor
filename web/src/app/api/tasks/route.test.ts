@@ -524,6 +524,54 @@ describe("/api/tasks", () => {
       expect(data[0].status).toBe("killed");
     });
 
+    it("should not kill a still-running task when the Web instance has no disconnectAt record (split-brain protection)", async () => {
+      // Reproduces the regression where recover_stale=1 marked a healthy
+      // Codex/fire session as `killed` purely because this Web instance had
+      // no in-memory record of the agent — e.g. fresh Web boot, websocket
+      // dropout, or another Web instance is the one actually holding the
+      // agent socket. The agent's task.updatedAt is ancient relative to the
+      // current Web process, so without the boot-time floor we would falsely
+      // declare the task offline-since-updatedAt and kill it.
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const now = Date.now();
+      const mockTasks = [
+        {
+          id: "task-fire-split-brain",
+          projectId: "proj-1",
+          title: "Healthy fire task on another instance",
+          status: "running",
+          agentHost: "conductor-fire-mac-789",
+          executionHost: "conductor-fire-mac-789",
+          backendType: null,
+          sessionId: null,
+          sessionFilePath: null,
+          metadata: null,
+          // Ancient timestamps — pretend the task has been running for hours.
+          createdAt: new Date(now - 6 * 60 * 60_000),
+          updatedAt: new Date(now - 6 * 60 * 60_000),
+        },
+      ];
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.task.findMany).mockResolvedValue(mockTasks as any);
+      // No connection on this instance, and no disconnectAt either — exactly
+      // the state right after a Web restart.
+      vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+      vi.mocked(realtimeHub.getAgentDisconnectAt).mockReturnValue(null);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        token,
+        url: "http://localhost:6152/api/tasks?recover_stale=1",
+      });
+      const response = await GET(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(db.task.update).not.toHaveBeenCalled();
+      expect(data[0].status).toBe("running");
+    });
+
     it("should not recover a task when execution host is connected fire", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const now = Date.now();
