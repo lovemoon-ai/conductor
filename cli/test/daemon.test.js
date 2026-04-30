@@ -873,7 +873,7 @@ describe("Daemon", () => {
       launch_config: {
         worktree: true,
         worktreeId: "task-worktree",
-        worktreeBranch: "conductor/task/task-worktree",
+        worktreeBranch: "task-worktree",
         worktreeBaseRef: "main",
         projectRepoRoot: "/tmp/repo",
         projectWorkspacePath: "/tmp/repo/packages/app",
@@ -893,7 +893,7 @@ describe("Daemon", () => {
           "worktree",
           "add",
           "-b",
-          "conductor/task/task-worktree",
+          "task-worktree",
           "/tmp/repo/packages/app/.conductor/worktrees/task-worktree",
           "main",
         ]);
@@ -979,7 +979,7 @@ describe("Daemon", () => {
       launch_config: {
         worktree: true,
         worktreeId: "task-worktree-sync-timeout",
-        worktreeBranch: "conductor/task/task-worktree-sync-timeout",
+        worktreeBranch: "task-worktree-sync-timeout",
         worktreeBaseRef: "main",
         projectRepoRoot: "/tmp/repo",
         projectWorkspacePath: "/tmp/repo",
@@ -1165,7 +1165,7 @@ describe("Daemon", () => {
         launch_config: {
           worktree: true,
           worktreeId: "task-worktree",
-          worktreeBranch: "conductor/task/task-worktree",
+          worktreeBranch: "task-worktree",
           worktreeBaseRef: "main",
           projectRepoRoot: "/tmp/repo",
           projectWorkspacePath: "/tmp/repo/packages/app",
@@ -1213,7 +1213,7 @@ describe("Daemon", () => {
           request_id: "req-cleanup-1",
           task_id: "task-worktree",
           daemon_host: "daemon-worktree-cleanup",
-          worktree_branch: "conductor/task/task-worktree",
+          worktree_branch: "task-worktree",
           removed_path: "/tmp/repo/packages/app/.conductor/worktrees/task-worktree",
           cleaned: true,
           error: null,
@@ -1290,7 +1290,7 @@ describe("Daemon", () => {
         launch_config: {
           worktree: true,
           worktreeId: "task-worktree-force",
-          worktreeBranch: "abc123",
+          worktreeBranch: "task-worktree-force",
           worktreeBaseRef: "main",
           projectRepoRoot: "/tmp/repo",
           projectWorkspacePath: "/tmp/repo/packages/app",
@@ -1330,7 +1330,7 @@ describe("Daemon", () => {
           request_id: "req-cleanup-force-1",
           task_id: "task-worktree-force",
           daemon_host: "daemon-worktree-cleanup-force",
-          worktree_branch: "abc123",
+          worktree_branch: "task-worktree-force",
           removed_path: "/tmp/repo/packages/app/.conductor/worktrees/task-worktree-force",
           cleaned: true,
           error: null,
@@ -1353,7 +1353,7 @@ describe("Daemon", () => {
       launch_config: {
         worktree: true,
         worktreeId: "task-worktree-links",
-        worktreeBranch: "conductor/task/task-worktree-links",
+        worktreeBranch: "task-worktree-links",
         worktreeBaseRef: "main",
         projectRepoRoot: "/tmp/repo",
         projectWorkspacePath: "/tmp/repo",
@@ -1400,7 +1400,7 @@ describe("Daemon", () => {
               "worktree",
               "add",
               "-b",
-              "conductor/task/task-worktree-links",
+              "task-worktree-links",
               "/tmp/repo/.conductor/worktrees/task-worktree-links",
               "main",
             ]);
@@ -1482,7 +1482,7 @@ describe("Daemon", () => {
       launch_config: {
         worktree: true,
         worktreeId: "task-worktree-legacy-links",
-        worktreeBranch: "abc123",
+        worktreeBranch: "task-worktree-legacy-links",
         worktreeBaseRef: "main",
         projectRepoRoot: "/tmp/repo",
         projectWorkspacePath: "/tmp/repo",
@@ -1529,7 +1529,7 @@ describe("Daemon", () => {
               "worktree",
               "add",
               "-b",
-              "abc123",
+              "task-worktree-legacy-links",
               "/tmp/repo/.conductor/worktrees/task-worktree-legacy-links",
               "main",
             ]);
@@ -1623,7 +1623,7 @@ describe("Daemon", () => {
       launch_config: {
         worktree: true,
         worktreeId: "task-worktree-tracked-links",
-        worktreeBranch: "conductor/task/task-worktree-tracked-links",
+        worktreeBranch: "task-worktree-tracked-links",
         worktreeBaseRef: "main",
         projectRepoRoot: "/tmp/repo",
         projectWorkspacePath: "/tmp/repo",
@@ -1676,7 +1676,7 @@ describe("Daemon", () => {
               "worktree",
               "add",
               "-b",
-              "conductor/task/task-worktree-tracked-links",
+              "task-worktree-tracked-links",
               "/tmp/repo/.conductor/worktrees/task-worktree-tracked-links",
               "main",
             ]);
