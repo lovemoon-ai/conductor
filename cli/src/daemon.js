@@ -737,8 +737,8 @@ export function startDaemon(config = {}, deps = {}) {
   const resolveProjectSnapshotFn =
     deps.resolveProjectSnapshot || ((projectPath) => new ProjectContext(projectPath).snapshot());
 
-  function buildTaskWorktreeRoot(projectWorkspacePath, worktreeId) {
-    const sanitized = String(worktreeId).replace(/[/\\]/g, "_").replace(/\.\./g, "_");
+  function buildTaskWorktreeRoot(projectWorkspacePath, worktreeBranch) {
+    const sanitized = String(worktreeBranch).replace(/[/\\]/g, "_").replace(/\.\./g, "_");
     return path.join(projectWorkspacePath, ".conductor", "worktrees", sanitized);
   }
 
@@ -1015,7 +1015,7 @@ export function startDaemon(config = {}, deps = {}) {
 
     const worktreeRoot = buildTaskWorktreeRoot(
       worktreeConfig.projectWorkspacePath,
-      worktreeConfig.worktreeId,
+      worktreeConfig.worktreeBranch,
     );
     const finalCwd = resolveTaskWorktreeCwd(worktreeRoot, worktreeConfig.projectRelativePath);
     const gitMarkerPath = path.join(worktreeRoot, ".git");
@@ -3276,7 +3276,7 @@ export function startDaemon(config = {}, deps = {}) {
 
     const worktreeRoot = buildTaskWorktreeRoot(
       worktreeConfig.projectWorkspacePath,
-      worktreeConfig.worktreeId,
+      worktreeConfig.worktreeBranch,
     );
     if (!isSafeTaskWorktreeRoot(worktreeConfig.projectWorkspacePath, worktreeRoot)) {
       await reportTaskWorktreeCleanupResult({

@@ -86,6 +86,12 @@ export const isTaskWorktreeRequested = (launchConfig: JsonObject | null): boolea
 const buildInitialWorktreeBranchName = (): string =>
   randomBytes(3).toString("hex");
 
+// Mirrors cli/src/daemon.js buildTaskWorktreeRoot — keep in sync.
+// Identity must key off the on-disk folder name, not the raw branch, so that
+// two branches that sanitize to the same path are treated as one worktree.
+const sanitizeWorktreeFolderName = (branch: string): string =>
+  branch.replace(/[/\\]/g, "_").replace(/\.\./g, "_");
+
 export const hasSameTaskWorktreeRoot = (
   referenceLaunchConfig: unknown,
   candidateLaunchConfig: unknown,
@@ -97,7 +103,8 @@ export const hasSameTaskWorktreeRoot = (
   }
 
   return (
-    reference.worktreeId === candidate.worktreeId &&
+    sanitizeWorktreeFolderName(reference.worktreeBranch) ===
+      sanitizeWorktreeFolderName(candidate.worktreeBranch) &&
     reference.projectWorkspacePath === candidate.projectWorkspacePath
   );
 };
@@ -108,7 +115,7 @@ export const getTaskWorktreeRootKey = (launchConfig: unknown): string | null => 
     return null;
   }
 
-  return `${parsed.worktreeId}\u0000${parsed.projectWorkspacePath}`;
+  return `${sanitizeWorktreeFolderName(parsed.worktreeBranch)}\u0000${parsed.projectWorkspacePath}`;
 };
 
 export const resolveTaskWorktreeCleanupHost = (args: {
