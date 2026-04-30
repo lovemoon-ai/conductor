@@ -512,7 +512,7 @@ export function ProjectItem({
             onClick={handleDragHandleClick}
             onKeyDown={handleDragHandleKeyDown}
           >
-            <svg className={`w-5 h-5 ${isDefault ? 'text-white' : isHidden ? 'text-muted opacity-50' : 'text-accent'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className={`w-5 h-5 ${isDefault ? 'text-white' : isHidden ? 'text-muted opacity-30' : 'text-accent'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
