@@ -1,7 +1,6 @@
 'use client';
 
-import { useState } from 'react';
-import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { useEffect, useRef, useState } from 'react';
 import { useAiManagerStore } from '../store';
 import type { CodexAccount, CodexQuota } from '../types';
 import { QuotaBar } from './QuotaBar';
@@ -29,7 +28,29 @@ export function CodexAccountSwitcher({
   const switchAccount = useAiManagerStore((s) => s.switchAccount);
   const switching = useAiManagerStore((s) => s.byHost[agentHost]?.loading?.switching ?? false);
   const switchError = useAiManagerStore((s) => s.byHost[agentHost]?.error?.switching);
-  const [pending, setPending] = useState<CodexAccount | null>(null);
+  // Name of the account whose Use button is in the "Use?" confirmation state.
+  // Inline confirmation replaces the previous modal popup: first click arms,
+  // second click commits. Clicking another account re-arms onto that one.
+  const [pendingName, setPendingName] = useState<string | null>(null);
+  const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Auto-cancel the armed "Use?" state if the user walks away for a few seconds
+  // so a stale confirmation doesn't sit there indefinitely.
+  useEffect(() => {
+    if (pendingTimerRef.current) {
+      clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = null;
+    }
+    if (pendingName) {
+      pendingTimerRef.current = setTimeout(() => setPendingName(null), 4000);
+    }
+    return () => {
+      if (pendingTimerRef.current) {
+        clearTimeout(pendingTimerRef.current);
+        pendingTimerRef.current = null;
+      }
+    };
+  }, [pendingName]);
 
   if (loading && accounts.length === 0) {
     return <div className="text-sm text-muted">Loading accounts…</div>;
@@ -88,10 +109,28 @@ export function CodexAccountSwitcher({
               <button
                 type="button"
                 disabled={isCurrent || switching}
-                onClick={() => setPending(acct)}
-                className="shrink-0 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={async () => {
+                  if (isCurrent || switching) return;
+                  if (pendingName === acct.name) {
+                    setPendingName(null);
+                    await switchAccount(agentHost, acct.name);
+                  } else {
+                    setPendingName(acct.name);
+                  }
+                }}
+                className={`shrink-0 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  pendingName === acct.name && !isCurrent
+                    ? 'border-[var(--accent)] bg-[var(--accent)] text-white hover:bg-[var(--accent)]/90'
+                    : 'border-border text-ink hover:bg-paper'
+                }`}
               >
-                {isCurrent ? 'Active' : 'Use'}
+                {isCurrent
+                  ? 'Active'
+                  : switching && pendingName === null
+                  ? 'Switching…'
+                  : pendingName === acct.name
+                  ? 'Use?'
+                  : 'Use'}
               </button>
             </div>
             <QuotaBar label="5h" window={quota?.fiveHour} />
@@ -104,24 +143,6 @@ export function CodexAccountSwitcher({
       })}
 
       {switchError ? <p className="text-xs text-[var(--error)]">{switchError}</p> : null}
-
-      <ConfirmDialog
-        open={pending !== null}
-        title={`Switch Codex account to "${pending?.email ?? pending?.name ?? ''}"?`}
-        description={
-          'This rewrites ~/.codex/auth.json on the daemon machine and backs up the current file to auth.json.bak.\n\n' +
-          'Already-running codex processes will keep using the old token; the change only takes effect on the next codex invocation.'
-        }
-        confirmLabel={switching ? 'Switching…' : 'Switch'}
-        cancelLabel="Cancel"
-        onCancel={() => setPending(null)}
-        onConfirm={async () => {
-          if (!pending) return;
-          const target = pending;
-          setPending(null);
-          await switchAccount(agentHost, target.name);
-        }}
-      />
     </div>
   );
 }
