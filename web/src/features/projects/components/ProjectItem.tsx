@@ -512,12 +512,12 @@ export function ProjectItem({
             onClick={handleDragHandleClick}
             onKeyDown={handleDragHandleKeyDown}
           >
-            <svg className={`w-5 h-5 ${isDefault ? 'text-white' : isHidden ? 'text-muted opacity-30' : 'text-accent'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className={`w-5 h-5 ${isDefault ? 'text-white' : isHidden ? 'text-muted opacity-20' : 'text-accent'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path
-                strokeLinecap="round"
+                strokeLinecap={isHidden ? 'butt' : 'round'}
                 strokeLinejoin="round"
                 strokeWidth={2}
-                strokeDasharray={isHidden ? '1 1.5' : undefined}
+                strokeDasharray={isHidden ? '0.5 1.5' : undefined}
                 d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
               />
             </svg>
