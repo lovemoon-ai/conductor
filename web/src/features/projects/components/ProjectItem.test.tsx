@@ -205,7 +205,8 @@ describe('ProjectItem', () => {
       />,
     );
 
-    expect(screen.getByText('Hidden')).toBeInTheDocument();
+    // Hidden projects render the folder icon with a dashed stroke instead of a "Hidden" tag.
+    expect(container.querySelector('path[stroke-dasharray]')).not.toBeNull();
     expect(container.querySelector('button[aria-label="Hide project"]')).toBeNull();
 
     const showButton = container.querySelector('button[aria-label="Show project"]');

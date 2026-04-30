@@ -35,6 +35,7 @@ export interface Project {
   lastCommit?: string | null;
   fileCount?: number | null;
   sortOrder?: number | null;
+  hidden?: boolean;
   isDefault?: boolean;
   taskStatusCounts?: Record<string, number>;
   createdAt?: string;
@@ -277,6 +278,7 @@ export interface UpdateProjectInput {
   lastCommit?: string;
   fileCount?: number;
   bindingConfirmed?: boolean;
+  hidden?: boolean;
 }
 
 export interface CreateIssueInput {

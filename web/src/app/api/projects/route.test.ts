@@ -1032,6 +1032,211 @@ describe("/api/projects", () => {
       );
     });
 
+    it("hides a non-default project when hidden:true is sent", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValueOnce({
+        id: "proj-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "abc",
+        fileCount: 10,
+        hiddenAt: null,
+      } as any);
+      vi.mocked(db.project.updateMany).mockResolvedValue({ count: 1 } as any);
+      const hiddenAt = new Date("2026-04-26T10:00:00.000Z");
+      vi.mocked(db.project.findUnique).mockResolvedValue({
+        id: "proj-1",
+        name: "Demo",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "abc",
+        fileCount: 10,
+        hiddenAt,
+        metadata: null,
+        createdAt: new Date("2026-04-01"),
+        updatedAt: hiddenAt,
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-1",
+        body: { hidden: true },
+      });
+      const response = await PATCH(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.hidden).toBe(true);
+      expect(data.hiddenAt).toBe(hiddenAt.toISOString());
+      expect(data.hidden_at).toBe(hiddenAt.toISOString());
+      expect(db.project.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "proj-1", userId: "user-1" },
+          data: expect.objectContaining({ hiddenAt: expect.any(Date) }),
+        }),
+      );
+    });
+
+    it("rejects hiding the default project", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.defaultProject.findUnique).mockResolvedValue({
+        id: "default-map-1",
+        userId: "user-1",
+        projectId: "proj-default",
+      } as any);
+      vi.mocked(db.project.findFirst).mockResolvedValueOnce({
+        id: "proj-default",
+        daemonHost: null,
+        workspacePath: null,
+        repoRoot: null,
+        worktreeBranch: null,
+        lastCommit: null,
+        fileCount: null,
+        hiddenAt: null,
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-default",
+        body: { hidden: true },
+      });
+      const response = await PATCH(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(400);
+      expect(data.error).toBe("Default project cannot be hidden");
+      expect(db.project.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("clears the hidden timestamp when hidden:false is sent", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      const previouslyHiddenAt = new Date("2026-04-25T08:00:00.000Z");
+      vi.mocked(db.project.findFirst).mockResolvedValueOnce({
+        id: "proj-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "abc",
+        fileCount: 10,
+        hiddenAt: previouslyHiddenAt,
+      } as any);
+      vi.mocked(db.project.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.project.findUnique).mockResolvedValue({
+        id: "proj-1",
+        name: "Demo",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "abc",
+        fileCount: 10,
+        hiddenAt: null,
+        metadata: null,
+        createdAt: new Date("2026-04-01"),
+        updatedAt: new Date("2026-04-26"),
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-1",
+        body: { hidden: false },
+      });
+      const response = await PATCH(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.hidden).toBe(false);
+      expect(data.hiddenAt).toBeNull();
+      expect(db.project.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "proj-1", userId: "user-1" },
+          data: expect.objectContaining({ hiddenAt: null }),
+        }),
+      );
+    });
+
+    it("preserves the hidden timestamp when hiding an already-hidden project", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      const existingHiddenAt = new Date("2026-04-25T08:00:00.000Z");
+      vi.mocked(db.project.findFirst).mockResolvedValueOnce({
+        id: "proj-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "abc",
+        fileCount: 10,
+        hiddenAt: existingHiddenAt,
+      } as any);
+      vi.mocked(db.project.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.project.findUnique).mockResolvedValue({
+        id: "proj-1",
+        name: "Demo",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "abc",
+        fileCount: 10,
+        hiddenAt: existingHiddenAt,
+        metadata: null,
+        createdAt: new Date("2026-04-01"),
+        updatedAt: existingHiddenAt,
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-1",
+        body: { hidden: true },
+      });
+      const response = await PATCH(request);
+
+      expect(response.status).toBe(200);
+      expect(db.project.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ hiddenAt: existingHiddenAt }),
+        }),
+      );
+    });
+
+    it("rejects non-boolean hidden values", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-1",
+        body: { hidden: "yes" },
+      });
+      const response = await PATCH(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(400);
+      expect(data.error).toBe("hidden must be a boolean");
+    });
+
     it("should reject changing the default project binding", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);

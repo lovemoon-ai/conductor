@@ -4,8 +4,13 @@ import { getApiClient } from '@/shared/api/client';
 import { getStoredJwtToken } from '@/lib/auth/token-storage';
 
 const SELECTED_PROJECT_STORAGE_KEY = 'conductor-selected-project-id';
+// Legacy key kept only for one-time migration to the server-side hidden state.
+// Once the server confirms each entry, the key is removed from localStorage.
 const HIDDEN_PROJECTS_STORAGE_KEY = 'conductor-hidden-project-ids';
 const SHOW_HIDDEN_PROJECTS_STORAGE_KEY = 'conductor-show-hidden-projects';
+
+const collectHiddenProjectIds = (projects: Project[]): string[] =>
+  projects.filter((project) => project.hidden === true).map((project) => project.id);
 
 const readStoredSelectedProjectId = (): string | null => {
   if (typeof window === 'undefined') {
@@ -59,19 +64,15 @@ const readStoredHiddenProjectIds = (): string[] => {
   }
 };
 
-const writeStoredHiddenProjectIds = (projectIds: string[]) => {
+const clearStoredHiddenProjectIds = () => {
   if (typeof window === 'undefined') {
     return;
   }
 
   try {
-    if (projectIds.length === 0) {
-      window.localStorage.removeItem(HIDDEN_PROJECTS_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(HIDDEN_PROJECTS_STORAGE_KEY, JSON.stringify(projectIds));
-    }
+    window.localStorage.removeItem(HIDDEN_PROJECTS_STORAGE_KEY);
   } catch {
-    // Ignore storage failures; hidden project state still works for the current session.
+    // Ignore storage failures; the migration will retry on next launch.
   }
 };
 
@@ -143,6 +144,16 @@ export const normalizeProject = (raw: unknown): Project | null => {
       ? (record.metadata as Record<string, unknown>)
       : null;
 
+  const hiddenFlag =
+    typeof record.hidden === 'boolean'
+      ? record.hidden
+      : typeof record.is_hidden === 'boolean'
+        ? record.is_hidden
+        : null;
+  const hiddenAtValue =
+    pickString(record.hiddenAt) ?? pickString(record.hidden_at) ?? null;
+  const hidden = hiddenFlag ?? Boolean(hiddenAtValue);
+
   return {
     id,
     name,
@@ -153,6 +164,7 @@ export const normalizeProject = (raw: unknown): Project | null => {
     lastCommit: pickString(record.lastCommit) ?? pickString(record.last_commit),
     fileCount: pickInt(record.fileCount) ?? pickInt(record.file_count),
     sortOrder: pickInt(record.sortOrder) ?? pickInt(record.sort_order) ?? null,
+    hidden,
     isDefault:
       typeof record.isDefault === 'boolean'
         ? record.isDefault
@@ -199,12 +211,83 @@ interface ProjectsState {
   clearError: () => void;
 }
 
+// Tracks an in-flight one-time migration of legacy localStorage hidden ids so
+// that simultaneous fetches do not double-fire PATCH requests.
+let legacyHiddenMigrationPromise: Promise<void> | null = null;
+
+const migrateLegacyHiddenProjectIds = async (projects: Project[]): Promise<boolean> => {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  const localIds = readStoredHiddenProjectIds();
+  if (localIds.length === 0) {
+    return false;
+  }
+
+  const projectsById = new Map(projects.map((project) => [project.id, project] as const));
+  const toHide = localIds.filter((id) => {
+    const project = projectsById.get(id);
+    if (!project) return false;
+    if (project.isDefault) return false;
+    return project.hidden !== true;
+  });
+
+  let allOk = true;
+  if (toHide.length > 0) {
+    const api = getApiClient();
+    const results = await Promise.allSettled(
+      toHide.map((id) =>
+        api.patch<unknown>(
+          `/projects?projectId=${encodeURIComponent(id)}`,
+          { hidden: true },
+        ),
+      ),
+    );
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        allOk = false;
+        // Keep the legacy key around so that the next launch can retry.
+      }
+    }
+  }
+
+  if (allOk) {
+    clearStoredHiddenProjectIds();
+    return toHide.length > 0;
+  }
+  return false;
+};
+
+const triggerLegacyHiddenMigration = (projects: Project[], applyHidden: (ids: string[]) => void) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  if (legacyHiddenMigrationPromise) {
+    return;
+  }
+  if (readStoredHiddenProjectIds().length === 0) {
+    return;
+  }
+  legacyHiddenMigrationPromise = (async () => {
+    try {
+      const migrated = await migrateLegacyHiddenProjectIds(projects);
+      if (migrated) {
+        applyHidden(readStoredHiddenProjectIds());
+      }
+    } catch {
+      // Swallow — failures keep the legacy key for next-launch retry.
+    } finally {
+      legacyHiddenMigrationPromise = null;
+    }
+  })();
+};
+
 export const useProjectsStore = create<ProjectsState>()((set, get) => ({
   projects: [],
   isLoading: false,
   error: null,
   selectedProjectId: readStoredSelectedProjectId(),
-  hiddenProjectIds: readStoredHiddenProjectIds(),
+  hiddenProjectIds: [],
   showHiddenProjects: readStoredShowHiddenProjects(),
 
   fetchProjects: async () => {
@@ -224,7 +307,7 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
       }
       const currentSelectedProjectId = get().selectedProjectId;
       const projectIds = new Set(projects.map((project) => project.id));
-      const hiddenProjectIds = get().hiddenProjectIds.filter((projectId) => projectIds.has(projectId));
+      const hiddenProjectIds = collectHiddenProjectIds(projects);
       const hiddenProjectIdSet = new Set(hiddenProjectIds);
       const selectedProjectId = currentSelectedProjectId
         && projectIds.has(currentSelectedProjectId)
@@ -234,10 +317,14 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
       if (selectedProjectId !== currentSelectedProjectId) {
         writeStoredSelectedProjectId(selectedProjectId);
       }
-      if (hiddenProjectIds.length !== get().hiddenProjectIds.length) {
-        writeStoredHiddenProjectIds(hiddenProjectIds);
-      }
       set({ projects, selectedProjectId, hiddenProjectIds, isLoading: false });
+
+      // Kick off a one-time migration of any legacy localStorage entries; runs
+      // in the background and re-fetches projects on success so the UI picks up
+      // the server-side hidden state.
+      triggerLegacyHiddenMigration(projects, () => {
+        void get().fetchProjects();
+      });
     } catch (error) {
       const currentJwtToken = getStoredJwtToken();
       if (requestId !== fetchProjectsRequestSequence || requestJwtToken !== currentJwtToken) {
@@ -351,20 +438,71 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
     if (!normalizedProjectId) {
       return;
     }
-    const hiddenProjectIds = get().hiddenProjectIds.includes(normalizedProjectId)
-      ? get().hiddenProjectIds
-      : [...get().hiddenProjectIds, normalizedProjectId];
-    writeStoredHiddenProjectIds(hiddenProjectIds);
-    writeStoredShowHiddenProjects(false);
-    const shouldClearSelectedProject = get().selectedProjectId === normalizedProjectId;
+    const previousProjects = get().projects;
+    const previousSelectedProjectId = get().selectedProjectId;
+    const previousShowHiddenProjects = get().showHiddenProjects;
+    const targetProject = previousProjects.find((p) => p.id === normalizedProjectId);
+    if (!targetProject) {
+      return;
+    }
+    if (targetProject.isDefault) {
+      // Default project cannot be hidden; mirror the server-side guard.
+      return;
+    }
+
+    // Optimistic update.
+    const nextProjects = previousProjects.map((project) =>
+      project.id === normalizedProjectId ? { ...project, hidden: true } : project,
+    );
+    const hiddenProjectIds = collectHiddenProjectIds(nextProjects);
+    const shouldClearSelectedProject = previousSelectedProjectId === normalizedProjectId;
     if (shouldClearSelectedProject) {
       writeStoredSelectedProjectId(null);
     }
+    writeStoredShowHiddenProjects(false);
     set((state) => ({
+      projects: nextProjects,
       hiddenProjectIds,
       showHiddenProjects: false,
       selectedProjectId: shouldClearSelectedProject ? null : state.selectedProjectId,
     }));
+
+    if (targetProject.hidden === true) {
+      // Already hidden on the server; nothing else to do.
+      return;
+    }
+
+    void (async () => {
+      try {
+        const api = getApiClient();
+        const raw = await api.patch<unknown>(
+          `/projects?projectId=${encodeURIComponent(normalizedProjectId)}`,
+          { hidden: true },
+        );
+        const updated = normalizeProject(raw);
+        if (!updated) return;
+        set((state) => {
+          const merged = state.projects.map((p) => (p.id === normalizedProjectId ? updated : p));
+          return {
+            projects: merged,
+            hiddenProjectIds: collectHiddenProjectIds(merged),
+          };
+        });
+      } catch (error) {
+        // Roll back optimistic update on failure.
+        if (shouldClearSelectedProject && previousSelectedProjectId) {
+          writeStoredSelectedProjectId(previousSelectedProjectId);
+        }
+        writeStoredShowHiddenProjects(previousShowHiddenProjects);
+        set({
+          projects: previousProjects,
+          hiddenProjectIds: collectHiddenProjectIds(previousProjects),
+          showHiddenProjects: previousShowHiddenProjects,
+          selectedProjectId: previousSelectedProjectId,
+          error: error instanceof Error ? error.message : 'Failed to hide project',
+        });
+      }
+    })();
   },
 
   unhideProject: (projectId) => {
@@ -372,9 +510,51 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
     if (!normalizedProjectId) {
       return;
     }
-    const hiddenProjectIds = get().hiddenProjectIds.filter((id) => id !== normalizedProjectId);
-    writeStoredHiddenProjectIds(hiddenProjectIds);
-    set({ hiddenProjectIds });
+    const previousProjects = get().projects;
+    const targetProject = previousProjects.find((p) => p.id === normalizedProjectId);
+    if (!targetProject) {
+      return;
+    }
+
+    // Optimistic update.
+    const nextProjects = previousProjects.map((project) =>
+      project.id === normalizedProjectId ? { ...project, hidden: false } : project,
+    );
+    const hiddenProjectIds = collectHiddenProjectIds(nextProjects);
+    set({
+      projects: nextProjects,
+      hiddenProjectIds,
+    });
+
+    if (targetProject.hidden !== true) {
+      // Was not actually hidden on the server; skip the round-trip.
+      return;
+    }
+
+    void (async () => {
+      try {
+        const api = getApiClient();
+        const raw = await api.patch<unknown>(
+          `/projects?projectId=${encodeURIComponent(normalizedProjectId)}`,
+          { hidden: false },
+        );
+        const updated = normalizeProject(raw);
+        if (!updated) return;
+        set((state) => {
+          const merged = state.projects.map((p) => (p.id === normalizedProjectId ? updated : p));
+          return {
+            projects: merged,
+            hiddenProjectIds: collectHiddenProjectIds(merged),
+          };
+        });
+      } catch (error) {
+        set({
+          projects: previousProjects,
+          hiddenProjectIds: collectHiddenProjectIds(previousProjects),
+          error: error instanceof Error ? error.message : 'Failed to restore project',
+        });
+      }
+    })();
   },
 
   toggleShowHiddenProjects: () => {
@@ -397,12 +577,14 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
 
   resetState: () => {
     fetchProjectsRequestSequence += 1;
+    legacyHiddenMigrationPromise = null;
     writeStoredSelectedProjectId(null);
     set({
       projects: [],
       isLoading: false,
       error: null,
       selectedProjectId: null,
+      hiddenProjectIds: [],
     });
   },
 
