@@ -272,10 +272,9 @@ export function TaskList({
     : taskTypeFilter === 'ai_task'
       ? 'AI'
       : null;
-  const hasProjectTagFilter = Boolean(effectiveProjectFilter) && Boolean(onFilterByProject);
   const hasDaemonTagFilter = Boolean(daemonHostFilter) && Boolean(onFilterByDaemonHost);
   const hasBackendTagFilter = Boolean(backendFilter) && Boolean(onFilterByBackend);
-  const hasTagFilter = Boolean(taskTypeFilterLabel) || hasProjectTagFilter || hasDaemonTagFilter || hasBackendTagFilter;
+  const hasTagFilter = Boolean(taskTypeFilterLabel) || hasDaemonTagFilter || hasBackendTagFilter;
   const pillClassName =
     'inline-flex items-center gap-1 rounded bg-[var(--accent)]/10 px-2 py-0.5 text-xs font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20';
   const tagFilterBar = hasTagFilter ? (
@@ -290,18 +289,6 @@ export function TaskList({
           <span>{taskTypeFilterLabel}</span>
           <span aria-hidden="true">✕</span>
           <span className="sr-only">Clear {taskTypeFilterLabel} filter</span>
-        </button>
-      ) : null}
-      {hasProjectTagFilter && effectiveProjectFilter && onFilterByProject ? (
-        <button
-          type="button"
-          onClick={() => onFilterByProject(effectiveProjectFilter)}
-          title={currentProjectName ? `Clear project filter (${currentProjectName})` : 'Clear project filter'}
-          className={pillClassName}
-        >
-          <span>project</span>
-          <span aria-hidden="true">✕</span>
-          <span className="sr-only">Clear project filter</span>
         </button>
       ) : null}
       {hasDaemonTagFilter && daemonHostFilter && onFilterByDaemonHost ? (
