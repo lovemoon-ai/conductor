@@ -93,6 +93,7 @@ model Project {
   lastCommit    String?  @map("last_commit")
   fileCount     Int?     @map("file_count")
   sortOrder     Int      @default(0) @map("sort_order")
+  hiddenAt      DateTime? @map("hidden_at")
   metadata      String?
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
@@ -107,6 +108,7 @@ model Project {
   @@index([userId, name])
   @@index([userId, daemonHost])
   @@index([userId, workspacePath])
+  @@index([userId, hiddenAt])
   @@unique([userId, daemonHost, name])
   @@unique([userId, daemonHost, workspacePath])
   @@map("projects")

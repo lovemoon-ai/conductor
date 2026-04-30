@@ -221,12 +221,13 @@ type SerializableProject = {
   lastCommit: string | null;
   fileCount: number | null;
   sortOrder?: number | null;
+  hiddenAt?: Date | null;
   metadata: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
 
-const PROJECT_SERIALIZATION_SELECT = {
+const PROJECT_SERIALIZATION_BASE_SELECT = {
   id: true,
   name: true,
   daemonHost: true,
@@ -240,8 +241,18 @@ const PROJECT_SERIALIZATION_SELECT = {
   updatedAt: true,
 } satisfies Prisma.ProjectSelect;
 
+const PROJECT_SERIALIZATION_SELECT = {
+  ...PROJECT_SERIALIZATION_BASE_SELECT,
+  hiddenAt: true,
+} satisfies Prisma.ProjectSelect;
+
 const PROJECT_SERIALIZATION_WITH_SORT_SELECT = {
   ...PROJECT_SERIALIZATION_SELECT,
+  sortOrder: true,
+} satisfies Prisma.ProjectSelect;
+
+const PROJECT_SERIALIZATION_WITH_SORT_NO_HIDDEN_SELECT = {
+  ...PROJECT_SERIALIZATION_BASE_SELECT,
   sortOrder: true,
 } satisfies Prisma.ProjectSelect;
 
@@ -258,6 +269,11 @@ const isMissingProjectSortOrderColumnError = (error: unknown): boolean =>
   error instanceof Prisma.PrismaClientKnownRequestError &&
   error.code === "P2022" &&
   (errorMessage(error).includes("sort_order") || errorMessage(error).includes("sortOrder"));
+
+const isMissingProjectHiddenAtColumnError = (error: unknown): boolean =>
+  error instanceof Prisma.PrismaClientKnownRequestError &&
+  error.code === "P2022" &&
+  (errorMessage(error).includes("hidden_at") || errorMessage(error).includes("hiddenAt"));
 
 const getComparableSortOrder = (project: SortableProject): number =>
   typeof project.sortOrder === "number" && Number.isInteger(project.sortOrder)
@@ -282,6 +298,8 @@ const serializeProject = (
 ) => {
   const createdAt = project.createdAt.toISOString();
   const updatedAt = project.updatedAt.toISOString();
+  const hiddenAt = project.hiddenAt ? project.hiddenAt.toISOString() : null;
+  const hidden = Boolean(project.hiddenAt);
   return {
     id: project.id,
     name: project.name,
@@ -293,6 +311,8 @@ const serializeProject = (
     lastCommit: project.lastCommit,
     fileCount: project.fileCount,
     sortOrder: project.sortOrder,
+    hidden,
+    hiddenAt,
     isDefault: isDefault,
     createdAt,
     updatedAt,
@@ -304,6 +324,7 @@ const serializeProject = (
     last_commit: project.lastCommit,
     file_count: project.fileCount,
     sort_order: project.sortOrder,
+    hidden_at: hiddenAt,
     is_default: isDefault,
     created_at: createdAt,
     updated_at: updatedAt,
@@ -327,8 +348,11 @@ export {
   readProjectBindingPath,
   readProjectMetadataInput,
   isMissingProjectSortOrderColumnError,
+  isMissingProjectHiddenAtColumnError,
+  PROJECT_SERIALIZATION_BASE_SELECT,
   PROJECT_SERIALIZATION_SELECT,
   PROJECT_SERIALIZATION_WITH_SORT_SELECT,
+  PROJECT_SERIALIZATION_WITH_SORT_NO_HIDDEN_SELECT,
   compareProjectsForDisplay,
   serializeProject,
 };

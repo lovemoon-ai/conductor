@@ -33,6 +33,9 @@ import {
   readProjectBindingPath,
   readProjectMetadataInput,
   isMissingProjectSortOrderColumnError,
+  isMissingProjectHiddenAtColumnError,
+  PROJECT_SERIALIZATION_BASE_SELECT,
+  PROJECT_SERIALIZATION_WITH_SORT_NO_HIDDEN_SELECT,
   compareProjectsForDisplay,
   serializeProject,
 } from "./shared";
@@ -166,14 +169,43 @@ const listProjectsForDisplay = async (userId: string) => {
       select: PROJECT_SERIALIZATION_WITH_SORT_SELECT,
     });
   } catch (error) {
+    if (isMissingProjectHiddenAtColumnError(error)) {
+      try {
+        return await db.project.findMany({
+          where: { userId },
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
+          select: PROJECT_SERIALIZATION_WITH_SORT_NO_HIDDEN_SELECT,
+        });
+      } catch (innerError) {
+        if (!isMissingProjectSortOrderColumnError(innerError)) {
+          throw innerError;
+        }
+        return db.project.findMany({
+          where: { userId },
+          orderBy: { createdAt: "desc" },
+          select: PROJECT_SERIALIZATION_BASE_SELECT,
+        });
+      }
+    }
     if (!isMissingProjectSortOrderColumnError(error)) {
       throw error;
     }
-    return db.project.findMany({
-      where: { userId },
-      orderBy: { createdAt: "desc" },
-      select: PROJECT_SERIALIZATION_SELECT,
-    });
+    try {
+      return await db.project.findMany({
+        where: { userId },
+        orderBy: { createdAt: "desc" },
+        select: PROJECT_SERIALIZATION_SELECT,
+      });
+    } catch (innerError) {
+      if (!isMissingProjectHiddenAtColumnError(innerError)) {
+        throw innerError;
+      }
+      return db.project.findMany({
+        where: { userId },
+        orderBy: { createdAt: "desc" },
+        select: PROJECT_SERIALIZATION_BASE_SELECT,
+      });
+    }
   }
 };
 
@@ -487,6 +519,16 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     return NextResponse.json({ error: "Project name cannot be empty" }, { status: 400 });
   }
 
+  const hasHiddenField = hasOwn(normalizedBody, "hidden");
+  let hiddenInput: boolean | undefined;
+  if (hasHiddenField) {
+    const rawHidden = normalizedBody.hidden;
+    if (typeof rawHidden !== "boolean") {
+      return NextResponse.json({ error: "hidden must be a boolean" }, { status: 400 });
+    }
+    hiddenInput = rawHidden;
+  }
+
   let metadata: string | null | undefined;
   if (metadataInput.hasField) {
     metadata =
@@ -505,22 +547,43 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     binding.fileCount !== null;
   const hasBindingField = hasBindingIdentityField || hasSnapshotField;
 
-  if (!name && metadata === undefined && !hasBindingField) {
+  if (!name && metadata === undefined && !hasBindingField && !hasHiddenField) {
     return NextResponse.json({ error: "No fields to update" }, { status: 400 });
   }
 
-  const existingProject = await db.project.findFirst({
-    where: { id: projectId, userId: user.id },
-    select: {
-      id: true,
-      daemonHost: true,
-      workspacePath: true,
-      repoRoot: true,
-      worktreeBranch: true,
-      lastCommit: true,
-      fileCount: true,
-    },
-  });
+  const existingProjectSelectBase = {
+    id: true,
+    daemonHost: true,
+    workspacePath: true,
+    repoRoot: true,
+    worktreeBranch: true,
+    lastCommit: true,
+    fileCount: true,
+  } as const;
+  let existingProject: ({
+    id: string;
+    daemonHost: string | null;
+    workspacePath: string | null;
+    repoRoot: string | null;
+    worktreeBranch: string | null;
+    lastCommit: string | null;
+    fileCount: number | null;
+    hiddenAt?: Date | null;
+  }) | null;
+  try {
+    existingProject = await db.project.findFirst({
+      where: { id: projectId, userId: user.id },
+      select: { ...existingProjectSelectBase, hiddenAt: true },
+    });
+  } catch (error) {
+    if (!isMissingProjectHiddenAtColumnError(error)) {
+      throw error;
+    }
+    existingProject = await db.project.findFirst({
+      where: { id: projectId, userId: user.id },
+      select: existingProjectSelectBase,
+    });
+  }
   if (!existingProject) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
@@ -531,6 +594,9 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
   });
   if (defaultProject?.projectId === projectId && hasBindingIdentityField) {
     return NextResponse.json({ error: "Default project binding cannot be changed" }, { status: 409 });
+  }
+  if (defaultProject?.projectId === projectId && hiddenInput === true) {
+    return NextResponse.json({ error: "Default project cannot be hidden" }, { status: 400 });
   }
 
   if (hasBindingField && !bindingConfirmed) {
@@ -563,9 +629,16 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     return NextResponse.json({ error: "Project binding is immutable; create a new project to rebind" }, { status: 409 });
   }
 
-  let updatedCount;
-  try {
-    const result = await db.project.updateMany({
+  let hiddenAtUpdate: Date | null | undefined;
+  if (hiddenInput === true) {
+    // Preserve existing timestamp if already hidden to avoid update churn.
+    hiddenAtUpdate = existingProject.hiddenAt ?? new Date();
+  } else if (hiddenInput === false) {
+    hiddenAtUpdate = null;
+  }
+
+  const performUpdate = (includeHiddenAt: boolean) =>
+    db.project.updateMany({
       where: { id: projectId, userId: user.id },
       data: {
         name: name ?? undefined,
@@ -576,27 +649,66 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
         lastCommit: binding.lastCommit ?? undefined,
         fileCount: binding.fileCount ?? undefined,
         metadata,
+        ...(includeHiddenAt ? { hiddenAt: hiddenAtUpdate } : {}),
       },
     });
+
+  let updatedCount;
+  try {
+    const result = await performUpdate(hiddenAtUpdate !== undefined);
     updatedCount = result.count;
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+    if (
+      hiddenAtUpdate !== undefined &&
+      isMissingProjectHiddenAtColumnError(error)
+    ) {
+      // Tolerate environments where the migration has not yet run; fall back to
+      // updating other fields without the hidden flag instead of 500ing the
+      // entire request.
+      try {
+        const fallback = await performUpdate(false);
+        updatedCount = fallback.count;
+      } catch (fallbackError) {
+        if (
+          fallbackError instanceof Prisma.PrismaClientKnownRequestError &&
+          fallbackError.code === "P2002"
+        ) {
+          return NextResponse.json(
+            { error: hasNameField ? "Project name already exists on this daemon" : "Project binding already exists" },
+            { status: 409 },
+          );
+        }
+        throw fallbackError;
+      }
+    } else if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       return NextResponse.json(
         { error: hasNameField ? "Project name already exists on this daemon" : "Project binding already exists" },
         { status: 409 },
       );
+    } else {
+      throw error;
     }
-    throw error;
   }
 
   if (updatedCount === 0) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const project = await db.project.findUnique({
-    where: { id: projectId },
-    select: PROJECT_SERIALIZATION_SELECT,
-  });
+  let project;
+  try {
+    project = await db.project.findUnique({
+      where: { id: projectId },
+      select: PROJECT_SERIALIZATION_SELECT,
+    });
+  } catch (error) {
+    if (!isMissingProjectHiddenAtColumnError(error)) {
+      throw error;
+    }
+    project = await db.project.findUnique({
+      where: { id: projectId },
+      select: PROJECT_SERIALIZATION_BASE_SELECT,
+    });
+  }
   if (!project) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
