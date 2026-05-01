@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { db } from '@/lib/db';
 import { realtimeHub } from '@/lib/realtime/hub';
 import { enqueueAndAttemptAgentCommand } from '@/lib/realtime/agent-outbox';
+import { persistIssueAiSession } from '@/lib/issues/persist-ai-session';
 import {
   applyLegacyTaskShape,
   isMissingIssueIdSchemaError,
@@ -58,6 +59,7 @@ type CreatedAiTaskMessage = {
 type AiTaskDbClient = {
   task: Pick<typeof db.task, 'create' | 'update'>;
   message: Pick<typeof db.message, 'create'>;
+  issue: Pick<typeof db.issue, 'update'>;
 };
 
 type CreatedAiTaskArtifacts = {
@@ -197,6 +199,21 @@ export async function createAiTaskArtifacts(
     });
 
     task.updatedAt = await touchTaskUpdatedAt(dbClient.task, task.id, new Date());
+  }
+
+  // Mirror AI session breadcrumbs onto the issue so the trail survives task
+  // deletion. Stays inside the same transaction (dbClient) so a rollback also
+  // discards the issue update. Only persists when issueId is set and at least
+  // one of the backend type / session id has a non-empty value.
+  if (task.issueId && (task.backendType || task.sessionId)) {
+    await persistIssueAiSession(
+      { issue: dbClient.issue },
+      task.issueId,
+      {
+        backendType: task.backendType,
+        sessionId: task.sessionId,
+      },
+    );
   }
 
   return {

@@ -52,6 +52,7 @@ import {
   resolveTaskStopTargetHost,
   stopTaskBeforeRelaunch,
 } from "@/lib/tasks/task-stop";
+import { persistIssueAiSession } from "@/lib/issues/persist-ai-session";
 
 const DELETE_SNAPSHOT_TRIGGER = "task_delete";
 const KILLING_TIMEOUT_MS = 60_000;
@@ -863,6 +864,31 @@ export async function PATCH(
       },
     });
   }
+
+  // Mirror AI session breadcrumbs onto the linked issue. The patched task may
+  // have just received its session id from the client, and we want the issue
+  // to keep that pointer even if the task is later deleted. This runs outside
+  // the task-update transaction, so we treat a failure as best-effort: a
+  // transient DB error here must NOT 500 a PATCH whose task write already
+  // committed — the next task lifecycle event will re-mirror.
+  const taskBackendType = (task as { backendType?: string | null }).backendType ?? null;
+  const taskSessionId = (task as { sessionId?: string | null }).sessionId ?? null;
+  const taskIssueId = (task as { issueId?: string | null }).issueId ?? null;
+  if (taskIssueId && (taskBackendType || taskSessionId)) {
+    try {
+      await persistIssueAiSession(db, taskIssueId, {
+        backendType: taskBackendType,
+        sessionId: taskSessionId,
+      });
+    } catch (mirrorError) {
+      console.warn(
+        `[tasks] failed to mirror AI session breadcrumb to issue ${taskIssueId} for task ${taskId}: ${
+          mirrorError instanceof Error ? mirrorError.message : String(mirrorError)
+        }`,
+      );
+    }
+  }
+
   return NextResponse.json(serializeTaskResponse({ ...task, ptySession }));
 }
 

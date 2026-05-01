@@ -14,6 +14,7 @@ import {
 } from '@/lib/tasks/worktree';
 import { normalizeBackendType } from '@/lib/tasks/pty-runtime';
 import { isConductorFireHost } from '@/lib/subscription/plan-limits';
+import { persistIssueAiSession } from '@/lib/issues/persist-ai-session';
 
 type RestartableTask = {
   id: string;
@@ -193,6 +194,9 @@ export const restartTaskInPlace = async (args: {
     agentOutbox: {
       create: (value: Record<string, unknown>) => Promise<unknown>;
     };
+    issue: {
+      update: (value: Record<string, unknown>) => Promise<unknown>;
+    };
   };
   userId: string;
   sourceTask: RestartableTask;
@@ -245,6 +249,21 @@ export const restartTaskInPlace = async (args: {
       updatedAt: now,
     },
   });
+
+  // Restart preserves the source backend/session pair — make sure the linked
+  // issue mirrors them so the breadcrumb is intact even for tasks that were
+  // created before the persistIssueAiSession behavior shipped. Runs inside the
+  // same transaction so a rollback also discards the issue update.
+  if (args.sourceTask.issueId) {
+    await persistIssueAiSession(
+      { issue: args.tx.issue },
+      args.sourceTask.issueId,
+      {
+        backendType: args.plan.sourceBackend,
+        sessionId: args.plan.sourceSessionId,
+      },
+    );
+  }
 
   return {
     requestId,

@@ -59,6 +59,17 @@ export interface Issue {
   priority: IssuePriority;
   position: number;
   metadata?: Record<string, unknown> | null;
+  /**
+   * Last-known AI backend type (e.g. "codex", "claude") for any task linked to
+   * this issue. Persisted on the issue itself so the breadcrumb survives task
+   * deletion or unlinking.
+   */
+  aiBackendType?: string | null;
+  /**
+   * Last-known AI session id for any task linked to this issue. Persisted on
+   * the issue itself so the breadcrumb survives task deletion or unlinking.
+   */
+  aiSessionId?: string | null;
   activeTask?: Task | null;
   linkedTask?: Task | null;
   tasks?: Task[] | null;
