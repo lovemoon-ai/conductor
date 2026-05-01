@@ -73,6 +73,15 @@ const missingPriorityColumnError = () =>
     },
   );
 
+const missingAiSessionColumnError = () =>
+  new Prisma.PrismaClientKnownRequestError(
+    'The column `issues.ai_session_id` does not exist in the current database.',
+    {
+      code: 'P2022',
+      clientVersion: 'test',
+    },
+  );
+
 const buildExistingIssue = (overrides: Record<string, unknown> = {}) => ({
   id: 'issue-1',
   projectId: 'project-1',
@@ -1100,6 +1109,95 @@ describe('/api/issues/[issueId]', () => {
 
     expect(response.status).toBe(204);
     expect(db.issue.delete).toHaveBeenCalledWith({ where: { id: 'issue-1' } });
+  });
+
+  it('falls back to the legacy select when the AI session columns are missing on the issues table', async () => {
+    vi.mocked(db.issue.findFirst)
+      .mockRejectedValueOnce(missingAiSessionColumnError())
+      .mockResolvedValueOnce(buildExistingIssue({ priority: undefined }) as any);
+    mockIssueTasks({
+      activeTasks: [],
+      linkedTasks: [],
+    });
+
+    const response = await GET(createMockRequest({ method: 'GET' }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(vi.mocked(db.issue.findFirst)).toHaveBeenCalledTimes(2);
+    expect(data).toEqual(expect.objectContaining({
+      id: 'issue-1',
+      ai_backend_type: null,
+      ai_session_id: null,
+    }));
+  });
+
+  it('exposes the persisted AI backend type and session id on issue detail so the breadcrumb survives task deletion', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      status: 'done',
+      aiBackendType: 'codex',
+      aiSessionId: 'sess-archived-1',
+    }) as any);
+    mockIssueTasks({
+      activeTasks: [],
+      // Simulate the case where the originating task has been deleted: linked
+      // tasks are empty, but the issue should still expose the AI session
+      // breadcrumb that was mirrored from the (now-deleted) task.
+      linkedTasks: [],
+    });
+
+    const response = await GET(createMockRequest({ method: 'GET' }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data).toEqual(expect.objectContaining({
+      id: 'issue-1',
+      aiBackendType: 'codex',
+      aiSessionId: 'sess-archived-1',
+      ai_backend_type: 'codex',
+      ai_session_id: 'sess-archived-1',
+      linked_task: null,
+      active_task: null,
+    }));
+  });
+
+  it('mirrors the source task backend/session onto the issue when restarting in place', async () => {
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['codex'] },
+    ] as any);
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ status: 'done' }) as any);
+    mockIssueTasks({
+      activeTasks: [],
+      linkedTasks: [buildTask({
+        status: 'killed',
+        backendType: 'codex',
+        sessionId: 'sess-restart-7',
+      })],
+    });
+    vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({
+      status: 'doing',
+      aiBackendType: 'codex',
+      aiSessionId: 'sess-restart-7',
+    }) as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { status: 'doing' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    const issueUpdateCalls = vi.mocked(db.issue.update).mock.calls;
+    const persistedAiSessionCall = issueUpdateCalls.find(([call]) => {
+      const data = (call as { data?: Record<string, unknown> } | undefined)?.data ?? {};
+      return data.aiBackendType === 'codex' && data.aiSessionId === 'sess-restart-7';
+    });
+    expect(persistedAiSessionCall).toBeDefined();
   });
 
   it('skips task spawn when another request already claimed the todo-to-doing transition', async () => {

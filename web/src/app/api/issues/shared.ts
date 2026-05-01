@@ -12,6 +12,7 @@ import {
   normalizeIssuePriority,
 } from '@/lib/issues/config';
 import { serializeIssue } from '@/lib/issues/serialization';
+import { isMissingIssueAiSessionColumnError } from '@/lib/issues/persist-ai-session';
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
@@ -119,7 +120,14 @@ export const withIssuePrioritySchemaFallback = async <T>(
       prioritySchemaAvailable: true,
     };
   } catch (error) {
-    if (!isMissingIssuePriorityColumnError(error)) {
+    // The fallback select drops both `priority` and the newer
+    // `ai_backend_type` / `ai_session_id` columns, so trigger it whenever
+    // either set is missing — that covers partial migrations where one column
+    // group is present but the other is not.
+    if (
+      !isMissingIssuePriorityColumnError(error) &&
+      !isMissingIssueAiSessionColumnError(error)
+    ) {
       throw error;
     }
     warnMissingIssuePrioritySchema(context, error);
@@ -130,6 +138,10 @@ export const withIssuePrioritySchemaFallback = async <T>(
   }
 };
 
+// Legacy-safe select used as the fallback when newer columns are missing
+// (priority, ai_backend_type, ai_session_id). Do NOT add columns introduced
+// after the original `issues` table to this select — extend the WITH variant
+// below instead, or routes will start failing on partially-migrated DBs.
 export const issueSerializationSelect = {
   id: true,
   projectId: true,
@@ -142,9 +154,15 @@ export const issueSerializationSelect = {
   updatedAt: true,
 } satisfies Prisma.IssueSelect;
 
+// Primary select used on healthy schemas. Includes every column the API
+// surfaces today; queries fall back to `issueSerializationSelect` via
+// `withIssuePrioritySchemaFallback` when any of these newer columns are
+// missing.
 export const issueSerializationWithPrioritySelect = {
   ...issueSerializationSelect,
   priority: true,
+  aiBackendType: true,
+  aiSessionId: true,
 } satisfies Prisma.IssueSelect;
 
 export const isDefaultIssuePriority = (value: unknown): boolean =>
@@ -317,6 +335,8 @@ export const serializeIssueWithTasks = (issue: {
   priority?: string | null;
   position: number;
   metadata: string | null;
+  aiBackendType?: string | null;
+  aiSessionId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }, tasks?: {

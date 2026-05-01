@@ -25,6 +25,8 @@ type SerializableIssue = {
   priority?: string | null;
   position: number;
   metadata: string | null;
+  aiBackendType?: string | null;
+  aiSessionId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -32,6 +34,12 @@ type SerializableIssue = {
 type SerializableActiveTask = Parameters<typeof serializeTaskResponse>[0] | null | undefined;
 type SerializableLinkedTask = Parameters<typeof serializeTaskResponse>[0] | null | undefined;
 type SerializableTaskList = Parameters<typeof serializeTaskResponse>[0][] | null | undefined;
+
+const normalizePersistedString = (value: string | null | undefined): string | null => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+};
 
 export const serializeIssue = (
   issue: SerializableIssue,
@@ -49,6 +57,8 @@ export const serializeIssue = (
   const serializedTasks = Array.isArray(tasks)
     ? tasks.map((task) => serializeTaskResponse(task))
     : null;
+  const aiBackendType = normalizePersistedString(issue.aiBackendType);
+  const aiSessionId = normalizePersistedString(issue.aiSessionId);
 
   return {
     id: issue.id,
@@ -59,12 +69,16 @@ export const serializeIssue = (
     priority,
     position: issue.position,
     metadata: parseIssueMetadata(issue.metadata),
+    aiBackendType,
+    aiSessionId,
     activeTask: serializedActiveTask,
     linkedTask: serializedLinkedTask,
     tasks: serializedTasks,
     createdAt,
     updatedAt,
     project_id: issue.projectId,
+    ai_backend_type: aiBackendType,
+    ai_session_id: aiSessionId,
     active_task: serializedActiveTask,
     linked_task: serializedLinkedTask,
     created_at: createdAt,
