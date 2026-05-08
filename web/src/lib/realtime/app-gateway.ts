@@ -5,9 +5,11 @@ import { authenticateToken } from "../auth/service";
 import { randomUUID } from "crypto";
 import { db } from "../db";
 import { isMissingPtySchemaError } from "@/lib/tasks/pty-compat";
+import { isConductorFireHost } from "@/lib/subscription/plan-limits";
 
 export const APP_WS_PATH = "/ws/app";
 const ptyTransportSessionIdsByTask = new Map<string, Map<string, string>>();
+const AI_TASK_TERMINAL_CAPABILITY = "ai_task_terminal";
 
 const sendEnvelope = (socket: WebSocket, envelope: Record<string, unknown>) => {
   if (socket.readyState !== WebSocket.OPEN) return;
@@ -114,8 +116,14 @@ export const deliverTerminalAttachEnvelope = (args: {
   taskId: string;
   agentHost?: string | null;
   executionHost?: string | null;
+  preferredHost?: string | null;
   envelope: Record<string, unknown>;
 }): boolean => {
+  if (args.preferredHost && realtimeHub.hasAgentHost(args.preferredHost, args.userId)) {
+    realtimeHub.bindTaskToAgent(args.taskId, args.preferredHost);
+    return realtimeHub.sendToAgentHost(args.userId, args.preferredHost, args.envelope);
+  }
+
   let delivered = realtimeHub.sendToAgent(args.taskId, args.envelope);
   if (!delivered) {
     const fallbackHost = args.executionHost || args.agentHost;
@@ -133,6 +141,27 @@ const resolveTerminalAttachHost = (args: {
   executionHost?: string | null;
 }): string | null => realtimeHub.getTaskAgentHost(args.taskId) ?? args.executionHost ?? args.agentHost ?? null;
 
+const resolveAiTaskTerminalAttachHost = (task: {
+  agentHost?: string | null;
+  executionHost?: string | null;
+}): string | null => {
+  const configuredHost = typeof task.agentHost === "string" && task.agentHost.trim()
+    ? task.agentHost.trim()
+    : null;
+  if (configuredHost && !isConductorFireHost(configuredHost)) {
+    return configuredHost;
+  }
+
+  const executionHost = typeof task.executionHost === "string" && task.executionHost.trim()
+    ? task.executionHost.trim()
+    : null;
+  if (executionHost && !isConductorFireHost(executionHost)) {
+    return executionHost;
+  }
+
+  return configuredHost || executionHost;
+};
+
 const agentSupportsCapability = (userId: string, host: string | null, capability: string): boolean => {
   if (!host) {
     return false;
@@ -140,6 +169,24 @@ const agentSupportsCapability = (userId: string, host: string | null, capability
   return realtimeHub
     .getAgentsForUser(userId)
     .some((agent) => agent.host === host && agent.capabilities.includes(capability));
+};
+
+const parseLaunchConfig = (value: unknown): Record<string, unknown> | null => {
+  if (!value) return null;
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
 };
 
 export const buildForwardTerminalEnvelope = (
@@ -358,6 +405,10 @@ export const setupAppGateway = (): WebSocketServer => {
                 taskType: true,
                 agentHost: true,
                 executionHost: true,
+                backendType: true,
+                sessionId: true,
+                sessionFilePath: true,
+                launchConfig: true,
                 ptySession: { select: { id: true } },
               },
             });
@@ -366,8 +417,11 @@ export const setupAppGateway = (): WebSocketServer => {
               throw error;
             }
           }
-          if (!task || task.taskType !== "pty_task" || !task.ptySession) {
-            sendTerminalError(socket, taskId, `PTY task ${taskId} not found`);
+          const taskType = task?.taskType ?? "ai_task";
+          const isPtyTask = taskType === "pty_task";
+          const isAiTask = taskType === "ai_task";
+          if (!task || (!isPtyTask && !isAiTask) || (isPtyTask && !task.ptySession)) {
+            sendTerminalError(socket, taskId, `Terminal task ${taskId} not found`);
             return;
           }
 
@@ -405,11 +459,22 @@ export const setupAppGateway = (): WebSocketServer => {
           const requestedResumeStrategy = normalizeTerminalResumeStrategy(
             data.payload?.resume_strategy ?? data.payload?.resumeStrategy,
           );
-          const attachHost = resolveTerminalAttachHost({
-            taskId: task.id,
-            agentHost: task.agentHost,
-            executionHost: task.executionHost,
-          });
+          const attachHost = isAiTask
+            ? resolveAiTaskTerminalAttachHost(task)
+            : resolveTerminalAttachHost({
+                taskId: task.id,
+                agentHost: task.agentHost,
+                executionHost: task.executionHost,
+              });
+          if (isAiTask && !agentSupportsCapability(user.id, attachHost, AI_TASK_TERMINAL_CAPABILITY)) {
+            realtimeHub.detachTerminal(connectionId, task.id);
+            clearPtyTransportSessionIds(task.id, connectionId);
+            emitPtyTransportSessions(task.id);
+            emitTerminalAccessState(user.id, task.id);
+            sendTerminalError(socket, taskId, `Agent for AI task ${taskId} does not support terminal view`);
+            return;
+          }
+          const launchConfig = isAiTask ? parseLaunchConfig(task.launchConfig) : null;
           const useSnapshotResume =
             lastSeq === 0 &&
             requestedResumeStrategy === "snapshot" &&
@@ -419,10 +484,19 @@ export const setupAppGateway = (): WebSocketServer => {
             payload: {
               task_id: task.id,
               project_id: task.projectId,
-              pty_session_id: task.ptySession.id,
+              task_type: taskType,
+              pty_session_id: task.ptySession?.id ?? `ai-terminal:${task.id}`,
               last_seq: lastSeq,
               cols: normalizePositiveInt(data.payload?.cols),
               rows: normalizePositiveInt(data.payload?.rows),
+              ...(isAiTask
+                ? {
+                    backend_type: task.backendType ?? undefined,
+                    session_id: task.sessionId ?? undefined,
+                    session_file_path: task.sessionFilePath ?? undefined,
+                    launch_config: launchConfig ?? undefined,
+                  }
+                : {}),
               ...(useSnapshotResume
                 ? {
                     connection_id: connectionId,
@@ -436,6 +510,7 @@ export const setupAppGateway = (): WebSocketServer => {
             taskId: task.id,
             agentHost: task.agentHost,
             executionHost: task.executionHost,
+            preferredHost: isAiTask ? attachHost : null,
             envelope,
           });
           if (!delivered) {
@@ -443,7 +518,7 @@ export const setupAppGateway = (): WebSocketServer => {
             clearPtyTransportSessionIds(task.id, connectionId);
             emitPtyTransportSessions(task.id);
             emitTerminalAccessState(user.id, task.id);
-            sendTerminalError(socket, taskId, `Agent for PTY task ${taskId} is offline`);
+            sendTerminalError(socket, taskId, `Agent for ${isAiTask ? "AI" : "PTY"} task ${taskId} is offline`);
             return;
           }
           emitPtyTransportSessions(task.id, {
@@ -565,7 +640,7 @@ export const setupAppGateway = (): WebSocketServer => {
 
           const delivered = realtimeHub.sendToAgent(taskId, buildForwardTerminalEnvelope(data.type, data.payload, taskId));
           if (!delivered && data.type !== "terminal_detach") {
-            sendTerminalError(socket, taskId, `Agent for PTY task ${taskId} is offline`);
+            sendTerminalError(socket, taskId, `Agent for terminal task ${taskId} is offline`);
           }
         }
       } catch {}

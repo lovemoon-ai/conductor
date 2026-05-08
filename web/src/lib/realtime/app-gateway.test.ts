@@ -72,6 +72,33 @@ describe("app-gateway terminal attach delivery", () => {
     expect(realtimeHub.sendToAgentHost).toHaveBeenCalledWith("user-1", "daemon-reconnected", envelope);
   });
 
+  it("delivers terminal attach directly to the preferred host when provided", () => {
+    const envelope = {
+      type: "terminal_attach",
+      payload: {
+        task_id: "task-ai-1",
+        task_type: "ai_task",
+      },
+    };
+
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(true);
+    vi.mocked(realtimeHub.sendToAgentHost).mockReturnValue(true);
+
+    const delivered = deliverTerminalAttachEnvelope({
+      userId: "user-1",
+      taskId: "task-ai-1",
+      agentHost: "daemon-original",
+      executionHost: "conductor-fire-task-ai-1",
+      preferredHost: "daemon-original",
+      envelope,
+    });
+
+    expect(delivered).toBe(true);
+    expect(realtimeHub.sendToAgent).not.toHaveBeenCalled();
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-ai-1", "daemon-original");
+    expect(realtimeHub.sendToAgentHost).toHaveBeenCalledWith("user-1", "daemon-original", envelope);
+  });
+
 
   it("builds a relay PTY transport session envelope", () => {
     vi.useFakeTimers();

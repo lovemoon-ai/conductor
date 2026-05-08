@@ -5984,7 +5984,7 @@ describe("Daemon", () => {
       assert.ok(typeof handler === "function");
       assert.strictEqual(
         webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-        "project_path_validation,restart_daemon,refresh_session_inplace,pty_task,terminal_snapshot",
+        "project_path_validation,restart_daemon,refresh_session_inplace,pty_task,terminal_snapshot,ai_task_terminal",
       );
 
       handler({
@@ -6014,7 +6014,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,restart_daemon,refresh_session_inplace,pty_task,terminal_snapshot",
+      "project_path_validation,restart_daemon,refresh_session_inplace,pty_task,terminal_snapshot,ai_task_terminal",
     );
 
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -6107,6 +6107,435 @@ describe("Daemon", () => {
       if (daemonInstance && typeof daemonInstance.close === "function") {
         daemonInstance.close();
       }
+    }
+  });
+
+  it("opens AI task terminals by spawning the backend resume command in a PTY", async () => {
+    let handler;
+    const writes = [];
+    const sentEvents = [];
+    let webSocketClientOptions = null;
+    let daemonInstance = null;
+    let killed = false;
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-ai-terminal-config-"));
+    const configPath = path.join(configDir, "config.yaml");
+    const cwd = path.join(configDir, "workspace");
+    fs.mkdirSync(cwd, { recursive: true });
+    fs.writeFileSync(configPath, "allow_cli_list:\n  codex: \"codex --model test\"\n");
+
+    const mockPty = {
+      pid: 77777,
+      write: (data) => {
+        writes.push(data);
+      },
+      resize: () => {},
+      kill: () => {
+        killed = true;
+      },
+      onData: () => {},
+      onExit: () => {},
+    };
+
+    try {
+      daemonInstance = startDaemon(
+        {
+          BACKEND_URL: "ws://localhost:0",
+          BACKEND_HTTP: "http://localhost:6152",
+          WORKSPACE_ROOT: path.join(configDir, "ws"),
+          CLI_PATH: "/tmp/cli.js",
+          NAME: "ai-terminal-daemon",
+          CONFIG_FILE: configPath,
+        },
+        {
+          spawn: () => {
+            throw new Error("spawn should not be called for AI terminal attach");
+          },
+          mkdirSync: (...args) => fs.mkdirSync(...args),
+          writeFileSync: () => {},
+          existsSync: (candidate) => fs.existsSync(candidate),
+          readFileSync: (...args) => fs.readFileSync(...args),
+          unlinkSync: () => {},
+          renameSync: () => {},
+          createWriteStream: () => ({
+            on: () => {},
+            write: () => {},
+            end: () => {},
+          }),
+          fetch: async (url) => {
+            if (String(url).endsWith("/api/tasks")) {
+              return { ok: true, json: async () => [] };
+            }
+            return { ok: true, json: async () => ({}) };
+          },
+          createPty: async (command, args, options) => {
+            assert.strictEqual(
+              command,
+              resolveDefaultPtyShell({
+                envShell: process.env.SHELL,
+                comspec: process.env.COMSPEC,
+                platform: process.platform,
+                existsSync: fs.existsSync,
+              }),
+            );
+            assert.deepStrictEqual(args, ["-lc", "codex --model test 'resume' 'session-ai-1'"]);
+            assert.strictEqual(options.cwd, cwd);
+            assert.strictEqual(options.env.PWD, cwd);
+            assert.strictEqual(options.env.CONDUCTOR_CONFIG, configPath);
+            assert.strictEqual(options.env.CONDUCTOR_TASK_ID, undefined);
+            assert.strictEqual(options.env.AI_TERM_KEEP, "keep");
+            return mockPty;
+          },
+          createWebSocketClient: (_sdkConfig, options) => {
+            webSocketClientOptions = options;
+            return {
+              registerHandler: (nextHandler) => {
+                handler = nextHandler;
+              },
+              connect: async () => {},
+              disconnect: async () => {},
+              sendJson: async (payload) => {
+                sentEvents.push(payload);
+              },
+            };
+          },
+        },
+      );
+
+      assert.ok(typeof handler === "function");
+      assert.ok(
+        String(webSocketClientOptions.extraHeaders["x-conductor-capabilities"]).split(",").includes("ai_task_terminal"),
+      );
+      await waitUntil(
+        () => String(webSocketClientOptions.extraHeaders["x-conductor-backends"] || "").split(",").includes("codex"),
+        { timeoutMs: 1000, message: "codex backend advertised" },
+      );
+
+      handler({
+        type: "terminal_attach",
+        payload: {
+          task_id: "task-ai-1",
+          project_id: "proj-ai-1",
+          task_type: "ai_task",
+          pty_session_id: "ai-terminal:task-ai-1",
+          backend_type: "codex",
+          session_id: "session-ai-1",
+          cols: 100,
+          rows: 30,
+          launch_config: {
+            cwd,
+            env: {
+              AI_TERM_KEEP: "keep",
+              CONDUCTOR_TASK_ID: "should-be-stripped",
+            },
+          },
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expectEvent(sentEvents, "terminal_opened", (payload) => {
+        assert.strictEqual(payload.task_id, "task-ai-1");
+        assert.strictEqual(payload.project_id, "proj-ai-1");
+        assert.strictEqual(payload.pty_session_id, "ai-terminal:task-ai-1");
+        assert.strictEqual(payload.cwd, cwd);
+        assert.strictEqual(payload.cols, 100);
+        assert.strictEqual(payload.rows, 30);
+      });
+
+      handler({
+        type: "terminal_input",
+        payload: {
+          task_id: "task-ai-1",
+          data: "hello\r",
+        },
+      });
+      assert.deepStrictEqual(writes, ["hello\r"]);
+
+      handler({
+        type: "terminal_detach",
+        payload: {
+          task_id: "task-ai-1",
+        },
+      });
+      assert.strictEqual(killed, true);
+    } finally {
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+      fs.rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not stop an active AI task until terminal resume details validate", async () => {
+    let handler;
+    let webSocketClientOptions = null;
+    const sentEvents = [];
+    const killCalls = [];
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-ai-terminal-prevalidate-"));
+    const configPath = path.join(configDir, "config.yaml");
+    fs.writeFileSync(configPath, "allow_cli_list:\n  codex: \"codex\"\n");
+    const child = new EventEmitter();
+    child.pid = 77881;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = (signal) => {
+      killCalls.push(signal);
+    };
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: path.join(configDir, "ws"),
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "ai-terminal-prevalidate-daemon",
+        CONFIG_FILE: configPath,
+      },
+      {
+        spawn: () => child,
+        mkdirSync: (...args) => fs.mkdirSync(...args),
+        writeFileSync: () => {},
+        existsSync: (candidate) => fs.existsSync(candidate),
+        readFileSync: (...args) => fs.readFileSync(...args),
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return { ok: true, json: async () => ({ metadata: null }) };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createPty: async () => {
+          throw new Error("createPty should not be called for an invalid AI terminal attach");
+        },
+        createWebSocketClient: (_sdkConfig, options) => {
+          webSocketClientOptions = options;
+          return {
+            registerHandler: (nextHandler) => {
+              handler = nextHandler;
+            },
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async (payload) => {
+              sentEvents.push(payload);
+            },
+          };
+        },
+      },
+    );
+
+    try {
+      assert.ok(typeof handler === "function");
+      assert.ok(webSocketClientOptions);
+      await waitUntil(
+        () => String(webSocketClientOptions.extraHeaders["x-conductor-backends"] || "").split(",").includes("codex"),
+        { timeoutMs: 1000, message: "codex backend advertised" },
+      );
+
+      handler({
+        type: "create_task",
+        payload: {
+          task_id: "task-ai-prevalidate-1",
+          project_id: "proj-ai-prevalidate-1",
+          backend_type: "codex",
+        },
+      });
+
+      await waitUntil(
+        () =>
+          sentEvents.some(
+            (event) =>
+              event.type === "task_status_update" &&
+              event.payload?.task_id === "task-ai-prevalidate-1" &&
+              event.payload?.status === "RUNNING",
+          ),
+        { message: "task-ai-prevalidate-1 to start running" },
+      );
+
+      handler({
+        type: "terminal_attach",
+        payload: {
+          task_id: "task-ai-prevalidate-1",
+          project_id: "proj-ai-prevalidate-1",
+          task_type: "ai_task",
+          pty_session_id: "ai-terminal:task-ai-prevalidate-1",
+          backend_type: "codex",
+        },
+      });
+
+      await waitUntil(
+        () =>
+          sentEvents.some(
+            (event) =>
+              event.type === "terminal_error" &&
+              event.payload?.task_id === "task-ai-prevalidate-1" &&
+              event.payload?.message === "AI terminal attach requires a session_id to resume",
+          ),
+        { message: "invalid AI terminal attach error" },
+      );
+
+      assert.deepStrictEqual(killCalls, []);
+      assert.strictEqual(
+        sentEvents.some(
+          (event) =>
+            event.type === "terminal_opened" &&
+            event.payload?.task_id === "task-ai-prevalidate-1",
+        ),
+        false,
+      );
+    } finally {
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+      fs.rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a final AI task status when terminal spawn fails after stopping the fire process", async () => {
+    let handler;
+    let webSocketClientOptions = null;
+    const sentEvents = [];
+    const killCalls = [];
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-ai-terminal-spawn-fail-"));
+    const configPath = path.join(configDir, "config.yaml");
+    const cwd = path.join(configDir, "workspace");
+    fs.mkdirSync(cwd, { recursive: true });
+    fs.writeFileSync(configPath, "allow_cli_list:\n  codex: \"codex\"\n");
+    const child = new EventEmitter();
+    child.pid = 77882;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = (signal) => {
+      killCalls.push(signal);
+      setImmediate(() => child.emit("exit", 143, null));
+    };
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: path.join(configDir, "ws"),
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "ai-terminal-spawn-fail-daemon",
+        CONFIG_FILE: configPath,
+      },
+      {
+        spawn: () => child,
+        mkdirSync: (...args) => fs.mkdirSync(...args),
+        writeFileSync: () => {},
+        existsSync: (candidate) => fs.existsSync(candidate),
+        readFileSync: (...args) => fs.readFileSync(...args),
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return { ok: true, json: async () => ({ metadata: null }) };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createPty: async () => {
+          throw new Error("node-pty spawn failed");
+        },
+        createWebSocketClient: (_sdkConfig, options) => {
+          webSocketClientOptions = options;
+          return {
+            registerHandler: (nextHandler) => {
+              handler = nextHandler;
+            },
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async (payload) => {
+              sentEvents.push(payload);
+            },
+          };
+        },
+      },
+    );
+
+    try {
+      assert.ok(typeof handler === "function");
+      assert.ok(webSocketClientOptions);
+      await waitUntil(
+        () => String(webSocketClientOptions.extraHeaders["x-conductor-backends"] || "").split(",").includes("codex"),
+        { timeoutMs: 1000, message: "codex backend advertised" },
+      );
+
+      handler({
+        type: "create_task",
+        payload: {
+          task_id: "task-ai-spawn-fail-1",
+          project_id: "proj-ai-spawn-fail-1",
+          backend_type: "codex",
+        },
+      });
+
+      await waitUntil(
+        () =>
+          sentEvents.some(
+            (event) =>
+              event.type === "task_status_update" &&
+              event.payload?.task_id === "task-ai-spawn-fail-1" &&
+              event.payload?.status === "RUNNING",
+          ),
+        { message: "task-ai-spawn-fail-1 to start running" },
+      );
+
+      handler({
+        type: "terminal_attach",
+        payload: {
+          task_id: "task-ai-spawn-fail-1",
+          project_id: "proj-ai-spawn-fail-1",
+          task_type: "ai_task",
+          pty_session_id: "ai-terminal:task-ai-spawn-fail-1",
+          backend_type: "codex",
+          session_id: "session-ai-spawn-fail-1",
+          launch_config: {
+            cwd,
+          },
+        },
+      });
+
+      await waitUntil(
+        () =>
+          sentEvents.some(
+            (event) =>
+              event.type === "terminal_error" &&
+              event.payload?.task_id === "task-ai-spawn-fail-1" &&
+              event.payload?.message === "node-pty spawn failed" &&
+              event.payload?.task_status === "killed",
+          ),
+        { timeoutMs: 2000, message: "failed AI terminal attach final status" },
+      );
+
+      assert.deepStrictEqual(killCalls, ["SIGTERM"]);
+      assert.strictEqual(
+        sentEvents.some(
+          (event) =>
+            event.type === "terminal_opened" &&
+            event.payload?.task_id === "task-ai-spawn-fail-1",
+        ),
+        false,
+      );
+    } finally {
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+      fs.rmSync(configDir, { recursive: true, force: true });
     }
   });
 
