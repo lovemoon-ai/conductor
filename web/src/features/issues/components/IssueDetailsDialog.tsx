@@ -22,7 +22,15 @@ const pickIssueBackendType = (issue: Issue | null): string | null => {
   const latestTaskBackend = issue.activeTask?.backendType
     ?? issue.linkedTask?.backendType
     ?? (Array.isArray(issue.tasks) && issue.tasks.length > 0 ? issue.tasks[0].backendType : null);
-  return latestTaskBackend?.trim() || null;
+  if (latestTaskBackend && latestTaskBackend.trim()) {
+    return latestTaskBackend.trim();
+  }
+  // Fall through to the breadcrumb persisted on the issue row itself so the
+  // AI tool stays visible after the originating task is deleted/unlinked.
+  const persistedBackend = typeof issue.aiBackendType === 'string'
+    ? issue.aiBackendType.trim()
+    : '';
+  return persistedBackend || null;
 };
 
 const collectIssueTasks = (issue: Issue | null): Task[] => {
@@ -91,10 +99,33 @@ export function IssueDetailsDialog({
   const backendType = useMemo(() => pickIssueBackendType(issue), [issue]);
   const tasks = useMemo(() => collectIssueTasks(issue), [issue]);
   const sessionEntries = useMemo(
-    () => tasks
-      .map((task) => ({ id: task.id, sessionId: task.sessionId?.trim() || null }))
-      .filter((entry): entry is { id: string; sessionId: string } => Boolean(entry.sessionId)),
-    [tasks],
+    () => {
+      const entries: Array<{ key: string; sessionId: string; orphan: boolean }> = [];
+      const seen = new Set<string>();
+      for (const task of tasks) {
+        const sessionId = task.sessionId?.trim();
+        if (!sessionId || seen.has(sessionId)) {
+          continue;
+        }
+        seen.add(sessionId);
+        entries.push({ key: `${task.id}-${sessionId}`, sessionId, orphan: false });
+      }
+      // Fall through to the breadcrumb persisted on the issue row when the
+      // originating task is gone — that's the whole point of mirroring the
+      // session id onto the issue.
+      const persistedSessionId = typeof issue?.aiSessionId === 'string'
+        ? issue.aiSessionId.trim()
+        : '';
+      if (persistedSessionId && !seen.has(persistedSessionId)) {
+        entries.push({
+          key: `issue-${issue?.id ?? 'unknown'}-${persistedSessionId}`,
+          sessionId: persistedSessionId,
+          orphan: true,
+        });
+      }
+      return entries;
+    },
+    [issue, tasks],
   );
   // Last entry (oldest) is the historical one; first (newest) is the latest
   // task-id which is navigable.
@@ -215,13 +246,21 @@ export function IssueDetailsDialog({
               {sessionEntries.length > 0 ? (
                 <ul className="space-y-1">
                   {sessionEntries.map((entry) => (
-                    <li key={`${entry.id}-${entry.sessionId}`} className="flex items-center gap-2">
+                    <li key={entry.key} className="flex items-center gap-2">
                       <code
                         className="max-w-full truncate rounded-md border border-border/70 bg-paper/60 px-2 py-0.5 text-xs font-mono"
                         title={entry.sessionId}
                       >
                         {entry.sessionId}
                       </code>
+                      {entry.orphan ? (
+                        <span
+                          className="text-[11px] uppercase tracking-wide text-muted/70"
+                          title="Persisted on this issue; the originating task is no longer available"
+                        >
+                          archived
+                        </span>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

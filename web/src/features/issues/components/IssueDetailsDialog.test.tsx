@@ -149,4 +149,26 @@ describe('IssueDetailsDialog', () => {
     expect(screen.queryByTitle('Open task task-0')).not.toBeInTheDocument();
     expect(screen.getByText('session-old')).toBeInTheDocument();
   });
+
+  it('falls back to the persisted issue breadcrumb when the originating task is gone', () => {
+    const issueWithoutTasks: Issue = {
+      ...issue,
+      metadata: null,
+      activeTask: null,
+      linkedTask: null,
+      tasks: [],
+      aiBackendType: 'codex',
+      aiSessionId: '019daec0-aaaa-bbbb-cccc-deadbeef',
+    };
+
+    render(<IssueDetailsDialog open onClose={() => {}} issue={issueWithoutTasks} />);
+
+    // AI tool falls through from issue.aiBackendType
+    expect(screen.getByText('codex')).toBeInTheDocument();
+    // Session id falls through from issue.aiSessionId, marked as archived
+    expect(screen.getByText('019daec0-aaaa-bbbb-cccc-deadbeef')).toBeInTheDocument();
+    expect(screen.getByText('archived')).toBeInTheDocument();
+    // No task id shown — the originating task is gone
+    expect(screen.getByText('No tasks yet')).toBeInTheDocument();
+  });
 });
