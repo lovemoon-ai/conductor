@@ -1,7 +1,8 @@
 import { create } from 'zustand';
-import type { Project, CreateProjectInput, UpdateProjectInput } from '@/shared/types';
+import type { Project, ProjectGroup, CreateProjectInput, UpdateProjectInput } from '@/shared/types';
 import { getApiClient } from '@/shared/api/client';
 import { getStoredJwtToken } from '@/lib/auth/token-storage';
+import { computeProjectGroups } from './utils/project-groups';
 
 const SELECTED_PROJECT_STORAGE_KEY = 'conductor-selected-project-id';
 // Legacy key kept only for one-time migration to the server-side hidden state.
@@ -162,9 +163,16 @@ export const normalizeProject = (raw: unknown): Project | null => {
     repoRoot: pickString(record.repoRoot) ?? pickString(record.repo_root),
     worktreeBranch: pickString(record.worktreeBranch) ?? pickString(record.worktree_branch),
     lastCommit: pickString(record.lastCommit) ?? pickString(record.last_commit),
+    gitRemoteUrl: pickString(record.gitRemoteUrl) ?? pickString(record.git_remote_url),
     fileCount: pickInt(record.fileCount) ?? pickInt(record.file_count),
     sortOrder: pickInt(record.sortOrder) ?? pickInt(record.sort_order) ?? null,
     hidden,
+    mergeOptOut:
+      typeof record.mergeOptOut === 'boolean'
+        ? record.mergeOptOut
+        : typeof record.merge_opt_out === 'boolean'
+          ? record.merge_opt_out
+          : false,
     isDefault:
       typeof record.isDefault === 'boolean'
         ? record.isDefault
@@ -206,6 +214,24 @@ interface ProjectsState {
   setSelectedProjectId: (projectId: string | null) => void;
   hideProject: (projectId: string) => void;
   unhideProject: (projectId: string) => void;
+  /**
+   * Bulk-apply hide/unhide to every member of a merged project group. Used by
+   * the cross-daemon merged card whose primary action affects all members.
+   * Fire-and-forget — relies on the per-project optimistic flow with its own
+   * background server confirmation.
+   */
+  hideProjectGroup: (projectIds: string[]) => void;
+  unhideProjectGroup: (projectIds: string[]) => void;
+  /**
+   * Bulk-delete every member of a merged project group. Awaitable: callers
+   * (e.g. ProjectItem confirm dialog) need to know when every member is gone
+   * so the toast / spinner can sequence correctly.
+   */
+  deleteProjectGroup: (projectIds: string[]) => Promise<void>;
+  /** Toggle a single project's mergeOptOut flag (split / re-merge). */
+  setProjectMergeOptOut: (projectId: string, value: boolean) => Promise<Project>;
+  /** Re-validate a project against its daemon to refresh git fields. */
+  refreshProject: (projectId: string) => Promise<Project>;
   toggleShowHiddenProjects: () => void;
   resetState: () => void;
   clearError: () => void;
@@ -557,6 +583,78 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
     })();
   },
 
+  hideProjectGroup: (projectIds) => {
+    const targets = [...new Set(projectIds.map((id) => id.trim()).filter(Boolean))];
+    for (const id of targets) {
+      // Reuse the optimistic single-project flow per member; failures roll back
+      // independently (acceptable since members are independent DB rows).
+      get().hideProject(id);
+    }
+  },
+
+  unhideProjectGroup: (projectIds) => {
+    const targets = [...new Set(projectIds.map((id) => id.trim()).filter(Boolean))];
+    for (const id of targets) {
+      get().unhideProject(id);
+    }
+  },
+
+  deleteProjectGroup: async (projectIds) => {
+    const targets = [...new Set(projectIds.map((id) => id.trim()).filter(Boolean))];
+    // Sequential: each daemon may need to clean up worktrees before its
+    // project row can be deleted; running them in parallel would multiply
+    // failure modes when daemons share state.
+    for (const id of targets) {
+      await get().deleteProject(id);
+    }
+  },
+
+  setProjectMergeOptOut: async (projectId, value) => {
+    try {
+      const api = getApiClient();
+      const raw = await api.patch<unknown>(
+        `/projects?projectId=${encodeURIComponent(projectId)}`,
+        { mergeOptOut: value },
+      );
+      const project = normalizeProject(raw);
+      if (!project) {
+        throw new Error('Invalid project response');
+      }
+      set((state) => ({
+        projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+      }));
+      return project;
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : 'Failed to update merge state',
+      });
+      throw error;
+    }
+  },
+
+  refreshProject: async (projectId) => {
+    try {
+      const api = getApiClient();
+      const raw = await api.patch<unknown>(
+        `/projects?projectId=${encodeURIComponent(projectId)}`,
+        { refresh: true },
+      );
+      const project = normalizeProject(raw);
+      if (!project) {
+        throw new Error('Invalid project response');
+      }
+      set((state) => ({
+        projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+      }));
+      return project;
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : 'Failed to refresh project',
+      });
+      throw error;
+    }
+  },
+
   toggleShowHiddenProjects: () => {
     const nextShowHiddenProjects = !get().showHiddenProjects;
     writeStoredShowHiddenProjects(nextShowHiddenProjects);
@@ -590,3 +688,60 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
 
   clearError: () => set({ error: null }),
 }));
+
+/**
+ * Pure helper kept outside of zustand so tests and non-React callers can
+ * derive groups without instantiating a store.
+ *
+ * Result is memoized against the input array's identity so consecutive calls
+ * with the same `projects` reference return the same `ProjectGroup[]`. This
+ * matters because the function is fed straight into a zustand selector — if
+ * we returned a fresh array every call, every store update (including
+ * unrelated ones like `setSelectedProjectId`) would force-rerender every
+ * subscriber.
+ */
+const projectGroupsCache = new WeakMap<Project[], ProjectGroup[]>();
+export const selectProjectGroups = (projects: Project[]): ProjectGroup[] => {
+  const cached = projectGroupsCache.get(projects);
+  if (cached) return cached;
+  const computed = computeProjectGroups(projects);
+  projectGroupsCache.set(projects, computed);
+  return computed;
+};
+
+/**
+ * Resolve which group a given project belongs to. Returns the matching group
+ * or `null` if the project is not in the supplied list.
+ */
+export const findProjectGroup = (
+  groups: ProjectGroup[],
+  projectId: string | null | undefined,
+): ProjectGroup | null => {
+  if (!projectId) return null;
+  for (const group of groups) {
+    if (group.members.some((member) => member.id === projectId)) {
+      return group;
+    }
+  }
+  return null;
+};
+
+/**
+ * Hook: derive the merged-project groups from the current store snapshot.
+ * Intentionally light — group computation is O(n^2) over a list of typically
+ * < 100 projects, which is comfortably fast on every render.
+ */
+export const useProjectGroups = (): ProjectGroup[] =>
+  useProjectsStore((state) => selectProjectGroups(state.projects));
+
+/**
+ * Hook: return the project ids for the currently selected group, in member
+ * order. When nothing is selected, returns an empty array. UI consumers use
+ * this to call `/api/issues?project_ids=…` for cross-daemon merged views.
+ */
+export const useSelectedProjectGroupIds = (): string[] => {
+  const groups = useProjectGroups();
+  const selectedProjectId = useProjectsStore((state) => state.selectedProjectId);
+  const group = findProjectGroup(groups, selectedProjectId);
+  return group ? group.members.map((member) => member.id) : [];
+};

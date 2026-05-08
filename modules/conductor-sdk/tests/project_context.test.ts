@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 
 import { describe, expect, test } from 'vitest';
 
-import { ProjectContext } from '../src/context/index.js';
+import { ProjectContext, normalizeGitRemoteUrl } from '../src/context/index.js';
 
 function gitEnv(): NodeJS.ProcessEnv {
   return {
@@ -80,5 +80,78 @@ describe('ProjectContext', () => {
       expect(snapshot.worktreeBranch).toBe(branch);
     }
     expect(snapshot.fileCount).toBe(files.length);
+  });
+
+  test('snapshot.gitRemoteUrl is normalized when an origin remote is configured', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'project-context-'));
+    initRepo(dir);
+    execFileSync(
+      'git',
+      ['remote', 'add', 'origin', 'git@github.com:Owner/Repo.git'],
+      { cwd: dir, env: gitEnv(), stdio: 'ignore' },
+    );
+    const ctx = new ProjectContext(dir);
+    const snapshot = ctx.snapshot();
+    expect(snapshot.gitRemoteUrl).toBe('github.com/owner/repo');
+  });
+
+  test('snapshot.gitRemoteUrl is undefined when origin is not configured', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'project-context-'));
+    initRepo(dir);
+    const ctx = new ProjectContext(dir);
+    const snapshot = ctx.snapshot();
+    expect(snapshot.gitRemoteUrl).toBeUndefined();
+  });
+});
+
+describe('normalizeGitRemoteUrl', () => {
+  test('strips ssh and converts host:path scp form', () => {
+    expect(normalizeGitRemoteUrl('git@github.com:owner/repo.git')).toBe('github.com/owner/repo');
+    expect(normalizeGitRemoteUrl('ssh://git@github.com/owner/repo')).toBe('github.com/owner/repo');
+  });
+
+  test('strips https/http and trailing .git plus slashes', () => {
+    expect(normalizeGitRemoteUrl('https://github.com/owner/repo.git')).toBe('github.com/owner/repo');
+    expect(normalizeGitRemoteUrl('http://github.com/owner/repo/')).toBe('github.com/owner/repo');
+  });
+
+  test('lowercases the result so casing variants compare equal', () => {
+    expect(normalizeGitRemoteUrl('https://GitHub.com/Owner/Repo.git')).toBe('github.com/owner/repo');
+  });
+
+  test('preserves explicit port for self-hosted instances (Gitea, GitLab on-prem)', () => {
+    expect(normalizeGitRemoteUrl('https://gitea.local:3000/foo/bar.git')).toBe(
+      'gitea.local:3000/foo/bar',
+    );
+    expect(normalizeGitRemoteUrl('https://gitea.local:3000/foo/bar/')).toBe(
+      'gitea.local:3000/foo/bar',
+    );
+  });
+
+  test('drops user-info from URL-form inputs', () => {
+    expect(normalizeGitRemoteUrl('https://user:pass@gitlab.com/foo/bar.git')).toBe(
+      'gitlab.com/foo/bar',
+    );
+    expect(normalizeGitRemoteUrl('https://token@github.com/foo/bar')).toBe(
+      'github.com/foo/bar',
+    );
+  });
+
+  test('handles git:// protocol', () => {
+    expect(normalizeGitRemoteUrl('git://github.com/foo/bar.git')).toBe('github.com/foo/bar');
+  });
+
+  test('returns null for unparseable URL forms instead of fabricating a normalized one', () => {
+    // Bare relative paths are never legal git remotes — return null so the
+    // caller's equality check stays honest.
+    expect(normalizeGitRemoteUrl('not a url')).toBeNull();
+    expect(normalizeGitRemoteUrl('./local/path')).toBeNull();
+  });
+
+  test('returns null for empty/null inputs', () => {
+    expect(normalizeGitRemoteUrl(null)).toBeNull();
+    expect(normalizeGitRemoteUrl(undefined)).toBeNull();
+    expect(normalizeGitRemoteUrl('')).toBeNull();
+    expect(normalizeGitRemoteUrl('   ')).toBeNull();
   });
 });

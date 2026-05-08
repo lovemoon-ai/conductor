@@ -84,6 +84,7 @@ type AgentEvent =
         repo_root?: string | null;
         worktree_branch?: string | null;
         last_commit?: string | null;
+        git_remote_url?: string | null;
         file_count?: number | string | null;
         error?: string | null;
         error_code?: string | null;
@@ -513,6 +514,7 @@ const normalizeProjectPathValidationResult = (
     repo_root: normalizeOptionalString(payload.repo_root),
     worktree_branch: normalizeOptionalString(payload.worktree_branch),
     last_commit: normalizeOptionalString(payload.last_commit),
+    git_remote_url: normalizeOptionalString(payload.git_remote_url),
     file_count: normalizeNonNegativeInt(payload.file_count),
     error: normalizeOptionalString(payload.error),
     error_code: normalizeOptionalString(payload.error_code),

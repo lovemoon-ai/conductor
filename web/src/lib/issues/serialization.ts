@@ -29,6 +29,15 @@ type SerializableIssue = {
   aiSessionId?: string | null;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * Optional project attribution — populated when the caller wants the issue's
+   * card to show which daemon/project it belongs to (e.g. when the UI is
+   * displaying a merged group spanning multiple daemons).
+   */
+  project?: {
+    name?: string | null;
+    daemonHost?: string | null;
+  } | null;
 };
 
 type SerializableActiveTask = Parameters<typeof serializeTaskResponse>[0] | null | undefined;
@@ -60,9 +69,14 @@ export const serializeIssue = (
   const aiBackendType = normalizePersistedString(issue.aiBackendType);
   const aiSessionId = normalizePersistedString(issue.aiSessionId);
 
+  const projectName = issue.project?.name ?? null;
+  const daemonHost = issue.project?.daemonHost ?? null;
+
   return {
     id: issue.id,
     projectId: issue.projectId,
+    projectName,
+    daemonHost,
     title: issue.title,
     description: issue.description,
     status,
@@ -77,6 +91,8 @@ export const serializeIssue = (
     createdAt,
     updatedAt,
     project_id: issue.projectId,
+    project_name: projectName,
+    daemon_host: daemonHost,
     ai_backend_type: aiBackendType,
     ai_session_id: aiSessionId,
     active_task: serializedActiveTask,

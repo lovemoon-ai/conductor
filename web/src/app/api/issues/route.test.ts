@@ -177,6 +177,75 @@ describe('/api/issues', () => {
     ]);
   });
 
+  it('lists issues from all members of a merged group via project_ids and includes daemon attribution', async () => {
+    vi.mocked(db.issue.findMany).mockResolvedValue([
+      {
+        id: 'issue-a',
+        projectId: 'project-a',
+        title: 'On daemon-a',
+        description: null,
+        status: 'todo',
+        priority: 'P1',
+        position: 0,
+        metadata: null,
+        tasks: [],
+        createdAt: new Date('2026-04-14T00:00:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:10:00.000Z'),
+        project: { name: 'My Project', daemonHost: 'daemon-a' },
+      },
+      {
+        id: 'issue-b',
+        projectId: 'project-b',
+        title: 'On daemon-b',
+        description: null,
+        status: 'todo',
+        priority: 'P1',
+        position: 1,
+        metadata: null,
+        tasks: [],
+        createdAt: new Date('2026-04-14T00:01:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:11:00.000Z'),
+        project: { name: 'My Project', daemonHost: 'daemon-b' },
+      },
+    ] as any);
+
+    const response = await GET(createMockRequest({
+      method: 'GET',
+      url: 'http://localhost:6152/api/issues?project_ids=project-a,project-b',
+    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.issue.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        project: { userId: 'user-1' },
+        projectId: { in: ['project-a', 'project-b'] },
+      }),
+    }));
+    expect(data).toEqual([
+      expect.objectContaining({
+        id: 'issue-a',
+        daemonHost: 'daemon-a',
+        daemon_host: 'daemon-a',
+        projectName: 'My Project',
+        project_name: 'My Project',
+      }),
+      expect.objectContaining({
+        id: 'issue-b',
+        daemonHost: 'daemon-b',
+        daemon_host: 'daemon-b',
+      }),
+    ]);
+  });
+
+  it('rejects requests that combine project_id and project_ids', async () => {
+    const response = await GET(createMockRequest({
+      method: 'GET',
+      url: 'http://localhost:6152/api/issues?project_id=project-a&project_ids=project-b',
+    }));
+    expect(response.status).toBe(400);
+  });
+
   it('lists issues from all user projects when project_id is missing', async () => {
     vi.mocked(db.issue.findMany).mockResolvedValue([
       {
@@ -273,12 +342,57 @@ describe('/api/issues', () => {
         position: 5,
       }),
     }));
+    expect((vi.mocked(db.issue.create).mock.calls[0]?.[0] as any).select.project).toBeUndefined();
     expect(data).toEqual(expect.objectContaining({
       id: 'issue-2',
       projectId: 'project-1',
       project_id: 'project-1',
       priority: 'P1',
       position: 5,
+    }));
+  });
+
+  it('creates an issue with daemon attribution when requested by a merged view', async () => {
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
+    vi.mocked(db.issue.create).mockResolvedValue({
+      id: 'issue-merged',
+      projectId: 'project-1',
+      title: 'Merged create',
+      description: null,
+      status: 'todo',
+      priority: 'P1',
+      position: 0,
+      metadata: null,
+      tasks: [],
+      createdAt: new Date('2026-04-14T00:20:00.000Z'),
+      updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+      project: { name: 'Alpha', daemonHost: 'daemon-a' },
+    } as any);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: {
+        project_id: 'project-1',
+        title: 'Merged create',
+        include_project: true,
+      },
+    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect((vi.mocked(db.issue.create).mock.calls[0]?.[0] as any).select.project).toEqual({
+      select: {
+        name: true,
+        daemonHost: true,
+      },
+    });
+    expect(data).toEqual(expect.objectContaining({
+      id: 'issue-merged',
+      daemonHost: 'daemon-a',
+      daemon_host: 'daemon-a',
+      projectName: 'Alpha',
+      project_name: 'Alpha',
     }));
   });
 

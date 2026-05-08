@@ -33,13 +33,38 @@ export interface Project {
   repoRoot?: string | null;
   worktreeBranch?: string | null;
   lastCommit?: string | null;
+  /**
+   * Normalized git remote URL (lower-case, trailing `.git` stripped). Captured
+   * by the daemon on bind/refresh. Used to merge same-name projects across
+   * daemons that share the same upstream repo.
+   */
+  gitRemoteUrl?: string | null;
   fileCount?: number | null;
   sortOrder?: number | null;
   hidden?: boolean;
+  /**
+   * When true, the project is excluded from auto-grouping in the project list,
+   * even if its name + gitRemoteUrl match other projects.
+   */
+  mergeOptOut?: boolean;
   isDefault?: boolean;
   taskStatusCounts?: Record<string, number>;
   createdAt?: string;
   updatedAt?: string;
+}
+
+/**
+ * A merged-project group as displayed in the project list. Members are the
+ * underlying Project rows (one per daemon). Single-member groups behave the
+ * same as the corresponding standalone project.
+ */
+export interface ProjectGroup {
+  /** Stable key derived from members' ids — used as the group's id in UI. */
+  key: string;
+  name: string;
+  members: Project[];
+  /** True when members.length > 1 (multi-daemon merged group). */
+  isMerged: boolean;
 }
 
 export interface ProjectWithBoundDaemons extends Project {
@@ -53,6 +78,10 @@ export type IssuePriority = IssuePriorityValue;
 export interface Issue {
   id: string;
   projectId: string;
+  /** Project's display name — populated when fetched via merged group views. */
+  projectName?: string | null;
+  /** Owning daemon's host — populated when fetched via merged group views. */
+  daemonHost?: string | null;
   title: string;
   description?: string | null;
   status: IssueStatus;
@@ -290,6 +319,14 @@ export interface UpdateProjectInput {
   fileCount?: number;
   bindingConfirmed?: boolean;
   hidden?: boolean;
+  /** Set true to exclude this project from cross-daemon auto-merging. */
+  mergeOptOut?: boolean;
+  /**
+   * Trigger a daemon-side refresh that re-validates the binding and updates
+   * snapshot fields including `gitRemoteUrl`. Used to backfill the field for
+   * legacy projects created before the cross-daemon merge feature.
+   */
+  refresh?: boolean;
 }
 
 export interface CreateIssueInput {
@@ -300,6 +337,12 @@ export interface CreateIssueInput {
   priority?: IssuePriority;
   position?: number;
   metadata?: Record<string, unknown> | null;
+  /**
+   * Ask the API to include project/daemon attribution in the create response.
+   * Used by merged cross-daemon views so the newly inserted card has the same
+   * daemon badge as list-fetched issues.
+   */
+  includeProject?: boolean;
 }
 
 export interface UpdateIssueInput {

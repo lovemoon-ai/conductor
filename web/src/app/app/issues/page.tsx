@@ -13,6 +13,7 @@ import {
   useIssuesStore,
 } from '@/features/issues';
 import { useProjectsStore } from '@/features/projects';
+import { computeProjectGroups } from '@/features/projects/utils/project-groups';
 import { RefreshIcon } from '@/features/tasks';
 import {
   calculateIssueAppendPosition,
@@ -93,6 +94,7 @@ function IssuesPageContent() {
   const issues = useIssuesStore((state) => state.issues);
   const isIssuesLoading = useIssuesStore((state) => state.isLoading);
   const fetchIssues = useIssuesStore((state) => state.fetchIssues);
+  const fetchIssuesForProjects = useIssuesStore((state) => state.fetchIssuesForProjects);
   const moveIssue = useIssuesStore((state) => state.moveIssue);
   const updateIssue = useIssuesStore((state) => state.updateIssue);
   const deleteIssue = useIssuesStore((state) => state.deleteIssue);
@@ -119,6 +121,21 @@ function IssuesPageContent() {
     () => projects.find((project) => project.id === resolvedProjectId) ?? null,
     [projects, resolvedProjectId],
   );
+  // When the resolved project belongs to a cross-daemon merged group, fetch
+  // issues for every member so the board shows them together with daemon
+  // attribution. Single-member groups behave exactly as before.
+  const projectGroups = useMemo(() => computeProjectGroups(projects), [projects]);
+  const currentGroup = useMemo(() => {
+    if (!resolvedProjectId) return null;
+    return projectGroups.find((group) =>
+      group.members.some((member) => member.id === resolvedProjectId),
+    ) ?? null;
+  }, [projectGroups, resolvedProjectId]);
+  const currentGroupMemberIds = useMemo(
+    () => (currentGroup ? currentGroup.members.map((member) => member.id) : []),
+    [currentGroup],
+  );
+  const isMergedGroup = currentGroup ? currentGroup.isMerged : false;
   const visibleIssues = useMemo(() => (
     resolvedProjectId
       ? issues
@@ -173,11 +190,27 @@ function IssuesPageContent() {
       return;
     }
     setSelectedProjectId(resolvedProjectId ?? null);
-    void fetchIssues(resolvedProjectId);
-  }, [fetchIssues, resolvedProjectId, setSelectedProjectId, shouldWaitForProjectResolution]);
+    if (isMergedGroup && currentGroupMemberIds.length > 1) {
+      void fetchIssuesForProjects(currentGroupMemberIds);
+    } else {
+      void fetchIssues(resolvedProjectId);
+    }
+  }, [
+    currentGroupMemberIds,
+    fetchIssues,
+    fetchIssuesForProjects,
+    isMergedGroup,
+    resolvedProjectId,
+    setSelectedProjectId,
+    shouldWaitForProjectResolution,
+  ]);
 
   const handleRefresh = () => {
-    void fetchIssues(resolvedProjectId);
+    if (isMergedGroup && currentGroupMemberIds.length > 1) {
+      void fetchIssuesForProjects(currentGroupMemberIds);
+    } else {
+      void fetchIssues(resolvedProjectId);
+    }
   };
 
   const handleMoveIssue = async (

@@ -7666,6 +7666,7 @@ describe("Daemon", () => {
             repoRoot: "/tmp/project-real",
             worktreeBranch: "main",
             lastCommit: "abc123",
+            gitRemoteUrl: "github.com/example/project-real",
             fileCount: 8,
           };
         },
@@ -7704,6 +7705,7 @@ describe("Daemon", () => {
           repo_root: "/tmp/project-real",
           worktree_branch: "main",
           last_commit: "abc123",
+          git_remote_url: "github.com/example/project-real",
           file_count: 8,
           error: null,
           error_code: null,

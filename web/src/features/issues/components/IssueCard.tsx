@@ -15,6 +15,26 @@ const stopEventPropagation = (event: SyntheticEvent) => {
   event.stopPropagation();
 };
 
+/**
+ * Hash a daemon host into one of a small palette so a given daemon stays the
+ * same color across cards in a session. Pure function, no React state.
+ */
+const DAEMON_BADGE_PALETTE = [
+  'bg-sky-500/15 text-sky-700 dark:text-sky-300 border-sky-500/30',
+  'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/30',
+  'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30',
+  'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30',
+  'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30',
+  'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/30',
+];
+export const pickDaemonBadgeClass = (daemonHost: string): string => {
+  let hash = 0;
+  for (let i = 0; i < daemonHost.length; i += 1) {
+    hash = (hash * 31 + daemonHost.charCodeAt(i)) | 0;
+  }
+  return DAEMON_BADGE_PALETTE[Math.abs(hash) % DAEMON_BADGE_PALETTE.length];
+};
+
 function IssueStatusMenu({
   issue,
   onStatusChange,
@@ -203,6 +223,25 @@ function IssueCardBody({
             </span>
           )}
         </div>
+
+        {issue.daemonHost ? (
+          // Daemon attribution chip — surfaced when the parent view is showing
+          // issues from multiple daemons (merged cross-daemon project group).
+          // Single-daemon views leave `daemonHost` unset so this stays hidden.
+          <div className="mt-2 flex items-center gap-1.5">
+            <span
+              title={
+                issue.projectName
+                  ? `${issue.projectName} on ${issue.daemonHost}`
+                  : issue.daemonHost
+              }
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${pickDaemonBadgeClass(issue.daemonHost)}`}
+            >
+              <span aria-hidden="true" className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-80" />
+              {issue.daemonHost}
+            </span>
+          </div>
+        ) : null}
 
         {description ? (
           <p

@@ -91,9 +91,11 @@ model Project {
   repoRoot      String?  @map("repo_root")
   worktreeBranch String? @map("worktree_branch")
   lastCommit    String?  @map("last_commit")
+  gitRemoteUrl  String?  @map("git_remote_url")
   fileCount     Int?     @map("file_count")
   sortOrder     Int      @default(0) @map("sort_order")
   hiddenAt      DateTime? @map("hidden_at")
+  mergeOptOut   Boolean  @default(false) @map("merge_opt_out")
   metadata      String?
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")

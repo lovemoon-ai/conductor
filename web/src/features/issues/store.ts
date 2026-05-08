@@ -75,6 +75,8 @@ export const normalizeIssue = (raw: unknown): Issue | null => {
   return {
     id,
     projectId,
+    projectName: pickString(record.projectName) ?? pickString(record.project_name),
+    daemonHost: pickString(record.daemonHost) ?? pickString(record.daemon_host),
     title,
     description: pickString(record.description),
     status: normalizeIssueStatus(record.status),
@@ -120,6 +122,11 @@ const sortIssues = (issues: Issue[]): Issue[] => {
   });
 };
 
+const projectScopeKey = (projectIds: string[]): string =>
+  [...new Set(projectIds.map((id) => id.trim()).filter(Boolean))]
+    .sort()
+    .join(',');
+
 const normalizeIssueMutationResponse = (raw: unknown): {
   issue: Issue | null;
   activeTask: Task | null;
@@ -156,7 +163,19 @@ interface IssuesState {
   isLoading: boolean;
   error: string | null;
   currentProjectId: string | null;
+  /**
+   * When the active project list view is a merged cross-daemon group, this
+   * holds the full set of project ids the issue list is fetching for. Empty
+   * when only `currentProjectId` is in use.
+   */
+  currentProjectIds: string[];
   fetchIssues: (projectId?: string | null) => Promise<void>;
+  /**
+   * Fetch issues across multiple projects in one call — used by the merged
+   * cross-daemon view. Pass an empty list (or omit) to clear the merged
+   * scope and fall back to fetching everything.
+   */
+  fetchIssuesForProjects: (projectIds: string[]) => Promise<void>;
   createIssue: (input: CreateIssueInput) => Promise<Issue>;
   updateIssue: (issueId: string, input: UpdateIssueInput) => Promise<Issue>;
   moveIssue: (issueId: string, status: Issue['status'], position: number) => Promise<Issue>;
@@ -169,20 +188,68 @@ export const useIssuesStore = create<IssuesState>()((set, get) => ({
   isLoading: false,
   error: null,
   currentProjectId: null,
+  currentProjectIds: [],
 
   fetchIssues: async (projectId) => {
     const normalizedProjectId = projectId?.trim() || null;
-    set({ isLoading: true, error: null, currentProjectId: normalizedProjectId });
+    set({
+      isLoading: true,
+      error: null,
+      currentProjectId: normalizedProjectId,
+      currentProjectIds: [],
+    });
     try {
       const api = getApiClient();
       const suffix = normalizedProjectId ? `?project_id=${encodeURIComponent(normalizedProjectId)}` : '';
       const issues = sortIssues(normalizeIssueList(await api.get(`/issues${suffix}`)));
-      if (get().currentProjectId !== normalizedProjectId) {
+      if (
+        get().currentProjectId !== normalizedProjectId ||
+        get().currentProjectIds.length !== 0
+      ) {
         return;
       }
       set({ issues, isLoading: false });
     } catch (error) {
-      if (get().currentProjectId !== normalizedProjectId) {
+      if (
+        get().currentProjectId !== normalizedProjectId ||
+        get().currentProjectIds.length !== 0
+      ) {
+        return;
+      }
+      set({
+        isLoading: false,
+        error: error instanceof Error ? error.message : 'Failed to fetch issues',
+      });
+    }
+  },
+
+  fetchIssuesForProjects: async (projectIds) => {
+    const normalized = [...new Set(projectIds.map((id) => id.trim()).filter(Boolean))];
+    const requestScope = projectScopeKey(normalized);
+    // Empty list ⇒ defer to fetchIssues with no project filter so callers can
+    // unwind the merged scope without a second API call shape.
+    if (normalized.length === 0) {
+      await get().fetchIssues(null);
+      return;
+    }
+    set({
+      isLoading: true,
+      error: null,
+      currentProjectId: null,
+      currentProjectIds: normalized,
+    });
+    try {
+      const api = getApiClient();
+      const suffix = `?project_ids=${encodeURIComponent(normalized.join(','))}`;
+      const issues = sortIssues(normalizeIssueList(await api.get(`/issues${suffix}`)));
+      const currentScope = projectScopeKey(get().currentProjectIds);
+      if (currentScope !== requestScope) {
+        return;
+      }
+      set({ issues, isLoading: false });
+    } catch (error) {
+      const currentScope = projectScopeKey(get().currentProjectIds);
+      if (currentScope !== requestScope) {
         return;
       }
       set({

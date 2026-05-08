@@ -5,6 +5,9 @@ import { ProjectItem } from './ProjectItem';
 const pushMock = vi.fn();
 const updateProjectMock = vi.fn();
 const deleteProjectMock = vi.fn();
+const deleteProjectGroupMock = vi.fn();
+const hideProjectGroupMock = vi.fn();
+const unhideProjectGroupMock = vi.fn();
 const pushToastMock = vi.fn();
 const sortableListeners = vi.hoisted(() => ({
   onPointerDown: vi.fn(),
@@ -27,6 +30,9 @@ vi.mock('../store', () => ({
   useProjectsStore: () => ({
     updateProject: updateProjectMock,
     deleteProject: deleteProjectMock,
+    deleteProjectGroup: deleteProjectGroupMock,
+    hideProjectGroup: hideProjectGroupMock,
+    unhideProjectGroup: unhideProjectGroupMock,
   }),
 }));
 
@@ -80,6 +86,9 @@ describe('ProjectItem', () => {
     pushMock.mockReset();
     updateProjectMock.mockReset();
     deleteProjectMock.mockReset();
+    deleteProjectGroupMock.mockReset();
+    hideProjectGroupMock.mockReset();
+    unhideProjectGroupMock.mockReset();
     pushToastMock.mockReset();
     sortableListeners.onPointerDown.mockReset();
     sortableListeners.onMouseDown.mockReset();
@@ -375,5 +384,96 @@ describe('ProjectItem', () => {
 
     expect(sortableListeners.onMouseDown).not.toHaveBeenCalled();
     expect(sortableListeners.onTouchStart).not.toHaveBeenCalled();
+  });
+
+  describe('merged cross-daemon group', () => {
+    const mergedMembers = [
+      {
+        id: 'p-a',
+        name: 'Alpha',
+        daemonHost: 'daemon-a',
+        workspacePath: '/repo/alpha',
+        repoRoot: '/repo/alpha',
+        gitRemoteUrl: 'github.com/foo/alpha',
+      },
+      {
+        id: 'p-b',
+        name: 'Alpha',
+        daemonHost: 'daemon-b',
+        workspacePath: '/repo/alpha',
+        repoRoot: '/repo/alpha',
+        gitRemoteUrl: 'github.com/foo/alpha',
+      },
+    ];
+
+    it('renders one daemon badge per member with online dot when daemon is online', () => {
+      agentsState = {
+        agents: [
+          { id: 'a', host: 'daemon-a' },
+          { id: 'b', host: 'daemon-b' },
+        ],
+      };
+      render(
+        <ProjectItem
+          project={mergedMembers[0] as any}
+          mergedMembers={mergedMembers as any}
+          sortableId="merged:Alpha:p-a|p-b"
+        />,
+      );
+      // Both daemon hosts surface as their own chips.
+      expect(screen.getByText('daemon-a')).toBeInTheDocument();
+      expect(screen.getByText('daemon-b')).toBeInTheDocument();
+      // Group summary chip ("merged · 2 daemons") is rendered.
+      expect(screen.getByText(/merged · 2 daemons/i)).toBeInTheDocument();
+      // The single-mode "Daemon offline" / "Binding pending" chips MUST NOT
+      // render under merged mode — those are per-card states.
+      expect(screen.queryByText('Daemon offline')).toBeNull();
+    });
+
+    it('fans out hide to every member via hideProjectGroup', () => {
+      render(
+        <ProjectItem
+          project={mergedMembers[0] as any}
+          mergedMembers={mergedMembers as any}
+          isSelected={false}
+          isHidden={false}
+          // onHide is supplied because canHide depends on it; the merged path
+          // should bypass it and call hideProjectGroup instead.
+          onHide={vi.fn()}
+        />,
+      );
+      // Hide is invoked via the swipe action button. Find it by aria-label.
+      fireEvent.click(screen.getByLabelText('Hide project'));
+
+      expect(hideProjectGroupMock).toHaveBeenCalledWith(['p-a', 'p-b']);
+      expect(pushToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Merged project hidden across daemons',
+        }),
+      );
+    });
+
+    it('aggregates running task counts across all members', () => {
+      const membersWithCounts = [
+        {
+          ...mergedMembers[0],
+          taskStatusCounts: { running: 2, killed: 0 },
+        },
+        {
+          ...mergedMembers[1],
+          taskStatusCounts: { running: 3, killed: 1 },
+        },
+      ];
+      render(
+        <ProjectItem
+          project={membersWithCounts[0] as any}
+          mergedMembers={membersWithCounts as any}
+        />,
+      );
+      // 2 + 3 = 5 running.
+      expect(screen.getByText(/5 running/)).toBeInTheDocument();
+      // 0 + 1 = 1 killed.
+      expect(screen.getByText(/1 killed/)).toBeInTheDocument();
+    });
   });
 });

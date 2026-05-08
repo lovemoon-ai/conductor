@@ -104,6 +104,28 @@ vi.mock('./project-list-utils', () => ({
     next.splice(overIndex, 0, moved);
     return next;
   },
+  reorderProjectGroupsLocally: (
+    groups: Array<{ key: string; members: Project[] }>,
+    activeId: string,
+    overId: string,
+  ) => {
+    const activeIndex = groups.findIndex((group) => group.key === activeId);
+    const overIndex = groups.findIndex((group) => group.key === overId);
+    if (activeIndex === -1 || overIndex === -1 || activeIndex === overIndex) {
+      return groups;
+    }
+    const next = [...groups];
+    const [moved] = next.splice(activeIndex, 1);
+    next.splice(overIndex, 0, moved);
+    return next;
+  },
+  flattenGroupsToProjectIds: (groups: Array<{ members: Project[] }>) => {
+    const out: string[] = [];
+    for (const group of groups) {
+      for (const member of group.members) out.push(member.id);
+    }
+    return out;
+  },
 }));
 
 describe('ProjectList', () => {
