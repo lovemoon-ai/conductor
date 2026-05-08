@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { createRequire } from "node:module";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import dotenv from "dotenv";
@@ -161,6 +161,33 @@ function getUserConfig(configFilePath) {
     // ignore error
   }
   return {};
+}
+
+// Read whether the daemon should launch each Fire process inside a detached
+// tmux session. When enabled, the daemon spawns `tmux new-session -d ...` so
+// that the Fire process runs under the tmux server with no parent/child
+// relationship to the daemon. The daemon can therefore be restarted or killed
+// without affecting any running Fire process.
+//
+// Resolution order:
+//   1. CONDUCTOR_FIRE_TMUX_MODE env var ("1"/"true"/"on" enable, "0"/"false"/"off" disable)
+//   2. fire_tmux_mode boolean in ~/.conductor/config.yaml
+//   3. Default: false
+function getFireTmuxModeEnabled(userConfig) {
+  const rawEnv = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+  if (typeof rawEnv === "string" && rawEnv.trim()) {
+    const normalized = rawEnv.trim().toLowerCase();
+    if (normalized === "1" || normalized === "true" || normalized === "on" || normalized === "yes") {
+      return true;
+    }
+    if (normalized === "0" || normalized === "false" || normalized === "off" || normalized === "no") {
+      return false;
+    }
+  }
+  if (userConfig && typeof userConfig === "object") {
+    return userConfig.fire_tmux_mode === true;
+  }
+  return false;
 }
 
 function normalizePlanLimitType(limitType) {
@@ -650,6 +677,16 @@ export function startDaemon(config = {}, deps = {}) {
   const WORKSPACE_ROOT = expandHomePath(workspaceRootValue, homeDir);
   const CLI_PATH_VAL = config.CLI_PATH || CLI_PATH;
 
+  // When enabled, every Fire process is launched inside a detached tmux
+  // session via `tmux new-session -d`. The daemon-spawned `tmux` client exits
+  // immediately after creating the session, leaving the Fire process running
+  // under the tmux server with no parent/child relationship to the daemon.
+  // The actual runtime activation flag (FIRE_TMUX_MODE_ACTIVE) is computed
+  // below after we verify tmux is installed; if tmux is missing we log a
+  // warning and silently fall back to direct spawn rather than failing every
+  // create_task with ENOENT.
+  const FIRE_TMUX_MODE_ENABLED = getFireTmuxModeEnabled(userConfig);
+
   // Get allow_cli_list from config
   const RAW_ALLOW_CLI_LIST = getRawAllowCliList(userConfig);
   let ALLOW_CLI_LIST = {};
@@ -716,6 +753,7 @@ export function startDaemon(config = {}, deps = {}) {
   );
 
   const spawnFn = deps.spawn || spawn;
+  const spawnSyncFn = deps.spawnSync || spawnSync;
   const mkdirSyncFn = deps.mkdirSync || fs.mkdirSync;
   const writeFileSyncFn = deps.writeFileSync || fs.writeFileSync;
   const existsSyncFn = deps.existsSync || fs.existsSync;
@@ -736,6 +774,248 @@ export function startDaemon(config = {}, deps = {}) {
   const createLogCollector = deps.createLogCollector || ((backendUrl) => new DaemonLogCollector(backendUrl));
   const resolveProjectSnapshotFn =
     deps.resolveProjectSnapshot || ((projectPath) => new ProjectContext(projectPath).snapshot());
+
+  // ---- Fire tmux mode helpers ---------------------------------------------
+  // Probe whether the `tmux` binary is available on PATH. Used at daemon
+  // startup so a misconfigured environment falls back gracefully instead of
+  // failing every create_task with ENOENT.
+  function isTmuxAvailable() {
+    try {
+      const result = spawnSyncFn("tmux", ["-V"], {
+        stdio: "ignore",
+        timeout: 2000,
+      });
+      if (!result || result.error) {
+        return false;
+      }
+      // spawnSync sets `status` to the exit code on success and to null when
+      // the process couldn't be started; the `pid` is also unset in the
+      // latter case.
+      return result.status === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  // Resolve the active tmux mode: requested via config AND tmux installed.
+  const FIRE_TMUX_MODE_ACTIVE = FIRE_TMUX_MODE_ENABLED && isTmuxAvailable();
+  if (FIRE_TMUX_MODE_ENABLED && !FIRE_TMUX_MODE_ACTIVE) {
+    logError(
+      "fire_tmux_mode is enabled but `tmux` is not available on PATH; " +
+        "falling back to direct spawn. Install tmux to launch Fire processes " +
+        "in detached tmux sessions.",
+    );
+  } else if (FIRE_TMUX_MODE_ACTIVE) {
+    log("Fire tmux mode enabled: each Fire process will run in a detached tmux session");
+  }
+
+  // Single-quote a value so it can be embedded inside a `bash -c '...'`
+  // command. Embedded single-quotes are escaped via the standard `'\\''`
+  // sequence.
+  function shellQuoteForBash(value) {
+    const str = String(value ?? "");
+    if (str === "") {
+      return "''";
+    }
+    return `'${str.replace(/'/g, `'\\''`)}'`;
+  }
+
+  // Build a unique tmux session name for a Fire spawn.
+  //
+  // Tmux session names cannot contain `:` or `.`; we sanitize the task id
+  // aggressively and clamp the length. We also append a per-spawn uniqueness
+  // suffix (base36 timestamp + 4 random chars) so re-spawning the same task
+  // id while a previous session may still be alive — for example after a
+  // daemon restart that left the old session running — does not collide
+  // with a `duplicate session` error from tmux.
+  function buildFireTmuxSessionName(taskId) {
+    const safe = String(taskId || "")
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 32) || "task";
+    const uniq = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    return `conductor-fire-${safe}-${uniq}`;
+  }
+
+  // Spawn the Fire CLI either directly (default) or inside a detached tmux
+  // session (when FIRE_TMUX_MODE_ACTIVE). In tmux mode the returned `child`
+  // is the short-lived `tmux new-session` client; once it exits with code 0
+  // the Fire process keeps running under the tmux server, fully detached from
+  // the daemon. Fire's stdout/stderr is redirected directly to `logPath` so
+  // the daemon does not need to pipe streams.
+  function spawnFireProcess({ taskId, args, env, cwd, logPath }) {
+    if (!FIRE_TMUX_MODE_ACTIVE) {
+      const child = spawnFn(process.execPath, [CLI_PATH_VAL, ...args], {
+        cwd,
+        env,
+        stdio: ["inherit", "pipe", "pipe"],
+      });
+      return { child, tmuxSession: null };
+    }
+
+    const sessionName = buildFireTmuxSessionName(taskId);
+    const innerCommandParts = [process.execPath, CLI_PATH_VAL, ...args].map(shellQuoteForBash);
+    const redirectedCommand = logPath
+      ? `${innerCommandParts.join(" ")} >> ${shellQuoteForBash(logPath)} 2>&1`
+      : innerCommandParts.join(" ");
+    // Use a non-login `bash -c` here: node and the CLI script are passed by
+    // absolute path, so we don't need PATH from a login shell, and `-l`
+    // would slow startup and could leak unexpected stderr from user shell
+    // init scripts.
+    const tmuxArgs = [
+      "new-session",
+      "-d",
+      "-s",
+      sessionName,
+      "-c",
+      cwd,
+      "bash",
+      "-c",
+      `exec ${redirectedCommand}`,
+    ];
+    log(`Spawning Fire via tmux: session=${sessionName} cwd=${cwd}`);
+    const child = spawnFn("tmux", tmuxArgs, {
+      cwd,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
+    });
+    if (typeof child.unref === "function") {
+      child.unref();
+    }
+    return { child, tmuxSession: sessionName };
+  }
+
+  // Async probe: does the named tmux session still exist? Resolves to a
+  // boolean — `true` iff `tmux has-session -t <name>` exits with code 0.
+  // Any spawn error, non-zero exit, or timeout resolves to `false`.
+  //
+  // The hard timeout matters because a wedged tmux server (bad socket perms,
+  // hung server process) would otherwise leave probes pending forever and,
+  // combined with the periodic reaper, leak children + Promises. The
+  // timeout is overridable via `config.TMUX_PROBE_TIMEOUT_MS` (mostly for
+  // tests).
+  const TMUX_PROBE_TIMEOUT_MS = (() => {
+    const explicit = Number(config.TMUX_PROBE_TIMEOUT_MS);
+    if (Number.isFinite(explicit) && explicit > 0) {
+      return explicit;
+    }
+    return 5000;
+  })();
+  function tmuxSessionExists(sessionName) {
+    return new Promise((resolve) => {
+      if (!sessionName) {
+        resolve(false);
+        return;
+      }
+      let settled = false;
+      let probe = null;
+      let timer = null;
+      const settle = (alive) => {
+        if (settled) return;
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        resolve(alive);
+      };
+      try {
+        probe = spawnFn("tmux", ["has-session", "-t", sessionName], {
+          stdio: "ignore",
+        });
+        probe.on("exit", (code) => settle(code === 0));
+        probe.on("error", () => settle(false));
+        timer = setTimeout(() => {
+          // Probe took too long — assume the session state is unknown,
+          // treat as "not alive" (so the reaper falls back to safe cleanup),
+          // and best-effort kill the stuck child so it doesn't pile up.
+          try {
+            if (probe && typeof probe.kill === "function") {
+              probe.kill("SIGKILL");
+            }
+          } catch {
+            // ignore; we already settled
+          }
+          logError(
+            `tmux has-session probe timed out after ${TMUX_PROBE_TIMEOUT_MS}ms for session ${sessionName}`,
+          );
+          settle(false);
+        }, TMUX_PROBE_TIMEOUT_MS);
+        if (typeof timer.unref === "function") {
+          timer.unref();
+        }
+      } catch {
+        settle(false);
+      }
+    });
+  }
+
+  // Walk every tmux-mode entry in `activeTaskProcesses` and remove the ones
+  // whose tmux session no longer exists. We don't (and can't reliably)
+  // observe the inner Fire process exit when we never owned it as a child,
+  // so this best-effort sweep is what keeps the active map from leaking
+  // across long daemon lifetimes.
+  //
+  // Theoretical startup race (intentionally not guarded against):
+  //   `spawnFireProcess` returns synchronously, and we set the active
+  //   record before the spawned `tmux new-session -d` client has actually
+  //   exited. There is therefore a microsecond-scale window in which an
+  //   active record exists but `tmux has-session` may return false because
+  //   the session has not finished registering with the tmux server. With
+  //   the default 30s poll interval the chance of hitting this window is
+  //   ~negligible, and even when hit Fire's own websocket connection
+  //   subsequently overwrites any stale terminal status the daemon
+  //   reports. If this ever shows up in production, add a `createdAt`
+  //   timestamp to the record and a grace period here.
+  async function reapDeadTmuxSessionsOnce() {
+    const candidates = [];
+    for (const [taskId, record] of activeTaskProcesses.entries()) {
+      if (record?.tmuxMode && record.tmuxSession) {
+        candidates.push([taskId, record]);
+      }
+    }
+    for (const [taskId, record] of candidates) {
+      const alive = await tmuxSessionExists(record.tmuxSession);
+      // Only remove the entry if it still points to the same record; a
+      // concurrent restart_task may have replaced it while we were probing.
+      if (!alive && activeTaskProcesses.get(taskId) === record) {
+        log(
+          `Tmux session ${record.tmuxSession} for task ${taskId} no longer exists; cleaning up activeTaskProcesses entry`,
+        );
+        if (record.stopForceKillTimer) {
+          clearTimeout(record.stopForceKillTimer);
+          record.stopForceKillTimer = null;
+        }
+        activeTaskProcesses.delete(taskId);
+      }
+    }
+  }
+
+  // Best-effort: terminate a Fire process running in tmux by killing the
+  // session. Returns true if the kill command was issued.
+  function killFireTmuxSession(sessionName) {
+    if (!sessionName) {
+      return false;
+    }
+    try {
+      const killChild = spawnFn("tmux", ["kill-session", "-t", sessionName], {
+        stdio: "ignore",
+        detached: true,
+      });
+      if (typeof killChild.unref === "function") {
+        killChild.unref();
+      }
+      killChild.on("error", (err) => {
+        logError(`Failed to issue tmux kill-session for ${sessionName}: ${err?.message || err}`);
+      });
+      return true;
+    } catch (error) {
+      logError(`Failed to spawn tmux kill-session for ${sessionName}: ${error?.message || error}`);
+      return false;
+    }
+  }
+  // -------------------------------------------------------------------------
 
   function buildTaskWorktreeRoot(projectWorkspacePath, worktreeId) {
     const sanitized = String(worktreeId).replace(/[/\\]/g, "_").replace(/\.\./g, "_");
@@ -1494,6 +1774,23 @@ export function startDaemon(config = {}, deps = {}) {
   let watchdogAwaitingHealthySignalAt = null;
   let watchdogTimer = null;
 
+  // Tmux liveness reaper — periodically removes activeTaskProcesses entries
+  // whose underlying tmux session no longer exists. Only used when
+  // FIRE_TMUX_MODE_ACTIVE.
+  //
+  // Set `config.TMUX_LIVENESS_POLL_MS` to 0 to disable polling entirely
+  // (escape hatch — the in-memory map will then accumulate stale entries
+  // until the daemon restarts). Negative or non-numeric values fall back
+  // to the 30s default.
+  let tmuxLivenessTimer = null;
+  const TMUX_LIVENESS_POLL_MS = (() => {
+    const explicit = Number(config.TMUX_LIVENESS_POLL_MS);
+    if (Number.isFinite(explicit) && explicit >= 0) {
+      return explicit;
+    }
+    return 30 * 1000;
+  })();
+
   // --- Auto-update state ---
   const VERSION_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
   let lastVersionCheckAt = 0;
@@ -1671,6 +1968,30 @@ export function startDaemon(config = {}, deps = {}) {
       watchdogTimer.unref();
     }
     void runMaintenanceTick();
+
+    if (FIRE_TMUX_MODE_ACTIVE && TMUX_LIVENESS_POLL_MS > 0) {
+      // Reentrancy guard: setInterval fires at fixed wall-clock intervals
+      // regardless of whether the previous reaper run finished. With many
+      // active tmux tasks (or a slow tmux server), a single sweep can take
+      // longer than the poll interval — without this flag we would fan
+      // out concurrent sweeps that all probe the same sessions and pile
+      // up child processes.
+      let reapInFlight = false;
+      tmuxLivenessTimer = setInterval(() => {
+        if (reapInFlight) return;
+        reapInFlight = true;
+        reapDeadTmuxSessionsOnce()
+          .catch((err) => {
+            logError(`Tmux liveness reaper error: ${err?.message || err}`);
+          })
+          .finally(() => {
+            reapInFlight = false;
+          });
+      }, TMUX_LIVENESS_POLL_MS);
+      if (typeof tmuxLivenessTimer?.unref === "function") {
+        tmuxLivenessTimer.unref();
+      }
+    }
   })();
 
   function markBackendHttpSuccess(at = Date.now()) {
@@ -3843,7 +4164,7 @@ export function startDaemon(config = {}, deps = {}) {
   ) {
     const processRecord = activeTaskProcesses.get(taskId);
     const ptyRecord = activePtySessions.get(taskId);
-    if ((!processRecord || !processRecord.child) && !ptyRecord) {
+    if ((!processRecord || (!processRecord.child && !processRecord.tmuxSession)) && !ptyRecord) {
       return false;
     }
 
@@ -3861,6 +4182,19 @@ export function startDaemon(config = {}, deps = {}) {
     }
     if (ptyRecord) {
       cleanupPtyRtcTransport(taskId);
+    }
+
+    if (processRecord?.tmuxMode) {
+      // Tmux-managed Fire processes are not direct children. The tmux client
+      // we spawned has already exited; the live Fire process is owned by the
+      // tmux server. Terminate it by killing the session and immediately
+      // remove it from the active map (no force-kill timer needed because
+      // tmux kills the session synchronously).
+      const sessionName = processRecord.tmuxSession;
+      log(`Killing tmux session ${sessionName || "(unknown)"} for task ${taskId}`);
+      killFireTmuxSession(sessionName);
+      activeTaskProcesses.delete(taskId);
+      return true;
     }
 
     if (processRecord?.child) {
@@ -4416,13 +4750,28 @@ export function startDaemon(config = {}, deps = {}) {
         env.CONDUCTOR_BACKEND_URL = BACKEND_HTTP;
       }
 
-      const child = spawnFn(process.execPath, [CLI_PATH_VAL, ...args], {
-        cwd: taskDir,
+      const { child, tmuxSession } = spawnFireProcess({
+        taskId,
+        args,
         env,
-        stdio: ["inherit", "pipe", "pipe"],
+        cwd: taskDir,
+        logPath,
       });
 
-      if (!boundPath && runTimestampPart && Number.isInteger(child?.pid) && child.pid > 0) {
+      // In normal mode we rename the placeholder run-timestamp dir to embed
+      // the freshly spawned child pid. We must NOT do this in tmux mode:
+      // 1) child.pid is the short-lived tmux client, not Fire — misleading.
+      // 2) Fire's stdout/stderr is redirected to logPath inside the tmux
+      //    `bash -c ...` command, which captures the path *before* this
+      //    rename runs. Renaming the parent dir afterwards would break that
+      //    redirection (file open would fail) and Fire would never start.
+      if (
+        !tmuxSession &&
+        !boundPath &&
+        runTimestampPart &&
+        Number.isInteger(child?.pid) &&
+        child.pid > 0
+      ) {
         const desiredTaskDir = path.join(path.dirname(taskDir), `${runTimestampPart}_pid_${child.pid}`);
         if (desiredTaskDir !== taskDir) {
           try {
@@ -4465,6 +4814,8 @@ export function startDaemon(config = {}, deps = {}) {
         logPath,
         stopForceKillTimer: null,
         managedByFireBridge: true,
+        tmuxSession: tmuxSession || null,
+        tmuxMode: Boolean(tmuxSession),
       });
 
       client
@@ -4480,15 +4831,29 @@ export function startDaemon(config = {}, deps = {}) {
           logError(`Failed to report task status (RUNNING) for ${taskId}: ${err?.message || err}`);
         });
 
-      if (child.stdout && typeof child.stdout.pipe === "function" && logStream) {
-        child.stdout.pipe(logStream, { end: false });
-      } else if (child.stdout && typeof child.stdout.on === "function" && logStream) {
-        child.stdout.on("data", (chunk) => logStream.write(chunk));
-      }
-      if (child.stderr && typeof child.stderr.pipe === "function" && logStream) {
-        child.stderr.pipe(logStream, { end: false });
-      } else if (child.stderr && typeof child.stderr.on === "function" && logStream) {
-        child.stderr.on("data", (chunk) => logStream.write(chunk));
+      // In tmux mode the Fire process writes directly to logPath via the
+      // shell redirection inside the tmux session, so the daemon does not
+      // pipe stdout/stderr. We only attach the data listeners in normal mode.
+      if (!tmuxSession) {
+        if (child.stdout && typeof child.stdout.pipe === "function" && logStream) {
+          child.stdout.pipe(logStream, { end: false });
+        } else if (child.stdout && typeof child.stdout.on === "function" && logStream) {
+          child.stdout.on("data", (chunk) => logStream.write(chunk));
+        }
+        if (child.stderr && typeof child.stderr.pipe === "function" && logStream) {
+          child.stderr.pipe(logStream, { end: false });
+        } else if (child.stderr && typeof child.stderr.on === "function" && logStream) {
+          child.stderr.on("data", (chunk) => logStream.write(chunk));
+        }
+      } else if (child.stderr && typeof child.stderr.on === "function") {
+        // Capture any error output emitted by the tmux client itself so
+        // problems during session creation surface in daemon logs.
+        child.stderr.on("data", (chunk) => {
+          const text = chunk?.toString?.("utf8") ?? String(chunk ?? "");
+          if (text.trim()) {
+            logError(`tmux(${tmuxSession}) stderr: ${text.trim()}`);
+          }
+        });
       }
 
       child.on("error", (err) => {
@@ -4501,6 +4866,37 @@ export function startDaemon(config = {}, deps = {}) {
 
       child.on("exit", (code, signal) => {
         const active = activeTaskProcesses.get(taskId);
+
+        // In tmux mode the `tmux new-session -d` client always exits
+        // shortly after launching the Fire session. A clean exit (code 0,
+        // no signal) just means the session was successfully created and
+        // Fire is now running detached under the tmux server. We must NOT
+        // remove the task from activeTaskProcesses or report a terminal
+        // status in that case — Fire is still alive.
+        if (active?.tmuxMode && !signal && code === 0) {
+          log(`Fire launched in detached tmux session: ${active.tmuxSession || "(unknown)"}`);
+          if (logStream) {
+            const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).replace(" ", "T");
+            logStream.write(
+              `[daemon ${ts}] tmux session ${active.tmuxSession || "?"} created; Fire detached from daemon\n`,
+            );
+          }
+          return;
+        }
+
+        // tmux mode + non-zero/signaled exit means `tmux new-session` itself
+        // failed (duplicate session, invalid args, tmux server crashed, …).
+        // Fire never started, so the bridge-managed assumption that "Fire
+        // will report its own terminal status" no longer holds — force the
+        // daemon to report failure so the backend doesn't get stuck on
+        // RUNNING.
+        if (active?.tmuxMode) {
+          active.forceDaemonTerminalStatusReport = true;
+          logError(
+            `tmux session ${active.tmuxSession || "?"} for task ${taskId} failed to launch (code=${code}, signal=${signal || "null"})`,
+          );
+        }
+
         if (active?.stopForceKillTimer) {
           clearTimeout(active.stopForceKillTimer);
         }
@@ -4969,10 +5365,12 @@ export function startDaemon(config = {}, deps = {}) {
       env.CONDUCTOR_BACKEND_URL = BACKEND_HTTP;
     }
 
-    const child = spawnFn(process.execPath, [CLI_PATH_VAL, ...args], {
-      cwd: taskDir,
+    const { child, tmuxSession } = spawnFireProcess({
+      taskId: normalizedTargetTaskId,
+      args,
       env,
-      stdio: ["inherit", "pipe", "pipe"],
+      cwd: taskDir,
+      logPath,
     });
 
     let logStream;
@@ -5006,18 +5404,32 @@ export function startDaemon(config = {}, deps = {}) {
       logPath,
       stopForceKillTimer: null,
       managedByFireBridge: true,
+      tmuxSession: tmuxSession || null,
+      tmuxMode: Boolean(tmuxSession),
     };
     activeTaskProcesses.set(normalizedTargetTaskId, activeProcessRecord);
 
-    if (child.stdout && typeof child.stdout.pipe === "function" && logStream) {
-      child.stdout.pipe(logStream, { end: false });
-    } else if (child.stdout && typeof child.stdout.on === "function" && logStream) {
-      child.stdout.on("data", (chunk) => logStream.write(chunk));
-    }
-    if (child.stderr && typeof child.stderr.pipe === "function" && logStream) {
-      child.stderr.pipe(logStream, { end: false });
-    } else if (child.stderr && typeof child.stderr.on === "function" && logStream) {
-      child.stderr.on("data", (chunk) => logStream.write(chunk));
+    // In tmux mode the Fire process writes directly to logPath via shell
+    // redirection inside the tmux session, so the daemon does not pipe
+    // stdout/stderr. We only attach the data listeners in normal mode.
+    if (!tmuxSession) {
+      if (child.stdout && typeof child.stdout.pipe === "function" && logStream) {
+        child.stdout.pipe(logStream, { end: false });
+      } else if (child.stdout && typeof child.stdout.on === "function" && logStream) {
+        child.stdout.on("data", (chunk) => logStream.write(chunk));
+      }
+      if (child.stderr && typeof child.stderr.pipe === "function" && logStream) {
+        child.stderr.pipe(logStream, { end: false });
+      } else if (child.stderr && typeof child.stderr.on === "function" && logStream) {
+        child.stderr.on("data", (chunk) => logStream.write(chunk));
+      }
+    } else if (child.stderr && typeof child.stderr.on === "function") {
+      child.stderr.on("data", (chunk) => {
+        const text = chunk?.toString?.("utf8") ?? String(chunk ?? "");
+        if (text.trim()) {
+          logError(`tmux(${tmuxSession}) stderr: ${text.trim()}`);
+        }
+      });
     }
 
     child.on("error", (err) => {
@@ -5030,6 +5442,33 @@ export function startDaemon(config = {}, deps = {}) {
 
     child.on("exit", (code, signal) => {
       const active = activeTaskProcesses.get(normalizedTargetTaskId);
+
+      // In tmux mode the `tmux new-session -d` client always exits soon
+      // after launching the session. A clean exit (code 0, no signal) means
+      // Fire is now running detached under the tmux server — keep the task
+      // record and skip terminal-status reporting.
+      if (active?.tmuxMode && !signal && code === 0) {
+        log(`Fire restart launched in detached tmux session: ${active.tmuxSession || "(unknown)"}`);
+        if (logStream) {
+          const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).replace(" ", "T");
+          logStream.write(
+            `[daemon ${ts}] tmux session ${active.tmuxSession || "?"} created; Fire detached from daemon\n`,
+          );
+        }
+        return;
+      }
+
+      // tmux mode + non-zero/signaled exit means the `tmux new-session` call
+      // failed before Fire could start (e.g. duplicate session for the same
+      // task id, tmux server crashed). Force the daemon to report failure so
+      // the backend doesn't get stuck on RUNNING.
+      if (active?.tmuxMode) {
+        active.forceDaemonTerminalStatusReport = true;
+        logError(
+          `tmux session ${active.tmuxSession || "?"} for restart of task ${normalizedTargetTaskId} failed to launch (code=${code}, signal=${signal || "null"})`,
+        );
+      }
+
       if (active?.stopForceKillTimer) {
         clearTimeout(active.stopForceKillTimer);
       }
@@ -5148,6 +5587,10 @@ export function startDaemon(config = {}, deps = {}) {
         clearInterval(watchdogTimer);
         watchdogTimer = null;
       }
+      if (tmuxLivenessTimer) {
+        clearInterval(tmuxLivenessTimer);
+        tmuxLivenessTimer = null;
+      }
       const activeProcessEntries = [...activeTaskProcesses.entries()];
       const activePtyEntries = [...activePtySessions.entries()];
       const activeEntries = [...activeProcessEntries, ...activePtyEntries];
@@ -5184,6 +5627,16 @@ export function startDaemon(config = {}, deps = {}) {
       for (const [taskId, record] of activeProcessEntries) {
         if (record?.stopForceKillTimer) {
           clearTimeout(record.stopForceKillTimer);
+        }
+        // In tmux mode the Fire process runs detached under the tmux server.
+        // Daemon shutdown must NOT terminate those Fire processes — that's
+        // the whole purpose of the mode. Skip the kill and let them keep
+        // running.
+        if (record?.tmuxMode) {
+          log(
+            `Daemon shutting down: leaving tmux-detached Fire task ${taskId} (session=${record.tmuxSession || "?"}) running`,
+          );
+          continue;
         }
         try {
           if (typeof record.child?.kill === "function") {
