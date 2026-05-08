@@ -885,16 +885,23 @@ describe("Daemon", () => {
       tmuxSpawnCalls.push({ cmd, args, opts });
       assert.strictEqual(args[0], "new-session");
       assert.strictEqual(args[1], "-d");
-      assert.strictEqual(args[2], "-s");
-      // Session name format: conductor-fire-<sanitizedTaskId>-<uniqSuffix>
-      // The uniqueness suffix avoids collisions when re-spawning the same
-      // task id while a prior session may still be alive.
-      assert.match(args[3], /^conductor-fire-task-tmux-[a-z0-9]{4,}/);
-      assert.strictEqual(args[4], "-c");
-      assert.match(args[5], /^\/tmp\/test-ws-tmux\//);
-      assert.strictEqual(args[6], "bash");
-      assert.strictEqual(args[7], "-c");
-      const innerCmd = args[8];
+
+      // Argument layout (after the leading `-d`): a variable number of
+      // `-e KEY=VALUE` pairs, then `-s <session>`, `-c <cwd>`, then the
+      // positional shell-command args. Locate the indices instead of
+      // hard-coding positions.
+      const sIdx = args.indexOf("-s");
+      const cIdx = args.indexOf("-c");
+      assert.ok(sIdx > 1, "expected -s flag after -d");
+      assert.ok(cIdx > sIdx, "expected -c flag after -s");
+      // Session name format: conductor-fire-<sanitizedTaskId>-<uniqSuffix>.
+      assert.match(args[sIdx + 1], /^conductor-fire-task-tmux-[a-z0-9]{4,}/);
+      assert.match(args[cIdx + 1], /^\/tmp\/test-ws-tmux\//);
+
+      // Trailing positional args: bash -c '<inner>'.
+      assert.strictEqual(args[cIdx + 2], "bash");
+      assert.strictEqual(args[cIdx + 3], "-c");
+      const innerCmd = args[cIdx + 4];
       assert.ok(innerCmd.includes(process.execPath), "inner command must invoke node");
       assert.ok(innerCmd.includes("/tmp/cli.js"), "inner command must invoke CLI script");
       assert.ok(innerCmd.includes("--backend"));
@@ -903,6 +910,29 @@ describe("Daemon", () => {
       assert.ok(innerCmd.includes("'tmux hello'"));
       assert.ok(innerCmd.includes("conductor.log"));
       assert.ok(/>>\s+'.*conductor\.log'\s+2>&1/.test(innerCmd), "inner command must redirect output to log");
+
+      // The Conductor-specific env vars must be passed via tmux `-e KEY=VAL`
+      // flags so the new session sees them regardless of any pre-existing
+      // tmux server's stale environment. Without these flags Fire would
+      // start with the wrong/missing task id and never publish
+      // "<backend> session started: <uuid>" to the frontend.
+      const envFlags = [];
+      for (let i = 2; i < sIdx; i += 2) {
+        assert.strictEqual(args[i], "-e", `expected -e at position ${i}`);
+        envFlags.push(args[i + 1]);
+      }
+      assert.ok(
+        envFlags.some((f) => f === "CONDUCTOR_TASK_ID=task-tmux"),
+        `tmux session env must include CONDUCTOR_TASK_ID; got: ${envFlags.join(", ")}`,
+      );
+      assert.ok(
+        envFlags.some((f) => f === "CONDUCTOR_PROJECT_ID=proj-tmux"),
+        `tmux session env must include CONDUCTOR_PROJECT_ID`,
+      );
+      assert.ok(
+        envFlags.some((f) => f === "CONDUCTOR_LAUNCHED_BY_DAEMON=1"),
+        `tmux session env must include CONDUCTOR_LAUNCHED_BY_DAEMON`,
+      );
       // tmux mode must spawn detached so the daemon doesn't act as parent.
       assert.strictEqual(opts.detached, true);
       const child = new EventEmitter();

@@ -858,6 +858,39 @@ export function startDaemon(config = {}, deps = {}) {
     const redirectedCommand = logPath
       ? `${innerCommandParts.join(" ")} >> ${shellQuoteForBash(logPath)} 2>&1`
       : innerCommandParts.join(" ");
+
+    // Build `-e KEY=VALUE` flags for the new session.
+    //
+    // Why we cannot rely on the spawn `env` to reach Fire:
+    //   `tmux new-session` is dispatched through the user's tmux server
+    //   process. If a tmux server is already running (which is the common
+    //   case on dev machines that use tmux for other work) the new session
+    //   inherits that server's process environment — NOT the env we pass
+    //   to the freshly spawned `tmux` client. The `update-environment`
+    //   server option only forwards a small allowlist (DISPLAY,
+    //   SSH_AUTH_SOCK, …), none of which are CONDUCTOR_*.
+    //
+    //   Without this fix Fire would start with no CONDUCTOR_TASK_ID /
+    //   CONDUCTOR_AGENT_TOKEN / CONDUCTOR_BACKEND_URL, its
+    //   ConductorClient.connect would either fail authentication or send
+    //   `session_started` to the wrong task id, and the frontend would
+    //   never see the "<backend> session started: <uuid>" line.
+    //
+    // The `-e` flag attaches the variable to *this* session's environment,
+    // bypassing the server's stale environment entirely.
+    const tmuxEnvFlags = [];
+    for (const [key, value] of Object.entries(env || {})) {
+      if (value === undefined || value === null) continue;
+      const stringValue = String(value);
+      // Skip values containing NUL / newline / carriage-return — tmux's
+      // environment storage does not handle them and they would otherwise
+      // corrupt the session env or fail the new-session call. Spaces are
+      // fine because each `-e KEY=VALUE` is a single argv element (e.g.
+      // CONDUCTOR_CLI_COMMAND="codex --dangerously-bypass-...").
+      if (/[\u0000\r\n]/.test(stringValue)) continue;
+      tmuxEnvFlags.push("-e", `${key}=${stringValue}`);
+    }
+
     // Use a non-login `bash -c` here: node and the CLI script are passed by
     // absolute path, so we don't need PATH from a login shell, and `-l`
     // would slow startup and could leak unexpected stderr from user shell
@@ -865,6 +898,7 @@ export function startDaemon(config = {}, deps = {}) {
     const tmuxArgs = [
       "new-session",
       "-d",
+      ...tmuxEnvFlags,
       "-s",
       sessionName,
       "-c",
