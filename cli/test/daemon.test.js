@@ -861,6 +861,567 @@ describe("Daemon", () => {
     }, 500);
   });
 
+  it("launches Fire inside a detached tmux session when fire_tmux_mode is enabled", (t, done) => {
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    const taskPayload = {
+      task_id: "task-tmux",
+      project_id: "proj-tmux",
+      backend_type: "codex",
+      initial_content: "tmux hello",
+    };
+
+    const tmuxSpawnCalls = [];
+    let killCalled = false;
+
+    const mockSpawn = (cmd, args, opts) => {
+      // Only the tmux client should ever be spawned for Fire when tmux mode
+      // is enabled; the daemon must not exec node/CLI directly.
+      if (cmd !== "tmux") {
+        assert.fail(`unexpected spawn of ${cmd} when tmux mode is enabled`);
+      }
+      tmuxSpawnCalls.push({ cmd, args, opts });
+      assert.strictEqual(args[0], "new-session");
+      assert.strictEqual(args[1], "-d");
+      assert.strictEqual(args[2], "-s");
+      // Session name format: conductor-fire-<sanitizedTaskId>-<uniqSuffix>
+      // The uniqueness suffix avoids collisions when re-spawning the same
+      // task id while a prior session may still be alive.
+      assert.match(args[3], /^conductor-fire-task-tmux-[a-z0-9]{4,}/);
+      assert.strictEqual(args[4], "-c");
+      assert.match(args[5], /^\/tmp\/test-ws-tmux\//);
+      assert.strictEqual(args[6], "bash");
+      assert.strictEqual(args[7], "-c");
+      const innerCmd = args[8];
+      assert.ok(innerCmd.includes(process.execPath), "inner command must invoke node");
+      assert.ok(innerCmd.includes("/tmp/cli.js"), "inner command must invoke CLI script");
+      assert.ok(innerCmd.includes("--backend"));
+      assert.ok(innerCmd.includes("'codex'"));
+      assert.ok(innerCmd.includes("--prefill"));
+      assert.ok(innerCmd.includes("'tmux hello'"));
+      assert.ok(innerCmd.includes("conductor.log"));
+      assert.ok(/>>\s+'.*conductor\.log'\s+2>&1/.test(innerCmd), "inner command must redirect output to log");
+      // tmux mode must spawn detached so the daemon doesn't act as parent.
+      assert.strictEqual(opts.detached, true);
+      const child = new EventEmitter();
+      child.pid = 99001;
+      child.unref = () => {};
+      child.kill = () => {
+        killCalled = true;
+      };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      // Simulate the tmux client exiting cleanly right after creating the
+      // session, mirroring real tmux behavior.
+      setImmediate(() => child.emit("exit", 0, null));
+      return child;
+    };
+
+    wss.once("connection", (ws) => {
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-tmux",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-tmux-test",
+      },
+      {
+        spawn: mockSpawn,
+        // Stub the startup `tmux -V` probe so the test is deterministic
+        // regardless of whether the dev box has tmux installed.
+        spawnSync: (cmd, args) => {
+          if (cmd === "tmux" && args && args[0] === "-V") {
+            return { status: 0, error: null, pid: 12345 };
+          }
+          return { status: 1, error: new Error("ENOENT"), pid: undefined };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => filePath.endsWith("daemon.pid") ? false : false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {}, on: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.strictEqual(tmuxSpawnCalls.length >= 1, true, "expected tmux new-session spawn");
+      // The clean tmux client exit must NOT trigger child.kill on the
+      // daemon — Fire is now living under the tmux server.
+      assert.strictEqual(killCalled, false);
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 500);
+  });
+
+  it("reports KILLED to backend when tmux new-session fails to launch Fire", (t, done) => {
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    const taskPayload = {
+      task_id: "task-tmux-fail",
+      project_id: "proj-tmux-fail",
+      backend_type: "codex",
+      initial_content: "boom",
+    };
+
+    const mockSpawn = (cmd) => {
+      if (cmd === "tmux") {
+        // Simulate `tmux new-session` failing (e.g. duplicate session).
+        const child = new EventEmitter();
+        child.pid = 88001;
+        child.unref = () => {};
+        child.kill = () => {};
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        setImmediate(() => {
+          child.stderr.emit("data", Buffer.from("duplicate session: conductor-fire-task-tmux-fail\n"));
+          child.emit("exit", 1, null);
+        });
+        return child;
+      }
+      assert.fail(`unexpected spawn of ${cmd} in tmux failure test`);
+    };
+
+    const receivedFromDaemon = [];
+    wss.once("connection", (ws) => {
+      ws.on("message", (raw) => {
+        try {
+          receivedFromDaemon.push(JSON.parse(raw.toString("utf8")));
+        } catch {
+          // ignore non-JSON frames
+        }
+      });
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-tmux-fail",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-tmux-fail-test",
+      },
+      {
+        spawn: mockSpawn,
+        spawnSync: (cmd, args) => {
+          if (cmd === "tmux" && args && args[0] === "-V") {
+            return { status: 0, error: null, pid: 12345 };
+          }
+          return { status: 1, error: new Error("ENOENT"), pid: undefined };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => filePath.endsWith("daemon.pid") ? false : false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {}, on: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+      },
+    );
+
+    setTimeout(() => {
+      const terminal = receivedFromDaemon.find(
+        (msg) =>
+          msg?.type === "task_status_update" &&
+          msg?.payload?.task_id === "task-tmux-fail" &&
+          (msg.payload.status === "KILLED" || msg.payload.status === "FAILED"),
+      );
+      assert.ok(
+        terminal,
+        `daemon must report a terminal status when tmux session creation fails; got: ${JSON.stringify(receivedFromDaemon.map((m) => ({ type: m?.type, status: m?.payload?.status })))}`,
+      );
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 500);
+  });
+
+  it("reaps activeTaskProcesses entries whose tmux session has disappeared", (t, done) => {
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    const taskPayload = {
+      task_id: "task-tmux-reap",
+      project_id: "proj-tmux-reap",
+      backend_type: "codex",
+      initial_content: "reap me",
+    };
+
+    let hasSessionCalls = 0;
+    let killSessionCalls = 0;
+    let newSessionCalls = 0;
+
+    const mockSpawn = (cmd, args) => {
+      if (cmd === "tmux" && args?.[0] === "new-session") {
+        newSessionCalls += 1;
+        const child = new EventEmitter();
+        child.pid = 77001;
+        child.unref = () => {};
+        child.kill = () => {};
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        // Successful detach.
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      }
+      if (cmd === "tmux" && args?.[0] === "has-session") {
+        hasSessionCalls += 1;
+        const child = new EventEmitter();
+        child.unref = () => {};
+        // Always claim the session is gone so the reaper cleans it up.
+        setImmediate(() => child.emit("exit", 1, null));
+        return child;
+      }
+      if (cmd === "tmux" && args?.[0] === "kill-session") {
+        killSessionCalls += 1;
+        const child = new EventEmitter();
+        child.unref = () => {};
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      }
+      assert.fail(`unexpected spawn ${cmd} ${JSON.stringify(args)}`);
+    };
+
+    wss.once("connection", (ws) => {
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+      // Send stop_task much later — by the time it arrives the reaper should
+      // already have cleared the entry, so the daemon must NOT issue a
+      // tmux kill-session for it.
+      setTimeout(() => {
+        ws.send(
+          JSON.stringify({
+            type: "stop_task",
+            payload: { task_id: "task-tmux-reap", request_id: "stop-after-reap" },
+          }),
+        );
+      }, 350);
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-tmux-reap",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-tmux-reap-test",
+        TMUX_LIVENESS_POLL_MS: 60,
+      },
+      {
+        spawn: mockSpawn,
+        spawnSync: (cmd, args) => {
+          if (cmd === "tmux" && args && args[0] === "-V") {
+            return { status: 0, error: null, pid: 12345 };
+          }
+          return { status: 1, error: new Error("ENOENT"), pid: undefined };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => filePath.endsWith("daemon.pid") ? false : false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {}, on: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.strictEqual(newSessionCalls, 1, "expected exactly one tmux new-session spawn");
+      assert.ok(
+        hasSessionCalls >= 1,
+        `expected the liveness reaper to invoke tmux has-session at least once (got ${hasSessionCalls})`,
+      );
+      assert.strictEqual(
+        killSessionCalls,
+        0,
+        "stop_task arriving after the reaper removed the entry must not trigger tmux kill-session",
+      );
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 700);
+  });
+
+  it("does not start the tmux liveness reaper when poll interval is 0", (t, done) => {
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    const taskPayload = {
+      task_id: "task-tmux-noreap",
+      project_id: "proj-tmux-noreap",
+      backend_type: "codex",
+    };
+
+    let hasSessionCalls = 0;
+
+    const mockSpawn = (cmd, args) => {
+      if (cmd === "tmux" && args?.[0] === "new-session") {
+        const child = new EventEmitter();
+        child.pid = 71001;
+        child.unref = () => {};
+        child.kill = () => {};
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      }
+      if (cmd === "tmux" && args?.[0] === "has-session") {
+        hasSessionCalls += 1;
+        const child = new EventEmitter();
+        child.unref = () => {};
+        setImmediate(() => child.emit("exit", 1, null));
+        return child;
+      }
+      assert.fail(`unexpected spawn ${cmd} ${JSON.stringify(args)}`);
+    };
+
+    wss.once("connection", (ws) => {
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-tmux-noreap",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-tmux-noreap-test",
+        // Explicit zero disables the reaper.
+        TMUX_LIVENESS_POLL_MS: 0,
+      },
+      {
+        spawn: mockSpawn,
+        spawnSync: (cmd, args) => {
+          if (cmd === "tmux" && args && args[0] === "-V") {
+            return { status: 0, error: null, pid: 12345 };
+          }
+          return { status: 1, error: new Error("ENOENT"), pid: undefined };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => filePath.endsWith("daemon.pid") ? false : false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {}, on: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.strictEqual(
+        hasSessionCalls,
+        0,
+        "reaper must not run when TMUX_LIVENESS_POLL_MS is 0",
+      );
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 400);
+  });
+
+  it("treats stuck tmux has-session probes as dead via the timeout fallback", (t, done) => {
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    const taskPayload = {
+      task_id: "task-tmux-hang",
+      project_id: "proj-tmux-hang",
+      backend_type: "codex",
+    };
+
+    let probeKilled = false;
+    let killSessionCalls = 0;
+
+    const mockSpawn = (cmd, args) => {
+      if (cmd === "tmux" && args?.[0] === "new-session") {
+        const child = new EventEmitter();
+        child.pid = 72001;
+        child.unref = () => {};
+        child.kill = () => {};
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      }
+      if (cmd === "tmux" && args?.[0] === "has-session") {
+        // Simulate a wedged tmux server: the probe never exits on its own.
+        // The daemon must kill it via the timeout path.
+        const child = new EventEmitter();
+        child.unref = () => {};
+        child.kill = () => {
+          probeKilled = true;
+          // Surface the kill via a delayed exit so node bookkeeping is happy
+          // — but the reaper has already settled by now.
+          setImmediate(() => child.emit("exit", null, "SIGKILL"));
+        };
+        return child;
+      }
+      if (cmd === "tmux" && args?.[0] === "kill-session") {
+        killSessionCalls += 1;
+        const child = new EventEmitter();
+        child.unref = () => {};
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      }
+      assert.fail(`unexpected spawn ${cmd} ${JSON.stringify(args)}`);
+    };
+
+    wss.once("connection", (ws) => {
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+      // Issue stop_task long after the probe should have timed out.
+      setTimeout(() => {
+        ws.send(
+          JSON.stringify({
+            type: "stop_task",
+            payload: { task_id: "task-tmux-hang", request_id: "stop-hang" },
+          }),
+        );
+      }, 350);
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-tmux-hang",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-tmux-hang-test",
+        TMUX_LIVENESS_POLL_MS: 80,
+        // Compress the 5s probe timeout so the test runs in well under 1s.
+        TMUX_PROBE_TIMEOUT_MS: 50,
+      },
+      {
+        spawn: mockSpawn,
+        spawnSync: (cmd, args) => {
+          if (cmd === "tmux" && args && args[0] === "-V") {
+            return { status: 0, error: null, pid: 12345 };
+          }
+          return { status: 1, error: new Error("ENOENT"), pid: undefined };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => filePath.endsWith("daemon.pid") ? false : false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {}, on: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.strictEqual(probeKilled, true, "wedged has-session probe must be SIGKILLed by the timeout");
+      assert.strictEqual(
+        killSessionCalls,
+        0,
+        "after the timeout reaper removes the entry, stop_task should have nothing to kill",
+      );
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 700);
+  });
+
+  it("falls back to direct spawn when fire_tmux_mode is enabled but tmux is missing", (t, done) => {
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    const taskPayload = {
+      task_id: "task-tmux-missing",
+      project_id: "proj-tmux-missing",
+      backend_type: "codex",
+      initial_content: "fallback hello",
+    };
+
+    const directSpawnCalls = [];
+
+    const mockSpawn = (cmd, args, opts) => {
+      // When tmux is missing, the daemon must NOT shell out to tmux at all.
+      if (cmd === "tmux") {
+        assert.fail("daemon should not spawn tmux after the availability probe fails");
+      }
+      directSpawnCalls.push({ cmd, args, opts });
+      assert.strictEqual(cmd, process.execPath);
+      assert.ok(args.includes("/tmp/cli.js"));
+      assert.ok(args.includes("--backend"));
+      assert.ok(args.includes("codex"));
+      const child = new EventEmitter();
+      child.pid = 24690;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = () => {};
+      return child;
+    };
+
+    let probeCalls = 0;
+    const mockSpawnSync = (cmd, args) => {
+      if (cmd === "tmux" && args && args[0] === "-V") {
+        probeCalls += 1;
+        // Simulate ENOENT — tmux is not installed on PATH.
+        return { status: null, error: new Error("spawn tmux ENOENT"), pid: undefined };
+      }
+      return { status: 1, error: new Error("unexpected spawnSync call"), pid: undefined };
+    };
+
+    wss.once("connection", (ws) => {
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-tmux-missing",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-tmux-fallback",
+      },
+      {
+        spawn: mockSpawn,
+        spawnSync: mockSpawnSync,
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => filePath.endsWith("daemon.pid") ? false : false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {}, on: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.strictEqual(probeCalls, 1, "expected exactly one tmux -V availability probe");
+      assert.strictEqual(directSpawnCalls.length >= 1, true, "expected fallback direct spawn of node CLI");
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 500);
+  });
+
   it("creates and uses an isolated git worktree when launch_config requests it", (t, done) => {
     const previousPwd = process.env.PWD;
     process.env.PWD = "/tmp/daemon-start";
