@@ -72,6 +72,11 @@ export const normalizeIssue = (raw: unknown): Issue | null => {
     return null;
   }
 
+  // The API surfaces both camelCase and snake_case for these breadcrumb
+  // fields; accept either so older clients/payloads don't drop the value.
+  const aiBackendType = pickString(record.aiBackendType) ?? pickString(record.ai_backend_type);
+  const aiSessionId = pickString(record.aiSessionId) ?? pickString(record.ai_session_id);
+
   return {
     id,
     projectId,
@@ -81,6 +86,8 @@ export const normalizeIssue = (raw: unknown): Issue | null => {
     priority: normalizeIssuePriority(record.priority),
     position,
     metadata: normalizeObject(record.metadata),
+    aiBackendType,
+    aiSessionId,
     activeTask: record.activeTask || record.active_task ? normalizeTask(record.activeTask ?? record.active_task) : null,
     linkedTask: record.linkedTask || record.linked_task
       ? normalizeTask(record.linkedTask ?? record.linked_task)
