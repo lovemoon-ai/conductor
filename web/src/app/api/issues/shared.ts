@@ -55,6 +55,22 @@ const normalizeOptionalFiniteNumber = (value: unknown): number | undefined => {
   return undefined;
 };
 
+const normalizeOptionalBoolean = (value: unknown): boolean | undefined => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') {
+      return true;
+    }
+    if (normalized === 'false') {
+      return false;
+    }
+  }
+  return undefined;
+};
+
 const normalizeOptionalIssueStatus = (value: unknown): string | undefined => {
   if (value === undefined) {
     return undefined;
@@ -147,6 +163,27 @@ export const issueSerializationWithPrioritySelect = {
   priority: true,
 } satisfies Prisma.IssueSelect;
 
+/**
+ * Variant that also pulls project name + daemon host so the response can carry
+ * daemon attribution. Used when the UI displays issues from multiple projects
+ * together (e.g. a merged cross-daemon group) and needs to show which daemon
+ * each issue belongs to.
+ */
+export const issueSerializationWithProjectSelect = {
+  ...issueSerializationSelect,
+  project: {
+    select: {
+      name: true,
+      daemonHost: true,
+    },
+  },
+} satisfies Prisma.IssueSelect;
+
+export const issueSerializationWithPriorityAndProjectSelect = {
+  ...issueSerializationWithProjectSelect,
+  priority: true,
+} satisfies Prisma.IssueSelect;
+
 export const isDefaultIssuePriority = (value: unknown): boolean =>
   normalizeIssuePriority(value) === DEFAULT_ISSUE_PRIORITY;
 
@@ -162,6 +199,7 @@ export const issueCreateSchema = z.object({
   priority: issuePrioritySchema.default(DEFAULT_ISSUE_PRIORITY),
   position: z.number().finite().optional(),
   metadata: issueMetadataSchema.nullable().optional(),
+  includeProject: z.boolean().default(false),
 });
 
 export const issuePatchSchema = z.object({
@@ -179,6 +217,7 @@ export const normalizeIssueCreateBody = (body: unknown) => {
   const record = body && typeof body === 'object' && !Array.isArray(body)
     ? body as Record<string, unknown>
     : {};
+  const includeProject = readField(record, 'include_project', 'includeProject');
 
   return {
     projectId: normalizeOptionalString(readField(record, 'project_id', 'projectId')) ?? '',
@@ -191,6 +230,9 @@ export const normalizeIssueCreateBody = (body: unknown) => {
       : undefined,
     metadata: hasOwn(record, 'metadata')
       ? (normalizeMetadata(record.metadata) ?? record.metadata)
+      : undefined,
+    includeProject: hasOwn(record, 'include_project') || hasOwn(record, 'includeProject')
+      ? (normalizeOptionalBoolean(includeProject) ?? includeProject)
       : undefined,
   };
 };

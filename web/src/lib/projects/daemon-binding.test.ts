@@ -57,6 +57,7 @@ describe("validateProjectBindingWithDaemon", () => {
       repoRoot: "/repo/alpha-real",
       worktreeBranch: "main",
       lastCommit: "abc123",
+      gitRemoteUrl: null,
       fileCount: 12,
     });
     expect(realtimeHubMock.sendToAgentHost).toHaveBeenCalledWith(

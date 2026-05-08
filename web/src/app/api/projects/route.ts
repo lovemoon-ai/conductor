@@ -34,6 +34,7 @@ import {
   readProjectMetadataInput,
   isMissingProjectSortOrderColumnError,
   isMissingProjectHiddenAtColumnError,
+  isMissingProjectMergeColumnsError,
   PROJECT_SERIALIZATION_BASE_SELECT,
   PROJECT_SERIALIZATION_WITH_SORT_NO_HIDDEN_SELECT,
   compareProjectsForDisplay,
@@ -331,6 +332,7 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
           repoRoot: validatedBinding.repoRoot,
           worktreeBranch: validatedBinding.worktreeBranch,
           lastCommit: validatedBinding.lastCommit,
+          gitRemoteUrl: validatedBinding.gitRemoteUrl,
           fileCount: validatedBinding.fileCount,
         };
         effectiveBindingConfirmed = true;
@@ -414,6 +416,7 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
           repoRoot: effectiveBinding.repoRoot ?? undefined,
           worktreeBranch: effectiveBinding.worktreeBranch ?? undefined,
           lastCommit: effectiveBinding.lastCommit ?? undefined,
+          gitRemoteUrl: effectiveBinding.gitRemoteUrl ?? undefined,
           fileCount: effectiveBinding.fileCount ?? undefined,
           metadata: metadataInput.hasField ? serializedMetadata : promotedMetadata,
         },
@@ -460,6 +463,7 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
       repoRoot: effectiveBindingConfirmed ? effectiveBinding.repoRoot : null,
       worktreeBranch: effectiveBindingConfirmed ? effectiveBinding.worktreeBranch : null,
       lastCommit: effectiveBindingConfirmed ? effectiveBinding.lastCommit : null,
+      gitRemoteUrl: effectiveBindingConfirmed ? effectiveBinding.gitRemoteUrl ?? null : null,
       fileCount: effectiveBindingConfirmed ? effectiveBinding.fileCount : null,
       metadata: serializedMetadata,
       ...(nextSortOrder === null ? {} : { sortOrder: nextSortOrder }),
@@ -529,6 +533,27 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     hiddenInput = rawHidden;
   }
 
+  const hasMergeOptOutField =
+    hasOwn(normalizedBody, "mergeOptOut") || hasOwn(normalizedBody, "merge_opt_out");
+  let mergeOptOutInput: boolean | undefined;
+  if (hasMergeOptOutField) {
+    const rawMergeOptOut = readField(normalizedBody, "merge_opt_out", "mergeOptOut");
+    if (typeof rawMergeOptOut !== "boolean") {
+      return NextResponse.json({ error: "mergeOptOut must be a boolean" }, { status: 400 });
+    }
+    mergeOptOutInput = rawMergeOptOut;
+  }
+
+  const hasRefreshField = hasOwn(normalizedBody, "refresh");
+  let refreshRequested = false;
+  if (hasRefreshField) {
+    const rawRefresh = normalizedBody.refresh;
+    if (typeof rawRefresh !== "boolean") {
+      return NextResponse.json({ error: "refresh must be a boolean" }, { status: 400 });
+    }
+    refreshRequested = rawRefresh;
+  }
+
   let metadata: string | null | undefined;
   if (metadataInput.hasField) {
     metadata =
@@ -547,8 +572,29 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     binding.fileCount !== null;
   const hasBindingField = hasBindingIdentityField || hasSnapshotField;
 
-  if (!name && metadata === undefined && !hasBindingField && !hasHiddenField) {
+  if (
+    !name &&
+    metadata === undefined &&
+    !hasBindingField &&
+    !hasHiddenField &&
+    !hasMergeOptOutField &&
+    !refreshRequested
+  ) {
     return NextResponse.json({ error: "No fields to update" }, { status: 400 });
+  }
+
+  // `refresh: true` semantically means "trust the daemon's snapshot". Mixing
+  // it with caller-supplied binding fields would silently drop the latter
+  // (refresh values win), so we reject the combination up front to avoid
+  // surprising data overwrites.
+  if (refreshRequested && hasBindingField) {
+    return NextResponse.json(
+      {
+        error:
+          "refresh:true cannot be combined with explicit binding fields. Send one or the other.",
+      },
+      { status: 400 },
+    );
   }
 
   const existingProjectSelectBase = {
@@ -610,6 +656,46 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     return NextResponse.json({ error: "daemonHost and workspacePath are required to bind a project" }, { status: 400 });
   }
 
+  // When `refresh: true`, the server re-runs the daemon validation handshake
+  // for the project's existing binding and refreshes snapshot fields including
+  // `gitRemoteUrl`. This lets clients backfill the new field for projects
+  // created before the cross-daemon merge feature shipped without forcing the
+  // user to delete/recreate them.
+  let refreshedSnapshot: {
+    repoRoot: string | null;
+    worktreeBranch: string | null;
+    lastCommit: string | null;
+    gitRemoteUrl: string | null;
+    fileCount: number | null;
+  } | null = null;
+  if (refreshRequested) {
+    if (!existingProject.daemonHost || !existingProject.workspacePath) {
+      return NextResponse.json(
+        { error: "Project has no confirmed binding to refresh" },
+        { status: 409 },
+      );
+    }
+    try {
+      const validated = await validateProjectBindingWithDaemon({
+        userId: user.id,
+        daemonHost: existingProject.daemonHost,
+        workspacePath: existingProject.workspacePath,
+      });
+      refreshedSnapshot = {
+        repoRoot: validated.repoRoot,
+        worktreeBranch: validated.worktreeBranch,
+        lastCommit: validated.lastCommit,
+        gitRemoteUrl: validated.gitRemoteUrl,
+        fileCount: validated.fileCount,
+      };
+    } catch (error) {
+      if (error instanceof ProjectBindingValidationError) {
+        return NextResponse.json({ error: error.message }, { status: error.status });
+      }
+      throw error;
+    }
+  }
+
   const projectNameConflict = name
     ? await findProjectNameConflict({
         userId: user.id,
@@ -637,36 +723,71 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     hiddenAtUpdate = null;
   }
 
-  const performUpdate = (includeHiddenAt: boolean) =>
+  const performUpdate = (
+    includeHiddenAt: boolean,
+    includeMergeColumns: boolean,
+  ) =>
     db.project.updateMany({
       where: { id: projectId, userId: user.id },
       data: {
         name: name ?? undefined,
         daemonHost: binding.daemonHost ?? undefined,
         workspacePath: binding.workspacePath ?? undefined,
-        repoRoot: binding.repoRoot ?? undefined,
-        worktreeBranch: binding.worktreeBranch ?? undefined,
-        lastCommit: binding.lastCommit ?? undefined,
-        fileCount: binding.fileCount ?? undefined,
+        repoRoot: refreshedSnapshot ? refreshedSnapshot.repoRoot : binding.repoRoot ?? undefined,
+        worktreeBranch: refreshedSnapshot
+          ? refreshedSnapshot.worktreeBranch
+          : binding.worktreeBranch ?? undefined,
+        lastCommit: refreshedSnapshot
+          ? refreshedSnapshot.lastCommit
+          : binding.lastCommit ?? undefined,
+        fileCount: refreshedSnapshot
+          ? refreshedSnapshot.fileCount
+          : binding.fileCount ?? undefined,
         metadata,
         ...(includeHiddenAt ? { hiddenAt: hiddenAtUpdate } : {}),
+        ...(includeMergeColumns
+          ? {
+              ...(refreshedSnapshot
+                ? { gitRemoteUrl: refreshedSnapshot.gitRemoteUrl }
+                : binding.gitRemoteUrl !== null
+                  ? { gitRemoteUrl: binding.gitRemoteUrl }
+                  : {}),
+              ...(mergeOptOutInput !== undefined ? { mergeOptOut: mergeOptOutInput } : {}),
+            }
+          : {}),
       },
     });
 
+  const includeHiddenInitial = hiddenAtUpdate !== undefined;
+  const includeMergeInitial =
+    refreshedSnapshot !== null || binding.gitRemoteUrl !== null || mergeOptOutInput !== undefined;
   let updatedCount;
   try {
-    const result = await performUpdate(hiddenAtUpdate !== undefined);
+    const result = await performUpdate(includeHiddenInitial, includeMergeInitial);
     updatedCount = result.count;
   } catch (error) {
-    if (
-      hiddenAtUpdate !== undefined &&
-      isMissingProjectHiddenAtColumnError(error)
-    ) {
+    const missingHidden = includeHiddenInitial && isMissingProjectHiddenAtColumnError(error);
+    const missingMerge = includeMergeInitial && isMissingProjectMergeColumnsError(error);
+    if (missingMerge && (mergeOptOutInput !== undefined || refreshedSnapshot !== null)) {
+      // The caller asked for merge-related changes but this database hasn't
+      // been migrated yet. Reject loudly so the operator runs `pnpm db:push`.
+      return NextResponse.json(
+        {
+          error:
+            "Cross-daemon merge requires a database migration. Run `pnpm db:push` and retry.",
+        },
+        { status: 409 },
+      );
+    }
+    if (missingHidden || missingMerge) {
       // Tolerate environments where the migration has not yet run; fall back to
-      // updating other fields without the hidden flag instead of 500ing the
+      // updating other fields without the new flags instead of 500ing the
       // entire request.
       try {
-        const fallback = await performUpdate(false);
+        const fallback = await performUpdate(
+          includeHiddenInitial && !missingHidden,
+          includeMergeInitial && !missingMerge,
+        );
         updatedCount = fallback.count;
       } catch (fallbackError) {
         if (

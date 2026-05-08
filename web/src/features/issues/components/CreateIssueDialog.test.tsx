@@ -114,4 +114,83 @@ describe('CreateIssueDialog', () => {
     expect(screen.getByText('No project available')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create Issue' })).toBeDisabled();
   });
+
+  describe('cross-daemon merged group', () => {
+    const mergedProjects = [
+      {
+        id: 'p-a',
+        name: 'Alpha',
+        daemonHost: 'daemon-a',
+        workspacePath: '/repo/alpha',
+        repoRoot: '/repo/alpha',
+        gitRemoteUrl: 'github.com/foo/alpha',
+      },
+      {
+        id: 'p-b',
+        name: 'Alpha',
+        daemonHost: 'daemon-b',
+        workspacePath: '/repo/alpha',
+        repoRoot: '/repo/alpha',
+        gitRemoteUrl: 'github.com/foo/alpha',
+      },
+    ];
+
+    it('renders a target-daemon picker when the projectId belongs to a merged group', () => {
+      projectsState = {
+        projects: mergedProjects as any,
+        fetchProjects: fetchProjectsMock,
+      };
+
+      render(<CreateIssueDialog open onClose={() => {}} projectId="p-a" />);
+
+      const picker = screen.getByLabelText('Target daemon') as HTMLSelectElement;
+      expect(picker).toBeInTheDocument();
+      // Default selection is the projectId the parent passed in.
+      expect(picker.value).toBe('p-a');
+      // Both members are listed as options.
+      expect(picker.options).toHaveLength(2);
+    });
+
+    it('hides the daemon picker for single-member groups', () => {
+      projectsState = {
+        projects: [mergedProjects[0]] as any,
+        fetchProjects: fetchProjectsMock,
+      };
+
+      render(<CreateIssueDialog open onClose={() => {}} projectId="p-a" />);
+
+      expect(screen.queryByLabelText('Target daemon')).toBeNull();
+    });
+
+    it('routes the create call to the daemon the user picks', async () => {
+      projectsState = {
+        projects: mergedProjects as any,
+        fetchProjects: fetchProjectsMock,
+      };
+      createIssueMock.mockResolvedValue({ id: 'issue-1' });
+
+      render(<CreateIssueDialog open onClose={() => {}} projectId="p-a" />);
+
+      // User switches the target daemon to daemon-b.
+      fireEvent.change(screen.getByLabelText('Target daemon'), {
+        target: { value: 'p-b' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('Summarize the issue'), {
+        target: { value: 'Wire up endpoint' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Create Issue' }));
+
+      await waitFor(() => {
+        expect(createIssueMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            // The new issue lands on daemon-b's underlying project, NOT the
+            // primary projectId the parent component passed in.
+            projectId: 'p-b',
+            title: 'Wire up endpoint',
+            includeProject: true,
+          }),
+        );
+      });
+    });
+  });
 });

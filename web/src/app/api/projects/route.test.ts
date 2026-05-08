@@ -1276,5 +1276,228 @@ describe("/api/projects", () => {
       expect(response.status).toBe(409);
       expect(data.error).toBe("Default project binding cannot be changed");
     });
+
+    it("persists mergeOptOut=true via PATCH", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValueOnce({
+        id: "proj-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "abc",
+        fileCount: 10,
+        hiddenAt: null,
+      } as any);
+      vi.mocked(db.project.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.project.findUnique).mockResolvedValue({
+        id: "proj-1",
+        name: "Demo",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "abc",
+        gitRemoteUrl: "github.com/foo/bar",
+        fileCount: 10,
+        hiddenAt: null,
+        mergeOptOut: true,
+        metadata: null,
+        createdAt: new Date("2026-04-01"),
+        updatedAt: new Date("2026-05-01"),
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-1",
+        body: { mergeOptOut: true },
+      });
+      const response = await PATCH(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.mergeOptOut).toBe(true);
+      expect(data.merge_opt_out).toBe(true);
+      // Update payload must include the new column.
+      expect(db.project.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "proj-1", userId: "user-1" },
+          data: expect.objectContaining({ mergeOptOut: true }),
+        }),
+      );
+    });
+
+    it("rejects mergeOptOut writes loudly when the merge columns are missing in the database", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValueOnce({
+        id: "proj-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "abc",
+        fileCount: 10,
+        hiddenAt: null,
+      } as any);
+      vi.mocked(db.project.updateMany).mockRejectedValueOnce(
+        new Prisma.PrismaClientKnownRequestError(
+          "The column `projects.merge_opt_out` does not exist in the current database.",
+          { code: "P2022", clientVersion: "test" },
+        ),
+      );
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-1",
+        body: { mergeOptOut: true },
+      });
+      const response = await PATCH(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(String(data.error)).toContain("pnpm db:push");
+    });
+
+    it("re-validates against the daemon and refreshes snapshot fields when refresh:true", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValueOnce({
+        id: "proj-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "old-commit",
+        fileCount: 10,
+        hiddenAt: null,
+      } as any);
+      vi.mocked(validateProjectBindingWithDaemon).mockResolvedValueOnce({
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "fresh-commit",
+        gitRemoteUrl: "github.com/foo/bar",
+        fileCount: 12,
+      });
+      vi.mocked(db.project.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.project.findUnique).mockResolvedValue({
+        id: "proj-1",
+        name: "Demo",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "fresh-commit",
+        gitRemoteUrl: "github.com/foo/bar",
+        fileCount: 12,
+        hiddenAt: null,
+        mergeOptOut: false,
+        metadata: null,
+        createdAt: new Date("2026-04-01"),
+        updatedAt: new Date("2026-05-01"),
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-1",
+        body: { refresh: true },
+      });
+      const response = await PATCH(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(validateProjectBindingWithDaemon).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: "user-1",
+          daemonHost: "daemon-a",
+          workspacePath: "/repo/app",
+        }),
+      );
+      // The DB write should carry the daemon-supplied fields, not the
+      // existing project's stale values.
+      expect(db.project.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            lastCommit: "fresh-commit",
+            gitRemoteUrl: "github.com/foo/bar",
+            fileCount: 12,
+          }),
+        }),
+      );
+      expect(data.lastCommit).toBe("fresh-commit");
+      expect(data.gitRemoteUrl).toBe("github.com/foo/bar");
+    });
+
+    it("refuses refresh:true when the project has no confirmed binding", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValueOnce({
+        id: "proj-default",
+        daemonHost: null,
+        workspacePath: null,
+        repoRoot: null,
+        worktreeBranch: null,
+        lastCommit: null,
+        fileCount: null,
+        hiddenAt: null,
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-default",
+        body: { refresh: true },
+      });
+      const response = await PATCH(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(String(data.error)).toContain("no confirmed binding");
+      expect(validateProjectBindingWithDaemon).not.toHaveBeenCalled();
+    });
+
+    it("rejects combining refresh:true with caller-supplied binding fields", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValueOnce({
+        id: "proj-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "abc",
+        fileCount: 10,
+        hiddenAt: null,
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-1",
+        body: {
+          refresh: true,
+          repoRoot: "/repo/manual",
+          bindingConfirmed: true,
+        },
+      });
+      const response = await PATCH(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(400);
+      expect(String(data.error)).toContain("refresh");
+    });
   });
 });

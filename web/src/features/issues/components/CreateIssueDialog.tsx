@@ -13,6 +13,8 @@ import {
 } from '@/lib/issues/config';
 import { useIssuesStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
+import { computeProjectGroups } from '@/features/projects/utils/project-groups';
+import { formatBindingLabel } from '@/features/projects/utils/format-binding-label';
 
 const DEFAULT_STATUS = 'todo' as const;
 
@@ -42,7 +44,31 @@ export function CreateIssueDialog({
     () => projectId ?? projects.find((project) => project.isDefault)?.id ?? projects[0]?.id ?? null,
     [projectId, projects],
   );
-  const effectiveProjectId = projectId ?? selectedProjectId;
+
+  // When `projectId` belongs to a merged cross-daemon group, expose a daemon
+  // picker so the user can decide which daemon's underlying project gets the
+  // new issue. For single-member groups (or no projectId), this behaves like
+  // the original dialog and stays hidden.
+  const projectGroups = useMemo(() => computeProjectGroups(projects), [projects]);
+  const groupForProvidedProject = useMemo(() => {
+    if (!projectId) return null;
+    return (
+      projectGroups.find((group) =>
+        group.members.some((member) => member.id === projectId),
+      ) ?? null
+    );
+  }, [projectGroups, projectId]);
+  const isMergedGroup = (groupForProvidedProject?.members.length ?? 0) > 1;
+
+  // Selected daemon target inside a merged group. Defaults to the projectId
+  // that the parent passed in, which is the group's "primary" member.
+  const [selectedGroupMemberId, setSelectedGroupMemberId] = useState<string | null>(
+    isMergedGroup ? projectId : null,
+  );
+
+  const effectiveProjectId = isMergedGroup
+    ? selectedGroupMemberId ?? projectId
+    : projectId ?? selectedProjectId;
   const showProjectPicker = !projectId;
 
   useEffect(() => {
@@ -77,6 +103,24 @@ export function CreateIssueDialog({
     ));
   }, [defaultProjectId, open, projectId, projects]);
 
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    if (isMergedGroup && groupForProvidedProject) {
+      setSelectedGroupMemberId((current) => {
+        if (current && groupForProvidedProject.members.some((m) => m.id === current)) {
+          return current;
+        }
+        // Default to the projectId the parent passed in, falling back to the
+        // first member.
+        return projectId ?? groupForProvidedProject.members[0]?.id ?? null;
+      });
+    } else {
+      setSelectedGroupMemberId(null);
+    }
+  }, [groupForProvidedProject, isMergedGroup, open, projectId]);
+
   const handleClose = () => {
     if (isSubmitting) {
       return;
@@ -98,6 +142,7 @@ export function CreateIssueDialog({
         description: description.trim() ? description.trim() : null,
         status: DEFAULT_STATUS,
         priority,
+        ...(isMergedGroup ? { includeProject: true } : {}),
       });
       pushToast({
         title: 'Issue created',
@@ -147,6 +192,39 @@ export function CreateIssueDialog({
                 </option>
               ))}
             </select>
+          </div>
+        ) : null}
+
+        {isMergedGroup && groupForProvidedProject ? (
+          // The current project is part of a cross-daemon merged group.
+          // Surface a daemon picker so the user can pin the new issue to a
+          // specific daemon's project. Hidden for single-member groups.
+          <div>
+            <label htmlFor="create-issue-daemon" className="mb-2 block text-sm font-medium text-ink">
+              Target daemon
+            </label>
+            <select
+              id="create-issue-daemon"
+              value={selectedGroupMemberId ?? ''}
+              onChange={(event) => setSelectedGroupMemberId(event.target.value || null)}
+              className="w-full webapp-input"
+            >
+              {groupForProvidedProject.members.map((member) => {
+                const daemonHost = (member.daemonHost ?? '').trim() || 'Local';
+                const label = member.workspacePath
+                  ? formatBindingLabel(daemonHost, member.workspacePath)
+                  : daemonHost;
+                return (
+                  <option key={member.id} value={member.id}>
+                    {label}
+                  </option>
+                );
+              })}
+            </select>
+            <p className="mt-1 text-xs text-muted">
+              This project name spans {groupForProvidedProject.members.length} daemons. The
+              issue will live on the selected one.
+            </p>
           </div>
         ) : null}
 

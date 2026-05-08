@@ -12,6 +12,13 @@ export interface WorkspaceSnapshot {
   repoRoot?: string;
   worktreeBranch?: string;
   lastCommit?: string;
+  /**
+   * Normalized origin remote URL (lower-cased, trailing `.git` stripped).
+   * Only populated when the workspace is a git repository AND has an
+   * `origin` remote configured. Used by the web UI to merge same-name
+   * projects across daemons that point to the same upstream repo.
+   */
+  gitRemoteUrl?: string;
   fileCount?: number;
 }
 
@@ -43,6 +50,7 @@ export class ProjectContext {
       repoRoot: guess.repoRoot,
       worktreeBranch: this.gitBranch(guess.repoRoot) ?? undefined,
       lastCommit: this.gitHead(guess.repoRoot) ?? undefined,
+      gitRemoteUrl: this.gitRemoteUrl(guess.repoRoot) ?? undefined,
       fileCount: this.gitFileCount(guess.repoRoot) ?? undefined,
     };
   }
@@ -112,6 +120,15 @@ export class ProjectContext {
     }
   }
 
+  private gitRemoteUrl(repoRoot: string): string | null {
+    try {
+      const url = runGit(['config', '--get', 'remote.origin.url'], repoRoot).trim();
+      return normalizeGitRemoteUrl(url);
+    } catch {
+      return null;
+    }
+  }
+
   private gitFileCount(repoRoot: string): number | null {
     try {
       return this.gitListFiles(repoRoot).length;
@@ -142,6 +159,61 @@ function runGit(args: string[], cwd: string): string {
     throw new Error(result.stderr || 'git command failed');
   }
   return result.stdout;
+}
+
+/**
+ * Normalize a git remote URL so that variations of the same upstream
+ * compare equal. Examples:
+ *   git@github.com:foo/bar.git              -> github.com/foo/bar
+ *   https://github.com/foo/bar/             -> github.com/foo/bar
+ *   ssh://git@github.com/foo/bar            -> github.com/foo/bar
+ *   https://gitea.local:3000/foo/bar.git    -> gitea.local:3000/foo/bar
+ *   https://user:pass@gitlab.com/foo/bar    -> gitlab.com/foo/bar
+ *
+ * Two normalization paths:
+ *  1. URL form (anything with `://`): parsed via WHATWG URL so host, port,
+ *     and path are preserved correctly while user-info is dropped.
+ *  2. scp form (`user@host:path`): handled with a small regex; the colon
+ *     after host becomes a `/` so it lines up with the URL form. IPv6 hosts
+ *     should use the `ssh://` URL form; git's scp-like syntax does not
+ *     reliably represent bracketed IPv6 hosts.
+ */
+export function normalizeGitRemoteUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  // URL form: ssh://, https://, http://, git://, ftp://, file://, etc.
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    let parsed: URL;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      return null;
+    }
+    // `host` keeps the explicit port when present (e.g. `gitea.local:3000`).
+    // `pathname` preserves the leading slash so `${host}${pathname}` reads
+    // naturally; we drop trailing `/` and trailing `.git` afterwards.
+    const path = parsed.pathname.replace(/\/+$/, '');
+    const combined = `${parsed.host}${path}`.replace(/\.git$/i, '');
+    return combined.toLowerCase() || null;
+  }
+
+  // scp form: `[user@]host:path`. The host segment must not contain `/`
+  // (otherwise the first `/` would have shown up before the `:` and we'd
+  // be looking at a relative-path URL, which git doesn't support as a
+  // remote URL anyway).
+  const scpMatch = trimmed.match(/^(?:[^@/:]+@)?([^/:]+):(?!\/)(.*)$/);
+  if (scpMatch) {
+    const host = scpMatch[1];
+    const path = scpMatch[2].replace(/\/+$/, '').replace(/\.git$/i, '');
+    return `${host}/${path}`.toLowerCase() || null;
+  }
+
+  // Anything else (e.g. plain path) — give up so we don't fabricate a
+  // misleading "normalized" form that could accidentally collide with a
+  // real upstream URL.
+  return null;
 }
 
 function* walkFiles(root: string): Generator<string> {

@@ -17,12 +17,16 @@ import {
   type DragStartEvent,
 } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import type { Project } from '@/shared/types';
+import type { Project, ProjectGroup } from '@/shared/types';
 import { useAgentsStore } from '@/features/agents';
 import { useProjectsStore } from '../store';
 import { ProjectItem } from './ProjectItem';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
-import { reorderProjectsLocally } from './project-list-utils';
+import {
+  flattenGroupsToProjectIds,
+  reorderProjectGroupsLocally,
+} from './project-list-utils';
+import { computeProjectGroups } from '../utils/project-groups';
 
 const collisionDetection: CollisionDetection = (args) => {
   const pointerIntersections = pointerWithin(args);
@@ -56,19 +60,24 @@ export function ProjectList() {
     reorderProjects,
   } = useProjectsStore();
   const agents = useAgentsStore((state) => state.agents);
-  const onlineDaemonHosts = new Set(
-    agents
-      .map((agent) => agent.host.trim())
-      .filter(Boolean),
+  const onlineDaemonHosts = useMemo(
+    () => new Set(agents.map((agent) => agent.host.trim()).filter(Boolean)),
+    [agents],
   );
   const hiddenProjectIdSet = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
-  const onlineProjects = projects.filter((project) => {
-    const daemonHost = getProjectDaemonHost(project);
-    return !daemonHost || onlineDaemonHosts.has(daemonHost);
-  });
-  const visibleProjects = onlineProjects.filter((project) => (
-    showHiddenProjects || !hiddenProjectIdSet.has(project.id)
-  ));
+  const onlineProjects = useMemo(
+    () =>
+      projects.filter((project) => {
+        const daemonHost = getProjectDaemonHost(project);
+        return !daemonHost || onlineDaemonHosts.has(daemonHost);
+      }),
+    [onlineDaemonHosts, projects],
+  );
+  const visibleProjects = useMemo(
+    () =>
+      onlineProjects.filter((project) => showHiddenProjects || !hiddenProjectIdSet.has(project.id)),
+    [hiddenProjectIdSet, onlineProjects, showHiddenProjects],
+  );
   const sensors = useSensors(
     useSensor(MouseSensor, {
       activationConstraint: {
@@ -82,64 +91,70 @@ export function ProjectList() {
       },
     }),
   );
-  const [orderedVisibleProjects, setOrderedVisibleProjects] = useState<Project[]>(visibleProjects);
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  // Compute groups (one card per merged set) from the currently visible
+  // projects. Single-member groups behave like the old single-project rows;
+  // merged groups render one card with multiple daemon badges.
+  const visibleGroups = useMemo(() => computeProjectGroups(visibleProjects), [visibleProjects]);
+  const [orderedVisibleGroups, setOrderedVisibleGroups] = useState<ProjectGroup[]>(visibleGroups);
+  const [activeGroupKey, setActiveGroupKey] = useState<string | null>(null);
 
-  const visibleProjectIds = useMemo(() => visibleProjects.map((project) => project.id).join(','), [visibleProjects]);
+  const visibleGroupKeys = useMemo(() => visibleGroups.map((group) => group.key).join(','), [visibleGroups]);
 
-  const prevVisibleProjectsRef = useRef(visibleProjects);
+  const prevVisibleGroupsRef = useRef(visibleGroups);
 
   useEffect(() => {
-    if (activeProjectId !== null) {
+    if (activeGroupKey !== null) {
       return;
     }
 
-    const prev = prevVisibleProjectsRef.current;
-    prevVisibleProjectsRef.current = visibleProjects;
+    const prev = prevVisibleGroupsRef.current;
+    prevVisibleGroupsRef.current = visibleGroups;
 
-    // Same reference — nothing changed
-    if (prev === visibleProjects) {
+    if (prev === visibleGroups) {
       return;
     }
 
-    setOrderedVisibleProjects((current) => {
-      const currentIds = current.map((p) => p.id).join(',');
-      if (currentIds !== visibleProjectIds) {
-        // ID set changed — full reset
-        return visibleProjects;
+    setOrderedVisibleGroups((current) => {
+      const currentKeys = current.map((g) => g.key).join(',');
+      if (currentKeys !== visibleGroupKeys) {
+        // Key set changed (project added/removed/regrouped) — full reset.
+        return visibleGroups;
       }
-      // IDs unchanged — refresh object references so renamed/updated projects render
-      const byId = new Map<string, Project>();
-      for (const p of visibleProjects) byId.set(p.id, p);
-      const next = current.map((p) => byId.get(p.id) ?? p);
-      // Only return a new array if something actually changed
-      const changed = next.some((p, i) => p !== current[i]);
+      // Keys unchanged but contents may have updated (rename, refresh) —
+      // swap in fresh group objects without disturbing the user's order.
+      const byKey = new Map<string, ProjectGroup>();
+      for (const g of visibleGroups) byKey.set(g.key, g);
+      const next = current.map((g) => byKey.get(g.key) ?? g);
+      const changed = next.some((g, i) => g !== current[i]);
       return changed ? next : current;
     });
-  }, [activeProjectId, visibleProjectIds, visibleProjects]);
+  }, [activeGroupKey, visibleGroupKeys, visibleGroups]);
 
-  const activeProject = useMemo(() => {
-    if (!activeProjectId) {
+  const activeGroup = useMemo(() => {
+    if (!activeGroupKey) {
       return null;
     }
-    return orderedVisibleProjects.find((project) => project.id === activeProjectId)
-      ?? visibleProjects.find((project) => project.id === activeProjectId)
+    return orderedVisibleGroups.find((group) => group.key === activeGroupKey)
+      ?? visibleGroups.find((group) => group.key === activeGroupKey)
       ?? null;
-  }, [activeProjectId, orderedVisibleProjects, visibleProjects]);
+  }, [activeGroupKey, orderedVisibleGroups, visibleGroups]);
 
-  const commitOrder = useCallback((nextVisibleProjects: Project[]) => {
-    const visibleIdSet = new Set(visibleProjects.map((project) => project.id));
-    const reorderedVisibleIds = nextVisibleProjects.map((project) => project.id);
-    const ids = projects.map((project) => (
-      visibleIdSet.has(project.id)
-        ? reorderedVisibleIds.shift()!
-        : project.id
-    ));
+  const commitOrder = useCallback((nextVisibleGroups: ProjectGroup[]) => {
+    // Reorder uses individual project ids — flatten the groups back to a flat
+    // member-by-member list, then splice it back into the full project order
+    // (replacing the visible slots while leaving hidden/offline projects
+    // untouched).
+    const reorderedVisibleIds = flattenGroupsToProjectIds(nextVisibleGroups);
+    const visibleIdSet = new Set(reorderedVisibleIds);
+    const queue = [...reorderedVisibleIds];
+    const ids = projects.map((project) =>
+      visibleIdSet.has(project.id) ? queue.shift()! : project.id,
+    );
     void reorderProjects(ids);
-  }, [projects, reorderProjects, visibleProjects]);
+  }, [projects, reorderProjects]);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
-    setActiveProjectId(String(event.active.id));
+    setActiveGroupKey(String(event.active.id));
   }, []);
 
   const handleDragOver = useCallback((event: DragOverEvent) => {
@@ -149,35 +164,35 @@ export function ProjectList() {
 
     const activeId = String(event.active.id);
     const overId = String(event.over.id);
-    setOrderedVisibleProjects((current) => reorderProjectsLocally(current, activeId, overId));
+    setOrderedVisibleGroups((current) => reorderProjectGroupsLocally(current, activeId, overId));
   }, []);
 
   const handleDragCancel = useCallback((_event: DragCancelEvent) => {
-    setActiveProjectId(null);
-    setOrderedVisibleProjects(visibleProjects);
-  }, [visibleProjects]);
+    setActiveGroupKey(null);
+    setOrderedVisibleGroups(visibleGroups);
+  }, [visibleGroups]);
 
   const handleDragEnd = useCallback(async (event: DragEndEvent) => {
     if (!event.over) {
-      setActiveProjectId(null);
-      setOrderedVisibleProjects(visibleProjects);
+      setActiveGroupKey(null);
+      setOrderedVisibleGroups(visibleGroups);
       return;
     }
 
     const activeId = String(event.active.id);
     const overId = String(event.over.id);
-    const nextVisibleProjects = reorderProjectsLocally(orderedVisibleProjects, activeId, overId);
-    setOrderedVisibleProjects(nextVisibleProjects);
-    setActiveProjectId(null);
+    const nextVisibleGroups = reorderProjectGroupsLocally(orderedVisibleGroups, activeId, overId);
+    setOrderedVisibleGroups(nextVisibleGroups);
+    setActiveGroupKey(null);
 
-    const previousOrder = visibleProjects.map((project) => project.id).join(',');
-    const nextOrder = nextVisibleProjects.map((project) => project.id).join(',');
+    const previousOrder = visibleGroups.map((group) => group.key).join(',');
+    const nextOrder = nextVisibleGroups.map((group) => group.key).join(',');
     if (previousOrder === nextOrder) {
       return;
     }
 
-    await commitOrder(nextVisibleProjects);
-  }, [commitOrder, orderedVisibleProjects, visibleProjects]);
+    await commitOrder(nextVisibleGroups);
+  }, [commitOrder, orderedVisibleGroups, visibleGroups]);
 
   if (isLoading && projects.length === 0) {
     return (
@@ -219,30 +234,43 @@ export function ProjectList() {
       onDragCancel={handleDragCancel}
       onDragEnd={handleDragEnd}
     >
-      <SortableContext items={orderedVisibleProjects.map((project) => project.id)} strategy={verticalListSortingStrategy}>
+      <SortableContext items={orderedVisibleGroups.map((group) => group.key)} strategy={verticalListSortingStrategy}>
         <div className="space-y-3">
-          {orderedVisibleProjects.map((project) => (
-            <ProjectItem
-              key={project.id}
-              project={project}
-              isSelected={selectedProjectId === project.id}
-              isHidden={hiddenProjectIdSet.has(project.id)}
-              onSelect={setSelectedProjectId}
-              onHide={hideProject}
-              onUnhide={unhideProject}
-              dragDisabled={isLoading}
-            />
-          ))}
+          {orderedVisibleGroups.map((group) => {
+            const primary = group.members[0];
+            // The card "selects" the primary member; the issues view derives
+            // the full member set via `useSelectedProjectGroupIds`.
+            const groupSelected = group.members.some((member) => member.id === selectedProjectId);
+            // A group is hidden iff every member is hidden — partially-hidden
+            // groups still render so the user can act on visible members.
+            const groupHidden = group.members.every((member) => hiddenProjectIdSet.has(member.id));
+            return (
+              <ProjectItem
+                key={group.key}
+                project={primary}
+                mergedMembers={group.members}
+                sortableId={group.key}
+                isSelected={groupSelected}
+                isHidden={groupHidden}
+                onSelect={() => setSelectedProjectId(primary.id)}
+                onHide={hideProject}
+                onUnhide={unhideProject}
+                dragDisabled={isLoading}
+              />
+            );
+          })}
         </div>
       </SortableContext>
 
       <DragOverlay>
-        {activeProject ? (
+        {activeGroup ? (
           <ProjectItem
-            project={activeProject}
-            isSelected={selectedProjectId === activeProject.id}
-            isHidden={hiddenProjectIdSet.has(activeProject.id)}
-            onSelect={setSelectedProjectId}
+            project={activeGroup.members[0]}
+            mergedMembers={activeGroup.members}
+            sortableId={activeGroup.key}
+            isSelected={activeGroup.members.some((member) => member.id === selectedProjectId)}
+            isHidden={activeGroup.members.every((member) => hiddenProjectIdSet.has(member.id))}
+            onSelect={() => setSelectedProjectId(activeGroup.members[0].id)}
             onHide={hideProject}
             onUnhide={unhideProject}
             dragDisabled

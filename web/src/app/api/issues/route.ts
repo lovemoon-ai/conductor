@@ -8,6 +8,8 @@ import {
   issueCreateSchema,
   issueSerializationSelect,
   issueSerializationWithPrioritySelect,
+  issueSerializationWithProjectSelect,
+  issueSerializationWithPriorityAndProjectSelect,
   isMissingIssuePriorityColumnError,
   loadIssueTaskMaps,
   normalizeIssueCreateBody,
@@ -23,11 +25,35 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const projectId = searchParams.get('project_id')?.trim() || null;
+  // `project_ids` lets the UI fetch issues across multiple projects in one
+  // call — used by the cross-daemon merged-project view to show issues from
+  // each daemon's same-named project together while preserving daemon
+  // attribution.
+  const rawProjectIds = searchParams.get('project_ids');
+  const projectIds = rawProjectIds
+    ? rawProjectIds
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean)
+    : [];
+
+  if (projectId && projectIds.length > 0) {
+    return NextResponse.json(
+      { error: 'Specify either project_id or project_ids, not both' },
+      { status: 400 },
+    );
+  }
+
+  const projectFilter = projectIds.length > 0
+    ? { projectId: { in: projectIds } }
+    : projectId
+      ? { projectId }
+      : {};
 
   const listQuery = {
     where: {
       project: { userId: user.id },
-      ...(projectId ? { projectId } : {}),
+      ...projectFilter,
     },
     orderBy: [
       { status: 'asc' as const },
@@ -36,15 +62,23 @@ export async function GET(request: NextRequest) {
     ],
   };
 
+  // Only pull the project join when the caller is in a cross-daemon merged
+  // view (`project_ids` set). Single-project and full-list views skip the
+  // JOIN to keep the high-traffic path cheap.
+  const includeProjectJoin = projectIds.length > 0;
   const { result: issues } = await withIssuePrioritySchemaFallback(
     'issues.list',
     () => db.issue.findMany({
       ...listQuery,
-      select: issueSerializationWithPrioritySelect,
+      select: includeProjectJoin
+        ? issueSerializationWithPriorityAndProjectSelect
+        : issueSerializationWithPrioritySelect,
     }),
     () => db.issue.findMany({
       ...listQuery,
-      select: issueSerializationSelect,
+      select: includeProjectJoin
+        ? issueSerializationWithProjectSelect
+        : issueSerializationSelect,
     }),
   );
 
@@ -64,6 +98,7 @@ export async function GET(request: NextRequest) {
     metadata: string | null;
     createdAt: Date;
     updatedAt: Date;
+    project?: { name: string | null; daemonHost: string | null } | null;
   }) => serializeIssueWithTasks(issue, {
     activeTask: activeTaskByIssueId.get(issue.id) ?? null,
     linkedTask: linkedTaskByIssueId.get(issue.id) ?? null,
@@ -116,7 +151,9 @@ export async function POST(request: NextRequest) {
   try {
     issue = await db.issue.create({
       data: issueData,
-      select: issueSerializationWithPrioritySelect,
+      select: input.includeProject
+        ? issueSerializationWithPriorityAndProjectSelect
+        : issueSerializationWithPrioritySelect,
     });
   } catch (error) {
     if (!isMissingIssuePriorityColumnError(error)) {
@@ -138,7 +175,9 @@ export async function POST(request: NextRequest) {
         position: issueData.position,
         metadata: issueData.metadata,
       },
-      select: issueSerializationSelect,
+      select: input.includeProject
+        ? issueSerializationWithProjectSelect
+        : issueSerializationSelect,
     });
   }
 

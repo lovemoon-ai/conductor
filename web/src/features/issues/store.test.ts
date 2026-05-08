@@ -24,6 +24,7 @@ describe('issues store', () => {
       isLoading: false,
       error: null,
       currentProjectId: null,
+      currentProjectIds: [],
     });
   });
 
@@ -84,6 +85,48 @@ describe('issues store', () => {
       error: null,
     });
     expect(useIssuesStore.getState().issues).toHaveLength(1);
+  });
+
+  it('treats reversed project id order as the same merged fetch scope', async () => {
+    let resolveFetch: ((value: unknown[]) => void) | null = null;
+    mockGet.mockReturnValueOnce(new Promise((resolve) => {
+      resolveFetch = resolve;
+    }));
+
+    const fetchPromise = useIssuesStore.getState().fetchIssuesForProjects([
+      'project-a',
+      'project-b',
+    ]);
+
+    useIssuesStore.setState({
+      currentProjectId: null,
+      currentProjectIds: ['project-b', 'project-a'],
+    });
+
+    resolveFetch?.([
+      {
+        id: 'issue-merged',
+        project_id: 'project-a',
+        daemon_host: 'daemon-a',
+        title: 'Merged issue',
+        status: 'todo',
+        position: 0,
+        created_at: '2026-04-19T00:00:00.000Z',
+      },
+    ]);
+    await fetchPromise;
+
+    expect(mockGet).toHaveBeenCalledWith('/issues?project_ids=project-a%2Cproject-b');
+    expect(useIssuesStore.getState()).toMatchObject({
+      isLoading: false,
+      error: null,
+    });
+    expect(useIssuesStore.getState().issues).toEqual([
+      expect.objectContaining({
+        id: 'issue-merged',
+        daemonHost: 'daemon-a',
+      }),
+    ]);
   });
 
   it('normalizes linked historical tasks from issue responses', async () => {

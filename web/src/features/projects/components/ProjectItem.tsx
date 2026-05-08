@@ -20,11 +20,24 @@ import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 
 interface ProjectItemProps {
   project: Project;
+  /**
+   * All members of the merged project group this card represents. Defaults to
+   * `[project]` for single-member groups. When > 1, the card displays a
+   * daemon badge for each member and primary actions (hide/delete) fan out to
+   * all members via the corresponding *_Group store actions.
+   */
+  mergedMembers?: Project[];
   isSelected?: boolean;
   isHidden?: boolean;
   onSelect?: (projectId: string) => void;
   onHide?: (projectId: string) => void;
   onUnhide?: (projectId: string) => void;
+  /**
+   * Optional sortable id override. ProjectList passes the merged group's
+   * `key` so dnd-kit treats the whole group as a single draggable. Defaults
+   * to `project.id` for backward compatibility.
+   */
+  sortableId?: string;
   dragDisabled?: boolean;
 }
 
@@ -90,13 +103,17 @@ const readBindingCandidate = (
 
 export function ProjectItem({
   project,
+  mergedMembers,
   isSelected = false,
   isHidden = false,
   onSelect,
   onHide,
   onUnhide,
+  sortableId,
   dragDisabled = false,
 }: ProjectItemProps) {
+  const groupMembers = mergedMembers && mergedMembers.length > 0 ? mergedMembers : [project];
+  const isMergedGroup = groupMembers.length > 1;
   const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(project.name);
@@ -107,7 +124,13 @@ export function ProjectItem({
   const renamingRef = useRef(false);
   const skipRenameOnBlurRef = useRef(false);
 
-  const { updateProject, deleteProject } = useProjectsStore();
+  const {
+    updateProject,
+    deleteProject,
+    deleteProjectGroup,
+    hideProjectGroup,
+    unhideProjectGroup,
+  } = useProjectsStore();
   const agents = useAgentsStore((state) => state.agents);
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
@@ -134,8 +157,18 @@ export function ProjectItem({
     ? formatBindingLabel(daemonHost, workspacePath)
     : pendingBindingLabel;
   const taskStatusCounts = projectRecord.taskStatusCounts as Record<string, number> | undefined;
-  const runningCount = taskStatusCounts?.running ?? 0;
-  const killedCount = taskStatusCounts?.killed ?? 0;
+  // For merged groups sum task counts across every daemon's underlying project
+  // so a single chip captures the full picture.
+  const aggregatedRunningCount = groupMembers.reduce(
+    (sum, member) => sum + (member.taskStatusCounts?.running ?? 0),
+    0,
+  );
+  const aggregatedKilledCount = groupMembers.reduce(
+    (sum, member) => sum + (member.taskStatusCounts?.killed ?? 0),
+    0,
+  );
+  const runningCount = isMergedGroup ? aggregatedRunningCount : taskStatusCounts?.running ?? 0;
+  const killedCount = isMergedGroup ? aggregatedKilledCount : taskStatusCounts?.killed ?? 0;
   const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isUnavailable || isPendingBinding || runningCount > 0 || killedCount > 0;
   const projectTitleId = `project-title-${project.id}`;
   const canHide = Boolean(onHide) && !isHidden;
@@ -299,15 +332,25 @@ export function ProjectItem({
       });
       return;
     }
+    const memberIds = groupMembers.map((member) => member.id);
+    const memberCount = memberIds.length;
     const accepted = await confirm({
-      title: `Delete project "${project.name}"?`,
-      description: 'This action cannot be undone.',
+      title: isMergedGroup
+        ? `Delete merged project "${project.name}" on ${memberCount} daemons?`
+        : `Delete project "${project.name}"?`,
+      description: isMergedGroup
+        ? 'This deletes the project from every daemon it is bound to. This action cannot be undone.'
+        : 'This action cannot be undone.',
       confirmLabel: 'Delete',
       tone: 'danger',
     });
     if (accepted) {
       try {
-        await deleteProject(project.id);
+        if (isMergedGroup) {
+          await deleteProjectGroup(memberIds);
+        } else {
+          await deleteProject(project.id);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to delete project';
         pushToast({
@@ -324,9 +367,13 @@ export function ProjectItem({
     if (isEditing || !canHide) {
       return;
     }
-    onHide?.(project.id);
+    if (isMergedGroup) {
+      hideProjectGroup(groupMembers.map((member) => member.id));
+    } else {
+      onHide?.(project.id);
+    }
     pushToast({
-      title: 'Project hidden',
+      title: isMergedGroup ? 'Merged project hidden across daemons' : 'Project hidden',
       description: 'Double-click Projects to show hidden projects.',
     });
     swipe.closeActions();
@@ -336,9 +383,13 @@ export function ProjectItem({
     if (isEditing || !canUnhide) {
       return;
     }
-    onUnhide?.(project.id);
+    if (isMergedGroup) {
+      unhideProjectGroup(groupMembers.map((member) => member.id));
+    } else {
+      onUnhide?.(project.id);
+    }
     pushToast({
-      title: 'Project restored',
+      title: isMergedGroup ? 'Merged project restored' : 'Project restored',
     });
     swipe.closeActions();
   };
@@ -351,7 +402,7 @@ export function ProjectItem({
     transition,
     isDragging,
   } = useSortable({
-    id: project.id,
+    id: sortableId ?? project.id,
     disabled: dragDisabled,
   });
 
@@ -560,14 +611,39 @@ export function ProjectItem({
                 </h3>
               )}
             </div>
-            {hasMetadataChips ? (
+            {hasMetadataChips || isMergedGroup ? (
               <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted">
                 {isGitProject ? (
                   <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
                     git
                   </span>
                 ) : null}
-                {daemonLabel ? (
+                {isMergedGroup ? (
+                  // Merged group: list each member's daemon as its own badge so
+                  // the user can see at a glance which daemons own this name.
+                  groupMembers.map((member) => {
+                    const memberDaemon = typeof member.daemonHost === 'string' ? member.daemonHost.trim() : '';
+                    if (!memberDaemon) return null;
+                    const memberOnline = agents.some((agent) => agent.host === memberDaemon);
+                    return (
+                      <span
+                        key={member.id}
+                        title={formatBindingLabel(memberDaemon, member.workspacePath ?? null)}
+                        className={`flex max-w-[12rem] items-center gap-1 truncate rounded px-1.5 py-0.5 text-xs font-medium ${
+                          memberOnline
+                            ? 'bg-[var(--paper)] text-muted'
+                            : 'bg-[var(--warning)]/10 text-ink'
+                        }`}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className={`inline-block h-1.5 w-1.5 rounded-full ${memberOnline ? 'bg-emerald-500' : 'bg-[var(--warning)]'}`}
+                        />
+                        {memberDaemon}
+                      </span>
+                    );
+                  })
+                ) : daemonLabel ? (
                   <span
                     title={daemonTitle ?? daemonLabel}
                     className="flex max-w-[12rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted"
@@ -575,11 +651,19 @@ export function ProjectItem({
                     {daemonLabel}
                   </span>
                 ) : null}
-                {isUnavailable ? (
+                {isMergedGroup ? (
+                  <span
+                    title={`${groupMembers.length} daemons share this project`}
+                    className="flex items-center gap-1 rounded bg-[var(--accent)]/15 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]"
+                  >
+                    merged · {groupMembers.length} daemons
+                  </span>
+                ) : null}
+                {!isMergedGroup && isUnavailable ? (
                   <span className="flex items-center gap-1 rounded bg-[var(--warning)]/10 px-1.5 py-0.5 text-xs font-medium text-ink">
                     Daemon offline
                   </span>
-                ) : isPendingBinding ? (
+                ) : !isMergedGroup && isPendingBinding ? (
                   <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted">
                     Binding pending
                   </span>

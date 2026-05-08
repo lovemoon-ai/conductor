@@ -57,6 +57,7 @@ export type ProjectPathValidationResult = {
   repo_root: string | null;
   worktree_branch: string | null;
   last_commit: string | null;
+  git_remote_url: string | null;
   file_count: number | null;
   error: string | null;
   error_code: string | null;

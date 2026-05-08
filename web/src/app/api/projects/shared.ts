@@ -159,6 +159,7 @@ const readProjectBindingInput = (body: Record<string, unknown>) => {
     repoRoot: normalizeOptionalString(readField(body, "repo_root", "repoRoot", nestedBinding)),
     worktreeBranch: normalizeOptionalString(readField(body, "worktree_branch", "worktreeBranch", nestedBinding)),
     lastCommit: normalizeOptionalString(readField(body, "last_commit", "lastCommit", nestedBinding)),
+    gitRemoteUrl: normalizeOptionalString(readField(body, "git_remote_url", "gitRemoteUrl", nestedBinding)),
     fileCount: normalizeOptionalInt(readField(body, "file_count", "fileCount", nestedBinding)),
   };
 };
@@ -219,9 +220,11 @@ type SerializableProject = {
   repoRoot: string | null;
   worktreeBranch: string | null;
   lastCommit: string | null;
+  gitRemoteUrl?: string | null;
   fileCount: number | null;
   sortOrder?: number | null;
   hiddenAt?: Date | null;
+  mergeOptOut?: boolean;
   metadata: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -244,6 +247,8 @@ const PROJECT_SERIALIZATION_BASE_SELECT = {
 const PROJECT_SERIALIZATION_SELECT = {
   ...PROJECT_SERIALIZATION_BASE_SELECT,
   hiddenAt: true,
+  gitRemoteUrl: true,
+  mergeOptOut: true,
 } satisfies Prisma.ProjectSelect;
 
 const PROJECT_SERIALIZATION_WITH_SORT_SELECT = {
@@ -275,6 +280,14 @@ const isMissingProjectHiddenAtColumnError = (error: unknown): boolean =>
   error.code === "P2022" &&
   (errorMessage(error).includes("hidden_at") || errorMessage(error).includes("hiddenAt"));
 
+const isMissingProjectMergeColumnsError = (error: unknown): boolean =>
+  error instanceof Prisma.PrismaClientKnownRequestError &&
+  error.code === "P2022" &&
+  (errorMessage(error).includes("git_remote_url") ||
+    errorMessage(error).includes("gitRemoteUrl") ||
+    errorMessage(error).includes("merge_opt_out") ||
+    errorMessage(error).includes("mergeOptOut"));
+
 const getComparableSortOrder = (project: SortableProject): number =>
   typeof project.sortOrder === "number" && Number.isInteger(project.sortOrder)
     ? project.sortOrder
@@ -300,6 +313,8 @@ const serializeProject = (
   const updatedAt = project.updatedAt.toISOString();
   const hiddenAt = project.hiddenAt ? project.hiddenAt.toISOString() : null;
   const hidden = Boolean(project.hiddenAt);
+  const gitRemoteUrl = project.gitRemoteUrl ?? null;
+  const mergeOptOut = Boolean(project.mergeOptOut);
   return {
     id: project.id,
     name: project.name,
@@ -309,10 +324,12 @@ const serializeProject = (
     repoRoot: project.repoRoot,
     worktreeBranch: project.worktreeBranch,
     lastCommit: project.lastCommit,
+    gitRemoteUrl,
     fileCount: project.fileCount,
     sortOrder: project.sortOrder,
     hidden,
     hiddenAt,
+    mergeOptOut,
     isDefault: isDefault,
     createdAt,
     updatedAt,
@@ -322,9 +339,11 @@ const serializeProject = (
     repo_root: project.repoRoot,
     worktree_branch: project.worktreeBranch,
     last_commit: project.lastCommit,
+    git_remote_url: gitRemoteUrl,
     file_count: project.fileCount,
     sort_order: project.sortOrder,
     hidden_at: hiddenAt,
+    merge_opt_out: mergeOptOut,
     is_default: isDefault,
     created_at: createdAt,
     updated_at: updatedAt,
@@ -349,6 +368,7 @@ export {
   readProjectMetadataInput,
   isMissingProjectSortOrderColumnError,
   isMissingProjectHiddenAtColumnError,
+  isMissingProjectMergeColumnsError,
   PROJECT_SERIALIZATION_BASE_SELECT,
   PROJECT_SERIALIZATION_SELECT,
   PROJECT_SERIALIZATION_WITH_SORT_SELECT,

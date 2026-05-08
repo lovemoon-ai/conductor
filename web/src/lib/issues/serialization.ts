@@ -27,6 +27,15 @@ type SerializableIssue = {
   metadata: string | null;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * Optional project attribution — populated when the caller wants the issue's
+   * card to show which daemon/project it belongs to (e.g. when the UI is
+   * displaying a merged group spanning multiple daemons).
+   */
+  project?: {
+    name?: string | null;
+    daemonHost?: string | null;
+  } | null;
 };
 
 type SerializableActiveTask = Parameters<typeof serializeTaskResponse>[0] | null | undefined;
@@ -50,9 +59,14 @@ export const serializeIssue = (
     ? tasks.map((task) => serializeTaskResponse(task))
     : null;
 
+  const projectName = issue.project?.name ?? null;
+  const daemonHost = issue.project?.daemonHost ?? null;
+
   return {
     id: issue.id,
     projectId: issue.projectId,
+    projectName,
+    daemonHost,
     title: issue.title,
     description: issue.description,
     status,
@@ -65,6 +79,8 @@ export const serializeIssue = (
     createdAt,
     updatedAt,
     project_id: issue.projectId,
+    project_name: projectName,
+    daemon_host: daemonHost,
     active_task: serializedActiveTask,
     linked_task: serializedLinkedTask,
     created_at: createdAt,
