@@ -9,6 +9,7 @@ import { useProjectsStore } from '@/features/projects';
 import { useAgentsStore } from '@/features/agents';
 import { ApiRequestError } from '@/shared/api/client';
 import { formatBindingLabel } from '@/features/projects';
+import { computeProjectGroups } from '@/features/projects/utils/project-groups';
 import { useRouter } from 'next/navigation';
 import type { TaskType } from '@/lib/tasks/task-config';
 import type { Project } from '@/shared/types';
@@ -99,19 +100,36 @@ export function CreateTaskDialog({
   const wasOpenRef = useRef(false);
   const daemons = agents.filter((agent) => !agent.host.startsWith('conductor-fire-'));
   const selectableProjects = projects.filter((project) => Boolean(project.isDefault) || Boolean(project.daemonHost));
+  // Merge same-name git projects across daemons into one picker entry; the
+  // user picks the project name once and a separate daemon dropdown decides
+  // which daemon's underlying project the task lands on. Single-member
+  // groups behave exactly as before.
+  const projectGroups = useMemo(
+    () => computeProjectGroups(selectableProjects),
+    [selectableProjects],
+  );
   const resolvedDefaultProjectId = useMemo(() => {
-    if (selectableProjects.length === 0) {
+    if (projectGroups.length === 0) {
       return '';
     }
-
     if (defaultProjectId && selectableProjects.some((project) => project.id === defaultProjectId)) {
       return defaultProjectId;
     }
-
-    return selectableProjects[0].id;
-  }, [defaultProjectId, selectableProjects]);
+    return projectGroups[0].members[0].id;
+  }, [defaultProjectId, projectGroups, selectableProjects]);
   const effectiveProjectId = projectId || resolvedDefaultProjectId;
   const selectedProject = selectableProjects.find((project) => project.id === effectiveProjectId) ?? null;
+  const currentGroup = useMemo(() => {
+    if (!effectiveProjectId) return null;
+    return projectGroups.find((group) =>
+      group.members.some((member) => member.id === effectiveProjectId),
+    ) ?? null;
+  }, [effectiveProjectId, projectGroups]);
+  const isMergedGroup = (currentGroup?.members.length ?? 0) > 1;
+  // Picker value tracks the group's primary member id so the option matches
+  // even when projectId points at a non-primary member (i.e. the user picked
+  // a specific daemon inside a merged group).
+  const projectPickerValue = currentGroup?.members[0]?.id ?? effectiveProjectId;
   const projectRecord = selectedProject as (Project & Record<string, unknown>) | null;
   const isDefaultProject = Boolean(projectRecord?.isDefault);
   const boundDaemonHost = projectRecord && typeof projectRecord.daemonHost === 'string'
@@ -135,32 +153,75 @@ export function CreateTaskDialog({
     ? Boolean(boundDaemonAgent && supportsPtyTask(boundDaemonAgent.capabilities))
     : true;
   const boundBindingLabel = boundDaemonHost ? formatBindingLabel(boundDaemonHost, boundWorkspacePath) : null;
-  const daemonScope = isBoundProject
-    ? (boundDaemonAgent ? [boundDaemonAgent] : [])
-    : daemons;
+  // For merged cross-daemon groups, daemon scope is the set of online
+  // daemons that own a member of the group. Picking a daemon in this case
+  // also re-points the projectId at that daemon's underlying member.
+  const mergedGroupDaemonOptions = useMemo(() => {
+    if (!isMergedGroup || !currentGroup) return null;
+    return currentGroup.members
+      .map((member) => {
+        const host = typeof member.daemonHost === 'string' ? member.daemonHost.trim() : '';
+        if (!host) return null;
+        const agent = daemons.find((daemon) => daemon.host === host) ?? null;
+        return { memberId: member.id, host, agent };
+      })
+      .filter((entry): entry is { memberId: string; host: string; agent: typeof daemons[number] | null } =>
+        entry !== null,
+      );
+  }, [currentGroup, daemons, isMergedGroup]);
+  const daemonScope = isMergedGroup && mergedGroupDaemonOptions
+    ? mergedGroupDaemonOptions
+        .map((entry) => entry.agent)
+        .filter((agent): agent is NonNullable<typeof agent> => Boolean(agent))
+    : isBoundProject
+      ? (boundDaemonAgent ? [boundDaemonAgent] : [])
+      : daemons;
   const eligibleDaemons = taskType === 'pty_task'
     ? daemonScope.filter((agent) => supportsPtyTask(agent.capabilities))
     : daemonScope;
-  const effectiveAgentHost = isBoundProject
+  const effectiveAgentHost = isMergedGroup
     ? (boundDaemonHost ?? '')
-    : (agentHost || eligibleDaemons[0]?.host || '');
+    : isBoundProject
+      ? (boundDaemonHost ?? '')
+      : (agentHost || eligibleDaemons[0]?.host || '');
   const selectedAgent = effectiveAgentHost
     ? eligibleDaemons.find((agent) => agent.host === effectiveAgentHost) ?? null
     : null;
   const availableBackends = selectedAgent?.supportedBackends || [];
-  const canCreatePtyTask = isBoundProject
-    ? boundDaemonSupportsPty
-    : daemons.some((agent) => supportsPtyTask(agent.capabilities));
+  const canCreatePtyTask = isMergedGroup && mergedGroupDaemonOptions
+    ? mergedGroupDaemonOptions.some(
+        (entry) => entry.agent && supportsPtyTask(entry.agent.capabilities),
+      )
+    : isBoundProject
+      ? boundDaemonSupportsPty
+      : daemons.some((agent) => supportsPtyTask(agent.capabilities));
   const hasEligibleDaemon = eligibleDaemons.length > 0;
   const canSubmit = Boolean(title.trim())
     && selectableProjects.length > 0
     && !isSubmitting
     && hasReadyProjectBinding
-    && (!isBoundProject || boundDaemonOnline)
+    && (isMergedGroup ? hasEligibleDaemon : (!isBoundProject || boundDaemonOnline))
     && (taskType === 'pty_task' ? hasEligibleDaemon : true);
-  const daemonSelectOptions = isBoundProject && boundDaemonHost
-    ? [{ host: boundDaemonHost, label: boundDaemonOnline ? boundDaemonHost : `${boundDaemonHost} (offline)` }]
-    : eligibleDaemons.map((daemon) => ({ host: daemon.host, label: daemon.host }));
+  // Daemon select options. Merged groups list each member's daemon and use
+  // the member's projectId as the option value so onChange can re-point the
+  // submission target. Other modes keep the previous (host-keyed) behavior.
+  const daemonSelectOptions = isMergedGroup && mergedGroupDaemonOptions
+    ? mergedGroupDaemonOptions
+        .filter((entry) => {
+          if (!entry.agent) return false;
+          if (taskType === 'pty_task') {
+            return supportsPtyTask(entry.agent.capabilities);
+          }
+          return true;
+        })
+        .map((entry) => ({
+          value: entry.memberId,
+          host: entry.host,
+          label: entry.host,
+        }))
+    : isBoundProject && boundDaemonHost
+      ? [{ value: boundDaemonHost, host: boundDaemonHost, label: boundDaemonOnline ? boundDaemonHost : `${boundDaemonHost} (offline)` }]
+      : eligibleDaemons.map((daemon) => ({ value: daemon.host, host: daemon.host, label: daemon.host }));
 
   useEffect(() => {
     if (selectableProjects.length === 0) {
@@ -183,6 +244,12 @@ export function CreateTaskDialog({
   }, [open, projectId, resolvedDefaultProjectId, selectableProjects]);
 
   useEffect(() => {
+    // Merged groups drive the daemon via projectId (see daemon picker below);
+    // skip the unbound-mode `agentHost` pinning so we don't fight the merged
+    // selection logic.
+    if (isMergedGroup) {
+      return;
+    }
     if (isBoundProject) {
       if (boundDaemonHost && agentHost !== boundDaemonHost) {
         setAgentHost(boundDaemonHost);
@@ -196,7 +263,24 @@ export function CreateTaskDialog({
     if (!agentHost || !eligibleDaemons.some((daemon) => daemon.host === agentHost)) {
       setAgentHost(eligibleDaemons[0].host);
     }
-  }, [agentHost, boundDaemonHost, eligibleDaemons, isBoundProject]);
+  }, [agentHost, boundDaemonHost, eligibleDaemons, isBoundProject, isMergedGroup]);
+
+  // When a merged group is selected but the current projectId points at an
+  // offline / pty-incapable member, hop to the first eligible member so the
+  // backend dropdown stays usable. Without this, switching task types could
+  // strand the form on a projectId whose daemon is filtered out.
+  useEffect(() => {
+    if (!isMergedGroup || !daemonSelectOptions || daemonSelectOptions.length === 0) {
+      return;
+    }
+    const currentMemberId = effectiveProjectId;
+    const stillAvailable = daemonSelectOptions.some(
+      (option) => option.value === currentMemberId,
+    );
+    if (!stillAvailable) {
+      setProjectId(daemonSelectOptions[0].value);
+    }
+  }, [daemonSelectOptions, effectiveProjectId, isMergedGroup]);
 
   useEffect(() => {
     if (availableBackends.length === 0) {
@@ -312,8 +396,11 @@ export function CreateTaskDialog({
             </div>
             <select
               id="create-task-project"
-              value={projectId}
+              value={projectPickerValue}
               onChange={(e) => {
+                // Picker option value is always the group's primary member id.
+                // For merged groups, the daemon dropdown then narrows down to
+                // a specific member.
                 setProjectId(e.target.value);
                 setCreateWorktree(false);
                 if (submitError) {
@@ -321,13 +408,18 @@ export function CreateTaskDialog({
                 }
               }}
               className="webapp-input w-full"
-              disabled={selectableProjects.length === 0}
+              disabled={projectGroups.length === 0}
             >
-              {selectableProjects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
+              {projectGroups.map((group) => {
+                const primary = group.members[0];
+                return (
+                  <option key={group.key} value={primary.id}>
+                    {group.isMerged
+                      ? `${group.name} (${group.members.length} daemons)`
+                      : group.name}
+                  </option>
+                );
+              })}
             </select>
           </div>
         </div>
@@ -480,18 +572,25 @@ export function CreateTaskDialog({
                 </div>
                 <select
                   id="create-task-daemon"
-                  value={agentHost}
+                  value={isMergedGroup ? effectiveProjectId : agentHost}
                   onChange={(e) => {
-                    setAgentHost(e.target.value);
+                    if (isMergedGroup) {
+                      // For merged groups the option value IS the member's
+                      // projectId — switching daemon means switching which
+                      // daemon's underlying project receives the task.
+                      setProjectId(e.target.value);
+                    } else {
+                      setAgentHost(e.target.value);
+                    }
                     setBackendType('');
                     setSubmitError(null);
                   }}
                   className="webapp-input w-full"
-                  disabled={isBoundProject}
+                  disabled={!isMergedGroup && isBoundProject}
                 >
-                  {daemonSelectOptions.map((daemon) => (
-                    <option key={daemon.host} value={daemon.host}>
-                      {daemon.label}
+                  {daemonSelectOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
                     </option>
                   ))}
                 </select>
