@@ -35,25 +35,6 @@ export const pickDaemonBadgeClass = (daemonHost: string): string => {
   return DAEMON_BADGE_PALETTE[Math.abs(hash) % DAEMON_BADGE_PALETTE.length];
 };
 
-const pickIssueAiToolBadge = (issue: Issue): string | null => {
-  // Mirror IssueDetailsDialog's resolution order so the card and the dialog
-  // agree: requested backend (metadata) → live task → archived breadcrumb.
-  const metaBackend = issue.metadata && typeof issue.metadata.backendType === 'string'
-    ? issue.metadata.backendType.trim()
-    : '';
-  if (metaBackend) {
-    return metaBackend;
-  }
-  const liveTaskBackend = issue.activeTask?.backendType
-    ?? issue.linkedTask?.backendType
-    ?? (Array.isArray(issue.tasks) && issue.tasks.length > 0 ? issue.tasks[0].backendType : null);
-  if (liveTaskBackend && liveTaskBackend.trim()) {
-    return liveTaskBackend.trim();
-  }
-  const persisted = typeof issue.aiBackendType === 'string' ? issue.aiBackendType.trim() : '';
-  return persisted || null;
-};
-
 function IssueStatusMenu({
   issue,
   onStatusChange,
@@ -166,13 +147,6 @@ function IssueCardBody({
   const linkedTask = issue.linkedTask ?? activeTask;
   const openTask = activeTask ?? linkedTask;
   const hasHistoricalLinkedTask = !activeTask && Boolean(linkedTask);
-  const aiToolBadge = pickIssueAiToolBadge(issue);
-  const persistedSessionId = typeof issue.aiSessionId === 'string' ? issue.aiSessionId.trim() : '';
-  // Show the archived flag only when the breadcrumb is the only surviving
-  // pointer — i.e., no live tasks but the issue still remembers an AI session.
-  const isArchivedBreadcrumb = !openTask
-    && (!Array.isArray(issue.tasks) || issue.tasks.length === 0)
-    && (Boolean(aiToolBadge) || Boolean(persistedSessionId));
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const deleteActionRef = useRef<HTMLButtonElement>(null);
@@ -279,35 +253,6 @@ function IssueCardBody({
         ) : (
           <p className="mt-2 text-sm text-muted/60">No description</p>
         )}
-
-        {aiToolBadge || persistedSessionId ? (
-          <div className="mt-3 flex flex-wrap items-center gap-1.5">
-            {aiToolBadge ? (
-              <span
-                className="inline-flex items-center rounded-full border border-border/70 bg-paper/50 px-2 py-0.5 text-[11px] font-medium text-muted"
-                title={isArchivedBreadcrumb ? `AI tool used by the (now-deleted) task: ${aiToolBadge}` : `AI tool: ${aiToolBadge}`}
-              >
-                {aiToolBadge}
-              </span>
-            ) : null}
-            {persistedSessionId ? (
-              <code
-                className="max-w-[14rem] truncate rounded-md border border-border/70 bg-paper/60 px-1.5 py-0.5 text-[11px] font-mono text-muted"
-                title={`Session id: ${persistedSessionId}`}
-              >
-                {persistedSessionId}
-              </code>
-            ) : null}
-            {isArchivedBreadcrumb ? (
-              <span
-                className="text-[10px] uppercase tracking-wide text-muted/70"
-                title="The originating task is no longer available; this is the persisted breadcrumb on the issue."
-              >
-                archived
-              </span>
-            ) : null}
-          </div>
-        ) : null}
 
         {interactive && (openTask || onDelete) ? (
           <div

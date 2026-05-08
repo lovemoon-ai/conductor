@@ -129,6 +129,69 @@ describe('issues store', () => {
     ]);
   });
 
+  it('preserves the persisted ai breadcrumb fields when normalizing issues from the API', async () => {
+    // Regression: previously normalizeIssue dropped aiBackendType/aiSessionId,
+    // so even when the API surfaced them the IssueDetailsDialog saw undefined
+    // and rendered an empty fallback after the linked task was deleted.
+    mockGet.mockResolvedValueOnce([
+      {
+        id: 'issue-1',
+        project_id: 'project-1',
+        title: 'Issue with archived breadcrumb',
+        status: 'done',
+        position: 0,
+        // Snake-case payload, as the API actually emits.
+        ai_backend_type: 'codex',
+        ai_session_id: '019daec0-aaaa-bbbb-cccc-deadbeef',
+        created_at: '2026-05-01T00:00:00.000Z',
+      },
+      {
+        id: 'issue-2',
+        project_id: 'project-1',
+        title: 'Issue with camel breadcrumb',
+        status: 'doing',
+        position: 1,
+        // Some clients/tests use camelCase — accept both.
+        aiBackendType: 'claude',
+        aiSessionId: 'sess-camel-1',
+        created_at: '2026-05-01T00:01:00.000Z',
+      },
+    ]);
+
+    await useIssuesStore.getState().fetchIssues('project-1');
+
+    const issues = useIssuesStore.getState().issues;
+    const archived = issues.find((issue) => issue.id === 'issue-1');
+    const live = issues.find((issue) => issue.id === 'issue-2');
+    expect(archived).toMatchObject({
+      aiBackendType: 'codex',
+      aiSessionId: '019daec0-aaaa-bbbb-cccc-deadbeef',
+    });
+    expect(live).toMatchObject({
+      aiBackendType: 'claude',
+      aiSessionId: 'sess-camel-1',
+    });
+  });
+
+  it('leaves ai breadcrumb fields null when the API returns nothing', async () => {
+    mockGet.mockResolvedValueOnce([
+      {
+        id: 'issue-empty',
+        project_id: 'project-1',
+        title: 'No breadcrumb yet',
+        status: 'todo',
+        position: 0,
+        created_at: '2026-05-01T00:00:00.000Z',
+      },
+    ]);
+
+    await useIssuesStore.getState().fetchIssues('project-1');
+
+    const issue = useIssuesStore.getState().issues[0];
+    expect(issue.aiBackendType ?? null).toBeNull();
+    expect(issue.aiSessionId ?? null).toBeNull();
+  });
+
   it('normalizes linked historical tasks from issue responses', async () => {
     mockGet.mockResolvedValueOnce([
       {
