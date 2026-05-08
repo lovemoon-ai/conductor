@@ -5523,7 +5523,31 @@ export function startDaemon(config = {}, deps = {}) {
     let refreshStoppedActiveTask = false;
     let startupTerminalStatusReported = false;
     try {
-    const activeTarget = activeTaskProcesses.get(normalizedTargetTaskId);
+    let activeTarget = activeTaskProcesses.get(normalizedTargetTaskId);
+
+    // For tmux-mode entries, `activeTarget.child` is the long-dead
+    // `tmux new-session` client object — truthy regardless of whether
+    // the underlying tmux session (and Fire inside it) is still alive.
+    // Probe the actual session and clean up stale entries on demand so
+    // the restart gating below reflects reality, not the stale record.
+    if (activeTarget?.tmuxMode && activeTarget.tmuxSession) {
+      const sessionAlive = await tmuxSessionExists(activeTarget.tmuxSession);
+      if (
+        !sessionAlive &&
+        activeTaskProcesses.get(normalizedTargetTaskId) === activeTarget
+      ) {
+        log(
+          `Tmux session ${activeTarget.tmuxSession} for task ${normalizedTargetTaskId} no longer exists; clearing stale activeTaskProcesses entry before restart`,
+        );
+        if (activeTarget.stopForceKillTimer) {
+          clearTimeout(activeTarget.stopForceKillTimer);
+          activeTarget.stopForceKillTimer = null;
+        }
+        activeTaskProcesses.delete(normalizedTargetTaskId);
+        activeTarget = undefined;
+      }
+    }
+
     if (isRefreshSessionInplace) {
       if (!activeTarget?.child) {
         reportRestartFailure({
@@ -5537,12 +5561,16 @@ export function startDaemon(config = {}, deps = {}) {
         return;
       }
     } else if (activeTarget?.child) {
+      // tmux-mode failures point at the tmux session, not a meaningless pid.
+      const description = activeTarget.tmuxMode
+        ? `task already active in tmux session ${activeTarget.tmuxSession || "(unknown)"} — stop the task before restarting`
+        : `task already active (pid=${activeTarget.child.pid ?? "unknown"})`;
       reportRestartFailure({
         taskId: normalizedTargetTaskId,
         projectId: normalizedProjectId,
         requestId,
         mode: normalizedMode,
-        error: new Error(`task already active (pid=${activeTarget.child.pid ?? "unknown"})`),
+        error: new Error(description),
       });
       return;
     }

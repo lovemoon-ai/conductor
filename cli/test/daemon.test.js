@@ -1498,6 +1498,254 @@ describe("Daemon", () => {
     }, 700);
   });
 
+  it("refuses restart_task with a tmux-aware error message when the tmux session is still alive", (t, done) => {
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    const taskPayload = {
+      task_id: "task-tmux-restart-alive",
+      project_id: "proj-tmux-restart-alive",
+      backend_type: "codex",
+    };
+
+    const restartPayload = {
+      mode: "resume_inplace",
+      source_task_id: "task-tmux-restart-alive",
+      target_task_id: "task-tmux-restart-alive",
+      project_id: "proj-tmux-restart-alive",
+      title: "Restart tmux task",
+      source_backend_type: "codex",
+      source_session_id: "sess-tmux-restart-1",
+      target_backend_type: "codex",
+      request_id: "req-restart-tmux-alive",
+    };
+
+    let newSessionCalls = 0;
+    let hasSessionCalls = 0;
+
+    const mockSpawn = (cmd, args) => {
+      if (cmd === "tmux" && args?.[0] === "new-session") {
+        newSessionCalls += 1;
+        const child = new EventEmitter();
+        child.pid = 86001;
+        child.unref = () => {};
+        child.kill = () => {};
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      }
+      if (cmd === "tmux" && args?.[0] === "has-session") {
+        hasSessionCalls += 1;
+        const child = new EventEmitter();
+        child.unref = () => {};
+        // Pretend the session is alive — restart must be refused.
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      }
+      if (cmd === "tmux" && args?.[0] === "list-sessions") {
+        const child = new EventEmitter();
+        child.unref = () => {};
+        child.stdout = new EventEmitter();
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      }
+      assert.fail(`unexpected spawn ${cmd} ${JSON.stringify(args)}`);
+    };
+
+    const receivedFromDaemon = [];
+    wss.once("connection", (ws) => {
+      ws.on("message", (raw) => {
+        try {
+          receivedFromDaemon.push(JSON.parse(raw.toString("utf8")));
+        } catch {
+          // ignore
+        }
+      });
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+      // Fire restart after the task is registered.
+      setTimeout(() => {
+        ws.send(JSON.stringify({ type: "restart_task", payload: restartPayload }));
+      }, 200);
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-tmux-restart-alive",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-tmux-restart-alive",
+        TMUX_LIVENESS_POLL_MS: 0,
+      },
+      {
+        spawn: mockSpawn,
+        spawnSync: (cmd, args) => {
+          if (cmd === "tmux" && args && args[0] === "-V") {
+            return { status: 0, error: null, pid: 12345 };
+          }
+          return { status: 1, error: new Error("ENOENT"), pid: undefined };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => filePath.endsWith("daemon.pid") ? false : false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {}, on: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.strictEqual(newSessionCalls, 1, "create_task should spawn exactly one tmux session");
+      assert.ok(hasSessionCalls >= 1, "expected restart_task to probe tmux has-session");
+      const refusal = receivedFromDaemon.find(
+        (msg) =>
+          msg?.type === "task_status_update" &&
+          msg?.payload?.task_id === "task-tmux-restart-alive" &&
+          msg.payload.status === "KILLED" &&
+          typeof msg.payload.summary === "string" &&
+          msg.payload.summary.includes("tmux session"),
+      );
+      assert.ok(
+        refusal,
+        `daemon must refuse restart_task with a tmux-aware error message; got: ${JSON.stringify(receivedFromDaemon.map((m) => m?.payload?.summary).filter(Boolean))}`,
+      );
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 700);
+  });
+
+  it("clears stale tmux activeTaskProcesses entry on restart_task when the session has already died", (t, done) => {
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    const taskPayload = {
+      task_id: "task-tmux-restart-dead",
+      project_id: "proj-tmux-restart-dead",
+      backend_type: "codex",
+    };
+
+    const restartPayload = {
+      mode: "resume_inplace",
+      source_task_id: "task-tmux-restart-dead",
+      target_task_id: "task-tmux-restart-dead",
+      project_id: "proj-tmux-restart-dead",
+      title: "Restart tmux task with dead session",
+      source_backend_type: "codex",
+      source_session_id: "sess-tmux-restart-2",
+      target_backend_type: "codex",
+      request_id: "req-restart-tmux-dead",
+    };
+
+    let newSessionCalls = 0;
+    let hasSessionCalls = 0;
+
+    const mockSpawn = (cmd, args) => {
+      if (cmd === "tmux" && args?.[0] === "new-session") {
+        newSessionCalls += 1;
+        const child = new EventEmitter();
+        child.pid = 87000 + newSessionCalls;
+        child.unref = () => {};
+        child.kill = () => {};
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      }
+      if (cmd === "tmux" && args?.[0] === "has-session") {
+        hasSessionCalls += 1;
+        const child = new EventEmitter();
+        child.unref = () => {};
+        // Pretend the session is gone — restart must clear the stale
+        // entry and proceed (which will spawn a fresh tmux new-session).
+        setImmediate(() => child.emit("exit", 1, null));
+        return child;
+      }
+      if (cmd === "tmux" && args?.[0] === "list-sessions") {
+        const child = new EventEmitter();
+        child.unref = () => {};
+        child.stdout = new EventEmitter();
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      }
+      assert.fail(`unexpected spawn ${cmd} ${JSON.stringify(args)}`);
+    };
+
+    const receivedFromDaemon = [];
+    wss.once("connection", (ws) => {
+      ws.on("message", (raw) => {
+        try {
+          receivedFromDaemon.push(JSON.parse(raw.toString("utf8")));
+        } catch {
+          // ignore
+        }
+      });
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+      setTimeout(() => {
+        ws.send(JSON.stringify({ type: "restart_task", payload: restartPayload }));
+      }, 200);
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-tmux-restart-dead",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-tmux-restart-dead",
+        TMUX_LIVENESS_POLL_MS: 0,
+      },
+      {
+        spawn: mockSpawn,
+        spawnSync: (cmd, args) => {
+          if (cmd === "tmux" && args && args[0] === "-V") {
+            return { status: 0, error: null, pid: 12345 };
+          }
+          return { status: 1, error: new Error("ENOENT"), pid: undefined };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => filePath.endsWith("daemon.pid") ? false : false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {}, on: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.ok(hasSessionCalls >= 1, "expected restart_task to probe tmux has-session");
+      // The "task already active" refusal must NOT be sent — the stale
+      // entry was cleared, so the gating treated this as a non-active
+      // task. Don't assert success of the actual restart (that exercises
+      // many unrelated code paths beyond the gating fix).
+      const aliveRefusal = receivedFromDaemon.find(
+        (msg) =>
+          msg?.type === "task_status_update" &&
+          msg?.payload?.task_id === "task-tmux-restart-dead" &&
+          msg.payload.status === "KILLED" &&
+          typeof msg.payload.summary === "string" &&
+          msg.payload.summary.includes("task already active"),
+      );
+      assert.strictEqual(
+        aliveRefusal,
+        undefined,
+        `restart_task must not be refused as 'already active' once the dead session entry is cleared; saw: ${aliveRefusal ? JSON.stringify(aliveRefusal.payload) : ""}`,
+      );
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 700);
+  });
+
   it("kills orphan tmux sessions on stop_task even when no in-memory record exists", (t, done) => {
     const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
     process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
