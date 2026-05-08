@@ -1379,6 +1379,125 @@ describe("Daemon", () => {
     }, 700);
   });
 
+  it("reports KILLED to backend when stopping a tmux-detached task", (t, done) => {
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    const taskPayload = {
+      task_id: "task-tmux-stop-status",
+      project_id: "proj-tmux-stop-status",
+      backend_type: "codex",
+      initial_content: "hello",
+    };
+
+    let killSessionTarget = null;
+
+    const mockSpawn = (cmd, args) => {
+      if (cmd === "tmux" && args?.[0] === "new-session") {
+        const child = new EventEmitter();
+        child.pid = 73001;
+        child.unref = () => {};
+        child.kill = () => {};
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      }
+      if (cmd === "tmux" && args?.[0] === "list-sessions") {
+        // Used by handleStopTask's orphan-cleanup pass — return no
+        // additional sessions for this test.
+        const child = new EventEmitter();
+        child.unref = () => {};
+        child.stdout = new EventEmitter();
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      }
+      if (cmd === "tmux" && args?.[0] === "kill-session") {
+        killSessionTarget = args[2];
+        const child = new EventEmitter();
+        child.unref = () => {};
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      }
+      assert.fail(`unexpected spawn ${cmd} ${JSON.stringify(args)}`);
+    };
+
+    const receivedFromDaemon = [];
+    wss.once("connection", (ws) => {
+      ws.on("message", (raw) => {
+        try {
+          receivedFromDaemon.push(JSON.parse(raw.toString("utf8")));
+        } catch {
+          // ignore non-JSON
+        }
+      });
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+      // Stop after the tmux session is registered.
+      setTimeout(() => {
+        ws.send(
+          JSON.stringify({
+            type: "stop_task",
+            payload: {
+              task_id: "task-tmux-stop-status",
+              request_id: "stop-tmux-task",
+              reason: "deleted_by_user",
+            },
+          }),
+        );
+      }, 200);
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-tmux-stop-status",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-tmux-stop-status",
+        TMUX_LIVENESS_POLL_MS: 0,
+      },
+      {
+        spawn: mockSpawn,
+        spawnSync: (cmd, args) => {
+          if (cmd === "tmux" && args && args[0] === "-V") {
+            return { status: 0, error: null, pid: 12345 };
+          }
+          return { status: 1, error: new Error("ENOENT"), pid: undefined };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => filePath.endsWith("daemon.pid") ? false : false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {}, on: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.ok(
+        killSessionTarget && /^conductor-fire-task-tmux-stop-status-/.test(killSessionTarget),
+        `expected tmux kill-session for the task's session, got: ${killSessionTarget}`,
+      );
+      const killedReport = receivedFromDaemon.find(
+        (msg) =>
+          msg?.type === "task_status_update" &&
+          msg?.payload?.task_id === "task-tmux-stop-status" &&
+          msg.payload.status === "KILLED",
+      );
+      assert.ok(
+        killedReport,
+        `daemon must report KILLED status for tmux-detached task on stop_task; got: ${JSON.stringify(receivedFromDaemon.map((m) => ({ type: m?.type, status: m?.payload?.status })))}`,
+      );
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 700);
+  });
+
   it("kills orphan tmux sessions on stop_task even when no in-memory record exists", (t, done) => {
     const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
     process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";

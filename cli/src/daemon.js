@@ -4341,6 +4341,33 @@ export function startDaemon(config = {}, deps = {}) {
       const sessionName = processRecord.tmuxSession;
       log(`Killing tmux session ${sessionName || "(unknown)"} for task ${taskId}`);
       killFireTmuxSession(sessionName);
+
+      // Report KILLED to the backend ourselves. Normally a `managedByFireBridge`
+      // task relies on Fire to publish its own terminal status before exiting,
+      // but `tmux kill-session` cascades as SIGHUP → bash → Fire and Fire
+      // typically does not get a chance to flush a final websocket message
+      // before being killed. Without this explicit report the task would stay
+      // RUNNING in the frontend until some external timeout. Skip when the
+      // caller explicitly suppressed status reporting (e.g. refresh_session
+      // _inplace, which will re-spawn and overwrite status anyway).
+      if (!suppressExitStatusReport && processRecord.projectId) {
+        client
+          .sendJson({
+            type: "task_status_update",
+            payload: {
+              task_id: taskId,
+              project_id: processRecord.projectId,
+              status: "KILLED",
+              summary: reason ? `stopped (${reason})` : "stopped via tmux kill-session",
+            },
+          })
+          .catch((err) => {
+            logError(
+              `Failed to report task_status_update(KILLED) for tmux task ${taskId}: ${err?.message || err}`,
+            );
+          });
+      }
+
       activeTaskProcesses.delete(taskId);
       return true;
     }
