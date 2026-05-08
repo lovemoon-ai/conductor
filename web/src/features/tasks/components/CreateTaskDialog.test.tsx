@@ -252,4 +252,72 @@ describe('CreateTaskDialog', () => {
       }));
     });
   });
+
+  describe('cross-daemon merged group', () => {
+    const mergedProjects = [
+      {
+        id: 'p-a',
+        name: 'Alpha',
+        daemonHost: 'daemon-a',
+        workspacePath: '/repo/alpha',
+        repoRoot: '/repo/alpha',
+        gitRemoteUrl: 'github.com/foo/alpha',
+      },
+      {
+        id: 'p-b',
+        name: 'Alpha',
+        daemonHost: 'daemon-b',
+        workspacePath: '/repo/alpha',
+        repoRoot: '/repo/alpha',
+        gitRemoteUrl: 'github.com/foo/alpha',
+      },
+    ];
+
+    it('renders one project entry per merged group, not one per daemon', async () => {
+      projectsState = { projects: mergedProjects };
+      render(<CreateTaskDialog open onClose={() => {}} />);
+
+      const projectSelect = await screen.findByLabelText('Project');
+      const options = within(projectSelect).getAllByRole('option');
+      // Two same-name projects collapse to one option labeled with daemon count.
+      expect(options).toHaveLength(1);
+      expect(options[0]).toHaveTextContent(/Alpha \(2 daemons\)/);
+    });
+
+    it('uses the daemon dropdown to switch which member project receives the task', async () => {
+      projectsState = { projects: mergedProjects };
+      createTaskMock.mockResolvedValueOnce({ id: 'task-merged' });
+      render(<CreateTaskDialog open onClose={() => {}} />);
+
+      const daemonSelect = await screen.findByLabelText('Daemon');
+      // The daemon dropdown lists each member's daemon and is enabled even
+      // though the underlying member project is "bound".
+      expect(daemonSelect).not.toBeDisabled();
+      const daemonOptions = within(daemonSelect).getAllByRole('option');
+      expect(daemonOptions.map((o) => o.textContent)).toEqual(['daemon-a', 'daemon-b']);
+
+      // Default selection is the group's primary member (p-a / daemon-a).
+      await waitFor(() => {
+        expect((daemonSelect as HTMLSelectElement).value).toBe('p-a');
+      });
+
+      // Switch to daemon-b's underlying project.
+      fireEvent.change(daemonSelect, { target: { value: 'p-b' } });
+
+      fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+        target: { value: 'Run on daemon-b' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+
+      await waitFor(() => {
+        expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+          title: 'Run on daemon-b',
+          // Submission must target daemon-b's project (p-b), not the group's
+          // primary (p-a).
+          projectId: 'p-b',
+          agentHost: 'daemon-b',
+        }));
+      });
+    });
+  });
 });
