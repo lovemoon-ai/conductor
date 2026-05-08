@@ -17,7 +17,7 @@ import {
 } from "@love-moon/conductor-sdk";
 import { DaemonLogCollector } from "./log-collector.js";
 import { createAiManagerHandlers, handleAiManagerRequest } from "./ai-manager-handlers.js";
-import { resolveResumeContext } from "./fire/resume.js";
+import { buildResumeArgsForBackend, resolveResumeContext } from "./fire/resume.js";
 import {
   filterRuntimeSupportedAllowCliList,
   listAdvertisedBackends,
@@ -1536,7 +1536,7 @@ export function startDaemon(config = {}, deps = {}) {
   };
   const advertisedCapabilities = ["project_path_validation", "restart_daemon", "refresh_session_inplace"];
   if (ptyTaskCapabilityEnabled) {
-    advertisedCapabilities.push("pty_task", "terminal_snapshot");
+    advertisedCapabilities.push("pty_task", "terminal_snapshot", "ai_task_terminal");
   }
   if (advertisedCapabilities.length > 0) {
     extraHeaders["x-conductor-capabilities"] = advertisedCapabilities.join(",");
@@ -2815,6 +2815,116 @@ export function startDaemon(config = {}, deps = {}) {
     };
   }
 
+  function shellQuoteArg(value) {
+    const text = String(value ?? "");
+    if (!text) {
+      return "''";
+    }
+    return `'${text.replace(/'/g, "'\\''")}'`;
+  }
+
+  function resolveAiTerminalSessionId(payload, launchConfig) {
+    return (
+      normalizeOptionalString(payload?.session_id) ||
+      normalizeOptionalString(payload?.sessionId) ||
+      normalizeOptionalString(launchConfig?.resumeSessionId) ||
+      normalizeOptionalString(launchConfig?.resume_session_id) ||
+      normalizeOptionalString(launchConfig?.sessionId) ||
+      normalizeOptionalString(launchConfig?.session_id)
+    );
+  }
+
+  async function resolveAiTerminalLaunchSpec(payload) {
+    const taskId = normalizeOptionalString(payload?.task_id);
+    const projectId = normalizeOptionalString(payload?.project_id);
+    const launchConfig = normalizeLaunchConfig(payload?.launch_config);
+    const sessionId = resolveAiTerminalSessionId(payload, launchConfig);
+    if (!taskId || !projectId) {
+      throw new Error("AI terminal attach requires task_id and project_id");
+    }
+    if (!sessionId) {
+      throw new Error("AI terminal attach requires a session_id to resume");
+    }
+
+    const requestedBackend = normalizeRuntimeBackendName(
+      payload?.backend_type ||
+        payload?.backendType ||
+        launchConfig.backendType ||
+        launchConfig.backend_type ||
+        SUPPORTED_BACKENDS[0],
+    );
+    if (!requestedBackend) {
+      throw new Error("AI terminal attach requires backend_type");
+    }
+
+    const configuredBackend = await resolveConfiguredRuntimeBackend(requestedBackend, ALLOW_CLI_LIST, {
+      configFilePath: config.CONFIG_FILE,
+    });
+    const effectiveBackend = configuredBackend?.runtimeBackend ||
+      await normalizeRuntimeBackendAlias(requestedBackend, { configFilePath: config.CONFIG_FILE });
+    const selectedBackend = configuredBackend?.commandLine
+      ? configuredBackend.requestedBackend
+      : effectiveBackend;
+    const isAdvertisedBackend = SUPPORTED_BACKENDS.includes(selectedBackend);
+    const isAllowedExternalBackend =
+      !isBuiltInRuntimeBackend(effectiveBackend) &&
+      await isRuntimeSupportedBackend(effectiveBackend, { configFilePath: config.CONFIG_FILE });
+    if (!isAdvertisedBackend || (!configuredBackend?.commandLine && !isAllowedExternalBackend)) {
+      throw new Error(`Unsupported backend: ${selectedBackend}`);
+    }
+
+    const cliCommand = ALLOW_CLI_LIST[selectedBackend] || ALLOW_CLI_LIST[effectiveBackend] || "";
+    if (!cliCommand) {
+      throw new Error(`CLI command is not configured for backend "${selectedBackend}"`);
+    }
+
+    const resumeArgs = buildResumeArgsForBackend(effectiveBackend, sessionId);
+    const commandLine = [cliCommand, ...resumeArgs.map(shellQuoteArg)].join(" ");
+    const cwd = await resolveRestartCwd({
+      taskId,
+      projectId,
+      launchConfig,
+      backendType: effectiveBackend,
+      sessionId,
+      sourceSessionFilePath:
+        normalizeOptionalString(payload?.session_file_path) ||
+        normalizeOptionalString(payload?.sessionFilePath) ||
+        normalizeOptionalString(launchConfig.sessionFilePath) ||
+        normalizeOptionalString(launchConfig.session_file_path) ||
+        "",
+    });
+    if (!cwd) {
+      throw new Error(`Could not resolve workspace for AI terminal session ${sessionId}`);
+    }
+
+    const shell = resolveDefaultPtyShell({
+      explicitShell: launchConfig.shell,
+      envShell: process.env.SHELL,
+      comspec: process.env.COMSPEC,
+      platform: process.platform,
+      existsSync: existsSyncFn,
+    });
+    const env = buildPtyTaskEnv(process.env, normalizeTerminalEnv(launchConfig.env));
+    env.PWD = cwd;
+    if (config.CONFIG_FILE) {
+      env.CONDUCTOR_CONFIG = config.CONFIG_FILE;
+    }
+
+    return {
+      entrypointType: "ai_resume",
+      backend: selectedBackend,
+      effectiveBackend,
+      sessionId,
+      command: shell,
+      args: ["-lc", commandLine],
+      shell,
+      cwd,
+      env,
+      cols: normalizePositiveInt(payload?.cols ?? launchConfig.cols ?? launchConfig.columns, DEFAULT_TERMINAL_COLS),
+      rows: normalizePositiveInt(payload?.rows ?? launchConfig.rows, DEFAULT_TERMINAL_ROWS),
+    };
+  }
+
   function getTerminalChunkByteLength(data) {
     return Buffer.byteLength(data, "utf8");
   }
@@ -3341,10 +3451,174 @@ export function startDaemon(config = {}, deps = {}) {
     }
   }
 
+  async function startAiTaskTerminalSession(payload) {
+    const taskId = normalizeOptionalString(payload?.task_id);
+    const projectId = normalizeOptionalString(payload?.project_id);
+    const ptySessionId = normalizeOptionalString(payload?.pty_session_id) || (taskId ? `ai-terminal:${taskId}` : "");
+    if (!taskId || !projectId || !ptySessionId) {
+      sendTerminalEvent("terminal_error", {
+        task_id: taskId || undefined,
+        project_id: projectId || undefined,
+        pty_session_id: ptySessionId || null,
+        message: "Invalid AI terminal attach payload",
+      }).catch(() => {});
+      return null;
+    }
+
+    if (!ptyTaskCapabilityEnabled) {
+      sendTerminalEvent("terminal_error", {
+        task_id: taskId,
+        project_id: projectId,
+        pty_session_id: ptySessionId,
+        message: ptyTaskCapabilityError
+          ? `pty runtime unavailable: ${ptyTaskCapabilityError}`
+          : "pty runtime unavailable",
+      }).catch(() => {});
+      return null;
+    }
+
+    const existingPtyRecord = activePtySessions.get(taskId);
+    if (existingPtyRecord) {
+      return existingPtyRecord;
+    }
+
+    let launchSpec;
+    try {
+      launchSpec = await resolveAiTerminalLaunchSpec(payload);
+    } catch (error) {
+      logError(`Failed to resolve AI terminal launch for ${taskId}: ${error?.message || error}`);
+      sendTerminalEvent("terminal_error", {
+        task_id: taskId,
+        project_id: projectId,
+        pty_session_id: ptySessionId,
+        message: error?.message || String(error),
+      }).catch(() => {});
+      return null;
+    }
+
+    if (activeTaskProcesses.has(taskId)) {
+      stopActiveTaskProcess(taskId, {
+        reason: "ai_task_terminal_attach",
+        suppressExitStatusReport: true,
+      });
+      const stopped = await waitForTaskToStop(taskId);
+      if (!stopped) {
+      sendTerminalEvent("terminal_error", {
+        task_id: taskId,
+        project_id: projectId,
+        pty_session_id: ptySessionId,
+        message: "AI task process is still stopping; try opening the terminal again",
+        task_status: "killed",
+      }).catch(() => {});
+      return null;
+    }
+  }
+
+    try {
+      mkdirSyncFn(launchSpec.cwd, { recursive: true });
+    } catch (err) {
+      logError(`Failed to create AI terminal workspace ${launchSpec.cwd}: ${err?.message || err}`);
+      sendTerminalEvent("terminal_error", {
+        task_id: taskId,
+        project_id: projectId,
+        pty_session_id: ptySessionId,
+        message: err?.message || String(err),
+        task_status: "killed",
+      }).catch(() => {});
+      return null;
+    }
+
+    const logPath = path.join(launchSpec.cwd, "conductor-ai-terminal.log");
+    let logStream;
+    try {
+      logStream = createWriteStreamFn(logPath, { flags: "a" });
+      if (logStream && typeof logStream.on === "function") {
+        const logPathSnapshot = logPath;
+        logStream.on("error", (err) => {
+          logError(`AI terminal log stream error (${logPathSnapshot}): ${err?.message || err}`);
+        });
+      }
+    } catch (err) {
+      logError(`Failed to open AI terminal log file ${logPath}: ${err?.message || err}`);
+    }
+
+    try {
+      const pty = await createPtyFn(launchSpec.command, launchSpec.args, {
+        name: "xterm-256color",
+        cols: launchSpec.cols,
+        rows: launchSpec.rows,
+        cwd: launchSpec.cwd,
+        env: launchSpec.env,
+      });
+      if (daemonShuttingDown) {
+        try {
+          if (typeof pty?.kill === "function") {
+            pty.kill("SIGTERM");
+          }
+        } catch (killError) {
+          logError(`Failed to stop AI terminal ${taskId} during shutdown: ${killError?.message || killError}`);
+        }
+        if (logStream) {
+          logStream.end();
+        }
+        sendTerminalEvent("terminal_error", {
+          task_id: taskId,
+          project_id: projectId,
+          pty_session_id: ptySessionId,
+          message: "daemon shutting down",
+          task_status: "killed",
+        }).catch(() => {});
+        return null;
+      }
+
+      const startedAt = new Date().toISOString();
+      const record = {
+        kind: "ai_terminal",
+        pty,
+        ptySessionId,
+        projectId,
+        taskDir: launchSpec.cwd,
+        logPath,
+        logStream,
+        cols: launchSpec.cols,
+        rows: launchSpec.rows,
+        shell: launchSpec.shell,
+        startedAt,
+        outputSeq: 0,
+        ringBuffer: [],
+        ringBufferByteLength: 0,
+        pendingLatencySample: null,
+        stopForceKillTimer: null,
+      };
+      activePtySessions.set(taskId, record);
+      attachPtyStreamHandlers(taskId, record);
+      log(`Opened AI terminal for task ${taskId} (${launchSpec.backend} --resume ${launchSpec.sessionId}) cwd=${launchSpec.cwd}`);
+      return record;
+    } catch (error) {
+      if (logStream) {
+        logStream.end();
+      }
+      logError(`Failed to create AI terminal for ${taskId}: ${error?.message || error}`);
+      sendTerminalEvent("terminal_error", {
+        task_id: taskId,
+        project_id: projectId,
+        pty_session_id: ptySessionId,
+        message: error?.message || String(error),
+        task_status: "killed",
+      }).catch(() => {});
+      return null;
+    }
+  }
+
   async function handleTerminalAttach(payload) {
     const taskId = payload?.task_id ? String(payload.task_id) : "";
     if (!taskId) return;
-    const record = activePtySessions.get(taskId);
+    const isAiTaskTerminalAttach =
+      normalizeOptionalString(payload?.task_type) === "ai_task" ||
+      normalizeOptionalString(payload?.taskType) === "ai_task";
+    const record =
+      activePtySessions.get(taskId) ||
+      (isAiTaskTerminalAttach ? await startAiTaskTerminalSession(payload) : null);
     if (!record) {
       sendTerminalEvent("terminal_error", {
         task_id: taskId,
@@ -3430,8 +3704,18 @@ export function startDaemon(config = {}, deps = {}) {
     resizePty(record, payload?.cols, payload?.rows);
   }
 
-  function handleTerminalDetach(_payload) {
-    // PTY sessions stay alive without viewers. Detach is currently a no-op.
+  function handleTerminalDetach(payload) {
+    const taskId = payload?.task_id ? String(payload.task_id) : "";
+    if (!taskId) return;
+    const record = activePtySessions.get(taskId);
+    if (record?.kind !== "ai_terminal") {
+      // PTY tasks stay alive without viewers. AI terminals are transient views.
+      return;
+    }
+    stopActiveTaskProcess(taskId, {
+      reason: "ai_task_terminal_detach",
+      suppressExitStatusReport: true,
+    });
   }
 
   async function handlePtyTransportSignal(payload) {
