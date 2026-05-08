@@ -820,21 +820,32 @@ export function startDaemon(config = {}, deps = {}) {
     return `'${str.replace(/'/g, `'\\''`)}'`;
   }
 
-  // Build a unique tmux session name for a Fire spawn.
-  //
-  // Tmux session names cannot contain `:` or `.`; we sanitize the task id
-  // aggressively and clamp the length. We also append a per-spawn uniqueness
-  // suffix (base36 timestamp + 4 random chars) so re-spawning the same task
-  // id while a previous session may still be alive — for example after a
-  // daemon restart that left the old session running — does not collide
-  // with a `duplicate session` error from tmux.
-  function buildFireTmuxSessionName(taskId) {
+  // Build the deterministic prefix shared by every tmux session belonging to
+  // a given task id. Tmux session names cannot contain `:` or `.`; we
+  // sanitize aggressively and clamp the length. The trailing `-` separates
+  // the prefix from the per-spawn uniqueness suffix added by
+  // `buildFireTmuxSessionName`. Used both by spawn (to construct the full
+  // name) and by orphan cleanup on task delete (to find every session that
+  // belongs to a deleted task — even ones the current daemon never tracked,
+  // e.g. left over from a previous daemon process).
+  function buildFireTmuxSessionPrefix(taskId) {
     const safe = String(taskId || "")
       .replace(/[^a-zA-Z0-9_-]/g, "_")
       .replace(/^_+|_+$/g, "")
       .slice(0, 32) || "task";
+    return `conductor-fire-${safe}-`;
+  }
+
+  // Build a unique tmux session name for a Fire spawn.
+  //
+  // We append a per-spawn uniqueness suffix (base36 timestamp + 4 random
+  // chars) so re-spawning the same task id while a previous session may
+  // still be alive — for example after a daemon restart that left the old
+  // session running — does not collide with a `duplicate session` error
+  // from tmux.
+  function buildFireTmuxSessionName(taskId) {
     const uniq = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-    return `conductor-fire-${safe}-${uniq}`;
+    return `${buildFireTmuxSessionPrefix(taskId)}${uniq}`;
   }
 
   // Spawn the Fire CLI either directly (default) or inside a detached tmux
@@ -1054,6 +1065,89 @@ export function startDaemon(config = {}, deps = {}) {
       logError(`Failed to spawn tmux kill-session for ${sessionName}: ${error?.message || error}`);
       return false;
     }
+  }
+
+  // List every tmux session name visible to the current user. Returns `[]`
+  // on any spawn error, non-zero exit, or timeout (e.g. tmux not available
+  // or the server not running). Subject to TMUX_PROBE_TIMEOUT_MS.
+  function listAllTmuxSessions() {
+    return new Promise((resolve) => {
+      let settled = false;
+      let stdout = "";
+      let timer = null;
+      const settle = (lines) => {
+        if (settled) return;
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        resolve(lines);
+      };
+      try {
+        const probe = spawnFn("tmux", ["list-sessions", "-F", "#{session_name}"], {
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        if (probe.stdout && typeof probe.stdout.on === "function") {
+          probe.stdout.on("data", (chunk) => {
+            stdout += chunk.toString("utf8");
+          });
+        }
+        probe.on("exit", (code) => {
+          if (code === 0) {
+            settle(
+              stdout
+                .split("\n")
+                .map((s) => s.trim())
+                .filter(Boolean),
+            );
+          } else {
+            // Non-zero exit usually means "no server running" or "no
+            // sessions" — both fine, just return empty.
+            settle([]);
+          }
+        });
+        probe.on("error", () => settle([]));
+        timer = setTimeout(() => {
+          try {
+            if (typeof probe.kill === "function") {
+              probe.kill("SIGKILL");
+            }
+          } catch {
+            // ignore; we already settled
+          }
+          logError(`tmux list-sessions probe timed out after ${TMUX_PROBE_TIMEOUT_MS}ms`);
+          settle([]);
+        }, TMUX_PROBE_TIMEOUT_MS);
+        if (typeof timer.unref === "function") {
+          timer.unref();
+        }
+      } catch {
+        settle([]);
+      }
+    });
+  }
+
+  // Belt-and-suspenders cleanup for `delete_task`: when the frontend deletes
+  // a task, the daemon's in-memory `activeTaskProcesses` map may not contain
+  // its record (e.g. daemon was restarted between spawn and delete, or the
+  // liveness reaper had already removed it). The tmux session itself can
+  // still be alive in those cases, leaking a Fire process. This walks
+  // `tmux list-sessions` and kills every session whose name matches the
+  // deterministic prefix derived from the task id.
+  async function killTmuxSessionsForDeletedTask(taskId) {
+    if (!FIRE_TMUX_MODE_ACTIVE || !taskId) return 0;
+    const prefix = buildFireTmuxSessionPrefix(taskId);
+    const sessions = await listAllTmuxSessions();
+    let killed = 0;
+    for (const name of sessions) {
+      if (name.startsWith(prefix)) {
+        log(`Killing orphaned tmux session ${name} for deleted task ${taskId}`);
+        killFireTmuxSession(name);
+        killed += 1;
+      }
+    }
+    return killed;
   }
   // -------------------------------------------------------------------------
 
@@ -3598,6 +3692,15 @@ export function startDaemon(config = {}, deps = {}) {
       logError(`Failed to report agent_command_ack(cleanup_task_worktree) for ${taskId}: ${error?.message || error}`);
     });
 
+    // cleanup_task_worktree is queued as part of the frontend's task delete
+    // flow. Always sweep any tmux sessions for this task id, including
+    // orphaned sessions that survived a daemon restart and so were not
+    // tracked by `stopActiveTaskProcess` below. Fire-and-forget so we don't
+    // block the worktree cleanup itself.
+    killTmuxSessionsForDeletedTask(taskId).catch((error) => {
+      logError(`Orphan tmux cleanup failed for task ${taskId}: ${error?.message || error}`);
+    });
+
     if (activeTaskProcesses.has(taskId) || activePtySessions.has(taskId)) {
       if (forceCleanup) {
         const stopStarted = stopActiveTaskProcess(taskId, {
@@ -4357,11 +4460,27 @@ export function startDaemon(config = {}, deps = {}) {
     if ((!processRecord || !processRecord.child) && !ptyRecord) {
       log(`Stop requested for task ${taskId}, but no active process found`);
       sendStopAck(false);
+      // Even when we have no in-memory record, the task may still own a
+      // tmux session (e.g. the daemon was restarted between spawn and
+      // stop, or the liveness reaper removed our entry but the session
+      // is alive). Try a name-based orphan kill as a belt-and-suspenders
+      // — fire-and-forget so we don't delay the ack response.
+      killTmuxSessionsForDeletedTask(taskId).catch((error) => {
+        logError(`Orphan tmux cleanup failed for task ${taskId}: ${error?.message || error}`);
+      });
       return;
     }
 
     sendStopAck(true);
     stopActiveTaskProcess(taskId, { reason: payload?.reason });
+    // Belt-and-suspenders: also sweep any tmux sessions matching this
+    // task id that didn't make it into the active map (stale entries
+    // from previous spawns, daemon restarts, etc.). `stopActiveTaskProcess`
+    // already kills the session associated with the current active record;
+    // this catches everything else with the same task-id prefix.
+    killTmuxSessionsForDeletedTask(taskId).catch((error) => {
+      logError(`Orphan tmux cleanup failed for task ${taskId}: ${error?.message || error}`);
+    });
   }
 
   async function getProjectLocalPath(projectId) {

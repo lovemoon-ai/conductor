@@ -1379,6 +1379,107 @@ describe("Daemon", () => {
     }, 700);
   });
 
+  it("kills orphan tmux sessions on stop_task even when no in-memory record exists", (t, done) => {
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    // Two stale sessions for the same task id (e.g. left over after a
+    // daemon crash + restart) plus an unrelated session that must NOT
+    // be touched.
+    const orphanSessionA = "conductor-fire-task-zombie-aaaa1111";
+    const orphanSessionB = "conductor-fire-task-zombie-bbbb2222";
+    const unrelatedSession = "conductor-fire-task-other-cccc3333";
+
+    const killSessionTargets = [];
+    let listSessionsCalls = 0;
+
+    const mockSpawn = (cmd, args) => {
+      assert.strictEqual(cmd, "tmux");
+      if (args?.[0] === "list-sessions") {
+        listSessionsCalls += 1;
+        const child = new EventEmitter();
+        child.unref = () => {};
+        child.stdout = new EventEmitter();
+        setImmediate(() => {
+          child.stdout.emit(
+            "data",
+            Buffer.from(`${orphanSessionA}\n${orphanSessionB}\n${unrelatedSession}\n`),
+          );
+          child.emit("exit", 0, null);
+        });
+        return child;
+      }
+      if (args?.[0] === "kill-session") {
+        // args is ["kill-session", "-t", sessionName]
+        killSessionTargets.push(args[2]);
+        const child = new EventEmitter();
+        child.unref = () => {};
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      }
+      assert.fail(`unexpected tmux subcommand ${JSON.stringify(args)}`);
+    };
+
+    wss.once("connection", (ws) => {
+      // Send stop_task without ever creating the task — daemon has no
+      // in-memory record, so the only path to kill the orphans is via
+      // the name-prefix sweep.
+      ws.send(
+        JSON.stringify({
+          type: "stop_task",
+          payload: { task_id: "task-zombie", request_id: "stop-zombie" },
+        }),
+      );
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-tmux-orphan",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-tmux-orphan-test",
+        // Disable the periodic reaper so it doesn't race with our assertions.
+        TMUX_LIVENESS_POLL_MS: 0,
+      },
+      {
+        spawn: mockSpawn,
+        spawnSync: (cmd, args) => {
+          if (cmd === "tmux" && args && args[0] === "-V") {
+            return { status: 0, error: null, pid: 12345 };
+          }
+          return { status: 1, error: new Error("ENOENT"), pid: undefined };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => filePath.endsWith("daemon.pid") ? false : false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {}, on: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.ok(listSessionsCalls >= 1, "expected daemon to call tmux list-sessions on stop_task");
+      assert.deepStrictEqual(
+        killSessionTargets.sort(),
+        [orphanSessionA, orphanSessionB].sort(),
+        `expected only the two task-zombie sessions to be killed; got: ${killSessionTargets.join(", ")}`,
+      );
+      assert.ok(
+        !killSessionTargets.includes(unrelatedSession),
+        "must not kill sessions belonging to other tasks",
+      );
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 500);
+  });
+
   it("falls back to direct spawn when fire_tmux_mode is enabled but tmux is missing", (t, done) => {
     const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
     process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
