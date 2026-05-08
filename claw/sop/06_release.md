@@ -87,6 +87,24 @@ The workflow dispatch is intentional: tags pushed by `GITHUB_TOKEN` do not
 normally trigger a second workflow via `push`, so the release workflow dispatches
 the archive workflow explicitly after npm publish succeeds.
 
+## Pre-release Notes Gate
+
+Before any release (web deploy, npm package publish, or CLI archive), walk
+through every file under `claw/notes-before-release/` and resolve each item.
+
+- The directory is an **active reminder list**. A non-empty directory at
+  release time is a hard gate — do not deploy until each item is either
+  resolved, explicitly accepted, or migrated to a longer-lived doc (PRD,
+  ADR, lesson, or follow-up issue under `claw/issues/`).
+- After the release ships and health checks pass, **clear every file in
+  `claw/notes-before-release/` except `README.md`** as part of the same
+  release commit / PR. The empty directory is the steady state; carrying
+  notes across releases means they were not actually addressed.
+- If an item cannot be resolved before this release but the release should
+  still go out, edit the note to record what was accepted and why, then
+  promote it out of `notes-before-release/` (e.g. into `claw/issues/` or
+  `claw/lessons/`) before clearing.
+
 ## Local Checks Before Merging a Release PR
 
 Run the relevant package tests as needed. The release workflow runs a
@@ -190,6 +208,8 @@ updates.
 
 ## Minimum Acceptance Criteria
 
+- `claw/notes-before-release/` contains only `README.md` (every pre-release
+  note has been resolved, accepted, or promoted elsewhere, then cleared).
 - Every intended npm package version exists on `registry.npmjs.org`.
 - If the CLI was released, tag `vX.Y.Z` exists and the CLI archive workflow has
   succeeded.
