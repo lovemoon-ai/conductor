@@ -855,8 +855,14 @@ export function startDaemon(config = {}, deps = {}) {
 
     const sessionName = buildFireTmuxSessionName(taskId);
     const innerCommandParts = [process.execPath, CLI_PATH_VAL, ...args].map(shellQuoteForBash);
+    // Pipe Fire's stdout/stderr through `tee -a <log>` instead of plain
+    // `>> <log> 2>&1`. With redirection alone, the tmux pane's terminal
+    // shows nothing (all output goes straight to the file), so attaching
+    // via `tmux a -t <session>` for live observation is useless. With
+    // `tee` the same bytes go to both the pane (visible to whoever
+    // attaches) and the log file (preserved for offline inspection).
     const redirectedCommand = logPath
-      ? `${innerCommandParts.join(" ")} >> ${shellQuoteForBash(logPath)} 2>&1`
+      ? `${innerCommandParts.join(" ")} 2>&1 | tee -a ${shellQuoteForBash(logPath)}`
       : innerCommandParts.join(" ");
 
     // Build `-e KEY=VALUE` flags for the new session.

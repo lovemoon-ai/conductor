@@ -909,7 +909,12 @@ describe("Daemon", () => {
       assert.ok(innerCmd.includes("--prefill"));
       assert.ok(innerCmd.includes("'tmux hello'"));
       assert.ok(innerCmd.includes("conductor.log"));
-      assert.ok(/>>\s+'.*conductor\.log'\s+2>&1/.test(innerCmd), "inner command must redirect output to log");
+      // Output is teed so the tmux pane shows live Fire output AND the log
+      // file gets a copy. We assert the `2>&1 | tee -a '<log>'` shape.
+      assert.ok(
+        /2>&1\s*\|\s*tee\s+-a\s+'.*conductor\.log'/.test(innerCmd),
+        `inner command must pipe through 'tee -a <log>'; got: ${innerCmd}`,
+      );
 
       // The Conductor-specific env vars must be passed via tmux `-e KEY=VAL`
       // flags so the new session sees them regardless of any pre-existing
