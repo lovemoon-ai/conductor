@@ -15,6 +15,7 @@ import { setupAgentGateway, AGENT_WS_PATH } from "./src/lib/realtime/agent-gatew
 import { startTaskAttachmentJanitor } from "./src/lib/tasks/task-file-storage";
 import { realtimeHub } from "./src/lib/realtime/hub";
 import { db } from "./src/lib/db";
+import { backfillIssueAiSessionIfNeeded } from "./src/lib/issues/backfill-ai-session";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOST || "0.0.0.0";
@@ -62,6 +63,22 @@ app.prepare().then(async () => {
       select: { id: true, agentHost: true },
     });
     return tasks;
+  });
+
+  // Idempotent boot-time backfill of issue.ai_backend_type / ai_session_id
+  // from any task that already carries those values. Required because
+  // `prisma db push` (the default Conductor dev flow) does not replay
+  // migration files, so the dedicated backfill migration would never run on
+  // those installs. Safe to call on every boot — no-ops once everything is
+  // already mirrored.
+  void backfillIssueAiSessionIfNeeded().catch((error) => {
+    // backfillIssueAiSessionIfNeeded never throws, but defensively log just
+    // in case a future change introduces one — startup must not crash.
+    console.warn(
+      `[issue-ai-session-backfill] unexpected backfill failure: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   });
   const handleUpgrade = app.getUpgradeHandler();
   const server = createServer(async (req, res) => {
