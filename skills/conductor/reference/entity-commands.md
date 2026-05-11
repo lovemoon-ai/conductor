@@ -82,12 +82,12 @@ CONDUCTOR_INVOKED_BY=claude-code conductor issue create --title "X" ...
 
 ```bash
 conductor project list [--include-hidden]
-conductor project show [<id|name>]
+conductor project show [<id|name>] [--daemon-host <h>]
 conductor project current
 conductor project create [--name <n>] [--workspace-path <p>] [--daemon-host <h>] [--default] [--client-request-id <key>]
-conductor project set-default <id|name>
-conductor project hide   <id|name>
-conductor project unhide <id|name>
+conductor project set-default <id|name> [--daemon-host <h>]
+conductor project hide   <id|name> [--daemon-host <h>]
+conductor project unhide <id|name> [--daemon-host <h>]
 ```
 
 要点：
@@ -102,6 +102,31 @@ conductor project unhide <id|name>
   - `--default` 创建用户的默认项目（无 binding，与所有 `--workspace-path/--daemon-host` 冲突）
 - `set-default`：调 `POST /api/projects/default`，可促任意未隐藏项目（含 bound 项目）为默认。
 - `hide`：默认项目会被服务端拒绝，退出码 2。
+
+### 6.1 多 daemon 同名怎么办
+
+`Project` 的唯一约束是 `(userId, daemonHost, name)` —— 同一用户在不同 daemon 上**允许**同名项目（这是 web 端 "merged group" 视图的根因）。`show / set-default / hide / unhide` 这四条按 `<id|name>` 解析的命令都支持 `--daemon-host <host>` 做二级筛选：
+
+```bash
+# 1) 单纯传 name，多匹配 → 退出码 2，错误里直接列候选
+$ conductor project set-default persona
+Error: Project name 'persona' is ambiguous (2 matches). Pass --project <id> or --daemon-host <host> to disambiguate:
+  42620d1b-9460-4c36-9989-9f2d65263c5c  daemon=4090  /home/duino/ws/ququ/persona
+  ced85ff7-9754-4eaa-8285-348c8a2e24ee  daemon=m1    /Users/duino/ws/ark/persona
+
+# 2) 用 --daemon-host 精确选一个
+$ conductor project set-default persona --daemon-host 4090
+
+# 3) --daemon-host 排除掉所有候选 → 退出码 4
+$ conductor project set-default persona --daemon-host nowhere
+Error: No project found matching 'persona' (no match on daemon 'nowhere')
+
+# 4) id + --daemon-host 不一致 → 退出码 2（避免误操作）
+$ conductor project set-default 42620d1b-... --daemon-host m1
+Error: Project 42620d1b-... is on daemon '4090', not 'm1'
+```
+
+`DefaultProject` 表是 `(userId → projectId)` 单行映射，**不能把"跨 daemon 的同名 group"作为默认** —— 默认项目永远指向某一具体 Project 行。如果你想"按 cwd 自动切换具体 daemon 行"，那是产品层 default-strategy，超出本期范围。
 
 ## 7. `conductor issue`
 
@@ -209,6 +234,10 @@ conductor project list --json | jq -r '.[].id'      # 看候选
 conductor project current                            # 看当前
 conductor issue list --project <id> --json           # 显式指定
 ```
+
+### 11.1.1 "Project name 'X' is ambiguous"（退出码 2）
+
+跨 daemon 同名的常见结果。错误消息会直接列候选 id + daemon。按 §6.1 用 `--daemon-host <host>` 精确选一条，或直接用 id。
 
 ### 11.2 "Daemon at <host> not reachable"（`project create` 时）
 
