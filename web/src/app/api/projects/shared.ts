@@ -1,4 +1,9 @@
 import { Prisma } from "@prisma/client";
+import {
+  collaborationSummarySelect,
+  serializeCollaboration,
+  type CollaborationSummaryRecord,
+} from "@/lib/collaboration/service";
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
@@ -225,11 +230,19 @@ type SerializableProject = {
   sortOrder?: number | null;
   hiddenAt?: Date | null;
   mergeOptOut?: boolean;
+  collaborationId?: string | null;
+  collaboration?: CollaborationSummaryRecord | null;
   metadata: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
 
+// BASE_SELECT is intentionally scalar-only so that callers that bind the
+// result to Prisma's default `Project` type (e.g. `let row: Awaited<...>`)
+// still compile. The `collaboration` relation is added per-route via the
+// expanded variants below so the merge of RFC 0025 (cli-entity-commands) and
+// RFC 0026 (project-collaboration) doesn't break consumers that don't ask
+// for the relation.
 const PROJECT_SERIALIZATION_BASE_SELECT = {
   id: true,
   name: true,
@@ -239,6 +252,7 @@ const PROJECT_SERIALIZATION_BASE_SELECT = {
   worktreeBranch: true,
   lastCommit: true,
   fileCount: true,
+  collaborationId: true,
   metadata: true,
   createdAt: true,
   updatedAt: true,
@@ -246,6 +260,9 @@ const PROJECT_SERIALIZATION_BASE_SELECT = {
 
 const PROJECT_SERIALIZATION_SELECT = {
   ...PROJECT_SERIALIZATION_BASE_SELECT,
+  collaboration: {
+    select: collaborationSummarySelect,
+  },
   hiddenAt: true,
   gitRemoteUrl: true,
   mergeOptOut: true,
@@ -258,6 +275,9 @@ const PROJECT_SERIALIZATION_WITH_SORT_SELECT = {
 
 const PROJECT_SERIALIZATION_WITH_SORT_NO_HIDDEN_SELECT = {
   ...PROJECT_SERIALIZATION_BASE_SELECT,
+  collaboration: {
+    select: collaborationSummarySelect,
+  },
   sortOrder: true,
 } satisfies Prisma.ProjectSelect;
 
@@ -327,6 +347,8 @@ const serializeProject = (
     gitRemoteUrl,
     fileCount: project.fileCount,
     sortOrder: project.sortOrder,
+    collaborationId: project.collaborationId ?? null,
+    collaboration: project.collaboration ? serializeCollaboration(project.collaboration) : null,
     hidden,
     hiddenAt,
     mergeOptOut,
@@ -342,6 +364,7 @@ const serializeProject = (
     git_remote_url: gitRemoteUrl,
     file_count: project.fileCount,
     sort_order: project.sortOrder,
+    collaboration_id: project.collaborationId ?? null,
     hidden_at: hiddenAt,
     merge_opt_out: mergeOptOut,
     is_default: isDefault,

@@ -44,17 +44,23 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
   // detectable downstream and fixable by retrying the call.
   try {
     const project = await db.$transaction(async (tx) => {
-      let row: Awaited<ReturnType<typeof tx.project.findUnique>> | null;
+      // We need `userId` (for the authorization check below) and `hiddenAt`
+      // (to refuse promoting a hidden project) on top of the base select.
+      // Letting TS infer the type from the actual call site keeps the
+      // narrowed select-result shape and avoids the pre-existing build
+      // failure where `let row: Awaited<ReturnType<typeof findUnique>>` was
+      // resolving to the wide `Project | null` type (RFC 0025 §2 follow-up).
+      let row;
       try {
         row = await tx.project.findUnique({
           where: { id: projectId },
-          select: { ...PROJECT_SERIALIZATION_BASE_SELECT, hiddenAt: true },
+          select: { ...PROJECT_SERIALIZATION_BASE_SELECT, userId: true, hiddenAt: true },
         });
       } catch (error) {
         if (!isMissingProjectHiddenAtColumnError(error)) throw error;
         row = await tx.project.findUnique({
           where: { id: projectId },
-          select: PROJECT_SERIALIZATION_BASE_SELECT,
+          select: { ...PROJECT_SERIALIZATION_BASE_SELECT, userId: true },
         });
       }
       if (!row || row.userId !== user.id) {
