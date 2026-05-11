@@ -206,6 +206,94 @@ describe('ProjectList', () => {
     expect(screen.queryByText('Offline Project')).toBeNull();
   });
 
+  it('keeps shared projects visible even when their daemon is offline', () => {
+    projectsState = {
+      projects: [
+        { id: 'offline-project', name: 'Offline Project', daemonHost: 'daemon-offline' },
+        {
+          id: 'shared-project',
+          name: 'Shared Project',
+          daemonHost: 'daemon-offline',
+          collaborationId: 'collab-1',
+          collaboration: {
+            id: 'collab-1',
+            inviteToken: 'invite-token',
+            memberCount: 2,
+            maxMembers: 5,
+            members: [],
+          },
+        },
+      ],
+      isLoading: false,
+      selectedProjectId: null,
+      hiddenProjectIds: [],
+      showHiddenProjects: false,
+      setSelectedProjectId: setSelectedProjectIdMock,
+      hideProject: hideProjectMock,
+      unhideProject: unhideProjectMock,
+      reorderProjects: reorderProjectsMock,
+    };
+    agentsState = {
+      agents: [],
+    };
+
+    render(<ProjectList />);
+
+    expect(screen.getByText('Shared Project')).toBeInTheDocument();
+    expect(screen.queryByText('Offline Project')).toBeNull();
+  });
+
+  it('hides stale solo collaboration duplicates when the same workspace has a shared collaboration', () => {
+    projectsState = {
+      projects: [
+        {
+          id: 'solo-collaboration',
+          name: 'conductor',
+          daemonHost: 'qa-daemon-2',
+          workspacePath: '/Users/duino/ws/conductor',
+          collaborationId: 'solo-collab',
+          collaboration: {
+            id: 'solo-collab',
+            inviteToken: 'solo-token',
+            memberCount: 1,
+            maxMembers: 5,
+            members: [],
+          },
+        },
+        {
+          id: 'shared-collaboration',
+          name: 'conductor',
+          daemonHost: 'debug',
+          workspacePath: '/Users/duino/ws/conductor',
+          collaborationId: 'shared-collab',
+          collaboration: {
+            id: 'shared-collab',
+            inviteToken: 'shared-token',
+            memberCount: 2,
+            maxMembers: 5,
+            members: [],
+          },
+        },
+      ],
+      isLoading: false,
+      selectedProjectId: null,
+      hiddenProjectIds: [],
+      showHiddenProjects: false,
+      setSelectedProjectId: setSelectedProjectIdMock,
+      hideProject: hideProjectMock,
+      unhideProject: unhideProjectMock,
+      reorderProjects: reorderProjectsMock,
+    };
+    agentsState = {
+      agents: [],
+    };
+
+    render(<ProjectList />);
+
+    expect(screen.getByTestId('project-item-shared-collaboration')).toBeInTheDocument();
+    expect(screen.queryByTestId('project-item-solo-collaboration')).toBeNull();
+  });
+
   it('shows an online-projects empty state when only offline daemon projects exist', () => {
     projectsState = {
       projects: [

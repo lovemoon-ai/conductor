@@ -64,6 +64,23 @@ const ShowIcon = () => (
   </svg>
 );
 
+const InviteIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 14v4m2-2h-4M15 8a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0" />
+  </svg>
+);
+
+const LeaveIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6A2.25 2.25 0 005.25 5.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h11.25" />
+  </svg>
+);
+
+const stopEventPropagation = (event: SyntheticEvent) => {
+  event.preventDefault();
+  event.stopPropagation();
+};
+
 const readBindingCandidate = (
   metadata: Record<string, unknown> | null | undefined,
 ): { daemonHost: string; workspacePath: string } | null => {
@@ -130,6 +147,8 @@ export function ProjectItem({
     deleteProjectGroup,
     hideProjectGroup,
     unhideProjectGroup,
+    startProjectCollaboration,
+    leaveCollaboration,
   } = useProjectsStore();
   const agents = useAgentsStore((state) => state.agents);
   const { confirm } = useConfirm();
@@ -169,12 +188,22 @@ export function ProjectItem({
   );
   const runningCount = isMergedGroup ? aggregatedRunningCount : taskStatusCounts?.running ?? 0;
   const killedCount = isMergedGroup ? aggregatedKilledCount : taskStatusCounts?.killed ?? 0;
-  const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isUnavailable || isPendingBinding || runningCount > 0 || killedCount > 0;
+  const collaboration = project.collaboration ?? null;
+  const collaborationMemberCount = collaboration?.memberCount ?? collaboration?.members.length ?? 0;
+  const hasCollaboration = Boolean(collaboration);
+  const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isUnavailable || isPendingBinding || hasCollaboration || runningCount > 0 || killedCount > 0;
   const projectTitleId = `project-title-${project.id}`;
+  const [isCollaborationBusy, setIsCollaborationBusy] = useState(false);
+  const canInvite = !isDefault;
+  const canLeaveCollaboration = Boolean(collaboration && collaborationMemberCount > 1);
   const canHide = Boolean(onHide) && !isHidden;
   const canUnhide = Boolean(onUnhide) && isHidden;
   const canDelete = !isDefault;
-  const swipeActionsWidth = (canHide || canUnhide ? ACTIONS_WIDTH : 0) + (canDelete ? ACTIONS_WIDTH : 0);
+  const swipeActionsWidth =
+    (canInvite ? ACTIONS_WIDTH : 0)
+    + (canLeaveCollaboration ? ACTIONS_WIDTH : 0)
+    + (canHide || canUnhide ? ACTIONS_WIDTH : 0)
+    + (canDelete ? ACTIONS_WIDTH : 0);
   const swipe = useSwipeActions({
     maxOffset: swipeActionsWidth,
   });
@@ -394,6 +423,77 @@ export function ProjectItem({
     swipe.closeActions();
   };
 
+  const copyInviteLink = async (target: { inviteUrl?: string; inviteToken: string }) => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    // Prefer the URL the server constructed from the request origin so reverse
+    // proxies / different API hosts stay consistent; fall back to building it
+    // locally from window.location.origin if the API didn't include one.
+    const inviteUrl = target.inviteUrl?.trim()
+      || `${window.location.origin}/app/invite/${encodeURIComponent(target.inviteToken)}`;
+    await navigator.clipboard.writeText(inviteUrl);
+  };
+
+  const handleInvite = async (event: SyntheticEvent) => {
+    stopEventPropagation(event);
+    if (isCollaborationBusy) {
+      return;
+    }
+    setIsCollaborationBusy(true);
+    try {
+      const nextCollaboration = collaboration ?? await startProjectCollaboration(project.id);
+      await copyInviteLink(nextCollaboration);
+      pushToast({
+        title: 'Invite link copied',
+        description: `${nextCollaboration.memberCount}/${nextCollaboration.maxMembers} members joined.`,
+        variant: 'success',
+      });
+    } catch (error) {
+      pushToast({
+        title: 'Failed to create invite link',
+        description: error instanceof Error ? error.message : 'Try again later.',
+        variant: 'error',
+      });
+    } finally {
+      setIsCollaborationBusy(false);
+      swipe.closeActions();
+    }
+  };
+
+  const handleLeaveCollaboration = async (event: SyntheticEvent) => {
+    stopEventPropagation(event);
+    if (!collaboration || isCollaborationBusy) {
+      return;
+    }
+    const accepted = await confirm({
+      title: 'Leave collaboration?',
+      description: 'This project will stop sharing its issue board with the other members.',
+      confirmLabel: 'Leave',
+      tone: 'danger',
+    });
+    if (!accepted) {
+      return;
+    }
+    setIsCollaborationBusy(true);
+    try {
+      await leaveCollaboration(collaboration.id);
+      pushToast({
+        title: 'Left collaboration',
+        variant: 'success',
+      });
+    } catch (error) {
+      pushToast({
+        title: 'Failed to leave collaboration',
+        description: error instanceof Error ? error.message : 'Try again later.',
+        variant: 'error',
+      });
+    } finally {
+      setIsCollaborationBusy(false);
+      swipe.closeActions();
+    }
+  };
+
   const {
     attributes,
     listeners,
@@ -461,6 +561,40 @@ export function ProjectItem({
       <div className="relative overflow-hidden rounded-2xl">
       {swipeActionsWidth > 0 && (
         <div className="absolute inset-y-0 right-0 flex z-0" aria-hidden={!swipe.isOpen}>
+          {canInvite ? (
+            <button
+              type="button"
+              tabIndex={swipe.isOpen ? 0 : -1}
+              aria-label="Invite project"
+              title="Invite"
+              disabled={isCollaborationBusy}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void handleInvite(e);
+              }}
+              className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--accent)]/10 text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20 disabled:opacity-60"
+            >
+              <InviteIcon />
+            </button>
+          ) : null}
+          {canLeaveCollaboration ? (
+            <button
+              type="button"
+              tabIndex={swipe.isOpen ? 0 : -1}
+              aria-label="Leave collaboration"
+              title="Leave"
+              disabled={isCollaborationBusy}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void handleLeaveCollaboration(e);
+              }}
+              className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--warning)]/10 text-ink transition-colors hover:bg-[var(--warning)]/20 disabled:opacity-60"
+            >
+              <LeaveIcon />
+            </button>
+          ) : null}
           {canHide ? (
             <button
               type="button"
@@ -666,6 +800,11 @@ export function ProjectItem({
                 ) : !isMergedGroup && isPendingBinding ? (
                   <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted">
                     Binding pending
+                  </span>
+                ) : null}
+                {hasCollaboration ? (
+                  <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
+                    {collaborationMemberCount}/{collaboration?.maxMembers ?? 5} members
                   </span>
                 ) : null}
                 {runningCount > 0 ? (

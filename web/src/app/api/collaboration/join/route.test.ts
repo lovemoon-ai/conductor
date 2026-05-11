@@ -15,6 +15,8 @@ vi.mock('@/lib/db', () => ({
     },
     project: {
       findFirst: vi.fn(),
+      aggregate: vi.fn(),
+      create: vi.fn(),
       update: vi.fn(),
     },
     collaborationMember: {
@@ -55,11 +57,13 @@ describe('/api/collaboration/join', () => {
         collaborationMember: db.collaborationMember,
       }),
     );
+    vi.mocked(db.project.aggregate).mockResolvedValue({ _max: { sortOrder: 1 } } as any);
     vi.mocked(db.project.findFirst).mockResolvedValue({
       id: 'project-2',
       collaborationId: null,
       defaultProject: null,
     } as any);
+    vi.mocked(db.project.create).mockResolvedValue({ id: 'project-created' } as any);
     vi.mocked(db.project.update).mockResolvedValue({ id: 'project-2' } as any);
     vi.mocked(db.collaborationMember.create).mockResolvedValue({ id: 'member-2' } as any);
     vi.mocked(db.collaborationMember.count).mockResolvedValue(2);
@@ -112,6 +116,94 @@ describe('/api/collaboration/join', () => {
       where: { collaborationId: 'collab-1' },
     });
     expect(data.collaboration.memberCount).toBe(2);
+    expect(data.projectId).toBe('project-2');
+  });
+
+  it('creates an unbound project and joins the invited collaboration', async () => {
+    vi.mocked(db.project.findFirst).mockResolvedValueOnce(null);
+    vi.mocked(db.project.create).mockResolvedValueOnce({ id: 'project-created' } as any);
+    vi.mocked(db.projectCollaboration.findUnique)
+      .mockResolvedValueOnce({
+        id: 'collab-1',
+        members: [buildMember()],
+      } as any)
+      .mockResolvedValueOnce({
+        id: 'collab-1',
+        inviteToken: 'invite-token',
+        createdAt: new Date('2026-05-03T00:00:00.000Z'),
+        members: [
+          buildMember(),
+          buildMember({
+            id: 'member-2',
+            userId: 'user-2',
+            projectId: 'project-created',
+            user: { id: 'user-2', email: 'user2@example.com', phone: null },
+            project: { id: 'project-created', name: 'Shared workspace' },
+          }),
+        ],
+      } as any);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: {
+        inviteToken: 'invite-token',
+        createProjectName: 'Shared workspace',
+      },
+    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.project.findFirst).toHaveBeenCalledWith({
+      where: {
+        userId: 'user-2',
+        daemonHost: null,
+        name: 'Shared workspace',
+      },
+      select: { id: true },
+    });
+    expect(db.project.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        userId: 'user-2',
+        name: 'Shared workspace',
+        daemonHost: null,
+        workspacePath: null,
+        metadata: null,
+        collaborationId: 'collab-1',
+        sortOrder: 2,
+      }),
+      select: { id: true },
+    });
+    expect(db.collaborationMember.create).toHaveBeenCalledWith({
+      data: {
+        collaborationId: 'collab-1',
+        userId: 'user-2',
+        projectId: 'project-created',
+      },
+    });
+    expect(db.project.update).not.toHaveBeenCalled();
+    expect(data.projectId).toBe('project-created');
+  });
+
+  it('rejects creating a project when the suggested unbound name already exists', async () => {
+    vi.mocked(db.projectCollaboration.findUnique).mockResolvedValueOnce({
+      id: 'collab-1',
+      members: [buildMember()],
+    } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValueOnce({ id: 'existing-project' } as any);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: {
+        inviteToken: 'invite-token',
+        createProjectName: 'conductor',
+      },
+    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toBe('Project name already exists');
+    expect(db.project.create).not.toHaveBeenCalled();
+    expect(db.collaborationMember.create).not.toHaveBeenCalled();
   });
 
   it('rejects joining with the user default project', async () => {

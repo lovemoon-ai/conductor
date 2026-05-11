@@ -8,7 +8,11 @@ const deleteProjectMock = vi.fn();
 const deleteProjectGroupMock = vi.fn();
 const hideProjectGroupMock = vi.fn();
 const unhideProjectGroupMock = vi.fn();
+const startProjectCollaborationMock = vi.fn();
+const leaveCollaborationMock = vi.fn();
 const pushToastMock = vi.fn();
+const confirmMock = vi.fn();
+const writeTextMock = vi.fn();
 const sortableListeners = vi.hoisted(() => ({
   onPointerDown: vi.fn(),
   onMouseDown: vi.fn(),
@@ -33,6 +37,8 @@ vi.mock('../store', () => ({
     deleteProjectGroup: deleteProjectGroupMock,
     hideProjectGroup: hideProjectGroupMock,
     unhideProjectGroup: unhideProjectGroupMock,
+    startProjectCollaboration: startProjectCollaborationMock,
+    leaveCollaboration: leaveCollaborationMock,
   }),
 }));
 
@@ -74,7 +80,7 @@ vi.mock('@dnd-kit/utilities', () => ({
 
 vi.mock('@/components/common/FeedbackProvider', () => ({
   useConfirm: () => ({
-    confirm: vi.fn(),
+    confirm: confirmMock,
   }),
   useToast: () => ({
     pushToast: pushToastMock,
@@ -89,7 +95,19 @@ describe('ProjectItem', () => {
     deleteProjectGroupMock.mockReset();
     hideProjectGroupMock.mockReset();
     unhideProjectGroupMock.mockReset();
+    startProjectCollaborationMock.mockReset();
+    leaveCollaborationMock.mockReset();
     pushToastMock.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    writeTextMock.mockReset();
+    writeTextMock.mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: writeTextMock,
+      },
+    });
     sortableListeners.onPointerDown.mockReset();
     sortableListeners.onMouseDown.mockReset();
     sortableListeners.onTouchStart.mockReset();
@@ -125,6 +143,167 @@ describe('ProjectItem', () => {
     expect(screen.getByText('git')).toBeInTheDocument();
     expect(screen.getByText('daemon-offline')).toBeInTheDocument();
     expect(screen.getByText('Daemon offline')).toBeInTheDocument();
+  });
+
+  it('shows collaboration member count on shared project cards even when the daemon is offline', () => {
+    render(
+      <ProjectItem
+        project={{
+          id: 'project-shared',
+          name: 'Shared Project',
+          daemonHost: 'daemon-offline',
+          collaborationId: 'collab-1',
+          collaboration: {
+            id: 'collab-1',
+            inviteToken: 'invite-token',
+            memberCount: 2,
+            maxMembers: 5,
+            members: [
+              { id: 'member-1', userId: 'user-1', projectId: 'project-shared', label: 'User 1' },
+              { id: 'member-2', userId: 'user-2', projectId: 'project-other', label: 'User 2' },
+            ],
+          },
+        } as any}
+      />,
+    );
+
+    expect(screen.getByText('Daemon offline')).toBeInTheDocument();
+    expect(screen.getByText('2/5 members')).toBeInTheDocument();
+  });
+
+  it('creates and copies an invite link from the swipe action for unshared projects', async () => {
+    startProjectCollaborationMock.mockResolvedValue({
+      id: 'collab-new',
+      inviteToken: 'invite-token',
+      inviteUrl: 'http://localhost:6152/app/invite/invite-token',
+      memberCount: 1,
+      maxMembers: 5,
+      members: [],
+    });
+
+    const { container } = render(
+      <ProjectItem
+        project={{
+          id: 'project-invite',
+          name: 'Invite Project',
+          daemonHost: 'daemon-online',
+        } as any}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Invite' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Leave' })).toBeNull();
+
+    const inviteButton = container.querySelector('button[aria-label="Invite project"]');
+    expect(inviteButton).not.toBeNull();
+
+    fireEvent.click(inviteButton!);
+
+    await waitFor(() => {
+      expect(startProjectCollaborationMock).toHaveBeenCalledWith('project-invite');
+    });
+    expect(writeTextMock).toHaveBeenCalledWith('http://localhost:6152/app/invite/invite-token');
+    expect(pushToastMock).toHaveBeenCalledWith({
+      title: 'Invite link copied',
+      description: '1/5 members joined.',
+      variant: 'success',
+    });
+  });
+
+  it('copies an existing invite from the same Invite swipe action', async () => {
+    const { container } = render(
+      <ProjectItem
+        project={{
+          id: 'project-shared-solo',
+          name: 'Shared Solo',
+          daemonHost: 'daemon-online',
+          collaborationId: 'collab-solo',
+          collaboration: {
+            id: 'collab-solo',
+            inviteToken: 'invite-token-solo',
+            inviteUrl: 'http://localhost:6152/app/invite/invite-token-solo',
+            memberCount: 1,
+            maxMembers: 5,
+            members: [
+              { id: 'member-1', userId: 'user-1', projectId: 'project-shared-solo', label: 'User 1' },
+            ],
+          },
+        } as any}
+      />,
+    );
+
+    expect(screen.getByText('1/5 members')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copy invite' })).toBeNull();
+    expect(container.querySelector('button[aria-label="Leave collaboration"]')).toBeNull();
+
+    const inviteButton = container.querySelector('button[aria-label="Invite project"]');
+    expect(inviteButton).not.toBeNull();
+
+    fireEvent.click(inviteButton!);
+
+    await waitFor(() => {
+      expect(writeTextMock).toHaveBeenCalledWith('http://localhost:6152/app/invite/invite-token-solo');
+    });
+    expect(startProjectCollaborationMock).not.toHaveBeenCalled();
+  });
+
+  it('shows the leave swipe action only after another member joins', async () => {
+    const { container } = render(
+      <ProjectItem
+        project={{
+          id: 'project-shared-actions',
+          name: 'Shared Actions',
+          daemonHost: 'daemon-online',
+          collaborationId: 'collab-actions',
+          collaboration: {
+            id: 'collab-actions',
+            inviteToken: 'invite-token-actions',
+            inviteUrl: 'http://localhost:6152/app/invite/invite-token-actions',
+            memberCount: 2,
+            maxMembers: 5,
+            members: [
+              { id: 'member-1', userId: 'user-1', projectId: 'project-shared-actions', label: 'User 1' },
+              { id: 'member-2', userId: 'user-2', projectId: 'project-other', label: 'User 2' },
+            ],
+          },
+        } as any}
+      />,
+    );
+
+    expect(screen.getByText('2/5 members')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copy invite' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Leave' })).toBeNull();
+
+    const inviteButton = container.querySelector('button[aria-label="Invite project"]');
+    const leaveButton = container.querySelector('button[aria-label="Leave collaboration"]');
+    expect(inviteButton).not.toBeNull();
+    expect(leaveButton).not.toBeNull();
+
+    fireEvent.click(inviteButton!);
+
+    await waitFor(() => {
+      expect(writeTextMock).toHaveBeenCalledWith('http://localhost:6152/app/invite/invite-token-actions');
+    });
+    expect(startProjectCollaborationMock).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(inviteButton).not.toBeDisabled();
+    });
+
+    fireEvent.click(leaveButton!);
+
+    await waitFor(() => {
+      expect(confirmMock).toHaveBeenCalledWith({
+        title: 'Leave collaboration?',
+        description: 'This project will stop sharing its issue board with the other members.',
+        confirmLabel: 'Leave',
+        tone: 'danger',
+      });
+    });
+    expect(leaveCollaborationMock).toHaveBeenCalledWith('collab-actions');
+    expect(pushToastMock).toHaveBeenCalledWith({
+      title: 'Left collaboration',
+      variant: 'success',
+    });
   });
 
   it('shows candidate binding details for pending projects', () => {

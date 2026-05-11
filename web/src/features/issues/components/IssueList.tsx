@@ -8,7 +8,7 @@ import {
   ISSUE_STATUS_LABELS,
 } from '@/lib/issues/config';
 import { buildIssueColumns } from './board-utils';
-import { IssueCard } from './IssueCard';
+import { IssueCard, type IssueOwnerOption } from './IssueCard';
 import { IssueDetailsDialog } from './IssueDetailsDialog';
 
 const getDefaultVisibleStatus = (issues: Issue[]): Issue['status'] => {
@@ -19,10 +19,12 @@ const getDefaultVisibleStatus = (issues: Issue[]): Issue['status'] => {
 export function IssueList({
   issues,
   onStatusChange,
+  ownerOptionsByProjectId,
   onDeleteIssue,
 }: {
   issues: Issue[];
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
+  ownerOptionsByProjectId?: Map<string, IssueOwnerOption[]>;
   onDeleteIssue?: (issueId: string) => Promise<void> | void;
 }) {
   const columns = useMemo(() => buildIssueColumns(issues), [issues]);
@@ -43,6 +45,7 @@ export function IssueList({
     () => (detailsIssueId ? issues.find((issue) => issue.id === detailsIssueId) ?? null : null),
     [detailsIssueId, issues],
   );
+  const detailsOwnerOptions = detailsIssue ? ownerOptionsByProjectId?.get(detailsIssue.projectId) : undefined;
 
   useEffect(() => {
     if (!hasCustomizedFilter) {
@@ -91,6 +94,7 @@ export function IssueList({
               issue={issue}
               disabled
               onStatusChange={onStatusChange}
+              ownerOptions={ownerOptionsByProjectId?.get(issue.projectId)}
               onDelete={onDeleteIssue}
               onOpenDetails={handleOpenDetails}
             />
@@ -106,6 +110,7 @@ export function IssueList({
         open={Boolean(detailsIssue)}
         onClose={handleCloseDetails}
         issue={detailsIssue}
+        ownerOptions={detailsOwnerOptions}
       />
     </div>
   );

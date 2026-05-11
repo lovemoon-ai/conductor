@@ -18,7 +18,7 @@ import {
 import type { Issue } from '@/shared/types';
 import { ISSUE_STATUSES } from '@/lib/issues/config';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
-import { IssueCardOverlay } from './IssueCard';
+import { IssueCardOverlay, type IssueOwnerOption } from './IssueCard';
 import { IssueColumn } from './IssueColumn';
 import { IssueDetailsDialog } from './IssueDetailsDialog';
 import {
@@ -46,6 +46,7 @@ export function IssueBoard({
   statusMenuDisabled = false,
   onMoveIssue,
   onStatusChange,
+  ownerOptionsByProjectId,
   onDeleteIssue,
 }: {
   issues: Issue[];
@@ -59,6 +60,7 @@ export function IssueBoard({
     placement?: IssueMovePlacement,
   ) => Promise<boolean | void> | boolean | void;
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
+  ownerOptionsByProjectId?: Map<string, IssueOwnerOption[]>;
   onDeleteIssue?: (issueId: string) => Promise<void> | void;
 }) {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
@@ -80,6 +82,7 @@ export function IssueBoard({
     () => (detailsIssueId ? issues.find((issue) => issue.id === detailsIssueId) ?? null : null),
     [detailsIssueId, issues],
   );
+  const detailsOwnerOptions = detailsIssue ? ownerOptionsByProjectId?.get(detailsIssue.projectId) : undefined;
 
   useEffect(() => {
     if (activeIssueId !== null) {
@@ -184,6 +187,7 @@ export function IssueBoard({
               dragDisabled={effectiveDragDisabled}
               statusMenuDisabled={effectiveStatusMenuDisabled}
               onStatusChange={onStatusChange}
+              ownerOptionsByProjectId={ownerOptionsByProjectId}
               onDeleteIssue={onDeleteIssue}
               onOpenDetails={handleOpenDetails}
             />
@@ -199,6 +203,7 @@ export function IssueBoard({
         open={Boolean(detailsIssue)}
         onClose={handleCloseDetails}
         issue={detailsIssue}
+        ownerOptions={detailsOwnerOptions}
       />
     </DndContext>
   );

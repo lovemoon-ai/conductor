@@ -21,6 +21,7 @@ import {
   getIssueAppendPlacement,
   type IssueMovePlacement,
 } from '@/features/issues/components/board-utils';
+import type { IssueOwnerOption } from '@/features/issues/components/IssueCard';
 import type { Agent, Issue, IssueStatus, Project } from '@/shared/types';
 
 const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
@@ -141,6 +142,24 @@ function IssuesPageContent() {
       ? issues
       : issues.filter((issue) => !hiddenProjectIdSet.has(issue.projectId))
   ), [hiddenProjectIdSet, issues, resolvedProjectId]);
+  const ownerOptionsByProjectId = useMemo(() => {
+    const result = new Map<string, IssueOwnerOption[]>();
+    for (const project of projects) {
+      const members = project.collaboration?.members ?? [];
+      if (members.length === 0) {
+        continue;
+      }
+      const options = members.map((member) => ({
+        userId: member.userId,
+        label: member.label,
+        projectName: member.projectName ?? member.project?.name,
+      }));
+      for (const member of members) {
+        result.set(member.projectId, options);
+      }
+    }
+    return result;
+  }, [projects]);
   const issueCount = visibleIssues.length;
   const title = currentProject
     ? `${currentProject.name} (${issueCount} ${issueCount === 1 ? 'issue' : 'issues'})`
@@ -361,6 +380,7 @@ function IssuesPageContent() {
           <IssueList
             issues={visibleIssues}
             onStatusChange={handleStatusChange}
+            ownerOptionsByProjectId={ownerOptionsByProjectId}
             onDeleteIssue={handleDeleteIssue}
           />
         ) : (
@@ -370,6 +390,7 @@ function IssuesPageContent() {
             dragDisabled={!resolvedProjectId}
             onMoveIssue={handleMoveIssue}
             onStatusChange={handleStatusChange}
+            ownerOptionsByProjectId={ownerOptionsByProjectId}
             onDeleteIssue={handleDeleteIssue}
           />
         )}

@@ -34,6 +34,9 @@ type InviteData = {
   candidateProjects: InviteProject[];
   alreadyJoined: boolean;
   isFull: boolean;
+  suggestedProjectName?: string;
+  suggestedProjectNameExists: boolean;
+  suggestedProjectNameAvailable: boolean;
 };
 
 const normalizeInviteProject = (raw: unknown): InviteProject | null => {
@@ -102,7 +105,46 @@ const normalizeInviteData = (raw: unknown): InviteData | null => {
     candidateProjects,
     alreadyJoined: Boolean(record.alreadyJoined ?? record.already_joined),
     isFull: Boolean(record.isFull ?? record.is_full),
+    suggestedProjectName: typeof record.suggestedProjectName === 'string'
+      ? record.suggestedProjectName
+      : typeof record.suggested_project_name === 'string'
+        ? record.suggested_project_name
+        : undefined,
+    suggestedProjectNameExists: Boolean(record.suggestedProjectNameExists ?? record.suggested_project_name_exists),
+    suggestedProjectNameAvailable: typeof record.suggestedProjectNameAvailable === 'boolean'
+      ? record.suggestedProjectNameAvailable
+      : typeof record.suggested_project_name_available === 'boolean'
+        ? record.suggested_project_name_available
+        : !Boolean(record.suggestedProjectNameExists ?? record.suggested_project_name_exists),
   };
+};
+
+const normalizeJoinedProjectId = (raw: unknown): string | null => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  return typeof record.projectId === 'string'
+    ? record.projectId
+    : typeof record.project_id === 'string'
+      ? record.project_id
+      : null;
+};
+
+const suggestSharedProjectName = (members: InviteMember[]): string => {
+  const inviterProjectName = members.find((member) => member.projectName)?.projectName?.trim();
+  return inviterProjectName || 'Shared workspace';
+};
+
+const getSuggestedProjectName = (invite: InviteData): string => {
+  const apiSuggestion = invite.suggestedProjectName?.trim();
+  return apiSuggestion || suggestSharedProjectName(invite.collaboration.members);
+};
+
+const pickDefaultJoinProjectId = (invite: InviteData): string => {
+  const suggestedName = getSuggestedProjectName(invite);
+  const joinableProjects = invite.candidateProjects.filter((project) => project.canJoin && !project.alreadyInCollaboration);
+  return joinableProjects.find((project) => project.name.trim() === suggestedName)?.id
+    ?? joinableProjects[0]?.id
+    ?? '';
 };
 
 export default function CollaborationInvitePage() {
@@ -116,11 +158,14 @@ export default function CollaborationInvitePage() {
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isJoining, setIsJoining] = useState(false);
+  const [isCreatingAndJoining, setIsCreatingAndJoining] = useState(false);
 
   const joinableProjects = useMemo(
     () => data?.candidateProjects.filter((project) => project.canJoin && !project.alreadyInCollaboration) ?? [],
     [data],
   );
+  const suggestedProjectName = data ? getSuggestedProjectName(data) : 'Shared workspace';
+  const canCreateSuggestedProject = Boolean(data && data.suggestedProjectNameAvailable && !data.suggestedProjectNameExists);
 
   useEffect(() => {
     let cancelled = false;
@@ -135,7 +180,7 @@ export default function CollaborationInvitePage() {
         }
         if (cancelled) return;
         setData(invite);
-        setSelectedProjectId(invite.candidateProjects.find((project) => project.canJoin && !project.alreadyInCollaboration)?.id ?? '');
+        setSelectedProjectId(pickDefaultJoinProjectId(invite));
       } catch (err) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : 'Failed to load invitation');
@@ -175,6 +220,53 @@ export default function CollaborationInvitePage() {
     }
   };
 
+  const completeJoin = async (projectId: string) => {
+    await fetchProjects();
+    pushToast({
+      title: 'Joined collaboration',
+      variant: 'success',
+    });
+    router.push(`/app/issues?projectId=${encodeURIComponent(projectId)}`);
+  };
+
+  const markSuggestedProjectNameUnavailable = () => {
+    setData((current) => current
+      ? {
+          ...current,
+          suggestedProjectNameExists: true,
+          suggestedProjectNameAvailable: false,
+        }
+      : current);
+  };
+
+  const handleCreateAndJoin = async () => {
+    if (!data || isCreatingAndJoining || !canCreateSuggestedProject) {
+      return;
+    }
+    setIsCreatingAndJoining(true);
+    setError(null);
+    try {
+      const api = getApiClient();
+      const joinResponse = await api.post<unknown>('/collaboration/join', {
+        inviteToken: token,
+        createProjectName: suggestedProjectName,
+      });
+      const projectId = normalizeJoinedProjectId(joinResponse);
+      if (!projectId) {
+        throw new Error('Invalid join response');
+      }
+      await completeJoin(projectId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to create and join';
+      if (message === 'Project name already exists') {
+        markSuggestedProjectNameUnavailable();
+      }
+      setError(message);
+    } finally {
+      setIsCreatingAndJoining(false);
+    }
+  };
+
   return (
     <>
       <Header title="Join Collaboration" compact />
@@ -185,7 +277,7 @@ export default function CollaborationInvitePage() {
             <div className="flex min-h-64 items-center justify-center rounded-2xl border border-border bg-panel/60">
               <LoadingSpinner size="lg" />
             </div>
-          ) : error ? (
+          ) : error && !data ? (
             <InlineNotice variant="error" title="Invitation unavailable">
               {error}
             </InlineNotice>
@@ -206,6 +298,14 @@ export default function CollaborationInvitePage() {
                 ))}
               </div>
 
+              {error ? (
+                <div className="mb-5">
+                  <InlineNotice variant="error" title="Could not complete">
+                    {error}
+                  </InlineNotice>
+                </div>
+              ) : null}
+
               {data.alreadyJoined ? (
                 <InlineNotice variant="info" title="Already joined">
                   This account is already a member of the collaboration.
@@ -215,9 +315,44 @@ export default function CollaborationInvitePage() {
                   Ask a member to create a new collaboration link.
                 </InlineNotice>
               ) : joinableProjects.length === 0 ? (
-                <InlineNotice variant="warning" title="No available project">
-                  Create a project or leave another collaboration before joining.
-                </InlineNotice>
+                <div className="space-y-4">
+                  <InlineNotice
+                    variant={canCreateSuggestedProject ? 'info' : 'warning'}
+                    title={canCreateSuggestedProject ? 'No project available to pair' : 'Project already exists'}
+                  >
+                    {canCreateSuggestedProject ? (
+                      <>
+                        Every project you own is already in another collaboration (or is the
+                        default scratch project, which can't be shared). Create a new local project
+                        and we'll pair it with this collaboration immediately.
+                      </>
+                    ) : (
+                      <>
+                        A project named "{suggestedProjectName}" already exists, so we won't create
+                        another one automatically. Leave it from its current collaboration or create
+                        a differently named local project from Projects, then reopen this invite.
+                      </>
+                    )}
+                  </InlineNotice>
+                  {canCreateSuggestedProject ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void handleCreateAndJoin()}
+                        disabled={isCreatingAndJoining}
+                        className="webapp-btn-primary w-full px-5 py-2.5 text-sm disabled:opacity-60"
+                      >
+                        {isCreatingAndJoining
+                          ? 'Creating project & joining...'
+                          : `Create "${suggestedProjectName}" & join`}
+                      </button>
+                      <p className="text-xs text-muted">
+                        The new project is unbound. Attach a daemon later from the project list when
+                        you want to run tasks on your own machine.
+                      </p>
+                    </>
+                  ) : null}
+                </div>
               ) : (
                 <div className="space-y-4">
                   <div>
@@ -246,6 +381,26 @@ export default function CollaborationInvitePage() {
                   >
                     {isJoining ? 'Joining...' : 'Join'}
                   </button>
+
+                  {canCreateSuggestedProject ? (
+                    <details className="text-xs text-muted">
+                      <summary className="cursor-pointer hover:text-ink">
+                        Or create a brand new project for this collaboration
+                      </summary>
+                      <div className="mt-2 space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleCreateAndJoin()}
+                          disabled={isCreatingAndJoining}
+                          className="inline-flex w-full items-center justify-center rounded-lg border border-border px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-border/40 disabled:opacity-60"
+                        >
+                          {isCreatingAndJoining
+                            ? 'Creating project & joining...'
+                            : `Create "${suggestedProjectName}" & join`}
+                        </button>
+                      </div>
+                    </details>
+                  ) : null}
                 </div>
               )}
             </div>

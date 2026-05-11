@@ -154,6 +154,38 @@ describe('IssueBoard', () => {
     expect(onStatusChange).toHaveBeenCalledWith('issue-1', 'doing');
   });
 
+  it('shows phone owners with the last two digits on the card', () => {
+    const ownedIssues: Issue[] = [
+      {
+        ...issues[0],
+        ownerUserId: 'user-1',
+        owner: {
+          id: 'user-1',
+          label: '+8618707151525',
+        },
+      },
+    ];
+    const ownerOptionsByProjectId = new Map([
+      ['project-1', [
+        { userId: 'user-1', label: '+8618707151525', projectName: 'Project One' },
+        { userId: 'user-2', label: '+8618707151526', projectName: 'Project Two' },
+      ]],
+    ]);
+
+    render(
+      <IssueBoard
+        issues={ownedIssues}
+        ownerOptionsByProjectId={ownerOptionsByProjectId}
+        onMoveIssue={onMoveIssue}
+        onStatusChange={onStatusChange}
+        onDeleteIssue={onDeleteIssue}
+      />,
+    );
+
+    expect(screen.getByLabelText('Issue owner +8618707151525')).toHaveTextContent('25');
+    expect(screen.queryByRole('button', { name: 'Assign Plan board UX to +8618707151526' })).toBeNull();
+  });
+
   it('keeps status updates enabled when dragging is disabled', async () => {
     render(
       <IssueBoard

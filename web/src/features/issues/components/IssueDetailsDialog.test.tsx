@@ -116,6 +116,47 @@ describe('IssueDetailsDialog', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('updates owner from the details dialog', async () => {
+    const onClose = vi.fn();
+    const ownedIssue: Issue = {
+      ...issue,
+      ownerUserId: 'user-1',
+      owner: {
+        id: 'user-1',
+        label: '+8618707151525',
+      },
+    };
+    updateIssueMock.mockResolvedValue({
+      ...ownedIssue,
+      ownerUserId: 'user-2',
+    });
+
+    render(
+      <IssueDetailsDialog
+        open
+        onClose={onClose}
+        issue={ownedIssue}
+        ownerOptions={[
+          { userId: 'user-1', label: '+8618707151525', projectName: 'Conductor A' },
+          { userId: 'user-2', label: '+8618707151526', projectName: 'Conductor B' },
+        ]}
+      />,
+    );
+
+    expect(screen.getByLabelText('Owner')).toHaveValue('user-1');
+    fireEvent.change(screen.getByLabelText('Owner'), {
+      target: { value: 'user-2' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(updateIssueMock).toHaveBeenCalledWith('issue-1', {
+        ownerUserId: 'user-2',
+      });
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('shows the ai tool, session id, and task id fields', () => {
     render(<IssueDetailsDialog open onClose={() => {}} issue={issue} />);
 

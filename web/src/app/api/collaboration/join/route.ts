@@ -8,29 +8,63 @@ import {
   MAX_COLLABORATION_MEMBERS,
   serializeCollaboration,
 } from '@/lib/collaboration/service';
+import { isMissingProjectSortOrderColumnError } from '@/app/api/projects/shared';
 
 const joinCollaborationSchema = z.object({
   inviteToken: z.string().trim().min(1),
-  projectId: z.string().trim().min(1),
-});
+  projectId: z.string().trim().min(1).optional(),
+  createProjectName: z.string().trim().min(1).optional(),
+}).refine(
+  (input) => Boolean(input.projectId) !== Boolean(input.createProjectName),
+  {
+    message: 'Provide either projectId or createProjectName',
+    path: ['projectId'],
+  },
+);
+
+const readStringField = (
+  record: Record<string, unknown>,
+  camelCaseKey: string,
+  snakeCaseKey: string,
+): string | undefined => {
+  const value =
+    typeof record[camelCaseKey] === 'string'
+      ? record[camelCaseKey]
+      : typeof record[snakeCaseKey] === 'string'
+        ? record[snakeCaseKey]
+        : undefined;
+  return value;
+};
+
+const getNextProjectSortOrder = async (
+  tx: Prisma.TransactionClient,
+  userId: string,
+): Promise<number | null> => {
+  try {
+    const result = await tx.project.aggregate({
+      where: { userId },
+      _max: { sortOrder: true },
+    });
+    const maxSortOrder = result._max.sortOrder;
+    return typeof maxSortOrder === 'number' && Number.isInteger(maxSortOrder)
+      ? maxSortOrder + 1
+      : 0;
+  } catch (error) {
+    if (isMissingProjectSortOrderColumnError(error)) {
+      return null;
+    }
+    throw error;
+  }
+};
 
 const normalizeJoinBody = (body: unknown) => {
   const record = body && typeof body === 'object' && !Array.isArray(body)
     ? body as Record<string, unknown>
     : {};
   return {
-    inviteToken:
-      typeof record.inviteToken === 'string'
-        ? record.inviteToken
-        : typeof record.invite_token === 'string'
-          ? record.invite_token
-          : '',
-    projectId:
-      typeof record.projectId === 'string'
-        ? record.projectId
-        : typeof record.project_id === 'string'
-          ? record.project_id
-          : '',
+    inviteToken: readStringField(record, 'inviteToken', 'invite_token') ?? '',
+    projectId: readStringField(record, 'projectId', 'project_id'),
+    createProjectName: readStringField(record, 'createProjectName', 'create_project_name'),
   };
 };
 
@@ -55,7 +89,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { inviteToken, projectId } = parsed.data;
+  const { inviteToken, projectId, createProjectName } = parsed.data;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
@@ -76,38 +110,92 @@ export async function POST(request: NextRequest) {
           return { status: 404 as const, body: { error: 'Collaboration invite not found' } };
         }
 
-        const targetProject = await tx.project.findFirst({
-          where: {
-            id: projectId,
-            userId: user.id,
-          },
-          select: {
-            id: true,
-            collaborationId: true,
-            // Symmetric guard with POST /projects/[id]/collaboration: the
-            // default project is personal scratch and cannot be paired into a
-            // shared collaboration even from the invite-acceptance side.
-            defaultProject: { select: { id: true } },
-          },
-        });
-        if (!targetProject) {
-          return { status: 403 as const, body: { error: 'Project not found' } };
-        }
-        if (targetProject.defaultProject) {
-          return {
-            status: 400 as const,
-            body: {
-              error: 'The default project cannot be shared. Pick a non-default project to join with.',
+        const existingMember = collaboration.members.find((member) => member.userId === user.id) ?? null;
+        let targetProjectId: string;
+        let targetProjectCollaborationId: string | null;
+
+        if (createProjectName) {
+          if (existingMember) {
+            return {
+              status: 409 as const,
+              body: {
+                error: 'You already joined this collaboration with a different project. Leave it first to switch.',
+              },
+            };
+          }
+          if (collaboration.members.length >= MAX_COLLABORATION_MEMBERS) {
+            return { status: 409 as const, body: { error: 'Collaboration is full' } };
+          }
+
+          const nameConflict = await tx.project.findFirst({
+            where: {
+              userId: user.id,
+              daemonHost: null,
+              name: createProjectName,
             },
-          };
-        }
-        if (targetProject.collaborationId && targetProject.collaborationId !== collaboration.id) {
-          return { status: 409 as const, body: { error: 'Project is already in a collaboration' } };
+            select: { id: true },
+          });
+          if (nameConflict) {
+            return { status: 409 as const, body: { error: 'Project name already exists' } };
+          }
+
+          const nextSortOrder = await getNextProjectSortOrder(tx, user.id);
+          const createdProject = await tx.project.create({
+            data: {
+              userId: user.id,
+              name: createProjectName,
+              daemonHost: null,
+              workspacePath: null,
+              repoRoot: null,
+              worktreeBranch: null,
+              lastCommit: null,
+              fileCount: null,
+              metadata: null,
+              collaborationId: collaboration.id,
+              ...(nextSortOrder === null ? {} : { sortOrder: nextSortOrder }),
+            },
+            select: { id: true },
+          });
+          targetProjectId = createdProject.id;
+          targetProjectCollaborationId = collaboration.id;
+        } else {
+          if (!projectId) {
+            return { status: 400 as const, body: { error: 'Project is required' } };
+          }
+          const targetProject = await tx.project.findFirst({
+            where: {
+              id: projectId,
+              userId: user.id,
+            },
+            select: {
+              id: true,
+              collaborationId: true,
+              // Symmetric guard with POST /projects/[id]/collaboration: the
+              // default project is personal scratch and cannot be paired into a
+              // shared collaboration even from the invite-acceptance side.
+              defaultProject: { select: { id: true } },
+            },
+          });
+          if (!targetProject) {
+            return { status: 403 as const, body: { error: 'Project not found' } };
+          }
+          if (targetProject.defaultProject) {
+            return {
+              status: 400 as const,
+              body: {
+                error: 'The default project cannot be shared. Pick a non-default project to join with.',
+              },
+            };
+          }
+          if (targetProject.collaborationId && targetProject.collaborationId !== collaboration.id) {
+            return { status: 409 as const, body: { error: 'Project is already in a collaboration' } };
+          }
+          targetProjectId = targetProject.id;
+          targetProjectCollaborationId = targetProject.collaborationId;
         }
 
-        const existingMember = collaboration.members.find((member) => member.userId === user.id) ?? null;
         if (!existingMember) {
-          if (collaboration.members.length >= MAX_COLLABORATION_MEMBERS) {
+          if (!createProjectName && collaboration.members.length >= MAX_COLLABORATION_MEMBERS) {
             return { status: 409 as const, body: { error: 'Collaboration is full' } };
           }
 
@@ -115,7 +203,7 @@ export async function POST(request: NextRequest) {
             data: {
               collaborationId: collaboration.id,
               userId: user.id,
-              projectId: targetProject.id,
+              projectId: targetProjectId,
             },
           });
           const memberCount = await tx.collaborationMember.count({
@@ -124,20 +212,22 @@ export async function POST(request: NextRequest) {
           if (memberCount > MAX_COLLABORATION_MEMBERS) {
             throw new CollaborationFullError();
           }
-          await tx.project.update({
-            where: { id: targetProject.id },
-            data: { collaborationId: collaboration.id },
-          });
-        } else if (existingMember.projectId !== targetProject.id) {
+          if (targetProjectCollaborationId !== collaboration.id) {
+            await tx.project.update({
+              where: { id: targetProjectId },
+              data: { collaborationId: collaboration.id },
+            });
+          }
+        } else if (existingMember.projectId !== targetProjectId) {
           return {
             status: 409 as const,
             body: {
               error: 'You already joined this collaboration with a different project. Leave it first to switch.',
             },
           };
-        } else if (targetProject.collaborationId !== collaboration.id) {
+        } else if (targetProjectCollaborationId !== collaboration.id) {
           await tx.project.update({
-            where: { id: targetProject.id },
+            where: { id: targetProjectId },
             data: { collaborationId: collaboration.id },
           });
         }
@@ -156,6 +246,8 @@ export async function POST(request: NextRequest) {
             collaboration: serializeCollaboration(updated),
             collaborationId: updated.id,
             collaboration_id: updated.id,
+            projectId: targetProjectId,
+            project_id: targetProjectId,
           },
         };
       }, {

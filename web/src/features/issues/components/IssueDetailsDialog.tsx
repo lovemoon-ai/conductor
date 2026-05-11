@@ -8,6 +8,7 @@ import { InlineNotice } from '@/components/common/InlineNotice';
 import { useToast } from '@/components/common/FeedbackProvider';
 import { DEFAULT_ISSUE_PRIORITY, ISSUE_PRIORITIES, ISSUE_PRIORITY_LABELS } from '@/lib/issues/config';
 import { useIssuesStore } from '../store';
+import type { IssueOwnerOption } from './IssueCard';
 
 const pickIssueBackendType = (issue: Issue | null): string | null => {
   if (!issue) {
@@ -72,14 +73,17 @@ export function IssueDetailsDialog({
   open,
   onClose,
   issue,
+  ownerOptions = [],
 }: {
   open: boolean;
   onClose: () => void;
   issue: Issue | null;
+  ownerOptions?: IssueOwnerOption[];
 }) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<Issue['priority']>(DEFAULT_ISSUE_PRIORITY);
+  const [ownerUserId, setOwnerUserId] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -93,8 +97,20 @@ export function IssueDetailsDialog({
     setTitle(issue.title);
     setDescription(issue.description ?? '');
     setPriority(issue.priority);
+    setOwnerUserId(issue.ownerUserId ?? issue.owner?.id ?? '');
     setLocalError(null);
   }, [issue, open]);
+
+  useEffect(() => {
+    if (!open || !issue || ownerOptions.length === 0) {
+      return;
+    }
+    setOwnerUserId((current) => (
+      current && ownerOptions.some((option) => option.userId === current)
+        ? current
+        : issue.ownerUserId ?? issue.owner?.id ?? ownerOptions[0]?.userId ?? ''
+    ));
+  }, [issue, open, ownerOptions]);
 
   const backendType = useMemo(() => pickIssueBackendType(issue), [issue]);
   const tasks = useMemo(() => collectIssueTasks(issue), [issue]);
@@ -154,8 +170,10 @@ export function IssueDetailsDialog({
     const titleChanged = nextTitle !== issue.title;
     const descriptionChanged = nextDescription !== previousDescription;
     const priorityChanged = priority !== issue.priority;
+    const currentOwnerUserId = issue.ownerUserId ?? issue.owner?.id ?? '';
+    const ownerChanged = Boolean(ownerUserId) && ownerUserId !== currentOwnerUserId;
 
-    if (!titleChanged && !descriptionChanged && !priorityChanged) {
+    if (!titleChanged && !descriptionChanged && !priorityChanged && !ownerChanged) {
       onClose();
       return;
     }
@@ -167,6 +185,7 @@ export function IssueDetailsDialog({
         ...(titleChanged ? { title: nextTitle } : {}),
         ...(descriptionChanged ? { description: nextDescription ? nextDescription : null } : {}),
         ...(priorityChanged ? { priority } : {}),
+        ...(ownerChanged ? { ownerUserId } : {}),
       });
       pushToast({
         title: 'Issue updated',
@@ -225,6 +244,26 @@ export function IssueDetailsDialog({
             ))}
           </select>
         </div>
+
+        {ownerOptions.length > 1 ? (
+          <div>
+            <label htmlFor="issue-details-owner" className="mb-2 block text-sm font-medium text-ink">
+              Owner
+            </label>
+            <select
+              id="issue-details-owner"
+              value={ownerUserId}
+              onChange={(event) => setOwnerUserId(event.target.value)}
+              className="w-full webapp-input"
+            >
+              {ownerOptions.map((option) => (
+                <option key={option.userId} value={option.userId}>
+                  {option.projectName ? `${option.label} · ${option.projectName}` : option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
 
         <div className="space-y-3 rounded-2xl border border-border/70 bg-panel/40 p-4">
           <h3 className="text-sm font-semibold text-ink">Runtime</h3>

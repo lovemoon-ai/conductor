@@ -35,6 +35,54 @@ export const pickDaemonBadgeClass = (daemonHost: string): string => {
   return DAEMON_BADGE_PALETTE[Math.abs(hash) % DAEMON_BADGE_PALETTE.length];
 };
 
+export type IssueOwnerOption = {
+  userId: string;
+  label: string;
+  projectName?: string;
+};
+
+const getOwnerInitials = (label: string): string => {
+  const normalized = label.trim();
+  if (!normalized) {
+    return '?';
+  }
+  if (!normalized.includes('@')) {
+    const digits = normalized.replace(/\D/g, '');
+    if (digits.length >= 2) {
+      return digits.slice(-2);
+    }
+    if (digits.length === 1) {
+      return digits;
+    }
+  }
+  const compact = normalized.includes('@') ? normalized.split('@')[0] : normalized;
+  return compact.slice(0, 2).toUpperCase();
+};
+
+function IssueOwnerBadge({
+  issue,
+  ownerOptions = [],
+}: {
+  issue: Issue;
+  ownerOptions?: IssueOwnerOption[];
+}) {
+  const owner = ownerOptions.find((option) => option.userId === issue.ownerUserId) ?? null;
+  const ownerLabel = owner?.label ?? issue.owner?.label ?? issue.ownerUserId ?? 'Unassigned';
+
+  return (
+    <span
+      aria-label={`Issue owner ${ownerLabel}`}
+      title={ownerLabel}
+      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-paper text-[10px] font-semibold text-ink"
+      onPointerDown={stopEventPropagation}
+      onClick={stopEventPropagation}
+      onDoubleClick={stopEventPropagation}
+    >
+      {getOwnerInitials(ownerLabel)}
+    </span>
+  );
+}
+
 function IssueStatusMenu({
   issue,
   onStatusChange,
@@ -129,6 +177,7 @@ function IssueCardBody({
   statusMenuDisabled = false,
   statusAttributes,
   onStatusChange,
+  ownerOptions,
   onDelete,
   onOpenDetails,
 }: {
@@ -139,6 +188,7 @@ function IssueCardBody({
   statusMenuDisabled?: boolean;
   statusAttributes?: Record<string, unknown>;
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
+  ownerOptions?: IssueOwnerOption[];
   onDelete?: (issueId: string) => Promise<void> | void;
   onOpenDetails?: (issue: Issue) => void;
 }) {
@@ -215,6 +265,7 @@ function IssueCardBody({
           >
             {issue.title}
           </h3>
+          <IssueOwnerBadge issue={issue} ownerOptions={ownerOptions} />
           {interactive ? (
             <IssueStatusMenu issue={issue} onStatusChange={onStatusChange} disabled={statusMenuDisabled} />
           ) : (
@@ -308,6 +359,7 @@ export function IssueCard({
   disabled = false,
   statusMenuDisabled = false,
   onStatusChange,
+  ownerOptions,
   onDelete,
   onOpenDetails,
 }: {
@@ -315,6 +367,7 @@ export function IssueCard({
   disabled?: boolean;
   statusMenuDisabled?: boolean;
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
+  ownerOptions?: IssueOwnerOption[];
   onDelete?: (issueId: string) => Promise<void> | void;
   onOpenDetails?: (issue: Issue) => void;
 }) {
@@ -344,6 +397,7 @@ export function IssueCard({
         disabled={disabled}
         statusMenuDisabled={statusMenuDisabled}
         onStatusChange={onStatusChange}
+        ownerOptions={ownerOptions}
         onDelete={onDelete}
         onOpenDetails={onOpenDetails}
         statusAttributes={{ ...attributes, ...listeners }}

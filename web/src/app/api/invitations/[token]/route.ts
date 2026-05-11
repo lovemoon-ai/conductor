@@ -5,7 +5,15 @@ import {
   collaborationSummarySelect,
   MAX_COLLABORATION_MEMBERS,
   serializeCollaboration,
+  type CollaborationSummaryRecord,
 } from '@/lib/collaboration/service';
+
+const suggestSharedProjectName = (collaboration: CollaborationSummaryRecord): string => {
+  const inviterProjectName = collaboration.members
+    .find((member) => member.project.name.trim().length > 0)
+    ?.project.name.trim();
+  return inviterProjectName || 'Shared workspace';
+};
 
 export async function GET(
   request: NextRequest,
@@ -42,6 +50,10 @@ export async function GET(
 
   const alreadyJoined = collaboration.members.some((member) => member.userId === user.id);
   const isFull = collaboration.members.length >= MAX_COLLABORATION_MEMBERS;
+  const suggestedProjectName = suggestSharedProjectName(collaboration);
+  const suggestedProjectNameExists = projects.some(
+    (project) => project.name.trim() === suggestedProjectName,
+  );
   const candidateProjects = projects
     .filter((project) => !project.defaultProject)
     .map((project) => ({
@@ -62,8 +74,14 @@ export async function GET(
     candidateProjects,
     alreadyJoined,
     isFull,
+    suggestedProjectName,
+    suggestedProjectNameExists,
+    suggestedProjectNameAvailable: !suggestedProjectNameExists,
     candidate_projects: candidateProjects,
     already_joined: alreadyJoined,
     is_full: isFull,
+    suggested_project_name: suggestedProjectName,
+    suggested_project_name_exists: suggestedProjectNameExists,
+    suggested_project_name_available: !suggestedProjectNameExists,
   });
 }

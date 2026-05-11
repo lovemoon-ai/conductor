@@ -13,7 +13,10 @@ let issuesState = {
   error: null as string | null,
   clearError: clearErrorMock,
 };
-let projectsState = {
+let projectsState: {
+  projects: Array<Record<string, unknown>>;
+  fetchProjects: typeof fetchProjectsMock;
+} = {
   projects: [
     { id: 'project-default', name: 'Default Project', isDefault: true },
     { id: 'project-2', name: 'Other Project' },
@@ -102,6 +105,47 @@ describe('CreateIssueDialog', () => {
     });
   });
 
+  it('does not expose owner selection during creation for shared projects', async () => {
+    createIssueMock.mockResolvedValue({ id: 'issue-1' });
+    projectsState = {
+      projects: [
+        {
+          id: 'shared-project',
+          name: 'Shared Project',
+          collaboration: {
+            id: 'collaboration-1',
+            inviteToken: 'token',
+            memberCount: 2,
+            maxMembers: 5,
+            members: [
+              { id: 'member-1', userId: 'user-1', projectId: 'shared-project', label: '+8618707151525' },
+              { id: 'member-2', userId: 'user-2', projectId: 'peer-project', label: '+8618707151526' },
+            ],
+          },
+        },
+      ],
+      fetchProjects: fetchProjectsMock,
+    };
+
+    render(<CreateIssueDialog open onClose={() => {}} projectId="shared-project" />);
+
+    expect(screen.queryByLabelText('Owner')).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText('Summarize the issue'), {
+      target: { value: 'Shared issue' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Issue' }));
+
+    await waitFor(() => {
+      expect(createIssueMock).toHaveBeenCalledWith({
+        projectId: 'shared-project',
+        title: 'Shared issue',
+        description: null,
+        status: 'todo',
+        priority: 'P1',
+      });
+    });
+  });
+
   it('fetches projects and disables submit when no project is available', () => {
     projectsState = {
       projects: [],
@@ -135,7 +179,7 @@ describe('CreateIssueDialog', () => {
       },
     ];
 
-    it('renders a target-daemon picker when the projectId belongs to a merged group', () => {
+    it('does not render a target-daemon picker when the projectId belongs to a merged group', () => {
       projectsState = {
         projects: mergedProjects as any,
         fetchProjects: fetchProjectsMock,
@@ -143,12 +187,8 @@ describe('CreateIssueDialog', () => {
 
       render(<CreateIssueDialog open onClose={() => {}} projectId="p-a" />);
 
-      const picker = screen.getByLabelText('Target daemon') as HTMLSelectElement;
-      expect(picker).toBeInTheDocument();
-      // Default selection is the projectId the parent passed in.
-      expect(picker.value).toBe('p-a');
-      // Both members are listed as options.
-      expect(picker.options).toHaveLength(2);
+      expect(screen.queryByLabelText('Target daemon')).toBeNull();
+      expect(screen.queryByLabelText('Owner')).toBeNull();
     });
 
     it('hides the daemon picker for single-member groups', () => {
@@ -162,7 +202,7 @@ describe('CreateIssueDialog', () => {
       expect(screen.queryByLabelText('Target daemon')).toBeNull();
     });
 
-    it('routes the create call to the daemon the user picks', async () => {
+    it('defaults the create call to the provided project without target daemon selection', async () => {
       projectsState = {
         projects: mergedProjects as any,
         fetchProjects: fetchProjectsMock,
@@ -171,10 +211,6 @@ describe('CreateIssueDialog', () => {
 
       render(<CreateIssueDialog open onClose={() => {}} projectId="p-a" />);
 
-      // User switches the target daemon to daemon-b.
-      fireEvent.change(screen.getByLabelText('Target daemon'), {
-        target: { value: 'p-b' },
-      });
       fireEvent.change(screen.getByPlaceholderText('Summarize the issue'), {
         target: { value: 'Wire up endpoint' },
       });
@@ -183,14 +219,12 @@ describe('CreateIssueDialog', () => {
       await waitFor(() => {
         expect(createIssueMock).toHaveBeenCalledWith(
           expect.objectContaining({
-            // The new issue lands on daemon-b's underlying project, NOT the
-            // primary projectId the parent component passed in.
-            projectId: 'p-b',
+            projectId: 'p-a',
             title: 'Wire up endpoint',
-            includeProject: true,
           }),
         );
       });
+      expect(createIssueMock.mock.calls[0]?.[0]).not.toHaveProperty('includeProject');
     });
   });
 });
