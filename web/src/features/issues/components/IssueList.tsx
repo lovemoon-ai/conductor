@@ -9,6 +9,7 @@ import {
 } from '@/lib/issues/config';
 import { buildIssueColumns } from './board-utils';
 import { IssueCard } from './IssueCard';
+import type { IssueOwnerOption } from './IssueCard';
 import { IssueDetailsDialog } from './IssueDetailsDialog';
 
 const getDefaultVisibleStatus = (issues: Issue[]): Issue['status'] => {
@@ -19,10 +20,14 @@ const getDefaultVisibleStatus = (issues: Issue[]): Issue['status'] => {
 export function IssueList({
   issues,
   onStatusChange,
+  ownerOptionsByProjectId,
+  onOwnerChange,
   onDeleteIssue,
 }: {
   issues: Issue[];
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
+  ownerOptionsByProjectId?: Map<string, IssueOwnerOption[]>;
+  onOwnerChange?: (issueId: string, ownerUserId: string) => Promise<void> | void;
   onDeleteIssue?: (issueId: string) => Promise<void> | void;
 }) {
   const columns = useMemo(() => buildIssueColumns(issues), [issues]);
@@ -91,6 +96,8 @@ export function IssueList({
               issue={issue}
               disabled
               onStatusChange={onStatusChange}
+              ownerOptions={ownerOptionsByProjectId?.get(issue.projectId)}
+              onOwnerChange={onOwnerChange}
               onDelete={onDeleteIssue}
               onOpenDetails={handleOpenDetails}
             />

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Project, CreateProjectInput, UpdateProjectInput } from '@/shared/types';
+import type { CollaborationMember, Project, ProjectCollaboration, CreateProjectInput, UpdateProjectInput } from '@/shared/types';
 import { getApiClient } from '@/shared/api/client';
 import { getStoredJwtToken } from '@/lib/auth/token-storage';
 
@@ -120,6 +120,74 @@ const normalizeTaskStatusCounts = (value: unknown): Record<string, number> | und
   return Object.keys(result).length > 0 ? result : undefined;
 };
 
+const normalizeCollaborationMember = (raw: unknown): CollaborationMember | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const id = pickString(record.id);
+  const userId = pickString(record.userId) ?? pickString(record.user_id);
+  const projectId = pickString(record.projectId) ?? pickString(record.project_id);
+  const label = pickString(record.label)
+    ?? (record.user && typeof record.user === 'object' ? pickString((record.user as Record<string, unknown>).label) : null)
+    ?? userId;
+  if (!id || !userId || !projectId || !label) return null;
+
+  const user = record.user && typeof record.user === 'object' && !Array.isArray(record.user)
+    ? record.user as Record<string, unknown>
+    : null;
+  const project = record.project && typeof record.project === 'object' && !Array.isArray(record.project)
+    ? record.project as Record<string, unknown>
+    : null;
+  const projectName = pickString(record.projectName)
+    ?? pickString(record.project_name)
+    ?? (project ? pickString(project.name) : null)
+    ?? undefined;
+
+  return {
+    id,
+    userId,
+    projectId,
+    projectName,
+    label,
+    joinedAt: pickString(record.joinedAt) ?? pickString(record.joined_at) ?? undefined,
+    // Server intentionally only sends `id` + `label`. Older payloads with
+    // email/phone are tolerated as a label fallback but never surfaced.
+    user: user
+      ? {
+          id: pickString(user.id) ?? userId,
+          label: pickString(user.label) ?? pickString(user.email) ?? pickString(user.phone) ?? label,
+        }
+      : undefined,
+    project: project
+      ? {
+          id: pickString(project.id) ?? projectId,
+          name: pickString(project.name) ?? projectName ?? projectId,
+        }
+      : undefined,
+  };
+};
+
+const normalizeCollaboration = (raw: unknown): ProjectCollaboration | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const id = pickString(record.id);
+  const inviteToken = pickString(record.inviteToken) ?? pickString(record.invite_token);
+  if (!id || !inviteToken) return null;
+  const members = Array.isArray(record.members)
+    ? record.members
+        .map((entry) => normalizeCollaborationMember(entry))
+        .filter((member): member is CollaborationMember => member !== null)
+    : [];
+  return {
+    id,
+    inviteToken,
+    inviteUrl: pickString(record.inviteUrl) ?? pickString(record.invite_url) ?? undefined,
+    memberCount: pickInt(record.memberCount) ?? pickInt(record.member_count) ?? members.length,
+    maxMembers: pickInt(record.maxMembers) ?? pickInt(record.max_members) ?? 5,
+    members,
+    createdAt: pickString(record.createdAt) ?? pickString(record.created_at) ?? undefined,
+  };
+};
+
 const pickInt = (value: unknown): number | null => {
   if (typeof value === 'number' && Number.isInteger(value)) return value;
   if (typeof value === 'string') {
@@ -157,6 +225,8 @@ export const normalizeProject = (raw: unknown): Project | null => {
   return {
     id,
     name,
+    collaborationId: pickString(record.collaborationId) ?? pickString(record.collaboration_id),
+    collaboration: normalizeCollaboration(record.collaboration),
     daemonHost: pickString(record.daemonHost) ?? pickString(record.daemon_host),
     workspacePath: pickString(record.workspacePath) ?? pickString(record.workspace_path),
     repoRoot: pickString(record.repoRoot) ?? pickString(record.repo_root),
@@ -203,6 +273,8 @@ interface ProjectsState {
   updateProject: (projectId: string, input: UpdateProjectInput) => Promise<Project>;
   deleteProject: (projectId: string) => Promise<void>;
   reorderProjects: (projectIds: string[]) => Promise<void>;
+  startProjectCollaboration: (projectId: string) => Promise<ProjectCollaboration>;
+  leaveCollaboration: (collaborationId: string) => Promise<void>;
   setSelectedProjectId: (projectId: string | null) => void;
   hideProject: (projectId: string) => void;
   unhideProject: (projectId: string) => void;
@@ -401,6 +473,52 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
     } catch (error) {
       set({
         error: error instanceof Error ? error.message : 'Failed to delete project',
+      });
+      throw error;
+    }
+  },
+
+  startProjectCollaboration: async (projectId) => {
+    try {
+      const api = getApiClient();
+      const raw = await api.post<unknown>(`/projects/${encodeURIComponent(projectId)}/collaboration`);
+      const record = raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? raw as Record<string, unknown>
+        : {};
+      const collaboration = normalizeCollaboration(record.collaboration);
+      if (!collaboration) {
+        throw new Error('Invalid collaboration response');
+      }
+      set((state) => ({
+        projects: state.projects.map((project) => (
+          project.id === projectId
+            ? { ...project, collaborationId: collaboration.id, collaboration }
+            : project
+        )),
+      }));
+      return collaboration;
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : 'Failed to start collaboration',
+      });
+      throw error;
+    }
+  },
+
+  leaveCollaboration: async (collaborationId) => {
+    try {
+      const api = getApiClient();
+      await api.delete(`/collaboration/${encodeURIComponent(collaborationId)}/members/me`);
+      set((state) => ({
+        projects: state.projects.map((project) => (
+          project.collaboration?.id === collaborationId || project.collaborationId === collaborationId
+            ? { ...project, collaborationId: null, collaboration: null }
+            : project
+        )),
+      }));
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : 'Failed to leave collaboration',
       });
       throw error;
     }

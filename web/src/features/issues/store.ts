@@ -36,6 +36,24 @@ const normalizeObject = (value: unknown): Record<string, unknown> | null => {
   return value as Record<string, unknown>;
 };
 
+const normalizeIssueUser = (value: unknown): Issue['owner'] => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const id = pickString(record.id);
+  if (!id) {
+    return null;
+  }
+  // Server intentionally only sends `id` + `label`. We tolerate older payloads
+  // by reading email/phone as label fallbacks but never surface them.
+  const fallbackLabel = pickString(record.email) ?? pickString(record.phone);
+  return {
+    id,
+    label: pickString(record.label) ?? fallbackLabel ?? undefined,
+  };
+};
+
 const syncTask = (raw: unknown, moveToFront = false): Task | null => {
   if (!raw || typeof raw !== 'object') {
     return null;
@@ -75,6 +93,10 @@ export const normalizeIssue = (raw: unknown): Issue | null => {
   return {
     id,
     projectId,
+    ownerUserId: pickString(record.ownerUserId) ?? pickString(record.owner_user_id),
+    creatorUserId: pickString(record.creatorUserId) ?? pickString(record.creator_user_id),
+    owner: normalizeIssueUser(record.owner),
+    creator: normalizeIssueUser(record.creator),
     title,
     description: pickString(record.description),
     status: normalizeIssueStatus(record.status),

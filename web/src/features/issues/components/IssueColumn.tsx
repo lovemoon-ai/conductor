@@ -9,6 +9,7 @@ import {
   ISSUE_STATUS_TITLE_CLASSNAMES,
 } from '@/lib/issues/config';
 import { IssueCard } from './IssueCard';
+import type { IssueOwnerOption } from './IssueCard';
 
 export function IssueColumn({
   status,
@@ -16,6 +17,8 @@ export function IssueColumn({
   dragDisabled = false,
   statusMenuDisabled = false,
   onStatusChange,
+  ownerOptionsByProjectId,
+  onOwnerChange,
   onDeleteIssue,
   onOpenDetails,
 }: {
@@ -24,6 +27,8 @@ export function IssueColumn({
   dragDisabled?: boolean;
   statusMenuDisabled?: boolean;
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
+  ownerOptionsByProjectId?: Map<string, IssueOwnerOption[]>;
+  onOwnerChange?: (issueId: string, ownerUserId: string) => Promise<void> | void;
   onDeleteIssue?: (issueId: string) => Promise<void> | void;
   onOpenDetails?: (issue: Issue) => void;
 }) {
@@ -53,6 +58,8 @@ export function IssueColumn({
                 disabled={dragDisabled}
                 statusMenuDisabled={statusMenuDisabled}
                 onStatusChange={onStatusChange}
+                ownerOptions={ownerOptionsByProjectId?.get(issue.projectId)}
+                onOwnerChange={onOwnerChange}
                 onDelete={onDeleteIssue}
                 onOpenDetails={onOpenDetails}
               />

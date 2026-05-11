@@ -27,6 +27,8 @@ export interface AuthSession {
 export interface Project {
   id: string;
   name: string;
+  collaborationId?: string | null;
+  collaboration?: ProjectCollaboration | null;
   metadata?: Record<string, unknown> | null;
   daemonHost?: string | null;
   workspacePath?: string | null;
@@ -42,6 +44,34 @@ export interface Project {
   updatedAt?: string;
 }
 
+export interface CollaborationMember {
+  id: string;
+  userId: string;
+  projectId: string;
+  projectName?: string;
+  label: string;
+  joinedAt?: string;
+  // Raw email/phone are intentionally not surfaced — only `label` is.
+  user?: {
+    id: string;
+    label?: string;
+  };
+  project?: {
+    id: string;
+    name: string;
+  };
+}
+
+export interface ProjectCollaboration {
+  id: string;
+  inviteToken: string;
+  inviteUrl?: string;
+  memberCount: number;
+  maxMembers: number;
+  members: CollaborationMember[];
+  createdAt?: string;
+}
+
 export interface ProjectWithBoundDaemons extends Project {
   boundDaemonNames: string[];
 }
@@ -53,6 +83,17 @@ export type IssuePriority = IssuePriorityValue;
 export interface Issue {
   id: string;
   projectId: string;
+  ownerUserId?: string | null;
+  creatorUserId?: string | null;
+  // Raw email/phone are intentionally not surfaced — only `label` is.
+  owner?: {
+    id: string;
+    label?: string;
+  } | null;
+  creator?: {
+    id: string;
+    label?: string;
+  } | null;
   title: string;
   description?: string | null;
   status: IssueStatus;
@@ -283,6 +324,7 @@ export interface UpdateProjectInput {
 
 export interface CreateIssueInput {
   projectId: string;
+  ownerUserId?: string;
   title: string;
   description?: string | null;
   status?: IssueStatus;
@@ -292,6 +334,7 @@ export interface CreateIssueInput {
 }
 
 export interface UpdateIssueInput {
+  ownerUserId?: string;
   title?: string;
   description?: string | null;
   status?: IssueStatus;

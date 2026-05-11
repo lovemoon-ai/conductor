@@ -51,6 +51,16 @@ const ShowIcon = () => (
   </svg>
 );
 
+const InviteIcon = () => (
+  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 14v4m2-2h-4M15 8a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0" />
+  </svg>
+);
+
+const stopEventPropagation = (event: SyntheticEvent) => {
+  event.stopPropagation();
+};
+
 const readBindingCandidate = (
   metadata: Record<string, unknown> | null | undefined,
 ): { daemonHost: string; workspacePath: string } | null => {
@@ -107,7 +117,7 @@ export function ProjectItem({
   const renamingRef = useRef(false);
   const skipRenameOnBlurRef = useRef(false);
 
-  const { updateProject, deleteProject } = useProjectsStore();
+  const { updateProject, deleteProject, startProjectCollaboration, leaveCollaboration } = useProjectsStore();
   const agents = useAgentsStore((state) => state.agents);
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
@@ -134,10 +144,14 @@ export function ProjectItem({
     ? formatBindingLabel(daemonHost, workspacePath)
     : pendingBindingLabel;
   const taskStatusCounts = projectRecord.taskStatusCounts as Record<string, number> | undefined;
+  const collaboration = project.collaboration ?? null;
+  const collaborationMemberCount = collaboration?.memberCount ?? collaboration?.members.length ?? 0;
+  const hasCollaboration = Boolean(collaboration);
   const runningCount = taskStatusCounts?.running ?? 0;
   const killedCount = taskStatusCounts?.killed ?? 0;
-  const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isUnavailable || isPendingBinding || runningCount > 0 || killedCount > 0;
+  const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isUnavailable || isPendingBinding || hasCollaboration || runningCount > 0 || killedCount > 0;
   const projectTitleId = `project-title-${project.id}`;
+  const [isCollaborationBusy, setIsCollaborationBusy] = useState(false);
   const canHide = Boolean(onHide) && !isHidden;
   const canUnhide = Boolean(onUnhide) && isHidden;
   const canDelete = !isDefault;
@@ -341,6 +355,77 @@ export function ProjectItem({
       title: 'Project restored',
     });
     swipe.closeActions();
+  };
+
+  const copyInviteLink = async (target: { inviteUrl?: string; inviteToken: string }) => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    // Prefer the URL the server constructed from the request origin so reverse
+    // proxies / different API hosts stay consistent; fall back to building it
+    // locally from window.location.origin if the API didn't include one.
+    const inviteUrl = target.inviteUrl?.trim()
+      || `${window.location.origin}/app/invite/${encodeURIComponent(target.inviteToken)}`;
+    await navigator.clipboard.writeText(inviteUrl);
+  };
+
+  const handleInvite = async (event: SyntheticEvent) => {
+    stopEventPropagation(event);
+    if (isCollaborationBusy) {
+      return;
+    }
+    setIsCollaborationBusy(true);
+    try {
+      const nextCollaboration = collaboration ?? await startProjectCollaboration(project.id);
+      await copyInviteLink(nextCollaboration);
+      pushToast({
+        title: 'Invite link copied',
+        description: `${nextCollaboration.memberCount}/${nextCollaboration.maxMembers} members joined.`,
+        variant: 'success',
+      });
+    } catch (error) {
+      pushToast({
+        title: 'Failed to create invite link',
+        description: error instanceof Error ? error.message : 'Try again later.',
+        variant: 'error',
+      });
+    } finally {
+      setIsCollaborationBusy(false);
+      swipe.closeActions();
+    }
+  };
+
+  const handleLeaveCollaboration = async (event: SyntheticEvent) => {
+    stopEventPropagation(event);
+    if (!collaboration || isCollaborationBusy) {
+      return;
+    }
+    const accepted = await confirm({
+      title: 'Leave collaboration?',
+      description: 'This project will stop sharing its issue board with the other members.',
+      confirmLabel: 'Leave',
+      tone: 'danger',
+    });
+    if (!accepted) {
+      return;
+    }
+    setIsCollaborationBusy(true);
+    try {
+      await leaveCollaboration(collaboration.id);
+      pushToast({
+        title: 'Left collaboration',
+        variant: 'success',
+      });
+    } catch (error) {
+      pushToast({
+        title: 'Failed to leave collaboration',
+        description: error instanceof Error ? error.message : 'Try again later.',
+        variant: 'error',
+      });
+    } finally {
+      setIsCollaborationBusy(false);
+      swipe.closeActions();
+    }
   };
 
   const {
@@ -584,6 +669,11 @@ export function ProjectItem({
                     Binding pending
                   </span>
                 ) : null}
+                {hasCollaboration ? (
+                  <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
+                    {collaborationMemberCount}/{collaboration?.maxMembers ?? 5} members
+                  </span>
+                ) : null}
                 {runningCount > 0 ? (
                   <span className="flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
                     {runningCount} running
@@ -593,6 +683,42 @@ export function ProjectItem({
                   <span className="flex items-center gap-1 rounded bg-[var(--error)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--error)]">
                     {killedCount} killed
                   </span>
+                ) : null}
+              </div>
+            ) : null}
+            {/*
+              Default project is the user's personal "scratch" — collaboration
+              is suppressed there. Invite is hidden entirely; Leave stays as an
+              escape hatch in case a legacy default project somehow ended up
+              attached to a collaboration.
+            */}
+            {!isDefault || collaboration ? (
+              <div
+                className="mt-3 flex flex-wrap items-center gap-2"
+                onPointerDown={stopEventPropagation}
+                onClick={stopEventPropagation}
+                onDoubleClick={stopEventPropagation}
+              >
+                {!isDefault ? (
+                  <button
+                    type="button"
+                    onClick={(event) => void handleInvite(event)}
+                    disabled={isCollaborationBusy}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-border/40 disabled:opacity-60"
+                  >
+                    <InviteIcon />
+                    {hasCollaboration ? 'Copy invite' : 'Invite'}
+                  </button>
+                ) : null}
+                {collaboration ? (
+                  <button
+                    type="button"
+                    onClick={(event) => void handleLeaveCollaboration(event)}
+                    disabled={isCollaborationBusy}
+                    className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-muted transition-colors hover:bg-border/30 hover:text-ink disabled:opacity-60"
+                  >
+                    Leave
+                  </button>
                 ) : null}
               </div>
             ) : null}

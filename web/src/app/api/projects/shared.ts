@@ -1,4 +1,9 @@
 import { Prisma } from "@prisma/client";
+import {
+  collaborationSummarySelect,
+  serializeCollaboration,
+  type CollaborationSummaryRecord,
+} from "@/lib/collaboration/service";
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
@@ -222,6 +227,8 @@ type SerializableProject = {
   fileCount: number | null;
   sortOrder?: number | null;
   hiddenAt?: Date | null;
+  collaborationId?: string | null;
+  collaboration?: CollaborationSummaryRecord | null;
   metadata: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -236,6 +243,10 @@ const PROJECT_SERIALIZATION_BASE_SELECT = {
   worktreeBranch: true,
   lastCommit: true,
   fileCount: true,
+  collaborationId: true,
+  collaboration: {
+    select: collaborationSummarySelect,
+  },
   metadata: true,
   createdAt: true,
   updatedAt: true,
@@ -311,6 +322,8 @@ const serializeProject = (
     lastCommit: project.lastCommit,
     fileCount: project.fileCount,
     sortOrder: project.sortOrder,
+    collaborationId: project.collaborationId ?? null,
+    collaboration: project.collaboration ? serializeCollaboration(project.collaboration) : null,
     hidden,
     hiddenAt,
     isDefault: isDefault,
@@ -324,6 +337,7 @@ const serializeProject = (
     last_commit: project.lastCommit,
     file_count: project.fileCount,
     sort_order: project.sortOrder,
+    collaboration_id: project.collaborationId ?? null,
     hidden_at: hiddenAt,
     is_default: isDefault,
     created_at: createdAt,

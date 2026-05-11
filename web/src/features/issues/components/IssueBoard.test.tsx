@@ -55,6 +55,7 @@ describe('IssueBoard', () => {
   const onMoveIssue = vi.fn();
   const onStatusChange = vi.fn();
   const onDeleteIssue = vi.fn();
+  const onOwnerChange = vi.fn();
   const issues: Issue[] = [
     {
       id: 'issue-1',
@@ -108,6 +109,7 @@ describe('IssueBoard', () => {
     onMoveIssue.mockReset();
     onStatusChange.mockReset();
     onDeleteIssue.mockReset();
+    onOwnerChange.mockReset();
   });
 
   it('renders the simplified status columns and only the compact open-task action', () => {
@@ -152,6 +154,45 @@ describe('IssueBoard', () => {
     });
 
     expect(onStatusChange).toHaveBeenCalledWith('issue-1', 'doing');
+  });
+
+  it('opens the owner menu and forwards owner updates', async () => {
+    const ownedIssues: Issue[] = [
+      {
+        ...issues[0],
+        ownerUserId: 'user-1',
+        owner: {
+          id: 'user-1',
+          label: 'Alice',
+        },
+      },
+    ];
+    const ownerOptionsByProjectId = new Map([
+      ['project-1', [
+        { userId: 'user-1', label: 'Alice', projectName: 'Project One' },
+        { userId: 'user-2', label: 'Bob', projectName: 'Project Two' },
+      ]],
+    ]);
+
+    render(
+      <IssueBoard
+        issues={ownedIssues}
+        ownerOptionsByProjectId={ownerOptionsByProjectId}
+        onOwnerChange={onOwnerChange}
+        onMoveIssue={onMoveIssue}
+        onStatusChange={onStatusChange}
+        onDeleteIssue={onDeleteIssue}
+      />,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Issue owner Alice' }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Assign Plan board UX to Bob' }));
+    });
+
+    expect(onOwnerChange).toHaveBeenCalledWith('issue-1', 'user-2');
   });
 
   it('keeps status updates enabled when dragging is disabled', async () => {

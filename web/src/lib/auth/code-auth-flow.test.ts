@@ -1,10 +1,25 @@
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { PrismaClient } from "@prisma/client";
 import { loginWithCode, registerWithCode } from "./service";
 
 const prisma = new PrismaClient();
 const createdUserIds = new Set<string>();
 const verificationTargets = new Set<string>();
+
+async function ignoreExistingSchema(action: () => Promise<unknown>): Promise<void> {
+  try {
+    await action();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      message.includes("duplicate column name") ||
+      message.includes("already exists")
+    ) {
+      return;
+    }
+    throw error;
+  }
+}
 
 function futureDate(days = 1): Date {
   const next = new Date();
@@ -15,6 +30,32 @@ function futureDate(days = 1): Date {
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
 }
+
+beforeAll(async () => {
+  await ignoreExistingSchema(() => prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "project_collaborations" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "invite_token" TEXT NOT NULL,
+      "created_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `));
+  await ignoreExistingSchema(() => prisma.$executeRawUnsafe(`
+    CREATE UNIQUE INDEX IF NOT EXISTS "project_collaborations_invite_token_key"
+    ON "project_collaborations"("invite_token")
+  `));
+  await ignoreExistingSchema(() => prisma.$executeRawUnsafe(`
+    ALTER TABLE "projects" ADD COLUMN "collaboration_id" TEXT
+  `));
+  await ignoreExistingSchema(() => prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "collaboration_members" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "collaboration_id" TEXT NOT NULL,
+      "user_id" TEXT NOT NULL,
+      "project_id" TEXT NOT NULL,
+      "joined_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `));
+});
 
 afterEach(async () => {
   if (verificationTargets.size > 0) {

@@ -15,6 +15,112 @@ const stopEventPropagation = (event: SyntheticEvent) => {
   event.stopPropagation();
 };
 
+export type IssueOwnerOption = {
+  userId: string;
+  label: string;
+  projectName?: string;
+};
+
+const getOwnerInitials = (label: string): string => {
+  const normalized = label.trim();
+  if (!normalized) {
+    return '?';
+  }
+  const compact = normalized.includes('@') ? normalized.split('@')[0] : normalized;
+  return compact.slice(0, 2).toUpperCase();
+};
+
+function IssueOwnerMenu({
+  issue,
+  ownerOptions = [],
+  onOwnerChange,
+}: {
+  issue: Issue;
+  ownerOptions?: IssueOwnerOption[];
+  onOwnerChange?: (issueId: string, ownerUserId: string) => Promise<void> | void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const owner = ownerOptions.find((option) => option.userId === issue.ownerUserId) ?? null;
+  const ownerLabel = owner?.label ?? issue.owner?.label ?? issue.ownerUserId ?? 'Unassigned';
+  const canChangeOwner = Boolean(onOwnerChange) && ownerOptions.length > 1;
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [open]);
+
+  const handleSelect = async (ownerUserId: string) => {
+    setOpen(false);
+    if (!onOwnerChange || isUpdating || ownerUserId === issue.ownerUserId) {
+      return;
+    }
+    setIsUpdating(true);
+    try {
+      await onOwnerChange(issue.id, ownerUserId);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  return (
+    <div
+      ref={menuRef}
+      className="relative shrink-0"
+      onPointerDown={stopEventPropagation}
+      onClick={stopEventPropagation}
+      onDoubleClick={stopEventPropagation}
+    >
+      <button
+        type="button"
+        aria-label={`Issue owner ${ownerLabel}`}
+        title={ownerLabel}
+        disabled={!canChangeOwner || isUpdating}
+        onClick={() => setOpen((current) => !current)}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-border bg-paper text-[10px] font-semibold text-ink transition-colors hover:bg-border/30 disabled:cursor-default disabled:opacity-90"
+      >
+        {getOwnerInitials(ownerLabel)}
+      </button>
+
+      {open ? (
+        <div className="absolute right-0 top-[calc(100%+0.5rem)] z-20 min-w-44 rounded-2xl border border-border/80 bg-panel/70 p-1.5 shadow-[0_18px_48px_rgba(15,23,42,0.14)] backdrop-blur-md">
+          {ownerOptions.map((option) => {
+            const active = option.userId === issue.ownerUserId;
+            return (
+              <button
+                key={option.userId}
+                type="button"
+                aria-label={`Assign ${issue.title} to ${option.label}`}
+                disabled={isUpdating}
+                onClick={() => void handleSelect(option.userId)}
+                className={`flex w-full flex-col rounded-xl px-3 py-2 text-left text-sm transition-colors ${
+                  active ? 'bg-border/40 text-ink' : 'text-muted hover:bg-border/30 hover:text-ink'
+                }`}
+              >
+                <span>{option.label}</span>
+                {option.projectName ? (
+                  <span className="text-[11px] text-muted/75">{option.projectName}</span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function IssueStatusMenu({
   issue,
   onStatusChange,
@@ -109,6 +215,8 @@ function IssueCardBody({
   statusMenuDisabled = false,
   statusAttributes,
   onStatusChange,
+  ownerOptions,
+  onOwnerChange,
   onDelete,
   onOpenDetails,
 }: {
@@ -119,6 +227,8 @@ function IssueCardBody({
   statusMenuDisabled?: boolean;
   statusAttributes?: Record<string, unknown>;
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
+  ownerOptions?: IssueOwnerOption[];
+  onOwnerChange?: (issueId: string, ownerUserId: string) => Promise<void> | void;
   onDelete?: (issueId: string) => Promise<void> | void;
   onOpenDetails?: (issue: Issue) => void;
 }) {
@@ -195,6 +305,7 @@ function IssueCardBody({
           >
             {issue.title}
           </h3>
+          <IssueOwnerMenu issue={issue} ownerOptions={ownerOptions} onOwnerChange={onOwnerChange} />
           {interactive ? (
             <IssueStatusMenu issue={issue} onStatusChange={onStatusChange} disabled={statusMenuDisabled} />
           ) : (
@@ -269,6 +380,8 @@ export function IssueCard({
   disabled = false,
   statusMenuDisabled = false,
   onStatusChange,
+  ownerOptions,
+  onOwnerChange,
   onDelete,
   onOpenDetails,
 }: {
@@ -276,6 +389,8 @@ export function IssueCard({
   disabled?: boolean;
   statusMenuDisabled?: boolean;
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
+  ownerOptions?: IssueOwnerOption[];
+  onOwnerChange?: (issueId: string, ownerUserId: string) => Promise<void> | void;
   onDelete?: (issueId: string) => Promise<void> | void;
   onOpenDetails?: (issue: Issue) => void;
 }) {
@@ -305,6 +420,8 @@ export function IssueCard({
         disabled={disabled}
         statusMenuDisabled={statusMenuDisabled}
         onStatusChange={onStatusChange}
+        ownerOptions={ownerOptions}
+        onOwnerChange={onOwnerChange}
         onDelete={onDelete}
         onOpenDetails={onOpenDetails}
         statusAttributes={{ ...attributes, ...listeners }}

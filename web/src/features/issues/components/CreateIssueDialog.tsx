@@ -29,6 +29,7 @@ export function CreateIssueDialog({
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<IssuePriorityValue>(DEFAULT_ISSUE_PRIORITY);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(projectId);
+  const [ownerUserId, setOwnerUserId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const projects = useProjectsStore((state) => state.projects);
@@ -44,6 +45,19 @@ export function CreateIssueDialog({
   );
   const effectiveProjectId = projectId ?? selectedProjectId;
   const showProjectPicker = !projectId;
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.id === effectiveProjectId) ?? null,
+    [effectiveProjectId, projects],
+  );
+  const ownerOptions = selectedProject?.collaboration?.members ?? [];
+  const defaultOwnerUserId = useMemo(() => {
+    if (!effectiveProjectId || ownerOptions.length === 0) {
+      return null;
+    }
+    return ownerOptions.find((member) => member.projectId === effectiveProjectId)?.userId
+      ?? ownerOptions[0]?.userId
+      ?? null;
+  }, [effectiveProjectId, ownerOptions]);
 
   useEffect(() => {
     if (!open) {
@@ -52,8 +66,9 @@ export function CreateIssueDialog({
     setTitle('');
     setDescription('');
     setPriority(DEFAULT_ISSUE_PRIORITY);
+    setOwnerUserId(defaultOwnerUserId);
     clearError();
-  }, [clearError, open]);
+  }, [clearError, defaultOwnerUserId, open]);
 
   useEffect(() => {
     if (!open || projects.length > 0) {
@@ -77,6 +92,17 @@ export function CreateIssueDialog({
     ));
   }, [defaultProjectId, open, projectId, projects]);
 
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setOwnerUserId((current) => (
+      current && ownerOptions.some((member) => member.userId === current)
+        ? current
+        : defaultOwnerUserId
+    ));
+  }, [defaultOwnerUserId, open, ownerOptions]);
+
   const handleClose = () => {
     if (isSubmitting) {
       return;
@@ -94,6 +120,7 @@ export function CreateIssueDialog({
     try {
       await createIssue({
         projectId: effectiveProjectId,
+        ...(ownerUserId ? { ownerUserId } : {}),
         title: title.trim(),
         description: description.trim() ? description.trim() : null,
         status: DEFAULT_STATUS,
@@ -144,6 +171,26 @@ export function CreateIssueDialog({
               {projects.map((project) => (
                 <option key={project.id} value={project.id}>
                   {project.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+
+        {ownerOptions.length > 1 ? (
+          <div>
+            <label htmlFor="create-issue-owner" className="mb-2 block text-sm font-medium text-ink">
+              Owner
+            </label>
+            <select
+              id="create-issue-owner"
+              value={ownerUserId ?? ''}
+              onChange={(event) => setOwnerUserId(event.target.value || null)}
+              className="w-full webapp-input"
+            >
+              {ownerOptions.map((member) => (
+                <option key={member.userId} value={member.userId}>
+                  {member.projectName ? `${member.label} · ${member.projectName}` : member.label}
                 </option>
               ))}
             </select>

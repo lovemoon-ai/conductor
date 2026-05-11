@@ -1,4 +1,5 @@
 import { normalizeIssuePriority, normalizeIssueStatus } from '@/lib/issues/config';
+import { serializeIssueUser, type IssueUserRecord } from '@/lib/collaboration/service';
 import { serializeTaskResponse } from '@/lib/tasks/serialization';
 
 const parseIssueMetadata = (value: string | null): Record<string, unknown> | null => {
@@ -19,6 +20,8 @@ const parseIssueMetadata = (value: string | null): Record<string, unknown> | nul
 type SerializableIssue = {
   id: string;
   projectId: string;
+  ownerUserId?: string | null;
+  creatorUserId?: string | null;
   title: string;
   description: string | null;
   status: string;
@@ -27,6 +30,8 @@ type SerializableIssue = {
   metadata: string | null;
   createdAt: Date;
   updatedAt: Date;
+  owner?: IssueUserRecord | null;
+  creator?: IssueUserRecord | null;
 };
 
 type SerializableActiveTask = Parameters<typeof serializeTaskResponse>[0] | null | undefined;
@@ -53,6 +58,10 @@ export const serializeIssue = (
   return {
     id: issue.id,
     projectId: issue.projectId,
+    ownerUserId: issue.ownerUserId ?? null,
+    creatorUserId: issue.creatorUserId ?? null,
+    owner: serializeIssueUser(issue.owner),
+    creator: serializeIssueUser(issue.creator),
     title: issue.title,
     description: issue.description,
     status,
@@ -65,6 +74,8 @@ export const serializeIssue = (
     createdAt,
     updatedAt,
     project_id: issue.projectId,
+    owner_user_id: issue.ownerUserId ?? null,
+    creator_user_id: issue.creatorUserId ?? null,
     active_task: serializedActiveTask,
     linked_task: serializedLinkedTask,
     created_at: createdAt,

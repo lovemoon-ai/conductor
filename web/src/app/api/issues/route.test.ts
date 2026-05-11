@@ -3,8 +3,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET, POST } from './route';
 import { createMockRequest, extractJson } from '@/__tests__/helpers';
 
+const collaborationMocks = vi.hoisted(() => ({
+  getProjectIssueScope: vi.fn(),
+  isAssignableIssueOwner: vi.fn(),
+}));
+
 vi.mock('@/lib/auth/middleware', () => ({
   getActiveSubscriptionUser: vi.fn(),
+}));
+
+vi.mock('@/lib/collaboration/service', () => ({
+  issueUserSelect: { id: true, email: true, phone: true },
+  // Mirror the production shape — raw email/phone never leave the server.
+  serializeIssueUser: (user: any) => user ? {
+    id: user.id,
+    label: user.email ?? user.phone ?? user.id,
+  } : null,
+  getProjectIssueScope: collaborationMocks.getProjectIssueScope,
+  isAssignableIssueOwner: collaborationMocks.isAssignableIssueOwner,
 }));
 
 vi.mock('@/lib/db', () => ({
@@ -41,7 +57,25 @@ describe('/api/issues', () => {
     vi.mocked(getActiveSubscriptionUser).mockResolvedValue({
       id: 'user-1',
     } as any);
+    collaborationMocks.getProjectIssueScope.mockImplementation(async (_userId: string, projectId: string | null) =>
+      projectId ? [projectId] : ['project-1', 'project-2'],
+    );
+    collaborationMocks.isAssignableIssueOwner.mockResolvedValue(true);
     vi.mocked(db.task.findMany).mockResolvedValue([] as any);
+  });
+
+  it('returns 404 when the requested project is outside the caller scope', async () => {
+    collaborationMocks.getProjectIssueScope.mockResolvedValueOnce(null);
+
+    const response = await GET(createMockRequest({
+      method: 'GET',
+      url: 'http://localhost:6152/api/issues?project_id=foreign-project',
+    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(404);
+    expect(data).toEqual({ error: 'Project not found' });
+    expect(db.issue.findMany).not.toHaveBeenCalled();
   });
 
   it('lists issues scoped to the requested project', async () => {
@@ -70,8 +104,7 @@ describe('/api/issues', () => {
     expect(response.status).toBe(200);
     expect(db.issue.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
-        project: { userId: 'user-1' },
-        projectId: 'project-1',
+        projectId: { in: ['project-1'] },
       }),
     }));
     expect(data).toEqual([
@@ -214,7 +247,7 @@ describe('/api/issues', () => {
     expect(response.status).toBe(200);
     expect(db.issue.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: {
-        project: { userId: 'user-1' },
+        projectId: { in: ['project-1', 'project-2'] },
       },
     }));
     expect(data).toEqual([
@@ -252,6 +285,8 @@ describe('/api/issues', () => {
       method: 'POST',
       body: {
         projectId: 'project-1',
+        ownerUserId: 'user-1',
+        creatorUserId: 'user-1',
         title: 'Ship issue nav',
       },
     }));
