@@ -23,8 +23,15 @@ vi.mock('@/lib/db', () => ({
   },
 }));
 
+vi.mock('@/lib/realtime/hub', () => ({
+  realtimeHub: {
+    broadcast: vi.fn(),
+  },
+}));
+
 const { getActiveSubscriptionUser } = await import('@/lib/auth/middleware');
 const { db } = await import('@/lib/db');
+const { realtimeHub } = await import('@/lib/realtime/hub');
 
 const missingPriorityColumnError = () =>
   new Prisma.PrismaClientKnownRequestError(
@@ -488,5 +495,183 @@ describe('/api/issues', () => {
     expect(response.status).toBe(409);
     expect(data.error).toContain("Issue priority is unavailable");
     expect(vi.mocked(db.issue.create)).toHaveBeenCalledTimes(1);
+  });
+
+  it('broadcasts issue.created on a fresh create and persists clientRequestId in metadata', async () => {
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    // Idempotency lookup runs first when clientRequestId is provided.
+    vi.mocked(db.issue.findMany).mockResolvedValueOnce([] as any);
+    vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
+    vi.mocked(db.issue.create).mockResolvedValue({
+      id: 'issue-cri',
+      projectId: 'project-1',
+      title: 'Idempotent create',
+      description: null,
+      status: 'todo',
+      priority: 'P1',
+      position: 0,
+      metadata: JSON.stringify({
+        audit: { actor: 'cli', cliVersion: '1.2.3' },
+        clientRequestId: 'req-abc',
+      }),
+      createdAt: new Date('2026-04-14T00:20:00.000Z'),
+      updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+    } as any);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: {
+        projectId: 'project-1',
+        title: 'Idempotent create',
+        clientRequestId: 'req-abc',
+        metadata: { audit: { actor: 'cli', cliVersion: '1.2.3' } },
+      },
+    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.id).toBe('issue-cri');
+    // metadata round-trips: audit namespace preserved, clientRequestId merged in.
+    expect(data.metadata).toEqual({
+      audit: { actor: 'cli', cliVersion: '1.2.3' },
+      clientRequestId: 'req-abc',
+    });
+    // The persisted JSON includes the merged clientRequestId.
+    const createCall = vi.mocked(db.issue.create).mock.calls[0]?.[0] as { data: { metadata: string } };
+    expect(JSON.parse(createCall.data.metadata)).toEqual({
+      audit: { actor: 'cli', cliVersion: '1.2.3' },
+      clientRequestId: 'req-abc',
+    });
+    // Broadcast fires exactly once on the create path.
+    expect(realtimeHub.broadcast).toHaveBeenCalledTimes(1);
+    expect(realtimeHub.broadcast).toHaveBeenCalledWith(
+      'user-1',
+      'project-1',
+      expect.objectContaining({
+        type: 'issue.created',
+        payload: expect.objectContaining({
+          projectId: 'project-1',
+          issue: expect.objectContaining({ id: 'issue-cri' }),
+        }),
+      }),
+    );
+  });
+
+  it('returns the existing issue without broadcasting when clientRequestId already exists', async () => {
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.issue.findMany).mockResolvedValueOnce([
+      {
+        id: 'issue-existing',
+        projectId: 'project-1',
+        title: 'Already there',
+        description: null,
+        status: 'todo',
+        priority: 'P1',
+        position: 0,
+        metadata: JSON.stringify({ clientRequestId: 'req-xyz', audit: { actor: 'cli' } }),
+        createdAt: new Date('2026-04-14T00:00:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:10:00.000Z'),
+      },
+    ] as any);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: {
+        projectId: 'project-1',
+        title: 'Should be ignored',
+        clientRequestId: 'req-xyz',
+      },
+    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.id).toBe('issue-existing');
+    expect(data.title).toBe('Already there');
+    expect(db.issue.create).not.toHaveBeenCalled();
+    expect(realtimeHub.broadcast).not.toHaveBeenCalled();
+  });
+
+  it('passes through audit metadata under metadata.audit on create round-trip', async () => {
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
+    vi.mocked(db.issue.create).mockResolvedValue({
+      id: 'issue-audit',
+      projectId: 'project-1',
+      title: 'Audit',
+      description: null,
+      status: 'todo',
+      priority: 'P1',
+      position: 0,
+      metadata: JSON.stringify({ audit: { actor: 'cli', cliVersion: '9.9.9', invokedBy: 'claude-code' } }),
+      createdAt: new Date('2026-04-14T00:20:00.000Z'),
+      updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+    } as any);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: {
+        projectId: 'project-1',
+        title: 'Audit',
+        metadata: { audit: { actor: 'cli', cliVersion: '9.9.9', invokedBy: 'claude-code' } },
+      },
+    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.metadata).toEqual({
+      audit: { actor: 'cli', cliVersion: '9.9.9', invokedBy: 'claude-code' },
+    });
+    const createCall = vi.mocked(db.issue.create).mock.calls[0]?.[0] as { data: { metadata: string } };
+    expect(JSON.parse(createCall.data.metadata)).toEqual({
+      audit: { actor: 'cli', cliVersion: '9.9.9', invokedBy: 'claude-code' },
+    });
+  });
+
+  it('strips top-level audit-shaped keys (actor / cliVersion / invokedBy / sdkVersion)', async () => {
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
+    vi.mocked(db.issue.create).mockResolvedValue({
+      id: 'issue-strip',
+      projectId: 'project-1',
+      title: 'Strip',
+      description: null,
+      status: 'todo',
+      priority: 'P1',
+      position: 0,
+      // Persisted shape: only the audit namespace and `extra` survive; the
+      // top-level spoof keys were dropped server-side.
+      metadata: JSON.stringify({ audit: { actor: 'cli' }, extra: 'kept' }),
+      createdAt: new Date('2026-04-14T00:20:00.000Z'),
+      updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+    } as any);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: {
+        projectId: 'project-1',
+        title: 'Strip',
+        metadata: {
+          audit: { actor: 'cli' },
+          // Caller tries to spoof at the top level. Server must drop these.
+          actor: 'system',
+          cliVersion: 'fake',
+          sdkVersion: 'fake',
+          invokedBy: 'attacker',
+          extra: 'kept',
+        },
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    const createCall = vi.mocked(db.issue.create).mock.calls[0]?.[0] as { data: { metadata: string } };
+    const persisted = JSON.parse(createCall.data.metadata);
+    expect(persisted).toEqual({
+      audit: { actor: 'cli' },
+      extra: 'kept',
+    });
+    expect(persisted.actor).toBeUndefined();
+    expect(persisted.cliVersion).toBeUndefined();
+    expect(persisted.sdkVersion).toBeUndefined();
+    expect(persisted.invokedBy).toBeUndefined();
   });
 });

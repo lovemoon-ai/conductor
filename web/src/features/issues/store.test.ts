@@ -14,7 +14,7 @@ vi.mock('@/shared/api/client', () => ({
   }),
 }));
 
-import { useIssuesStore } from './store';
+import { applyIssueCreatedEvent, useIssuesStore } from './store';
 
 describe('issues store', () => {
   beforeEach(() => {
@@ -223,6 +223,71 @@ describe('issues store', () => {
       }),
       activeTask: null,
     });
+  });
+
+  it('merges issue.created realtime payloads into the active project list', async () => {
+    useIssuesStore.setState({
+      issues: [],
+      isLoading: false,
+      error: null,
+      currentProjectId: 'project-1',
+      currentProjectIds: [],
+    });
+
+    applyIssueCreatedEvent({
+      projectId: 'project-1',
+      issue: {
+        id: 'issue-rt',
+        project_id: 'project-1',
+        title: 'Realtime arrival',
+        status: 'todo',
+        position: 0,
+        created_at: '2026-05-09T00:00:00.000Z',
+      },
+    });
+
+    const issues = useIssuesStore.getState().issues;
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ id: 'issue-rt', projectId: 'project-1' });
+
+    // Replaying the same event must not produce a duplicate (POST response +
+    // WS event race scenario).
+    applyIssueCreatedEvent({
+      projectId: 'project-1',
+      issue: {
+        id: 'issue-rt',
+        project_id: 'project-1',
+        title: 'Realtime arrival',
+        status: 'todo',
+        position: 0,
+        created_at: '2026-05-09T00:00:00.000Z',
+      },
+    });
+    expect(useIssuesStore.getState().issues).toHaveLength(1);
+  });
+
+  it('ignores issue.created events outside the active project scope', async () => {
+    useIssuesStore.setState({
+      issues: [],
+      isLoading: false,
+      error: null,
+      currentProjectId: 'project-1',
+      currentProjectIds: [],
+    });
+
+    applyIssueCreatedEvent({
+      projectId: 'project-other',
+      issue: {
+        id: 'issue-other',
+        project_id: 'project-other',
+        title: 'Different project',
+        status: 'todo',
+        position: 0,
+        created_at: '2026-05-09T00:00:00.000Z',
+      },
+    });
+
+    expect(useIssuesStore.getState().issues).toHaveLength(0);
   });
 
   it('updates issue-linked task metadata from mutation responses', async () => {

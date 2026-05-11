@@ -461,6 +461,124 @@ export class BackendApiClient {
     return ProjectSummary.fromJSON(payload);
   }
 
+  /**
+   * PATCH /projects?projectId=... — used for fields the per-id PATCH endpoint
+   * doesn't accept (today: `hidden`). The two PATCH endpoints intentionally
+   * have different surfaces; see web/src/app/api/projects/route.ts vs
+   * web/src/app/api/projects/[projectId]/route.ts.
+   */
+  async patchProjectByQuery(
+    projectId: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, any>> {
+    const query = new URLSearchParams();
+    query.set('projectId', projectId);
+    const response = await this.request('PATCH', '/projects', {
+      query,
+      body: JSON.stringify(params),
+    });
+    return this.parseJson(response);
+  }
+
+  /**
+   * POST /projects/default — switches the user's default project to
+   * `projectId`. Returns the serialized Project (with `is_default: true`).
+   * Extra body fields (e.g., `metadata`) are merged into the request so the
+   * facade can pass audit info through.
+   */
+  async setDefaultProject(
+    projectId: string,
+    extraBody: Record<string, unknown> = {},
+  ): Promise<Record<string, any>> {
+    const response = await this.request('POST', '/projects/default', {
+      body: JSON.stringify({ projectId, ...extraBody }),
+    });
+    return this.parseJson(response);
+  }
+
+  async listIssues(params: {
+    projectId?: string;
+    projectIds?: string[];
+    status?: string;
+  } = {}): Promise<Record<string, any>[]> {
+    const query = new URLSearchParams();
+    if (params.projectId) {
+      query.set('project_id', params.projectId);
+    }
+    if (params.projectIds && params.projectIds.length > 0) {
+      query.set('project_ids', params.projectIds.join(','));
+    }
+    if (params.status) {
+      query.set('status', params.status);
+    }
+    const response = await this.request('GET', '/issues', { query });
+    const payload = await this.parseJson(response);
+    if (!Array.isArray(payload)) {
+      throw new BackendApiError('Invalid issues response: expected list', response.status, payload);
+    }
+    return payload as Record<string, any>[];
+  }
+
+  async getIssue(issueId: string): Promise<Record<string, any>> {
+    const response = await this.request('GET', `/issues/${issueId}`);
+    return this.parseJson(response);
+  }
+
+  async createIssue(params: Record<string, unknown>): Promise<Record<string, any>> {
+    const response = await this.request('POST', '/issues', {
+      body: JSON.stringify(params),
+    });
+    return this.parseJson(response);
+  }
+
+  async patchIssue(issueId: string, params: Record<string, unknown>): Promise<Record<string, any>> {
+    const response = await this.request('PATCH', `/issues/${issueId}`, {
+      body: JSON.stringify(params),
+    });
+    return this.parseJson(response);
+  }
+
+  async deleteIssue(issueId: string): Promise<void> {
+    await this.request('DELETE', `/issues/${issueId}`);
+  }
+
+  async listTaskMessages(
+    taskId: string,
+    params: { limit?: number; before?: string } = {},
+  ): Promise<Record<string, any>[]> {
+    const query = new URLSearchParams();
+    query.set('pagination', '1');
+    if (typeof params.limit === 'number' && Number.isFinite(params.limit)) {
+      query.set('limit', String(params.limit));
+    }
+    if (params.before) {
+      query.set('before_id', params.before);
+    }
+    const response = await this.request('GET', `/tasks/${taskId}/messages`, { query });
+    const payload = await this.parseJson(response);
+    if (Array.isArray(payload)) {
+      return payload as Record<string, any>[];
+    }
+    if (payload && typeof payload === 'object' && Array.isArray((payload as any).messages)) {
+      return (payload as any).messages as Record<string, any>[];
+    }
+    throw new BackendApiError('Invalid messages response', response.status, payload);
+  }
+
+  /**
+   * POST /tasks/[taskId]/messages — direct REST call. Note: `BackendApiClient`
+   * has a higher-level `commitSdkMessage` that goes through the agent-events
+   * pipeline (durable outbox + WS scope), but the CLI/AI Agent flow is a
+   * one-shot HTTP write with no agent host context, so we use the REST
+   * endpoint directly here. (RFC 0025 §2 picks the simpler path.)
+   */
+  async postTaskMessage(taskId: string, params: Record<string, unknown>): Promise<Record<string, any>> {
+    const response = await this.request('POST', `/tasks/${taskId}/messages`, {
+      body: JSON.stringify(params),
+    });
+    return this.parseJson(response);
+  }
+
   private async request(
     method: string,
     pathname: string,

@@ -9,6 +9,41 @@ import { buildMessageResponse } from "@/shared/utils/message-attachments";
 import {
   isMissingAnyNewSchemaError,
 } from "@/lib/tasks/pty-compat";
+import { stripTopLevelAuditKeys } from "@/lib/audit/metadata";
+
+const parseStoredMetadata = (value: unknown): Record<string, unknown> | null => {
+  if (!value) return null;
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+};
+
+const normalizeClientRequestId = (body: Record<string, unknown> | null): string | null => {
+  if (!body) return null;
+  const candidate = body.clientRequestId ?? body.client_request_id;
+  if (typeof candidate !== "string") return null;
+  const trimmed = candidate.trim();
+  return trimmed || null;
+};
+
+/**
+ * Scan window for the idempotency lookup. We only inspect the most recent N
+ * messages on the task because a retried client typically sends within
+ * seconds of the original. Avoids the full-table fetch the original
+ * implementation did — a long-running task with thousands of messages would
+ * otherwise pay a large cost on every retry (review H3).
+ */
+const IDEMPOTENCY_SCAN_LIMIT = 200;
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
@@ -147,6 +182,41 @@ export async function POST(
     );
   }
 
+  // Optional idempotency key (RFC 0025 §5.1). When provided, dedupe within
+  // this task's message history by `metadata.clientRequestId`. Stored on the
+  // existing JSON `metadata` column (no schema change).
+  //
+  // Scan is bounded to the most recent N messages — a retried request will
+  // target a write-window measured in seconds, so older history doesn't need
+  // to be re-scanned (review H3).
+  const clientRequestId = normalizeClientRequestId(body);
+  const rawCallerMetadata: Record<string, unknown> | null =
+    body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
+      ? (body.metadata as Record<string, unknown>)
+      : null;
+  const callerMetadata = stripTopLevelAuditKeys(rawCallerMetadata);
+  if (clientRequestId) {
+    const taskMessages = await db.message.findMany({
+      where: { taskId },
+      orderBy: { createdAt: "desc" },
+      take: IDEMPOTENCY_SCAN_LIMIT,
+    });
+    const existing = taskMessages.find((message) => {
+      const parsed = parseStoredMetadata((message as { metadata?: unknown }).metadata);
+      return parsed && parsed.clientRequestId === clientRequestId;
+    });
+    if (existing) {
+      return NextResponse.json(buildMessageResponse(existing));
+    }
+  }
+
+  // Persist the structured metadata (after the top-level audit strip above).
+  // The `metadata.audit.*` namespace is preserved verbatim, so SDK / CLI
+  // audit traces survive the round trip (RFC §5.2).
+  const mergedMetadata: Record<string, unknown> | null = clientRequestId
+    ? { ...(callerMetadata ?? {}), clientRequestId }
+    : callerMetadata;
+
   let message;
   try {
     ({ message } = await appendUserMessageToTask({
@@ -154,7 +224,7 @@ export async function POST(
       taskId,
       content: body.content,
       role: body.role ?? "sdk",
-      metadata: body.metadata ?? null,
+      metadata: mergedMetadata,
     }));
   } catch (error) {
     if (error instanceof TaskIngressError) {

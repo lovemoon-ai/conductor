@@ -44,10 +44,23 @@ vi.mock("@/lib/realtime/agent-outbox", () => ({
   enqueueAndAttemptAgentCommand: vi.fn(),
 }));
 
+// Partial-mock the ingress service so the audit-strip test (M-NEW-1) can
+// inspect the metadata that crosses the persistence boundary, while the
+// existing tests keep using the real `appendUserMessageToTask` runtime
+// checks (e.g. "missing fire owner" → 409).
+vi.mock("@/lib/channel/task-ingress-service", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/lib/channel/task-ingress-service")>();
+  return {
+    ...original,
+    appendUserMessageToTask: vi.fn(original.appendUserMessageToTask),
+  };
+});
+
 const { getActiveSubscriptionUser } = await import("@/lib/auth/middleware");
 const { db } = await import("@/lib/db");
 const { realtimeHub } = await import("@/lib/realtime/hub");
 const { enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
+const { appendUserMessageToTask } = await import("@/lib/channel/task-ingress-service");
 
 describe("/api/tasks/[taskId]/messages", () => {
   beforeEach(() => {
@@ -261,6 +274,114 @@ describe("/api/tasks/[taskId]/messages", () => {
       page_size: 2,
     });
     expect(data.messages.map((message: { id: string }) => message.id)).toEqual(["msg-3", "msg-4"]);
+  });
+
+  it("strips top-level audit-shaped keys before persisting metadata (review M3 / M-NEW-1)", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-strip",
+      projectId: "proj-1",
+      taskType: "ai_task",
+    } as any);
+    // Stub the ingress for just this test so we don't have to also mock the
+    // `db.$transaction` / `realtimeHub` plumbing the real implementation
+    // exercises. The original is restored automatically by `clearAllMocks`
+    // in `beforeEach` so other tests still see the real runtime checks.
+    vi.mocked(appendUserMessageToTask).mockResolvedValueOnce({
+      task: { id: "task-strip", projectId: "proj-1" } as any,
+      message: {
+        id: "msg-strip",
+        taskId: "task-strip",
+        role: "sdk",
+        content: "hello",
+        metadata: JSON.stringify({ audit: { actor: "cli" }, custom: "kept" }),
+        createdAt: new Date("2026-03-23T00:00:01.000Z"),
+      } as any,
+    });
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:6152/api/tasks/task-strip/messages",
+        body: {
+          content: "hello",
+          metadata: {
+            audit: { actor: "cli" },
+            // Caller tries to spoof at the top level. Server must drop these.
+            actor: "system",
+            cliVersion: "fake",
+            sdkVersion: "fake",
+            invokedBy: "attacker",
+            custom: "kept",
+          },
+        },
+      }),
+      { params: Promise.resolve({ taskId: "task-strip" }) },
+    );
+
+    expect(response.status).toBe(200);
+    // Inspect what reached the ingress service (the persistence boundary).
+    expect(appendUserMessageToTask).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(appendUserMessageToTask).mock.calls[0]?.[0] as {
+      metadata: Record<string, unknown> | null;
+    };
+    expect(call.metadata).toEqual({
+      audit: { actor: "cli" },
+      custom: "kept",
+    });
+    expect(call.metadata?.actor).toBeUndefined();
+    expect(call.metadata?.cliVersion).toBeUndefined();
+    expect(call.metadata?.sdkVersion).toBeUndefined();
+    expect(call.metadata?.invokedBy).toBeUndefined();
+  });
+
+  it("returns existing message without re-creating when clientRequestId already exists", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-cri",
+      projectId: "proj-1",
+      taskType: "ai_task",
+    } as any);
+    vi.mocked(db.message.findMany).mockResolvedValueOnce([
+      {
+        id: "msg-prev",
+        taskId: "task-cri",
+        role: "sdk",
+        content: "first delivery",
+        metadata: JSON.stringify({
+          clientRequestId: "send-1",
+          audit: { actor: "cli" },
+        }),
+        createdAt: new Date("2026-03-23T00:00:01.000Z"),
+      },
+    ] as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:6152/api/tasks/task-cri/messages",
+        body: {
+          content: "second attempt",
+          clientRequestId: "send-1",
+        },
+      }),
+      { params: Promise.resolve({ taskId: "task-cri" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data).toMatchObject({ id: "msg-prev", content: "first delivery" });
+    expect(db.message.create).not.toHaveBeenCalled();
+    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+    // Idempotency scan must be bounded — review H3 (no full-table fetch).
+    expect(db.message.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { taskId: "task-cri" },
+        orderBy: { createdAt: "desc" },
+        take: expect.any(Number),
+      }),
+    );
+    const call = vi.mocked(db.message.findMany).mock.calls[0]?.[0] as { take: number };
+    expect(call.take).toBeGreaterThan(0);
+    expect(call.take).toBeLessThanOrEqual(500);
   });
 
   it("returns older paginated page before a cursor id", async () => {
