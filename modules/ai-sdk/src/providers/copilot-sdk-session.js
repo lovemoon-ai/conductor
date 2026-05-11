@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
+import { COPILOT_SDK_VARIANT as COPILOT_PROVIDER_VARIANT } from "../built-in-backends.js";
 import {
   emitLog,
   getBoundedEnvInt,
@@ -18,7 +19,6 @@ const MIN_TURN_DEADLINE_MS = 30 * 1000;
 const MAX_TURN_DEADLINE_MS = 30 * 60 * 1000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 5 * 1000;
 const SDK_SEND_AND_WAIT_TIMEOUT_GRACE_MS = 5 * 1000;
-const COPILOT_PROVIDER_VARIANT = "copilot-sdk";
 const LEGACY_COPILOT_CLI_ARGS = new Set(["--allow-all-paths", "--allow-all-tools"]);
 
 function waitForever() {

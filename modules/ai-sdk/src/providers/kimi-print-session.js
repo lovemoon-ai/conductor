@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import readline from "node:readline";
 
+import { KIMI_CLI_PRINT_VARIANT as KIMI_PRINT_PROVIDER_VARIANT } from "../built-in-backends.js";
 import {
   emitLog,
   getBoundedEnvInt,
@@ -18,7 +19,6 @@ import {
 const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
 const MIN_TURN_DEADLINE_MS = 30 * 1000;
 const MAX_TURN_DEADLINE_MS = 30 * 60 * 1000;
-const KIMI_PRINT_PROVIDER_VARIANT = "kimi-cli-print";
 const DEFAULT_KIMI_COMMAND = "kimi";
 
 function createTurnError(message, extras = {}) {

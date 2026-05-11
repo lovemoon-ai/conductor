@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import readline from "node:readline";
 
+import { CODEX_EXEC_VARIANT as CODEX_EXEC_PROVIDER_VARIANT } from "../built-in-backends.js";
 import {
   emitLog,
   getBoundedEnvInt,
@@ -19,7 +20,6 @@ import {
 const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
 const MIN_TURN_DEADLINE_MS = 30 * 1000;
 const MAX_TURN_DEADLINE_MS = 30 * 60 * 1000;
-const CODEX_EXEC_PROVIDER_VARIANT = "codex-exec";
 const DEFAULT_CODEX_EXEC_COMMAND = "codex";
 
 function createTurnError(message, extras = {}) {

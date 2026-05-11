@@ -1,27 +1,31 @@
-import fs from "node:fs";
+import crypto from "node:crypto";
 import { promises as fsp } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import readline from "node:readline";
-import crypto from "node:crypto";
 
 import yaml from "js-yaml";
+import {
+  buildResumeArgsForBackend as buildResumeArgsForBackendFromSdk,
+  findSessionPath as findSessionPathFromSdk,
+  resolveResumeContext as resolveResumeContextFromSdk,
+  resolveSessionRunDirectory as resolveSessionRunDirectoryFromSdk,
+  resumeProviderForBackend as resumeProviderForBackendFromSdk,
+} from "@love-moon/ai-sdk";
+
 import {
   filterRuntimeSupportedAllowCliList,
   getExternalRuntimeBackendDescriptor,
   isRuntimeSupportedBackend,
   normalizeRuntimeBackendAlias,
-  parseCommandParts,
   resolveConfiguredRuntimeBackend,
 } from "../runtime-backends.js";
 
-const LEGACY_COPILOT_CLI_ARGS = new Set(["--allow-all-paths", "--allow-all-tools"]);
-const DEFAULT_COPILOT_RESUME_TIMEOUT_MS = 20_000;
-const DEFAULT_COPILOT_RESUME_STOP_TIMEOUT_MS = 5_000;
-const COPILOT_GITHUB_TOKEN_ENV_KEYS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"];
-
 function normalizeBackend(backend) {
   return String(backend || "").trim().toLowerCase();
+}
+
+function normalizeSessionId(sessionId) {
+  return typeof sessionId === "string" ? sessionId.trim() : "";
 }
 
 function resolveHomeDir(options) {
@@ -29,10 +33,6 @@ function resolveHomeDir(options) {
     return options.homeDir;
   }
   return os.homedir();
-}
-
-function normalizeSessionId(sessionId) {
-  return typeof sessionId === "string" ? sessionId.trim() : "";
 }
 
 function resolveConfigFilePath(options = {}) {
@@ -47,439 +47,12 @@ function resolveConfigFilePath(options = {}) {
     : path.join(resolveHomeDir(options), ".conductor", "config.yaml");
 }
 
-function normalizeCopilotCliArgs(args) {
-  if (!Array.isArray(args)) {
-    return [];
-  }
-  return args.filter((item) => {
-    const normalized = typeof item === "string" ? item.trim().toLowerCase() : "";
-    return normalized && !LEGACY_COPILOT_CLI_ARGS.has(normalized);
-  });
+function normalizeProjectPathCandidate(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
-function stripExecutableSuffix(name) {
-  return String(name || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\.(cmd|bat|exe)$/i, "");
-}
-
-function isDefaultCopilotCommand(command) {
-  const normalized = String(command || "").trim();
-  if (!normalized || /[\\/]/.test(normalized)) {
-    return false;
-  }
-  return stripExecutableSuffix(normalized) === "copilot";
-}
-
-function isEnvironmentAssignment(token) {
-  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(String(token || "").trim());
-}
-
-function parseEnvironmentAssignment(token) {
-  const normalized = String(token || "");
-  const index = normalized.indexOf("=");
-  if (index <= 0) {
-    return null;
-  }
-  return {
-    key: normalized.slice(0, index),
-    value: normalized.slice(index + 1),
-  };
-}
-
-function isEnvCommand(command) {
-  return stripExecutableSuffix(path.basename(String(command || ""))) === "env";
-}
-
-function isPathLikeCommand(command) {
-  const normalized = String(command || "").trim();
-  return (
-    normalized.startsWith(".") ||
-    normalized.startsWith("/") ||
-    normalized.includes("/") ||
-    normalized.includes("\\") ||
-    /^[A-Za-z]:[\\/]/.test(normalized)
-  );
-}
-
-function resolveExecutablePath(command, env = process.env) {
-  const normalized = String(command || "").trim();
-  if (!normalized) {
-    return "";
-  }
-  if (isPathLikeCommand(normalized)) {
-    return normalized;
-  }
-
-  const pathEnv = typeof env?.PATH === "string" ? env.PATH : process.env.PATH || "";
-  const pathExt =
-    process.platform === "win32" && !path.extname(normalized)
-      ? String(env?.PATHEXT || process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
-          .split(";")
-          .filter(Boolean)
-      : [""];
-  for (const dir of pathEnv.split(path.delimiter)) {
-    if (!dir) {
-      continue;
-    }
-    for (const ext of pathExt) {
-      const candidate = path.join(dir, `${normalized}${ext}`);
-      if (fs.existsSync(candidate)) {
-        return candidate;
-      }
-    }
-  }
-  return "";
-}
-
-function unwrapEnvironmentCommand(command, args) {
-  const parts = [command, ...args].filter((item) => typeof item === "string" && item.length > 0);
-  const extraEnv = {};
-  let index = 0;
-
-  while (index < parts.length && isEnvironmentAssignment(parts[index])) {
-    const assignment = parseEnvironmentAssignment(parts[index]);
-    if (assignment) {
-      extraEnv[assignment.key] = assignment.value;
-    }
-    index += 1;
-  }
-
-  if (index > 0) {
-    return {
-      command: parts[index] || "",
-      args: parts.slice(index + 1),
-      env: extraEnv,
-    };
-  }
-
-  if (!isEnvCommand(command)) {
-    return { command, args, env: extraEnv };
-  }
-
-  index = 0;
-  while (index < args.length) {
-    const token = args[index];
-    if (token === "--") {
-      index += 1;
-      break;
-    }
-    if (isEnvironmentAssignment(token)) {
-      const assignment = parseEnvironmentAssignment(token);
-      if (assignment) {
-        extraEnv[assignment.key] = assignment.value;
-      }
-      index += 1;
-      continue;
-    }
-    if (String(token || "").startsWith("-")) {
-      return { command, args, env: extraEnv };
-    }
-    break;
-  }
-
-  return {
-    command: args[index] || "",
-    args: args.slice(index + 1),
-    env: extraEnv,
-  };
-}
-
-function hasOwnEnumerableKeys(value) {
-  return value && typeof value === "object" && Object.keys(value).length > 0;
-}
-
-function withoutCopilotGithubTokenEnv(env) {
-  const next = env && typeof env === "object" ? { ...env } : {};
-  for (const key of COPILOT_GITHUB_TOKEN_ENV_KEYS) {
-    delete next[key];
-  }
-  return next;
-}
-
-function resolvePositiveTimeoutMs(value, fallback) {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback;
-}
-
-function remainingTimeoutMs(startedAtMs, timeoutMs, message) {
-  const remaining = timeoutMs - (Date.now() - startedAtMs);
-  if (remaining <= 0) {
-    throw new Error(message);
-  }
-  return remaining;
-}
-
-async function withTimeout(promise, timeoutMs, message) {
-  let timer = null;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) {
-      clearTimeout(timer);
-    }
-  }
-}
-
-function resolveCopilotCliLaunch(commandLine, env = process.env) {
-  const normalized = typeof commandLine === "string" ? commandLine.trim() : "";
-  if (!normalized) {
-    return null;
-  }
-  const parsed = parseCommandParts(normalized);
-  const unwrapped = unwrapEnvironmentCommand(parsed.command, parsed.args);
-  const command = unwrapped.command;
-  const args = unwrapped.args;
-  if (!command) {
-    return null;
-  }
-  const cliArgs = normalizeCopilotCliArgs(args);
-  if (isDefaultCopilotCommand(command)) {
-    if (cliArgs.length === 0 && !hasOwnEnumerableKeys(unwrapped.env)) {
-      return null;
-    }
-    return {
-      cliArgs,
-      env: unwrapped.env,
-    };
-  }
-  const launchEnv = {
-    ...process.env,
-    ...env,
-    ...unwrapped.env,
-  };
-  const resolvedPath = resolveExecutablePath(command, launchEnv);
-  return {
-    cliPath: resolvedPath || command,
-    cliArgs,
-    env: unwrapped.env,
-  };
-}
-
-function normalizeEnvConfigValue(value) {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function proxyToEnv(envConfig) {
-  if (!envConfig || typeof envConfig !== "object") {
-    return {};
-  }
-  const env = {};
-  const mappings = {
-    http_proxy: ["HTTP_PROXY", "http_proxy"],
-    https_proxy: ["HTTPS_PROXY", "https_proxy"],
-    all_proxy: ["ALL_PROXY", "all_proxy"],
-    no_proxy: ["NO_PROXY", "no_proxy"],
-  };
-  for (const [key, envKeys] of Object.entries(mappings)) {
-    const value = envConfig[key] || envConfig[key.toUpperCase()];
-    if (!value) {
-      continue;
-    }
-    for (const envKey of envKeys) {
-      env[envKey] = value;
-    }
-  }
-  return env;
-}
-
-export function buildResumeArgsForBackend(backend, sessionId) {
-  const resumeSessionId = normalizeSessionId(sessionId);
-  if (!resumeSessionId) {
-    return [];
-  }
-  const normalizedBackend = normalizeBackend(backend);
-  if (normalizedBackend === "codex" || normalizedBackend === "code") {
-    return ["resume", resumeSessionId];
-  }
-  if (normalizedBackend === "claude" || normalizedBackend === "claude-code") {
-    return ["--resume", resumeSessionId];
-  }
-  if (normalizedBackend === "copilot") {
-    return [`--resume=${resumeSessionId}`];
-  }
-  if (normalizedBackend === "kimi" || normalizedBackend === "kimi-cli" || normalizedBackend === "kimi-code") {
-    return ["--session", resumeSessionId];
-  }
-  throw new Error(`--resume is not supported for backend "${backend}"`);
-}
-
-export function resumeProviderForBackend(backend) {
-  const normalizedBackend = normalizeBackend(backend);
-  if (normalizedBackend === "codex" || normalizedBackend === "code") {
-    return "codex";
-  }
-  if (normalizedBackend === "claude" || normalizedBackend === "claude-code") {
-    return "claude";
-  }
-  if (normalizedBackend === "copilot") {
-    return "copilot";
-  }
-  if (normalizedBackend === "kimi" || normalizedBackend === "kimi-cli" || normalizedBackend === "kimi-code") {
-    return "kimi";
-  }
-  return null;
-}
-
-export async function findSessionPath(provider, sessionId, options = {}) {
-  const normalizedProvider = String(provider || "").trim().toLowerCase();
-  if (normalizedProvider === "codex") {
-    return findCodexSessionPath(sessionId, options);
-  }
-  if (normalizedProvider === "claude") {
-    return findClaudeSessionPath(sessionId, options);
-  }
-  if (normalizedProvider === "kimi") {
-    return findKimiSessionPath(sessionId, options);
-  }
-  throw new Error(`Unsupported provider: ${provider}`);
-}
-
-export async function findCodexSessionPath(sessionId, options = {}) {
-  const normalizedSessionId = normalizeSessionId(sessionId);
-  if (!normalizedSessionId) {
-    return null;
-  }
-  const homeDir = resolveHomeDir(options);
-  const sessionsDir = options.codexSessionsDir || path.join(homeDir, ".codex", "sessions");
-  return findCodexSessionFile(sessionsDir, normalizedSessionId);
-}
-
-export async function findClaudeSessionPath(sessionId, options = {}) {
-  const normalizedSessionId = normalizeSessionId(sessionId);
-  if (!normalizedSessionId) {
-    return null;
-  }
-
-  const homeDir = resolveHomeDir(options);
-  const projectsDir = options.claudeProjectsDir || path.join(homeDir, ".claude", "projects");
-  const sessionEntries = await findClaudeSessionEntries(projectsDir, normalizedSessionId);
-  if (sessionEntries.length > 0) {
-    return sessionEntries[0]?.source || null;
-  }
-
-  const tasksDir = options.claudeTasksDir || path.join(homeDir, ".claude", "tasks");
-  const directTaskDir = path.join(tasksDir, normalizedSessionId);
-  if (await pathExists(directTaskDir, "directory")) {
-    return directTaskDir;
-  }
-
-  return null;
-}
-
-export async function findKimiSessionPath(sessionId, options = {}) {
-  const normalizedSessionId = normalizeSessionId(sessionId);
-  if (!normalizedSessionId) {
-    return null;
-  }
-
-  const homeDir = resolveHomeDir(options);
-  const sessionsDir = options.kimiSessionsDir || path.join(homeDir, ".kimi", "sessions");
-  return findKimiSessionDirectory(sessionsDir, normalizedSessionId);
-}
-
-export async function resolveSessionRunDirectory(sessionPath) {
-  const normalizedPath = typeof sessionPath === "string" ? sessionPath.trim() : "";
-  if (!normalizedPath) {
-    throw new Error("Invalid session path");
-  }
-  let stats;
-  try {
-    stats = await fsp.stat(normalizedPath);
-  } catch {
-    throw new Error(`Session path does not exist: ${normalizedPath}`);
-  }
-  return stats.isDirectory() ? normalizedPath : path.dirname(normalizedPath);
-}
-
-export async function inspectResumeTarget(backend, sessionId, options = {}) {
-  return resolveResumeContext(backend, sessionId, options);
-}
-
-export async function resolveResumeContext(backend, sessionId, options = {}) {
-  const normalizedSessionId = normalizeSessionId(sessionId);
-  if (!normalizedSessionId) {
-    throw new Error("--resume requires a session id");
-  }
-  const configFilePath = resolveConfigFilePath(options);
-  const allowCliList =
-    options.allowCliList && typeof options.allowCliList === "object"
-      ? options.allowCliList
-      : await loadConfiguredAllowCliList({ ...options, configFilePath });
-  const lookupBackend = await resolveResumeLookupBackend(backend, {
-    ...options,
-    configFilePath,
-    allowCliList,
-  });
-  const provider = resumeProviderForBackend(lookupBackend || backend);
-  if (!provider) {
-    const externalContext = await resolveExternalResumeContext(backend, normalizedSessionId, {
-      ...options,
-      configFilePath,
-      allowCliList,
-    });
-    if (externalContext) {
-      return externalContext;
-    }
-    throw new Error(`--resume is not supported for backend "${backend}"`);
-  }
-
-  if (provider === "copilot") {
-    const copilotContext = await resolveCopilotResumeContext(normalizedSessionId, {
-      ...options,
-      configFilePath,
-      allowCliList,
-      backend,
-      runtimeBackend: lookupBackend || provider,
-    });
-    if (!copilotContext) {
-      throw new Error(`Invalid --resume session id for copilot: ${normalizedSessionId}`);
-    }
-    return copilotContext;
-  }
-
-  const sessionPath = await findSessionPath(provider, normalizedSessionId, options);
-  if (!sessionPath) {
-    throw new Error(`Invalid --resume session id for ${provider}: ${normalizedSessionId}`);
-  }
-
-  const cwdFromSession = await extractResumeCwdFromSession(
-    provider,
-    sessionPath,
-    normalizedSessionId,
-    options,
-  );
-  const fallbackCwd =
-    provider === "kimi" ? null : await resolveSessionRunDirectory(sessionPath);
-  const cwd = cwdFromSession || fallbackCwd;
-  if (!cwd) {
-    if (provider === "kimi") {
-      throw new Error(
-        `Could not resolve workspace for Kimi session ${normalizedSessionId}. Re-run from the original workspace or resume a session previously started by conductor fire.`,
-      );
-    }
-    throw new Error(`Could not resolve workspace for ${provider} session ${normalizedSessionId}`);
-  }
-  if (!(await isExistingDirectory(cwd))) {
-    throw new Error(`Resume workspace path does not exist: ${cwd}`);
-  }
-
-  return {
-    provider,
-    sessionId: normalizedSessionId,
-    sessionPath,
-    cwd,
-    debugMetadata: {
-      cwdSource: cwdFromSession ? "session" : "session_path",
-      sessionPath,
-    },
-  };
+function normalizeConductorRecordSourcePath(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 async function isExistingDirectory(targetPath) {
@@ -493,65 +66,6 @@ async function isExistingDirectory(targetPath) {
   } catch {
     return false;
   }
-}
-
-async function extractCodexResumeCwd(sessionPath) {
-  if (!sessionPath.endsWith(".jsonl")) {
-    return null;
-  }
-  const rl = readline.createInterface({
-    input: fs.createReadStream(sessionPath),
-    crlfDelay: Infinity,
-  });
-  for await (const line of rl) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      continue;
-    }
-    let entry;
-    try {
-      entry = JSON.parse(trimmed);
-    } catch {
-      continue;
-    }
-    const maybeCwd = entry?.type === "session_meta" ? entry?.payload?.cwd : null;
-    if (typeof maybeCwd === "string" && maybeCwd.trim()) {
-      return maybeCwd.trim();
-    }
-  }
-  return null;
-}
-
-async function extractClaudeResumeCwd(sessionPath, sessionId) {
-  if (!sessionPath.endsWith(".jsonl")) {
-    return null;
-  }
-  const rl = readline.createInterface({
-    input: fs.createReadStream(sessionPath),
-    crlfDelay: Infinity,
-  });
-  for await (const line of rl) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      continue;
-    }
-    let entry;
-    try {
-      entry = JSON.parse(trimmed);
-    } catch {
-      continue;
-    }
-    const idMatches = String(entry?.sessionId || "").trim() === sessionId;
-    const maybeCwd = entry?.cwd;
-    if (idMatches && typeof maybeCwd === "string" && maybeCwd.trim()) {
-      return maybeCwd.trim();
-    }
-  }
-  return null;
-}
-
-function md5Hex(value) {
-  return crypto.createHash("md5").update(String(value ?? "")).digest("hex");
 }
 
 function listCandidateWorkingDirectories(options = {}) {
@@ -572,6 +86,10 @@ function listCandidateWorkingDirectories(options = {}) {
   push(process.cwd());
 
   return candidates;
+}
+
+function md5Hex(value) {
+  return crypto.createHash("md5").update(String(value ?? "")).digest("hex");
 }
 
 async function loadConductorSessionRecords(options = {}) {
@@ -678,24 +196,6 @@ async function loadConfiguredAllowCliList(options = {}) {
   return filterRuntimeSupportedAllowCliList(parsed.allow_cli_list, { configFilePath });
 }
 
-async function loadConfiguredEnvMap(options = {}) {
-  const parsed = await loadParsedConfigFile(options);
-  if (!parsed || typeof parsed !== "object" || !parsed.envs || typeof parsed.envs !== "object") {
-    return {};
-  }
-  const proxyEnv = proxyToEnv(parsed.envs);
-  const normalizedEnv = {
-    ...proxyEnv,
-  };
-  for (const [key, value] of Object.entries(parsed.envs)) {
-    const normalizedValue = normalizeEnvConfigValue(value);
-    if (normalizedValue !== undefined) {
-      normalizedEnv[key] = normalizedValue;
-    }
-  }
-  return normalizedEnv;
-}
-
 async function resolveResumeLookupBackend(backend, options = {}) {
   const normalizedBackend = normalizeBackend(backend);
   if (!normalizedBackend) {
@@ -715,204 +215,48 @@ async function resolveResumeLookupBackend(backend, options = {}) {
   return normalizeRuntimeBackendAlias(normalizedBackend, { configFilePath });
 }
 
-async function getCopilotSdkModule(options = {}) {
-  if (options.copilotSdkModule && typeof options.copilotSdkModule === "object") {
-    return options.copilotSdkModule;
-  }
-  return import("@github/copilot-sdk");
-}
-
-async function resolveCopilotCommandLine(options = {}) {
-  if (typeof options.commandLine === "string" && options.commandLine.trim()) {
-    return options.commandLine.trim();
-  }
+async function kimiWorkspaceLookupFromConductorRecords(worktreeHash, options, sessionId) {
+  const records = await loadConductorSessionRecords(options);
   const configFilePath = resolveConfigFilePath(options);
-  const allowCliList =
-    options.allowCliList && typeof options.allowCliList === "object"
-      ? options.allowCliList
-      : await loadConfiguredAllowCliList({ ...options, configFilePath });
-  const backendCandidates = [];
-  const pushCandidate = (backend) => {
-    const normalized = normalizeBackend(backend);
-    if (normalized && !backendCandidates.includes(normalized)) {
-      backendCandidates.push(normalized);
-    }
-  };
-  pushCandidate(options.backend);
-  pushCandidate(options.runtimeBackend);
-  pushCandidate("copilot");
+  const allowCliList = await loadConfiguredAllowCliList({ ...options, configFilePath });
+  const bySessionId = [];
+  const byHash = [];
 
-  for (const candidate of backendCandidates) {
-    const configuredBackend = await resolveConfiguredRuntimeBackend(candidate, allowCliList, {
+  for (const record of records) {
+    const projectPath = normalizeProjectPathCandidate(record?.project_path);
+    if (!projectPath) {
+      continue;
+    }
+    const backendType = await resolveResumeLookupBackend(record?.backend_type, {
+      ...options,
       configFilePath,
+      allowCliList,
     });
-    const commandLine =
-      typeof configuredBackend?.commandLine === "string" && configuredBackend.commandLine.trim()
-        ? configuredBackend.commandLine.trim()
-        : "";
-    if (commandLine) {
-      return commandLine;
+    const recordSessionId = normalizeSessionId(record?.session_id);
+    const projectHash = md5Hex(projectPath);
+    if (
+      recordSessionId === sessionId &&
+      (backendType === "kimi" || !backendType) &&
+      projectHash === worktreeHash &&
+      !bySessionId.includes(projectPath)
+    ) {
+      bySessionId.push(projectPath);
     }
-  }
-  return "";
-}
-
-async function buildCopilotClientOptions(options = {}) {
-  const clientOptions = options.copilotClientOptions && typeof options.copilotClientOptions === "object"
-    ? { ...options.copilotClientOptions }
-    : {};
-  const configFilePath = resolveConfigFilePath(options);
-  const configEnv = await loadConfiguredEnvMap({ ...options, configFilePath });
-  const commandLine = await resolveCopilotCommandLine(options);
-  const cliLaunch = resolveCopilotCliLaunch(commandLine, {
-    ...process.env,
-    ...configEnv,
-    ...options.env,
-  });
-  if (cliLaunch && clientOptions.cliPath === undefined && clientOptions.cliArgs === undefined && clientOptions.cliUrl === undefined) {
-    if (cliLaunch.cliPath !== undefined) {
-      clientOptions.cliPath = cliLaunch.cliPath;
-    }
-    if (cliLaunch.cliArgs !== undefined) {
-      clientOptions.cliArgs = cliLaunch.cliArgs;
+    if (projectHash === worktreeHash && !byHash.includes(projectPath)) {
+      byHash.push(projectPath);
     }
   }
 
-  const explicitGithubToken =
-    typeof clientOptions.githubToken === "string" && clientOptions.githubToken.trim()
-      ? clientOptions.githubToken.trim()
-      : typeof options.githubToken === "string" && options.githubToken.trim()
-        ? options.githubToken.trim()
-        : "";
-  if (clientOptions.githubToken === undefined && explicitGithubToken) {
-    clientOptions.githubToken = explicitGithubToken;
+  if (bySessionId.length > 0) {
+    return bySessionId[0];
   }
-  if (clientOptions.useLoggedInUser === undefined && typeof options.useLoggedInUser === "boolean") {
-    clientOptions.useLoggedInUser = options.useLoggedInUser;
+  if (byHash.length === 1) {
+    return byHash[0];
   }
-
-  let resolvedEnv;
-  if (clientOptions.env === undefined) {
-    resolvedEnv = {
-      ...process.env,
-      ...configEnv,
-      ...(options.env && typeof options.env === "object" ? options.env : {}),
-      ...(hasOwnEnumerableKeys(cliLaunch?.env) ? cliLaunch.env : {}),
-    };
-  } else if (hasOwnEnumerableKeys(cliLaunch?.env)) {
-    resolvedEnv = {
-      ...clientOptions.env,
-      ...cliLaunch.env,
-    };
-  } else {
-    resolvedEnv = { ...clientOptions.env };
-  }
-  clientOptions.env = explicitGithubToken
-    ? resolvedEnv
-    : withoutCopilotGithubTokenEnv(resolvedEnv);
-  if (!explicitGithubToken && clientOptions.useLoggedInUser === undefined) {
-    clientOptions.useLoggedInUser = true;
-  }
-  if (clientOptions.cwd === undefined) {
-    const cwd =
-      typeof options.cwd === "string" && options.cwd.trim()
-        ? options.cwd.trim()
-        : process.cwd();
-    clientOptions.cwd = cwd;
-  }
-  return clientOptions;
+  return null;
 }
 
-async function withCopilotClient(options, fn) {
-  const sdkModule = await getCopilotSdkModule(options);
-  if (!sdkModule || typeof sdkModule.CopilotClient !== "function") {
-    throw new Error("GitHub Copilot SDK client is unavailable");
-  }
-  const timeoutMs = resolvePositiveTimeoutMs(
-    options.copilotResumeTimeoutMs ?? options.timeoutMs,
-    DEFAULT_COPILOT_RESUME_TIMEOUT_MS,
-  );
-  const startedAtMs = Date.now();
-  const client = new sdkModule.CopilotClient(await buildCopilotClientOptions(options));
-  try {
-    if (typeof client.start === "function") {
-      const startTimeoutMs = remainingTimeoutMs(startedAtMs, timeoutMs, "copilot resume lookup timed out");
-      await withTimeout(
-        client.start(),
-        startTimeoutMs,
-        "copilot resume SDK start timed out",
-      );
-    }
-    const lookupTimeoutMs = remainingTimeoutMs(startedAtMs, timeoutMs, "copilot resume lookup timed out");
-    return await withTimeout(
-      fn(client),
-      lookupTimeoutMs,
-      "copilot resume lookup timed out",
-    );
-  } finally {
-    try {
-      if (typeof client.stop === "function") {
-        const stopTimeoutMs = resolvePositiveTimeoutMs(
-          options.copilotResumeStopTimeoutMs,
-          DEFAULT_COPILOT_RESUME_STOP_TIMEOUT_MS,
-        );
-        await withTimeout(
-          client.stop(),
-          stopTimeoutMs,
-          "copilot resume SDK stop timed out",
-        );
-      }
-    } catch {
-      try {
-        await client.forceStop?.();
-      } catch {
-        // best effort
-      }
-    }
-  }
-}
-
-async function resolveCopilotResumeContext(sessionId, options = {}) {
-  const sessionMetadata = await withCopilotClient(options, async (client) => {
-    const sessions = await client.listSessions();
-    return sessions.find((entry) => normalizeSessionId(entry?.sessionId) === sessionId) || null;
-  });
-  if (!sessionMetadata) {
-    return null;
-  }
-
-  const cwd = normalizeProjectPathCandidate(sessionMetadata?.context?.cwd);
-  if (!cwd) {
-    throw new Error(`Could not resolve workspace for copilot session ${sessionId}`);
-  }
-  if (!(await isExistingDirectory(cwd))) {
-    throw new Error(`Resume workspace path does not exist: ${cwd}`);
-  }
-
-  return {
-    provider: "copilot",
-    sessionId,
-    sessionPath: null,
-    cwd,
-    debugMetadata: {
-      cwdSource: "sdk_list_sessions",
-      sessionPath: null,
-      context: sessionMetadata?.context && typeof sessionMetadata.context === "object"
-        ? { ...sessionMetadata.context }
-        : undefined,
-    },
-  };
-}
-
-function normalizeProjectPathCandidate(value) {
-  return typeof value === "string" && value.trim() ? value.trim() : "";
-}
-
-function normalizeConductorRecordSourcePath(value) {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-async function resolveExternalResumeContext(backend, sessionId, options = {}) {
+async function resolveExternalResumeContextFromConductorRecords(backend, sessionId, options = {}) {
   const configFilePath = resolveConfigFilePath(options);
   const allowCliList =
     options.allowCliList && typeof options.allowCliList === "object"
@@ -923,7 +267,7 @@ async function resolveExternalResumeContext(backend, sessionId, options = {}) {
     configFilePath,
     allowCliList,
   });
-  if (!normalizedBackend || resumeProviderForBackend(normalizedBackend)) {
+  if (!normalizedBackend || resumeProviderForBackendFromSdk(normalizedBackend)) {
     return null;
   }
   if (!(await isRuntimeSupportedBackend(normalizedBackend, { configFilePath }))) {
@@ -1005,185 +349,84 @@ async function resolveExternalResumeContext(backend, sessionId, options = {}) {
   throw new Error(`Could not resolve workspace for backend "${normalizedBackend}" session ${sessionId}`);
 }
 
-async function resolveKimiResumeCwd(sessionPath, sessionId, options = {}) {
-  const sessionDirectory = typeof sessionPath === "string" ? sessionPath.trim() : "";
-  if (!sessionDirectory) {
-    return null;
-  }
+// ---------------------------------------------------------------------------
+// Public API — thin facade over `@love-moon/ai-sdk` resume.
+// ---------------------------------------------------------------------------
 
-  const worktreeHash = path.basename(path.dirname(sessionDirectory));
-  if (!worktreeHash) {
-    return null;
-  }
+export function buildResumeArgsForBackend(backend, sessionId) {
+  return buildResumeArgsForBackendFromSdk(backend, sessionId);
+}
 
-  for (const candidate of listCandidateWorkingDirectories(options)) {
-    if (md5Hex(candidate) === worktreeHash) {
-      return candidate;
-    }
-  }
+export function resumeProviderForBackend(backend) {
+  return resumeProviderForBackendFromSdk(backend);
+}
 
-  const records = await loadConductorSessionRecords(options);
+export async function findSessionPath(provider, sessionId, options = {}) {
+  return findSessionPathFromSdk(provider, sessionId, options);
+}
+
+export async function findCodexSessionPath(sessionId, options = {}) {
+  return findSessionPathFromSdk("codex", sessionId, options);
+}
+
+export async function findClaudeSessionPath(sessionId, options = {}) {
+  return findSessionPathFromSdk("claude", sessionId, options);
+}
+
+export async function findKimiSessionPath(sessionId, options = {}) {
+  return findSessionPathFromSdk("kimi", sessionId, options);
+}
+
+export async function resolveSessionRunDirectory(sessionPath) {
+  return resolveSessionRunDirectoryFromSdk(sessionPath);
+}
+
+export async function inspectResumeTarget(backend, sessionId, options = {}) {
+  return resolveResumeContext(backend, sessionId, options);
+}
+
+export async function resolveResumeContext(backend, sessionId, options = {}) {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  if (!normalizedSessionId) {
+    throw new Error("--resume requires a session id");
+  }
   const configFilePath = resolveConfigFilePath(options);
-  const allowCliList = await loadConfiguredAllowCliList({ ...options, configFilePath });
-  const bySessionId = [];
-  const byHash = [];
+  const allowCliList =
+    options.allowCliList && typeof options.allowCliList === "object"
+      ? options.allowCliList
+      : await loadConfiguredAllowCliList({ ...options, configFilePath });
+  const lookupBackend = await resolveResumeLookupBackend(backend, {
+    ...options,
+    configFilePath,
+    allowCliList,
+  });
+  const effectiveBackend = lookupBackend || backend;
+  const provider = resumeProviderForBackendFromSdk(effectiveBackend);
 
-  for (const record of records) {
-    const projectPath = normalizeProjectPathCandidate(record?.project_path);
-    if (!projectPath) {
-      continue;
-    }
-    const backendType = await resolveResumeLookupBackend(record?.backend_type, {
+  if (!provider) {
+    const externalContext = await resolveExternalResumeContextFromConductorRecords(backend, normalizedSessionId, {
       ...options,
       configFilePath,
       allowCliList,
     });
-    const recordSessionId = normalizeSessionId(record?.session_id);
-    const projectHash = md5Hex(projectPath);
-    if (
-      recordSessionId === sessionId &&
-      (backendType === "kimi" || !backendType) &&
-      projectHash === worktreeHash &&
-      !bySessionId.includes(projectPath)
-    ) {
-      bySessionId.push(projectPath);
+    if (externalContext) {
+      return externalContext;
     }
-    if (projectHash === worktreeHash && !byHash.includes(projectPath)) {
-      byHash.push(projectPath);
-    }
+    throw new Error(`--resume is not supported for backend "${backend}"`);
   }
 
-  if (bySessionId.length > 0) {
-    return bySessionId[0];
-  }
-  if (byHash.length === 1) {
-    return byHash[0];
-  }
-  return null;
-}
+  const sdkOptions = {
+    ...options,
+    configFilePath,
+    allowCliList,
+    backend,
+    runtimeBackend: effectiveBackend,
+  };
 
-async function extractResumeCwdFromSession(provider, sessionPath, sessionId, options = {}) {
-  if (provider === "codex") {
-    return extractCodexResumeCwd(sessionPath);
-  }
-  if (provider === "claude") {
-    return extractClaudeResumeCwd(sessionPath, sessionId);
-  }
-  if (provider === "kimi") {
-    return resolveKimiResumeCwd(sessionPath, sessionId, options);
-  }
-  return null;
-}
-
-async function findCodexSessionFile(rootDir, sessionId) {
-  const queue = [rootDir];
-  while (queue.length) {
-    const current = queue.pop();
-    let entries = [];
-    try {
-      entries = await fsp.readdir(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const fullPath = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        queue.push(fullPath);
-      } else if (entry.isFile() && entry.name.includes(sessionId) && entry.name.endsWith(".jsonl")) {
-        return fullPath;
-      }
-    }
-  }
-  return null;
-}
-
-async function findClaudeSessionEntries(projectsDir, sessionId) {
-  const entries = [];
-  let projectDirs = [];
-  try {
-    projectDirs = await fsp.readdir(projectsDir, { withFileTypes: true });
-  } catch {
-    return entries;
+  if (provider === "kimi" && typeof sdkOptions.lookupWorkspaceByHash !== "function") {
+    sdkOptions.lookupWorkspaceByHash = async (worktreeHash, ctx = {}) =>
+      kimiWorkspaceLookupFromConductorRecords(worktreeHash, options, ctx.sessionId || normalizedSessionId);
   }
 
-  for (const projectDir of projectDirs) {
-    if (!projectDir.isDirectory()) {
-      continue;
-    }
-    const projectPath = path.join(projectsDir, projectDir.name);
-    let files = [];
-    try {
-      files = await fsp.readdir(projectPath, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const file of files) {
-      if (!file.isFile()) {
-        continue;
-      }
-      if (!file.name.endsWith(".jsonl") || file.name.startsWith("agent-")) {
-        continue;
-      }
-
-      const filePath = path.join(projectPath, file.name);
-      const rl = readline.createInterface({
-        input: fs.createReadStream(filePath),
-        crlfDelay: Infinity,
-      });
-
-      for await (const line of rl) {
-        const trimmed = line.trim();
-        if (!trimmed) {
-          continue;
-        }
-        let entry;
-        try {
-          entry = JSON.parse(trimmed);
-        } catch {
-          continue;
-        }
-        if (entry.sessionId === sessionId) {
-          entries.push({ ...entry, source: filePath });
-        }
-      }
-    }
-  }
-
-  return entries;
-}
-
-async function findKimiSessionDirectory(rootDir, sessionId) {
-  let hashDirs = [];
-  try {
-    hashDirs = await fsp.readdir(rootDir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-
-  for (const hashDir of hashDirs) {
-    if (!hashDir.isDirectory()) {
-      continue;
-    }
-    const candidateDir = path.join(rootDir, hashDir.name, sessionId);
-    if (await pathExists(candidateDir, "directory")) {
-      return candidateDir;
-    }
-  }
-  return null;
-}
-
-async function pathExists(targetPath, expectedType) {
-  try {
-    const stats = await fsp.stat(targetPath);
-    if (expectedType === "file") {
-      return stats.isFile();
-    }
-    if (expectedType === "directory") {
-      return stats.isDirectory();
-    }
-    return true;
-  } catch {
-    return false;
-  }
+  return resolveResumeContextFromSdk(effectiveBackend, normalizedSessionId, sdkOptions);
 }

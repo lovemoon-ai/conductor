@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 
+import { CLAUDE_AGENT_SDK_VARIANT as CLAUDE_PROVIDER_VARIANT } from "../built-in-backends.js";
 import {
   emitLog,
   getBoundedEnvInt,
@@ -13,7 +14,6 @@ const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
 const MIN_TURN_DEADLINE_MS = 30 * 1000;
 const MAX_TURN_DEADLINE_MS = 30 * 60 * 1000;
 const DEFAULT_SETTING_SOURCES = ["user", "project", "local"];
-const CLAUDE_PROVIDER_VARIANT = "claude-agent-sdk";
 
 function waitForever() {
   return new Promise(() => {});

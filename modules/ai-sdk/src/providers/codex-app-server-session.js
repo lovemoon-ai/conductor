@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 
+import { CODEX_APP_SERVER_VARIANT } from "../built-in-backends.js";
 import { CodexAppServerTransport } from "../transports/codex-app-server-transport.js";
 import {
   emitLog,
@@ -305,7 +306,7 @@ export class CodexAppServerSession extends EventEmitter {
   getSnapshot() {
     return {
       backend: this.backend,
-      provider: "codex-app-server",
+      provider: CODEX_APP_SERVER_VARIANT,
       cwd: this.cwd,
       sessionId: this.sessionId || undefined,
       sessionInfo: this.getSessionInfo(),
@@ -393,7 +394,7 @@ export class CodexAppServerSession extends EventEmitter {
 
   markTurnStartedStatus() {
     this.updateCurrentTurnStatus({
-      source: "codex-app-server",
+      source: CODEX_APP_SERVER_VARIANT,
       reply_in_progress: true,
       replyTo: this.getCurrentReplyTarget(),
       phase: "turn_started",
@@ -524,7 +525,7 @@ export class CodexAppServerSession extends EventEmitter {
 
   normalizeWorkingStatusPayload(payload) {
     return {
-      source: "codex-app-server",
+      source: CODEX_APP_SERVER_VARIANT,
       reply_in_progress: Boolean(payload?.reply_in_progress),
       replyTo: payload?.replyTo || this.getCurrentReplyTarget(),
       state: payload?.state,
@@ -551,7 +552,7 @@ export class CodexAppServerSession extends EventEmitter {
     const payload = {
       text,
       preserveWhitespace: true,
-      source: "codex-app-server",
+      source: CODEX_APP_SERVER_VARIANT,
       replyTo: this.getCurrentReplyTarget(),
       sessionId: this.sessionId || undefined,
       sessionFilePath: this.threadPath || undefined,
@@ -1071,7 +1072,7 @@ export class CodexAppServerSession extends EventEmitter {
         events: [],
         provider: this.backend,
         metadata: {
-          source: "codex-app-server",
+          source: CODEX_APP_SERVER_VARIANT,
           threadId: this.sessionId,
           threadPath: this.threadPath || undefined,
           nativeSessionId: this.nativeSessionId || undefined,

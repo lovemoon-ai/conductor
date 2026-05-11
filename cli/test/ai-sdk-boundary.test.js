@@ -4,11 +4,16 @@ import assert from "node:assert/strict";
 import * as aiSdk from "@love-moon/ai-sdk";
 
 describe("ai-sdk boundary", () => {
-  it("only exposes runtime session entrypoints", () => {
+  it("exposes runtime session entrypoints and the resume API", () => {
     assert.equal(typeof aiSdk.createAiSession, "function");
     assert.equal(typeof aiSdk.RemoteAiSession, "function");
-    assert.equal("buildResumeArgsForBackend" in aiSdk, false);
-    assert.equal("resolveResumeContext" in aiSdk, false);
+    assert.equal(typeof aiSdk.buildResumeArgsForBackend, "function");
+    assert.equal(typeof aiSdk.resolveResumeContext, "function");
+    assert.equal(typeof aiSdk.resumeProviderForBackend, "function");
+    assert.equal(typeof aiSdk.findSessionPath, "function");
+    assert.equal(typeof aiSdk.resolveSessionRunDirectory, "function");
+    assert.ok(Array.isArray(aiSdk.BUILT_IN_BACKENDS));
+    assert.ok(aiSdk.BUILT_IN_BACKENDS.length > 0);
   });
 
   it("creates a codex session without exposing provider-specific helpers", async () => {

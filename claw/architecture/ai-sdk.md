@@ -246,22 +246,36 @@ Therefore `ai-sdk` is no longer maintained internally:
 
 ### 5.2 Resume / session discovery helper
 
-Removed from `ai-sdk` public boundary:
+**Update (2026-04):** resume is now owned by `ai-sdk` again, this time as a
+proper per-provider contract rather than a monolithic CLI helper. All built-in
+providers (codex, claude, copilot, kimi, opencode) and external providers
+expose resume through the ai-sdk public API:
 
-- `buildResumeArgsForBackend`
-- `resumeProviderForBackend`
-- `resolveResumeContext`
-- `findSessionPath`
-- `findCodexSessionPath`
-- `findClaudeSessionPath`
-- `findCopilotSessionPath`
-- `resolveSessionRunDirectory`
+- `buildResumeArgsForBackend(backend, sessionId)`
+- `resumeProviderForBackend(backend)`
+- `resolveResumeContext(backend, sessionId, options)`
+- `findSessionPath(provider, sessionId, options)`
+- `resolveSessionRunDirectory(sessionPath)`
+- `inspectResumeTarget(backend, sessionId, options)` (alias of `resolveResumeContext`)
 
-These helpers now belong to `cli`:
+Internally each provider has its own module under
+`modules/ai-sdk/src/resume/<provider>.js` (codex, claude, copilot, kimi,
+opencode). The shared dispatcher in `modules/ai-sdk/src/resume/index.js` walks
+the built-in providers first and falls back to the external provider registry.
+External provider descriptors may expose `resolveResumeContext` to opt in.
 
-- `cli/src/fire/resume.js`
+`cli/src/fire/resume.js` is now a thin facade that:
 
-The significance of this migration is to completely separate the "local runtime abstraction" and the "CLI compatibility tool".
+1. Delegates provider-specific lookups to `@love-moon/ai-sdk`.
+2. Keeps Conductor-specific fallbacks (conductor session-record discovery for
+   external backends, `allow_cli_list` alias normalization, `CONDUCTOR_CONFIG`
+   handling).
+3. Injects `lookupWorkspaceByHash` into the Kimi resolver so the CLI can walk
+   `~/.conductor/sessions` to reconstruct Kimi workspace paths.
+
+This means new providers added to ai-sdk automatically gain resume support by
+exporting a resume module (and registering in the dispatcher), without having
+to edit `cli/src/fire/resume.js`.
 
 ### 5.3 Leakage of top-level implementation details
 
@@ -283,21 +297,112 @@ The current boundaries of responsibilities are much clearer than before.
 - Codex session life cycle
 - Codex app-server transport
 - turn execution with local event stream
+- **provider-specific resume semantics** (session discovery, cwd extraction,
+  CLI-arg shape, per-provider external resolver hooks)
 
 ### 6.2 `cli/fire` is responsible
 
 - Conductor server communication
 - task attach / ack / runtime status
-- resume parameter analysis
-- Historical session discovery
-- Working directory switching
+- CLI-level resume orchestration (`--resume <id>` parsing, working directory
+  switching, `CONDUCTOR_RESUME_CWD` override)
+- Conductor-specific fallbacks: `allow_cli_list` alias resolution, conductor
+  session-record lookup, Kimi workspace reconstruction hints
 
-In other words, `cli` still retains the "human-operable resume entry", but these are no longer mixed in `ai-sdk`.
+In other words, `cli` owns the "human-operable resume entry" and the
+Conductor-specific policy; `ai-sdk` owns the "what each provider means by
+resume" contract.
 
 This is in line with the desired direction in the RFC:
 
 - `ai-sdk` only handles local AI runtime
 - `fire-controller` only handles the task control surface
+
+### 6.2.1 Dependency direction (strict)
+
+`@love-moon/ai-sdk` is the lower layer. The dependency arrow is one-way:
+
+```
+cli/ ─────────────► @love-moon/ai-sdk
+modules/conductor-sdk/ (does not depend on ai-sdk)
+```
+
+- `ai-sdk` **MUST NOT** import anything from `cli/` or `modules/conductor-sdk/`.
+  This includes transitive imports via session class files, worker.js, or
+  resume modules.
+- `cli/` **MAY** import from `ai-sdk` (e.g. `cli/src/runtime-backends.js`
+  imports `BUILT_IN_BACKENDS` from `@love-moon/ai-sdk` to derive its alias set
+  and run a module-load drift check).
+- The reverse import is forbidden because `ai-sdk` is also published as a
+  standalone npm package; depending on Conductor-specific code would tangle
+  the runtime layer with the orchestration layer.
+
+Violating this rule will likely surface as a circular-dependency error at
+module load. If you find yourself wanting ai-sdk to know something that
+currently lives in CLI, either (a) hoist it into `built-in-backends.js` (if
+it's static metadata), or (b) pass it through as a callback in
+`createAiSession` / `resolveResumeContext` options.
+
+## 6.3 Adding a new built-in provider
+
+The registry in `modules/ai-sdk/src/built-in-backends.js` is the **single
+source of truth** for built-in backends. Alias resolution, variant selection,
+and resume dispatch all read from it.
+
+**Invariant: every built-in provider supports resume.** This is enforced at
+module load by a self-check in `src/resume/index.js` — if you add a backend
+to `BUILT_IN_BACKENDS` without registering a resume module, ai-sdk will throw
+on import. If a provider's underlying runtime genuinely has no "resume" story,
+it does not belong as a built-in; package it as an external provider instead.
+
+Checklist — new built-in provider (e.g. `gemini`):
+
+1. **Session class.** Create `src/providers/gemini-sdk-session.js` exporting
+   a class with the usual duck-typed interface (`runTurn`, `close`,
+   `ensureSessionInfo`, `getSessionInfo`, `getSnapshot`, ...). Look at
+   `claude-agent-sdk-session.js` as a small reference and
+   `opencode-sdk-session.js` as the heaviest reference.
+
+2. **Register the backend in the central registry.** Add one entry to the
+   `BUILT_IN_BACKENDS` array in `src/built-in-backends.js`:
+   ```js
+   { backend: "gemini", aliases: ["gemini", "gemini-cli"],
+     defaultVariant: GEMINI_VARIANT }
+   ```
+   (Also export the `GEMINI_VARIANT` constant at the top of the file.) If
+   the provider has a "structured output" variant, add `structuredVariant`.
+
+3. **Wire the session factory.** Add one entry to
+   `SESSION_FACTORIES_BY_BACKEND` in `src/session-factory.js`:
+   ```js
+   ["gemini", (backend, options) => new GeminiSdkSession(backend, options)],
+   ```
+   plus the corresponding `import` and re-export.
+
+4. **Resume support (required).** Every built-in provider must support
+   resume:
+   - Create `src/resume/gemini.js` exporting `BACKEND`, `buildCliArgs`,
+     `findSessionPath`, `resolveResumeContext`. Use the smallest existing
+     module (`opencode.js`, 79 lines) as a template if the provider has no
+     local session file.
+   - Add one entry to `RESUME_MODULES_BY_BACKEND` in
+     `src/resume/index.js`.
+
+   Forgetting this step will cause ai-sdk to throw at module load —
+   the invariant is machine-checked.
+
+5. **Tests.**
+   - `modules/ai-sdk/test/gemini-sdk-session.test.js` — turn / close /
+     snapshot unit tests using a mocked SDK.
+   - Extend `modules/ai-sdk/test/resume.test.js` with gemini resume cases.
+
+**External providers** ship their own descriptor object via
+`AISDK_PROVIDER_PATH`. For external providers, `resolveResumeContext`,
+`buildResumeArgs`, and `findSessionPath` on the descriptor are optional —
+external backends without resume simply raise "not supported" when
+`--resume` is used against them. See
+`modules/ai-sdk/fixtures/fake-resume-capable-provider.js` for the full
+shape.
 
 ## 7. Current limitations
 

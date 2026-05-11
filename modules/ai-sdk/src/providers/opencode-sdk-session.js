@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 
+import { OPENCODE_SDK_VARIANT as OPENCODE_PROVIDER_VARIANT } from "../built-in-backends.js";
 import { OpencodeServerTransport } from "../transports/opencode-server-transport.js";
 import {
   emitLog,
@@ -13,7 +14,6 @@ import {
 const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
 const MIN_TURN_DEADLINE_MS = 30 * 1000;
 const MAX_TURN_DEADLINE_MS = 30 * 60 * 1000;
-const OPENCODE_PROVIDER_VARIANT = "opencode-sdk";
 
 function waitForever() {
   return new Promise(() => {});
