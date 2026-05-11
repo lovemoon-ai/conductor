@@ -56,6 +56,44 @@ describe("conductor project list", () => {
     const data = JSON.parse(stdout.collect().trim());
     assert.equal(data.length, 2);
   });
+
+  it("human-readable table shows a DAEMON column with the project's daemonHost", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [
+        { id: "p1", name: "alpha", daemonHost: "4090", isDefault: false, hidden: false },
+        { id: "p2", name: "beta", daemonHost: "m1", isDefault: false, hidden: false },
+        // Default / unbound project has no daemonHost — column should render empty.
+        { id: "p3", name: "default", daemonHost: null, isDefault: true, hidden: false },
+      ],
+    });
+    const code = await main(["list"], { stdout, stderr, ...makeCliDeps(backend) });
+    assert.equal(code, 0);
+    const out = stdout.collect();
+    const [header, ...rows] = out.trim().split("\n");
+    // Header order locks the column position so a future reshuffle has to
+    // update the test deliberately.
+    assert.match(header, /\bID\b.*\bDEFAULT\b.*\bHIDDEN\b.*\bDAEMON\b.*\bNAME\b/);
+    // Each row carries its own daemonHost (or empty for unbound).
+    assert.match(rows[0], /\b4090\b.*\balpha\b/);
+    assert.match(rows[1], /\bm1\b.*\bbeta\b/);
+    assert.match(rows[2], /default$/); // last row's last token is the name
+  });
+
+  it("--json output still includes daemonHost as a field (machine path unchanged)", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [
+        { id: "p1", name: "alpha", daemonHost: "4090", isDefault: false, hidden: false },
+      ],
+    });
+    const code = await main(["list", "--json"], { stdout, stderr, ...makeCliDeps(backend) });
+    assert.equal(code, 0);
+    const data = JSON.parse(stdout.collect().trim());
+    assert.equal(data[0].daemonHost, "4090");
+  });
 });
 
 describe("conductor project current", () => {

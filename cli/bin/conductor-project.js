@@ -129,11 +129,18 @@ async function handleList(argv, deps) {
     printPretty(deps.stdout, "(no projects)");
     return EXIT.OK;
   }
-  printPretty(deps.stdout, `${pad("ID", 24)} ${pad("DEFAULT", 8)} ${pad("HIDDEN", 7)} NAME`);
+  // DAEMON column width sized for typical hostnames (e.g. "4090", "m1",
+  // "macbook-pro"). Longer hosts overflow rather than truncate — readability
+  // for the common case beats column alignment for outliers.
+  const daemonColWidth = 14;
+  printPretty(
+    deps.stdout,
+    `${pad("ID", 24)} ${pad("DEFAULT", 8)} ${pad("HIDDEN", 7)} ${pad("DAEMON", daemonColWidth)} NAME`,
+  );
   for (const p of objects) {
     printPretty(
       deps.stdout,
-      `${pad(p.id, 24)} ${pad(p.isDefault ? "yes" : "", 8)} ${pad(p.hidden ? "yes" : "", 7)} ${p.name ?? ""}`,
+      `${pad(p.id, 24)} ${pad(p.isDefault ? "yes" : "", 8)} ${pad(p.hidden ? "yes" : "", 7)} ${pad(p.daemonHost ?? "", daemonColWidth)} ${p.name ?? ""}`,
     );
   }
   return EXIT.OK;
