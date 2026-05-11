@@ -38,6 +38,7 @@ export const pickDaemonBadgeClass = (daemonHost: string): string => {
 export type IssueOwnerOption = {
   userId: string;
   label: string;
+  projectId?: string;
   projectName?: string;
 };
 

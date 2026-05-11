@@ -172,8 +172,11 @@ export function IssueDetailsDialog({
     const priorityChanged = priority !== issue.priority;
     const currentOwnerUserId = issue.ownerUserId ?? issue.owner?.id ?? '';
     const ownerChanged = Boolean(ownerUserId) && ownerUserId !== currentOwnerUserId;
+    const selectedOwner = ownerOptions.find((option) => option.userId === ownerUserId) ?? null;
+    const selectedOwnerProjectId = selectedOwner?.projectId ?? null;
+    const projectChanged = Boolean(selectedOwnerProjectId) && selectedOwnerProjectId !== issue.projectId;
 
-    if (!titleChanged && !descriptionChanged && !priorityChanged && !ownerChanged) {
+    if (!titleChanged && !descriptionChanged && !priorityChanged && !ownerChanged && !projectChanged) {
       onClose();
       return;
     }
@@ -182,6 +185,7 @@ export function IssueDetailsDialog({
     setLocalError(null);
     try {
       await updateIssue(issue.id, {
+        ...(projectChanged && selectedOwnerProjectId ? { projectId: selectedOwnerProjectId } : {}),
         ...(titleChanged ? { title: nextTitle } : {}),
         ...(descriptionChanged ? { description: nextDescription ? nextDescription : null } : {}),
         ...(priorityChanged ? { priority } : {}),

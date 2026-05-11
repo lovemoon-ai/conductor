@@ -151,6 +151,7 @@ function IssuesPageContent() {
       }
       const options = members.map((member) => ({
         userId: member.userId,
+        projectId: member.projectId,
         label: member.label,
         projectName: member.projectName ?? member.project?.name,
       }));

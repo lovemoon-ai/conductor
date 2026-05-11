@@ -808,6 +808,191 @@ describe('/api/issues/[issueId]', () => {
     expect(db.issue.update).not.toHaveBeenCalled();
   });
 
+  it('rejects moving an issue into doing when the current user is not the owner', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      ownerUserId: 'user-2',
+    }) as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { status: 'doing' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toBe('Only the issue owner can move this issue into doing');
+    expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    expect(db.issue.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects changing a running issue status when the current user is not the owner', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      ownerUserId: 'user-2',
+      status: 'doing',
+    }) as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { status: 'done' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toBe('Only the issue owner can change a running issue status');
+    expect(stopTaskBeforeRelaunch).not.toHaveBeenCalled();
+    expect(db.issue.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects ownership reassignment from a non-owner and non-project-owner caller', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      ownerUserId: 'user-2',
+      project: {
+        id: 'project-1',
+        userId: 'user-2',
+        collaborationId: 'collab-1',
+        daemonHost: null,
+        workspacePath: null,
+        repoRoot: null,
+        worktreeBranch: null,
+        lastCommit: null,
+      },
+    }) as any);
+    vi.mocked(db.collaborationMember.findMany).mockResolvedValue([
+      { userId: 'user-1', projectId: 'project-1' },
+      { userId: 'user-2', projectId: 'project-2' },
+    ] as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { ownerUserId: 'user-1' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(403);
+    expect(data.error).toContain('current issue owner or the project owner');
+    expect(db.issue.update).not.toHaveBeenCalled();
+    expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+  });
+
+  it('allows the issue owner to move a collaboration issue to another member project', async () => {
+    vi.mocked(db.project.findMany).mockResolvedValue([
+      { id: 'project-1', collaborationId: 'collab-1' },
+    ] as any);
+    vi.mocked(db.collaborationMember.findMany).mockResolvedValue([
+      { userId: 'user-1', projectId: 'project-1' },
+      { userId: 'user-2', projectId: 'project-2' },
+    ] as any);
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      ownerUserId: 'user-1',
+      project: {
+        id: 'project-1',
+        userId: 'user-1',
+        collaborationId: 'collab-1',
+        daemonHost: 'daemon-a',
+        workspacePath: '/repo-a',
+        repoRoot: '/repo-a',
+        worktreeBranch: 'main',
+        lastCommit: 'abc',
+      },
+    }) as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({
+      id: 'project-2',
+      userId: 'user-2',
+      collaborationId: 'collab-1',
+      daemonHost: 'daemon-b',
+      workspacePath: '/repo-b',
+      repoRoot: '/repo-b',
+      worktreeBranch: 'main',
+      lastCommit: 'def',
+    } as any);
+    vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({
+      projectId: 'project-2',
+      ownerUserId: 'user-1',
+      project: {
+        id: 'project-2',
+        userId: 'user-2',
+        collaborationId: 'collab-1',
+        daemonHost: 'daemon-b',
+        workspacePath: '/repo-b',
+        repoRoot: '/repo-b',
+        worktreeBranch: 'main',
+        lastCommit: 'def',
+      },
+    }) as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { projectId: 'project-2' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(db.project.findFirst).toHaveBeenCalledWith({
+      where: { id: 'project-2' },
+      select: expect.objectContaining({
+        id: true,
+        userId: true,
+        collaborationId: true,
+      }),
+    });
+    expect(db.issue.aggregate).toHaveBeenCalledWith({
+      where: {
+        projectId: 'project-2',
+        status: 'todo',
+      },
+      _max: {
+        position: true,
+      },
+    });
+    expect(db.issue.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        projectId: 'project-2',
+        ownerUserId: 'user-1',
+        position: 5,
+      }),
+    }));
+  });
+
+  it('rejects owner changes while an issue is doing', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      ownerUserId: 'user-1',
+      status: 'doing',
+      project: {
+        id: 'project-1',
+        userId: 'user-1',
+        collaborationId: 'collab-1',
+        daemonHost: null,
+        workspacePath: null,
+        repoRoot: null,
+        worktreeBranch: null,
+        lastCommit: null,
+      },
+    }) as any);
+    vi.mocked(db.collaborationMember.findMany).mockResolvedValue([
+      { userId: 'user-1', projectId: 'project-1' },
+      { userId: 'user-2', projectId: 'project-2' },
+    ] as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { ownerUserId: 'user-2' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toBe('Move the issue out of doing before changing owner');
+    expect(db.issue.update).not.toHaveBeenCalled();
+  });
+
   it('does not spawn a duplicate task when an active linked task already exists', async () => {
     vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue() as any);
     mockIssueTasks({
@@ -1132,6 +1317,19 @@ describe('/api/issues/[issueId]', () => {
 
     expect(response.status).toBe(204);
     expect(db.issue.delete).toHaveBeenCalledWith({ where: { id: 'issue-1' } });
+  });
+
+  it('rejects deleting a running issue', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ status: 'doing' }) as any);
+
+    const response = await DELETE(createMockRequest({ method: 'DELETE' }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toBe('Move the issue out of doing before deleting it');
+    expect(db.issue.delete).not.toHaveBeenCalled();
   });
 
   it('falls back to the legacy select when the AI session columns are missing on the issues table', async () => {

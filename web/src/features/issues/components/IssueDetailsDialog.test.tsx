@@ -157,6 +157,42 @@ describe('IssueDetailsDialog', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('uses the selected owner project as the target project in details', async () => {
+    updateIssueMock.mockResolvedValue({
+      ...issue,
+      projectId: 'project-2',
+      ownerUserId: 'user-2',
+    });
+
+    render(
+      <IssueDetailsDialog
+        open
+        onClose={() => {}}
+        issue={{
+          ...issue,
+          ownerUserId: 'user-1',
+        }}
+        ownerOptions={[
+          { userId: 'user-1', projectId: 'project-1', label: '+15551234567', projectName: 'Alpha A' },
+          { userId: 'user-2', projectId: 'project-2', label: '+15557654321', projectName: 'Alpha B' },
+        ]}
+      />,
+    );
+
+    expect(screen.queryByLabelText('Target daemon')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Owner'), {
+      target: { value: 'user-2' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(updateIssueMock).toHaveBeenCalledWith('issue-1', {
+        projectId: 'project-2',
+        ownerUserId: 'user-2',
+      });
+    });
+  });
+
   it('shows the ai tool, session id, and task id fields', () => {
     render(<IssueDetailsDialog open onClose={() => {}} issue={issue} />);
 
