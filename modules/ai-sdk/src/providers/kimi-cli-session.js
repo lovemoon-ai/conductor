@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 
+import { KIMI_CLI_WIRE_VARIANT as KIMI_PROVIDER_VARIANT } from "../built-in-backends.js";
 import { KimiWireTransport } from "../transports/kimi-wire-transport.js";
 import {
   emitLog,
@@ -14,7 +15,6 @@ import {
 const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
 const MIN_TURN_DEADLINE_MS = 30 * 1000;
 const MAX_TURN_DEADLINE_MS = 30 * 60 * 1000;
-const KIMI_PROVIDER_VARIANT = "kimi-cli-wire";
 const DEFAULT_STATUS_DEDUPE_MS = 120;
 const DEFAULT_STATUS_THROTTLE_MS = 450;
 const DEFAULT_REASONING_STATUS_THROTTLE_MS = 2500;

@@ -3,19 +3,59 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import yaml from "js-yaml";
+import { BUILT_IN_BACKENDS as AI_SDK_BUILT_IN_BACKENDS } from "@love-moon/ai-sdk";
 
+// CLI display order for built-in backends. ai-sdk owns the canonical set of
+// built-in backends; CLI just picks an ordering for "Supported Backends:" log
+// output. The self-check below ensures this list always matches ai-sdk's set.
 const BUILT_IN_RUNTIME_BACKENDS = ["codex", "claude", "kimi", "opencode", "copilot"];
 const BUILT_IN_RUNTIME_BACKEND_SET = new Set(BUILT_IN_RUNTIME_BACKENDS);
 const COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKENDS = ["copilot"];
 const COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKEND_SET = new Set(COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKENDS);
-const LEGACY_RUNTIME_BACKEND_ALIASES = new Set([
-  "code",
-  "claude-code",
-  "open-code",
-  "open_code",
-  "kimi-cli",
-  "kimi-code",
-]);
+
+// Legacy aliases (e.g. "code" → "codex", "kimi-cli" → "kimi") are derived
+// from ai-sdk's BUILT_IN_BACKENDS to avoid drift. ai-sdk is the single source
+// of truth for which alias maps to which built-in backend.
+const LEGACY_RUNTIME_BACKEND_ALIASES = new Set(
+  AI_SDK_BUILT_IN_BACKENDS.flatMap((entry) =>
+    entry.aliases.filter((alias) => alias !== entry.backend),
+  ),
+);
+
+/**
+ * Asserts that CLI's ordered built-in display list and ai-sdk's built-in
+ * backend set are exactly equal. Throws on drift in either direction.
+ *
+ * Exported for test use; also invoked at module load below as a fail-fast
+ * invariant check.
+ *
+ * @param {string[]}                                    cliBackends
+ * @param {ReadonlyArray<{ backend: string }>}          aiSdkBackends
+ */
+export function assertCliAndAiSdkBackendsAgree(cliBackends, aiSdkBackends) {
+  const aiSdkBackendSet = new Set(aiSdkBackends.map((entry) => entry.backend));
+  const cliBackendSet = new Set(cliBackends);
+  for (const backend of cliBackends) {
+    if (!aiSdkBackendSet.has(backend)) {
+      throw new Error(
+        `cli/runtime-backends: BUILT_IN_RUNTIME_BACKENDS lists "${backend}" `
+          + `but ai-sdk does not know about it. Did you remove it from ai-sdk's BUILT_IN_BACKENDS?`,
+      );
+    }
+  }
+  for (const backend of aiSdkBackendSet) {
+    if (!cliBackendSet.has(backend)) {
+      throw new Error(
+        `cli/runtime-backends: ai-sdk has built-in backend "${backend}" `
+          + `but BUILT_IN_RUNTIME_BACKENDS does not list it. Add it to BUILT_IN_RUNTIME_BACKENDS in cli/src/runtime-backends.js.`,
+      );
+    }
+  }
+}
+
+// Module-load self-check: fails fast if someone adds a new built-in to ai-sdk
+// without updating CLI's ordering, or vice versa.
+assertCliAndAiSdkBackendsAgree(BUILT_IN_RUNTIME_BACKENDS, AI_SDK_BUILT_IN_BACKENDS);
 const externalRuntimeCatalogPromises = new Map();
 let externalRuntimeImportNonce = 0;
 

@@ -136,12 +136,28 @@ function validateDescriptor(descriptor, sourcePath) {
     throw new Error(`External AI SDK provider "${backend}" from ${sourcePath} is missing provider.createSession().`);
   }
   const aliases = Array.isArray(descriptor.aliases) ? descriptor.aliases.map((item) => normalizeName(item)).filter(Boolean) : [];
+  const optionalFn = (fieldName) => {
+    const value = descriptor[fieldName];
+    if (value === undefined || value === null) {
+      return null;
+    }
+    if (typeof value !== "function") {
+      throw new Error(
+        `External AI SDK provider "${backend}" from ${sourcePath} has provider.${fieldName} `
+          + `but it is not a function (got ${typeof value}).`,
+      );
+    }
+    return value;
+  };
   return {
     backend,
     variant,
     aliases,
     createSession: descriptor.createSession,
-    isSupported: typeof descriptor.isSupported === "function" ? descriptor.isSupported : null,
+    isSupported: optionalFn("isSupported"),
+    resolveResumeContext: optionalFn("resolveResumeContext"),
+    buildResumeArgs: optionalFn("buildResumeArgs"),
+    findSessionPath: optionalFn("findSessionPath"),
     sourcePath,
   };
 }
