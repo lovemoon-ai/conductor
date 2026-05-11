@@ -137,10 +137,12 @@ export function TaskDetailPane({
 
   const taskType = task.taskType ?? 'ai_task';
   const isAiTask = taskType === 'ai_task';
-  const isAiTerminalSessionActive =
+  const isAiTerminalSessionStarted =
     terminalConnectionState === 'connecting' ||
-    terminalConnectionState === 'open';
-  const lockAiTerminalView = isAiTask && aiViewMode === 'terminal' && isAiTerminalSessionActive;
+    terminalConnectionState === 'open' ||
+    terminalConnectionState === 'exited' ||
+    terminalConnectionState === 'error';
+  const lockAiTerminalView = isAiTask && aiViewMode === 'terminal' && isAiTerminalSessionStarted;
   const aiViewToggle = isAiTask ? (
     <AiTaskViewToggle
       value={aiViewMode}

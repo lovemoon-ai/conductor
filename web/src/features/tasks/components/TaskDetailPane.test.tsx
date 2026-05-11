@@ -189,45 +189,6 @@ describe('TaskDetailPane', () => {
     expect(screen.queryByTestId('chat-view')).not.toBeInTheDocument();
   });
 
-  it('allows returning to chat after an AI terminal error', () => {
-    fetchTaskMock.mockReturnValue(new Promise(() => {}));
-    useTasksStoreMock.mockReturnValue({
-      tasks: [
-        {
-          id: 'task-ai-error',
-          title: 'AI task terminal error',
-          taskType: 'ai_task',
-          status: 'running',
-          createdAt: '2026-03-23T00:00:00.000Z',
-        },
-      ],
-      fetchTask: fetchTaskMock,
-      markTaskRead: markTaskReadMock,
-    });
-    useTerminalStoreMock.mockImplementation((selector: (state: any) => unknown) =>
-      selector({
-        byTask: {
-          'task-ai-error': {
-            connectionState: 'error',
-          },
-        },
-      }),
-    );
-
-    window.sessionStorage.setItem('conductor:ai-task-view:task-ai-error', 'terminal');
-
-    render(<TaskDetailPane taskId="task-ai-error" />);
-
-    const chatTab = screen.getByRole('tab', { name: /chat/i });
-    expect(chatTab).not.toBeDisabled();
-    expect(screen.getByTestId('terminal-view')).toBeInTheDocument();
-
-    fireEvent.click(chatTab);
-
-    expect(screen.getByTestId('chat-view')).toBeInTheDocument();
-    expect(screen.queryByTestId('terminal-view')).not.toBeInTheDocument();
-  });
-
   it('treats legacy tasks without taskType as ai tasks', () => {
     fetchTaskMock.mockReturnValue(new Promise(() => {}));
     useTasksStoreMock.mockReturnValue({

@@ -66,8 +66,6 @@ const sendTerminalError = (socket: WebSocket, taskId: string | null, message: st
   });
 };
 
-export const isIdempotentDetachedTerminalEvent = (type: unknown): boolean => type === "terminal_detach";
-
 const emitTerminalAccessState = (userId: string, taskId: string) => {
   const viewerIds = realtimeHub.getTerminalSubscriberIds(taskId);
   const writerConnectionId = realtimeHub.getTerminalWriter(taskId);
@@ -623,10 +621,6 @@ export const setupAppGateway = (): WebSocketServer => {
             return;
           }
           if (!realtimeHub.isTerminalAttached(connectionId, taskId)) {
-            if (isIdempotentDetachedTerminalEvent(data.type)) {
-              clearPtyTransportSessionIds(taskId, connectionId);
-              return;
-            }
             sendTerminalError(socket, taskId, `terminal ${taskId} is not attached`);
             return;
           }

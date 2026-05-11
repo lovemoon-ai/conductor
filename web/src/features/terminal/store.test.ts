@@ -133,49 +133,6 @@ describe('terminal store', () => {
     });
   });
 
-  it('treats stale not-attached errors as a detached state', () => {
-    useTerminalStore.setState({
-      byTask: {
-        'task-pty-stale': {
-          taskId: 'task-pty-stale',
-          connectionState: 'open',
-          isAttached: true,
-          hasWriteAccess: true,
-          viewerCount: 1,
-          preferredMode: 'write',
-          transportState: 'direct',
-          transportSession: {
-            sessionId: 'transport-stale-1',
-            transportState: 'direct',
-            transportPolicy: 'direct_preferred',
-            issuedAt: null,
-            expiresAt: null,
-            writerConnectionId: 'conn-1',
-            ticket: null,
-            directCandidate: true,
-          },
-          banner: null,
-        },
-      },
-    });
-
-    useTerminalStore.getState().markError({
-      task_id: 'task-pty-stale',
-      message: 'terminal task-pty-stale is not attached',
-    });
-
-    expect(useTerminalStore.getState().byTask['task-pty-stale']).toMatchObject({
-      connectionState: 'idle',
-      isAttached: false,
-      hasWriteAccess: false,
-      viewerCount: 0,
-      error: null,
-      transportState: 'relay',
-      transportSession: null,
-      banner: null,
-    });
-  });
-
   it('keeps a bounded output snapshot for remount restore', () => {
     const firstChunk = 'a'.repeat(MAX_OUTPUT_BUFFER_BYTES - 8);
     const secondChunk = 'bcdefghij';

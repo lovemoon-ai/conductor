@@ -501,47 +501,6 @@ describe('TerminalView', () => {
     expect(screen.queryByRole('button', { name: /view only/i })).toBeNull();
   });
 
-  it('does not detach when a terminal view unmounts before attaching', async () => {
-    const task = {
-      id: 'task-pty-no-attach',
-      title: 'PTY No Attach',
-      taskType: 'pty_task',
-      status: 'completed',
-      agentHost: 'debug',
-      executionHost: 'debug',
-      launchConfig: null,
-      ptySession: {
-        cols: 80,
-        rows: 24,
-      },
-      createdAt: '2024-01-01T00:00:00.000Z',
-      updatedAt: null,
-    } as any;
-
-    const view = render(<TerminalView task={task} />);
-    await flushMicrotasks();
-
-    expect(sendMock).not.toHaveBeenCalledWith(expect.objectContaining({
-      type: 'terminal_attach',
-      payload: expect.objectContaining({
-        task_id: 'task-pty-no-attach',
-      }),
-    }));
-
-    view.unmount();
-
-    act(() => {
-      vi.advanceTimersByTime(200);
-    });
-
-    expect(sendMock).not.toHaveBeenCalledWith({
-      type: 'terminal_detach',
-      payload: {
-        task_id: 'task-pty-no-attach',
-      },
-    });
-  });
-
   it('shows relay transport state in the terminal header', async () => {
     const task = {
       id: 'task-pty-transport',

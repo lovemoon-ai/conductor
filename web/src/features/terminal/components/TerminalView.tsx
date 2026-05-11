@@ -166,7 +166,6 @@ export function TerminalView({ task }: TerminalViewProps) {
   const latestWriteAccessRef = useRef(false);
   const latestTransportStateRef = useRef<TerminalTransportState>('relay');
   const latestTransportSessionIdRef = useRef<string | null>(null);
-  const attachSentRef = useRef(false);
   const directNegotiationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attemptedDirectSessionIdRef = useRef<string | null>(null);
   const rtcPeerRef = useRef<RTCPeerConnection | null>(null);
@@ -225,7 +224,6 @@ export function TerminalView({ task }: TerminalViewProps) {
     if (!isTerminalReady || websocketStatus !== 'connected') {
       return;
     }
-    attachSentRef.current = true;
     markAttaching(task.id, {
       preferredMode: 'write',
       reason,
@@ -593,14 +591,9 @@ export function TerminalView({ task }: TerminalViewProps) {
       disposed = true;
       setIsTerminalReady(false);
       clearPendingTerminalDetach(task.id);
-      const shouldSendDetach =
-        attachSentRef.current ||
-        latestConnectionStateRef.current === 'connecting' ||
-        latestConnectionStateRef.current === 'open';
-      attachSentRef.current = false;
       const detachTimer = setTimeout(() => {
         pendingTerminalDetachTimers.delete(task.id);
-        if (shouldSendDetach && latestSocketStatusRef.current === 'connected') {
+        if (latestSocketStatusRef.current === 'connected') {
           send({
             type: 'terminal_detach',
             payload: {
