@@ -48,30 +48,56 @@ function buildBaseUrl(config) {
   return raw || "http://localhost";
 }
 
-async function resolveProjectSelector(apis, selector, options) {
+async function resolveProjectSelector(apis, selector, options = {}) {
   if (!selector) {
     return resolveProject(apis, options);
   }
-  // Try id first via getProject(); fall back to name.
-  if (typeof apis.projects.getProject === "function") {
-    try {
-      return await apis.projects.getProject(selector);
-    } catch (err) {
-      if ((err?.statusCode ?? err?.status) !== 404) {
-        // not an id miss; rethrow so we don't paper over auth/transport errors
-        if (err?.statusCode !== 400) throw err;
-      }
-    }
-  }
+  const daemonHostFilter = options.daemonHost
+    ? String(options.daemonHost).trim()
+    : null;
+
+  // Pull the project list once and do all matching client-side. We
+  // deliberately do NOT route through `ProjectsApi.getProject` because the
+  // SDK's variant transparently falls back from "id miss" to "unique name
+  // match" — which collapses two semantically distinct cases (id miss vs.
+  // ambiguous name) into one error, and prevents us from surfacing the
+  // candidate list. Doing it locally keeps that distinction.
   const list = await apis.projects.listProjects({ includeHidden: true });
-  const matches = list.filter((entry) => entry.name === selector);
+
+  const byId = list.find((entry) => entry.id === selector);
+  if (byId) {
+    if (daemonHostFilter && byId.daemonHost && byId.daemonHost !== daemonHostFilter) {
+      const err = new Error(
+        `Project ${byId.id} is on daemon '${byId.daemonHost}', not '${daemonHostFilter}'`,
+      );
+      err.code = "ARGS";
+      throw err;
+    }
+    return byId;
+  }
+
+  const nameMatches = list.filter((entry) => entry.name === selector);
+  const matches = daemonHostFilter
+    ? nameMatches.filter((entry) => entry.daemonHost === daemonHostFilter)
+    : nameMatches;
   if (matches.length === 0) {
-    const err = new Error(`No project found matching '${selector}'`);
+    const hint = daemonHostFilter
+      ? ` (no match on daemon '${daemonHostFilter}')`
+      : "";
+    const err = new Error(`No project found matching '${selector}'${hint}`);
     err.statusCode = 404;
     throw err;
   }
   if (matches.length > 1) {
-    const err = new Error(`Project name '${selector}' is ambiguous (${matches.length} matches); pass project id instead`);
+    // Surface candidates inline so the caller can copy-paste the right id
+    // without a second `conductor project list` round-trip (multi-daemon UX
+    // follow-up to RFC 0025).
+    const candidates = nameMatches
+      .map((entry) => `  ${entry.id}  daemon=${entry.daemonHost ?? "(none)"}  ${entry.workspacePath ?? ""}`.trimEnd())
+      .join("\n");
+    const err = new Error(
+      `Project name '${selector}' is ambiguous (${matches.length} matches). Pass --project <id> or --daemon-host <host> to disambiguate:\n${candidates}`,
+    );
     err.code = "ARGS";
     throw err;
   }
@@ -119,6 +145,7 @@ async function handleShow(argv, deps) {
   const project = await resolveProjectSelector(apis, selector, {
     env: deps.env,
     cwd: deps.cwd,
+    daemonHost: argv.daemonHost,
   });
   const obj = projectAsObject(project);
   if (argv.json) {
@@ -233,7 +260,11 @@ function isDaemonUnreachableError(err) {
 
 async function handleSetDefault(argv, deps) {
   const apis = await buildApis(deps);
-  const project = await resolveProjectSelector(apis, argv.idOrName, { env: deps.env, cwd: deps.cwd });
+  const project = await resolveProjectSelector(apis, argv.idOrName, {
+    env: deps.env,
+    cwd: deps.cwd,
+    daemonHost: argv.daemonHost,
+  });
   // The matching server endpoint is `POST /api/projects/default` with body
   // `{ projectId, metadata }` (see web/src/app/api/projects/default/route.ts).
   // Earlier the dry-run preview pointed at the PATCH-by-query route, which
@@ -257,7 +288,11 @@ async function handleSetDefault(argv, deps) {
 
 async function handleSetHidden(argv, deps, hidden) {
   const apis = await buildApis(deps);
-  const project = await resolveProjectSelector(apis, argv.idOrName, { env: deps.env, cwd: deps.cwd });
+  const project = await resolveProjectSelector(apis, argv.idOrName, {
+    env: deps.env,
+    cwd: deps.cwd,
+    daemonHost: argv.daemonHost,
+  });
   const url = `${buildBaseUrl(apis.config)}/api/projects?projectId=${encodeURIComponent(project.id)}`;
   const metadata = buildAuditMetadata(deps.env);
   const body = { hidden, metadata };
@@ -311,7 +346,9 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
       .command(
         "show [idOrName]",
         "Show a project (defaults to the resolved current project)",
-        (cmd) => cmd.positional("idOrName", { type: "string" }),
+        (cmd) => cmd
+          .positional("idOrName", { type: "string" })
+          .option("daemon-host", { type: "string", describe: "Disambiguate same-name projects across daemons" }),
         async (argv) => {
           exitCode = await handleShow(argv, { ...handlerDeps, configFile: argv.configFile });
         },
@@ -340,7 +377,9 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
       .command(
         "set-default <idOrName>",
         "Set the user's default project",
-        (cmd) => cmd.positional("idOrName", { type: "string", demandOption: true }),
+        (cmd) => cmd
+          .positional("idOrName", { type: "string", demandOption: true })
+          .option("daemon-host", { type: "string", describe: "Disambiguate same-name projects across daemons" }),
         async (argv) => {
           exitCode = await handleSetDefault(argv, { ...handlerDeps, configFile: argv.configFile });
         },
@@ -348,7 +387,9 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
       .command(
         "hide <idOrName>",
         "Hide a project from default listings",
-        (cmd) => cmd.positional("idOrName", { type: "string", demandOption: true }),
+        (cmd) => cmd
+          .positional("idOrName", { type: "string", demandOption: true })
+          .option("daemon-host", { type: "string", describe: "Disambiguate same-name projects across daemons" }),
         async (argv) => {
           exitCode = await handleSetHidden(argv, { ...handlerDeps, configFile: argv.configFile }, true);
         },
@@ -356,7 +397,9 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
       .command(
         "unhide <idOrName>",
         "Unhide a previously hidden project",
-        (cmd) => cmd.positional("idOrName", { type: "string", demandOption: true }),
+        (cmd) => cmd
+          .positional("idOrName", { type: "string", demandOption: true })
+          .option("daemon-host", { type: "string", describe: "Disambiguate same-name projects across daemons" }),
         async (argv) => {
           exitCode = await handleSetHidden(argv, { ...handlerDeps, configFile: argv.configFile }, false);
         },

@@ -198,6 +198,96 @@ describe("conductor project hide", () => {
   });
 });
 
+describe("conductor project — multi-daemon name disambiguation", () => {
+  // Same project name on two different daemons is a real situation: the
+  // unique constraint is `(userId, daemonHost, name)`, so the same user
+  // can legitimately have `persona` on both `4090` and `m1`. The CLI must
+  // not silently pick one — it must either error with candidates, or let
+  // the caller narrow via --daemon-host.
+  const ambiguousProjects = [
+    { id: "p1-4090", name: "persona", daemonHost: "4090", workspacePath: "/home/duino/ws/ququ/persona", hidden: false },
+    { id: "p2-m1", name: "persona", daemonHost: "m1", workspacePath: "/Users/duino/ws/ark/persona", hidden: false },
+  ];
+
+  it("ambiguous name → exit 2 with candidate ids and daemons listed", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({ projects: ambiguousProjects });
+    const code = await main(
+      ["set-default", "persona", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 2);
+    const errText = stderr.collect();
+    assert.match(errText, /ambiguous/i);
+    // Both candidate ids appear in the error so the user can copy-paste.
+    assert.match(errText, /p1-4090/);
+    assert.match(errText, /p2-m1/);
+    // Each candidate line shows its daemon, not just the id.
+    assert.match(errText, /daemon=4090/);
+    assert.match(errText, /daemon=m1/);
+    // Hint mentions both disambiguation paths.
+    assert.match(errText, /--daemon-host/);
+    // Nothing was written.
+    assert.equal(backend.calls.find((c) => c.method === "setDefaultProject"), undefined);
+  });
+
+  it("--daemon-host narrows ambiguous name to one match", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({ projects: ambiguousProjects });
+    const code = await main(
+      ["set-default", "persona", "--daemon-host", "m1", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 0);
+    const call = backend.calls.find((c) => c.method === "setDefaultProject");
+    assert.ok(call, "setDefaultProject must be called once --daemon-host picks one match");
+    assert.equal(call.projectId, "p2-m1");
+  });
+
+  it("--daemon-host that excludes all matches → exit 4", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({ projects: ambiguousProjects });
+    const code = await main(
+      ["set-default", "persona", "--daemon-host", "no-such-daemon", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 4);
+    assert.match(stderr.collect(), /no match on daemon 'no-such-daemon'/);
+  });
+
+  it("hide also accepts --daemon-host for the same disambiguation", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({ projects: ambiguousProjects });
+    const code = await main(
+      ["hide", "persona", "--daemon-host", "4090", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 0);
+    const call = backend.calls.find((c) => c.method === "patchProjectByQuery");
+    assert.ok(call);
+    assert.equal(call.projectId, "p1-4090");
+  });
+
+  it("passing an id with --daemon-host that disagrees → exit 2", async () => {
+    // Guard against the operator passing both an id and a host that don't
+    // line up. The CLI fails loudly so the user notices the inconsistency,
+    // rather than silently honoring one and ignoring the other.
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({ projects: ambiguousProjects });
+    const code = await main(
+      ["set-default", "p1-4090", "--daemon-host", "m1", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 2);
+    assert.match(stderr.collect(), /on daemon '4090', not 'm1'/);
+  });
+});
+
 describe("conductor project set-default", () => {
   it("dry-run preview points at /api/projects/default with POST (review B3)", async () => {
     const stdout = makeStream();
