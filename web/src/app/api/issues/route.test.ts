@@ -18,7 +18,13 @@ vi.mock('@/lib/db', () => ({
       findMany: vi.fn(),
     },
     project: {
+      findMany: vi.fn(),
+      findUnique: vi.fn(),
       findFirst: vi.fn(),
+    },
+    collaborationMember: {
+      findMany: vi.fn(),
+      findUnique: vi.fn(),
     },
   },
 }));
@@ -49,6 +55,22 @@ describe('/api/issues', () => {
       id: 'user-1',
     } as any);
     vi.mocked(db.task.findMany).mockResolvedValue([] as any);
+    vi.mocked(db.project.findMany).mockResolvedValue([
+      { id: 'project-1', collaborationId: null },
+      { id: 'project-2', collaborationId: null },
+    ] as any);
+    vi.mocked(db.project.findUnique).mockImplementation(async ({ where }: any) => ({
+      id: where.id,
+      userId: 'user-1',
+      collaborationId: null,
+    }) as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({
+      id: 'project-1',
+      userId: 'user-1',
+      collaborationId: null,
+    } as any);
+    vi.mocked(db.collaborationMember.findMany).mockResolvedValue([] as any);
+    vi.mocked(db.collaborationMember.findUnique).mockResolvedValue(null as any);
   });
 
   it('lists issues scoped to the requested project', async () => {
@@ -77,8 +99,7 @@ describe('/api/issues', () => {
     expect(response.status).toBe(200);
     expect(db.issue.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
-        project: { userId: 'user-1' },
-        projectId: 'project-1',
+        projectId: { in: ['project-1'] },
       }),
     }));
     expect(data).toEqual([
@@ -290,7 +311,7 @@ describe('/api/issues', () => {
     expect(response.status).toBe(200);
     expect(db.issue.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: {
-        project: { userId: 'user-1' },
+        projectId: { in: ['project-1', 'project-2'] },
       },
     }));
     expect(data).toEqual([
@@ -308,7 +329,7 @@ describe('/api/issues', () => {
   });
 
   it('creates an issue using the next position when none is provided', async () => {
-    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1', userId: 'user-1', collaborationId: null } as any);
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: 4 } } as any);
     vi.mocked(db.issue.create).mockResolvedValue({
       id: 'issue-2',
@@ -360,7 +381,7 @@ describe('/api/issues', () => {
   });
 
   it('creates an issue with daemon attribution when requested by a merged view', async () => {
-    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1', userId: 'user-1', collaborationId: null } as any);
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
     vi.mocked(db.issue.create).mockResolvedValue({
       id: 'issue-merged',
@@ -404,7 +425,7 @@ describe('/api/issues', () => {
   });
 
   it('maps legacy backlog create requests to todo', async () => {
-    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1', userId: 'user-1', collaborationId: null } as any);
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
     vi.mocked(db.issue.create).mockResolvedValue({
       id: 'issue-legacy',
@@ -438,7 +459,7 @@ describe('/api/issues', () => {
   });
 
   it('creates issues with default priority when the priority column is missing', async () => {
-    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1', userId: 'user-1', collaborationId: null } as any);
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
     vi.mocked(db.issue.create)
       .mockRejectedValueOnce(missingPriorityColumnError())
@@ -478,7 +499,7 @@ describe('/api/issues', () => {
   });
 
   it('returns a migration error when creating a non-default priority issue without the priority column', async () => {
-    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1', userId: 'user-1', collaborationId: null } as any);
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
     vi.mocked(db.issue.create).mockRejectedValueOnce(missingPriorityColumnError());
 
@@ -498,7 +519,7 @@ describe('/api/issues', () => {
   });
 
   it('broadcasts issue.created on a fresh create and persists clientRequestId in metadata', async () => {
-    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1', userId: 'user-1', collaborationId: null } as any);
     // Idempotency lookup runs first when clientRequestId is provided.
     vi.mocked(db.issue.findMany).mockResolvedValueOnce([] as any);
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
@@ -558,7 +579,7 @@ describe('/api/issues', () => {
   });
 
   it('returns the existing issue without broadcasting when clientRequestId already exists', async () => {
-    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1', userId: 'user-1', collaborationId: null } as any);
     vi.mocked(db.issue.findMany).mockResolvedValueOnce([
       {
         id: 'issue-existing',
@@ -592,7 +613,7 @@ describe('/api/issues', () => {
   });
 
   it('passes through audit metadata under metadata.audit on create round-trip', async () => {
-    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1', userId: 'user-1', collaborationId: null } as any);
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
     vi.mocked(db.issue.create).mockResolvedValue({
       id: 'issue-audit',
@@ -628,7 +649,7 @@ describe('/api/issues', () => {
   });
 
   it('strips top-level audit-shaped keys (actor / cliVersion / invokedBy / sdkVersion)', async () => {
-    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1', userId: 'user-1', collaborationId: null } as any);
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
     vi.mocked(db.issue.create).mockResolvedValue({
       id: 'issue-strip',

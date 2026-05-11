@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { db } from '@/lib/db';
+import { issueUserSelect, type IssueUserRecord } from '@/lib/collaboration/service';
 import { serializeTaskResponse } from '@/lib/tasks/serialization';
 import {
   ACTIVE_ISSUE_TASK_STATUSES,
@@ -161,6 +162,14 @@ export const withIssuePrioritySchemaFallback = async <T>(
 export const issueSerializationSelect = {
   id: true,
   projectId: true,
+  ownerUserId: true,
+  creatorUserId: true,
+  owner: {
+    select: issueUserSelect,
+  },
+  creator: {
+    select: issueUserSelect,
+  },
   title: true,
   description: true,
   status: true,
@@ -211,6 +220,7 @@ const issueMetadataSchema = z.record(z.string(), z.unknown());
 
 export const issueCreateSchema = z.object({
   projectId: z.string().min(1),
+  ownerUserId: z.string().min(1).optional(),
   title: z.string().trim().min(1),
   description: z.string().trim().nullable().optional(),
   status: issueStatusSchema.default('todo'),
@@ -226,6 +236,8 @@ export const issueCreateSchema = z.object({
 });
 
 export const issuePatchSchema = z.object({
+  projectId: z.string().min(1).optional(),
+  ownerUserId: z.string().min(1).optional(),
   title: z.string().trim().min(1).optional(),
   description: z.string().trim().nullable().optional(),
   status: issueStatusSchema.optional(),
@@ -244,6 +256,7 @@ export const normalizeIssueCreateBody = (body: unknown) => {
 
   return {
     projectId: normalizeOptionalString(readField(record, 'project_id', 'projectId')) ?? '',
+    ownerUserId: normalizeOptionalString(readField(record, 'owner_user_id', 'ownerUserId')) ?? undefined,
     title: normalizeOptionalString(record.title) ?? '',
     description: hasOwn(record, 'description') ? normalizeOptionalString(record.description) : undefined,
     status: normalizeOptionalIssueStatus(record.status),
@@ -269,8 +282,14 @@ export const normalizeIssuePatchBody = (body: unknown) => {
     : {};
 
   const normalized: Record<string, unknown> = {};
+  if (hasOwn(record, 'projectId') || hasOwn(record, 'project_id')) {
+    normalized.projectId = normalizeOptionalString(readField(record, 'project_id', 'projectId')) ?? '';
+  }
   if (hasOwn(record, 'title')) {
     normalized.title = normalizeOptionalString(record.title) ?? '';
+  }
+  if (hasOwn(record, 'ownerUserId') || hasOwn(record, 'owner_user_id')) {
+    normalized.ownerUserId = normalizeOptionalString(readField(record, 'owner_user_id', 'ownerUserId')) ?? '';
   }
   if (hasOwn(record, 'description')) {
     normalized.description = normalizeOptionalString(record.description);
@@ -389,6 +408,10 @@ export const serializeIssueWithTasks = (issue: {
   aiSessionId?: string | null;
   createdAt: Date;
   updatedAt: Date;
+  ownerUserId?: string | null;
+  creatorUserId?: string | null;
+  owner?: IssueUserRecord | null;
+  creator?: IssueUserRecord | null;
 }, tasks?: {
   activeTask?: IssueTaskRecord | null;
   linkedTask?: IssueTaskRecord | null;

@@ -27,6 +27,8 @@ export interface AuthSession {
 export interface Project {
   id: string;
   name: string;
+  collaborationId?: string | null;
+  collaboration?: ProjectCollaboration | null;
   metadata?: Record<string, unknown> | null;
   daemonHost?: string | null;
   workspacePath?: string | null;
@@ -67,6 +69,34 @@ export interface ProjectGroup {
   isMerged: boolean;
 }
 
+export interface CollaborationMember {
+  id: string;
+  userId: string;
+  projectId: string;
+  projectName?: string;
+  label: string;
+  joinedAt?: string;
+  // Raw email/phone are intentionally not surfaced - only `label` is.
+  user?: {
+    id: string;
+    label?: string;
+  };
+  project?: {
+    id: string;
+    name: string;
+  };
+}
+
+export interface ProjectCollaboration {
+  id: string;
+  inviteToken: string;
+  inviteUrl?: string;
+  memberCount: number;
+  maxMembers: number;
+  members: CollaborationMember[];
+  createdAt?: string;
+}
+
 export interface ProjectWithBoundDaemons extends Project {
   boundDaemonNames: string[];
 }
@@ -82,6 +112,17 @@ export interface Issue {
   projectName?: string | null;
   /** Owning daemon's host — populated when fetched via merged group views. */
   daemonHost?: string | null;
+  ownerUserId?: string | null;
+  creatorUserId?: string | null;
+  // Raw email/phone are intentionally not surfaced - only `label` is.
+  owner?: {
+    id: string;
+    label?: string;
+  } | null;
+  creator?: {
+    id: string;
+    label?: string;
+  } | null;
   title: string;
   description?: string | null;
   status: IssueStatus;
@@ -331,6 +372,7 @@ export interface UpdateProjectInput {
 
 export interface CreateIssueInput {
   projectId: string;
+  ownerUserId?: string;
   title: string;
   description?: string | null;
   status?: IssueStatus;
@@ -346,6 +388,8 @@ export interface CreateIssueInput {
 }
 
 export interface UpdateIssueInput {
+  projectId?: string;
+  ownerUserId?: string;
   title?: string;
   description?: string | null;
   status?: IssueStatus;

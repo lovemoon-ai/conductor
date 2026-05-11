@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getActiveSubscriptionUser } from '@/lib/auth/middleware';
+import { getProjectIssueScope, isAssignableIssueOwner } from '@/lib/collaboration/service';
 import { db } from '@/lib/db';
 import { realtimeHub } from '@/lib/realtime/hub';
 import {
@@ -31,33 +32,40 @@ export async function GET(request: NextRequest) {
   // `project_ids` lets the UI fetch issues across multiple projects in one
   // call — used by the cross-daemon merged-project view to show issues from
   // each daemon's same-named project together while preserving daemon
-  // attribution.
+  // attribution. Mutually exclusive with `project_id` and bypasses the
+  // collaboration scope expansion (the caller already enumerated which of
+  // their own projects to query).
   const rawProjectIds = searchParams.get('project_ids');
-  const projectIds = rawProjectIds
+  const explicitProjectIds = rawProjectIds
     ? rawProjectIds
         .split(',')
         .map((value) => value.trim())
         .filter(Boolean)
     : [];
 
-  if (projectId && projectIds.length > 0) {
+  if (projectId && explicitProjectIds.length > 0) {
     return NextResponse.json(
       { error: 'Specify either project_id or project_ids, not both' },
       { status: 400 },
     );
   }
 
-  const projectFilter = projectIds.length > 0
-    ? { projectId: { in: projectIds } }
-    : projectId
-      ? { projectId }
-      : {};
+  let listWhere: Record<string, unknown>;
+  if (explicitProjectIds.length > 0) {
+    listWhere = {
+      project: { userId: user.id },
+      projectId: { in: explicitProjectIds },
+    };
+  } else {
+    const scopedProjectIds = await getProjectIssueScope(user.id, projectId);
+    if (!scopedProjectIds) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
+    listWhere = { projectId: { in: scopedProjectIds } };
+  }
 
   const listQuery = {
-    where: {
-      project: { userId: user.id },
-      ...projectFilter,
-    },
+    where: listWhere,
     orderBy: [
       { status: 'asc' as const },
       { position: 'asc' as const },
@@ -68,7 +76,7 @@ export async function GET(request: NextRequest) {
   // Only pull the project join when the caller is in a cross-daemon merged
   // view (`project_ids` set). Single-project and full-list views skip the
   // JOIN to keep the high-traffic path cheap.
-  const includeProjectJoin = projectIds.length > 0;
+  const includeProjectJoin = explicitProjectIds.length > 0;
   const { result: issues } = await withIssuePrioritySchemaFallback(
     'issues.list',
     () => db.issue.findMany({
@@ -102,6 +110,8 @@ export async function GET(request: NextRequest) {
     createdAt: Date;
     updatedAt: Date;
     project?: { name: string | null; daemonHost: string | null } | null;
+    ownerUserId?: string | null;
+    creatorUserId?: string | null;
   }) => serializeIssueWithTasks(issue, {
     activeTask: activeTaskByIssueId.get(issue.id) ?? null,
     linkedTask: linkedTaskByIssueId.get(issue.id) ?? null,
@@ -129,11 +139,15 @@ export async function POST(request: NextRequest) {
       id: input.projectId,
       userId: user.id,
     },
-    select: { id: true },
+    select: { id: true, userId: true, collaborationId: true },
   });
 
   if (!project) {
     return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+  }
+  const ownerUserId = input.ownerUserId ?? user.id;
+  if (!(await isAssignableIssueOwner(project, ownerUserId))) {
+    return NextResponse.json({ error: 'Issue owner is not a collaboration member' }, { status: 400 });
   }
 
   // Merge clientRequestId into metadata so the idempotency key is persisted
@@ -202,6 +216,8 @@ export async function POST(request: NextRequest) {
 
   const issueData = {
     projectId: input.projectId,
+    ownerUserId,
+    creatorUserId: user.id,
     title: input.title,
     description: input.description ?? null,
     status: input.status,
@@ -232,6 +248,8 @@ export async function POST(request: NextRequest) {
     issue = await db.issue.create({
       data: {
         projectId: issueData.projectId,
+        ownerUserId: issueData.ownerUserId,
+        creatorUserId: issueData.creatorUserId,
         title: issueData.title,
         description: issueData.description,
         status: issueData.status,

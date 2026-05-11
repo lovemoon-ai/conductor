@@ -1,6 +1,11 @@
 import { randomUUID } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getActiveSubscriptionUser } from '@/lib/auth/middleware';
+import {
+  getAccessibleProjectIds,
+  getUserProjectForCollaboration,
+  isAssignableIssueOwner,
+} from '@/lib/collaboration/service';
 import { db } from '@/lib/db';
 import {
   createAiTaskArtifacts,
@@ -47,6 +52,8 @@ const issueWithProjectSelect = {
   project: {
     select: {
       id: true,
+      userId: true,
+      collaborationId: true,
       daemonHost: true,
       workspacePath: true,
       repoRoot: true,
@@ -191,19 +198,20 @@ export async function GET(
   const user = userResult;
 
   const { issueId } = await params;
+  const accessibleProjectIds = await getAccessibleProjectIds(user.id);
   const { result: issue } = await withIssuePrioritySchemaFallback(
     'issues.detail',
     () => db.issue.findFirst({
       where: {
         id: issueId,
-        project: { userId: user.id },
+        projectId: { in: accessibleProjectIds },
       },
       select: issueSelectWithPriority,
     }),
     () => db.issue.findFirst({
       where: {
         id: issueId,
-        project: { userId: user.id },
+        projectId: { in: accessibleProjectIds },
       },
       select: issueSelect,
     }),
@@ -231,19 +239,20 @@ export async function PATCH(
   const user = userResult;
 
   const { issueId } = await params;
+  const accessibleProjectIds = await getAccessibleProjectIds(user.id);
   const { result: existing, prioritySchemaAvailable } = await withIssuePrioritySchemaFallback(
     'issues.patch.load',
     () => db.issue.findFirst({
       where: {
         id: issueId,
-        project: { userId: user.id },
+        projectId: { in: accessibleProjectIds },
       },
       select: issueWithProjectSelectWithPriority,
     }),
     () => db.issue.findFirst({
       where: {
         id: issueId,
-        project: { userId: user.id },
+        projectId: { in: accessibleProjectIds },
       },
       select: issueWithProjectSelect,
     }),
@@ -274,6 +283,73 @@ export async function PATCH(
   );
   const nextStatus = input.status ?? currentStatus;
   const nextPriority = input.priority ?? currentPriority;
+  const issueProjectOwnerId = existing.project.userId ?? user.id;
+  const issueProjectCollaborationId = existing.project.collaborationId ?? null;
+  const currentOwnerUserId = existing.ownerUserId ?? issueProjectOwnerId;
+  const nextProjectId = input.projectId ?? existing.projectId;
+  const projectChanged = input.projectId !== undefined && input.projectId !== existing.projectId;
+  let targetProject = existing.project;
+  if (projectChanged) {
+    if (currentStatus === 'doing' || nextStatus === 'doing') {
+      return NextResponse.json({ error: 'Move the issue out of doing before changing target project' }, { status: 409 });
+    }
+    if (currentOwnerUserId !== user.id && issueProjectOwnerId !== user.id) {
+      return NextResponse.json(
+        { error: 'Only the current issue owner or the project owner can change this issue target project' },
+        { status: 403 },
+      );
+    }
+    if (!accessibleProjectIds.includes(nextProjectId)) {
+      return NextResponse.json({ error: 'Target project not found' }, { status: 404 });
+    }
+    const requestedProject = await db.project.findFirst({
+      where: {
+        id: nextProjectId,
+      },
+      select: issueWithProjectSelect.project.select,
+    });
+    if (!requestedProject) {
+      return NextResponse.json({ error: 'Target project not found' }, { status: 404 });
+    }
+    const sameCollaboration =
+      issueProjectCollaborationId &&
+      requestedProject.collaborationId === issueProjectCollaborationId;
+    const ownStandaloneMove =
+      !issueProjectCollaborationId &&
+      !requestedProject.collaborationId &&
+      requestedProject.userId === user.id;
+    if (!sameCollaboration && !ownStandaloneMove) {
+      return NextResponse.json(
+        { error: 'Target project must belong to the same collaboration' },
+        { status: 400 },
+      );
+    }
+    targetProject = requestedProject;
+  }
+  const nextOwnerUserId = input.ownerUserId ?? currentOwnerUserId;
+  if ((input.ownerUserId || projectChanged) && !(await isAssignableIssueOwner(targetProject, nextOwnerUserId))) {
+    return NextResponse.json({ error: 'Issue owner is not a collaboration member' }, { status: 400 });
+  }
+  const ownerChanged = input.ownerUserId !== undefined && input.ownerUserId !== currentOwnerUserId;
+  // Only the current issue owner or the host project's owner may reassign
+  // ownership. Without this guard a collaborator could two-step `{ ownerUserId:
+  // self }` then `{ status: 'doing' }` to silently steal another member's
+  // issue and spawn a task on their own daemon.
+  if (ownerChanged && currentOwnerUserId !== user.id && issueProjectOwnerId !== user.id) {
+    return NextResponse.json(
+      { error: 'Only the current issue owner or the project owner can reassign this issue' },
+      { status: 403 },
+    );
+  }
+  if (ownerChanged && (currentStatus === 'doing' || nextStatus === 'doing')) {
+    return NextResponse.json({ error: 'Move the issue out of doing before changing owner' }, { status: 409 });
+  }
+  if (currentStatus !== 'doing' && nextStatus === 'doing' && nextOwnerUserId !== user.id) {
+    return NextResponse.json({ error: 'Only the issue owner can move this issue into doing' }, { status: 409 });
+  }
+  if (currentStatus === 'doing' && nextStatus !== 'doing' && currentOwnerUserId !== user.id) {
+    return NextResponse.json({ error: 'Only the issue owner can change a running issue status' }, { status: 409 });
+  }
   if (!prioritySchemaAvailable && input.priority !== undefined && !isDefaultIssuePriority(input.priority)) {
     return NextResponse.json(
       { error: ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE },
@@ -282,8 +358,8 @@ export async function PATCH(
   }
   const nextPosition = typeof input.position === 'number'
     ? input.position
-    : nextStatus !== currentStatus
-      ? await getNextIssuePosition(existing.projectId, nextStatus)
+    : nextStatus !== currentStatus || projectChanged
+      ? await getNextIssuePosition(nextProjectId, nextStatus)
       : existing.position;
   const shouldEnterDoing = currentStatus !== 'doing' && nextStatus === 'doing';
 
@@ -291,8 +367,9 @@ export async function PATCH(
     activeTaskByIssueId.get(existing.id) ?? null;
   let linkedTask: Parameters<typeof serializeTaskResponse>[0] | null =
     linkedTaskByIssueId.get(existing.id) ?? activeTask;
-  const shouldRestartLinkedTask = shouldEnterDoing && !activeTask && Boolean(linkedTask);
-  const shouldSpawnTask = shouldEnterDoing && !activeTask && !linkedTask;
+  const shouldManageLocalTask = nextOwnerUserId === user.id;
+  const shouldRestartLinkedTask = shouldManageLocalTask && shouldEnterDoing && !activeTask && Boolean(linkedTask);
+  const shouldSpawnTask = shouldManageLocalTask && shouldEnterDoing && !activeTask && !linkedTask;
   const shouldKillActiveTask = currentStatus === 'doing' && nextStatus === 'done' && Boolean(activeTask);
   let killedTask: Parameters<typeof serializeTaskResponse>[0] | null = null;
   let spawnedTask: Awaited<ReturnType<typeof createAiTaskArtifacts>> | null = null;
@@ -300,16 +377,25 @@ export async function PATCH(
   let restartPlan: PlannedInplaceTaskRestart | null = null;
 
   if (shouldSpawnTask && !activeTask) {
+    const executionProject = issueProjectOwnerId === user.id
+      ? existing.project
+      : issueProjectCollaborationId
+        ? (await getUserProjectForCollaboration(user.id, issueProjectCollaborationId))?.project ?? null
+        : null;
+    if (!executionProject) {
+      return NextResponse.json({ error: 'No local project available for this collaboration' }, { status: 409 });
+    }
+
     const defaultProject = await db.defaultProject.findUnique({
       where: { userId: user.id },
       select: { projectId: true },
     });
-    const isDefaultProject = defaultProject?.projectId === existing.projectId;
-    const projectDaemonHost = normalizeOptionalString(existing.project.daemonHost);
-    const projectWorkspacePath = normalizeOptionalString(existing.project.workspacePath);
-    const projectRepoRoot = normalizeOptionalString(existing.project.repoRoot);
-    const projectWorktreeBranch = normalizeOptionalString(existing.project.worktreeBranch);
-    const projectLastCommit = normalizeOptionalString(existing.project.lastCommit);
+    const isDefaultProject = defaultProject?.projectId === executionProject.id;
+    const projectDaemonHost = normalizeOptionalString(executionProject.daemonHost);
+    const projectWorkspacePath = normalizeOptionalString(executionProject.workspacePath);
+    const projectRepoRoot = normalizeOptionalString(executionProject.repoRoot);
+    const projectWorktreeBranch = normalizeOptionalString(executionProject.worktreeBranch);
+    const projectLastCommit = normalizeOptionalString(executionProject.lastCommit);
 
     if (
       (!isDefaultProject && (!projectDaemonHost || !projectWorkspacePath)) ||
@@ -371,7 +457,7 @@ export async function PATCH(
 
     spawnTaskArgs = {
       userId: user.id,
-      projectId: existing.projectId,
+      projectId: executionProject.id,
       issueId: existing.id,
       title: input.title ?? existing.title,
       agentHost,
@@ -384,10 +470,18 @@ export async function PATCH(
   }
 
   if (shouldRestartLinkedTask && linkedTask) {
+    const executionProject = issueProjectOwnerId === user.id
+      ? existing.project
+      : issueProjectCollaborationId
+        ? (await getUserProjectForCollaboration(user.id, issueProjectCollaborationId))?.project ?? null
+        : null;
+    if (!executionProject) {
+      return NextResponse.json({ error: 'No local project available for this collaboration' }, { status: 409 });
+    }
     const connectedAgents = realtimeHub.getAgentsForUser(user.id) as ConnectedAgent[];
     const restartPlanResult = planInplaceTaskRestart({
       sourceTask: linkedTask,
-      project: existing.project,
+      project: executionProject,
       connectedAgents,
     });
     if (!restartPlanResult.ok) {
@@ -458,6 +552,8 @@ export async function PATCH(
   }
 
   const issueUpdateData = {
+    projectId: nextProjectId,
+    ownerUserId: nextOwnerUserId,
     title: input.title ?? existing.title,
     description: input.description !== undefined ? input.description : existing.description,
     status: nextStatus,
@@ -643,13 +739,17 @@ export async function DELETE(
   const existing = await db.issue.findFirst({
     where: {
       id: issueId,
-      project: { userId: user.id },
+      projectId: { in: await getAccessibleProjectIds(user.id) },
     },
     select: issueSelect,
   });
 
   if (!existing) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  }
+
+  if (normalizeIssueStatus(existing.status) === 'doing') {
+    return NextResponse.json({ error: 'Move the issue out of doing before deleting it' }, { status: 409 });
   }
 
   await db.issue.delete({ where: { id: issueId } });

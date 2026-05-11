@@ -38,6 +38,9 @@ model User {
   channelConversations ChannelConversation[]
   channelProviderConfigs ChannelProviderConfig[]
   sharedTasks SharedTask[]
+  collaborationMemberships CollaborationMember[]
+  ownedIssues Issue[] @relation("IssueOwner")
+  createdIssues Issue[] @relation("IssueCreator")
   invitedBy User? @relation("UserInvites", fields: [invitedByUserId], references: [id])
   invitedUsers User[] @relation("UserInvites")
 
@@ -93,11 +96,14 @@ model Project {
   lastCommit     String?  @map("last_commit")
   fileCount      Int?     @map("file_count")
   sortOrder      Int      @default(0) @map("sort_order")
+  collaborationId String? @map("collaboration_id") @db.Uuid
   metadata       String?
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   user                 User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  collaboration        ProjectCollaboration? @relation(fields: [collaborationId], references: [id], onDelete: SetNull)
+  collaborationMember  CollaborationMember?
   defaultProject       DefaultProject?       @relation("ProjectDefaultProject")
   tasks                Task[]
   issues               Issue[]
@@ -107,14 +113,45 @@ model Project {
   @@index([userId, name])
   @@index([userId, daemonHost])
   @@index([userId, workspacePath])
+  @@index([collaborationId])
   @@unique([userId, daemonHost, name])
   @@unique([userId, daemonHost, workspacePath])
   @@map("projects")
 }
 
+model ProjectCollaboration {
+  id          String   @id @default(uuid()) @db.Uuid
+  inviteToken String   @unique @map("invite_token")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  members  CollaborationMember[]
+  projects Project[]
+
+  @@map("project_collaborations")
+}
+
+model CollaborationMember {
+  id              String   @id @default(uuid()) @db.Uuid
+  collaborationId String   @map("collaboration_id") @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  projectId       String   @unique @map("project_id") @db.Uuid
+  joinedAt        DateTime @default(now()) @map("joined_at")
+
+  collaboration ProjectCollaboration @relation(fields: [collaborationId], references: [id], onDelete: Cascade)
+  user          User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project       Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([collaborationId, userId])
+  @@index([userId])
+  @@index([collaborationId])
+  @@map("collaboration_members")
+}
+
 model Issue {
   id          String   @id @default(uuid()) @db.Uuid
   projectId   String   @map("project_id") @db.Uuid
+  ownerUserId String   @map("owner_user_id") @db.Uuid
+  creatorUserId String @map("creator_user_id") @db.Uuid
   title       String
   description String?
   status      String   @default("backlog")
@@ -125,10 +162,14 @@ model Issue {
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  owner   User    @relation("IssueOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  creator User    @relation("IssueCreator", fields: [creatorUserId], references: [id], onDelete: Cascade)
   tasks   Task[]
 
   @@index([projectId])
   @@index([projectId, status, position])
+  @@index([ownerUserId])
+  @@index([creatorUserId])
   @@map("issues")
 }
 

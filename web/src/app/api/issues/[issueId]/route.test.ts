@@ -22,6 +22,14 @@ vi.mock('@/lib/db', () => ({
       findFirst: vi.fn(),
       update: vi.fn(),
     },
+    project: {
+      findMany: vi.fn(),
+      findFirst: vi.fn(),
+    },
+    collaborationMember: {
+      findMany: vi.fn(),
+      findUnique: vi.fn(),
+    },
     agentOutbox: {
       create: vi.fn(),
     },
@@ -147,6 +155,21 @@ describe('/api/issues/[issueId]', () => {
     );
     vi.mocked(db.defaultProject.findUnique).mockResolvedValue({ projectId: 'project-1' } as any);
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([]);
+    vi.mocked(db.project.findMany).mockResolvedValue([
+      { id: 'project-1', collaborationId: null },
+    ] as any);
+    vi.mocked(db.project.findFirst).mockImplementation(async ({ where }: any) => ({
+      id: where.id ?? 'project-1',
+      userId: 'user-1',
+      collaborationId: null,
+      daemonHost: null,
+      workspacePath: null,
+      repoRoot: null,
+      worktreeBranch: null,
+      lastCommit: null,
+    }) as any);
+    vi.mocked(db.collaborationMember.findMany).mockResolvedValue([] as any);
+    vi.mocked(db.collaborationMember.findUnique).mockResolvedValue(null as any);
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: 4 } } as any);
     vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({ status: 'doing', tasks: [] }) as any);
     vi.mocked(db.issue.updateMany).mockResolvedValue({ count: 1 } as any);
