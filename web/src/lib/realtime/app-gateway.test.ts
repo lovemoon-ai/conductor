@@ -25,6 +25,7 @@ const {
   buildForwardTerminalEnvelope,
   buildPtyTransportSessionEnvelope,
   deliverTerminalAttachEnvelope,
+  isIdempotentDetachedTerminalEvent,
   shouldRefreshPtyTransportSessionOnWriterGrant,
   shouldRevokePreviousWriterTransport,
 } = await import("./app-gateway");
@@ -99,6 +100,11 @@ describe("app-gateway terminal attach delivery", () => {
     expect(realtimeHub.sendToAgentHost).toHaveBeenCalledWith("user-1", "daemon-original", envelope);
   });
 
+  it("treats detached terminal_detach as idempotent", () => {
+    expect(isIdempotentDetachedTerminalEvent("terminal_detach")).toBe(true);
+    expect(isIdempotentDetachedTerminalEvent("terminal_input")).toBe(false);
+    expect(isIdempotentDetachedTerminalEvent("terminal_resize")).toBe(false);
+  });
 
   it("builds a relay PTY transport session envelope", () => {
     vi.useFakeTimers();

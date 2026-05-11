@@ -516,6 +516,9 @@ const buildAttachBanner = (
   return null;
 };
 
+const isTerminalNotAttachedMessage = (message: string): boolean =>
+  /^terminal\s+\S+\s+is not attached$/i.test(message.trim());
+
 const appendToOutputSnapshot = (taskId: string, payload: Record<string, unknown>): TerminalOutputEvent | null => {
   const data = typeof payload.data === 'string' ? payload.data : '';
   if (!data) {
@@ -916,6 +919,21 @@ export const useTerminalStore = create<TerminalStoreState>()((set) => ({
     }
     fallbackFreshResumeAttach(taskId);
     const message = normalizeOptionalString(payload.message) ?? 'terminal error';
+    if (isTerminalNotAttachedMessage(message)) {
+      return {
+        byTask: withTask(state.byTask, taskId, (current) => ({
+          ...current,
+          connectionState: 'idle',
+          isAttached: false,
+          hasWriteAccess: false,
+          viewerCount: 0,
+          error: null,
+          transportState: 'relay',
+          transportSession: null,
+          banner: null,
+        })),
+      };
+    }
     return {
       byTask: withTask(state.byTask, taskId, (current) => ({
         ...current,
