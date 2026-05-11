@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getActiveSubscriptionUser } from '@/lib/auth/middleware';
 import { db } from '@/lib/db';
+import { realtimeHub } from '@/lib/realtime/hub';
 import {
   getNextIssuePosition,
   ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE,
@@ -17,6 +18,8 @@ import {
   warnMissingIssuePrioritySchema,
   withIssuePrioritySchemaFallback,
 } from './shared';
+import { parseIssueMetadata } from '@/lib/issues/serialization';
+import { stripTopLevelAuditKeys } from '@/lib/audit/metadata';
 
 export async function GET(request: NextRequest) {
   const userResult = await getActiveSubscriptionUser(request);
@@ -133,6 +136,66 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Project not found' }, { status: 404 });
   }
 
+  // Merge clientRequestId into metadata so the idempotency key is persisted
+  // alongside the structured `metadata.audit.*` object (RFC 0025 §5.1 / §5.2).
+  // We strip any top-level audit keys a caller might inject (review M3) so
+  // they can't masquerade as authoritative audit info.
+  const baseMetadata = stripTopLevelAuditKeys(input.metadata ?? null);
+  const mergedMetadata: Record<string, unknown> | null = input.clientRequestId
+    ? { ...(baseMetadata ?? {}), clientRequestId: input.clientRequestId }
+    : baseMetadata;
+
+  // Idempotency lookup: scoped by `(userId via project, projectId,
+  // metadata.clientRequestId)`. Select-then-filter because `metadata` is a
+  // JSON-encoded TEXT column without a JSON-path unique index — keeps the
+  // change cross-DB-portable per RFC §5.1.
+  //
+  // Race window (review H2): two concurrent POSTs with the same
+  // `clientRequestId` can both pass this lookup before either persists, then
+  // both create separate issues + both broadcast. We accept this as a
+  // documented trade-off here; eliminating it requires either a partial
+  // unique index on `(projectId, metadata->>'clientRequestId')` (Postgres) or
+  // promoting `clientRequestId` to a real column. The RFC names this
+  // follow-up; CLI usage today is single-threaded per (user, request id) so
+  // observed collisions should be rare.
+  if (input.clientRequestId) {
+    const candidates = await db.issue.findMany({
+      where: {
+        projectId: input.projectId,
+        project: { userId: user.id },
+      },
+      // Newest first so a retried request quickly finds its prior write.
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+      select: input.includeProject
+        ? issueSerializationWithPriorityAndProjectSelect
+        : issueSerializationWithPrioritySelect,
+    }).catch(async (error) => {
+      if (!isMissingIssuePriorityColumnError(error)) throw error;
+      warnMissingIssuePrioritySchema('issues.create.idempotency-lookup', error);
+      return db.issue.findMany({
+        where: {
+          projectId: input.projectId,
+          project: { userId: user.id },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+        select: input.includeProject
+          ? issueSerializationWithProjectSelect
+          : issueSerializationSelect,
+      });
+    });
+
+    const existing = candidates.find((row: { metadata: string | null }) => {
+      const parsed = parseIssueMetadata(row.metadata);
+      return parsed && parsed.clientRequestId === input.clientRequestId;
+    });
+    if (existing) {
+      // Idempotent re-fetch — do NOT broadcast, do NOT re-create.
+      return NextResponse.json(serializeIssueWithTasks(existing));
+    }
+  }
+
   const position = typeof input.position === 'number'
     ? input.position
     : await getNextIssuePosition(input.projectId, input.status);
@@ -144,7 +207,7 @@ export async function POST(request: NextRequest) {
     status: input.status,
     priority: input.priority,
     position,
-    metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+    metadata: mergedMetadata ? JSON.stringify(mergedMetadata) : null,
   };
 
   let issue;
@@ -181,5 +244,26 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  return NextResponse.json(serializeIssueWithTasks(issue));
+  const serialized = serializeIssueWithTasks(issue);
+
+  // Broadcast `issue.created` over the same per-user app WebSocket the issue
+  // store already subscribes to. RFC 0025 §5.3 — payload mirrors the POST
+  // response so the frontend can merge it into local state without a refetch.
+  // Note: we only land here on a real create; the idempotent fast-path above
+  // returns without ever reaching this broadcast.
+  try {
+    realtimeHub.broadcast(user.id, input.projectId, {
+      type: 'issue.created',
+      payload: {
+        projectId: input.projectId,
+        project_id: input.projectId,
+        issue: serialized,
+      },
+    });
+  } catch (error) {
+    // Broadcast must not fail the create.
+    console.warn('[issues.create] broadcast failed:', error);
+  }
+
+  return NextResponse.json(serialized);
 }

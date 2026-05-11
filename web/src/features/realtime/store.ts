@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { WSConnectionStatus, Message, TaskStatus, TaskRuntimeStatus } from '@/shared/types';
 import { getMessageAttachments } from '@/shared/utils/message-attachments';
 import { useChatStore } from '@/features/chat';
+import { applyIssueCreatedEvent } from '@/features/issues/store';
 import { useProjectsStore } from '@/features/projects/store';
 import { useTasksStore } from '@/features/tasks';
 import { useRuntimeStore } from '@/features/realtime/runtime-store';
@@ -434,6 +435,16 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
 
     case 'projects_reordered': {
       void useProjectsStore.getState().fetchProjects();
+      break;
+    }
+
+    case 'issue.created': {
+      // RFC 0025 §5.3 — the server broadcasts a freshly created issue to
+      // every connection of the owning user; merge into the issues store so
+      // the board updates without polling. Idempotent re-creates (clientRequestId
+      // hits) intentionally do NOT broadcast, so this branch always represents
+      // a real new issue.
+      applyIssueCreatedEvent(payload);
       break;
     }
 

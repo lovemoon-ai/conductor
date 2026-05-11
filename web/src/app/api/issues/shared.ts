@@ -218,6 +218,11 @@ export const issueCreateSchema = z.object({
   position: z.number().finite().optional(),
   metadata: issueMetadataSchema.nullable().optional(),
   includeProject: z.boolean().default(false),
+  // Optional idempotency key. When supplied, the server returns the existing
+  // issue (200) for a repeat `(userId, projectId, clientRequestId)` instead of
+  // creating a duplicate. Stored on `metadata.clientRequestId` rather than a
+  // dedicated column to keep the change additive (RFC 0025 §5.1).
+  clientRequestId: z.string().trim().min(1).optional(),
 });
 
 export const issuePatchSchema = z.object({
@@ -251,6 +256,9 @@ export const normalizeIssueCreateBody = (body: unknown) => {
       : undefined,
     includeProject: hasOwn(record, 'include_project') || hasOwn(record, 'includeProject')
       ? (normalizeOptionalBoolean(includeProject) ?? includeProject)
+      : undefined,
+    clientRequestId: hasOwn(record, 'client_request_id') || hasOwn(record, 'clientRequestId')
+      ? (normalizeOptionalString(readField(record, 'client_request_id', 'clientRequestId')) ?? undefined)
       : undefined,
   };
 };

@@ -4,8 +4,9 @@ description: >-
   Operate the Conductor cli directly. Default to executing or explaining the
   exact `conductor` subcommand the user asked for, especially `conductor fire`,
   `conductor fire --backend <name> --resume <session-id>`, `conductor send-file`,
-  `conductor daemon`, `conductor diagnose`, `conductor config`, and
-  `conductor update`. Strictly forbid the "handoff prompt" workflow: do not
+  `conductor daemon`, `conductor diagnose`, `conductor config`,
+  `conductor update`, and the entity commands `conductor project|issue|task`.
+  Strictly forbid the "handoff prompt" workflow: do not
   summarize the current Codex conversation into a new Conductor prompt, and do
   not convert user intent into a fresh `conductor fire -- "<prompt>"` task
   unless the user explicitly provided that prompt text and asked to run it.
@@ -18,6 +19,7 @@ Use this skill for the public `conductor` command surface in this repo.
 Reference docs in this skill:
 
 - `reference/serve-ai.md`: `conductor serve-ai` usage, config fallback, startup commands, and `response_format` / output schema examples.
+- `reference/entity-commands.md`: `conductor project|issue|task` — entity-oriented CRUD commands for AI / CI / scripting. Covers global flags (`--json`, `--dry-run`, `--project`), exit codes, project resolution priority, the `metadata.audit` audit boundary, idempotency via `--client-request-id`, and the three core RFC 0025 scenarios (batch issue creation, QA → done, sending a message to a task).
 
 Use it especially when the user says things like:
 
@@ -31,6 +33,11 @@ Use it especially when the user says things like:
 - "Start this in Conductor so I can continue from the app"
 - "How do I use `conductor serve-ai`?"
 - "How do I start the OpenAI-compatible server and set output schema?"
+- "Create these issues in my current project with `conductor issue create`"
+- "Mark this issue as done — QA passed, attach the report as evidence"
+- "Send a follow-up message to task `<id>` from the command line"
+- "List my projects / show which project this cwd resolves to / set this project as default"
+- "Hide this old project from my list" / "show hidden projects too"
 
 ## First Decide The Intent
 
@@ -69,6 +76,7 @@ Only run `conductor --help`, subcommand help, or read `~/.conductor/config.yaml`
 - `conductor daemon`: keep a desktop agent online so tasks created from the app can run remotely.
 - `conductor diagnose <task-id>`: inspect a stuck or failed task and print likely root cause.
 - `conductor update`: check npm for a newer CLI version and install it.
+- `conductor project|issue|task <sub>`: entity-oriented CRUD for projects, issues, and tasks. Use when the request is about creating/listing/updating these entities or sending a message to a task — not about launching a new coding session. See `reference/entity-commands.md` for the full surface, exit codes, and idempotency contract.
 
 ## Core Workflows
 
@@ -226,6 +234,37 @@ conductor update --force
 ```
 
 If the built-in updater fails, fall back to the package-manager command shown by the CLI.
+
+### Operate Entities (project / issue / task)
+
+Use `conductor project|issue|task` when the user wants to **operate on existing entities**, not launch a new coding agent. The full surface lives in `reference/entity-commands.md`; the minimal forms to know:
+
+```bash
+# Project
+conductor project list [--include-hidden]
+conductor project current                              # prints id only — good for shell substitution
+conductor project create [--workspace-path <p>] [--daemon-host <h>]
+conductor project hide <id|name>
+
+# Issue
+conductor issue list [--status doing,backlog]
+conductor issue create --title "<t>" [--priority P2] [--client-request-id <key>]
+conductor issue start <id>                             # backlog → doing
+conductor issue done  <id> [--evidence <text>|@FILE]   # doing → done, writes metadata.qa.evidence
+
+# Task
+conductor task send <id> "<message>"                   # or `--stdin` / `--from-file FILE`
+conductor task messages <id> [--limit N]               # pulls a slice and exits — no --follow
+```
+
+Rules of thumb when handling these:
+
+- Add `--json` for AI / scripting; the human-readable form is for humans.
+- Use `--dry-run` before any destructive or wide-blast write (especially `issue create` loops). It prints the would-be `method / url / body` and never hits the network.
+- Pass `--client-request-id <key>` on batch `issue create` for idempotent retries. Same key + same project returns the existing issue.
+- `--project <id|name>` overrides the cwd-based project resolution. When in doubt, capture it once: `PROJECT=$(conductor project current)`.
+- Audit fields live under `metadata.audit.*` (RFC 0025 §5.2). Setting `CONDUCTOR_INVOKED_BY=<caller>` lands in `metadata.audit.invokedBy`. Top-level `actor`/`cliVersion`/`sdkVersion`/`invokedBy` in user metadata is silently stripped by the server.
+- Exit codes: `0` ok, `1` generic, `2` args, `3` auth, `4` not found, `5` project unresolved.
 
 ## Task Context And Environment
 

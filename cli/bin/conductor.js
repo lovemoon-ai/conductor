@@ -12,6 +12,9 @@
  *   send-file - Upload a local file into a task session
  *   channel  - Connect user-owned chat channel providers
  *   serve-ai - Start an OpenAI-compatible local AI server
+ *   project  - Manage Conductor projects (list/show/create/...)
+ *   issue    - Manage issues (list/show/create/update/start/done)
+ *   task     - Manage tasks (list/show/send/messages)
  */
 
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -35,7 +38,19 @@ export function runConductorCli(args = argv, deps = {}) {
   const processArgv = deps.processArgv || process.argv;
   const fsExistsSync = deps.existsSync || fs.existsSync;
   const checkForUpdates = deps.maybeCheckForUpdates || maybeCheckForUpdates;
-  const validSubcommands = ["fire", "daemon", "config", "update", "diagnose", "send-file", "channel", "serve-ai"];
+  const validSubcommands = [
+    "fire",
+    "daemon",
+    "config",
+    "update",
+    "diagnose",
+    "send-file",
+    "channel",
+    "serve-ai",
+    "project",
+    "issue",
+    "task",
+  ];
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     showHelp(consoleImpl);
@@ -117,6 +132,9 @@ Subcommands:
   send-file Upload a local file into a task session
   channel   Connect user-owned chat channel providers
   serve-ai  Start an OpenAI-compatible local AI server
+  project   Manage Conductor projects (list/show/create/...)
+  issue     Manage issues (list/show/create/update/start/done)
+  task      Manage tasks (list/show/send/messages)
 
 Options:
   -h, --help     Show this help message
@@ -132,6 +150,9 @@ Examples:
   conductor serve-ai --port 8787
   conductor config
   conductor update
+  conductor project list
+  conductor issue create --title "Refactor module" --priority P2
+  conductor task send <task-id> "please add a unit test"
 
 For subcommand-specific help:
   conductor fire --help
@@ -142,6 +163,9 @@ For subcommand-specific help:
   conductor send-file --help
   conductor channel --help
   conductor serve-ai --help
+  conductor project --help
+  conductor issue --help
+  conductor task --help
 
 Version: ${pkgJson.version}
 `);

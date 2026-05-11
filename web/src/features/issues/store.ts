@@ -328,3 +328,33 @@ export const useIssuesStore = create<IssuesState>()((set, get) => ({
 
   clearError: () => set({ error: null }),
 }));
+
+/**
+ * Merge an `issue.created` realtime payload into the local list. RFC 0025 §5.3
+ * — the server broadcasts every fresh create over the same per-user app
+ * WebSocket; we dedupe by `id` so the user who issued the POST does not see
+ * the same issue twice when the WS event races the HTTP response.
+ *
+ * Scope filter: skip merging when the user is viewing a different project
+ * (single-project mode with `currentProjectId` set to a different project, or
+ * a merged `currentProjectIds` scope that does not include the new issue's
+ * project). The all-projects view (`currentProjectId === null` and
+ * `currentProjectIds.length === 0`) accepts every event.
+ */
+export const applyIssueCreatedEvent = (raw: unknown): void => {
+  const candidate =
+    raw && typeof raw === 'object' && 'issue' in (raw as Record<string, unknown>)
+      ? (raw as Record<string, unknown>).issue
+      : raw;
+  const issue = normalizeIssue(candidate);
+  if (!issue) return;
+  const state = useIssuesStore.getState();
+  const inSingleScope = state.currentProjectId !== null;
+  const inMergedScope = state.currentProjectIds.length > 0;
+  if (inSingleScope && state.currentProjectId !== issue.projectId) return;
+  if (inMergedScope && !state.currentProjectIds.includes(issue.projectId)) return;
+  if (state.issues.some((existing) => existing.id === issue.id)) return;
+  useIssuesStore.setState({
+    issues: sortIssues([issue, ...state.issues]),
+  });
+};
