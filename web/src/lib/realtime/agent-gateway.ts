@@ -167,7 +167,6 @@ type AgentEvent =
         project_id?: string;
         pty_session_id?: string;
         message?: string;
-        task_status?: string;
       };
     }
   | {
@@ -392,31 +391,6 @@ const getOwnedPtyTask = async (userId: string, taskId: string) =>
     async () => null,
   );
 
-const getOwnedTerminalTask = async (userId: string, taskId: string) =>
-  withPtySchemaFallback(
-    "agent-gateway.getOwnedTerminalTask",
-    () =>
-      db.task.findFirst({
-        where: {
-          id: taskId,
-          taskType: { in: ["pty_task", "ai_task"] },
-          project: { userId },
-        },
-        include: {
-          ptySession: true,
-          taskStatusEvents: {
-            orderBy: { createdAt: "desc" },
-            take: 1,
-            select: {
-              status: true,
-              summary: true,
-            },
-          },
-        },
-      }),
-    async () => null,
-  );
-
 const broadcastTaskStatusUpdate = (userId: string, projectId: string, taskId: string, status: string, summary?: string | null) => {
   realtimeHub.notifyTaskStatus(taskId, status);
   realtimeHub.broadcast(userId, projectId, {
@@ -616,51 +590,6 @@ export const ensureAgentOwnsTask = async (
   await persistTaskExecutionHost(userId, task.id, agentHost);
 };
 
-const canConfiguredDaemonOwnAiTerminal = (task: TaskOwnershipRecord, agentHost: string): boolean => (
-  normalizeOptionalString(task.taskType) === "ai_task" &&
-  normalizeOptionalString(task.agentHost) === agentHost &&
-  !isConductorFireHost(agentHost)
-);
-
-const ensureAgentOwnsTerminalTask = async (
-  userId: string,
-  task: TaskOwnershipRecord,
-  agentHost: string,
-): Promise<void> => {
-  try {
-    await ensureAgentOwnsTask(userId, task, agentHost);
-    return;
-  } catch (error) {
-    if (!canConfiguredDaemonOwnAiTerminal(task, agentHost)) {
-      throw error;
-    }
-    realtimeHub.bindTaskToAgent(task.id, agentHost);
-    await persistTaskExecutionHost(userId, task.id, agentHost);
-  }
-};
-
-const ensureAgentCanReportAiTerminalTask = (
-  userId: string,
-  task: TaskOwnershipRecord,
-  agentHost: string,
-): void => {
-  const boundHost = realtimeHub.getTaskAgentHost(task.id);
-  if (boundHost && boundHost !== agentHost && realtimeHub.hasAgentHost(boundHost, userId)) {
-    const ownerKind = isConductorFireHost(boundHost) ? "fire host" : "agent host";
-    throw new Error(`Task ${task.id} is already handled by active ${ownerKind} ${boundHost}`);
-  }
-
-  const assignedHost = getAssignedTaskHost(task);
-  if (assignedHost === agentHost || canConfiguredDaemonOwnAiTerminal(task, agentHost)) {
-    return;
-  }
-
-  if (!assignedHost) {
-    throw new Error(`Task ${task.id} has no assigned agent host`);
-  }
-  throw new Error(`Task ${task.id} is assigned to ${assignedHost}, not ${agentHost}`);
-};
-
 const extractToken = (req: IncomingMessage): string | undefined => {
   const header = req.headers["authorization"];
   if (!header || Array.isArray(header)) return undefined;
@@ -728,51 +657,34 @@ const handleTerminalOpenedEvent = async (args: {
     throw new Error("terminal_opened requires task_id");
   }
 
-  const task = await getOwnedTerminalTask(args.userId, taskId);
-  if (!task) {
+  const task = await getOwnedPtyTask(args.userId, taskId);
+  if (!task || !task.ptySession) {
     return;
   }
 
-  const taskType = normalizeOptionalString(task.taskType) ?? "ai_task";
-  if (taskType === "pty_task" && !task.ptySession) {
-    return;
-  }
-
-  await ensureAgentOwnsTerminalTask(args.userId, task, args.agentHost);
-  const ptySessionId =
-    taskType === "pty_task"
-      ? task.ptySession?.id
-      : normalizeOptionalString(args.payload.pty_session_id) || `ai-terminal:${task.id}`;
+  await ensureAgentOwnsTask(args.userId, task, args.agentHost);
   const startedAt =
-    task.ptySession?.startedAt?.toISOString() ||
+    task.ptySession.startedAt?.toISOString() ||
     normalizeIsoDate(args.payload.started_at, new Date().toISOString());
-
-  if (taskType === "pty_task") {
-    await db.$transaction([
-      db.task.update({
-        where: { id: task.id },
-        data: { status: "running", executionHost: args.agentHost },
-      }),
-      db.ptySession.update({
-        where: { taskId: task.id },
-        data: {
-          state: "running",
-          pid: normalizePositiveInt(args.payload.pid),
-          cwd: normalizeOptionalString(args.payload.cwd),
-          shell: normalizeOptionalString(args.payload.shell),
-          cols: normalizePositiveInt(args.payload.cols),
-          rows: normalizePositiveInt(args.payload.rows),
-          ...(task.ptySession?.startedAt ? {} : { startedAt: new Date(startedAt) }),
-          closedAt: null,
-        },
-      }),
-    ]);
-  } else {
-    await db.task.update({
+  await db.$transaction([
+    db.task.update({
       where: { id: task.id },
       data: { status: "running", executionHost: args.agentHost },
-    });
-  }
+    }),
+    db.ptySession.update({
+      where: { taskId: task.id },
+      data: {
+        state: "running",
+        pid: normalizePositiveInt(args.payload.pid),
+        cwd: normalizeOptionalString(args.payload.cwd),
+        shell: normalizeOptionalString(args.payload.shell),
+        cols: normalizePositiveInt(args.payload.cols),
+        rows: normalizePositiveInt(args.payload.rows),
+        ...(task.ptySession.startedAt ? {} : { startedAt: new Date(startedAt) }),
+        closedAt: null,
+      },
+    }),
+  ]);
 
   broadcastTaskStatusUpdate(args.userId, task.projectId, task.id, "running");
   realtimeHub.broadcastTerminal(args.userId, task.id, {
@@ -780,7 +692,7 @@ const handleTerminalOpenedEvent = async (args: {
     payload: {
       task_id: task.id,
       project_id: task.projectId,
-      pty_session_id: ptySessionId,
+      pty_session_id: task.ptySession.id,
       pid: normalizePositiveInt(args.payload.pid),
       cwd: normalizeOptionalString(args.payload.cwd) || undefined,
       shell: normalizeOptionalString(args.payload.shell) || undefined,
@@ -816,14 +728,13 @@ export const handleTerminalOutputEvent = async (args: {
       task = await db.task.findFirst({
         where: {
           id: taskId,
-          taskType: { in: ["pty_task", "ai_task"] },
+          taskType: "pty_task",
           project: { userId: args.userId },
         },
         select: {
           id: true,
           agentHost: true,
           executionHost: true,
-          taskType: true,
         },
       });
     } catch (error) {
@@ -839,7 +750,7 @@ export const handleTerminalOutputEvent = async (args: {
       return;
     }
     try {
-      await ensureAgentOwnsTerminalTask(args.userId, task, args.agentHost);
+      await ensureAgentOwnsTask(args.userId, task, args.agentHost);
     } catch (error) {
       console.warn(
         `[agent-gateway] dropped terminal_output from ${args.agentHost} for ${taskId}: ${
@@ -889,14 +800,13 @@ export const handleTerminalSnapshotEvent = async (args: {
       task = await db.task.findFirst({
         where: {
           id: taskId,
-          taskType: { in: ["pty_task", "ai_task"] },
+          taskType: "pty_task",
           project: { userId: args.userId },
         },
         select: {
           id: true,
           agentHost: true,
           executionHost: true,
-          taskType: true,
         },
       });
     } catch (error) {
@@ -912,7 +822,7 @@ export const handleTerminalSnapshotEvent = async (args: {
       return;
     }
     try {
-      await ensureAgentOwnsTerminalTask(args.userId, task, args.agentHost);
+      await ensureAgentOwnsTask(args.userId, task, args.agentHost);
     } catch (error) {
       console.warn(
         `[agent-gateway] dropped terminal_snapshot from ${args.agentHost} for ${taskId}: ${
@@ -956,57 +866,39 @@ export const handleTerminalExitEvent = async (args: {
     throw new Error("terminal_exit requires task_id");
   }
 
-  const task = await getOwnedTerminalTask(args.userId, taskId);
-  if (!task) {
+  const task = await getOwnedPtyTask(args.userId, taskId);
+  if (!task || !task.ptySession) {
     return;
   }
 
-  const taskType = normalizeOptionalString(task.taskType) ?? "ai_task";
-  if (taskType === "pty_task" && !task.ptySession) {
-    return;
-  }
-
-  await ensureAgentOwnsTerminalTask(args.userId, task, args.agentHost);
+  await ensureAgentOwnsTask(args.userId, task, args.agentHost);
   const exitCode = normalizeNonNegativeInt(args.payload.exit_code);
   const signal = normalizeExitSignal(args.payload.signal);
   const status = normalizePtyTaskStatus(exitCode, signal);
   const closedAt = normalizeIsoDate(args.payload.closed_at, new Date().toISOString());
   const seq = normalizeNonNegativeInt(args.payload.seq);
-
-  if (taskType === "pty_task") {
-    await db.$transaction([
-      db.task.update({
-        where: { id: task.id },
-        data: { status, executionHost: args.agentHost },
-      }),
-      db.ptySession.update({
-        where: { taskId: task.id },
-        data: {
-          state: "exited",
-          closedAt: new Date(closedAt),
-          ...(seq !== null ? { lastOutputSeq: seq } : {}),
-        },
-      }),
-    ]);
-
-    broadcastTaskStatusUpdate(args.userId, task.projectId, task.id, status);
-  } else {
-    await db.task.update({
+  await db.$transaction([
+    db.task.update({
       where: { id: task.id },
       data: { status, executionHost: args.agentHost },
-    });
-    broadcastTaskStatusUpdate(args.userId, task.projectId, task.id, status);
-  }
+    }),
+    db.ptySession.update({
+      where: { taskId: task.id },
+      data: {
+        state: "exited",
+        closedAt: new Date(closedAt),
+        ...(seq !== null ? { lastOutputSeq: seq } : {}),
+      },
+    }),
+  ]);
 
+  broadcastTaskStatusUpdate(args.userId, task.projectId, task.id, status);
   realtimeHub.broadcastTerminal(args.userId, task.id, {
     type: "terminal_exit",
     payload: {
       task_id: task.id,
       project_id: task.projectId,
-      pty_session_id:
-        taskType === "pty_task"
-          ? task.ptySession?.id
-          : normalizeOptionalString(args.payload.pty_session_id) || `ai-terminal:${task.id}`,
+      pty_session_id: task.ptySession.id,
       exit_code: exitCode,
       signal: signal ?? undefined,
       seq: seq ?? undefined,
@@ -1025,23 +917,13 @@ export const handleTerminalErrorEvent = async (args: {
     throw new Error("terminal_error requires task_id");
   }
 
-  const task = await getOwnedTerminalTask(args.userId, taskId);
-  if (!task) {
+  const task = await getOwnedPtyTask(args.userId, taskId);
+  if (!task || !task.ptySession) {
     return;
   }
 
-  const taskType = normalizeOptionalString(task.taskType) ?? "ai_task";
-  if (taskType === "pty_task" && !task.ptySession) {
-    return;
-  }
-
-  if (taskType === "pty_task") {
-    await ensureAgentOwnsTerminalTask(args.userId, task, args.agentHost);
-  } else {
-    ensureAgentCanReportAiTerminalTask(args.userId, task, args.agentHost);
-  }
+  await ensureAgentOwnsTask(args.userId, task, args.agentHost);
   const message = normalizeOptionalString(args.payload.message) || "terminal error";
-  const terminalTaskStatus = normalizeTaskStatus(args.payload.task_status);
   const closedAt = new Date().toISOString();
   const currentTaskStatus = normalizeTaskStatus(task.status);
   const taskWasActive =
@@ -1052,60 +934,49 @@ export const handleTerminalErrorEvent = async (args: {
   const latestStatusSummary = normalizeOptionalString(task.taskStatusEvents?.[0]?.summary);
   const shouldCreateStatusEvent = taskWasActive && latestStatusSummary !== message;
 
-  if (taskType === "pty_task") {
-    const writes = [];
-    if (shouldCreateStatusEvent) {
-      writes.push(
-        db.taskStatusEvent.create({
-          data: {
-            taskId: task.id,
-            statusEventId: randomUUID(),
-            status: "killed",
-            summary: message,
-          },
-        }),
-      );
-    }
-    if (taskWasActive) {
-      writes.push(
-        db.task.update({
-          where: { id: task.id },
-          data: { status: "killed", executionHost: args.agentHost },
-        }),
-      );
-      writes.push(
-        db.ptySession.update({
-          where: { taskId: task.id },
-          data: {
-            state: "failed",
-            closedAt: new Date(closedAt),
-          },
-        }),
-      );
-    }
-    if (writes.length > 0) {
-      await db.$transaction(writes);
-    }
+  const writes = [];
+  if (shouldCreateStatusEvent) {
+    writes.push(
+      db.taskStatusEvent.create({
+        data: {
+          taskId: task.id,
+          statusEventId: randomUUID(),
+          status: "killed",
+          summary: message,
+        },
+      }),
+    );
+  }
+  if (taskWasActive) {
+    writes.push(
+      db.task.update({
+        where: { id: task.id },
+        data: { status: "killed", executionHost: args.agentHost },
+      }),
+    );
+    writes.push(
+      db.ptySession.update({
+        where: { taskId: task.id },
+        data: {
+          state: "failed",
+          closedAt: new Date(closedAt),
+        },
+      }),
+    );
+  }
+  if (writes.length > 0) {
+    await db.$transaction(writes);
+  }
 
-    if (taskWasActive) {
-      broadcastTaskStatusUpdate(args.userId, task.projectId, task.id, "killed", message);
-    }
-  } else if (terminalTaskStatus === "killed" || terminalTaskStatus === "completed") {
-    await db.task.update({
-      where: { id: task.id },
-      data: { status: terminalTaskStatus, executionHost: args.agentHost },
-    });
-    broadcastTaskStatusUpdate(args.userId, task.projectId, task.id, terminalTaskStatus, message);
+  if (taskWasActive) {
+    broadcastTaskStatusUpdate(args.userId, task.projectId, task.id, "killed", message);
   }
   realtimeHub.broadcastTerminal(args.userId, task.id, {
     type: "terminal_error",
     payload: {
       task_id: task.id,
       project_id: task.projectId,
-      pty_session_id:
-        taskType === "pty_task"
-          ? task.ptySession?.id
-          : normalizeOptionalString(args.payload.pty_session_id) || `ai-terminal:${task.id}`,
+      pty_session_id: task.ptySession.id,
       message,
       closed_at: closedAt,
     },

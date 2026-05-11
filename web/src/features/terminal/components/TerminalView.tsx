@@ -12,7 +12,6 @@ import {
 import { useTasksStore } from '@/features/tasks';
 import { useWebSocketStore } from '@/features/realtime';
 import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
-import { InlineNotice } from '@/components/common/InlineNotice';
 import { loadXtermModules } from './xterm-loader';
 
 interface TerminalViewProps {
@@ -138,7 +137,6 @@ export function TerminalView({ task }: TerminalViewProps) {
   const { pushToast } = useToast();
   const connectionState = useTerminalStore((state) => state.byTask[task.id]?.connectionState ?? 'idle');
   const hasWriteAccess = useTerminalStore((state) => state.byTask[task.id]?.hasWriteAccess ?? false);
-  const sessionBanner = useTerminalStore((state) => state.byTask[task.id]?.banner ?? null);
   const lastLatencySample = useTerminalStore((state) => state.byTask[task.id]?.lastLatencySample ?? null);
   const transportState = useTerminalStore((state) => state.byTask[task.id]?.transportState ?? 'relay');
   const transportSessionId = useTerminalStore((state) => state.byTask[task.id]?.transportSession?.sessionId ?? null);
@@ -947,11 +945,6 @@ export function TerminalView({ task }: TerminalViewProps) {
             </select>
           </div>
         </div>
-        {sessionBanner ? (
-          <div className="mx-3 mt-2">
-            <InlineNotice variant={sessionBanner.tone}>{sessionBanner.message}</InlineNotice>
-          </div>
-        ) : null}
         <div
           ref={containerRef}
           className="h-[calc(100%-2.5rem)] w-full cursor-text px-2 py-2"

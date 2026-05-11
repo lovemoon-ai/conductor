@@ -45,8 +45,6 @@ vi.mock('@/features/chat', () => ({
 
 vi.mock('@/features/terminal', () => ({
   TerminalView: ({ task }: { task: { id: string } }) => <div>terminal:{task.id}</div>,
-  useTerminalStore: (selector: (state: { byTask: Record<string, unknown> }) => unknown) =>
-    selector({ byTask: {} }),
 }));
 
 vi.mock('@/components/common/LoadingSpinner', () => ({
