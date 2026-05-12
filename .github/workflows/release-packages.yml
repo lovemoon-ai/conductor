@@ -45,11 +45,21 @@ jobs:
         shell: bash
         run: npm install --global "npm@^11.5.1"
 
+      - name: Install pnpm for changesets publish
+        # Each package under cli/ and modules/* keeps its own pnpm-lock.yaml so
+        # local developers can run `pnpm test` per-package. `changeset publish`
+        # inspects each package's lockfile to pick a package manager and spawns
+        # `pnpm publish` when it finds pnpm-lock.yaml — which means the runner
+        # also needs pnpm on PATH, even though the root workspace uses npm.
+        shell: bash
+        run: npm install --global pnpm@9
+
       - name: Show tool versions
         shell: bash
         run: |
           node --version
           npm --version
+          pnpm --version
 
       - name: Install release workspace dependencies
         shell: bash
