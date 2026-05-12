@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useChatStore } from '../store';
 import { useRuntimeStore } from '@/features/realtime';
 import { useTasksStore } from '@/features/tasks';
@@ -9,6 +9,7 @@ import { MessageBubble } from './MessageBubble';
 import { MessageInput } from './MessageInput';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { InlineNotice } from '@/components/common/InlineNotice';
+import { QuestionNav } from '@/components/common/QuestionNav';
 import { getApiClient } from '@/shared/api/client';
 
 interface ChatViewProps {
@@ -26,6 +27,18 @@ const SCROLL_TOP_LOAD_THRESHOLD_PX = 24;
 const SCROLL_TO_BOTTOM_BUTTON_MIN_OVERFLOW_PX = 40;
 const INTERRUPT_CONFIRMATION_TIMEOUT_MS = 5000;
 const COMPOSER_FEEDBACK_AUTO_DISMISS_MS = 5000;
+// Pixels of scroll delta required before we treat a scroll event as an
+// intentional directional change. Anything smaller is treated as noise (e.g.
+// inertial bounce, sub-pixel reflows) so the nav doesn't flicker.
+const SCROLL_DIRECTION_THRESHOLD_PX = 4;
+// Vertical offset (in px) used when picking the "active" question dot. We bias
+// toward the first user message whose top is near this offset below the
+// scroll container's top edge.
+const QUESTION_ACTIVE_OFFSET_PX = 80;
+// Vertical offset (in px) applied above the target user message when a quick
+// jump is requested. Leaves a little breathing room above the message so the
+// timestamp / "older messages" header isn't covered.
+const QUESTION_JUMP_TOP_PADDING_PX = 12;
 
 interface StoredScrollState {
   scrollTop: number;
@@ -167,8 +180,28 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     content: string;
   } | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [showQuestionNav, setShowQuestionNav] = useState(false);
+  const [activeQuestion, setActiveQuestion] = useState(0);
+  const questionRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const isJumpingQuestionRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
+  // Pending requestAnimationFrame handle for active-dot recomputation, so we
+  // throttle the (O(N) getBoundingClientRect) scan to at most once per frame.
+  const activeQuestionRafRef = useRef<number | null>(null);
 
   const messages = messagesByTask[taskId] || [];
+  const userQuestionIndexByMessageIndex = useMemo(() => {
+    const map = new Map<number, number>();
+    let q = 0;
+    messages.forEach((msg, i) => {
+      if (msg.role === 'user') {
+        map.set(i, q);
+        q += 1;
+      }
+    });
+    return map;
+  }, [messages]);
+  const userQuestionCount = userQuestionIndexByMessageIndex.size;
   const historyState = historyStateByTask[taskId];
   const isLoading = loadingTasks.has(taskId);
   const hasMoreBefore = historyState?.hasMoreBefore ?? false;
@@ -227,14 +260,44 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     }
 
     const nextScrollTop = getMaxScrollTop(container);
+    // Seed the direction baseline before mutating scrollTop. Some browsers
+    // dispatch `scroll` synchronously on assignment, and we must not have a
+    // stale baseline when handleScroll runs.
+    lastScrollTopRef.current = nextScrollTop;
     container.scrollTop = nextScrollTop;
     shouldStickToBottomRef.current = true;
     setShowScrollToBottom(false);
+    setShowQuestionNav(false);
     writeStoredScrollState(taskId, {
       scrollTop: nextScrollTop,
       stickToBottom: true,
     });
   };
+
+  const handleJumpToQuestion = useCallback((questionIndex: number) => {
+    const el = questionRefs.current.get(questionIndex);
+    const container = scrollContainerRef.current;
+    if (!el || !container) {
+      return;
+    }
+    isJumpingQuestionRef.current = true;
+    const containerTop = container.getBoundingClientRect().top;
+    const elTop = el.getBoundingClientRect().top;
+    const nextScrollTop = clampScrollTop(
+      container,
+      container.scrollTop + (elTop - containerTop) - QUESTION_JUMP_TOP_PADDING_PX,
+    );
+    // Seed the direction baseline before mutating scrollTop so the resulting
+    // scroll event (which may fire synchronously) doesn't see a stale value.
+    // The isJumpingQuestionRef guard short-circuits handleScroll anyway, but
+    // keeping the baseline accurate avoids surprising future readers.
+    lastScrollTopRef.current = nextScrollTop;
+    container.scrollTop = nextScrollTop;
+    setActiveQuestion(questionIndex);
+    window.setTimeout(() => {
+      isJumpingQuestionRef.current = false;
+    }, 120);
+  }, []);
 
   const loadOlderMessages = async (options?: { continueUntilFilled?: boolean }) => {
     if (!oldestMessageId || isLoading) {
@@ -305,8 +368,26 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     shouldRestoreScrollRef.current = true;
     forceScrollToBottomRef.current = false;
     previousMessageCountRef.current = messages.length;
+    questionRefs.current = new Map();
+    isJumpingQuestionRef.current = false;
+    lastScrollTopRef.current = 0;
+    if (activeQuestionRafRef.current !== null) {
+      window.cancelAnimationFrame(activeQuestionRafRef.current);
+      activeQuestionRafRef.current = null;
+    }
     setShowScrollToBottom(false);
+    setShowQuestionNav(false);
+    setActiveQuestion(0);
   }, [taskId]);
+
+  // Cancel any in-flight active-dot recomputation when the component
+  // unmounts so we don't call setState on a stale instance.
+  useEffect(() => () => {
+    if (activeQuestionRafRef.current !== null) {
+      window.cancelAnimationFrame(activeQuestionRafRef.current);
+      activeQuestionRafRef.current = null;
+    }
+  }, []);
 
   useEffect(() => (
     () => {
@@ -324,6 +405,12 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
       const { previousScrollHeight, previousScrollTop } = pendingPrependAnchorRef.current;
       const delta = container.scrollHeight - previousScrollHeight;
       const nextScrollTop = clampScrollTop(container, previousScrollTop + delta);
+      // Resync the scroll-direction baseline before the assignment so the
+      // synthetic scrollTop bump from prepending older messages doesn't get
+      // misread as the user scrolling downward (which would hide the
+      // quick-jump nav mid-load) on browsers that dispatch scroll
+      // synchronously.
+      lastScrollTopRef.current = nextScrollTop;
       container.scrollTop = nextScrollTop;
       persistScrollPosition(nextScrollTop);
       pendingPrependAnchorRef.current = null;
@@ -342,6 +429,10 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
         scrollToBottom();
       } else if (storedScrollState) {
         const nextScrollTop = clampScrollTop(container, storedScrollState.scrollTop);
+        // Seed the direction baseline before mutating scrollTop so the
+        // upcoming scroll event from restoring position doesn't get treated
+        // as a real user scroll.
+        lastScrollTopRef.current = nextScrollTop;
         container.scrollTop = nextScrollTop;
         persistScrollPosition(nextScrollTop);
       } else {
@@ -572,14 +663,69 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     persistScrollPosition();
 
     const container = scrollContainerRef.current;
-    if (!container || !hasMoreBefore || isLoading || !oldestMessageId) {
+    if (!container) {
+      return;
+    }
+
+    const currentScrollTop = container.scrollTop;
+    const delta = currentScrollTop - lastScrollTopRef.current;
+
+    // Toggle the quick-jump nav based on scroll direction. Show when the user
+    // intentionally scrolls upward (toward older messages); hide on natural
+    // downward reading. Ignore tiny deltas and programmatic jumps so the nav
+    // doesn't flicker.
+    if (!isJumpingQuestionRef.current && userQuestionCount > 1) {
+      if (delta <= -SCROLL_DIRECTION_THRESHOLD_PX) {
+        setShowQuestionNav(true);
+      } else if (delta >= SCROLL_DIRECTION_THRESHOLD_PX) {
+        setShowQuestionNav(false);
+      }
+    }
+
+    // Recompute the active question dot at most once per animation frame.
+    // The scan calls getBoundingClientRect on every user-message element, so
+    // for long conversations doing it on every scroll tick would force a
+    // layout per tick. Coalescing into a single rAF keeps it cheap while
+    // still feeling instant. We skip entirely while a programmatic jump is
+    // in flight so we don't fight the click handler.
+    if (
+      !isJumpingQuestionRef.current &&
+      questionRefs.current.size > 0 &&
+      activeQuestionRafRef.current === null
+    ) {
+      activeQuestionRafRef.current = window.requestAnimationFrame(() => {
+        activeQuestionRafRef.current = null;
+        // A jump click between the schedule and the callback can land within
+        // the same animation frame. Re-check the flag here (the scheduling
+        // guard above isn't enough) so we never overwrite the activeQuestion
+        // that `handleJumpToQuestion` just set.
+        if (isJumpingQuestionRef.current) return;
+        const c = scrollContainerRef.current;
+        if (!c) return;
+        const containerTop = c.getBoundingClientRect().top;
+        let closest = 0;
+        let closestDist = Infinity;
+        questionRefs.current.forEach((el, idx) => {
+          const dist = Math.abs(el.getBoundingClientRect().top - containerTop - QUESTION_ACTIVE_OFFSET_PX);
+          if (dist < closestDist) {
+            closestDist = dist;
+            closest = idx;
+          }
+        });
+        setActiveQuestion((current) => (current === closest ? current : closest));
+      });
+    }
+
+    lastScrollTopRef.current = currentScrollTop;
+
+    if (!hasMoreBefore || isLoading || !oldestMessageId) {
       if (!hasMoreBefore || !oldestMessageId) {
         autoLoadUntilFilledRef.current = false;
       }
       return;
     }
 
-    if (container.scrollTop <= SCROLL_TOP_LOAD_THRESHOLD_PX) {
+    if (currentScrollTop <= SCROLL_TOP_LOAD_THRESHOLD_PX) {
       void loadOlderMessages({ continueUntilFilled: true });
       return;
     }
@@ -635,26 +781,56 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
                   </span>
                 </div>
               ) : null}
-              {messages.map((message) => (
-                <MessageBubble
-                  key={message.id}
-                  message={message}
-                  onResend={handleResend}
-                  onRestart={() => {
-                    void handleRestart();
-                  }}
-                  onInterrupt={() => {
-                    void handleInterrupt();
-                  }}
-                  restartEnabled={restartEnabled}
-                  restartPending={restartPending}
-                  interruptEnabled={interruptEnabled}
-                  interruptPending={interruptPending}
-                />
-              ))}
+              {messages.map((message, msgIndex) => {
+                const qIdx = userQuestionIndexByMessageIndex.get(msgIndex);
+                const bubble = (
+                  <MessageBubble
+                    message={message}
+                    onResend={handleResend}
+                    onRestart={() => {
+                      void handleRestart();
+                    }}
+                    onInterrupt={() => {
+                      void handleInterrupt();
+                    }}
+                    restartEnabled={restartEnabled}
+                    restartPending={restartPending}
+                    interruptEnabled={interruptEnabled}
+                    interruptPending={interruptPending}
+                  />
+                );
+                if (qIdx == null) {
+                  return <div key={message.id}>{bubble}</div>;
+                }
+                return (
+                  <div
+                    key={message.id}
+                    ref={(el) => {
+                      if (el) {
+                        questionRefs.current.set(qIdx, el);
+                      } else {
+                        questionRefs.current.delete(qIdx);
+                      }
+                    }}
+                  >
+                    {bubble}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
+        <QuestionNav
+          count={userQuestionCount}
+          activeIndex={activeQuestion}
+          visible={showQuestionNav && userQuestionCount > 1}
+          onJump={handleJumpToQuestion}
+          // `absolute` so the nav anchors to the scroll-area wrapper, not the
+          // viewport. `right-4` clears the custom `webapp-scrollbar` gutter
+          // on platforms with persistent scrollbars and visually aligns with
+          // the "scroll to latest" button below.
+          className="absolute right-4"
+        />
         {showScrollToBottom ? (
           <button
             type="button"
