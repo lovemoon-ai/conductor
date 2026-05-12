@@ -1243,4 +1243,181 @@ describe('ChatView', () => {
 
     expect(screen.queryByText('Interrupt request was not confirmed. You can try again.')).not.toBeInTheDocument();
   });
+
+  describe('quick-jump question nav', () => {
+    const makeUserMessage = (id: string, content = `user-${id}`) => ({
+      ...makeMessage(id, content),
+      role: 'user' as const,
+    });
+
+    const getNav = (root: HTMLElement) =>
+      root.querySelector('nav[aria-label="Jump to question"]') as HTMLElement | null;
+
+    it('stays hidden on initial render', () => {
+      chatState = {
+        ...chatState,
+        messagesByTask: {
+          'task-1': [makeUserMessage('u1'), makeMessage('a1'), makeUserMessage('u2')],
+        },
+      };
+
+      const view = render(<ChatView taskId="task-1" />);
+      const nav = getNav(view.container);
+      expect(nav).not.toBeNull();
+      expect(nav!.className).toContain('opacity-0');
+      expect(nav!.className).toContain('pointer-events-none');
+      // Hidden buttons must be out of the tab order so keyboard users don't
+      // hit invisible focus stops.
+      const firstDot = nav!.querySelector('button') as HTMLButtonElement;
+      expect(firstDot.tabIndex).toBe(-1);
+    });
+
+    it('becomes visible after the user scrolls upward', () => {
+      chatState = {
+        ...chatState,
+        messagesByTask: {
+          'task-1': [makeUserMessage('u1'), makeMessage('a1'), makeUserMessage('u2')],
+        },
+      };
+
+      const view = render(<ChatView taskId="task-1" />);
+      const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+      const metrics = mockScrollMetrics(scrollContainer, {
+        clientHeight: 200,
+        scrollHeight: 1000,
+        scrollTop: 0,
+      });
+
+      // Settle the direction baseline at the bottom of the conversation
+      // (where the user lands after the initial restore), then scroll up.
+      metrics.setScrollTop(800);
+      fireEvent.scroll(scrollContainer);
+      metrics.setScrollTop(500);
+      fireEvent.scroll(scrollContainer);
+
+      const nav = getNav(view.container)!;
+      expect(nav.className).toContain('opacity-100');
+      expect(nav.className).toContain('pointer-events-auto');
+      const firstDot = nav.querySelector('button') as HTMLButtonElement;
+      expect(firstDot.tabIndex).toBe(0);
+    });
+
+    it('hides again after the user scrolls downward', () => {
+      chatState = {
+        ...chatState,
+        messagesByTask: {
+          'task-1': [makeUserMessage('u1'), makeMessage('a1'), makeUserMessage('u2')],
+        },
+      };
+
+      const view = render(<ChatView taskId="task-1" />);
+      const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+      const metrics = mockScrollMetrics(scrollContainer, {
+        clientHeight: 200,
+        scrollHeight: 1000,
+        scrollTop: 0,
+      });
+
+      metrics.setScrollTop(800);
+      fireEvent.scroll(scrollContainer);
+      metrics.setScrollTop(400);
+      fireEvent.scroll(scrollContainer);
+      expect(getNav(view.container)!.className).toContain('opacity-100');
+
+      metrics.setScrollTop(700);
+      fireEvent.scroll(scrollContainer);
+      const nav = getNav(view.container)!;
+      expect(nav.className).toContain('opacity-0');
+      expect(nav.className).toContain('pointer-events-none');
+    });
+
+    it('does not surface the nav when there is at most one user message', () => {
+      chatState = {
+        ...chatState,
+        messagesByTask: {
+          'task-1': [makeUserMessage('u1'), makeMessage('a1')],
+        },
+      };
+
+      const view = render(<ChatView taskId="task-1" />);
+      const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+      const metrics = mockScrollMetrics(scrollContainer, {
+        clientHeight: 200,
+        scrollHeight: 1000,
+        scrollTop: 0,
+      });
+
+      metrics.setScrollTop(800);
+      fireEvent.scroll(scrollContainer);
+      metrics.setScrollTop(200);
+      fireEvent.scroll(scrollContainer);
+
+      // The component still renders a single dot (count > 0) but the
+      // visibility flag is gated on `count > 1`, so it must stay hidden
+      // regardless of scroll direction.
+      const nav = getNav(view.container)!;
+      expect(nav.className).toContain('opacity-0');
+    });
+
+    it('marks the clicked dot as active and scrolls the container when a jump is requested', () => {
+      chatState = {
+        ...chatState,
+        messagesByTask: {
+          'task-1': [
+            makeUserMessage('u1'),
+            makeUserMessage('u2'),
+            makeUserMessage('u3'),
+          ],
+        },
+      };
+
+      const view = render(<ChatView taskId="task-1" />);
+      const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+      const metrics = mockScrollMetrics(scrollContainer, {
+        clientHeight: 200,
+        scrollHeight: 1000,
+        scrollTop: 0,
+      });
+
+      // Reach a state a real user can actually be in: scrolled up far enough
+      // that the nav is visible and interactive. Without this, fireEvent
+      // would dispatch through a `pointer-events-none` element, which
+      // bypasses real-world hit testing and weakens the test.
+      metrics.setScrollTop(800);
+      fireEvent.scroll(scrollContainer);
+      metrics.setScrollTop(400);
+      fireEvent.scroll(scrollContainer);
+
+      const nav = view.container.querySelector(
+        'nav[aria-label="Jump to question"]',
+      ) as HTMLElement;
+      expect(nav.className).toContain('opacity-100');
+      const dots = nav.querySelectorAll('button');
+      expect(dots.length).toBe(3);
+      expect((dots[0] as HTMLButtonElement).tabIndex).toBe(0);
+
+      const scrollTopBeforeClick = metrics.getScrollTop();
+      fireEvent.click(dots[1] as HTMLElement);
+
+      // Active-dot rendering reflects the click.
+      const activeSpan = (dots[1] as HTMLElement).querySelector('span') as HTMLElement;
+      expect(activeSpan.className).toContain('h-3');
+      expect(activeSpan.className).toContain('w-3');
+      const inactiveSpan = (dots[0] as HTMLElement).querySelector('span') as HTMLElement;
+      expect(inactiveSpan.className).toContain('h-1.5');
+      expect(inactiveSpan.className).toContain('w-1.5');
+
+      // The container also actually scrolled. In jsdom getBoundingClientRect
+      // returns zeros, so the jump math collapses to
+      //   nextScrollTop = clamp(scrollTopBeforeClick + 0 - QUESTION_JUMP_TOP_PADDING_PX)
+      // which is enough to confirm scrollTop moved (and to the expected
+      // value), without depending on layout assumptions. The padding
+      // constant lives in ChatView.tsx; mirroring its current value here
+      // keeps this test independent of that import surface.
+      const QUESTION_JUMP_TOP_PADDING_PX = 12;
+      expect(metrics.getScrollTop()).toBe(
+        scrollTopBeforeClick - QUESTION_JUMP_TOP_PADDING_PX,
+      );
+    });
+  });
 });

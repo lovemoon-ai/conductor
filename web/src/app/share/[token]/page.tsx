@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { MessageBubble } from '@/features/chat';
+import { QuestionNav } from '@/components/common/QuestionNav';
 import type { MessageRole } from '@/shared/types';
 
 interface SharedMessage {
@@ -26,44 +27,6 @@ interface SharedTaskData {
 function formatShortDate(value: string): string {
   const date = new Date(value);
   return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
-}
-
-function QuestionNav({
-  count,
-  activeIndex,
-  onJump,
-}: {
-  count: number;
-  activeIndex: number;
-  onJump: (index: number) => void;
-}) {
-  if (count === 0) return null;
-
-  return (
-    <nav
-      aria-label="Jump to question"
-      className="fixed right-4 top-1/2 z-20 -translate-y-1/2 flex flex-col items-center"
-    >
-      {Array.from({ length: count }, (_, i) => (
-        <div key={i} className="flex flex-col items-center">
-          {i > 0 && <div className="h-3 w-px bg-neutral-400" />}
-          <button
-            type="button"
-            aria-label={`Jump to question ${i + 1}`}
-            title={`Question ${i + 1}`}
-            onClick={() => onJump(i)}
-            className="flex items-center justify-center h-6 w-6"
-          >
-            <span className={`block rounded-full transition-all ${
-              activeIndex === i
-                ? 'h-3 w-3 bg-[var(--accent)]'
-                : 'h-1.5 w-1.5 bg-neutral-400 group-hover:bg-neutral-600'
-            }`} />
-          </button>
-        </div>
-      ))}
-    </nav>
-  );
 }
 
 export default function SharedTaskPage() {
