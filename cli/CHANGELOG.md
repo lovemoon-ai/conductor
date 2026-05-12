@@ -39,6 +39,71 @@
   in-memory map does not accumulate stale entries when Fire exits naturally
   inside its session.
 
+### Other Changes (retroactively documented)
+
+The following changes shipped in `@love-moon/conductor-cli@0.3.0` but were
+merged without a `changeset` entry and so didn't make it into the
+auto-generated section above. See
+`claw/lessons/arch_release-packages-pnpm-changesets-20260512.md` for the
+process gap and the rule that every PR touching `cli/**` or `modules/**`
+must run `npm run changeset`.
+
+**New CLI commands**
+
+- `cli`: `conductor project|issue|task` entity commands (RFC 0025). Adds
+  scriptable CLI access to project/issue/task CRUD against the connected
+  daemon. (`2e10756`)
+- `cli`: `conductor project` accepts `--daemon-host` to disambiguate
+  same-named projects across multiple daemons. (`08eefee`)
+- `cli`: `conductor project list` now prints a daemon column. (`552731b`)
+
+**Daemon — Fire tmux mode (companion to `fire_tmux_mode`)**
+
+- Daemon now `tmux send-keys`-friendly: env vars are propagated via
+  `tmux -e` flags so the Fire process inherits the spawn environment.
+  (`3cd3022`)
+- Live Fire output is now visible via `tmux attach` thanks to a `tee`
+  inside the session shell. (`f07fbc6`)
+- `stop_task` and `cleanup_task_worktree` now reap orphan tmux sessions.
+  (`1f7ef28`)
+- A killed tmux-mode task reports `KILLED` directly from the daemon
+  instead of waiting on Fire to flip the status. (`59c6472`)
+- `restart_task` clears stale tmux entries before re-spawning and refuses
+  with a clearer error if the session can't be acquired. (`c659663`)
+
+**Daemon stability**
+
+- Fix: reconcile / stale-recovery no longer kills `init` successor tasks
+  that haven't received their initial websocket message yet. (`d9258ba`)
+- Fix: late websocket send after disconnect no longer crashes daemon
+  restart. (`a3532cc`)
+- Fix: stale fire task attach is now guarded against double-binding.
+  (`dc73be9`)
+
+**Worktree**
+
+- Worktree folders are now named by branch (slugified) rather than by
+  the task id, making them human-meaningful inside repos with many
+  concurrent tasks. (`ed124b5`)
+- The worktree scanner now skips symlinks that are git-tracked, so user
+  symlinks inside a worktree don't get treated as candidates. (`5281952`)
+
+**Quota / accounts UI**
+
+- Codex quota snapshots are now restored from the daemon cache on
+  refresh, so the daemon page doesn't blank out while a fresh fetch is
+  in flight. (`130bd93`)
+
+**Internal refactor (no consumer API change)**
+
+- `modules/ai-sdk`: resume logic has been split into per-provider
+  modules under `src/resume/<provider>.js`. The public exports
+  (`createAiSession`, `BUILT_IN_BACKENDS`, etc.) are unchanged.
+  Source-level only; the published `@love-moon/ai-sdk` version pinned
+  in `cli@0.3.0`'s manifest is still `0.2.42`, so consumer behavior is
+  identical to before — the refactor will reach npm with the next
+  ai-sdk release that includes a `changeset`. (`846f05a`)
+
 ### Patch Changes
 
 - Updated dependencies [be3b3cb]
