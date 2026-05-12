@@ -51,10 +51,23 @@ jobs:
         # inspects each package's lockfile to pick a package manager and spawns
         # `pnpm publish` when it finds pnpm-lock.yaml — which means the runner
         # also needs pnpm on PATH, even though the root workspace uses npm.
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-          run_install: false
+        #
+        # Root package.json declares `packageManager: npm@11.5.1`, which makes
+        # corepack reject any `pnpm` invocation when it intercepts the binary.
+        # Disable corepack first, then install pnpm globally via npm so it ends
+        # up on PATH unshimmed. Verify in the same step so a PATH propagation
+        # bug surfaces here instead of in a later step.
+        shell: bash
+        env:
+          COREPACK_ENABLE_STRICT: "0"
+        run: |
+          if command -v corepack >/dev/null 2>&1; then
+            corepack disable || true
+          fi
+          npm install --global pnpm@9
+          echo "PATH=$PATH"
+          which pnpm
+          pnpm --version
 
       - name: Show tool versions
         shell: bash
