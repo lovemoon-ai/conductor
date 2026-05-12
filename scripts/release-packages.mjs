@@ -151,9 +151,19 @@ async function publishCommand() {
   // is still missing from the registry. If everything is on npm we log a
   // warning and continue so GitHub Actions outputs get set and the next
   // step (cli-release-archives dispatch) fires.
+  // `--no-git-tag` skips changesets' default behavior of running
+  // `git tag <pkg>@<version> -m <msg>` after each successful publish.
+  // Annotated tag creation requires `user.name` / `user.email` to be
+  // configured on the runner; GitHub Actions doesn't set those, so the
+  // tag step throws "Please tell me who you are" and trips changesets'
+  // exit status — even though every package already reached npm. The
+  // per-package tags it would create (e.g. `@love-moon/conductor-cli@0.3.0`)
+  // are local-only anyway: this repo only pushes the unified `vX.Y.Z`
+  // tag via scripts/dispatch-cli-release-archive.sh, so the per-package
+  // tags would be dead weight even if they did get created.
   let changesetSpawnError = null;
   try {
-    npm(["exec", "--", "changeset", "publish"], { capture: false });
+    npm(["exec", "--", "changeset", "publish", "--no-git-tag"], { capture: false });
   } catch (error) {
     changesetSpawnError = error;
     console.warn(

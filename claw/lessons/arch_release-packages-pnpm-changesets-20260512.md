@@ -59,36 +59,60 @@ currently runs `cd modules/conductor-sdk && pnpm test`. The lockfile-rm
 workaround is contained to the workflow file with a comment block; the
 day someone wants to migrate, they can revisit this lesson.
 
-### 2. `changeset publish` exits non-zero even after a successful publish
+### 2. `changeset publish` exits non-zero on the post-publish git-tag step
 
 Even after fix #1, the `Publish npm packages` step exited 1. Both
 targeted packages reached npm (`cli@0.3.0` and `sdk@0.3.0` are visible
-on the registry); the failure happened in some post-publish stage that
-`@changesets/cli` runs (likely a summary print or a parse of the
-`npm publish --json` output). Because `release-packages.mjs` invoked
-`npm exec -- changeset publish` with `stdio: 'inherit'` and let the
-synchronous throw propagate, the script never reached
-`writeGitHubOutput()`. The workflow step inherited the throw and was
-marked failed, which skipped the `Trigger CLI archive workflow` step
-guarded by `if: steps.publish.outputs.cli_version != ''`. A human then
-had to:
+on the registry); the failure was in `@changesets/cli`'s post-publish
+**annotated git tag** step. After every successful `npm publish`,
+changesets calls:
+
+```js
+// node_modules/@changesets/git/dist/changesets-git.cjs.js
+async function tag(tagStr, cwd) {
+  const gitCmd = await spawn("git", ["tag", tagStr, "-m", tagStr], { cwd });
+  return gitCmd.code === 0;
+}
+```
+
+That `-m` makes it an **annotated** tag, which requires `user.name` and
+`user.email` to be configured in git. GitHub Actions runners don't set
+either by default. `changesets/action@v1` *does* set them when used for
+the version + publish steps, but our workflow runs `changesets/action`
+only for `version`; the `Publish npm packages` step calls
+`node ./scripts/release-packages.mjs publish` directly, inheriting an
+unconfigured git identity. So `git tag` failed with the canonical
+"Please tell me who you are" error, changesets returned non-zero, and
+`scripts/release-packages.mjs` let the synchronous throw propagate.
+
+Because the script never reached `writeGitHubOutput()`, the workflow's
+`if: steps.publish.outputs.cli_version != ''` gate skipped the
+`Trigger CLI archive workflow` step, and an operator had to:
 
 - `git tag -a v0.3.0 -m "release 0.3.0" <sha> && git push origin v0.3.0`
 - Let the `push: tags: v*` trigger on `cli-release-archives.yml` take over.
 
-**Fix shipped (this commit):** in `scripts/release-packages.mjs`,
-catch the `changeset publish` spawn error, **re-probe npm for every
-pending package**, and:
+**Fix shipped:** two complementary changes.
 
-- If every pending version is now on npm, treat the publish as
-  successful: write GitHub Actions outputs, log a warning about the
-  spurious non-zero, and let downstream steps run.
-- If any pending version is still missing, re-throw with a precise
-  message naming which versions failed to ship.
+1. Pass `--no-git-tag` to `changeset publish`. The repo only ever ships
+   one tag per release — the unified `vX.Y.Z` pushed by
+   `scripts/dispatch-cli-release-archive.sh`. The per-package tags
+   changesets would otherwise create (`@love-moon/conductor-cli@0.3.0`,
+   `@love-moon/conductor-sdk@0.3.0`) are local-only and never pushed
+   anywhere, so eliminating them removes a real failure mode and a pile
+   of garbage local refs at no functional cost.
+2. Keep the spurious-exit defense as belt-and-suspenders. The script
+   catches a non-zero spawn from `changeset publish`, re-probes npm for
+   every pending package, and:
+   - If every pending version is on npm, writes GitHub Actions outputs
+     and logs a warning about the unexpected exit so downstream steps
+     run.
+   - If any pending version is still missing, re-throws with a precise
+     error naming which versions failed to ship.
 
-This makes the workflow self-healing for the most likely failure
-shape: artifacts uploaded, post-processing tripped, downstream
-correctly continues.
+The two fixes together make the workflow correct on the normal path
+(no git-tag step → no fail) **and** self-healing if any future
+changesets version trips a different post-publish step.
 
 ## How to avoid next time
 
