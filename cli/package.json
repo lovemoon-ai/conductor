@@ -1,6 +1,6 @@
 {
   "name": "@love-moon/conductor-cli",
-  "version": "0.2.42",
+  "version": "0.3.0",
   "gitCommitId": "f79f36f",
   "repository": {
     "type": "git",
@@ -24,7 +24,7 @@
   "dependencies": {
     "@love-moon/ai-manager": "0.2.42",
     "@love-moon/ai-sdk": "0.2.42",
-    "@love-moon/conductor-sdk": "0.2.42",
+    "@love-moon/conductor-sdk": "0.3.0",
     "@github/copilot-sdk": "^0.2.2",
     "chrome-launcher": "^1.2.1",
     "chrome-remote-interface": "^0.33.0",
