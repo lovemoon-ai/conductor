@@ -130,7 +130,6 @@ export async function POST(request: NextRequest) {
           const nameConflict = await tx.project.findFirst({
             where: {
               userId: user.id,
-              daemonHost: null,
               name: createProjectName,
             },
             select: { id: true },

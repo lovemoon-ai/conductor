@@ -156,7 +156,6 @@ describe('/api/collaboration/join', () => {
     expect(db.project.findFirst).toHaveBeenCalledWith({
       where: {
         userId: 'user-2',
-        daemonHost: null,
         name: 'Shared workspace',
       },
       select: { id: true },
@@ -184,12 +183,15 @@ describe('/api/collaboration/join', () => {
     expect(data.projectId).toBe('project-created');
   });
 
-  it('rejects creating a project when the suggested unbound name already exists', async () => {
+  it('rejects creating a project when any project already uses the suggested name', async () => {
     vi.mocked(db.projectCollaboration.findUnique).mockResolvedValueOnce({
       id: 'collab-1',
       members: [buildMember()],
     } as any);
-    vi.mocked(db.project.findFirst).mockResolvedValueOnce({ id: 'existing-project' } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValueOnce({
+      id: 'existing-project',
+      daemonHost: 'qa-daemon-2',
+    } as any);
 
     const response = await POST(createMockRequest({
       method: 'POST',
@@ -202,6 +204,13 @@ describe('/api/collaboration/join', () => {
 
     expect(response.status).toBe(409);
     expect(data.error).toBe('Project name already exists');
+    expect(db.project.findFirst).toHaveBeenCalledWith({
+      where: {
+        userId: 'user-2',
+        name: 'conductor',
+      },
+      select: { id: true },
+    });
     expect(db.project.create).not.toHaveBeenCalled();
     expect(db.collaborationMember.create).not.toHaveBeenCalled();
   });
