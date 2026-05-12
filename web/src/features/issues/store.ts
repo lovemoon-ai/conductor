@@ -36,6 +36,19 @@ const normalizeObject = (value: unknown): Record<string, unknown> | null => {
   return value as Record<string, unknown>;
 };
 
+const normalizeMemberRef = (value: unknown): { id: string; label?: string } | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const id = pickString(record.id);
+  if (!id) {
+    return null;
+  }
+  const label = pickString(record.label) ?? undefined;
+  return label ? { id, label } : { id };
+};
+
 const syncTask = (raw: unknown, moveToFront = false): Task | null => {
   if (!raw || typeof raw !== 'object') {
     return null;
@@ -77,11 +90,24 @@ export const normalizeIssue = (raw: unknown): Issue | null => {
   const aiBackendType = pickString(record.aiBackendType) ?? pickString(record.ai_backend_type);
   const aiSessionId = pickString(record.aiSessionId) ?? pickString(record.ai_session_id);
 
+  // Owner / creator references drive the issue card's owner-badge avatar.
+  // The API returns them as `ownerUserId` + `owner: {id,label}` (camelCase)
+  // alongside the snake_case mirrors; accept either spelling so the card
+  // can render the correct phone-suffix initials rather than "Unassigned".
+  const ownerUserId = pickString(record.ownerUserId) ?? pickString(record.owner_user_id);
+  const creatorUserId = pickString(record.creatorUserId) ?? pickString(record.creator_user_id);
+  const owner = normalizeMemberRef(record.owner);
+  const creator = normalizeMemberRef(record.creator);
+
   return {
     id,
     projectId,
     projectName: pickString(record.projectName) ?? pickString(record.project_name),
     daemonHost: pickString(record.daemonHost) ?? pickString(record.daemon_host),
+    ownerUserId,
+    creatorUserId,
+    owner,
+    creator,
     title,
     description: pickString(record.description),
     status: normalizeIssueStatus(record.status),
