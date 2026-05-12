@@ -21,7 +21,11 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: pr-checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  # On PR events the ref is refs/pull/N/merge (unique per PR). On push to main
+  # there is exactly one ref. Either way `github.ref` is a stable concurrency
+  # key without the `||` fallback that tripped GitHub's expression parser
+  # when this workflow was first introduced in 781b154.
+  group: pr-checks-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
