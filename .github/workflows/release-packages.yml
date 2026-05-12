@@ -45,37 +45,25 @@ jobs:
         shell: bash
         run: npm install --global "npm@^11.5.1"
 
-      - name: Install pnpm for changesets publish
+      - name: Hide subpackage pnpm-lock files so changesets uses npm publish
         # Each package under cli/ and modules/* keeps its own pnpm-lock.yaml so
         # local developers can run `pnpm test` per-package. `changeset publish`
-        # inspects each package's lockfile to pick a package manager and spawns
-        # `pnpm publish` when it finds pnpm-lock.yaml — which means the runner
-        # also needs pnpm on PATH, even though the root workspace uses npm.
-        #
-        # We've already tried `pnpm/action-setup@v4` and `npm install -g pnpm@9`;
-        # both leave the binary at a path that corepack happily re-shims between
-        # steps (root package.json declares `packageManager: npm`, so the shim
-        # rejects pnpm). The standalone installer drops pnpm into
-        # `$HOME/.local/share/pnpm` — a path corepack never touches — and we
-        # then export it through `$GITHUB_PATH` so every subsequent step keeps
-        # the same resolution order.
+        # inspects each package's lockfile to pick a package manager and would
+        # otherwise spawn `pnpm publish`. Installing pnpm on the runner ran
+        # into a corepack-shim conflict (root package.json declares
+        # `packageManager: npm`). It's simpler to just delete the lockfiles
+        # inside the workflow's working copy so changesets falls back to npm
+        # publish — which is what we use everywhere else in this workflow.
+        # The repo itself is unchanged; the next checkout restores the files.
         shell: bash
-        env:
-          PNPM_VERSION: "9.15.0"
-          SHELL: /bin/bash
         run: |
-          curl -fsSL https://get.pnpm.io/install.sh | sh -
-          PNPM_DIR="$HOME/.local/share/pnpm"
-          echo "$PNPM_DIR" >> "$GITHUB_PATH"
-          "$PNPM_DIR/pnpm" --version
-          ls -l "$PNPM_DIR/pnpm"
+          find cli modules -maxdepth 2 -name pnpm-lock.yaml -print -exec rm -f {} +
 
       - name: Show tool versions
         shell: bash
         run: |
           node --version
           npm --version
-          pnpm --version
 
       - name: Install release workspace dependencies
         shell: bash
