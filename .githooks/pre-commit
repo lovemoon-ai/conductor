@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Pre-commit gate — runs the cheap, instant checks only.
+#
+# Heavy checks (prisma drift, branch-diff scoping) live in
+# `.githooks/pre-push` so per-commit feedback stays under a second.
+#
+# Install with `make install-hooks` (see Makefile).
+#
+# Skip with `git commit --no-verify` — the same gate is enforced on push
+# (.githooks/pre-push) and again in CI (.github/workflows/pr-checks.yml +
+# release-packages.yml), so --no-verify only buys you a few seconds before
+# CI catches the same problem.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+LIB_DIR="$REPO_ROOT/.githooks/lib"
+
+# Gate 4: changeset markdown must not instruct `db push`.
+# This catches the public-facing release-notes mistake we shipped in 0.3.0.
+# Scope: every .changeset/*.md file that's currently staged.
+bash "$LIB_DIR/check-changeset-no-db-push.sh" --staged

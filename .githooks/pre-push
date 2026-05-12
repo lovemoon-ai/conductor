@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Pre-push gate — runs the gates that need to see the cumulative branch
+# diff against `origin/main`, not just the most recent commit.
+#
+# Install with `make install-hooks` (see Makefile).
+#
+# Each gate prints a single-line summary on pass and an actionable
+# multi-line message on fail. To skip in an emergency, use
+# `git push --no-verify` — every gate is also enforced server-side by
+# .github/workflows/pr-checks.yml, so --no-verify only delays the fail
+# until the workflow run.
+#
+# Gates run (matches CI):
+#   Gate 1  prisma migrate diff vs accepted-drift baseline
+#   Gate 2  any cli/** or modules/** change requires a changeset
+#   Gate 4  same db-push lint as pre-commit, but on branch-diff scope
+# Gate 3 (notes-before-release) is intentionally NOT here — it's a
+# release-time gate, not a per-push gate. See claw/sop/06_release.md.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+LIB_DIR="$REPO_ROOT/.githooks/lib"
+
+# git invokes pre-push with the remote name + URL as positional args, then
+# pipes "<local_ref> <local_sha> <remote_ref> <remote_sha>\n" for each ref
+# being pushed via stdin. We don't filter by ref — every push is checked
+# against origin/main, which is what the CI also compares against.
+remote_name="${1:-origin}"
+
+# Fetch origin/main quietly so we have a baseline to diff against. Skip
+# the fetch on a network failure rather than blocking the developer:
+# CI will catch any real divergence anyway.
+if ! git fetch --quiet "$remote_name" main 2>/dev/null; then
+  printf '[pre-push] warning: could not fetch %s/main; comparing against the local copy.\n' "$remote_name" >&2
+fi
+
+BASE="$(git merge-base "$remote_name/main" HEAD 2>/dev/null || echo "")"
+if [[ -z "$BASE" ]]; then
+  echo "[pre-push] warning: no merge-base with $remote_name/main found, skipping branch-scoped checks." >&2
+  exit 0
+fi
+
+HEAD_SHA="$(git rev-parse HEAD)"
+if [[ "$BASE" == "$HEAD_SHA" ]]; then
+  echo "[pre-push] nothing to check (HEAD == merge-base with $remote_name/main)."
+  exit 0
+fi
+
+export PREPUSH_BASE="$BASE"
+export PREPUSH_HEAD="$HEAD_SHA"
+
+# Run the three gates. Each script exits non-zero with its own ::error::
+# message on fail. We collect the exit codes and fail at the end so the
+# developer sees ALL failing gates in one push, not one per push.
+fail=0
+
+if ! bash "$LIB_DIR/check-prisma-drift.sh"; then fail=1; fi
+if ! bash "$LIB_DIR/check-changeset-presence.sh"; then fail=1; fi
+if ! bash "$LIB_DIR/check-changeset-no-db-push.sh" --range "$BASE..$HEAD_SHA"; then fail=1; fi
+
+if [[ "$fail" == "1" ]]; then
+  echo
+  echo "[pre-push] One or more gates failed. Fix the errors above, or use 'git push --no-verify' to bypass (CI will still enforce)."
+  exit 1
+fi
+
+echo "[pre-push] all gates passed."
