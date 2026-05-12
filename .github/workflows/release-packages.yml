@@ -36,6 +36,37 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Enforce notes-before-release gate
+        # claw/notes-before-release/ is a hard gate per claw/sop/06_release.md:
+        # any file other than README.md represents a pre-release item that
+        # must be resolved, accepted, or promoted to claw/lessons/ /
+        # claw/issues/ BEFORE a release ships. This step blocks the entire
+        # release-packages workflow if the directory is non-empty, so the
+        # "version PR merge" event cannot accidentally publish past an open
+        # acceptance gate.
+        shell: bash
+        run: |
+          set -euo pipefail
+          # README.md is the steady-state placeholder; .gitkeep keeps the
+          # empty dir tracked. Anything else here is a real pre-release
+          # note that must be resolved before shipping.
+          notes=$(find claw/notes-before-release -mindepth 1 -maxdepth 1 -type f -name '*.md' ! -name README.md 2>/dev/null || true)
+          if [[ -n "$notes" ]]; then
+            cat <<EOF
+
+::error::claw/notes-before-release/ is non-empty. The release SOP
+treats this as a hard gate. Resolve every item, then either:
+  - tick all checkboxes and delete the file, or
+  - promote it to claw/lessons/ or claw/issues/ with an explicit
+    accept rationale.
+
+Open notes blocking this release:
+$notes
+EOF
+            exit 1
+          fi
+          echo "OK: claw/notes-before-release/ contains only README.md."
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24

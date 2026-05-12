@@ -1,0 +1,308 @@
+name: PR Checks
+
+# Pre-merge gates derived from the 0.3.0 release retro
+# (claw/lessons/arch_release-packages-pnpm-changesets-20260512.md and
+# claw/lessons/arch_cosmetic-prisma-drift-accepted-20260512.md).
+#
+# Each job fails fast with an actionable `::error::` message so the PR
+# author knows exactly what to do. None of these checks need write
+# access; everything runs from `actions/checkout` on the PR head.
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  prisma-drift:
+    name: Prisma schema vs migrations
+    # Run on every PR and on every push to main so a merge that bypasses
+    # PR review (force-push, admin override) still surfaces drift.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check whether the PR touches schema or migrations
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+            diff_range="$base...$head"
+          else
+            diff_range="${{ github.event.before }}..${{ github.sha }}"
+          fi
+          touched=$(git diff --name-only "$diff_range" -- web/prisma/ || true)
+          if [[ -z "$touched" ]]; then
+            echo "Scope: no web/prisma/ changes in this diff — skipping drift check."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Scope: touched files:"
+            echo "$touched"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install prisma CLI only
+        if: steps.scope.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Avoid full `npm ci` in web/ — we only need the prisma CLI to
+          # compare migrations vs schema.prisma. Pin to the version
+          # declared in web/package.json so this check uses the same
+          # engine the deploy uses.
+          version=$(node -p "require('./web/package.json').devDependencies?.prisma || require('./web/package.json').dependencies?.prisma")
+          version=${version#^}
+          version=${version#~}
+          echo "Installing prisma@$version"
+          npm install --global "prisma@$version" "@prisma/engines@$version"
+
+      - name: prisma migrate diff
+        if: steps.scope.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd web
+
+          # Tables whose schema.prisma vs migration drift is explicitly
+          # accepted in claw/lessons/arch_cosmetic-prisma-drift-accepted-20260512.md.
+          # The drift is cosmetic (NULL vs NOT NULL on default-having columns,
+          # CURRENT_TIMESTAMP default mismatch on @updatedAt) and would require
+          # an invasive SQLite table rewrite to fix. New PRs are allowed to
+          # leave these tables drifting, but introducing drift on any OTHER
+          # table or table-rewrite is a fail.
+          ACCEPTED_DRIFT_TABLES=(agent_outbox user_preferences)
+
+          rm -f prisma/_pr_checks_shadow.db
+
+          # Capture stdout+stderr so we can parse it for "Redefined table"
+          # markers. Disable pipefail temporarily because prisma exits 2
+          # on drift, which is exactly the signal we want to interpret.
+          set +e
+          diff_output=$(prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url "file:./prisma/_pr_checks_shadow.db" \
+            --exit-code 2>&1)
+          code=$?
+          set -e
+          rm -f prisma/_pr_checks_shadow.db
+
+          echo "$diff_output"
+
+          if [[ "$code" == "0" ]]; then
+            echo "OK: schema.prisma matches prisma/migrations/ exactly."
+            exit 0
+          fi
+          if [[ "$code" != "2" ]]; then
+            echo "::error::prisma migrate diff returned unexpected exit code $code"
+            exit "$code"
+          fi
+
+          # Parse "[*] Redefined table `<name>`" lines.
+          redefined=$(echo "$diff_output" | grep -oE 'Redefined table `[^`]+`' | sed -E 's/Redefined table `([^`]+)`/\1/' | sort -u)
+          unaccepted=""
+          while IFS= read -r table; do
+            [[ -z "$table" ]] && continue
+            accepted=0
+            for ok in "${ACCEPTED_DRIFT_TABLES[@]}"; do
+              if [[ "$table" == "$ok" ]]; then
+                accepted=1
+                break
+              fi
+            done
+            if [[ "$accepted" == "0" ]]; then
+              unaccepted="$unaccepted $table"
+            fi
+          done <<< "$redefined"
+
+          # Also fail if the diff contains any non-redefinition drift signal
+          # (e.g. CREATE TABLE / DROP TABLE / ADD COLUMN that the parser
+          # might miss). Be conservative: only redefined-tables drift is
+          # treated as "potentially accepted".
+          non_redefine_drift=$(echo "$diff_output" | grep -E '^\[[*+-]\]' | grep -vE 'Redefined table' || true)
+
+          if [[ -n "$unaccepted" || -n "$non_redefine_drift" ]]; then
+            cat <<EOF
+
+::error::schema.prisma diverges from prisma/migrations/ in a way that
+is NOT covered by the accepted-drift list in
+claw/lessons/arch_cosmetic-prisma-drift-accepted-20260512.md.
+
+New drift in this PR:
+  unaccepted redefined tables: ${unaccepted:-(none)}
+  other drift signals:
+$(echo "$non_redefine_drift" | sed 's/^/    /')
+
+Fix one of these:
+  1. Generate a migration:
+       cd web && npx prisma migrate dev --name <descriptive-name>
+     and commit the new prisma/migrations/* directory.
+  2. If the drift is intentional and cosmetic-only, document it in
+     claw/lessons/arch_cosmetic-prisma-drift-accepted-20260512.md and
+     extend ACCEPTED_DRIFT_TABLES in .github/workflows/pr-checks.yml
+     with the same table name.
+
+NEVER paper over the drift on production with \`prisma db push\` — see
+claw/lessons/arch_release-packages-pnpm-changesets-20260512.md for why.
+EOF
+            exit 1
+          fi
+
+          echo "OK: only previously-accepted cosmetic drift remains (${ACCEPTED_DRIFT_TABLES[*]})."
+
+  changeset-presence:
+    name: Changeset required for published-package changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect change scope vs PR base
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+
+          # Files under any published-package path
+          touched_published=$(git diff --name-only "$base...$head" \
+            -- 'cli/**' 'modules/ai-sdk/**' 'modules/ai-manager/**' 'modules/conductor-sdk/**' \
+            | grep -vE '(^cli/CHANGELOG\.md$|^modules/[^/]+/CHANGELOG\.md$|/\.gitignore$|/README\.md$|/dist/)' \
+            || true)
+
+          # Newly added changeset markdown files (excluding README + config)
+          new_changesets=$(git diff --name-only --diff-filter=A "$base...$head" -- '.changeset/*.md' \
+            | grep -vE '(^\.changeset/README\.md$|^\.changeset/config\.json$)' \
+            || true)
+
+          {
+            echo 'touched_published<<EOF'
+            echo "$touched_published"
+            echo 'EOF'
+            echo 'new_changesets<<EOF'
+            echo "$new_changesets"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ -n "$touched_published" ]]; then
+            echo "Touched published-package files:"
+            echo "$touched_published"
+          else
+            echo "No published-package files touched."
+          fi
+          if [[ -n "$new_changesets" ]]; then
+            echo "New changeset(s):"
+            echo "$new_changesets"
+          fi
+
+      - name: Enforce
+        shell: bash
+        run: |
+          set -euo pipefail
+          touched='${{ steps.detect.outputs.touched_published }}'
+          changesets='${{ steps.detect.outputs.new_changesets }}'
+          if [[ -n "$touched" && -z "$changesets" ]]; then
+            cat <<'EOF'
+
+::error::This PR modifies a published package (cli/ or modules/*) but
+does not include a `.changeset/*.md` file. The release workflow
+auto-generates the public CHANGELOG from changesets — without one your
+change ships in the next release with NO release-notes entry, exactly
+the way 20+ commits silently slipped past in 0.3.0.
+
+Fix:
+  npm run changeset
+  # follow the prompts, pick patch/minor/major, write a one-paragraph
+  # release-notes blurb, and commit the generated .changeset/*.md.
+
+If this PR is genuinely release-neutral (e.g. docs-only inside cli/,
+test-only changes, internal refactor with no behavior change), add a
+changeset with `patch` bump and leave the body empty, OR document the
+exemption in the PR description and use the bypass label
+`skip-changeset` (admin only).
+EOF
+            exit 1
+          fi
+          echo "OK: either no published-package change, or a changeset is present."
+
+  changeset-no-db-push:
+    name: Changeset must not instruct `db push`
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Lint touched changeset markdown
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+
+          touched=$(git diff --name-only --diff-filter=AM "$base...$head" -- '.changeset/*.md' \
+            | grep -vE '(^\.changeset/README\.md$)' \
+            || true)
+
+          if [[ -z "$touched" ]]; then
+            echo "No changeset files added/modified — skipping."
+            exit 0
+          fi
+
+          bad_files=""
+          for f in $touched; do
+            # Match: `db push`, `db:push`, `prisma db push`, `pnpm ... db:push`, etc.
+            # Case-insensitive, ERE.
+            if grep -iEn 'db[:[:space:]]+push|prisma[[:space:]]+db[[:space:]]+push' "$f" >/dev/null; then
+              echo "::group::$f"
+              grep -niE 'db[:[:space:]]+push|prisma[[:space:]]+db[[:space:]]+push' "$f" || true
+              echo "::endgroup::"
+              bad_files="$bad_files $f"
+            fi
+          done
+
+          if [[ -n "$bad_files" ]]; then
+            cat <<'EOF'
+
+::error::A changeset file in this PR tells operators to run `db push`.
+Production deploys use `prisma migrate deploy`, which only replays
+migration files — `db push` bypasses migrations and leaves the prod DB
+inconsistent with the migrations table.
+
+Fix:
+  1. Generate a proper migration:
+       cd web && npx prisma migrate dev --name <descriptive-name>
+  2. Edit the changeset to describe the schema change WITHOUT the
+     `db push` instruction. The deploy SOP already runs migrate
+     deploy automatically; consumers don't need any extra step.
+
+The 0.3.0 release shipped a changeset with this exact bad advice and
+created a real volc DB drift that took a manual `prisma migrate
+resolve` to clean up. See
+claw/lessons/arch_release-packages-pnpm-changesets-20260512.md.
+EOF
+            exit 1
+          fi
+          echo "OK: no `db push` instructions in touched changesets."
