@@ -52,22 +52,23 @@ jobs:
         # `pnpm publish` when it finds pnpm-lock.yaml — which means the runner
         # also needs pnpm on PATH, even though the root workspace uses npm.
         #
-        # Root package.json declares `packageManager: npm@11.5.1`, which makes
-        # corepack reject any `pnpm` invocation when it intercepts the binary.
-        # Disable corepack first, then install pnpm globally via npm so it ends
-        # up on PATH unshimmed. Verify in the same step so a PATH propagation
-        # bug surfaces here instead of in a later step.
+        # We've already tried `pnpm/action-setup@v4` and `npm install -g pnpm@9`;
+        # both leave the binary at a path that corepack happily re-shims between
+        # steps (root package.json declares `packageManager: npm`, so the shim
+        # rejects pnpm). The standalone installer drops pnpm into
+        # `$HOME/.local/share/pnpm` — a path corepack never touches — and we
+        # then export it through `$GITHUB_PATH` so every subsequent step keeps
+        # the same resolution order.
         shell: bash
         env:
-          COREPACK_ENABLE_STRICT: "0"
+          PNPM_VERSION: "9.15.0"
+          SHELL: /bin/bash
         run: |
-          if command -v corepack >/dev/null 2>&1; then
-            corepack disable || true
-          fi
-          npm install --global pnpm@9
-          echo "PATH=$PATH"
-          which pnpm
-          pnpm --version
+          curl -fsSL https://get.pnpm.io/install.sh | sh -
+          PNPM_DIR="$HOME/.local/share/pnpm"
+          echo "$PNPM_DIR" >> "$GITHUB_PATH"
+          "$PNPM_DIR/pnpm" --version
+          ls -l "$PNPM_DIR/pnpm"
 
       - name: Show tool versions
         shell: bash
