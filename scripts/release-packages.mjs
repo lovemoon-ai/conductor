@@ -139,21 +139,58 @@ async function publishCommand() {
     `Publishing ${pending.length} package(s): ${pending.map((pkg) => `${pkg.name}@${pkg.version}`).join(", ")}`,
   );
 
-  npm(["exec", "--", "changeset", "publish"], { capture: false });
+  // changeset publish has been observed to exit non-zero in the 0.3.0
+  // release even though every targeted version reached npm — likely a
+  // post-publish step (e.g. token attestation parse, summary print) that
+  // is non-essential to the actual artifact upload. The downstream tag
+  // and archive-dispatch steps must still run as long as the packages
+  // actually shipped, otherwise an operator has to push tags by hand.
+  //
+  // Catch the spawn failure here, then derive the published set from a
+  // direct npm registry probe. We only re-throw if some pending package
+  // is still missing from the registry. If everything is on npm we log a
+  // warning and continue so GitHub Actions outputs get set and the next
+  // step (cli-release-archives dispatch) fires.
+  let changesetSpawnError = null;
+  try {
+    npm(["exec", "--", "changeset", "publish"], { capture: false });
+  } catch (error) {
+    changesetSpawnError = error;
+    console.warn(
+      `[release-packages] changeset publish exited non-zero: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 
+  const stillMissing = [];
+  const confirmed = [];
   for (const pkg of pending) {
     const exists = await packageVersionExists(pkg.name, pkg.version);
-    if (!exists) {
-      throw new Error(`Publish completed without ${pkg.name}@${pkg.version} appearing on npm`);
+    if (exists) {
+      confirmed.push(pkg);
+    } else {
+      stillMissing.push(pkg);
     }
   }
 
   writeGitHubOutput({
-    published: "true",
-    pending_count: String(pending.length),
-    pending_names: pending.map((pkg) => pkg.name).join(","),
-    cli_version: pending.find((pkg) => pkg.name === "@love-moon/conductor-cli")?.version || "",
+    published: confirmed.length > 0 ? "true" : "false",
+    pending_count: String(confirmed.length),
+    pending_names: confirmed.map((pkg) => pkg.name).join(","),
+    cli_version: confirmed.find((pkg) => pkg.name === "@love-moon/conductor-cli")?.version || "",
   });
+
+  if (stillMissing.length > 0) {
+    const missing = stillMissing.map((pkg) => `${pkg.name}@${pkg.version}`).join(", ");
+    throw new Error(`Publish completed without these versions reaching npm: ${missing}`);
+  }
+
+  if (changesetSpawnError) {
+    console.warn(
+      "[release-packages] changeset publish reported a non-zero exit but every pending package is on npm; continuing so tag + archive dispatch can run.",
+    );
+  }
 }
 
 const command = process.argv[2];
