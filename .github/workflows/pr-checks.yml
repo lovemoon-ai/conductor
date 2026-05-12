@@ -140,29 +140,24 @@ jobs:
           non_redefine_drift=$(echo "$diff_output" | grep -E '^\[[*+-]\]' | grep -vE 'Redefined table' || true)
 
           if [[ -n "$unaccepted" || -n "$non_redefine_drift" ]]; then
-            cat <<EOF
-
-::error::schema.prisma diverges from prisma/migrations/ in a way that
-is NOT covered by the accepted-drift list in
-claw/lessons/arch_cosmetic-prisma-drift-accepted-20260512.md.
-
-New drift in this PR:
-  unaccepted redefined tables: ${unaccepted:-(none)}
-  other drift signals:
-$(echo "$non_redefine_drift" | sed 's/^/    /')
-
-Fix one of these:
-  1. Generate a migration:
-       cd web && npx prisma migrate dev --name <descriptive-name>
-     and commit the new prisma/migrations/* directory.
-  2. If the drift is intentional and cosmetic-only, document it in
-     claw/lessons/arch_cosmetic-prisma-drift-accepted-20260512.md and
-     extend ACCEPTED_DRIFT_TABLES in .github/workflows/pr-checks.yml
-     with the same table name.
-
-NEVER paper over the drift on production with \`prisma db push\` — see
-claw/lessons/arch_release-packages-pnpm-changesets-20260512.md for why.
-EOF
+            # Print as a single grouped block so it shows up cleanly
+            # in the Actions UI alongside the diff_output above.
+            echo "::error::schema.prisma diverges from prisma/migrations/ in a way not covered by the accepted-drift list. See claw/lessons/arch_cosmetic-prisma-drift-accepted-20260512.md and arch_release-packages-pnpm-changesets-20260512.md."
+            echo ""
+            echo "New drift in this PR:"
+            echo "  unaccepted redefined tables: ${unaccepted:-(none)}"
+            echo "  other drift signals:"
+            echo "$non_redefine_drift" | sed 's/^/    /'
+            echo ""
+            echo "Fix one of these:"
+            echo "  1. Generate a migration:"
+            echo "       cd web && npx prisma migrate dev --name <descriptive-name>"
+            echo "     and commit the new prisma/migrations/* directory."
+            echo "  2. If drift is intentional + cosmetic-only, document it in"
+            echo "     claw/lessons/arch_cosmetic-prisma-drift-accepted-20260512.md"
+            echo "     and extend ACCEPTED_DRIFT_TABLES in .github/workflows/pr-checks.yml."
+            echo ""
+            echo "NEVER paper over the drift on production with 'prisma db push'."
             exit 1
           fi
 
@@ -223,25 +218,20 @@ EOF
           touched='${{ steps.detect.outputs.touched_published }}'
           changesets='${{ steps.detect.outputs.new_changesets }}'
           if [[ -n "$touched" && -z "$changesets" ]]; then
-            cat <<'EOF'
-
-::error::This PR modifies a published package (cli/ or modules/*) but
-does not include a `.changeset/*.md` file. The release workflow
-auto-generates the public CHANGELOG from changesets — without one your
-change ships in the next release with NO release-notes entry, exactly
-the way 20+ commits silently slipped past in 0.3.0.
-
-Fix:
-  npm run changeset
-  # follow the prompts, pick patch/minor/major, write a one-paragraph
-  # release-notes blurb, and commit the generated .changeset/*.md.
-
-If this PR is genuinely release-neutral (e.g. docs-only inside cli/,
-test-only changes, internal refactor with no behavior change), add a
-changeset with `patch` bump and leave the body empty, OR document the
-exemption in the PR description and use the bypass label
-`skip-changeset` (admin only).
-EOF
+            echo "::error::This PR modifies a published package (cli/ or modules/*) but does not include a .changeset/*.md file. Run 'npm run changeset' and commit the result. See claw/lessons/arch_release-packages-pnpm-changesets-20260512.md."
+            echo ""
+            echo "The release workflow auto-generates the public CHANGELOG from changesets."
+            echo "Without one, your change ships in the next release with NO release-notes entry,"
+            echo "exactly the way 20+ commits silently slipped past in 0.3.0."
+            echo ""
+            echo "Fix:"
+            echo "  npm run changeset"
+            echo "  # follow the prompts, pick patch/minor/major, write a one-paragraph"
+            echo "  # release-notes blurb, and commit the generated .changeset/*.md."
+            echo ""
+            echo "If this PR is genuinely release-neutral (docs-only, test-only,"
+            echo "internal refactor with no behavior change), add a changeset with 'patch'"
+            echo "bump and leave the body empty."
             exit 1
           fi
           echo "OK: either no published-package change, or a changeset is present."
@@ -284,25 +274,16 @@ EOF
           done
 
           if [[ -n "$bad_files" ]]; then
-            cat <<'EOF'
-
-::error::A changeset file in this PR tells operators to run `db push`.
-Production deploys use `prisma migrate deploy`, which only replays
-migration files — `db push` bypasses migrations and leaves the prod DB
-inconsistent with the migrations table.
-
-Fix:
-  1. Generate a proper migration:
-       cd web && npx prisma migrate dev --name <descriptive-name>
-  2. Edit the changeset to describe the schema change WITHOUT the
-     `db push` instruction. The deploy SOP already runs migrate
-     deploy automatically; consumers don't need any extra step.
-
-The 0.3.0 release shipped a changeset with this exact bad advice and
-created a real volc DB drift that took a manual `prisma migrate
-resolve` to clean up. See
-claw/lessons/arch_release-packages-pnpm-changesets-20260512.md.
-EOF
+            echo "::error::A changeset file in this PR tells operators to run 'db push'. Production deploys use 'prisma migrate deploy' which only replays migrations. 'db push' bypasses the migrations table and creates drift. See claw/lessons/arch_release-packages-pnpm-changesets-20260512.md."
+            echo ""
+            echo "Bad changeset file(s):$bad_files"
+            echo ""
+            echo "Fix:"
+            echo "  1. Generate a proper migration:"
+            echo "       cd web && npx prisma migrate dev --name <descriptive-name>"
+            echo "  2. Edit the changeset to describe the schema change WITHOUT the"
+            echo "     'db push' instruction. The deploy SOP already runs migrate"
+            echo "     deploy automatically; consumers don't need any extra step."
             exit 1
           fi
-          echo "OK: no `db push` instructions in touched changesets."
+          echo "OK: no 'db push' instructions in touched changesets."

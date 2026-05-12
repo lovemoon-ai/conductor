@@ -52,17 +52,10 @@ jobs:
           # note that must be resolved before shipping.
           notes=$(find claw/notes-before-release -mindepth 1 -maxdepth 1 -type f -name '*.md' ! -name README.md 2>/dev/null || true)
           if [[ -n "$notes" ]]; then
-            cat <<EOF
-
-::error::claw/notes-before-release/ is non-empty. The release SOP
-treats this as a hard gate. Resolve every item, then either:
-  - tick all checkboxes and delete the file, or
-  - promote it to claw/lessons/ or claw/issues/ with an explicit
-    accept rationale.
-
-Open notes blocking this release:
-$notes
-EOF
+            echo "::error::claw/notes-before-release/ is non-empty. The release SOP treats this as a hard gate."
+            echo "Open notes blocking this release:"
+            echo "$notes"
+            echo "Resolve each item, then either tick all checkboxes and delete the file, or promote it to claw/lessons/ or claw/issues/ with an explicit accept rationale."
             exit 1
           fi
           echo "OK: claw/notes-before-release/ contains only README.md."
