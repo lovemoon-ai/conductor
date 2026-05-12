@@ -156,15 +156,12 @@ export async function PATCH(
     binding.fileCount !== null;
   const hasBindingField = hasBindingIdentityField || hasSnapshotField;
 
-  let metadata: string | null | undefined;
-  if (metadataInput.hasField) {
-    metadata =
-      metadataInput.value === null
-        ? null
-        : metadataInput.value === undefined
-          ? undefined
-          : JSON.stringify(metadataInput.value);
-  }
+  // Use the pre-serialized string from the validator so the bytes we store
+  // match the bytes we size-checked. Anything that survives `error` handling
+  // above is either `null` (clear) or a non-null serialized object.
+  const metadata: string | null | undefined = metadataInput.hasField
+    ? metadataInput.serialized
+    : undefined;
 
   if (!name && metadata === undefined && !hasBindingField) {
     return NextResponse.json({ error: "No fields to update" }, { status: 400 });

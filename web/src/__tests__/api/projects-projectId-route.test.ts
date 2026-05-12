@@ -195,6 +195,130 @@ describe("/api/projects/[projectId]", () => {
       expect(data.error).toBe("metadata must be an object or null");
     });
 
+    it("persists and serializes metadata.memos round-trip", async () => {
+      // Locks in the project-memo feature's storage contract: the dialog
+      // sends `metadata: { memos: [...] }` and expects the same shape back so
+      // the timeline renders without a refetch.
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-1",
+        name: "Memo Project",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/memo",
+      } as any);
+      vi.mocked(db.project.updateMany).mockResolvedValue({ count: 1 } as any);
+      const storedMemos = [
+        { id: "m1", content: "first", createdAt: "2026-05-01T08:00:00.000Z" },
+        { id: "m2", content: "second", createdAt: "2026-05-02T08:00:00.000Z" },
+      ];
+      vi.mocked(db.project.findUnique).mockResolvedValue({
+        id: "proj-1",
+        name: "Memo Project",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/memo",
+        repoRoot: null,
+        worktreeBranch: null,
+        lastCommit: null,
+        fileCount: null,
+        metadata: JSON.stringify({ memos: storedMemos }),
+        createdAt: new Date("2026-05-01"),
+        updatedAt: new Date("2026-05-02"),
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        body: { metadata: { memos: storedMemos } },
+      });
+      const response = await PATCH(request, { params: Promise.resolve({ projectId: "proj-1" }) });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      // The server should serialize the JSON before writing so we can verify
+      // the column value rather than rely on Prisma's type coercion.
+      expect(db.project.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            metadata: JSON.stringify({ memos: storedMemos }),
+          }),
+        }),
+      );
+      // And the response surfaces the parsed metadata so the client can render
+      // the timeline without another fetch.
+      expect(data.metadata).toEqual({ memos: storedMemos });
+    });
+
+    it("rejects multibyte metadata payloads whose UTF-8 size exceeds the cap", async () => {
+      // Regression guard for the byte-vs-char trap: a CJK char encodes to
+      // 3 UTF-8 bytes. With UTF-16-only accounting this payload (~100K chars
+      // ≈ 300 KB UTF-8) would silently slip past the documented 256 KiB cap.
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-1",
+        name: "Big Project",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/big",
+      } as any);
+
+      const token = createTestToken("user-1");
+      const cjkContent = "笔".repeat(100 * 1024);
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        body: {
+          metadata: {
+            memos: [
+              { id: "cjk", content: cjkContent, createdAt: "2026-05-01T00:00:00.000Z" },
+            ],
+          },
+        },
+      });
+      const response = await PATCH(request, { params: Promise.resolve({ projectId: "proj-1" }) });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(400);
+      expect(data.error).toMatch(/metadata exceeds/);
+      expect(db.project.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("rejects metadata payloads exceeding the size cap", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-1",
+        name: "Big Project",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/big",
+      } as any);
+
+      const token = createTestToken("user-1");
+      // 300 KiB of "a"s in a single memo — comfortably over the 256 KiB cap.
+      const oversizedContent = "a".repeat(300 * 1024);
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        body: {
+          metadata: {
+            memos: [{ id: "big", content: oversizedContent, createdAt: "2026-05-01T00:00:00.000Z" }],
+          },
+        },
+      });
+      const response = await PATCH(request, { params: Promise.resolve({ projectId: "proj-1" }) });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(400);
+      expect(data.error).toMatch(/metadata exceeds/);
+      // The guard must short-circuit before the DB call so a malicious payload
+      // cannot bloat the row.
+      expect(db.project.updateMany).not.toHaveBeenCalled();
+    });
+
     it("should reject binding to a workspace that already belongs to another project", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);

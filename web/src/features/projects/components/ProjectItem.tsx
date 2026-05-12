@@ -8,7 +8,6 @@ import type {
   SyntheticEvent,
   TouchEvent as ReactTouchEvent,
 } from 'react';
-import { useRouter } from 'next/navigation';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Project } from '@/shared/types';
@@ -17,6 +16,7 @@ import { useAgentsStore } from '@/features/agents';
 import { useSwipeActions } from '@/shared/hooks/useSwipeActions';
 import { formatBindingLabel } from '../utils/format-binding-label';
 import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
+import { ProjectDetailsDialog } from './ProjectDetailsDialog';
 
 interface ProjectItemProps {
   project: Project;
@@ -131,8 +131,8 @@ export function ProjectItem({
 }: ProjectItemProps) {
   const groupMembers = mergedMembers && mergedMembers.length > 0 ? mergedMembers : [project];
   const isMergedGroup = groupMembers.length > 1;
-  const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [editName, setEditName] = useState(project.name);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressStartXRef = useRef(0);
@@ -234,29 +234,14 @@ export function ProjectItem({
     onSelect?.(project.id);
   };
 
-  const openProjectTasks = () => {
+  const openProjectDetails = () => {
     if (isEditing) {
       return;
     }
-    if (isPendingBinding) {
-      pushToast({
-        title: 'Binding pending',
-        description: pendingBindingLabel
-          ? `Waiting for daemon confirmation for ${pendingBindingLabel}.`
-          : 'Waiting for daemon confirmation before opening tasks.',
-        variant: 'warning',
-      });
-      return;
-    }
-    if (isUnavailable) {
-      pushToast({
-        title: 'Daemon offline',
-        description: `This project is bound to ${daemonHost}, but the daemon is offline. Reconnect it to open this workspace.`,
-        variant: 'warning',
-      });
-      return;
-    }
-    router.push(`/app/tasks?projectId=${encodeURIComponent(project.id)}`);
+    // Details show metadata only (incl. the memo timeline), so a pending or
+    // offline daemon should not block opening the dialog — the toasts that
+    // previously gated the tasks navigation are intentionally dropped.
+    setIsDetailsOpen(true);
   };
 
   const handleRename = async () => {
@@ -652,7 +637,7 @@ export function ProjectItem({
           }
           selectProject();
         }}
-        onDoubleClick={openProjectTasks}
+        onDoubleClick={openProjectDetails}
         className={`webapp-card relative z-10 cursor-pointer px-4 pb-4 pt-4 transition-colors hover:border-[var(--accent)] ${
           isSelected ? 'webapp-card-list-pane-active' : 'webapp-card-list-pane-idle'
         } ${isUnavailable || isPendingBinding ? 'opacity-70' : ''}`}
@@ -823,6 +808,18 @@ export function ProjectItem({
         </div>
       </div>
       </div>
+      {isDetailsOpen ? (
+        // Lazy-mount the dialog so its inner content (which mirrors several
+        // chips already on the card — daemon host, name, etc.) doesn't sit in
+        // the DOM while closed. Keeping it mounted breaks Testing Library
+        // queries like `getByText('daemon-a')` that expect a single match.
+        <ProjectDetailsDialog
+          open
+          project={project}
+          mergedMembers={isMergedGroup ? groupMembers : undefined}
+          onClose={() => setIsDetailsOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

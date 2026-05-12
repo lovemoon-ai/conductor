@@ -554,15 +554,11 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     refreshRequested = rawRefresh;
   }
 
-  let metadata: string | null | undefined;
-  if (metadataInput.hasField) {
-    metadata =
-      metadataInput.value === null
-        ? null
-        : metadataInput.value === undefined
-          ? undefined
-          : JSON.stringify(metadataInput.value);
-  }
+  // Use the pre-serialized string from the validator so the bytes we store
+  // match the bytes we size-checked.
+  const metadata: string | null | undefined = metadataInput.hasField
+    ? metadataInput.serialized
+    : undefined;
 
   const hasBindingIdentityField = binding.daemonHost !== null || binding.workspacePath !== null;
   const hasSnapshotField =

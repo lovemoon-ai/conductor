@@ -169,23 +169,85 @@ const readProjectBindingInput = (body: Record<string, unknown>) => {
   };
 };
 
-const readProjectMetadataInput = (body: Record<string, unknown>): {
+/**
+ * Hard cap on the serialized size of `Project.metadata`, measured in UTF-8
+ * bytes (the encoding SQLite uses for TEXT). The column is technically
+ * unbounded, but accepting unlimited payloads makes the row easy to abuse —
+ * e.g. the memo timeline introduced by the project details dialog writes
+ * user-authored text straight into this field. 256 KiB leaves plenty of room
+ * for hundreds of memos plus existing keys like `bindingCandidate` while
+ * keeping the row small enough that listing endpoints stay fast and the JSON
+ * parser does not have to scan megabytes. Multi-byte characters (e.g. CJK
+ * scripts in memo content) are charged at their UTF-8 cost so the limit is
+ * not silently larger for non-ASCII users.
+ */
+const MAX_PROJECT_METADATA_BYTES = 256 * 1024;
+
+/**
+ * Result of validating a metadata payload. `error` is set when the input is
+ * invalid; both `value` and `serialized` carry the canonical representation
+ * the caller should hand to the DB on the happy path. Kept as a single shape
+ * (not a discriminated union) so callers can use a simple
+ * `if (result.error) return` pattern without narrowing helpers.
+ */
+type ReadMetadataInputResult = {
   hasField: boolean;
   value: Record<string, unknown> | null | undefined;
+  serialized: string | null | undefined;
   error?: string;
-} => {
+};
+
+const readProjectMetadataInput = (body: Record<string, unknown>): ReadMetadataInputResult => {
   if (!hasOwn(body, "metadata")) {
-    return { hasField: false, value: undefined };
+    return { hasField: false, value: undefined, serialized: undefined };
   }
 
   const raw = body.metadata;
   if (raw === null) {
-    return { hasField: true, value: null };
+    return { hasField: true, value: null, serialized: null };
   }
   if (typeof raw !== "object" || Array.isArray(raw)) {
-    return { hasField: true, value: undefined, error: "metadata must be an object or null" };
+    return {
+      hasField: true,
+      value: undefined,
+      serialized: undefined,
+      error: "metadata must be an object or null",
+    };
   }
-  return { hasField: true, value: raw as Record<string, unknown> };
+
+  // Serialize once here and return the string so callers writing to the DB
+  // do not need a second JSON.stringify pass. The validator owns the canonical
+  // representation that the size guard checks against, so we cannot drift
+  // between "what we measured" and "what we store".
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(raw);
+  } catch {
+    return {
+      hasField: true,
+      value: undefined,
+      serialized: undefined,
+      error: "metadata is not JSON-serializable",
+    };
+  }
+  // `Buffer.byteLength` counts UTF-8 bytes (1 for ASCII, 3 for most CJK,
+  // 4 for surrogate-pair emoji). `string.length` would under-count CJK so
+  // we'd accept rows up to ~3× the documented cap before rejecting.
+  const byteLength = Buffer.byteLength(serialized, "utf8");
+  if (byteLength > MAX_PROJECT_METADATA_BYTES) {
+    return {
+      hasField: true,
+      value: undefined,
+      serialized: undefined,
+      error: `metadata exceeds the ${Math.floor(MAX_PROJECT_METADATA_BYTES / 1024)} KiB limit`,
+    };
+  }
+
+  return {
+    hasField: true,
+    value: raw as Record<string, unknown>,
+    serialized,
+  };
 };
 
 const isBindingConfirmed = (body: Record<string, unknown>): boolean =>
@@ -398,4 +460,5 @@ export {
   PROJECT_SERIALIZATION_WITH_SORT_NO_HIDDEN_SELECT,
   compareProjectsForDisplay,
   serializeProject,
+  MAX_PROJECT_METADATA_BYTES,
 };
