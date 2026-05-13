@@ -11,7 +11,7 @@
   "scripts": {
     "changeset": "changeset",
     "release:status": "node ./scripts/release-packages.mjs status",
-    "release:version": "changeset version",
+    "release:version": "changeset version && node ./scripts/sync-root-changelog.mjs",
     "release:verify": "bash ./scripts/release-verify.sh",
     "release:publish": "node ./scripts/release-packages.mjs publish",
     "release:dispatch-cli-archive": "bash ./scripts/dispatch-cli-release-archive.sh"
