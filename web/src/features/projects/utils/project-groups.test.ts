@@ -43,32 +43,82 @@ describe('canMergeProjects', () => {
   });
 
   it('refuses to merge projects with different git remote URLs', () => {
-    const a = baseProject({ id: 'a', gitRemoteUrl: 'github.com/owner/repo' });
-    const b = baseProject({ id: 'b', gitRemoteUrl: 'github.com/forker/repo' });
+    const a = baseProject({
+      id: 'a',
+      daemonHost: 'daemon-a',
+      gitRemoteUrl: 'github.com/owner/repo',
+    });
+    const b = baseProject({
+      id: 'b',
+      daemonHost: 'daemon-b',
+      gitRemoteUrl: 'github.com/forker/repo',
+    });
     expect(canMergeProjects(a, b)).toBe(false);
   });
 
-  it('refuses to merge non-git projects (no repoRoot) even when names match', () => {
-    const a = baseProject({ id: 'p-a', repoRoot: null, gitRemoteUrl: null });
-    const b = baseProject({ id: 'p-b', repoRoot: null, gitRemoteUrl: null });
+  it('merges non-git projects when name and daemonHost differ', () => {
+    // Relaxed in 2026-05: non-git workspaces (scratch dirs, projects whose
+    // first snapshot happened while git was unavailable) are now merged on
+    // name + distinct daemonHost. Users opt out per row if a false positive
+    // shows up.
+    const a = baseProject({
+      id: 'p-a',
+      daemonHost: 'daemon-a',
+      repoRoot: null,
+      gitRemoteUrl: null,
+    });
+    const b = baseProject({
+      id: 'p-b',
+      daemonHost: 'daemon-b',
+      repoRoot: null,
+      gitRemoteUrl: null,
+    });
+    expect(canMergeProjects(a, b)).toBe(true);
+  });
+
+  it('merges a git project with a non-git project sharing the same name', () => {
+    const a = baseProject({ id: 'p-a', daemonHost: 'daemon-a' });
+    const b = baseProject({
+      id: 'p-b',
+      daemonHost: 'daemon-b',
+      repoRoot: null,
+      gitRemoteUrl: null,
+    });
+    expect(canMergeProjects(a, b)).toBe(true);
+  });
+
+  it('merges when one side has gitRemoteUrl and the other does not (legacy data)', () => {
+    // The backfill in `web/src/lib/projects/backfill.ts` will fill in the
+    // null side on the next daemon reconnect; until then we trust the
+    // name + daemonHost pairing.
+    const a = baseProject({ id: 'p-a', daemonHost: 'daemon-a' });
+    const b = baseProject({
+      id: 'p-b',
+      daemonHost: 'daemon-b',
+      gitRemoteUrl: null,
+    });
+    expect(canMergeProjects(a, b)).toBe(true);
+  });
+
+  it('refuses to merge same-name rows on the same daemon (data anomaly)', () => {
+    const a = baseProject({ id: 'p-a', daemonHost: 'daemon-a' });
+    const b = baseProject({ id: 'p-b', daemonHost: 'daemon-a' });
     expect(canMergeProjects(a, b)).toBe(false);
   });
 
-  it('refuses to merge a git project with a non-git project', () => {
-    const a = baseProject({ id: 'p-a' });
-    const b = baseProject({ id: 'p-b', repoRoot: null, gitRemoteUrl: null });
-    expect(canMergeProjects(a, b)).toBe(false);
-  });
-
-  it('refuses to merge when one side has no gitRemoteUrl (legacy data)', () => {
-    const a = baseProject({ id: 'p-a' });
-    const b = baseProject({ id: 'p-b', gitRemoteUrl: null });
+  it('refuses to merge when either side has no daemonHost', () => {
+    const a = baseProject({ id: 'p-a', daemonHost: 'daemon-a' });
+    const b = baseProject({ id: 'p-b', daemonHost: null });
     expect(canMergeProjects(a, b)).toBe(false);
   });
 
   it('refuses to merge when either side has mergeOptOut set', () => {
-    const a = baseProject({ id: 'a' });
-    const b = baseProject({ id: 'b', mergeOptOut: true });
+    const a = baseProject({ id: 'a', daemonHost: 'daemon-a' });
+    const b = baseProject({
+      id: 'b',
+      daemonHost: 'daemon-b',
+      mergeOptOut: true,
+    });
     expect(canMergeProjects(a, b)).toBe(false);
   });
 });
@@ -95,14 +145,25 @@ describe('computeProjectGroups', () => {
     expect(groups.every((g) => !g.isMerged)).toBe(true);
   });
 
-  it('keeps non-git projects as their own single-member groups', () => {
+  it('merges non-git same-name projects across different daemons', () => {
     const projects = [
-      baseProject({ id: 'p-a', repoRoot: null, gitRemoteUrl: null }),
-      baseProject({ id: 'p-b', repoRoot: null, gitRemoteUrl: null, daemonHost: 'daemon-b' }),
+      baseProject({
+        id: 'p-a',
+        daemonHost: 'daemon-a',
+        repoRoot: null,
+        gitRemoteUrl: null,
+      }),
+      baseProject({
+        id: 'p-b',
+        daemonHost: 'daemon-b',
+        repoRoot: null,
+        gitRemoteUrl: null,
+      }),
     ];
     const groups = computeProjectGroups(projects);
-    expect(groups).toHaveLength(2);
-    expect(groups.every((g) => !g.isMerged)).toBe(true);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].isMerged).toBe(true);
+    expect(groups[0].members.map((m) => m.id)).toEqual(['p-a', 'p-b']);
   });
 
   it('uses the project id as the group key for single-member groups', () => {
