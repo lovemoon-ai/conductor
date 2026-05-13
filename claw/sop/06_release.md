@@ -71,9 +71,27 @@ No changeset is needed for:
 ## Automated npm Release Flow
 
 1. Merge a feature PR that includes one or more changesets.
-2. The `Release Packages` workflow opens or updates a `version packages` PR.
+2. The `Release Packages` workflow pushes the version-bump commit to
+   `changeset-release/main` and **attempts** to open a `version packages` PR.
+   - **Caveat**: the `lovemoon-ai` org currently has
+     `default_workflow_permissions: read` set at the org level (see
+     `gh api orgs/lovemoon-ai/actions/permissions/workflow`), so the
+     `changesets/action@v1` step's PR-creation API call returns 403 and
+     the workflow itself is marked `failure` **even though the branch
+     was updated correctly**. This is benign as far as the version
+     bumps go; the failure is just the missing PR.
+   - **Workaround until an org admin lifts the policy**: after the
+     workflow run completes (even if red), open the PR manually:
+     ```sh
+     gh pr create -R lovemoon-ai/conductor \
+       --base main --head changeset-release/main \
+       --title "version packages" \
+       --body "<copy from cli/CHANGELOG.md's top entry>"
+     ```
 3. Review the generated package versions and package-level changelogs.
-4. Merge the `version packages` PR.
+4. Merge the `version packages` PR. (Or, if you're confident, fast-forward
+   merge `changeset-release/main` into `main` from the CLI — the 0.3.0
+   release skipped the PR review this way; see commit `3fdecee`.)
 5. The `Release Packages` workflow publishes only package versions that are not
    already present on `registry.npmjs.org`.
 6. If `@love-moon/conductor-cli` was published, the workflow creates/preserves
