@@ -1,6 +1,6 @@
 {
   "name": "@love-moon/ai-manager",
-  "version": "0.2.42",
+  "version": "0.3.1",
   "description": "Manage local AI CLI tools (codex, claude, kimi, copilot): install/network health, quota, and codex account switching",
   "repository": {
     "type": "git",
