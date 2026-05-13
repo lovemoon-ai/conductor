@@ -198,6 +198,7 @@ function IssueCardBody({
   const linkedTask = issue.linkedTask ?? activeTask;
   const openTask = activeTask ?? linkedTask;
   const hasHistoricalLinkedTask = !activeTask && Boolean(linkedTask);
+  const showOwnerBadge = (ownerOptions?.length ?? 0) > 1;
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const deleteActionRef = useRef<HTMLButtonElement>(null);
@@ -266,7 +267,7 @@ function IssueCardBody({
           >
             {issue.title}
           </h3>
-          <IssueOwnerBadge issue={issue} ownerOptions={ownerOptions} />
+          {showOwnerBadge ? <IssueOwnerBadge issue={issue} ownerOptions={ownerOptions} /> : null}
           {interactive ? (
             <IssueStatusMenu issue={issue} onStatusChange={onStatusChange} disabled={statusMenuDisabled} />
           ) : (
@@ -407,6 +408,12 @@ export function IssueCard({
   );
 }
 
-export function IssueCardOverlay({ issue }: { issue: Issue }) {
-  return <IssueCardBody issue={issue} elevated interactive={false} />;
+export function IssueCardOverlay({
+  issue,
+  ownerOptions,
+}: {
+  issue: Issue;
+  ownerOptions?: IssueOwnerOption[];
+}) {
+  return <IssueCardBody issue={issue} ownerOptions={ownerOptions} elevated interactive={false} />;
 }

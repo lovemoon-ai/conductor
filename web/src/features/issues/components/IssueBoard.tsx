@@ -99,6 +99,7 @@ export function IssueBoard({
       ?? Object.values(columns).flat().find((issue) => issue.id === activeIssueId)
       ?? null;
   }, [activeIssueId, columns, issues]);
+  const activeOwnerOptions = activeIssue ? ownerOptionsByProjectId?.get(activeIssue.projectId) : undefined;
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
     setActiveIssueId(String(event.active.id));
@@ -196,7 +197,7 @@ export function IssueBoard({
       </div>
 
       <DragOverlay>
-        {activeIssue ? <IssueCardOverlay issue={activeIssue} /> : null}
+        {activeIssue ? <IssueCardOverlay issue={activeIssue} ownerOptions={activeOwnerOptions} /> : null}
       </DragOverlay>
 
       <IssueDetailsDialog

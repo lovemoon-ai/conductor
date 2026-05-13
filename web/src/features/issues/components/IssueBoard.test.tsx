@@ -186,6 +186,36 @@ describe('IssueBoard', () => {
     expect(screen.queryByRole('button', { name: 'Assign Plan board UX to +8618707151526' })).toBeNull();
   });
 
+  it('hides owner info on cards when the project has one member', () => {
+    const ownedIssues: Issue[] = [
+      {
+        ...issues[0],
+        ownerUserId: 'user-1',
+        owner: {
+          id: 'user-1',
+          label: '+8618707151525',
+        },
+      },
+    ];
+    const ownerOptionsByProjectId = new Map([
+      ['project-1', [
+        { userId: 'user-1', label: '+8618707151525', projectName: 'Project One' },
+      ]],
+    ]);
+
+    render(
+      <IssueBoard
+        issues={ownedIssues}
+        ownerOptionsByProjectId={ownerOptionsByProjectId}
+        onMoveIssue={onMoveIssue}
+        onStatusChange={onStatusChange}
+        onDeleteIssue={onDeleteIssue}
+      />,
+    );
+
+    expect(screen.queryByLabelText('Issue owner +8618707151525')).toBeNull();
+  });
+
   it('keeps status updates enabled when dragging is disabled', async () => {
     render(
       <IssueBoard
