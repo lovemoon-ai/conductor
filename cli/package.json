@@ -12,7 +12,8 @@
   },
   "files": [
     "bin",
-    "src"
+    "src",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public",
