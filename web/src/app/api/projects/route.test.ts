@@ -418,6 +418,8 @@ describe("/api/projects", () => {
         repoRoot: "/Users/duo/ws/conductor-real",
         worktreeBranch: "main",
         lastCommit: "abc123",
+        lastCommitAt: "2026-05-12T14:30:00.000Z",
+        gitRemoteUrl: null,
         fileCount: 42,
         metadata: null,
         createdAt: new Date("2024-01-02"),
@@ -431,6 +433,8 @@ describe("/api/projects", () => {
         repoRoot: "/Users/duo/ws/conductor-real",
         worktreeBranch: "main",
         lastCommit: "abc123",
+        lastCommitAt: "2026-05-12T14:30:00.000Z",
+        gitRemoteUrl: null,
         fileCount: 42,
       });
       vi.mocked(db.project.create).mockResolvedValue(mockProject);
@@ -463,6 +467,7 @@ describe("/api/projects", () => {
           repoRoot: "/Users/duo/ws/conductor-real",
           worktreeBranch: "main",
           lastCommit: "abc123",
+          lastCommitAt: "2026-05-12T14:30:00.000Z",
           fileCount: 42,
           metadata: undefined,
         }),
@@ -1384,6 +1389,7 @@ describe("/api/projects", () => {
         repoRoot: "/repo",
         worktreeBranch: "main",
         lastCommit: "fresh-commit",
+        lastCommitAt: "2026-05-12T14:30:00.000Z",
         gitRemoteUrl: "github.com/foo/bar",
         fileCount: 12,
       });
@@ -1397,6 +1403,7 @@ describe("/api/projects", () => {
         repoRoot: "/repo",
         worktreeBranch: "main",
         lastCommit: "fresh-commit",
+        lastCommitAt: new Date("2026-05-12T14:30:00.000Z"),
         gitRemoteUrl: "github.com/foo/bar",
         fileCount: 12,
         hiddenAt: null,
@@ -1430,12 +1437,14 @@ describe("/api/projects", () => {
         expect.objectContaining({
           data: expect.objectContaining({
             lastCommit: "fresh-commit",
+            lastCommitAt: "2026-05-12T14:30:00.000Z",
             gitRemoteUrl: "github.com/foo/bar",
             fileCount: 12,
           }),
         }),
       );
       expect(data.lastCommit).toBe("fresh-commit");
+      expect(data.lastCommitAt).toBe("2026-05-12T14:30:00.000Z");
       expect(data.gitRemoteUrl).toBe("github.com/foo/bar");
     });
 

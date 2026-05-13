@@ -94,6 +94,7 @@ model Project {
   repoRoot       String?  @map("repo_root")
   worktreeBranch String?  @map("worktree_branch")
   lastCommit     String?  @map("last_commit")
+  lastCommitAt   DateTime? @map("last_commit_at")
   fileCount      Int?     @map("file_count")
   sortOrder      Int      @default(0) @map("sort_order")
   collaborationId String? @map("collaboration_id") @db.Uuid

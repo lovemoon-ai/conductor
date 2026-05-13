@@ -731,6 +731,7 @@ export class ConductorClient {
       repoRoot: snapshot.repoRoot,
       worktreeBranch: snapshot.worktreeBranch,
       lastCommit: snapshot.lastCommit,
+      lastCommitAt: snapshot.lastCommitAt,
       fileCount: snapshot.fileCount,
     });
     return {
@@ -743,6 +744,7 @@ export class ConductorClient {
       repo_root: snapshot.repoRoot ?? null,
       worktree_branch: snapshot.worktreeBranch ?? null,
       last_commit: snapshot.lastCommit ?? null,
+      last_commit_at: snapshot.lastCommitAt ?? null,
       file_count: snapshot.fileCount ?? null,
     };
   }

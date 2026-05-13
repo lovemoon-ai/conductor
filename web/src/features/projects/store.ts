@@ -240,6 +240,7 @@ export const normalizeProject = (raw: unknown): Project | null => {
     repoRoot: pickString(record.repoRoot) ?? pickString(record.repo_root),
     worktreeBranch: pickString(record.worktreeBranch) ?? pickString(record.worktree_branch),
     lastCommit: pickString(record.lastCommit) ?? pickString(record.last_commit),
+    lastCommitAt: pickString(record.lastCommitAt) ?? pickString(record.last_commit_at),
     gitRemoteUrl: pickString(record.gitRemoteUrl) ?? pickString(record.git_remote_url),
     fileCount: pickInt(record.fileCount) ?? pickInt(record.file_count),
     sortOrder: pickInt(record.sortOrder) ?? pickInt(record.sort_order) ?? null,

@@ -64,6 +64,9 @@ describe('ProjectContext', () => {
     const ctx = new ProjectContext(dir);
     const snapshot = ctx.snapshot();
     const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, env: gitEnv() }).toString().trim();
+    const committedAt = execFileSync('git', ['show', '-s', '--format=%cI', 'HEAD'], { cwd: dir, env: gitEnv() })
+      .toString()
+      .trim();
     const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, env: gitEnv() })
       .toString()
       .trim();
@@ -74,6 +77,7 @@ describe('ProjectContext', () => {
       .filter(Boolean);
     expect(snapshot.repoRoot).toBe(fs.realpathSync(dir));
     expect(snapshot.lastCommit).toBe(head);
+    expect(snapshot.lastCommitAt).toBe(committedAt);
     if (branch === 'HEAD') {
       expect(snapshot.worktreeBranch).toBeUndefined();
     } else {

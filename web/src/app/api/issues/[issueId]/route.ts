@@ -59,6 +59,7 @@ const issueWithProjectSelect = {
       repoRoot: true,
       worktreeBranch: true,
       lastCommit: true,
+      lastCommitAt: true,
     },
   },
 };

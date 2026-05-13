@@ -28,6 +28,7 @@ export type ValidatedProjectBinding = {
   repoRoot: string | null;
   worktreeBranch: string | null;
   lastCommit: string | null;
+  lastCommitAt: string | null;
   gitRemoteUrl: string | null;
   fileCount: number | null;
 };
@@ -115,6 +116,7 @@ export async function validateProjectBindingWithDaemon(params: {
     repoRoot: result.repo_root,
     worktreeBranch: result.worktree_branch,
     lastCommit: result.last_commit,
+    lastCommitAt: result.last_commit_at,
     gitRemoteUrl: result.git_remote_url ?? null,
     fileCount: result.file_count,
   };

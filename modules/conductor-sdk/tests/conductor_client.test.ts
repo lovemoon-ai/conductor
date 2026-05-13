@@ -27,6 +27,7 @@ class FakeBackendApi {
     repoRoot?: string;
     worktreeBranch?: string;
     lastCommit?: string;
+    lastCommitAt?: string;
     fileCount?: number;
   }> = [];
   tasks: Array<{
@@ -106,6 +107,7 @@ class FakeBackendApi {
     repoRoot?: string;
     worktreeBranch?: string;
     lastCommit?: string;
+    lastCommitAt?: string;
     fileCount?: number;
   }) {
     const project = {
@@ -117,6 +119,7 @@ class FakeBackendApi {
       repoRoot: params.repoRoot,
       worktreeBranch: params.worktreeBranch,
       lastCommit: params.lastCommit,
+      lastCommitAt: params.lastCommitAt,
       fileCount: params.fileCount,
       asObject() {
         return {
@@ -262,6 +265,7 @@ class FakeBackendApi {
     repoRoot?: string;
     worktreeBranch?: string;
     lastCommit?: string;
+    lastCommitAt?: string;
     fileCount?: number;
   }) {
     const project = this.projects.find((item) => item.id === projectId);
@@ -274,6 +278,7 @@ class FakeBackendApi {
     if (params.repoRoot) project.repoRoot = params.repoRoot;
     if (params.worktreeBranch) project.worktreeBranch = params.worktreeBranch;
     if (params.lastCommit) project.lastCommit = params.lastCommit;
+    if (params.lastCommitAt) project.lastCommitAt = params.lastCommitAt;
     if (typeof params.fileCount === 'number') project.fileCount = params.fileCount;
     return {
       id: project.id,

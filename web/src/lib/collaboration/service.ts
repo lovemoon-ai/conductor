@@ -261,6 +261,7 @@ export const getUserProjectForCollaboration = async (
         repoRoot: true,
         worktreeBranch: true,
         lastCommit: true,
+        lastCommitAt: true,
       },
     },
   },

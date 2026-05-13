@@ -37,6 +37,7 @@ describe("validateProjectBindingWithDaemon", () => {
       repo_root: "/repo/alpha-real",
       worktree_branch: "main",
       last_commit: "abc123",
+      last_commit_at: "2026-05-12T14:30:00.000Z",
       file_count: 12,
       error: null,
       error_code: null,
@@ -57,6 +58,7 @@ describe("validateProjectBindingWithDaemon", () => {
       repoRoot: "/repo/alpha-real",
       worktreeBranch: "main",
       lastCommit: "abc123",
+      lastCommitAt: "2026-05-12T14:30:00.000Z",
       gitRemoteUrl: null,
       fileCount: 12,
     });
@@ -81,6 +83,7 @@ describe("validateProjectBindingWithDaemon", () => {
       repo_root: null,
       worktree_branch: null,
       last_commit: null,
+      last_commit_at: null,
       file_count: null,
       error: "Workspace path does not exist on daemon daemon-a: /repo/missing",
       error_code: "workspace_not_found",

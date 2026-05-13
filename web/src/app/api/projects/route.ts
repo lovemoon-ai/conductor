@@ -68,6 +68,7 @@ const findProjectBindingMatch = async (params: {
       repoRoot: true,
       worktreeBranch: true,
       lastCommit: true,
+      lastCommitAt: true,
       fileCount: true,
       metadata: true,
       createdAt: true,
@@ -93,6 +94,7 @@ const findProjectBindingMatch = async (params: {
       repoRoot: true,
       worktreeBranch: true,
       lastCommit: true,
+      lastCommitAt: true,
       fileCount: true,
       metadata: true,
       createdAt: true,
@@ -290,6 +292,7 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
     binding.repoRoot !== null ||
     binding.worktreeBranch !== null ||
     binding.lastCommit !== null ||
+    binding.lastCommitAt !== null ||
     binding.fileCount !== null;
   const hasUnconfirmedBindingFields = hasBindingIdentityField || hasSnapshotField;
   const shouldValidateWithDaemon =
@@ -332,6 +335,7 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
           repoRoot: validatedBinding.repoRoot,
           worktreeBranch: validatedBinding.worktreeBranch,
           lastCommit: validatedBinding.lastCommit,
+          lastCommitAt: validatedBinding.lastCommitAt,
           gitRemoteUrl: validatedBinding.gitRemoteUrl,
           fileCount: validatedBinding.fileCount,
         };
@@ -416,6 +420,7 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
           repoRoot: effectiveBinding.repoRoot ?? undefined,
           worktreeBranch: effectiveBinding.worktreeBranch ?? undefined,
           lastCommit: effectiveBinding.lastCommit ?? undefined,
+          lastCommitAt: effectiveBinding.lastCommitAt ?? undefined,
           gitRemoteUrl: effectiveBinding.gitRemoteUrl ?? undefined,
           fileCount: effectiveBinding.fileCount ?? undefined,
           metadata: metadataInput.hasField ? serializedMetadata : promotedMetadata,
@@ -463,6 +468,7 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
       repoRoot: effectiveBindingConfirmed ? effectiveBinding.repoRoot : null,
       worktreeBranch: effectiveBindingConfirmed ? effectiveBinding.worktreeBranch : null,
       lastCommit: effectiveBindingConfirmed ? effectiveBinding.lastCommit : null,
+      lastCommitAt: effectiveBindingConfirmed ? effectiveBinding.lastCommitAt : null,
       gitRemoteUrl: effectiveBindingConfirmed ? effectiveBinding.gitRemoteUrl ?? null : null,
       fileCount: effectiveBindingConfirmed ? effectiveBinding.fileCount : null,
       metadata: serializedMetadata,
@@ -565,6 +571,7 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     binding.repoRoot !== null ||
     binding.worktreeBranch !== null ||
     binding.lastCommit !== null ||
+    binding.lastCommitAt !== null ||
     binding.fileCount !== null;
   const hasBindingField = hasBindingIdentityField || hasSnapshotField;
 
@@ -600,6 +607,7 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     repoRoot: true,
     worktreeBranch: true,
     lastCommit: true,
+    lastCommitAt: true,
     fileCount: true,
   } as const;
   let existingProject: ({
@@ -609,6 +617,7 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     repoRoot: string | null;
     worktreeBranch: string | null;
     lastCommit: string | null;
+    lastCommitAt: Date | null;
     fileCount: number | null;
     hiddenAt?: Date | null;
   }) | null;
@@ -661,6 +670,7 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     repoRoot: string | null;
     worktreeBranch: string | null;
     lastCommit: string | null;
+    lastCommitAt: string | null;
     gitRemoteUrl: string | null;
     fileCount: number | null;
   } | null = null;
@@ -681,6 +691,7 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
         repoRoot: validated.repoRoot,
         worktreeBranch: validated.worktreeBranch,
         lastCommit: validated.lastCommit,
+        lastCommitAt: validated.lastCommitAt,
         gitRemoteUrl: validated.gitRemoteUrl,
         fileCount: validated.fileCount,
       };
@@ -736,6 +747,9 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
         lastCommit: refreshedSnapshot
           ? refreshedSnapshot.lastCommit
           : binding.lastCommit ?? undefined,
+        lastCommitAt: refreshedSnapshot
+          ? refreshedSnapshot.lastCommitAt
+          : binding.lastCommitAt ?? undefined,
         fileCount: refreshedSnapshot
           ? refreshedSnapshot.fileCount
           : binding.fileCount ?? undefined,

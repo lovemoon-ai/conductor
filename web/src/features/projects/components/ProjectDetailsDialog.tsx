@@ -1,11 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Dialog } from '@/components/common/Dialog';
 import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 import type { Project } from '@/shared/types';
 import { useProjectsStore } from '../store';
-import { formatBindingLabel } from '../utils/format-binding-label';
 
 interface ProjectDetailsDialogProps {
   open: boolean;
@@ -90,6 +89,25 @@ const formatTimestamp = (iso: string | null | undefined): string | null => {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 };
 
+const githubProjectLink = (gitRemoteUrl: string | null | undefined): { label: string; href: string } | null => {
+  if (!gitRemoteUrl) return null;
+  const normalized = gitRemoteUrl
+    .trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/^www\./i, '')
+    .replace(/\.git$/i, '')
+    .replace(/\/+$/, '');
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.length < 3 || parts[0].toLowerCase() !== 'github.com') {
+    return null;
+  }
+  const label = parts.slice(0, 3).join('/');
+  return {
+    label,
+    href: `https://${label}`,
+  };
+};
+
 const generateMemoId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -99,13 +117,15 @@ const generateMemoId = (): string => {
 
 interface DetailRowProps {
   label: string;
-  value: string | null | undefined;
+  value: ReactNode;
 }
 
 const DetailRow = ({ label, value }: DetailRowProps) => (
   <div className="flex items-start gap-3 py-1.5 text-sm">
     <span className="w-28 flex-shrink-0 text-muted">{label}</span>
-    <span className="flex-1 break-all text-ink">{value && value.trim() ? value : '—'}</span>
+    <span className="flex-1 break-all text-ink">
+      {typeof value === 'string' ? (value.trim() ? value : '—') : value ?? '—'}
+    </span>
   </div>
 );
 
@@ -191,9 +211,7 @@ export function ProjectDetailsDialog({
     });
   }, [project]);
 
-  const bindingLabel = project.daemonHost
-    ? formatBindingLabel(project.daemonHost, project.workspacePath ?? null)
-    : null;
+  const githubLink = githubProjectLink(project.gitRemoteUrl);
 
   const draftLength = draft.length;
   const memoCount = memos.length;
@@ -309,13 +327,25 @@ export function ProjectDetailsDialog({
         <section>
           <h3 className="text-sm font-semibold uppercase tracking-wide text-muted">Overview</h3>
           <div className="mt-2 rounded-xl border border-border bg-paper/40 px-4 py-2">
-            <DetailRow label="Name" value={project.name} />
             <DetailRow label="Daemon" value={project.daemonHost ?? null} />
             <DetailRow label="Workspace" value={project.workspacePath ?? null} />
-            <DetailRow label="Repo root" value={project.repoRoot ?? null} />
             <DetailRow label="Branch" value={project.worktreeBranch ?? null} />
-            <DetailRow label="Last commit" value={project.lastCommit ?? null} />
-            {bindingLabel ? <DetailRow label="Binding" value={bindingLabel} /> : null}
+            <DetailRow label="Last commit" value={formatTimestamp(project.lastCommitAt)} />
+            {githubLink ? (
+              <DetailRow
+                label="GitHub"
+                value={(
+                  <a
+                    href={githubLink.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[var(--accent)] underline-offset-2 hover:underline"
+                  >
+                    {githubLink.label}
+                  </a>
+                )}
+              />
+            ) : null}
             <DetailRow label="Created" value={formatTimestamp(project.createdAt)} />
           </div>
         </section>

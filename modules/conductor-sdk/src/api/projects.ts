@@ -20,6 +20,7 @@ export interface Project {
   repoRoot?: string | null;
   worktreeBranch?: string | null;
   lastCommit?: string | null;
+  lastCommitAt?: string | null;
   fileCount?: number | null;
   isDefault: boolean;
   hidden: boolean;
@@ -96,6 +97,7 @@ const normalizeProject = (payload: Record<string, any>): Project => {
     repoRoot: payload.repoRoot ?? payload.repo_root ?? null,
     worktreeBranch: payload.worktreeBranch ?? payload.worktree_branch ?? null,
     lastCommit: payload.lastCommit ?? payload.last_commit ?? null,
+    lastCommitAt: payload.lastCommitAt ?? payload.last_commit_at ?? null,
     fileCount: payload.fileCount ?? payload.file_count ?? null,
     isDefault: Boolean(payload.isDefault ?? payload.is_default ?? false),
     hidden: Boolean(payload.hidden ?? Boolean(hiddenAt)),

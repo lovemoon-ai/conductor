@@ -58,6 +58,7 @@ export class ProjectSummary {
     public readonly lastCommit?: string | null,
     public readonly fileCount?: number | null,
     public readonly isDefault?: boolean,
+    public readonly lastCommitAt?: string | null,
   ) {}
 
   static fromJSON(payload: Record<string, any>): ProjectSummary {
@@ -75,6 +76,7 @@ export class ProjectSummary {
       payload.lastCommit ?? payload.last_commit ?? null,
       payload.fileCount ?? payload.file_count ?? null,
       payload.isDefault ?? payload.is_default ?? undefined,
+      payload.lastCommitAt ?? payload.last_commit_at ?? null,
     );
   }
 
@@ -87,6 +89,7 @@ export class ProjectSummary {
       repoRoot: this.repoRoot,
       worktreeBranch: this.worktreeBranch,
       lastCommit: this.lastCommit,
+      lastCommitAt: this.lastCommitAt,
       fileCount: this.fileCount,
       isDefault: this.isDefault,
     };
@@ -171,6 +174,7 @@ export class BackendApiClient {
     repoRoot?: string;
     worktreeBranch?: string;
     lastCommit?: string;
+    lastCommitAt?: string;
     fileCount?: number;
   }): Promise<ProjectSummary> {
     const response = await this.request('POST', '/projects', {
@@ -424,6 +428,7 @@ export class BackendApiClient {
     repoRoot?: string | null;
     worktreeBranch?: string | null;
     lastCommit?: string | null;
+    lastCommitAt?: string | null;
     fileCount?: number | null;
     isDefault?: boolean;
   }> {
@@ -438,6 +443,7 @@ export class BackendApiClient {
       repoRoot: payload.repoRoot ?? payload.repo_root ?? undefined,
       worktreeBranch: payload.worktreeBranch ?? payload.worktree_branch ?? undefined,
       lastCommit: payload.lastCommit ?? payload.last_commit ?? undefined,
+      lastCommitAt: payload.lastCommitAt ?? payload.last_commit_at ?? undefined,
       fileCount: payload.fileCount ?? payload.file_count ?? undefined,
       isDefault: payload.isDefault ?? payload.is_default ?? undefined,
     };
@@ -452,6 +458,7 @@ export class BackendApiClient {
     repoRoot?: string;
     worktreeBranch?: string;
     lastCommit?: string;
+    lastCommitAt?: string;
     fileCount?: number;
   }): Promise<ProjectSummary> {
     const response = await this.request('PATCH', `/projects/${projectId}`, {

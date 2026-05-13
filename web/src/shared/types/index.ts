@@ -35,6 +35,7 @@ export interface Project {
   repoRoot?: string | null;
   worktreeBranch?: string | null;
   lastCommit?: string | null;
+  lastCommitAt?: string | null;
   /**
    * Normalized git remote URL (lower-case, trailing `.git` stripped). Captured
    * by the daemon on bind/refresh. Used to merge same-name projects across
@@ -344,6 +345,7 @@ export interface CreateProjectInput {
   repoRoot?: string;
   worktreeBranch?: string;
   lastCommit?: string;
+  lastCommitAt?: string;
   fileCount?: number;
   bindingConfirmed?: boolean;
 }
@@ -357,6 +359,7 @@ export interface UpdateProjectInput {
   repoRoot?: string;
   worktreeBranch?: string;
   lastCommit?: string;
+  lastCommitAt?: string;
   fileCount?: number;
   bindingConfirmed?: boolean;
   hidden?: boolean;

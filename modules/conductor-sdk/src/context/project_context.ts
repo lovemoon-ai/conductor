@@ -12,6 +12,7 @@ export interface WorkspaceSnapshot {
   repoRoot?: string;
   worktreeBranch?: string;
   lastCommit?: string;
+  lastCommitAt?: string;
   /**
    * Normalized origin remote URL (lower-cased, trailing `.git` stripped).
    * Only populated when the workspace is a git repository AND has an
@@ -50,6 +51,7 @@ export class ProjectContext {
       repoRoot: guess.repoRoot,
       worktreeBranch: this.gitBranch(guess.repoRoot) ?? undefined,
       lastCommit: this.gitHead(guess.repoRoot) ?? undefined,
+      lastCommitAt: this.gitHeadCommittedAt(guess.repoRoot) ?? undefined,
       gitRemoteUrl: this.gitRemoteUrl(guess.repoRoot) ?? undefined,
       fileCount: this.gitFileCount(guess.repoRoot) ?? undefined,
     };
@@ -115,6 +117,15 @@ export class ProjectContext {
     try {
       const head = runGit(['rev-parse', 'HEAD'], repoRoot).trim();
       return head || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private gitHeadCommittedAt(repoRoot: string): string | null {
+    try {
+      const committedAt = runGit(['show', '-s', '--format=%cI', 'HEAD'], repoRoot).trim();
+      return committedAt || null;
     } catch {
       return null;
     }

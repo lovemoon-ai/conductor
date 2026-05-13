@@ -27,6 +27,7 @@ const PROJECT_WITHOUT_SORT_ORDER_SELECT = {
   repoRoot: true,
   worktreeBranch: true,
   lastCommit: true,
+  lastCommitAt: true,
   fileCount: true,
   metadata: true,
   createdAt: true,

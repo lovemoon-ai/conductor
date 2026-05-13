@@ -97,6 +97,31 @@ describe('ProjectDetailsDialog', () => {
     expect(screen.getByText(/No memos yet/)).toBeInTheDocument();
   });
 
+  it('renders a simplified overview with commit time and GitHub link', () => {
+    const project = {
+      ...baseProject,
+      repoRoot: '/repo',
+      worktreeBranch: 'main',
+      lastCommit: 'abc123',
+      lastCommitAt: '2026-05-12T14:30:00',
+      gitRemoteUrl: 'github.com/foo/bar',
+      createdAt: '2026-05-01T08:00:00.000Z',
+    } as any;
+
+    render(<ProjectDetailsDialog open project={project} onClose={vi.fn()} />);
+
+    expect(screen.getByRole('dialog', { name: 'Memo Project' })).toBeInTheDocument();
+    expect(screen.queryByText('Name')).toBeNull();
+    expect(screen.queryByText('Repo root')).toBeNull();
+    expect(screen.queryByText('Binding')).toBeNull();
+    expect(screen.queryByText('abc123')).toBeNull();
+    expect(screen.getByText('2026-05-12 14:30')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'github.com/foo/bar' })).toHaveAttribute(
+      'href',
+      'https://github.com/foo/bar',
+    );
+  });
+
   it('adds a new memo by prepending and patching metadata', async () => {
     const project = {
       ...baseProject,

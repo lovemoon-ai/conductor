@@ -3130,7 +3130,9 @@ describe("Daemon", () => {
     await new Promise((resolve) => setTimeout(resolve, 80));
 
     assert.ok(webSocketClientOptions);
-    assert.equal(String(webSocketClientOptions.extraHeaders["x-conductor-backends"] || ""), "");
+    const advertisedBackends = String(webSocketClientOptions.extraHeaders["x-conductor-backends"] || "");
+    assert.ok(!advertisedBackends.includes("bad-external"));
+    assert.ok(advertisedBackends.includes("copilot"));
   });
 
   it("advertises and launches configured codex aliases on daemon hosts", async (t) => {
@@ -8169,6 +8171,7 @@ describe("Daemon", () => {
             repoRoot: "/tmp/project-real",
             worktreeBranch: "main",
             lastCommit: "abc123",
+            lastCommitAt: "2026-05-12T14:30:00.000Z",
             gitRemoteUrl: "github.com/example/project-real",
             fileCount: 8,
           };
@@ -8208,6 +8211,7 @@ describe("Daemon", () => {
           repo_root: "/tmp/project-real",
           worktree_branch: "main",
           last_commit: "abc123",
+          last_commit_at: "2026-05-12T14:30:00.000Z",
           git_remote_url: "github.com/example/project-real",
           file_count: 8,
           error: null,

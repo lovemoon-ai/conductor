@@ -4221,6 +4221,7 @@ export function startDaemon(config = {}, deps = {}) {
       repoRoot: null,
       worktreeBranch: null,
       lastCommit: null,
+      lastCommitAt: null,
       fileCount: null,
       error: null,
       errorCode: null,
@@ -4263,6 +4264,10 @@ export function startDaemon(config = {}, deps = {}) {
             typeof snapshot?.lastCommit === "string" && snapshot.lastCommit.trim()
               ? snapshot.lastCommit.trim()
               : null,
+          lastCommitAt:
+            typeof snapshot?.lastCommitAt === "string" && snapshot.lastCommitAt.trim()
+              ? snapshot.lastCommitAt.trim()
+              : null,
           gitRemoteUrl:
             typeof snapshot?.gitRemoteUrl === "string" && snapshot.gitRemoteUrl.trim()
               ? snapshot.gitRemoteUrl.trim()
@@ -4291,6 +4296,7 @@ export function startDaemon(config = {}, deps = {}) {
           repo_root: result.repoRoot,
           worktree_branch: result.worktreeBranch,
           last_commit: result.lastCommit,
+          last_commit_at: result.lastCommitAt,
           git_remote_url: result.gitRemoteUrl,
           file_count: result.fileCount,
           error: result.error,

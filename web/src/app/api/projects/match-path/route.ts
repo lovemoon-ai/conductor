@@ -42,6 +42,7 @@ export async function POST(request: NextRequest) {
       repoRoot: true,
       worktreeBranch: true,
       lastCommit: true,
+      lastCommitAt: true,
       fileCount: true,
       metadata: true,
       createdAt: true,

@@ -153,6 +153,7 @@ export async function PATCH(
     binding.repoRoot !== null ||
     binding.worktreeBranch !== null ||
     binding.lastCommit !== null ||
+    binding.lastCommitAt !== null ||
     binding.fileCount !== null;
   const hasBindingField = hasBindingIdentityField || hasSnapshotField;
 
@@ -176,6 +177,7 @@ export async function PATCH(
       repoRoot: true,
       worktreeBranch: true,
       lastCommit: true,
+      lastCommitAt: true,
       fileCount: true,
     },
   });
@@ -245,6 +247,7 @@ export async function PATCH(
         repoRoot: binding.repoRoot ?? undefined,
         worktreeBranch: binding.worktreeBranch ?? undefined,
         lastCommit: binding.lastCommit ?? undefined,
+        lastCommitAt: binding.lastCommitAt ?? undefined,
         fileCount: binding.fileCount ?? undefined,
         metadata,
       },

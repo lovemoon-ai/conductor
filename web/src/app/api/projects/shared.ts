@@ -39,6 +39,12 @@ const normalizeOptionalInt = (value: unknown): number | null => {
   return Number.isInteger(parsed) ? parsed : null;
 };
 
+const normalizeOptionalIsoDate = (value: unknown): string | null => {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) return null;
+  return Number.isNaN(Date.parse(normalized)) ? null : new Date(normalized).toISOString();
+};
+
 const normalizeBoolean = (value: unknown): boolean => {
   if (typeof value === "boolean") {
     return value;
@@ -164,6 +170,7 @@ const readProjectBindingInput = (body: Record<string, unknown>) => {
     repoRoot: normalizeOptionalString(readField(body, "repo_root", "repoRoot", nestedBinding)),
     worktreeBranch: normalizeOptionalString(readField(body, "worktree_branch", "worktreeBranch", nestedBinding)),
     lastCommit: normalizeOptionalString(readField(body, "last_commit", "lastCommit", nestedBinding)),
+    lastCommitAt: normalizeOptionalIsoDate(readField(body, "last_commit_at", "lastCommitAt", nestedBinding)),
     gitRemoteUrl: normalizeOptionalString(readField(body, "git_remote_url", "gitRemoteUrl", nestedBinding)),
     fileCount: normalizeOptionalInt(readField(body, "file_count", "fileCount", nestedBinding)),
   };
@@ -287,6 +294,7 @@ type SerializableProject = {
   repoRoot: string | null;
   worktreeBranch: string | null;
   lastCommit: string | null;
+  lastCommitAt: Date | string | null;
   gitRemoteUrl?: string | null;
   fileCount: number | null;
   sortOrder?: number | null;
@@ -313,6 +321,7 @@ const PROJECT_SERIALIZATION_BASE_SELECT = {
   repoRoot: true,
   worktreeBranch: true,
   lastCommit: true,
+  lastCommitAt: true,
   fileCount: true,
   collaborationId: true,
   metadata: true,
@@ -393,6 +402,12 @@ const serializeProject = (
 ) => {
   const createdAt = project.createdAt.toISOString();
   const updatedAt = project.updatedAt.toISOString();
+  const lastCommitAt =
+    project.lastCommitAt instanceof Date
+      ? project.lastCommitAt.toISOString()
+      : typeof project.lastCommitAt === "string"
+        ? new Date(project.lastCommitAt).toISOString()
+        : null;
   const hiddenAt = project.hiddenAt ? project.hiddenAt.toISOString() : null;
   const hidden = Boolean(project.hiddenAt);
   const gitRemoteUrl = project.gitRemoteUrl ?? null;
@@ -406,6 +421,7 @@ const serializeProject = (
     repoRoot: project.repoRoot,
     worktreeBranch: project.worktreeBranch,
     lastCommit: project.lastCommit,
+    lastCommitAt,
     gitRemoteUrl,
     fileCount: project.fileCount,
     sortOrder: project.sortOrder,
@@ -423,6 +439,7 @@ const serializeProject = (
     repo_root: project.repoRoot,
     worktree_branch: project.worktreeBranch,
     last_commit: project.lastCommit,
+    last_commit_at: lastCommitAt,
     git_remote_url: gitRemoteUrl,
     file_count: project.fileCount,
     sort_order: project.sortOrder,
@@ -441,6 +458,7 @@ export {
   isBindingConfirmed,
   normalizeBoolean,
   normalizeOptionalInt,
+  normalizeOptionalIsoDate,
   normalizeOptionalString,
   normalizeOptionalWorkspacePath,
   normalizeWorkspacePath,
