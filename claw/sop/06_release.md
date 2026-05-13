@@ -95,15 +95,51 @@ No changeset is needed for:
 5. The `Release Packages` workflow publishes only package versions that are not
    already present on `registry.npmjs.org`.
 6. If `@love-moon/conductor-cli` was published, the workflow creates/preserves
-   tag `vX.Y.Z` and manually dispatches `.github/workflows/cli-release-archives.yml`.
+   tag `vX.Y.Z` and **attempts** to dispatch
+   `.github/workflows/cli-release-archives.yml`.
+   - **Caveat**: this dispatch hits the same org-level
+     `default_workflow_permissions: read` policy as the PR creation in step 2.
+     The npm publish + tag push both succeed (you'll see `cli@X.Y.Z` on the
+     registry and `vX.Y.Z` on origin), but the `Trigger CLI archive workflow`
+     step returns
+     `HTTP 403: Resource not accessible by integration` and the overall run
+     is marked `failure`.
+   - The `cli-release-archives.yml` workflow also has a `push: tags: v*`
+     trigger, but tags pushed by `GITHUB_TOKEN` do **not** trigger a second
+     workflow via `push` (GitHub Actions safety feature), so the archive
+     workflow never auto-starts.
+   - **Workaround until an org admin lifts the policy**: dispatch the
+     archive workflow manually after the npm-publish step succeeds:
+     ```sh
+     gh workflow run cli-release-archives.yml \
+       -R lovemoon-ai/conductor --ref main \
+       -f version=<X.Y.Z> -f publish_release=true
+     ```
+     Wait for it to finish (~10 min for the 4-platform matrix), then
+     proceed to the Homebrew tap update.
 
 There is no longer a manual step where the user runs `scripts/publish-npm.sh`
 or any other local publish command. After the version PR is merged, CI owns the
 npm publish step end to end.
 
-The workflow dispatch is intentional: tags pushed by `GITHUB_TOKEN` do not
-normally trigger a second workflow via `push`, so the release workflow dispatches
-the archive workflow explicitly after npm publish succeeds.
+### Org-policy summary: two manual workarounds per release
+
+The `lovemoon-ai` org currently sets `default_workflow_permissions: read` at
+the org level, which makes Actions unable to:
+
+1. Create the `version packages` PR (step 2) — workaround: `gh pr create ...`.
+2. Dispatch the CLI archive workflow (step 6) — workaround: `gh workflow run ...`.
+
+Both workarounds need org-member admin privileges (a PAT with `repo` scope
+is enough; `dang217`'s token works). An org admin can permanently fix both
+by running:
+```sh
+gh auth refresh -h github.com -s admin:org   # one-time scope upgrade
+gh api -X PUT orgs/lovemoon-ai/actions/permissions/workflow \
+  -f default_workflow_permissions=write \
+  -F can_approve_pull_request_reviews=true
+```
+After that the release flow is fully unattended.
 
 ## Pre-release Notes Gate
 
