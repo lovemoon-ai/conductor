@@ -17,6 +17,7 @@ import {
   drainAgentOutboxForHost,
 } from "./agent-upstream";
 import { outboxProcessor } from "../outbox-processor";
+import { backfillStaleProjectBindings } from "../projects/backfill";
 import {
   isConductorFireHost,
 } from "@/lib/subscription/plan-limits";
@@ -1148,6 +1149,28 @@ export const setupAgentGateway = (): WebSocketServer => {
     void drainAgentOutboxForHost(user.id, agentHost, {
       ignoreRetryAt: true,
     });
+
+    // Opportunistic backfill: projects created before the cross-daemon merge
+    // feature shipped (or while their workspace was offline) carry NULL
+    // `gitRemoteUrl`, so they never merge with their counterparts on other
+    // daemons. Every time the daemon reconnects we re-snapshot any rows still
+    // missing the field. The call is fire-and-forget; the SQL filter and the
+    // in-flight dedup map inside `backfillStaleProjectBindings` keep repeat
+    // connects idempotent and bounded.
+    const supportsPathValidation = capabilities.some(
+      (capability) =>
+        capability.trim().toLowerCase() === "project_path_validation",
+    );
+    if (supportsPathValidation) {
+      void backfillStaleProjectBindings({
+        userId: user.id,
+        daemonHost: agentHost,
+      }).catch((error) => {
+        console.error(
+          `[agent-gateway] project backfill crashed: userId=${user.id}, agentHost=${agentHost}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }
 
     socket.on("message", async (raw) => {
       try {

@@ -3,28 +3,43 @@ import type { Project, ProjectGroup } from '@/shared/types';
 /**
  * Decide whether two projects can be merged into the same cross-daemon group.
  *
- * Rules (locked in product spec):
+ * Rules:
  *  - Both projects must belong to the same user (caller-enforced).
  *  - Same `name`.
+ *  - Different `daemonHost` — the merge feature is explicitly about surfacing
+ *    one card for the "same project, different machines" case. Two rows on
+ *    the same daemon with the same name are a data anomaly and should stay
+ *    separate.
  *  - Neither has opted out of merging (`mergeOptOut !== true`).
- *  - Both must be git projects (`repoRoot` set).
- *  - Both must have a non-empty `gitRemoteUrl` and they must be equal.
+ *  - If BOTH sides have a `gitRemoteUrl`, they must be equal (case-insensitive
+ *    after trim). This preserves the safety net that prevents two unrelated
+ *    git repos that happen to share a folder name from accidentally fusing.
+ *  - If either side is missing `gitRemoteUrl` (non-git workspace, daemon
+ *    snapshot hasn't backfilled yet, etc.), we trust the name + daemonHost
+ *    pairing and merge anyway. Users can override individual rows with
+ *    `mergeOptOut` when they hit a false positive.
  *
- * Anything else — non-git projects, missing remote URL (legacy data not yet
- * refreshed), or differing remotes — surfaces as standalone single-member
- * groups so users never see unrelated projects accidentally combined.
+ * Historical note: the original spec required both sides to be git projects
+ * with matching remotes. That excluded a large class of legitimate workspaces
+ * (non-git scratch dirs, projects created while the daemon couldn't read git
+ * config, projects that pre-date the merge feature shipping). The relaxed
+ * rule, combined with the daemon-reconnect backfill in
+ * `web/src/lib/projects/backfill.ts`, lets the strict-equality safety net
+ * kick in once both sides actually have remote URLs while still merging
+ * everything else by name.
  */
 export const canMergeProjects = (a: Project, b: Project): boolean => {
   if (a.id === b.id) return true;
   if (a.name !== b.name) return false;
   if (a.mergeOptOut === true || b.mergeOptOut === true) return false;
-  const aIsGit = Boolean(a.repoRoot);
-  const bIsGit = Boolean(b.repoRoot);
-  if (!aIsGit || !bIsGit) return false;
+  const aHost = (a.daemonHost ?? '').trim();
+  const bHost = (b.daemonHost ?? '').trim();
+  if (!aHost || !bHost) return false;
+  if (aHost === bHost) return false;
   const aUrl = (a.gitRemoteUrl ?? '').trim().toLowerCase();
   const bUrl = (b.gitRemoteUrl ?? '').trim().toLowerCase();
-  if (!aUrl || !bUrl) return false;
-  return aUrl === bUrl;
+  if (aUrl && bUrl && aUrl !== bUrl) return false;
+  return true;
 };
 
 /**
