@@ -2,6 +2,18 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { CopilotSdkSession } from "../src/session-factory.js";
+import { resolveBundledCopilotCliPath } from "../src/providers/copilot-sdk-session.js";
+
+function assertBundledCopilotCliPath(value) {
+  if (value === undefined) {
+    return;
+  }
+  assert.match(
+    value,
+    /[\\/]@github[\\/]copilot-(?:darwin|linux|win32)-(?:arm64|x64)[\\/]copilot(?:\.exe)?$|[\\/]@github[\\/]copilot[\\/]npm-loader\.js$/,
+  );
+  assert.doesNotMatch(value, /[\\/]@github[\\/]copilot[\\/]index\.js$/);
+}
 
 function createDeferred() {
   let resolve = null;
@@ -127,6 +139,39 @@ function createCopilotSdkHarness({ onCreateSession, onResumeSession, onDisconnec
 }
 
 describe("copilot sdk session", () => {
+  it("resolves the bundled Copilot platform executable before the JS loader", () => {
+    const resolved = resolveBundledCopilotCliPath({
+      platform: "darwin",
+      arch: "arm64",
+      resolvePackage: (packageName) => {
+        if (packageName === "@github/copilot-darwin-arm64") {
+          return "/tmp/node_modules/@github/copilot-darwin-arm64/copilot";
+        }
+        throw new Error(`unexpected package: ${packageName}`);
+      },
+      resolvePackagePaths: () => ["/tmp/node_modules"],
+      existsSyncFn: (candidate) =>
+        candidate === "/tmp/node_modules/@github/copilot-darwin-arm64/copilot" ||
+        candidate === "/tmp/node_modules/@github/copilot/npm-loader.js",
+    });
+
+    assert.equal(resolved, "/tmp/node_modules/@github/copilot-darwin-arm64/copilot");
+  });
+
+  it("falls back to the Copilot npm loader when the platform package is absent", () => {
+    const resolved = resolveBundledCopilotCliPath({
+      platform: "linux",
+      arch: "x64",
+      resolvePackage: () => {
+        throw Object.assign(new Error("not found"), { code: "MODULE_NOT_FOUND" });
+      },
+      resolvePackagePaths: () => ["/tmp/node_modules"],
+      existsSyncFn: (candidate) => candidate === "/tmp/node_modules/@github/copilot/npm-loader.js",
+    });
+
+    assert.equal(resolved, "/tmp/node_modules/@github/copilot/npm-loader.js");
+  });
+
   it("runs streaming turns through the Copilot SDK and strips legacy CLI flags", async () => {
     const messages = [];
     const statuses = [];
@@ -259,7 +304,7 @@ describe("copilot sdk session", () => {
     assert.equal(usage.usage?.inputTokens, 10);
     assert.equal(harness.state.startCalls, 1);
     assert.equal(harness.state.stopCalls, 0);
-    assert.equal(harness.state.clientOptions[0]?.cliPath, undefined);
+    assertBundledCopilotCliPath(harness.state.clientOptions[0]?.cliPath);
     assert.deepEqual(harness.state.clientOptions[0]?.cliArgs, ["--trace"]);
     assert.equal(harness.state.prompts[0]?.mode, "immediate");
     assert.equal(harness.state.sendTimeouts[0], session.turnDeadlineMs + 5_000);
@@ -292,7 +337,7 @@ describe("copilot sdk session", () => {
     const result = await session.runTurn("hello");
 
     assert.equal(result.text, "hello from copilot");
-    assert.equal(harness.state.clientOptions[0]?.cliPath, undefined);
+    assertBundledCopilotCliPath(harness.state.clientOptions[0]?.cliPath);
     assert.equal(harness.state.clientOptions[0]?.cliArgs, undefined);
 
     await session.close();
@@ -322,10 +367,39 @@ describe("copilot sdk session", () => {
     const result = await session.runTurn("hello");
 
     assert.equal(result.text, "hello from env wrapper");
-    assert.equal(harness.state.clientOptions[0]?.cliPath, undefined);
+    assertBundledCopilotCliPath(harness.state.clientOptions[0]?.cliPath);
     assert.deepEqual(harness.state.clientOptions[0]?.cliArgs, ["--trace"]);
     assert.equal(harness.state.clientOptions[0]?.env?.GITHUB_TOKEN, undefined);
     assert.equal(harness.state.clientOptions[0]?.useLoggedInUser, true);
+
+    await session.close();
+  });
+
+  it("keeps explicit COPILOT_CLI_PATH env instead of overriding cliPath", async () => {
+    const harness = createCopilotSdkHarness({
+      onCreateSession(_config, state) {
+        return new FakeCopilotSession("copilot-session-explicit-env-cli", state, {
+          async onSendAndWait() {
+            return {
+              data: { content: "hello from explicit cli" },
+            };
+          },
+        });
+      },
+    });
+
+    const session = new CopilotSdkSession("copilot", {
+      cwd: process.cwd(),
+      env: { COPILOT_CLI_PATH: "/custom/copilot" },
+      logger: { log: () => {} },
+      sdkModule: harness.sdkModule,
+    });
+
+    const result = await session.runTurn("hello");
+
+    assert.equal(result.text, "hello from explicit cli");
+    assert.equal(harness.state.clientOptions[0]?.cliPath, undefined);
+    assert.equal(harness.state.clientOptions[0]?.env?.COPILOT_CLI_PATH, "/custom/copilot");
 
     await session.close();
   });

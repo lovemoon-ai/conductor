@@ -7,6 +7,7 @@ import {
   getCopilotQuota,
   parseCopilotQuotaSnapshots,
   parseCopilotUserQuota,
+  resolveBundledCopilotCliPath,
 } from "../src/quota/copilot.ts";
 
 function withTmp<T>(fn: (dir: string) => Promise<T> | T): Promise<T> {
@@ -77,6 +78,39 @@ test("parseCopilotQuotaSnapshots normalizes SDK quota snapshots", () => {
   assert.equal(q.chat?.status, "overage_allowed");
   assert.ok(q.premiumInteractions?.resetAt);
   assert.equal(q.premiumInteractions?.resetOnDate, undefined);
+});
+
+test("resolveBundledCopilotCliPath prefers Copilot platform executable", () => {
+  const resolved = resolveBundledCopilotCliPath({
+    platform: "darwin",
+    arch: "arm64",
+    resolvePackage: (packageName) => {
+      if (packageName === "@github/copilot-darwin-arm64") {
+        return "/tmp/node_modules/@github/copilot-darwin-arm64/copilot";
+      }
+      throw new Error(`unexpected package: ${packageName}`);
+    },
+    resolvePackagePaths: () => ["/tmp/node_modules"],
+    existsSyncFn: (candidate) =>
+      candidate === "/tmp/node_modules/@github/copilot-darwin-arm64/copilot" ||
+      candidate === "/tmp/node_modules/@github/copilot/npm-loader.js",
+  });
+
+  assert.equal(resolved, "/tmp/node_modules/@github/copilot-darwin-arm64/copilot");
+});
+
+test("resolveBundledCopilotCliPath falls back to Copilot npm loader", () => {
+  const resolved = resolveBundledCopilotCliPath({
+    platform: "linux",
+    arch: "x64",
+    resolvePackage: () => {
+      throw Object.assign(new Error("not found"), { code: "MODULE_NOT_FOUND" });
+    },
+    resolvePackagePaths: () => ["/tmp/node_modules"],
+    existsSyncFn: (candidate) => candidate === "/tmp/node_modules/@github/copilot/npm-loader.js",
+  });
+
+  assert.equal(resolved, "/tmp/node_modules/@github/copilot/npm-loader.js");
 });
 
 test("parseCopilotUserQuota normalizes limited-user Copilot quotas", () => {
@@ -253,6 +287,40 @@ test("getCopilotQuota defaults to logged-in auth and ignores GitHub token env", 
       restoreEnv("GH_TOKEN", previous.GH_TOKEN);
       restoreEnv("GITHUB_TOKEN", previous.GITHUB_TOKEN);
     }
+  });
+});
+
+test("getCopilotQuota keeps explicit COPILOT_CLI_PATH env instead of overriding cliPath", async () => {
+  await withTmp(async (dir) => {
+    const state = { started: 0, stopped: 0, quotaCalls: 0 };
+    const captured: any[] = [];
+    const result = await getCopilotQuota({
+      cacheDir: dir,
+      ttlSeconds: 0,
+      sdkModule: makeSdk(
+        {
+          quotaSnapshots: {
+            chat: {
+              entitlementRequests: 10,
+              usedRequests: 1,
+              remainingPercentage: 90,
+              overage: 0,
+              overageAllowedWithExhaustedQuota: false,
+            },
+          },
+        },
+        state,
+        { isAuthenticated: true, authType: "user", host: "github.com", login: "alice" },
+        captured,
+      ),
+      clientOptions: {
+        env: { COPILOT_CLI_PATH: "/custom/copilot" },
+      },
+    });
+
+    assert.equal(result.source, "fresh");
+    assert.equal(captured[0]?.cliPath, undefined);
+    assert.equal(captured[0]?.env?.COPILOT_CLI_PATH, "/custom/copilot");
   });
 });
 

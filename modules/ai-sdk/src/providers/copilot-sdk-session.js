@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 import { COPILOT_SDK_VARIANT as COPILOT_PROVIDER_VARIANT } from "../built-in-backends.js";
@@ -20,6 +21,7 @@ const MAX_TURN_DEADLINE_MS = 30 * 60 * 1000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 5 * 1000;
 const SDK_SEND_AND_WAIT_TIMEOUT_GRACE_MS = 5 * 1000;
 const LEGACY_COPILOT_CLI_ARGS = new Set(["--allow-all-paths", "--allow-all-tools"]);
+const moduleRequire = createRequire(import.meta.url);
 
 function waitForever() {
   return new Promise(() => {});
@@ -230,6 +232,59 @@ function unwrapEnvironmentCommand(command, args) {
 
 function hasOwnEnumerableKeys(value) {
   return value && typeof value === "object" && Object.keys(value).length > 0;
+}
+
+function resolveCopilotPlatformPackageName(platform = process.platform, arch = process.arch) {
+  if (!["darwin", "linux", "win32"].includes(platform)) {
+    return null;
+  }
+  if (!["arm64", "x64"].includes(arch)) {
+    return null;
+  }
+  return `@github/copilot-${platform}-${arch}`;
+}
+
+function resolvePackageFileFromSearchPaths(packageName, relativePath, resolvePackagePaths, existsSyncFn) {
+  const searchPaths = resolvePackagePaths(packageName) || [];
+  const packageParts = packageName.split("/");
+  for (const basePath of searchPaths) {
+    const candidate = path.join(basePath, ...packageParts, relativePath);
+    if (existsSyncFn(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+export function resolveBundledCopilotCliPath({
+  platform = process.platform,
+  arch = process.arch,
+  resolvePackage = (packageName) => moduleRequire.resolve(packageName),
+  resolvePackagePaths = (packageName) => moduleRequire.resolve.paths(packageName) || [],
+  existsSyncFn = existsSync,
+} = {}) {
+  const platformPackageName = resolveCopilotPlatformPackageName(platform, arch);
+  if (platformPackageName) {
+    try {
+      const platformExecutablePath = resolvePackage(platformPackageName);
+      if (platformExecutablePath && existsSyncFn(platformExecutablePath)) {
+        return platformExecutablePath;
+      }
+    } catch {
+      // Optional platform packages may be absent when optional dependencies are disabled.
+    }
+  }
+
+  return resolvePackageFileFromSearchPaths(
+    "@github/copilot",
+    "npm-loader.js",
+    resolvePackagePaths,
+    existsSyncFn,
+  );
+}
+
+function hasExplicitCopilotCliPathEnv(env) {
+  return typeof env?.COPILOT_CLI_PATH === "string" && env.COPILOT_CLI_PATH.trim();
 }
 
 function resolveCopilotCliLaunch(commandLine, env = process.env) {
@@ -454,6 +509,16 @@ function buildCopilotClientOptions(options, cwd, env) {
   clientOptions.env = hasExplicitGithubToken
     ? resolvedEnv
     : withoutCopilotGithubTokenEnv(resolvedEnv);
+  if (
+    clientOptions.cliPath === undefined &&
+    clientOptions.cliUrl === undefined &&
+    !hasExplicitCopilotCliPathEnv(clientOptions.env)
+  ) {
+    const bundledCliPath = resolveBundledCopilotCliPath();
+    if (bundledCliPath) {
+      clientOptions.cliPath = bundledCliPath;
+    }
+  }
   if (!hasExplicitGithubToken && clientOptions.useLoggedInUser === undefined) {
     clientOptions.useLoggedInUser = true;
   }

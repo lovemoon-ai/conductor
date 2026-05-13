@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { CopilotClientOptions } from "@github/copilot-sdk";
@@ -16,6 +18,7 @@ const GITHUB_API_VERSION = "2022-11-28";
 const COPILOT_KEYCHAIN_SERVICE = "copilot-cli";
 const COPILOT_USER_PATH = "/copilot_internal/user";
 const execFileAsync = promisify(execFile);
+const require = createRequire(import.meta.url);
 
 interface AccountGetQuotaResult {
   quotaSnapshots?: Record<string, unknown>;
@@ -78,6 +81,14 @@ interface CopilotSdkModule {
 
 interface CopilotAuthIndex {
   cacheKey: string;
+}
+
+interface ResolveBundledCopilotCliPathOptions {
+  platform?: NodeJS.Platform | string;
+  arch?: string;
+  resolvePackage?: (packageName: string) => string;
+  resolvePackagePaths?: (packageName: string) => string[] | null;
+  existsSyncFn?: (path: string) => boolean;
 }
 
 export interface GetCopilotQuotaOptions {
@@ -220,6 +231,63 @@ export async function getCopilotQuota(
   } finally {
     await stopClient(client);
   }
+}
+
+function resolveCopilotPlatformPackageName(
+  platform: NodeJS.Platform | string = process.platform,
+  arch: string = process.arch,
+): string | undefined {
+  if (!["darwin", "linux", "win32"].includes(platform)) {
+    return undefined;
+  }
+  if (!["arm64", "x64"].includes(arch)) {
+    return undefined;
+  }
+  return `@github/copilot-${platform}-${arch}`;
+}
+
+function resolvePackageFileFromSearchPaths(
+  packageName: string,
+  relativePath: string,
+  resolvePackagePaths: (packageName: string) => string[] | null,
+  existsSyncFn: (path: string) => boolean,
+): string | undefined {
+  const searchPaths = resolvePackagePaths(packageName) ?? [];
+  const packageParts = packageName.split("/");
+  for (const basePath of searchPaths) {
+    const candidate = join(basePath, ...packageParts, relativePath);
+    if (existsSyncFn(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+export function resolveBundledCopilotCliPath({
+  platform = process.platform,
+  arch = process.arch,
+  resolvePackage = (packageName: string) => require.resolve(packageName),
+  resolvePackagePaths = (packageName: string) => require.resolve.paths(packageName) ?? [],
+  existsSyncFn = existsSync,
+}: ResolveBundledCopilotCliPathOptions = {}): string | undefined {
+  const platformPackageName = resolveCopilotPlatformPackageName(platform, arch);
+  if (platformPackageName) {
+    try {
+      const platformExecutablePath = resolvePackage(platformPackageName);
+      if (platformExecutablePath && existsSyncFn(platformExecutablePath)) {
+        return platformExecutablePath;
+      }
+    } catch {
+      // Optional platform packages may be absent when optional dependencies are disabled.
+    }
+  }
+
+  return resolvePackageFileFromSearchPaths(
+    "@github/copilot",
+    "npm-loader.js",
+    resolvePackagePaths,
+    existsSyncFn,
+  );
 }
 
 /** Exported for tests. */
@@ -535,7 +603,7 @@ function resolveExplicitAuthCacheKey(opts: GetCopilotQuotaOptions): string | und
 function resolveClientOptions(opts: GetCopilotQuotaOptions): CopilotClientOptions {
   const explicitGithubToken = resolveExplicitGithubToken(opts);
   const baseEnv = opts.clientOptions?.env ?? process.env;
-  return {
+  const options: CopilotClientOptions = {
     logLevel: "none",
     ...opts.clientOptions,
     env: explicitGithubToken ? baseEnv : withoutGitHubTokenEnv(baseEnv),
@@ -545,10 +613,25 @@ function resolveClientOptions(opts: GetCopilotQuotaOptions): CopilotClientOption
         : opts.clientOptions?.useLoggedInUser ?? true,
     ...(opts.githubToken ? { githubToken: opts.githubToken } : {}),
   };
+  if (
+    options.cliPath === undefined &&
+    options.cliUrl === undefined &&
+    !hasExplicitCopilotCliPathEnv(options.env)
+  ) {
+    const bundledCliPath = resolveBundledCopilotCliPath();
+    if (bundledCliPath) {
+      options.cliPath = bundledCliPath;
+    }
+  }
+  return options;
 }
 
 function resolveExplicitGithubToken(opts: GetCopilotQuotaOptions): string | undefined {
   return opts.githubToken ?? opts.clientOptions?.githubToken;
+}
+
+function hasExplicitCopilotCliPathEnv(env: Record<string, string | undefined> | undefined): boolean {
+  return Boolean(typeof env?.COPILOT_CLI_PATH === "string" && env.COPILOT_CLI_PATH.trim());
 }
 
 function withoutGitHubTokenEnv(
