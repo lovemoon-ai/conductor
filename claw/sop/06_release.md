@@ -195,6 +195,50 @@ Only deploy code that is already on `origin/main`. A web-only deployment should
 not trigger npm publish, package version bumps, CLI archives, or Homebrew tap
 updates.
 
+### Release order
+
+The settings page used to embed `cli/package.json`'s `version` at web build
+time (`NEXT_PUBLIC_CLI_VERSION`) so a web deploy before the npm version bump
+would pin a stale "CLI Version" line on the live site. As of the post-0.3.0
+cleanup the settings page now fetches the latest CLI version from the npm
+registry at runtime (`/api/cli-version`, 5-minute cache), so a stale embedded
+value at worst flashes for one render before the fetch resolves.
+
+That said, the order below is still the canonical sequence for a **combined**
+release (one that includes new npm package versions). It avoids the brief
+mixed-version flash and gives operators a single linear sequence to follow.
+
+#### Combined release (changesets present on `main`)
+
+1. Push features + their `.changeset/*.md` to `origin/main`.
+2. Let the `Release Packages` workflow open or update the auto-generated
+   `version packages` PR.
+3. Merge the version-packages PR. This bumps `cli/package.json` and any
+   other touched packages on `main`.
+4. The workflow publishes to npm, creates the `vX.Y.Z` tag, and dispatches
+   `cli-release-archives.yml`. Wait for the GitHub Release to appear with
+   all archives + `conductor.rb`.
+5. Update `lovemoon-ai/homebrew-tap` per the Homebrew section above.
+6. **Then** run web deploy per `claw/sop/deploy-to-prod.md`. The deploy
+   script pulls the latest `main`, which now contains the bumped
+   `cli/package.json`, and the runtime `/api/cli-version` route immediately
+   sees the new version on the npm registry.
+
+#### Web-only release (no pending changesets)
+
+Deploy web at will. No npm step required; the settings page keeps showing
+whatever the npm registry serves today, so a web-only fix shipping mid-week
+doesn't change the "CLI Version" line at all.
+
+#### Pre-deploy guard
+
+`scripts/deploy-prod.sh` prints a warning when it detects that
+`.changeset/` contains unreleased entries (i.e., this would be a combined
+release but the npm part hasn't happened yet). The script does not block —
+sometimes you really do need to ship the web change first, e.g. a
+server-side fix that unblocks an already-released CLI — but the warning
+makes the choice explicit instead of silent.
+
 ## Failure Rules
 
 - If npm publish fails, fix the workflow or trusted publisher configuration and

@@ -2,7 +2,7 @@
 
 import { Header } from '@/components/layout/Header';
 import { useAgentsStore } from '@/features/agents';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { SETTINGS_ROOT_PATH, useSettingsNavStore } from '@/features/settings';
 
@@ -34,14 +34,54 @@ export default function SettingsPage() {
   const { agents, fetchAgents, error: agentsError, errorStatus: agentsErrorStatus } = useAgentsStore();
   const router = useRouter();
   const setLastSettingsPath = useSettingsNavStore((state) => state.setLastPath);
-  const cliVersion = process.env.NEXT_PUBLIC_CLI_VERSION || 'unknown';
-  const gitCommitId = process.env.NEXT_PUBLIC_GIT_COMMIT_ID || 'unknown';
   const buildTime = process.env.NEXT_PUBLIC_BUILD_TIME || 'unknown';
   const buildTimeInBeijing = formatBuildTimeInBeijing(buildTime);
+
+  // CLI version + git commit start out at whatever was embedded at web
+  // build time (NEXT_PUBLIC_CLI_VERSION / NEXT_PUBLIC_GIT_COMMIT_ID, read
+  // from cli/package.json during `next build`) and are then refreshed
+  // from the npm registry via /api/cli-version on mount. This decouples
+  // what we show on settings from whether the web app has been redeployed
+  // since the last npm publish — a web deploy that lags the CLI release
+  // by hours/days will still report the freshly-published version after
+  // the fetch resolves. See claw/sop/06_release.md → "Release order".
+  const [cliInfo, setCliInfo] = useState({
+    version: process.env.NEXT_PUBLIC_CLI_VERSION || 'unknown',
+    gitCommitId: process.env.NEXT_PUBLIC_GIT_COMMIT_ID || 'unknown',
+  });
+  const cliVersion = cliInfo.version;
+  const gitCommitId = cliInfo.gitCommitId;
 
   useEffect(() => {
     fetchAgents();
   }, [fetchAgents]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/cli-version')
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data) => {
+        if (cancelled) return;
+        const nextVersion = typeof data?.version === 'string' && data.version.trim()
+          ? data.version.trim()
+          : null;
+        const nextCommit = typeof data?.gitCommitId === 'string' && data.gitCommitId.trim()
+          ? data.gitCommitId.trim()
+          : null;
+        if (nextVersion || nextCommit) {
+          setCliInfo((prev) => ({
+            version: nextVersion ?? prev.version,
+            gitCommitId: nextCommit ?? prev.gitCommitId,
+          }));
+        }
+      })
+      .catch(() => {
+        // Keep the build-time fallback; this is a best-effort refresh.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Remember this as the most recent Settings-area path so the sidebar
   // Settings item returns here by default.

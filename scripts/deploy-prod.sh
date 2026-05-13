@@ -16,6 +16,33 @@ fi
 
 echo "🚀 Starting Conductor Web on Volcengine..."
 
+# 0. Pre-deploy guard: warn (do not block) if there are pending changesets.
+# Per claw/sop/06_release.md "Release order", combined releases ship more
+# cleanly when the npm publish happens first so the freshly-bumped
+# cli/package.json shows up on settings without a brief stale-version flash.
+# Warning only — sometimes a server-side fix needs to ship before the
+# corresponding CLI release, and forcing the order would block that.
+if command -v find >/dev/null 2>&1; then
+  pending_changesets=$(find .changeset -maxdepth 1 -type f -name '*.md' \
+    ! -name 'README.md' 2>/dev/null | head -20 || true)
+  if [[ -n "$pending_changesets" ]]; then
+    cat <<EOF >&2
+⚠️  .changeset/ has unreleased entries:
+$(echo "$pending_changesets" | sed 's/^/   /')
+   This deploy will pin the OLD cli/package.json version on the web build.
+   The runtime /api/cli-version fetch hides this from end users, but for a
+   clean combined release the canonical order is:
+     1. Merge the auto-opened "version packages" PR
+     2. Let release-packages.yml publish npm + dispatch CLI archive
+     3. Update lovemoon-ai/homebrew-tap manually
+     4. THEN re-run this deploy script
+   See claw/sop/06_release.md → "Release order" for the full rationale.
+   Continuing in 3 seconds (Ctrl+C to abort)...
+EOF
+    sleep 3
+  fi
+fi
+
 # 1. Load the Node environment
 if [[ -f /root/.nvm/nvm.sh ]]; then
   source /root/.nvm/nvm.sh
