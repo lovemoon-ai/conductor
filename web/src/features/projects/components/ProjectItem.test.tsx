@@ -10,9 +10,12 @@ const hideProjectGroupMock = vi.fn();
 const unhideProjectGroupMock = vi.fn();
 const startProjectCollaborationMock = vi.fn();
 const leaveCollaborationMock = vi.fn();
+const setProjectMergeOptOutMock = vi.fn();
 const pushToastMock = vi.fn();
 const confirmMock = vi.fn();
 const writeTextMock = vi.fn();
+
+let projectsState: { projects: Array<Record<string, unknown>> } = { projects: [] };
 const sortableListeners = vi.hoisted(() => ({
   onPointerDown: vi.fn(),
   onMouseDown: vi.fn(),
@@ -30,16 +33,31 @@ vi.mock('next/navigation', () => ({
   }),
 }));
 
+// vi.mock factories are hoisted to the top of the file, so we cannot read
+// the top-level *Mock consts there. Build the actions object lazily inside
+// the returned hook so the mocks are already initialized by call time.
+//
+// ProjectItem now calls the store both as a bare hook (destructuring
+// actions) and with a selector (for the `projects` slice used by the
+// cross-daemon merge peer lookup). Support both shapes so existing tests
+// and new ones share the same mock.
 vi.mock('../store', () => ({
-  useProjectsStore: () => ({
-    updateProject: updateProjectMock,
-    deleteProject: deleteProjectMock,
-    deleteProjectGroup: deleteProjectGroupMock,
-    hideProjectGroup: hideProjectGroupMock,
-    unhideProjectGroup: unhideProjectGroupMock,
-    startProjectCollaboration: startProjectCollaborationMock,
-    leaveCollaboration: leaveCollaborationMock,
-  }),
+  useProjectsStore: (selector?: (state: unknown) => unknown) => {
+    const actions = {
+      updateProject: updateProjectMock,
+      deleteProject: deleteProjectMock,
+      deleteProjectGroup: deleteProjectGroupMock,
+      hideProjectGroup: hideProjectGroupMock,
+      unhideProjectGroup: unhideProjectGroupMock,
+      startProjectCollaboration: startProjectCollaborationMock,
+      leaveCollaboration: leaveCollaborationMock,
+      setProjectMergeOptOut: setProjectMergeOptOutMock,
+    };
+    if (typeof selector === 'function') {
+      return selector({ ...projectsState, ...actions });
+    }
+    return actions;
+  },
 }));
 
 vi.mock('@/features/agents', () => ({
@@ -97,6 +115,9 @@ describe('ProjectItem', () => {
     unhideProjectGroupMock.mockReset();
     startProjectCollaborationMock.mockReset();
     leaveCollaborationMock.mockReset();
+    setProjectMergeOptOutMock.mockReset();
+    setProjectMergeOptOutMock.mockResolvedValue({});
+    projectsState = { projects: [] };
     pushToastMock.mockReset();
     confirmMock.mockReset();
     confirmMock.mockResolvedValue(true);
@@ -653,6 +674,137 @@ describe('ProjectItem', () => {
       expect(screen.getByText(/5 running/)).toBeInTheDocument();
       // 0 + 1 = 1 killed.
       expect(screen.getByText(/1 killed/)).toBeInTheDocument();
+    });
+  });
+
+  describe('cross-daemon merge/split swipe toggle', () => {
+    const projectA = {
+      id: 'p-a',
+      name: 'Conductor',
+      daemonHost: 'daemon-a',
+      workspacePath: '/repo/conductor',
+    };
+    const projectB = {
+      id: 'p-b',
+      name: 'Conductor',
+      daemonHost: 'daemon-b',
+      workspacePath: '/repo/conductor',
+      mergeOptOut: true,
+    };
+
+    it('hides the toggle entirely when there is no same-name peer on another daemon', () => {
+      projectsState = { projects: [projectA] };
+      const { container } = render(
+        <ProjectItem project={projectA as any} />,
+      );
+      expect(
+        container.querySelector('button[aria-label^="Merge"], button[aria-label^="Split"]'),
+      ).toBeNull();
+    });
+
+    it('shows the Merge button when an opted-out same-name peer exists on another daemon', () => {
+      projectsState = { projects: [projectA, projectB] };
+      const { container } = render(
+        <ProjectItem project={projectA as any} />,
+      );
+      const button = container.querySelector(
+        'button[aria-label="Merge same-name projects across daemons"]',
+      );
+      expect(button).not.toBeNull();
+    });
+
+    it('clicking Merge clears mergeOptOut on this project and every same-name peer', async () => {
+      projectsState = { projects: [projectA, projectB] };
+      const { container } = render(
+        <ProjectItem project={projectA as any} />,
+      );
+      const button = container.querySelector(
+        'button[aria-label="Merge same-name projects across daemons"]',
+      );
+      expect(button).not.toBeNull();
+
+      await act(async () => {
+        fireEvent.click(button!);
+      });
+
+      await waitFor(() => {
+        expect(setProjectMergeOptOutMock).toHaveBeenCalledWith('p-a', false);
+        expect(setProjectMergeOptOutMock).toHaveBeenCalledWith('p-b', false);
+      });
+      expect(pushToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Same-name projects merged' }),
+      );
+    });
+
+    it('shows the Split button on a merged group card and opts every member out on click', async () => {
+      const mergedPair = [
+        { id: 'p-a', name: 'Conductor', daemonHost: 'daemon-a', workspacePath: '/repo/conductor' },
+        { id: 'p-b', name: 'Conductor', daemonHost: 'daemon-b', workspacePath: '/repo/conductor' },
+      ];
+      projectsState = { projects: mergedPair };
+      const { container } = render(
+        <ProjectItem
+          project={mergedPair[0] as any}
+          mergedMembers={mergedPair as any}
+          sortableId="merged:Conductor:p-a|p-b"
+        />,
+      );
+      const button = container.querySelector(
+        'button[aria-label="Split cross-daemon merged project"]',
+      );
+      expect(button).not.toBeNull();
+
+      await act(async () => {
+        fireEvent.click(button!);
+      });
+
+      await waitFor(() => {
+        expect(setProjectMergeOptOutMock).toHaveBeenCalledWith('p-a', true);
+        expect(setProjectMergeOptOutMock).toHaveBeenCalledWith('p-b', true);
+      });
+      expect(pushToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Project split across daemons' }),
+      );
+    });
+
+    it('surfaces a toast when setProjectMergeOptOut rejects', async () => {
+      setProjectMergeOptOutMock.mockRejectedValue(new Error('network down'));
+      projectsState = { projects: [projectA, projectB] };
+      const { container } = render(
+        <ProjectItem project={projectA as any} />,
+      );
+      const button = container.querySelector(
+        'button[aria-label="Merge same-name projects across daemons"]',
+      );
+
+      await act(async () => {
+        fireEvent.click(button!);
+      });
+
+      await waitFor(() => {
+        expect(pushToastMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: 'Failed to update merge state',
+            variant: 'error',
+          }),
+        );
+      });
+    });
+
+    it('does not render the toggle for the default project even if a same-name peer exists', () => {
+      const defaultProject = {
+        id: 'default-1',
+        name: 'Conductor',
+        isDefault: true,
+        daemonHost: null,
+      };
+      projectsState = { projects: [defaultProject, projectA] };
+      const { container } = render(
+        <ProjectItem project={defaultProject as any} />,
+      );
+      expect(
+        container.querySelector('button[aria-label^="Merge"], button[aria-label^="Split"]'),
+      ).toBeNull();
     });
   });
 });

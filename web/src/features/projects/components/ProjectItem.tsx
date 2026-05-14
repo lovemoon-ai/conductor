@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
@@ -73,6 +73,22 @@ const InviteIcon = () => (
 const LeaveIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6A2.25 2.25 0 005.25 5.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h11.25" />
+  </svg>
+);
+
+// Heroicons "link" — used when the card represents an unmerged project that
+// has a same-name peer on another daemon, so clicking the button fuses them.
+const MergeIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+  </svg>
+);
+
+// Heroicons "link-slash" — used when the card is a merged cross-daemon group
+// and clicking the button breaks it back into individual daemon cards.
+const SplitIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.181 8.68a4.503 4.503 0 011.903 6.405m-9.768-2.782L3.56 14.06a4.5 4.5 0 006.364 6.364l1.757-1.757m4.682-4.682l4.5-4.5a4.5 4.5 0 00-6.364-6.364l-1.757 1.757M3 3l18 18" />
   </svg>
 );
 
@@ -149,7 +165,9 @@ export function ProjectItem({
     unhideProjectGroup,
     startProjectCollaboration,
     leaveCollaboration,
+    setProjectMergeOptOut,
   } = useProjectsStore();
+  const allProjects = useProjectsStore((state) => state.projects);
   const agents = useAgentsStore((state) => state.agents);
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
@@ -199,9 +217,33 @@ export function ProjectItem({
   const canHide = Boolean(onHide) && !isHidden;
   const canUnhide = Boolean(onUnhide) && isHidden;
   const canDelete = !isDefault;
+  // Find every project on a different daemon that shares this project's name.
+  // The cross-daemon merge predicate `canMergeProjects` keys off
+  // (same name, distinct non-empty daemonHost, neither side opted out), so
+  // surfacing the manual toggle only when at least one such peer exists
+  // matches what the user actually sees on the list. Projects with no peers
+  // simply hide the button — no need to confuse single-daemon installs.
+  const sameNameOtherDaemonPeers = useMemo(() => {
+    const thisName = project.name;
+    const thisHost = (daemonHost ?? '').trim();
+    if (!thisName || !thisHost) return [] as Project[];
+    return allProjects.filter((candidate) => {
+      if (candidate.id === project.id) return false;
+      if (candidate.name !== thisName) return false;
+      const peerHost = (candidate.daemonHost ?? '').trim();
+      return Boolean(peerHost) && peerHost !== thisHost;
+    });
+  }, [allProjects, daemonHost, project.id, project.name]);
+  const canSplitMerge = isMergedGroup;
+  const canRequestMerge = !isMergedGroup && sameNameOtherDaemonPeers.length > 0;
+  // Default projects are not eligible — they have no daemon binding and never
+  // merge by definition (their `daemonHost` is null).
+  const showMergeToggle = !isDefault && (canSplitMerge || canRequestMerge);
+  const [isMergeBusy, setIsMergeBusy] = useState(false);
   const swipeActionsWidth =
     (canInvite ? ACTIONS_WIDTH : 0)
     + (canLeaveCollaboration ? ACTIONS_WIDTH : 0)
+    + (showMergeToggle ? ACTIONS_WIDTH : 0)
     + (canHide || canUnhide ? ACTIONS_WIDTH : 0)
     + (canDelete ? ACTIONS_WIDTH : 0);
   const swipe = useSwipeActions({
@@ -408,6 +450,53 @@ export function ProjectItem({
     swipe.closeActions();
   };
 
+  const handleToggleMerge = async () => {
+    if (isMergeBusy) {
+      return;
+    }
+    setIsMergeBusy(true);
+    try {
+      if (canSplitMerge) {
+        // Opt out every member of the merged group at once. A single-side
+        // opt-out would leave a 3+ member group as "1 standalone + (N-1)
+        // still merged", which surprises users who expect "Split" to fully
+        // separate the daemons. Two-member groups (the common case) split
+        // cleanly either way.
+        await Promise.all(
+          groupMembers.map((member) => setProjectMergeOptOut(member.id, true)),
+        );
+        pushToast({
+          title: 'Project split across daemons',
+          description: 'Each daemon now shows its own card.',
+        });
+      } else if (canRequestMerge) {
+        // Clear opt-out on this project AND every same-name peer so the
+        // merge predicate fuses them regardless of which side had been
+        // opted out previously.
+        await Promise.all([
+          setProjectMergeOptOut(project.id, false),
+          ...sameNameOtherDaemonPeers.map((peer) =>
+            setProjectMergeOptOut(peer.id, false),
+          ),
+        ]);
+        pushToast({
+          title: 'Same-name projects merged',
+          description: 'They now show as one card with multiple daemons.',
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update merge state';
+      pushToast({
+        title: 'Failed to update merge state',
+        description: message,
+        variant: 'error',
+      });
+    } finally {
+      setIsMergeBusy(false);
+      swipe.closeActions();
+    }
+  };
+
   const copyInviteLink = async (target: { inviteUrl?: string; inviteToken: string }) => {
     if (typeof window === 'undefined') {
       return;
@@ -578,6 +667,23 @@ export function ProjectItem({
               className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--warning)]/10 text-ink transition-colors hover:bg-[var(--warning)]/20 disabled:opacity-60"
             >
               <LeaveIcon />
+            </button>
+          ) : null}
+          {showMergeToggle ? (
+            <button
+              type="button"
+              tabIndex={swipe.isOpen ? 0 : -1}
+              aria-label={canSplitMerge ? 'Split cross-daemon merged project' : 'Merge same-name projects across daemons'}
+              title={canSplitMerge ? 'Split' : 'Merge'}
+              disabled={isMergeBusy}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void handleToggleMerge();
+              }}
+              className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--accent)]/10 text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20 disabled:opacity-60"
+            >
+              {canSplitMerge ? <SplitIcon /> : <MergeIcon />}
             </button>
           ) : null}
           {canHide ? (
