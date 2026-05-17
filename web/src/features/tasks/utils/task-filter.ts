@@ -20,19 +20,42 @@ export function getStableTaskBackend(task: Task): string | null {
   return null;
 }
 
+/**
+ * Filter tasks by project scope.
+ *
+ * `projectFilter` accepts:
+ *  - `null | undefined | ''` → no project filter (everything visible, modulo
+ *    hidden projects).
+ *  - `string` → single project; only tasks attached to that exact projectId
+ *    pass.
+ *  - `string[]` → cross-daemon merged-group view; tasks attached to any of
+ *    the member projectIds pass. Used by the merged-project task list so a
+ *    single logical "project" shows tasks from every daemon's same-named
+ *    project together.
+ */
 export function filterTasksByProject(
   tasks: Task[],
-  projectId: string | null | undefined,
+  projectFilter: string | string[] | null | undefined,
   hiddenProjectIds: string[] = [],
 ): Task[] {
-  const normalizedProjectId = projectId?.trim() || null;
   const hiddenProjectIdSet = new Set(hiddenProjectIds.map((id) => id.trim()).filter(Boolean));
 
-  if (normalizedProjectId) {
-    if (hiddenProjectIdSet.has(normalizedProjectId)) {
+  const rawIds = Array.isArray(projectFilter)
+    ? projectFilter
+    : typeof projectFilter === 'string'
+      ? [projectFilter]
+      : [];
+  const normalizedIds = Array.from(
+    new Set(rawIds.map((id) => id.trim()).filter(Boolean)),
+  );
+
+  if (normalizedIds.length > 0) {
+    const visibleIds = normalizedIds.filter((id) => !hiddenProjectIdSet.has(id));
+    if (visibleIds.length === 0) {
       return [];
     }
-    return tasks.filter((task) => task.projectId === normalizedProjectId);
+    const visibleIdSet = new Set(visibleIds);
+    return tasks.filter((task) => !!task.projectId && visibleIdSet.has(task.projectId));
   }
 
   if (hiddenProjectIdSet.size === 0) {

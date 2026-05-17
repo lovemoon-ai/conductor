@@ -138,14 +138,24 @@ const buildTaskMessagePreviews = async (
   return previews;
 };
 
-const findTasksForList = async (userId: string, projectId: string | null) =>
-  withPtySchemaFallback(
+// `projectIds` may be `null` (no filter), `[id]` (single project — kept as
+// `projectId = id` for query-plan parity with the historical path) or
+// `[a, b, …]` (cross-daemon merged group — uses `projectId IN (…)`).
+const buildProjectIdFilter = (projectIds: string[] | null): Record<string, unknown> => {
+  if (projectIds === null) return {};
+  if (projectIds.length === 1) return { projectId: projectIds[0] };
+  return { projectId: { in: projectIds } };
+};
+
+const findTasksForList = async (userId: string, projectIds: string[] | null) => {
+  const projectFilter = buildProjectIdFilter(projectIds);
+  return withPtySchemaFallback(
     "tasks.GET.list",
     () =>
       db.task.findMany({
         where: {
           project: { userId },
-          ...(projectId ? { projectId } : {}),
+          ...projectFilter,
         },
         include: {
           ptySession: true,
@@ -155,7 +165,7 @@ const findTasksForList = async (userId: string, projectId: string | null) =>
       (await db.task.findMany({
         where: {
           project: { userId },
-          ...(projectId ? { projectId } : {}),
+          ...projectFilter,
         },
         select: legacyTaskSelect,
       })).map((task) => ({ ...applyLegacyTaskShape(task), issueId: null })),
@@ -163,7 +173,7 @@ const findTasksForList = async (userId: string, projectId: string | null) =>
       (await db.task.findMany({
         where: {
           project: { userId },
-          ...(projectId ? { projectId } : {}),
+          ...projectFilter,
         },
         select: {
           ...taskSelectWithoutIssueId,
@@ -171,6 +181,7 @@ const findTasksForList = async (userId: string, projectId: string | null) =>
         },
       })).map((task) => ({ ...task, issueId: null })),
   );
+};
 
 const getTaskListSortTime = (task: { updatedAt?: Date | null; createdAt: Date }) =>
   (task.updatedAt instanceof Date ? task.updatedAt : task.createdAt).getTime();
@@ -218,10 +229,41 @@ export async function GET(request: NextRequest) {
   const user = userResult;
 
   const { searchParams } = new URL(request.url);
-  const projectId = searchParams.get("project_id");
+  const projectId = searchParams.get("project_id")?.trim() || null;
+  // `project_ids` lets the UI fetch tasks across multiple projects in a single
+  // call — used by the cross-daemon merged-project view so the task list shows
+  // tasks from each daemon's same-named project together. Mutually exclusive
+  // with `project_id`, mirroring the contract on `/api/issues`.
+  const rawProjectIds = searchParams.get("project_ids");
+  const explicitProjectIds = rawProjectIds
+    ? rawProjectIds
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean)
+    : [];
+
+  if (projectId && explicitProjectIds.length > 0) {
+    return NextResponse.json(
+      { error: "Specify either project_id or project_ids, not both" },
+      { status: 400 },
+    );
+  }
+
   const recoverStale = searchParams.get("recover_stale") === "1";
 
-  const tasks = await findTasksForList(user.id, projectId);
+  const projectIdFilter: string[] | null = explicitProjectIds.length > 0
+    ? explicitProjectIds
+    : projectId
+      ? [projectId]
+      : null;
+
+  // `project_ids` was supplied but every value was blank — return an empty
+  // list rather than silently falling back to the unfiltered query.
+  if (projectIdFilter !== null && projectIdFilter.length === 0) {
+    return NextResponse.json([]);
+  }
+
+  const tasks = await findTasksForList(user.id, projectIdFilter);
 
   if (recoverStale) {
     await recoverStaleDisconnectedAgentTasks(user.id, tasks as any);
