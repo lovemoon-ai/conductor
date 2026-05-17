@@ -10,14 +10,18 @@ const apiClientMock = vi.hoisted(() => ({
 const pushToastMock = vi.hoisted(() => vi.fn());
 
 const setProjectFilterMock = vi.fn();
+const setProjectGroupFilterMock = vi.fn();
 const setSelectedProjectIdMock = vi.fn();
 const fetchTasksMock = vi.fn();
+const fetchTasksForProjectsMock = vi.fn();
 const replaceMock = vi.fn();
 const headerMock = vi.fn();
 
 let tasksState: {
   setProjectFilter: typeof setProjectFilterMock;
+  setProjectGroupFilter: typeof setProjectGroupFilterMock;
   fetchTasks: typeof fetchTasksMock;
+  fetchTasksForProjects: typeof fetchTasksForProjectsMock;
   isLoading: boolean;
   currentProjectFilter: string | null;
   tasks: Array<{ id: string; projectId?: string | null; status?: string }>;
@@ -25,6 +29,17 @@ let tasksState: {
 let searchParamsState = new URLSearchParams();
 let isDesktopViewport = false;
 let hiddenProjectIdsState: string[] = [];
+type MockProject = {
+  id: string;
+  name: string;
+  daemonHost?: string | null;
+  gitRemoteUrl?: string | null;
+  mergeOptOut?: boolean;
+};
+let projectsState: MockProject[] = [
+  { id: 'project-1', name: 'Conductor' },
+  { id: 'project-hidden', name: 'Hidden' },
+];
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
@@ -50,12 +65,21 @@ vi.mock('@/features/tasks', async () => {
     useTasksStore: (selector: (state: typeof tasksState) => unknown) => selector(tasksState),
     filterTasksByProject: (
       tasks: Array<{ projectId?: string | null }>,
-      projectId: string | null,
+      projectFilter: string | string[] | null,
       hiddenProjectIds: string[] = [],
     ) => {
       const hiddenProjectIdSet = new Set(hiddenProjectIds);
-      if (projectId) {
-        return hiddenProjectIdSet.has(projectId) ? [] : tasks.filter((task) => task.projectId === projectId);
+      const rawIds = Array.isArray(projectFilter)
+        ? projectFilter
+        : projectFilter
+          ? [projectFilter]
+          : [];
+      const normalized = rawIds.filter((id): id is string => Boolean(id));
+      if (normalized.length > 0) {
+        const visibleIds = normalized.filter((id) => !hiddenProjectIdSet.has(id));
+        if (visibleIds.length === 0) return [];
+        const visibleSet = new Set(visibleIds);
+        return tasks.filter((task) => !!task.projectId && visibleSet.has(task.projectId));
       }
       return tasks.filter((task) => !task.projectId || !hiddenProjectIdSet.has(task.projectId));
     },
@@ -108,15 +132,12 @@ vi.mock('@/features/tasks', async () => {
 
 vi.mock('@/features/projects', () => ({
   useProjectsStore: (selector: (state: {
-    projects: Array<{ id: string; name: string }>;
+    projects: MockProject[];
     hiddenProjectIds: string[];
     setSelectedProjectId: typeof setSelectedProjectIdMock;
   }) => unknown) =>
     selector({
-      projects: [
-        { id: 'project-1', name: 'Conductor' },
-        { id: 'project-hidden', name: 'Hidden' },
-      ],
+      projects: projectsState,
       hiddenProjectIds: hiddenProjectIdsState,
       setSelectedProjectId: setSelectedProjectIdMock,
     }),
@@ -154,9 +175,15 @@ describe('TasksPage', () => {
     searchParamsState = new URLSearchParams();
     isDesktopViewport = false;
     hiddenProjectIdsState = [];
+    projectsState = [
+      { id: 'project-1', name: 'Conductor' },
+      { id: 'project-hidden', name: 'Hidden' },
+    ];
     setProjectFilterMock.mockReset();
+    setProjectGroupFilterMock.mockReset();
     setSelectedProjectIdMock.mockReset();
     fetchTasksMock.mockReset();
+    fetchTasksForProjectsMock.mockReset();
     replaceMock.mockReset();
     headerMock.mockReset();
     pushToastMock.mockReset();
@@ -175,7 +202,9 @@ describe('TasksPage', () => {
 
     tasksState = {
       setProjectFilter: setProjectFilterMock,
+      setProjectGroupFilter: setProjectGroupFilterMock,
       fetchTasks: fetchTasksMock,
+      fetchTasksForProjects: fetchTasksForProjectsMock,
       isLoading: false,
       currentProjectFilter: 'project-1',
       tasks: [
@@ -425,6 +454,37 @@ describe('TasksPage', () => {
     render(<TasksPage />);
 
     expect(screen.getByText('Tasks(1)')).toBeInTheDocument();
+  });
+
+  it('expands a cross-daemon merged project so the task list shows tasks from every daemon', () => {
+    // Two same-named projects on different daemons form a merged group.
+    projectsState = [
+      { id: 'proj-host-a', name: 'Shared', daemonHost: 'host-a' },
+      { id: 'proj-host-b', name: 'Shared', daemonHost: 'host-b' },
+    ];
+    // The URL only carries one member id — the page must expand it to the
+    // full group when fetching and filtering.
+    searchParamsState = new URLSearchParams('projectId=proj-host-a');
+    tasksState = {
+      ...tasksState,
+      tasks: [
+        { id: 'task-a', projectId: 'proj-host-a', status: 'running' },
+        { id: 'task-b', projectId: 'proj-host-b', status: 'running' },
+      ],
+    };
+
+    render(<TasksPage />);
+
+    expect(setProjectGroupFilterMock).toHaveBeenCalledWith(['proj-host-a', 'proj-host-b']);
+    expect(setProjectFilterMock).not.toHaveBeenCalled();
+    expect(screen.getByText('Shared (2 tasks)')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh tasks' }));
+    expect(fetchTasksForProjectsMock).toHaveBeenCalledWith(
+      ['proj-host-a', 'proj-host-b'],
+      { recoverStale: true },
+    );
+    expect(fetchTasksMock).not.toHaveBeenCalled();
   });
 
   it('clears a hidden projectId from the URL', () => {

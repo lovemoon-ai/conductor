@@ -43,7 +43,12 @@ interface TaskListProps {
   activeTaskId?: string | null;
   onOpenTask?: (taskId: string) => void;
   desktopListPaneMode?: boolean;
-  projectFilter?: string | null;
+  /**
+   * Either a single projectId, or — for the cross-daemon merged-project
+   * view — every member projectId in the active group. The list filters
+   * tasks to whichever scope is provided.
+   */
+  projectFilter?: string | string[] | null;
   runningOnly?: boolean;
   taskTypeFilter?: TaskType | null;
   daemonHostFilter?: string | null;
@@ -79,11 +84,21 @@ export function TaskList({
   const previousRectsRef = useRef(new Map<string, DOMRect>());
   const previousOrderRef = useRef<string[]>([]);
   const animationFrameRef = useRef<number | null>(null);
-  const effectiveProjectFilter = projectFilter !== undefined ? projectFilter : currentProjectFilter;
+  const effectiveProjectFilter: string | string[] | null =
+    projectFilter !== undefined ? projectFilter : currentProjectFilter;
   const projectVisibleTasks = useMemo(
     () => filterTasksByProject(tasks, effectiveProjectFilter, hiddenProjectIds),
     [tasks, effectiveProjectFilter, hiddenProjectIds],
   );
+  // Normalize the filter to an id list so derived rendering helpers can treat
+  // single- and merged-group cases uniformly.
+  const effectiveProjectFilterIds = useMemo(() => {
+    if (!effectiveProjectFilter) return [] as string[];
+    return Array.isArray(effectiveProjectFilter)
+      ? effectiveProjectFilter.filter(Boolean)
+      : [effectiveProjectFilter];
+  }, [effectiveProjectFilter]);
+  const isMergedScope = effectiveProjectFilterIds.length > 1;
   const runningFilteredTasks = useMemo(
     () => runningOnly
       ? projectVisibleTasks.filter((task) => task.status === 'running' || task.status === 'killing')
@@ -97,7 +112,10 @@ export function TaskList({
     [runningFilteredTasks, taskTypeFilter],
   );
 
-  const showProjectInfo = !effectiveProjectFilter;
+  // In a merged cross-daemon view the project name is the same across every
+  // member but the daemon host differs — keep the per-card project / daemon
+  // chip so users can tell which daemon each task lives on.
+  const showProjectInfo = effectiveProjectFilterIds.length === 0 || isMergedScope;
   const projectMap = useMemo(() => {
     const map = new Map<
       string,
@@ -126,8 +144,10 @@ export function TaskList({
       : daemonFilteredTasks,
     [daemonFilteredTasks, backendFilter],
   );
-  const currentProjectName = effectiveProjectFilter
-    ? projects.find((project) => project.id === effectiveProjectFilter)?.name
+  // For the merged-group case every member has the same name, so the first
+  // member's name is a faithful header label.
+  const currentProjectName = effectiveProjectFilterIds.length > 0
+    ? projects.find((project) => project.id === effectiveProjectFilterIds[0])?.name
     : null;
   const selectedCount = selectedTaskIds.size;
   const selectionMode = selectedCount > 0;
@@ -423,7 +443,14 @@ export function TaskList({
               projectName={showProjectInfo ? projectEntry?.name ?? null : null}
               projectDaemonHost={showProjectInfo ? projectEntry?.daemonHost ?? null : null}
               activeTaskTypeFilter={taskTypeFilter}
-              activeProjectFilter={effectiveProjectFilter ?? null}
+              activeProjectFilter={
+                // In merged cross-daemon scope no single id is "the" filter,
+                // so the per-card chip is rendered without the active state
+                // (still clickable to drill into a specific member).
+                isMergedScope
+                  ? null
+                  : (effectiveProjectFilterIds[0] ?? null)
+              }
               activeDaemonHostFilter={daemonHostFilter}
               activeBackendFilter={backendFilter}
               onFilterByTaskType={onFilterByTaskType}

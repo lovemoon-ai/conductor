@@ -5,6 +5,7 @@ import { useWebSocket } from './useWebSocket';
 const connectMock = vi.fn();
 const disconnectMock = vi.fn();
 const fetchTasksMock = vi.fn();
+const fetchTasksForProjectsMock = vi.fn();
 const fetchProjectsMock = vi.fn();
 
 let authState: {
@@ -25,10 +26,14 @@ let websocketState: {
 
 let tasksState: {
   currentProjectFilter: string | null;
+  currentProjectIds: string[];
   fetchTasks: typeof fetchTasksMock;
+  fetchTasksForProjects: typeof fetchTasksForProjectsMock;
 } = {
   currentProjectFilter: null,
+  currentProjectIds: [],
   fetchTasks: fetchTasksMock,
+  fetchTasksForProjects: fetchTasksForProjectsMock,
 };
 
 let projectsState: {
@@ -69,6 +74,7 @@ describe('useWebSocket', () => {
     connectMock.mockReset();
     disconnectMock.mockReset();
     fetchTasksMock.mockReset();
+    fetchTasksForProjectsMock.mockReset();
     fetchProjectsMock.mockReset();
     authState = {
       session: { userToken: 'user-token-1' },
@@ -80,7 +86,9 @@ describe('useWebSocket', () => {
     };
     tasksState = {
       currentProjectFilter: null,
+      currentProjectIds: [],
       fetchTasks: fetchTasksMock,
+      fetchTasksForProjects: fetchTasksForProjectsMock,
     };
     projectsState = {
       fetchProjects: fetchProjectsMock,
@@ -115,5 +123,19 @@ describe('useWebSocket', () => {
     rerender(<TestComponent />);
 
     expect(fetchProjectsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('replays the cross-daemon merged fetch on reconnect when a merged group is active', () => {
+    tasksState = {
+      currentProjectFilter: null,
+      currentProjectIds: ['proj-a', 'proj-b'],
+      fetchTasks: fetchTasksMock,
+      fetchTasksForProjects: fetchTasksForProjectsMock,
+    };
+
+    render(<TestComponent />);
+
+    expect(fetchTasksMock).not.toHaveBeenCalled();
+    expect(fetchTasksForProjectsMock).toHaveBeenCalledWith(['proj-a', 'proj-b']);
   });
 });

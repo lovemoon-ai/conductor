@@ -293,6 +293,48 @@ describe("/api/tasks", () => {
       );
     });
 
+    it("filters by project_ids when listing tasks across a merged cross-daemon group", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.task.findMany).mockResolvedValue([]);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        token,
+        url: "http://localhost:6152/api/tasks?project_ids=proj-a,proj-b",
+      });
+      const response = await GET(request);
+
+      expect(response.status).toBe(200);
+      expect(db.task.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            projectId: { in: ["proj-a", "proj-b"] },
+          }),
+        }),
+      );
+    });
+
+    it("rejects requests that combine project_id and project_ids", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.task.findMany).mockResolvedValue([]);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        token,
+        url: "http://localhost:6152/api/tasks?project_id=proj-a&project_ids=proj-b",
+      });
+      const response = await GET(request);
+
+      expect(response.status).toBe(400);
+      const body = await extractJson(response);
+      expect(body.error).toBe("Specify either project_id or project_ids, not both");
+      expect(db.task.findMany).not.toHaveBeenCalled();
+    });
+
     it("falls back to legacy task reads when PTY schema columns are missing", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
 

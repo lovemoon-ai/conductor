@@ -22,6 +22,7 @@ describe('tasks store', () => {
       isLoading: false,
       error: null,
       currentProjectFilter: null,
+      currentProjectIds: [],
       unreadTaskIds: new Set(),
     });
   });
@@ -502,5 +503,100 @@ describe('tasks store', () => {
       },
     ]);
     expect(useTasksStore.getState().currentProjectFilter).toBe('proj-1');
+  });
+
+  it('fetches tasks across multiple projects via project_ids for cross-daemon merged groups', async () => {
+    mockGet.mockResolvedValueOnce([
+      {
+        id: 'task-a',
+        project_id: 'proj-a',
+        title: 'A task',
+        task_type: 'ai_task',
+        status: 'running',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:01:00.000Z',
+      },
+      {
+        id: 'task-b',
+        project_id: 'proj-b',
+        title: 'B task',
+        task_type: 'ai_task',
+        status: 'running',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:01:00.000Z',
+      },
+    ]);
+
+    await useTasksStore.getState().fetchTasksForProjects(['proj-a', 'proj-b']);
+
+    expect(mockGet).toHaveBeenCalledWith('/tasks?project_ids=proj-a%2Cproj-b&recover_stale=1');
+    expect(useTasksStore.getState().currentProjectFilter).toBeNull();
+    expect(useTasksStore.getState().currentProjectIds).toEqual(['proj-a', 'proj-b']);
+    expect(useTasksStore.getState().tasks).toMatchObject([
+      { id: 'task-a', projectId: 'proj-a' },
+      { id: 'task-b', projectId: 'proj-b' },
+    ]);
+  });
+
+  it('falls back to single-id fetch when fetchTasksForProjects gets a single member', async () => {
+    mockGet.mockResolvedValueOnce([]);
+
+    await useTasksStore.getState().fetchTasksForProjects(['proj-only']);
+
+    expect(mockGet).toHaveBeenCalledWith('/tasks?project_id=proj-only&recover_stale=1');
+    expect(useTasksStore.getState().currentProjectFilter).toBe('proj-only');
+    expect(useTasksStore.getState().currentProjectIds).toEqual([]);
+  });
+
+  it('drops a stale merged-group response once the active scope changes', async () => {
+    let resolveFirst: ((value: unknown) => void) | null = null;
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/tasks?project_ids=proj-a%2Cproj-b&recover_stale=1') {
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      if (url === '/tasks?project_id=proj-c&recover_stale=1') {
+        return Promise.resolve([
+          {
+            id: 'task-c',
+            project_id: 'proj-c',
+            title: 'C task',
+            task_type: 'ai_task',
+            status: 'running',
+            created_at: '2024-01-01T00:00:00.000Z',
+            updated_at: '2024-01-01T00:01:00.000Z',
+          },
+        ]);
+      }
+      throw new Error(`Unexpected url: ${url}`);
+    });
+
+    const inFlight = useTasksStore.getState().fetchTasksForProjects(['proj-a', 'proj-b']);
+    // User switches to a different single-project view while the merged
+    // request is still pending.
+    useTasksStore.getState().setProjectFilter('proj-c');
+
+    resolveFirst?.([
+      {
+        id: 'stale',
+        project_id: 'proj-a',
+        title: 'Stale task',
+        task_type: 'ai_task',
+        status: 'running',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:01:00.000Z',
+      },
+    ]);
+    await inFlight;
+    // Let the proj-c fetch finish.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useTasksStore.getState().tasks).toMatchObject([
+      { id: 'task-c', projectId: 'proj-c' },
+    ]);
+    expect(useTasksStore.getState().currentProjectFilter).toBe('proj-c');
+    expect(useTasksStore.getState().currentProjectIds).toEqual([]);
   });
 });

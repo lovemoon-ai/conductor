@@ -12,6 +12,7 @@ import { CreateTaskDialog } from '@/features/tasks';
 import { TaskDetailPane } from '@/features/tasks';
 import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
+import { computeProjectGroups } from '@/features/projects/utils/project-groups';
 import { filterTasksByProject, getStableTaskBackend } from '@/features/tasks';
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
 import { parseTaskType, type TaskType } from '@/lib/tasks/task-config';
@@ -33,7 +34,9 @@ function TasksPageContent() {
   const hydrateTaskListPreferences = useUserPreferencesStore((state) => state.hydrateTaskListPreferences);
   const setTaskListRunningOnly = useUserPreferencesStore((state) => state.setTaskListRunningOnly);
   const setProjectFilter = useTasksStore((state) => state.setProjectFilter);
+  const setProjectGroupFilter = useTasksStore((state) => state.setProjectGroupFilter);
   const fetchTasks = useTasksStore((state) => state.fetchTasks);
+  const fetchTasksForProjects = useTasksStore((state) => state.fetchTasksForProjects);
   const isLoading = useTasksStore((state) => state.isLoading);
   const tasks = useTasksStore((state) => state.tasks);
   const projects = useProjectsStore((state) => state.projects);
@@ -56,7 +59,37 @@ function TasksPageContent() {
     }
     return map;
   }, [projects]);
-  const projectVisibleTasks = useMemo(() => filterTasksByProject(tasks, projectId, hiddenProjectIds), [tasks, projectId, hiddenProjectIds]);
+  // When the URL-selected project belongs to a cross-daemon merged group,
+  // expand it to every member so the task list pulls tasks from each
+  // daemon's same-named project. Single-member groups behave exactly as
+  // before (a single projectId in / out).
+  const projectGroups = useMemo(() => computeProjectGroups(projects), [projects]);
+  const currentGroup = useMemo(() => {
+    if (!projectId) return null;
+    return projectGroups.find((group) =>
+      group.members.some((member) => member.id === projectId),
+    ) ?? null;
+  }, [projectGroups, projectId]);
+  const currentGroupMemberIds = useMemo(
+    () => (currentGroup ? currentGroup.members.map((member) => member.id) : []),
+    [currentGroup],
+  );
+  const isMergedGroup = currentGroup ? currentGroup.isMerged : false;
+  // The "scope" we feed both the task fetch and the in-memory filter:
+  //  - merged group view → all member ids
+  //  - single project view → [projectId]
+  //  - no project selected → []
+  const projectScope = useMemo(() => {
+    if (isMergedGroup && currentGroupMemberIds.length > 1) {
+      return currentGroupMemberIds;
+    }
+    return projectId ? [projectId] : [];
+  }, [isMergedGroup, currentGroupMemberIds, projectId]);
+  const projectScopeKey = useMemo(() => projectScope.slice().sort().join(','), [projectScope]);
+  const projectVisibleTasks = useMemo(
+    () => filterTasksByProject(tasks, projectScope.length > 0 ? projectScope : null, hiddenProjectIds),
+    [tasks, projectScope, hiddenProjectIds],
+  );
   const runningFilteredTasks = useMemo(
     () => showRunningOnly
       ? projectVisibleTasks.filter((task) => task.status === 'running' || task.status === 'killing')
@@ -141,9 +174,23 @@ function TasksPageContent() {
   }, [hiddenProjectIdSet, projectIdFromUrl, router, searchParams]);
 
   useEffect(() => {
-    setProjectFilter(projectId || null);
+    if (isMergedGroup && currentGroupMemberIds.length > 1) {
+      setProjectGroupFilter(currentGroupMemberIds);
+    } else {
+      setProjectFilter(projectId || null);
+    }
     setSelectedProjectId(projectId || null);
-  }, [projectId, setProjectFilter, setSelectedProjectId]);
+    // `projectScopeKey` collapses the array dependency to a stable string so
+    // the effect only re-runs when the actual member set changes.
+  }, [
+    projectId,
+    isMergedGroup,
+    projectScopeKey,
+    currentGroupMemberIds,
+    setProjectFilter,
+    setProjectGroupFilter,
+    setSelectedProjectId,
+  ]);
 
   useEffect(() => {
     if (!inlineDetailEnabled) {
@@ -204,7 +251,11 @@ function TasksPageContent() {
   }, [inlineDetailEnabled, router, searchParams, selectedTaskId, visibleTaskIds]);
 
   const handleRefresh = () => {
-    fetchTasks(projectId ?? undefined, { recoverStale: true });
+    if (isMergedGroup && currentGroupMemberIds.length > 1) {
+      void fetchTasksForProjects(currentGroupMemberIds, { recoverStale: true });
+    } else {
+      void fetchTasks(projectId ?? undefined, { recoverStale: true });
+    }
   };
 
   const replaceTaskRoute = useCallback(
@@ -331,7 +382,7 @@ function TasksPageContent() {
                 activeTaskId={selectedTaskId}
                 onOpenTask={handleSelectTask}
                 desktopListPaneMode
-                projectFilter={projectId}
+                projectFilter={projectScope.length > 0 ? projectScope : null}
                 runningOnly={showRunningOnly}
                 taskTypeFilter={taskTypeFilter}
                 daemonHostFilter={daemonHostFilter}

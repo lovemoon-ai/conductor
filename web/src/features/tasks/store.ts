@@ -68,10 +68,23 @@ interface TasksState {
   isLoading: boolean;
   error: string | null;
   currentProjectFilter: string | null;
+  /**
+   * When the active project view is a cross-daemon merged group, this holds
+   * the full set of project ids the task list is fetching for (in member
+   * order). Empty when only `currentProjectFilter` is in use.
+   */
+  currentProjectIds: string[];
   unreadTaskIds: Set<string>;
 
   // Actions
   fetchTasks: (projectId?: string, options?: { recoverStale?: boolean }) => Promise<void>;
+  /**
+   * Fetch tasks across multiple projects in a single call — used by the
+   * merged cross-daemon view so the list combines tasks from every daemon's
+   * same-named project. Pass an empty list to fall back to the unfiltered
+   * "all tasks" view.
+   */
+  fetchTasksForProjects: (projectIds: string[], options?: { recoverStale?: boolean }) => Promise<void>;
   fetchTask: (taskId: string) => Promise<Task | null>;
   createTask: (input: CreateTaskInput) => Promise<Task>;
   updateTask: (taskId: string, input: UpdateTaskInput) => Promise<Task>;
@@ -79,12 +92,24 @@ interface TasksState {
   cleanupTaskWorktree: (taskId: string) => Promise<CleanupTaskWorktreeResponse>;
   deleteTask: (taskId: string) => Promise<void>;
   setProjectFilter: (projectId: string | null) => void;
+  /**
+   * Set the active project filter to a merged cross-daemon group and fetch
+   * the combined task list. An empty / single-id list is treated the same as
+   * `setProjectFilter`.
+   */
+  setProjectGroupFilter: (projectIds: string[]) => void;
   markTaskRead: (taskId: string) => void;
   markTaskUnread: (taskId: string) => void;
   updateTaskInList: (task: Task, options?: { moveToFront?: boolean }) => void;
   removeTask: (taskId: string) => void;
   clearError: () => void;
 }
+
+const normalizeProjectIdList = (projectIds: string[]): string[] =>
+  Array.from(new Set(projectIds.map((id) => id.trim()).filter(Boolean)));
+
+const projectScopeKey = (projectIds: string[]): string =>
+  normalizeProjectIdList(projectIds).slice().sort().join(',');
 
 export const normalizeTask = (task: any): Task => ({
   id: task.id,
@@ -160,6 +185,7 @@ export const useTasksStore = create<TasksState>()((set, get) => {
     isLoading: false,
     error: null,
     currentProjectFilter: null,
+    currentProjectIds: [],
     unreadTaskIds: new Set(),
 
     fetchTasks: async (projectId, options) => {
@@ -178,12 +204,69 @@ export const useTasksStore = create<TasksState>()((set, get) => {
         }
         const suffix = query.toString() ? `?${query.toString()}` : '';
         const tasks = await api.get<Task[]>(`/tasks${suffix}`);
-        if (get().currentProjectFilter !== requestedProjectId || requestId !== fetchTasksRequestSequence) {
+        if (
+          get().currentProjectFilter !== requestedProjectId
+          || get().currentProjectIds.length !== 0
+          || requestId !== fetchTasksRequestSequence
+        ) {
           return;
         }
         set({ tasks: tasks.map(normalizeTask), isLoading: false });
       } catch (error) {
-        if (get().currentProjectFilter !== requestedProjectId || requestId !== fetchTasksRequestSequence) {
+        if (
+          get().currentProjectFilter !== requestedProjectId
+          || get().currentProjectIds.length !== 0
+          || requestId !== fetchTasksRequestSequence
+        ) {
+          return;
+        }
+        set({
+          isLoading: false,
+          error: error instanceof Error ? error.message : 'Failed to fetch tasks',
+        });
+      }
+    },
+
+    fetchTasksForProjects: async (projectIds, options) => {
+      const normalized = normalizeProjectIdList(projectIds);
+      // Empty list ⇒ defer to fetchTasks with no project filter so callers can
+      // unwind the merged scope without a second API call shape.
+      if (normalized.length === 0) {
+        await get().fetchTasks(undefined, options);
+        return;
+      }
+      // Single id ⇒ keep the lighter `project_id` path on the backend; the
+      // merged store fields are cleared to match.
+      if (normalized.length === 1) {
+        set({ currentProjectFilter: normalized[0], currentProjectIds: [] });
+        await get().fetchTasks(normalized[0], options);
+        return;
+      }
+      const requestId = ++fetchTasksRequestSequence;
+      const requestedKey = projectScopeKey(normalized);
+      set({ isLoading: true, error: null, currentProjectFilter: null, currentProjectIds: normalized });
+      try {
+        const api = getApiClient();
+        const query = new URLSearchParams();
+        const recoverStale = options?.recoverStale ?? true;
+        query.set('project_ids', normalized.join(','));
+        if (recoverStale) {
+          query.set('recover_stale', '1');
+        }
+        const suffix = `?${query.toString()}`;
+        const tasks = await api.get<Task[]>(`/tasks${suffix}`);
+        if (
+          projectScopeKey(get().currentProjectIds) !== requestedKey
+          || requestId !== fetchTasksRequestSequence
+        ) {
+          return;
+        }
+        set({ tasks: tasks.map(normalizeTask), isLoading: false });
+      } catch (error) {
+        if (
+          projectScopeKey(get().currentProjectIds) !== requestedKey
+          || requestId !== fetchTasksRequestSequence
+        ) {
           return;
         }
         set({
@@ -327,8 +410,25 @@ export const useTasksStore = create<TasksState>()((set, get) => {
     },
 
     setProjectFilter: (projectId) => {
-      set({ currentProjectFilter: projectId });
+      // Clearing `currentProjectIds` here is what makes a merged-group →
+      // single-project switch race-safe: the in-flight `fetchTasksForProjects`
+      // response checks `currentProjectIds` and bails out when it no longer
+      // matches, instead of clobbering the new single-project payload.
+      set({ currentProjectFilter: projectId, currentProjectIds: [] });
       get().fetchTasks(projectId ?? undefined);
+    },
+
+    setProjectGroupFilter: (projectIds) => {
+      const normalized = normalizeProjectIdList(projectIds);
+      if (normalized.length <= 1) {
+        // Single (or zero) member ⇒ behave exactly like setProjectFilter so
+        // we keep the historical single-id query path / state shape.
+        const single = normalized[0] ?? null;
+        set({ currentProjectFilter: single, currentProjectIds: [] });
+        get().fetchTasks(single ?? undefined);
+        return;
+      }
+      void get().fetchTasksForProjects(normalized);
     },
 
     markTaskRead: (taskId) => {
