@@ -408,7 +408,15 @@ function TasksPageContent() {
           <div className="h-full overflow-y-auto webapp-scrollbar">
             <TaskList
               viewMode={viewMode}
-              projectFilter={projectId}
+              // Must mirror the inline (desktop) branch's expanded scope —
+              // passing the raw single `projectId` here makes the merged-
+              // project view appear empty whenever the URL's projectId
+              // happens to be a different daemon than the one carrying the
+              // tasks. The page-level `taskCount` (computed from
+              // `projectScope`) was correct but TaskList was silently
+              // filtering to one member only, causing "title says N tasks
+              // but the list is empty" in the single-pane / mobile view.
+              projectFilter={projectScope.length > 0 ? projectScope : null}
               runningOnly={showRunningOnly}
               taskTypeFilter={taskTypeFilter}
               daemonHostFilter={daemonHostFilter}
