@@ -6,6 +6,7 @@
     "cli",
     "modules/ai-sdk",
     "modules/ai-manager",
+    "modules/app-sdk",
     "modules/conductor-sdk"
   ],
   "scripts": {

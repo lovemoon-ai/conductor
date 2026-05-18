@@ -1,0 +1,264 @@
+/* Conductor App SDK — chat widget styles.
+ *
+ * v0.1: hand-written CSS, functional but visually minimal. The eventual
+ * extraction from web/src/features/chat will swap this for the pre-compiled
+ * Tailwind output. Until then, hosts who want polished visuals are free to
+ * override any class — every component renders semantic conductor-* classes.
+ *
+ * Theming: all colors / radii / spacing pull from CSS variables on the
+ * `.conductor-chat-view` root, which `<ChatView theme={...} />` overrides
+ * per instance.
+ */
+
+.conductor-chat-view {
+  --accent: #e4572e;
+  --conductor-paper: #f5f1ea;
+  --conductor-text: #1a1a1a;
+  --conductor-text-muted: rgba(0, 0, 0, 0.55);
+  --conductor-bubble-user: #f1ece2;
+  --conductor-bubble-assistant: #ffffff;
+  --conductor-border: rgba(0, 0, 0, 0.08);
+  --conductor-radius: 12px;
+  --conductor-spacing: 12px;
+  --conductor-font:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100%;
+  background: var(--conductor-paper);
+  color: var(--conductor-text);
+  font-family: var(--conductor-font);
+  font-size: 14px;
+  line-height: 1.5;
+  box-sizing: border-box;
+}
+
+.conductor-chat-view *,
+.conductor-chat-view *::before,
+.conductor-chat-view *::after {
+  box-sizing: border-box;
+}
+
+/* ----- Runtime status bar ------------------------------------------------- */
+
+.conductor-runtime-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px var(--conductor-spacing);
+  font-size: 12px;
+  color: var(--conductor-text-muted);
+  border-bottom: 1px solid var(--conductor-border);
+  min-height: 32px;
+}
+
+.conductor-runtime-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.2);
+  flex-shrink: 0;
+}
+
+.conductor-runtime-indicator--active {
+  background: var(--accent);
+  animation: conductor-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes conductor-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 0.6;
+  }
+}
+
+.conductor-runtime-text {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conductor-runtime-error {
+  color: #b04020;
+  font-weight: 500;
+}
+
+.conductor-runtime-connection {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--conductor-text-muted);
+}
+
+/* ----- Message list ------------------------------------------------------- */
+
+.conductor-message-list {
+  overflow-y: auto;
+  padding: var(--conductor-spacing);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0; /* lets it shrink inside the grid row */
+}
+
+.conductor-load-earlier {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 4px;
+}
+
+.conductor-load-earlier button {
+  background: transparent;
+  border: 1px solid var(--conductor-border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--conductor-text-muted);
+  cursor: pointer;
+}
+
+.conductor-load-earlier button:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.conductor-message {
+  display: flex;
+}
+
+.conductor-message--user {
+  justify-content: flex-end;
+}
+
+.conductor-message--assistant {
+  justify-content: flex-start;
+}
+
+.conductor-bubble {
+  max-width: 75%;
+  padding: 10px 14px;
+  border-radius: var(--conductor-radius);
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid var(--conductor-border);
+}
+
+.conductor-message--user .conductor-bubble {
+  background: var(--conductor-bubble-user);
+  border-bottom-right-radius: 4px;
+}
+
+.conductor-message--assistant .conductor-bubble {
+  background: var(--conductor-bubble-assistant);
+  border-bottom-left-radius: 4px;
+}
+
+.conductor-message--pending .conductor-bubble {
+  opacity: 0.6;
+}
+
+/* ----- Message input ------------------------------------------------------ */
+
+.conductor-message-input {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: var(--conductor-spacing);
+  border-top: 1px solid var(--conductor-border);
+  background: var(--conductor-paper);
+}
+
+.conductor-message-input__textarea {
+  flex: 1;
+  min-height: 36px;
+  max-height: 136px;
+  resize: none;
+  padding: 8px 12px;
+  border: 1px solid var(--conductor-border);
+  border-radius: var(--conductor-radius);
+  background: #fff;
+  color: var(--conductor-text);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  outline: none;
+  overflow-y: auto;
+}
+
+.conductor-message-input__textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(228, 87, 46, 0.15);
+}
+
+.conductor-message-input__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.conductor-button {
+  padding: 8px 14px;
+  border-radius: var(--conductor-radius);
+  border: 1px solid var(--conductor-border);
+  background: #fff;
+  color: var(--conductor-text);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.conductor-button:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.conductor-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.conductor-button--send {
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+}
+
+.conductor-button--send:hover {
+  background: var(--accent);
+  filter: brightness(0.92);
+}
+
+.conductor-button--interrupt {
+  background: #b04020;
+  color: #fff;
+  border-color: transparent;
+}
+
+.conductor-button--interrupt:hover {
+  filter: brightness(0.92);
+}
+
+/* ----- Mobile layout ------------------------------------------------------ */
+
+@media (max-width: 600px) {
+  .conductor-chat-view {
+    font-size: 15px;
+  }
+  .conductor-bubble {
+    max-width: 85%;
+  }
+}
+
+.conductor-chat-view[data-layout='mobile'] .conductor-bubble {
+  max-width: 85%;
+}
+
+.conductor-chat-view[data-layout='desktop'] .conductor-bubble {
+  max-width: 60%;
+}

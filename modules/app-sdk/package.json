@@ -1,0 +1,78 @@
+{
+  "name": "@love-moon/app-sdk",
+  "version": "0.1.0",
+  "description": "Conductor App SDK: third-party backend SDK + React chat widget for embedding Conductor AI tools",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lovemoon-ai/conductor.git",
+    "directory": "modules/app-sdk"
+  },
+  "type": "module",
+  "files": [
+    "dist",
+    "examples",
+    "CHANGELOG.md",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "node": "./dist/server/index.js",
+      "default": "./dist/server/index.js"
+    },
+    "./react": {
+      "react-server": null,
+      "types": "./dist/react/index.d.ts",
+      "browser": "./dist/react/index.js",
+      "import": "./dist/react/index.js",
+      "default": "./dist/react/index.js"
+    },
+    "./react/styles.css": "./dist/react/styles.css",
+    "./package.json": "./package.json"
+  },
+  "sideEffects": [
+    "./dist/react/styles.css"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup && node scripts/build-styles.mjs",
+    "build:watch": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:bundle": "node scripts/bundle-smoke.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "zod": "^3.24.1"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": { "optional": true },
+    "react-dom": { "optional": true }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.5.12",
+    "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^25.0.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}
