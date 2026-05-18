@@ -18,6 +18,84 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.3.2] - 2026-05-18
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.3.2`
+- `@love-moon/conductor-sdk` `0.3.2`
+- `@love-moon/ai-sdk` `0.3.2`
+- `@love-moon/ai-manager` `0.3.2`
+- `@love-moon/app-sdk` `0.3.2`
+
+### Changes
+
+#### @love-moon/conductor-cli
+
+### Patch Changes
+
+- 8e1d4a8: Prefer the bundled Copilot platform executable before the JS entrypoint so Node
+  20 installs do not fail with `ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite`.
+- Updated dependencies [8e1d4a8]
+  - @love-moon/ai-sdk@0.3.2
+  - @love-moon/ai-manager@0.3.2
+  - @love-moon/conductor-sdk@0.3.2
+
+#### @love-moon/app-sdk
+
+### Changed
+
+- `ChatEvent.task_failed.error` and `StreamReplyDelta.error` now include
+  optional `details?: unknown` and `cause?: unknown` fields. Additive,
+  non-breaking — existing consumers ignore the new fields. The default WS
+  → ChatEvent translation forwards both from `ConductorAppError`, so host
+  UIs can surface server payloads / request IDs / underlying causes without
+  depending on the SDK error class directly. The `<ChatView />` React store
+  (`useChat().state.error`) also carries these through.
+- `examples/02_bff` BFF now hardcodes `role: 'user'` and strips
+  `metadata.audit` on `POST /messages`. **Integrators copying the example
+  must follow this pattern.** Without it, a malicious browser could forge
+  `role: 'system'|'assistant'` messages or stamp `audit.actor='app'` —
+  bypassing `streamReply`'s SDK-echo filter and impersonating server-side
+  app messages. The BFF is the only point in the pipeline that knows the
+  browser is untrusted; do not push role/audit choices down to the SDK.
+- `client.tasks.streamReply()` now applies a default **120s idle timeout**
+  between consecutive `text` / status-transition deltas. If no progress is
+  observed in that window the iterator yields a terminal
+  `{ type: 'error', error: { code: 'stream_aborted', message: 'idle timeout' } }`
+  and closes. Long-running backends (e.g. tools that may legitimately go
+  silent for minutes) can opt out by passing `idleTimeoutMs: 0`:
+
+  ```ts
+  for await (const delta of client.tasks.streamReply(taskId, { idleTimeoutMs: 0 })) {
+    // never time out — caller is responsible for cancelling via signal
+  }
+  ```
+- **Locked down the public `.d.ts` surface.** Internal transport types —
+  `Fetcher`, `FetcherOptions`, `RequestOptions`, `AppWebSocket`,
+  `AppWebSocketOptions`, `TasksRestApi` — are now tagged
+  `/** @internal */` and stripped from generated d.ts via tsup's
+  `dts.compilerOptions.stripInternal`. Previously these appeared as
+  `declare class …` in `dist/server/index.d.ts` (even though not
+  re-exported) and TypeScript surfaced them on hover / structural
+  reference. The `AppClient._internals` test-seam getter has been removed
+  (it was unused). The CI `bundle-smoke` script now also asserts none of
+  these symbols leak into any d.ts as a regression net.
+- **`AppClient.close()` now safely terminates in-flight subscribe
+  iterators.** When a `for await` loop on `tasks.subscribe(taskId)` is
+  mid-stream and the caller invokes `client.close()`, the iterator now
+  yields a synthetic
+  `{ type: 'task_failed', taskId, error: { code: 'subscribe_failed', message: 'client closed' } }`
+  and returns instead of hanging silently. Same for `tasks.streamReply()`
+  — it surfaces an `{ type: 'error', error: { code: 'subscribe_failed' } }`
+  delta. `close()` is also idempotent (a second call is a no-op). After
+  close, calls to `tasks.subscribe()` / `tasks.streamReply()` / any
+  `tasks.*` REST method throw a synchronous
+  `ConductorAppError({ code: 'subscribe_failed', message: 'client is closed' })`
+  rather than returning a hanging iterator. Implemented internally by a
+  new `AppWebSocket.onClose(listener)` channel; the public API surface
+  is unchanged.
+
 ## [0.3.1] - 2026-05-13
 
 ### Released packages

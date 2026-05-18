@@ -10,6 +10,7 @@ This repository now separates web deployment from npm package publishing.
 - Published npm packages are versioned independently with changesets:
   - `@love-moon/ai-sdk`
   - `@love-moon/ai-manager`
+  - `@love-moon/app-sdk`
   - `@love-moon/conductor-sdk`
   - `@love-moon/conductor-cli`
 - CLI archive releases are still built by `.github/workflows/cli-release-archives.yml`.
@@ -49,6 +50,7 @@ behavior for any published package:
 - `cli/**`
 - `modules/ai-sdk/**`
 - `modules/ai-manager/**`
+- `modules/app-sdk/**`
 - `modules/conductor-sdk/**`
 
 Skip `npm run changeset` when the diff is release-neutral, for example:

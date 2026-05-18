@@ -1,5 +1,16 @@
 # @love-moon/conductor-cli
 
+## 0.3.2
+
+### Patch Changes
+
+- 8e1d4a8: Prefer the bundled Copilot platform executable before the JS entrypoint so Node
+  20 installs do not fail with `ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite`.
+- Updated dependencies [8e1d4a8]
+  - @love-moon/ai-sdk@0.3.2
+  - @love-moon/ai-manager@0.3.2
+  - @love-moon/conductor-sdk@0.3.2
+
 ## 0.3.1
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 # @love-moon/app-sdk
 
-## 0.2.0 (unreleased)
+## 0.3.2
 
 ### Changed
 
