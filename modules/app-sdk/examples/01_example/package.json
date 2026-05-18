@@ -1,0 +1,13 @@
+{
+  "name": "conductor-app-sdk-cli-example",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Minimal CLI app that talks to a user's Conductor daemon via @love-moon/app-sdk.",
+  "type": "module",
+  "scripts": {
+    "start": "node chat-cli.mjs"
+  },
+  "dependencies": {
+    "@love-moon/app-sdk": "file:../.."
+  }
+}
