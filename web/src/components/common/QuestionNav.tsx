@@ -1,5 +1,7 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
+
 interface QuestionNavProps {
   /** Number of dots to render. Returns null when 0. */
   count: number;
@@ -47,6 +49,27 @@ export function QuestionNav({
   visible = true,
   className,
 }: QuestionNavProps) {
+  // Per-dot refs let us nudge the active dot back into the rail's own scroll
+  // viewport when the conversation has more dots than fit in `max-h-[80%]`.
+  // Without this the nav silently hides the active dot behind its internal
+  // scrollbar and users have to scroll the rail by hand to find it.
+  const buttonRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
+
+  useEffect(() => {
+    // While the nav is hidden (opacity-0 / pointer-events-none) scrolling it
+    // serves no purpose — and `scrollIntoView` on a non-visible element can
+    // perturb ancestor scroll containers. Defer until the rail comes back.
+    if (!visible) return;
+    const node = buttonRefs.current.get(activeIndex);
+    if (!node) return;
+    // `block: 'nearest'` is intentional: the browser leaves the rail alone
+    // when the active dot is already in view, and only scrolls the minimum
+    // distance needed when it isn't. Anything stronger (`center` / `start`)
+    // would yank the rail every time the user scrolls past a new question,
+    // which we explicitly don't want.
+    node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeIndex, visible, count]);
+
   if (count === 0) return null;
 
   const positionClass = className ?? DEFAULT_POSITION_CLASS;
@@ -65,6 +88,13 @@ export function QuestionNav({
           {i > 0 && <div className="h-3 w-px bg-neutral-400/60" />}
           <button
             type="button"
+            ref={(node) => {
+              if (node) {
+                buttonRefs.current.set(i, node);
+              } else {
+                buttonRefs.current.delete(i);
+              }
+            }}
             tabIndex={visible ? 0 : -1}
             aria-label={`Jump to question ${i + 1}`}
             title={`Question ${i + 1}`}
