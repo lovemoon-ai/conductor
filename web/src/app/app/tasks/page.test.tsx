@@ -89,20 +89,34 @@ vi.mock('@/features/tasks', async () => {
       activeTaskId,
       onOpenTask,
       runningOnly,
+      projectFilter,
     }: {
       viewMode: string;
       activeTaskId?: string | null;
       onOpenTask?: (taskId: string) => void;
       runningOnly?: boolean;
-    }) => (
-      <>
-        <div>task-list:{viewMode}:{activeTaskId ?? 'none'}:{onOpenTask ? 'inline' : 'route'}</div>
-        <div>running-only:{runningOnly ? 'yes' : 'no'}</div>
-        <button type="button" onClick={() => onOpenTask?.('task-2')}>
-          select-task-2
-        </button>
-      </>
-    ),
+      projectFilter?: string | string[] | null;
+    }) => {
+      // Surface projectFilter so tests can assert the page passed the right
+      // shape (single string vs expanded merged-group array). Earlier the
+      // mock ignored this prop, which silently masked a "single-pane render
+      // path still used the raw projectId" bug.
+      const projectFilterTag = projectFilter == null
+        ? 'none'
+        : Array.isArray(projectFilter)
+          ? `group:${projectFilter.join(',')}`
+          : `single:${projectFilter}`;
+      return (
+        <>
+          <div>task-list:{viewMode}:{activeTaskId ?? 'none'}:{onOpenTask ? 'inline' : 'route'}</div>
+          <div>running-only:{runningOnly ? 'yes' : 'no'}</div>
+          <div>project-filter:{projectFilterTag}</div>
+          <button type="button" onClick={() => onOpenTask?.('task-2')}>
+            select-task-2
+          </button>
+        </>
+      );
+    },
     CreateTaskDialog: ({
       open,
       onClose,
@@ -478,6 +492,12 @@ describe('TasksPage', () => {
     expect(setProjectGroupFilterMock).toHaveBeenCalledWith(['proj-host-a', 'proj-host-b']);
     expect(setProjectFilterMock).not.toHaveBeenCalled();
     expect(screen.getByText('Shared (2 tasks)')).toBeInTheDocument();
+    // TaskList must receive the expanded group, not the raw URL projectId —
+    // otherwise the page's task count is right but the rendered list filters
+    // to a single daemon and looks empty when tasks live on the other one.
+    expect(
+      screen.getByText('project-filter:group:proj-host-a,proj-host-b'),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh tasks' }));
     expect(fetchTasksForProjectsMock).toHaveBeenCalledWith(
@@ -485,6 +505,28 @@ describe('TasksPage', () => {
       { recoverStale: true },
     );
     expect(fetchTasksMock).not.toHaveBeenCalled();
+  });
+
+  it('expands the merged project in the desktop split-pane render path too', () => {
+    isDesktopViewport = true;
+    projectsState = [
+      { id: 'proj-host-a', name: 'Shared', daemonHost: 'host-a' },
+      { id: 'proj-host-b', name: 'Shared', daemonHost: 'host-b' },
+    ];
+    searchParamsState = new URLSearchParams('projectId=proj-host-a');
+    tasksState = {
+      ...tasksState,
+      tasks: [
+        { id: 'task-a', projectId: 'proj-host-a', status: 'running' },
+        { id: 'task-b', projectId: 'proj-host-b', status: 'running' },
+      ],
+    };
+
+    render(<TasksPage />);
+
+    expect(
+      screen.getByText('project-filter:group:proj-host-a,proj-host-b'),
+    ).toBeInTheDocument();
   });
 
   it('clears a hidden projectId from the URL', () => {
