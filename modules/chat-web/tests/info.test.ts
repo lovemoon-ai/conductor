@@ -28,6 +28,7 @@ describe("info command (filesystem-only mode)", () => {
     expect(names).toContain("chatgpt");
     expect(names).toContain("deepseek");
     expect(names).toContain("gemini");
+    expect(names).toContain("aistudio");
     for (const r of rows) {
       expect(r.profileExists).toBe(false);
       expect(r.loggedIn).toBeUndefined();

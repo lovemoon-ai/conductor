@@ -3,16 +3,21 @@ import { EventEmitter } from "node:events";
 import { CHAT_WEB_SESSION_VARIANT } from "../built-in-backends.js";
 import { emitLog, normalizeLogger } from "../shared.js";
 
-const SUPPORTED_CHAT_WEB_PROVIDERS = new Set(["chatgpt", "gemini"]);
+const SUPPORTED_CHAT_WEB_PROVIDERS = new Set(["chatgpt", "gemini", "aistudio"]);
 const DEFAULT_CHAT_WEB_PROVIDER = "chatgpt";
 const DEFAULT_TURN_TIMEOUT_MS = 5 * 60 * 1000;
 
 function normalizeChatWebProvider(value) {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (!raw) return "";
-  // Friendly aliases. "openai" / "gpt" → chatgpt, "google" → gemini.
+  // Friendly aliases:
+  //   openai/gpt/chat-gpt   → chatgpt
+  //   google                → gemini (the consumer chat)
+  //   aistudio/ai-studio    → aistudio (the developer playground;
+  //                          intentionally distinct from gemini)
   if (raw === "openai" || raw === "gpt" || raw === "chat-gpt") return "chatgpt";
-  if (raw === "google" || raw === "aistudio" || raw === "ai-studio") return "gemini";
+  if (raw === "google") return "gemini";
+  if (raw === "ai-studio") return "aistudio";
   return raw;
 }
 
@@ -387,8 +392,12 @@ export class ChatWebSession extends EventEmitter {
       case "gemini":
         // gemini.google.com (consumer chat) uses /app/{conversation-id}.
         // NB: this is intentionally NOT aistudio.google.com — AI Studio
-        // is a separate developer playground that requires an API key.
+        // is a separate developer playground that requires an API key
+        // (see the `aistudio` case below).
         return `https://gemini.google.com/app/${this.providerConversationId}`;
+      case "aistudio":
+        // AI Studio: developer playground. URL pattern /prompts/{slug}.
+        return `https://aistudio.google.com/prompts/${this.providerConversationId}`;
       default:
         return undefined;
     }

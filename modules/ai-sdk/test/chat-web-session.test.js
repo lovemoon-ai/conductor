@@ -110,20 +110,47 @@ describe("ChatWebSession", () => {
     assert.equal(s.chatWebProvider, "gemini");
   });
 
-  it("treats openai / gpt aliases as chatgpt; google as gemini", () => {
+  it("aliases: openai/gpt → chatgpt, google → gemini, ai-studio → aistudio", () => {
     const { mod } = createStubChatWebModule();
     assert.equal(
       new ChatWebSession("chat-web", { chatWebModule: mod, model: "openai" }).chatWebProvider,
       "chatgpt",
     );
     assert.equal(
+      new ChatWebSession("chat-web", { chatWebModule: mod, model: "gpt" }).chatWebProvider,
+      "chatgpt",
+    );
+    assert.equal(
       new ChatWebSession("chat-web", { chatWebModule: mod, model: "google" }).chatWebProvider,
       "gemini",
     );
+    // ai-studio and aistudio both resolve to the developer-playground
+    // adapter — NOT to gemini (the consumer chat). This is deliberate:
+    // they're two different products and target different DOMs.
     assert.equal(
       new ChatWebSession("chat-web", { chatWebModule: mod, model: "ai-studio" }).chatWebProvider,
-      "gemini",
+      "aistudio",
     );
+    assert.equal(
+      new ChatWebSession("chat-web", { chatWebModule: mod, model: "aistudio" }).chatWebProvider,
+      "aistudio",
+    );
+  });
+
+  it("metadata.providerUrl points at aistudio.google.com/prompts/{id} when chatWebProvider is aistudio", async () => {
+    const slug = "abc12345-deadbeef";
+    const sendImpl = async (message) => ({
+      turnIndex: 0,
+      message,
+      response: "ok",
+      durationMs: 1,
+      conversationId: slug,
+    });
+    const { mod } = createStubChatWebModule({ sendImpl });
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod, model: "aistudio" });
+    const r = await s.runTurn("hi");
+    assert.equal(r.metadata.providerUrl, `https://aistudio.google.com/prompts/${slug}`);
+    await s.close();
   });
 
   it("ignores unknown model values and falls back to chatgpt", () => {
