@@ -121,6 +121,19 @@ export class ChatWebSession extends EventEmitter {
     this.logger = normalizeLogger(options.logger);
     this.chatWebProvider = resolveChatWebProvider(options);
     this.headless = options.headless !== false;
+    // Optional: use a specific Chromium-family binary (system Chrome /
+    // Edge / explicit path) instead of Playwright's bundled
+    // `chrome-headless-shell`. Useful when the user's network treats
+    // chrome-headless-shell differently from real Chrome. Note:
+    // this does NOT bypass Google's WAA anti-abuse on AI Studio.
+    this.browserChannel =
+      typeof options.browserChannel === "string" && options.browserChannel.trim()
+        ? options.browserChannel.trim()
+        : "";
+    this.browserExecutablePath =
+      typeof options.browserExecutablePath === "string" && options.browserExecutablePath.trim()
+        ? options.browserExecutablePath.trim()
+        : "";
     this.turnTimeoutMs =
       Number.isFinite(options.turnTimeoutMs) && options.turnTimeoutMs > 0
         ? Math.round(options.turnTimeoutMs)
@@ -314,6 +327,14 @@ export class ChatWebSession extends EventEmitter {
       throw new Error("Loaded @love-moon/chat-web is missing ChatSession.open");
     }
 
+    // Forward optional browser-binary overrides to chat-web. The env vars
+    // CHAT_WEB_BROWSER_CHANNEL / CHAT_WEB_BROWSER_EXECUTABLE are also
+    // honoured by chat-web directly, so they apply even when nothing is
+    // passed here.
+    const launch = {};
+    if (this.browserChannel) launch.channel = this.browserChannel;
+    if (this.browserExecutablePath) launch.executablePath = this.browserExecutablePath;
+
     this.chatSession = await mod.ChatSession.open(this.chatWebProvider, {
       headless: this.headless,
       // IMPORTANT: chat-web's logger contract is `{ error, warn, info, debug }`;
@@ -321,6 +342,7 @@ export class ChatWebSession extends EventEmitter {
       // through verbatim crashes chat-web mid-session with
       // "this.logger.debug is not a function". Adapt to chat-web's shape.
       logger: adaptLoggerForChatWeb(this.logger),
+      ...(Object.keys(launch).length > 0 ? { launch } : {}),
     });
 
     if (this.closeRequested) {
