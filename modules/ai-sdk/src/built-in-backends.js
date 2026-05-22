@@ -19,6 +19,7 @@ export const COPILOT_SDK_VARIANT = "copilot-sdk";
 export const KIMI_CLI_WIRE_VARIANT = "kimi-cli-wire";
 export const KIMI_CLI_PRINT_VARIANT = "kimi-cli-print";
 export const OPENCODE_SDK_VARIANT = "opencode-sdk";
+export const CHAT_WEB_SESSION_VARIANT = "chat-web-session";
 
 /**
  * @typedef {Object} BuiltInBackendEntry
@@ -56,6 +57,11 @@ export const BUILT_IN_BACKENDS = [
     backend: "opencode",
     aliases: ["opencode", "open-code", "open_code"],
     defaultVariant: OPENCODE_SDK_VARIANT,
+  },
+  {
+    backend: "chat-web",
+    aliases: ["chat-web", "chatweb", "chat_web", "web-chat"],
+    defaultVariant: CHAT_WEB_SESSION_VARIANT,
   },
 ];
 

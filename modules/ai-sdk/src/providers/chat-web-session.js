@@ -1,0 +1,465 @@
+import { EventEmitter } from "node:events";
+
+import { CHAT_WEB_SESSION_VARIANT } from "../built-in-backends.js";
+import { emitLog, normalizeLogger } from "../shared.js";
+
+const SUPPORTED_CHAT_WEB_PROVIDERS = new Set(["chatgpt", "gemini"]);
+const DEFAULT_CHAT_WEB_PROVIDER = "chatgpt";
+const DEFAULT_TURN_TIMEOUT_MS = 5 * 60 * 1000;
+
+function normalizeChatWebProvider(value) {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!raw) return "";
+  // Friendly aliases. "openai" / "gpt" → chatgpt, "google" → gemini.
+  if (raw === "openai" || raw === "gpt" || raw === "chat-gpt") return "chatgpt";
+  if (raw === "google" || raw === "aistudio" || raw === "ai-studio") return "gemini";
+  return raw;
+}
+
+function resolveChatWebProvider(options = {}) {
+  const candidates = [options.chatWebProvider, options.provider, options.model];
+  for (const candidate of candidates) {
+    const normalized = normalizeChatWebProvider(candidate);
+    if (SUPPORTED_CHAT_WEB_PROVIDERS.has(normalized)) {
+      return normalized;
+    }
+  }
+  return DEFAULT_CHAT_WEB_PROVIDER;
+}
+
+function extractErrorMessage(error) {
+  if (typeof error?.message === "string" && error.message.trim()) {
+    return error.message.trim();
+  }
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+  return "chat-web turn failed";
+}
+
+function isPlaywrightMissingError(error) {
+  const msg = String(error?.message || "").toLowerCase();
+  return (
+    msg.includes("cannot find package 'playwright") ||
+    msg.includes("cannot find module 'playwright") ||
+    msg.includes("npx playwright install")
+  );
+}
+
+/**
+ * AI SDK provider that delegates to the chat-web runtime
+ * (`@love-moon/chat-web`), which automates a real Chromium browser against
+ * ChatGPT / Gemini / DeepSeek and ferries conversations through their web
+ * UIs. Choose the underlying chat-web provider via:
+ *
+ *   - `options.chatWebProvider`: "chatgpt" | "gemini"  (preferred)
+ *   - `options.provider`:        same surface
+ *   - `options.model`:           same surface (fallback for ergonomic
+ *                                `createAiSession("chat-web", { model: "gemini" })`)
+ *
+ * Defaults to "chatgpt". Aliases: "openai"/"gpt" → chatgpt, "google" → gemini.
+ *
+ * Lifecycle:
+ *   - `boot()` lazily imports `@love-moon/chat-web`, registers its built-in
+ *     providers, and opens a long-lived `ChatSession` (headless by default).
+ *   - `runTurn(prompt)` calls `session.send(prompt)` and emits a single
+ *     `assistant_message` with the model's reply.
+ *   - `close()` tears the Chromium context down.
+ *
+ * Resume: chat-web's "session" is a Chromium browser context, not a
+ * conversation ID — there is no native cross-process resume. We synthesise
+ * an id so the rest of ai-sdk has something stable to thread on, but
+ * passing `resumeSessionId` does not reattach to a prior conversation.
+ */
+export class ChatWebSession extends EventEmitter {
+  constructor(backend, options = {}) {
+    super();
+    this.backend = "chat-web";
+    this.options = options;
+    this.logger = normalizeLogger(options.logger);
+    this.chatWebProvider = resolveChatWebProvider(options);
+    this.headless = options.headless !== false;
+    this.turnTimeoutMs =
+      Number.isFinite(options.turnTimeoutMs) && options.turnTimeoutMs > 0
+        ? Math.round(options.turnTimeoutMs)
+        : DEFAULT_TURN_TIMEOUT_MS;
+    this.cwd =
+      typeof options.cwd === "string" && options.cwd.trim()
+        ? options.cwd.trim()
+        : process.cwd();
+
+    // chat-web doesn't expose a conversation ID. We synthesise one purely
+    // so ai-sdk's downstream threading works.
+    this.sessionId =
+      typeof options.resumeSessionId === "string" && options.resumeSessionId.trim()
+        ? options.resumeSessionId.trim()
+        : `chat-web-${this.chatWebProvider}-${Date.now().toString(36)}`;
+    this.sessionInfo = {
+      backend: this.backend,
+      sessionId: this.sessionId,
+      model: this.chatWebProvider,
+      modelProvider: "chat-web",
+    };
+
+    this.chatSession = null;
+    this.booted = false;
+    this.bootPromise = null;
+    this.closeRequested = false;
+    this.closed = false;
+
+    this.currentTurn = null;
+    this.currentTurnStatus = null;
+    this.sessionMessageHandler = null;
+    this.workingStatusHandler = null;
+    this.activeReplyTarget = "";
+    this.lastReplyTarget = "";
+    this.history = Array.isArray(options.initialHistory)
+      ? [...options.initialHistory]
+      : [];
+  }
+
+  writeLog(message) {
+    emitLog(this.logger, message);
+  }
+
+  trace(message) {
+    this.writeLog(`[${this.backend}] [chat-web] ${message}`);
+  }
+
+  get threadId() {
+    return this.sessionId;
+  }
+
+  get threadOptions() {
+    return {
+      model: this.chatWebProvider,
+      modelProvider: "chat-web",
+    };
+  }
+
+  getSnapshot() {
+    return {
+      backend: this.backend,
+      provider: CHAT_WEB_SESSION_VARIANT,
+      cwd: this.cwd,
+      sessionId: this.sessionId,
+      sessionInfo: this.getSessionInfo(),
+      useSessionFileReplyStream: this.usesSessionFileReplyStream(),
+      resumeReady: false,
+      manualResume: null,
+      currentTurnStatus: this.getCurrentTurnStatus(),
+      chatWebProvider: this.chatWebProvider,
+    };
+  }
+
+  getSessionInfo() {
+    return this.sessionInfo ? { ...this.sessionInfo } : null;
+  }
+
+  getCurrentTurnStatus() {
+    return this.currentTurnStatus ? { ...this.currentTurnStatus } : null;
+  }
+
+  usesSessionFileReplyStream() {
+    // chat-web doesn't persist a JSONL session file; replies are emitted
+    // in-process via the assistant_message event.
+    return false;
+  }
+
+  setSessionMessageHandler(handler) {
+    this.sessionMessageHandler = typeof handler === "function" ? handler : null;
+  }
+
+  setWorkingStatusHandler(handler) {
+    this.workingStatusHandler = typeof handler === "function" ? handler : null;
+  }
+
+  setSessionReplyTarget(replyTo) {
+    const normalized = typeof replyTo === "string" ? replyTo.trim() : "";
+    this.activeReplyTarget = normalized;
+    if (normalized) {
+      this.lastReplyTarget = normalized;
+    }
+  }
+
+  getCurrentReplyTarget() {
+    return this.activeReplyTarget || this.lastReplyTarget || undefined;
+  }
+
+  async ensureSessionInfo() {
+    await this.boot();
+    return this.getSessionInfo();
+  }
+
+  async getSessionUsageSummary() {
+    // chat-web has no token / cost telemetry — it's a browser puppeteer,
+    // not an API client.
+    return {
+      sessionId: this.sessionId,
+      sessionFilePath: undefined,
+      totalCostUsd: undefined,
+      usage: null,
+      rateLimits: null,
+      manualResume: null,
+    };
+  }
+
+  async getChatWebModule() {
+    if (this.options.chatWebModule && typeof this.options.chatWebModule === "object") {
+      return this.options.chatWebModule;
+    }
+    try {
+      return await import("@love-moon/chat-web");
+    } catch (error) {
+      if (isPlaywrightMissingError(error)) {
+        const enriched = new Error(
+          `@love-moon/chat-web requires Playwright Chromium. Run: npx playwright install chromium`,
+        );
+        enriched.cause = error;
+        throw enriched;
+      }
+      const enriched = new Error(
+        `Failed to load @love-moon/chat-web: ${extractErrorMessage(error)}. ` +
+          `Install it with: npm install @love-moon/chat-web playwright`,
+      );
+      enriched.cause = error;
+      throw enriched;
+    }
+  }
+
+  async boot() {
+    if (this.booted) return;
+    if (this.bootPromise) return this.bootPromise;
+    this.bootPromise = this.bootInternal();
+    try {
+      await this.bootPromise;
+      this.booted = true;
+    } finally {
+      this.bootPromise = null;
+    }
+  }
+
+  async bootInternal() {
+    if (this.closeRequested) {
+      throw this.createSessionClosedError();
+    }
+    const mod = await this.getChatWebModule();
+    if (typeof mod.registerBuiltinProviders === "function") {
+      mod.registerBuiltinProviders();
+    }
+    if (typeof mod.ChatSession?.open !== "function") {
+      throw new Error("Loaded @love-moon/chat-web is missing ChatSession.open");
+    }
+
+    this.chatSession = await mod.ChatSession.open(this.chatWebProvider, {
+      headless: this.headless,
+      logger: this.logger,
+    });
+
+    if (this.closeRequested) {
+      await this.chatSession.close().catch(() => undefined);
+      this.chatSession = null;
+      throw this.createSessionClosedError();
+    }
+
+    const loggedIn = await this.chatSession.isLoggedIn().catch(() => false);
+    if (!loggedIn) {
+      const error = new Error(
+        `chat-web provider "${this.chatWebProvider}" is not logged in. Run: chat-web login ${this.chatWebProvider}`,
+      );
+      error.reason = "not_logged_in";
+      this.emit("auth_required", {
+        reason: "login_required",
+        message: error.message,
+      });
+      throw error;
+    }
+
+    this.trace(`session ready provider=${this.chatWebProvider} id=${this.sessionId}`);
+    this.emit("session", this.getSessionInfo());
+  }
+
+  async runTurn(promptText, { onProgress = null } = {}) {
+    const prompt = String(promptText || "").trim();
+    if (!prompt) {
+      return {
+        text: "",
+        usage: null,
+        items: [],
+        events: [],
+        provider: this.backend,
+        metadata: {
+          source: CHAT_WEB_SESSION_VARIANT,
+          sessionId: this.sessionId,
+          chatWebProvider: this.chatWebProvider,
+        },
+      };
+    }
+    if (this.currentTurn) {
+      const error = new Error("chat-web turn already in progress");
+      error.reason = "turn_already_running";
+      throw error;
+    }
+
+    this.currentTurn = { aborted: false };
+    await this.emitWorkingStatus(
+      {
+        phase: "turn_started",
+        reply_in_progress: true,
+        status_line: `chat-web (${this.chatWebProvider}) is working`,
+      },
+      onProgress,
+    );
+
+    try {
+      await this.boot();
+      if (this.closeRequested) throw this.createSessionClosedError();
+
+      const result = await this.chatSession.send(prompt, {
+        timeoutMs: this.turnTimeoutMs,
+        onProgress: (text) => {
+          // chat-web's onProgress fires while streaming text grows; we
+          // forward those as working_status updates with a short preview.
+          void this.emitWorkingStatus(
+            {
+              phase: "message_aggregation",
+              reply_in_progress: true,
+              status_line: `chat-web (${this.chatWebProvider}) streaming`,
+              reply_preview: typeof text === "string" ? text.slice(-120) : undefined,
+            },
+            onProgress,
+          );
+        },
+      });
+
+      const text = String(result?.response ?? "").trim();
+      if (text) {
+        this.history.push({ role: "assistant", content: text });
+        await this.emitAssistantMessage(text);
+      }
+
+      await this.emitTerminalWorkingStatus(
+        {
+          phase: this.currentTurn.aborted ? "turn_interrupted" : "turn_completed",
+          status_done_line: this.currentTurn.aborted
+            ? `chat-web (${this.chatWebProvider}) interrupted`
+            : `chat-web (${this.chatWebProvider}) finished`,
+        },
+        onProgress,
+      );
+
+      return {
+        text,
+        usage: null,
+        items: [],
+        events: [],
+        provider: this.backend,
+        metadata: {
+          source: CHAT_WEB_SESSION_VARIANT,
+          sessionId: this.sessionId,
+          chatWebProvider: this.chatWebProvider,
+          turnIndex: result?.turnIndex,
+          durationMs: result?.durationMs,
+        },
+      };
+    } catch (error) {
+      const message = extractErrorMessage(error);
+      await this.emitTerminalWorkingStatus(
+        {
+          phase: this.currentTurn?.aborted ? "turn_interrupted" : "turn_failed",
+          status_done_line: message,
+        },
+        onProgress,
+      );
+      throw error;
+    } finally {
+      this.activeReplyTarget = "";
+      this.currentTurn = null;
+    }
+  }
+
+  async interruptCurrentTurn() {
+    // chat-web's ChatSession doesn't expose a turn abort — the underlying
+    // Chromium tab is still busy with the model. We mark the turn as
+    // aborted so the next status emission is "interrupted", but the
+    // assistant_message may still arrive once the model finishes.
+    if (this.currentTurn) {
+      this.currentTurn.aborted = true;
+    }
+  }
+
+  async close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.closeRequested = true;
+    if (this.chatSession) {
+      try {
+        await this.chatSession.close();
+      } catch {
+        // best effort
+      }
+      this.chatSession = null;
+    }
+  }
+
+  createSessionClosedError() {
+    const error = new Error("chat-web session closed");
+    error.reason = "session_closed";
+    return error;
+  }
+
+  async emitWorkingStatus(payload, onProgress = null) {
+    const updatedAtMs = Date.now();
+    const normalized = {
+      source: CHAT_WEB_SESSION_VARIANT,
+      reply_in_progress: Boolean(payload?.reply_in_progress),
+      replyTo: payload?.replyTo || this.getCurrentReplyTarget(),
+      state: payload?.state,
+      phase: payload?.phase,
+      status_line: payload?.status_line,
+      status_done_line: payload?.status_done_line,
+      reply_preview: payload?.reply_preview,
+      thread_id: this.sessionId,
+      session_id: this.sessionId,
+      session_file_path: undefined,
+      updated_at: new Date(updatedAtMs).toISOString(),
+    };
+    this.currentTurnStatus = normalized;
+    if (typeof onProgress === "function") {
+      try {
+        onProgress(normalized);
+      } catch {
+        // best effort
+      }
+    }
+    if (typeof this.workingStatusHandler === "function") {
+      await this.workingStatusHandler(normalized);
+    }
+    this.emit("working_status", normalized);
+  }
+
+  async emitTerminalWorkingStatus(payload, onProgress = null) {
+    await this.emitWorkingStatus(
+      { ...payload, reply_in_progress: false },
+      onProgress,
+    );
+  }
+
+  async emitAssistantMessage(text) {
+    const payload = {
+      text,
+      preserveWhitespace: true,
+      source: CHAT_WEB_SESSION_VARIANT,
+      replyTo: this.getCurrentReplyTarget(),
+      sessionId: this.sessionId,
+      sessionFilePath: undefined,
+      timestamp: new Date().toISOString(),
+    };
+    if (typeof this.sessionMessageHandler === "function") {
+      await this.sessionMessageHandler(payload);
+    }
+    this.emit("assistant_message", payload);
+  }
+}
+
+export { SUPPORTED_CHAT_WEB_PROVIDERS, DEFAULT_CHAT_WEB_PROVIDER };

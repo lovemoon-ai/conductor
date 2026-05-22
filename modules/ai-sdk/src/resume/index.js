@@ -8,6 +8,7 @@ import {
   resolveExternalBackend,
 } from "../external-provider-registry.js";
 
+import * as chatWeb from "./chat-web.js";
 import * as claude from "./claude.js";
 import * as codex from "./codex.js";
 import * as copilot from "./copilot.js";
@@ -41,6 +42,7 @@ const RESUME_MODULES_BY_BACKEND = new Map([
   ["copilot", copilot],
   ["kimi", kimi],
   ["opencode", opencode],
+  ["chat-web", chatWeb],
 ]);
 
 // Sanity-check at module load:
