@@ -6,6 +6,7 @@ import {
   ResponseTimeoutError,
 } from "../core/errors.js";
 import { typeMultiline } from "../core/keyboard.js";
+import { gotoOrThrowNetworkError } from "../core/navigate.js";
 import type { ChatProvider, ProviderDiagnostics, WaitOptions } from "../core/provider.js";
 import { sleep, waitUntilStable } from "../core/response-watcher.js";
 
@@ -40,9 +41,12 @@ export class GeminiAdapter implements ChatProvider {
   readonly homeUrl = "https://gemini.google.com/app";
 
   async open(page: Page): Promise<void> {
-    await page.goto(this.homeUrl, { waitUntil: "domcontentloaded" }).catch(() => {
-      return page.goto(this.homeUrl, { waitUntil: "load", timeout: 30_000 });
-    });
+    // gotoWithRetry uses waitUntil:"commit" + exponential-backoff retries.
+    // gemini.google.com is heavier than chatgpt.com (Firebase, GStatic,
+    // fonts, analytics) and waiting on `load` blows the budget on slow
+    // / DPI-proxied networks. The composer wait below is the real
+    // readiness check.
+    await gotoOrThrowNetworkError(page, this.homeUrl, this.name);
     await this.waitForComposerReady(page).catch(() => undefined);
     // Best-effort: dismiss any promo / "what's new" overlay that intercepts
     // pointer events on the composer.

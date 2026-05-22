@@ -6,6 +6,7 @@ import {
   ResponseTimeoutError,
 } from "../core/errors.js";
 import { typeMultiline } from "../core/keyboard.js";
+import { gotoOrThrowNetworkError } from "../core/navigate.js";
 import type { ChatProvider, ProviderDiagnostics, WaitOptions } from "../core/provider.js";
 import { sleep, waitUntilStable } from "../core/response-watcher.js";
 
@@ -46,12 +47,11 @@ export class ChatGPTAdapter implements ChatProvider {
     // mid-stream when we attached). Idempotent across re-opens.
     this.ensureCollector(page);
 
-    await page.goto(this.homeUrl, { waitUntil: "domcontentloaded" }).catch(() => {
-      // domcontentloaded can race with redirects; try once more with a longer wait.
-      return page.goto(this.homeUrl, { waitUntil: "load", timeout: 30_000 });
-    });
-    // ChatGPT initialises the ProseMirror editor after DOMContentLoaded.
-    // Wait for it (or for the signed-out form) so callers don't race the JS.
+    // gotoWithRetry uses waitUntil:"commit" + exponential-backoff retries.
+    // ChatGPT loads a lot from CDNs; relying on `load`/`domcontentloaded`
+    // wedges the open() on slow / proxied networks. The composer wait
+    // below is the real readiness check.
+    await gotoOrThrowNetworkError(page, this.homeUrl, this.name);
     await this.waitForComposerReady(page).catch(() => undefined);
   }
 
