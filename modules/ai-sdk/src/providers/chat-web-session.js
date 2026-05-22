@@ -203,7 +203,20 @@ export class ChatWebSession extends EventEmitter {
   }
 
   getSessionInfo() {
-    return this.sessionInfo ? { ...this.sessionInfo } : null;
+    if (!this.sessionInfo) return null;
+    // chat-web's "real" session id is the provider-side conversation id
+    // (e.g. ChatGPT /c/{uuid}), which only lands AFTER the first turn.
+    // Until then, our synthetic "chat-web-{provider}-{ts}" id is just a
+    // local handle — surfacing it to the daemon would lead to ugly UI
+    // copy like "web-chatgpt session started: chat-web-chatgpt-mpgw7cd1".
+    //
+    // We expose `sessionIdDeferred: true` so the fire-side announce can
+    // hold off until the real id arrives, then re-announce.
+    const hasRealId = Boolean(this.providerConversationId);
+    return {
+      ...this.sessionInfo,
+      sessionIdDeferred: !hasRealId,
+    };
   }
 
   getCurrentTurnStatus() {

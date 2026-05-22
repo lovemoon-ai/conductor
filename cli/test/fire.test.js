@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1596,6 +1597,71 @@ describe("conductor-fire backends", () => {
 
     assert.equal(interruptAccepted, false);
     assert.equal(interruptCalls, 0);
+  });
+
+  it("defers the session announcement when backend reports sessionIdDeferred=true, then re-announces with the real id", async () => {
+    const sentMessages = [];
+    const sentRuntimeStatuses = [];
+    let providerConversationId = "";
+    const backendSession = new EventEmitter();
+    Object.assign(backendSession, {
+      ensureSessionInfo: async () => ({
+        backend: "chat-web",
+        sessionId: providerConversationId || `synthetic-${Date.now()}`,
+        model: "chatgpt",
+        modelProvider: "chat-web",
+        sessionIdDeferred: !providerConversationId,
+      }),
+      getSessionInfo: () => null,
+      getSessionUsageSummary: async () => null,
+      close: async () => {},
+      runTurn: async () => ({ text: "", usage: null, items: [], metadata: {} }),
+      threadId: "synthetic-id",
+      threadOptions: { model: "chatgpt", modelProvider: "chat-web" },
+    });
+    const runner = new BridgeRunner({
+      backendSession,
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async (taskId, payload) => {
+          sentRuntimeStatuses.push({ taskId, payload });
+          return {};
+        },
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-deferred-session-id",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "web-chatgpt",
+    });
+
+    // First call: backend says "deferred" — NO message should be sent yet.
+    await runner.announceBackendSession();
+    assert.equal(sentMessages.length, 0, "deferred announce must not write a message");
+
+    // Simulate the provider landing on /c/{uuid} and emitting `session`.
+    providerConversationId = "6a104b3f-d9cc-83ea-8819-b4602c95e69d";
+    backendSession.emit("session", { sessionId: providerConversationId });
+    // Give the queued microtask a beat to run.
+    await new Promise((r) => setImmediate(r));
+
+    assert.equal(sentMessages.length, 1, "re-announce must fire on session event");
+    assert.match(
+      sentMessages[0].content,
+      /web-chatgpt session started: 6a104b3f-d9cc-83ea-8819-b4602c95e69d/,
+    );
+    assert.equal(sentMessages[0].metadata?.session_id, providerConversationId);
+
+    // Further session events must not produce duplicate announcements.
+    backendSession.emit("session", { sessionId: providerConversationId });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(sentMessages.length, 1, "second session event must NOT re-announce");
   });
 
   it("announces session started without id when real session id is unavailable", async () => {

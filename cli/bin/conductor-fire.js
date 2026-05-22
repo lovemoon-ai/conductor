@@ -1882,6 +1882,7 @@ export class BridgeRunner {
     this.pendingInterruptRetryTimers = new Map();
     this.activeTurnReplyTo = "";
     this.sessionAnnouncementSent = false;
+    this.sessionAnnouncementSubscribed = false;
     this.boundSessionId = "";
     this.errorLoop = null;
     this.errorLoopWindowMs = getBoundedEnvInt(
@@ -1927,6 +1928,30 @@ export class BridgeRunner {
     log(`[copilot-debug] task=${this.taskId} ${message}`);
   }
 
+  /**
+   * Listen for follow-up `session` events from the backend so that a
+   * provider with a deferred session id (currently only chat-web) can
+   * tell us "the real conversation id is ready, please announce now".
+   *
+   * Idempotent — repeated calls only register the listener once.
+   * Single-use semantics on the daemon side: after the first announce
+   * succeeds (sessionAnnouncementSent flips true), subsequent session
+   * events are ignored by `announceBackendSession()`.
+   */
+  subscribeToBackendSessionUpdates() {
+    if (this.sessionAnnouncementSubscribed) return;
+    if (!this.backendSession || typeof this.backendSession.on !== "function") return;
+    this.sessionAnnouncementSubscribed = true;
+    this.backendSession.on("session", () => {
+      if (this.sessionAnnouncementSent) return;
+      void this.announceBackendSession().catch((error) => {
+        this.copilotLog(
+          `session re-announce failed: ${sanitizeForLog(error?.message || error, 160)}`,
+        );
+      });
+    });
+  }
+
   async announceBackendSession() {
     if (this.sessionAnnouncementSent) {
       return;
@@ -1939,6 +1964,17 @@ export class BridgeRunner {
       sessionInfo = await this.backendSession.ensureSessionInfo();
     } catch (error) {
       this.copilotLog(`session announce skipped: ${sanitizeForLog(error?.message || error, 160)}`);
+      return;
+    }
+    // chat-web's session id is the provider-side conversation id
+    // (e.g. ChatGPT /c/{uuid}), which only materialises AFTER the first
+    // turn. The backend exposes `sessionIdDeferred: true` to ask us to
+    // hold the "session started" message until the real id lands.
+    // `subscribeToBackendSessionUpdates()` arms a one-shot listener that
+    // re-runs this announce once the real id is emitted.
+    if (sessionInfo && sessionInfo.sessionIdDeferred === true) {
+      this.subscribeToBackendSessionUpdates();
+      this.copilotLog("session announce deferred: backend reports sessionIdDeferred=true");
       return;
     }
     const discoveredSessionId = String(sessionInfo?.sessionId || "").trim();

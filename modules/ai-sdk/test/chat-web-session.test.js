@@ -270,6 +270,35 @@ describe("ChatWebSession", () => {
     await s.close();
   });
 
+  it("getSessionInfo marks sessionIdDeferred=true until a real conversation id lands", async () => {
+    const { mod } = createStubChatWebModule();
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod });
+
+    // Before boot: still no provider conversation id.
+    const beforeBoot = s.getSessionInfo();
+    assert.equal(beforeBoot.sessionIdDeferred, true);
+
+    await s.boot();
+    const afterBoot = s.getSessionInfo();
+    assert.equal(afterBoot.sessionIdDeferred, true, "boot alone must not clear deferred");
+
+    // Promote (simulating ChatGPT /c/{uuid} navigation).
+    s.applyProviderConversationId("6a104b3f-d9cc-83ea-8819-b4602c95e69d");
+    const afterPromote = s.getSessionInfo();
+    assert.equal(afterPromote.sessionIdDeferred, false);
+    assert.equal(afterPromote.sessionId, "6a104b3f-d9cc-83ea-8819-b4602c95e69d");
+
+    await s.close();
+  });
+
+  it("ensureSessionInfo respects the deferred flag so fire's announce can hold off", async () => {
+    const { mod } = createStubChatWebModule();
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod });
+    const info = await s.ensureSessionInfo();
+    assert.equal(info.sessionIdDeferred, true);
+    await s.close();
+  });
+
   it("adopts the ChatGPT /c/{uuid} conversation id as the session id after the first turn", async () => {
     const conversationUuid = "6a103f7e-bd94-83ea-ae46-9652657bbedf";
     const sendImpl = async (message) => ({
