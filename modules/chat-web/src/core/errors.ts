@@ -15,6 +15,7 @@ export type ChatWebErrorCode =
   | "PROVIDER_CAPTCHA"
   | "PROVIDER_API_KEY_REQUIRED"
   | "PROVIDER_PERMISSION_DENIED"
+  | "PROVIDER_AUTOMATION_BLOCKED"
   | "SELECTOR_VERIFICATION"
   | "UNKNOWN_PROVIDER"
   | "PROFILE_ERROR"
@@ -126,6 +127,30 @@ export class ProviderApiKeyRequiredError extends ChatWebError {
           : `Configure an API key for ${provider} in its web console.`,
     });
     this.name = "ProviderApiKeyRequiredError";
+  }
+}
+
+export class ProviderAutomationBlockedError extends ChatWebError {
+  constructor(provider: string, detail?: string) {
+    const base =
+      `Provider "${provider}" appears to be blocking automated access ` +
+      "(model invocation never started after the input was submitted; the page sits on 'Thinking' indefinitely).";
+    super(
+      "PROVIDER_AUTOMATION_BLOCKED",
+      detail ? `${base} ${detail}` : base,
+      {
+        provider,
+        hint:
+          provider === "gemini"
+            ? "Google AI Studio runs an anti-abuse challenge (WAA) before invoking the model. " +
+              "Headless / scripted browsers routinely fail this challenge silently. " +
+              "Workarounds: (1) use chat-web's `chatgpt` provider instead — ChatGPT is far more permissive of automation; " +
+              "(2) call the Gemini API directly with an API key from https://aistudio.google.com/app/apikey (outside chat-web); " +
+              "(3) try again later — the challenge sometimes passes."
+            : "The provider's anti-bot system is silently blocking model invocation. Try a different provider.",
+      },
+    );
+    this.name = "ProviderAutomationBlockedError";
   }
 }
 

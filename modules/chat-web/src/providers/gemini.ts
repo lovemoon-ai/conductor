@@ -2,6 +2,7 @@ import type { Locator, Page } from "playwright";
 
 import {
   InputNotFoundError,
+  ProviderAutomationBlockedError,
   ResponseExtractionError,
   ResponseTimeoutError,
 } from "../core/errors.js";
@@ -95,6 +96,21 @@ export class GeminiAdapter implements ChatProvider {
   }
 
   async sendMessage(page: Page, message: string): Promise<void> {
+    // CRITICAL: AI Studio defaults to "Grounding with Google Search"
+    // enabled on every new chat. With Grounding on, the page calls a
+    // Google Search backend BEFORE invoking the model — and on many
+    // user networks (especially behind DPI boxes that drop Google
+    // Search Suggest / search infrastructure traffic) that call hangs
+    // silently, leaving the UI stuck on "Thinking" forever even though
+    // the model invocation request (GenerateContent / streamGenerateContent)
+    // is never made. Disabling Grounding makes a simple "1+1=" return
+    // "2" instantly, since there's no pre-flight search step.
+    //
+    // We close the Grounding chip if it's present. Idempotent: if the
+    // chip has already been removed (sticky across the profile's
+    // session storage), this is a no-op.
+    await this.disableGroundingWithGoogleSearch(page).catch(() => undefined);
+
     const input = await this.findInput(page);
     await input.click();
     // typeMultiline preserves newlines correctly. Angular Material's
@@ -110,6 +126,23 @@ export class GeminiAdapter implements ChatProvider {
       });
     } else {
       await this.pressRunShortcut(page);
+    }
+  }
+
+  /**
+   * AI Studio shows a "Grounding with Google Search" chip on every new
+   * chat by default. The chip has a close (×) button with
+   * `aria-label="Remove Grounding with Google Search"`. Clicking it
+   * disables the grounding step for this conversation — and removes a
+   * silent hang point on networks that can't reach Google Search.
+   */
+  private async disableGroundingWithGoogleSearch(page: Page): Promise<void> {
+    const closer = page
+      .locator('button[aria-label="Remove Grounding with Google Search"]')
+      .first();
+    if (await closer.isVisible().catch(() => false)) {
+      await closer.click({ force: true }).catch(() => undefined);
+      await sleep(150);
     }
   }
 
@@ -163,8 +196,34 @@ export class GeminiAdapter implements ChatProvider {
         onProgress: options.onProgress,
       },
     );
-    if (!stable) throw new ResponseTimeoutError(this.name, timeoutMs);
+    if (!stable) {
+      // Distinguish "took too long" from "AI Studio's WAA anti-abuse
+      // silently blocked the request". If the page never navigated off
+      // /prompts/new_chat AND the model turn body is still "Thinking",
+      // the JS pipeline never actually invoked the model (it's stuck
+      // in the WAA challenge retry loop — see the lesson doc). Throw a
+      // typed error with an actionable hint instead of a vague timeout.
+      if (await this.looksAutomationBlocked(page)) {
+        throw new ProviderAutomationBlockedError(
+          this.name,
+          "The model invocation request was never made — Google's anti-abuse challenge (WAA) likely blocked it.",
+        );
+      }
+      throw new ResponseTimeoutError(this.name, timeoutMs);
+    }
     return stable;
+  }
+
+  /**
+   * Heuristic: are we stuck in the WAA-blocked state where AI Studio
+   * never moves past "Thinking" and the URL still says new_chat? Used
+   * to surface a clearer error than a generic timeout.
+   */
+  private async looksAutomationBlocked(page: Page): Promise<boolean> {
+    const url = page.url();
+    if (!url.includes("/prompts/new_chat")) return false;
+    const text = await this.extractLastAssistantMessage(page).catch(() => "");
+    return isThinkingPlaceholder(text);
   }
 
   /**
@@ -277,6 +336,25 @@ export class GeminiAdapter implements ChatProvider {
   }
 
   private async isStopButtonVisible(page: Page): Promise<boolean> {
+    // AI Studio's Stop button has NO aria-label — its visible text is
+    // "progress_activity Stop" (a Material icon ligature + the word
+    // "Stop"). The accessible name resolves to "Stop" via the visible
+    // text, so getByRole(name=/Stop/) catches it. We keep the
+    // aria-label fallbacks in case Google adds them later.
+    const stopByRole = await page
+      .getByRole("button", { name: /^Stop$/i })
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (stopByRole) return true;
+
+    const stopByText = await page
+      .locator('button:has-text("Stop")')
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (stopByText) return true;
+
     const selectors = [
       'button[aria-label*="Stop" i]',
       'button[aria-label*="Cancel" i]',
