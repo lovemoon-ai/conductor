@@ -574,6 +574,17 @@ describe("Daemon", () => {
             setImmediate(() => child.emit("close", 0));
             return child;
           }
+          if (cmd === "pnpm" && args[0] === "ignored-builds") {
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => {
+              child.stdout.emit("data", "Automatically ignored builds during installation:\n  None\n");
+              child.emit("close", 0);
+            });
+            return child;
+          }
           if (cmd === "pnpm" && args[0] === "root") {
             const child = new EventEmitter();
             child.stdout = new EventEmitter();
@@ -654,14 +665,15 @@ describe("Daemon", () => {
     assert.deepStrictEqual(
       calls
         .filter(([cmd]) => cmd === "pnpm")
-        .slice(0, 5)
+        .slice(0, 6)
         .map(([cmd, args]) => [cmd, args]),
       [
         ["pnpm", ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
         ["pnpm", ["config", "set", "--global", "onlyBuiltDependencies", '["foo","node-pty"]']],
-        ["pnpm", ["add", "-g", "@love-moon/conductor-cli@0.2.21"]],
+        ["pnpm", ["add", "-g", "--allow-build=node-pty", "@love-moon/conductor-cli@0.2.21"]],
         ["pnpm", ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
         ["pnpm", ["root", "-g"]],
+        ["pnpm", ["ignored-builds"]],
       ],
     );
     const rebuildCall = calls.find(

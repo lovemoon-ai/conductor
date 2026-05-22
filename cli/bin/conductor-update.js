@@ -19,6 +19,7 @@ import {
   detectPackageManager,
 } from "../src/version-check.js";
 import {
+  buildPnpmAllowBuildArgs,
   ensurePnpmOnlyBuiltDependencies,
   repairAndVerifyGlobalNodePty,
 } from "../src/native-deps.js";
@@ -177,7 +178,7 @@ async function performUpdate() {
   switch (packageManager) {
     case "pnpm":
       cmd = "pnpm";
-      args = ["add", "-g", `${PACKAGE_NAME}@latest`];
+      args = ["add", "-g", ...buildPnpmAllowBuildArgs(["node-pty"]), `${PACKAGE_NAME}@latest`];
       break;
     case "yarn":
       cmd = "yarn";
