@@ -13,11 +13,15 @@ describe("provider registry", () => {
     expect(names).toContain("gemini");
   });
 
-  it("exposes the gemini home URL with the requested model", () => {
+  it("exposes the gemini consumer-chat home URL (NOT AI Studio)", () => {
     registerBuiltinProviders();
     const gemini = getProvider("gemini");
-    expect(gemini.homeUrl).toContain("aistudio.google.com");
-    expect(gemini.homeUrl).toContain("gemini-3.5-flash");
+    // chat-web's Gemini integration deliberately targets the consumer
+    // chat at gemini.google.com (free with Google login, matches the
+    // chatgpt.com persistent-profile UX). AI Studio is a separate
+    // developer playground that requires an API key per request.
+    expect(gemini.homeUrl).toMatch(/^https:\/\/gemini\.google\.com\/app(\b|$)/);
+    expect(gemini.homeUrl).not.toMatch(/aistudio/);
   });
 
   it("throws UnknownProviderError for unknown names", () => {

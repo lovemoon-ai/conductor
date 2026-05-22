@@ -2,8 +2,6 @@ import type { Locator, Page } from "playwright";
 
 import {
   InputNotFoundError,
-  ProviderApiKeyRequiredError,
-  ProviderPermissionDeniedError,
   ResponseExtractionError,
   ResponseTimeoutError,
 } from "../core/errors.js";
@@ -12,43 +10,53 @@ import type { ChatProvider, ProviderDiagnostics, WaitOptions } from "../core/pro
 import { sleep, waitUntilStable } from "../core/response-watcher.js";
 
 /**
- * Google AI Studio (aistudio.google.com) provider adapter.
+ * Google Gemini (gemini.google.com) consumer chat provider adapter.
  *
- * AI Studio is an Angular Material app — composer is a textarea inside a
- * `<ms-prompt-input>` custom element, the submit button carries either a
- * "Run" / "Send" aria-label or a play icon, and assistant turns render
- * inside `<ms-chat-turn>` / `<ms-prompt-chunk>` custom elements.
+ * Why gemini.google.com and not aistudio.google.com? AI Studio is the
+ * developer playground and requires an API key per request — that's a
+ * separate operational model. chat-web is a consumer-chat automation
+ * runtime in the same league as ChatGPT (chatgpt.com), so the right
+ * Gemini surface is the consumer chat at gemini.google.com, which is
+ * free with a Google login and matches our persistent-profile design.
  *
- * Like DeepSeek, the streaming response goes through Google's own RPC
- * format (not SSE-compatible with our `ChatGPTSSECollector`), so this
- * adapter uses DOM `innerText` extraction gated by a stop-button toggle.
- * Markdown structure on text + code is preserved by AI Studio's renderer
- * for the most common cases (code blocks are real `<pre>` text), but
- * bullets / table pipes may be lost — same caveat as DeepSeek today.
+ * Observed structure (2026-05):
+ *   - Composer: `<rich-textarea>` wrapping a Quill editor
+ *     (`div[role="textbox"][contenteditable="true"].ql-editor`).
+ *     `aria-label="Enter a prompt for Gemini"`,
+ *     `data-placeholder="Ask Gemini"`.
+ *   - Send button: `<button aria-label="Send message">`.
+ *   - Stop / streaming: `<button aria-label="Stop response">` while
+ *     the model is generating.
+ *   - Assistant message: `<message-content>` custom element; clean
+ *     text without "Gemini said" / "edit" / "more_vert" chrome.
+ *     Equivalent: `.model-response-text`, `.markdown`.
+ *   - Conversation id: URL becomes
+ *     `https://gemini.google.com/app/{conversation-id}` after the first
+ *     turn — same pattern as ChatGPT's `/c/{uuid}` (but the id is
+ *     usually a 16-hex-char string, not a UUID).
  */
 export class GeminiAdapter implements ChatProvider {
   readonly name = "gemini";
-  readonly homeUrl = "https://aistudio.google.com/prompts/new_chat?model=gemini-3.5-flash";
+  readonly homeUrl = "https://gemini.google.com/app";
 
   async open(page: Page): Promise<void> {
     await page.goto(this.homeUrl, { waitUntil: "domcontentloaded" }).catch(() => {
       return page.goto(this.homeUrl, { waitUntil: "load", timeout: 30_000 });
     });
-    // AI Studio's Angular shell hydrates after DCL; give the composer a
-    // moment to attach before any subsequent action races it.
     await this.waitForComposerReady(page).catch(() => undefined);
+    // Best-effort: dismiss any promo / "what's new" overlay that intercepts
+    // pointer events on the composer.
+    await this.dismissOverlays(page).catch(() => undefined);
   }
 
   async isLoggedIn(page: Page): Promise<boolean> {
-    // Signed-out users land on accounts.google.com. Signed-in users see
-    // the prompt textarea. Detect by URL pattern first, then DOM.
     const url = page.url();
     if (url.includes("accounts.google.com") || url.includes("/signin/")) return false;
+    // Signed-in users always see the Quill composer.
     const candidates = [
-      'ms-prompt-box textarea',
-      'textarea[aria-label="Enter a prompt"]',
-      'textarea[aria-label*="prompt" i]',
-      'textarea',
+      'div[role="textbox"][contenteditable="true"][aria-label*="Gemini" i]',
+      'rich-textarea div[role="textbox"]',
+      'div[role="textbox"][contenteditable="true"]',
     ];
     for (const sel of candidates) {
       const visible = await page.locator(sel).first().isVisible().catch(() => false);
@@ -59,102 +67,76 @@ export class GeminiAdapter implements ChatProvider {
 
   async findInput(page: Page): Promise<Locator> {
     const candidates: Locator[] = [
-      // AI Studio's composer is `<ms-prompt-box>` wrapping a textarea with
-      // aria-label="Enter a prompt" and a CSS placeholder. The textarea is
-      // the real input; there is no fallback layer like ChatGPT.
-      page.locator('ms-prompt-box textarea').first(),
-      page.locator('textarea[aria-label="Enter a prompt"]').first(),
-      page.locator('textarea[aria-label*="prompt" i]').first(),
-      page.locator('textarea[placeholder*="Start typing" i]').first(),
-      page.locator('textarea').first(),
+      page
+        .locator('rich-textarea div[role="textbox"][contenteditable="true"]')
+        .first(),
+      page
+        .locator('div[role="textbox"][contenteditable="true"][aria-label*="Gemini" i]')
+        .first(),
+      page.locator('div[role="textbox"][contenteditable="true"]').first(),
+      page.locator('.ql-editor[contenteditable="true"]').first(),
     ];
-
     for (const locator of candidates) {
-      if (await locator.isVisible().catch(() => false)) {
-        return locator;
-      }
+      if (await locator.isVisible().catch(() => false)) return locator;
     }
     throw new InputNotFoundError(this.name);
   }
 
   async findSendButton(page: Page): Promise<Locator | null> {
-    // The Run button on AI Studio has NO aria-label — only the visible
-    // text "Run" plus two Material icon font ligatures
-    // ("keyboard_command_key keyboard_return"). It's a type=submit button.
     const candidates: Locator[] = [
-      page.getByRole("button", { name: /^Run$/i }).first(),
-      page.locator('ms-prompt-box button[type="submit"]').first(),
-      page.locator('button[type="submit"]').first(),
-      page.locator('button[aria-label*="Run" i]').first(),
-      page.locator('button[aria-label*="Send" i]').first(),
-      // Last-ditch: any button inside the composer with text containing "Run".
-      page.locator('ms-prompt-box button:has-text("Run")').first(),
+      page.locator('button[aria-label="Send message"]').first(),
+      page.locator('button[aria-label*="Send message" i]').first(),
+      page.locator('button[aria-label*="发送" i]').first(),
     ];
-
     for (const locator of candidates) {
-      if (await locator.isVisible().catch(() => false)) {
-        return locator;
-      }
+      if (await locator.isVisible().catch(() => false)) return locator;
     }
     return null;
   }
 
   async sendMessage(page: Page, message: string): Promise<void> {
     const input = await this.findInput(page);
-    await input.click();
 
-    // CRITICAL: do NOT use `locator.fill()`. AI Studio's Angular form
-    // listens for `input` events to toggle the Run button between
-    // disabled/enabled. `fill()` programmatically sets the textarea value
-    // without firing the same event sequence Angular expects, leaving
-    // the Run button stuck on disabled. Typing via keyboard fires real
-    // events and Angular flips the button correctly.
-    //
-    // Use `typeMultiline` rather than `page.keyboard.type(message)` so
-    // multi-line prompts don't submit on every `\n`: AI Studio binds
-    // Cmd/Ctrl+Enter to Run, but plain Enter still inserts a newline
-    // here, so a bare Enter wouldn't submit — BUT we want behaviour
-    // consistent with ChatGPT, and the Shift+Enter form is universally
-    // safe on every modern chat composer we've seen.
+    // The Quill editor (`.ql-editor`) listens for real key events to
+    // toggle the Send button between disabled/enabled. `locator.fill`
+    // is a no-op on contenteditable, and stuck overlays sometimes
+    // intercept normal clicks — `{ force: true }` is necessary even
+    // when the input itself is visible.
+    await input.click({ force: true });
+    await input.focus().catch(() => undefined);
     await typeMultiline(page, message);
-
-    // Give Angular a beat to run change detection and enable Run.
-    await sleep(200);
+    await sleep(150);
 
     const send = await this.findSendButton(page);
     if (send && (await send.isEnabled().catch(() => false))) {
-      await send.click().catch(async () => {
-        await this.pressRunShortcut(page);
+      await send.click({ force: true }).catch(async () => {
+        // Enter is "submit" in the Gemini composer too; Shift+Enter is
+        // the soft line break that typeMultiline already used between
+        // segments, so a bare Enter at the end is safe.
+        await page.keyboard.press("Enter");
       });
     } else {
-      // Fall back to the Cmd/Ctrl+Enter shortcut AI Studio binds to Run.
-      await this.pressRunShortcut(page);
+      await page.keyboard.press("Enter");
     }
   }
 
   async extractLastAssistantMessage(page: Page): Promise<string> {
-    // AI Studio shape (2026-05):
-    //   <ms-chat-turn>
-    //     <div class="chat-turn-container ... model render">
-    //       <div class="actions-container">…</div>
-    //       <div class="turn-content">…actual text + chrome…</div>
-    //     </div>
-    //   </ms-chat-turn>
-    // We target the model turn's `.turn-content`, then strip the
-    // "Model HH:MM AM/PM" header and Material icon font ligatures that
-    // leak into innerText (icon glyphs render as words like "edit",
-    // "more_vert", "error", "content_copy", ...).
+    // `<message-content>` is Gemini's clean per-turn container — no
+    // "Gemini said" chrome, no copy/feedback icon ligatures. Prefer it
+    // and fall back to `.model-response-text` / `.markdown` if the
+    // custom element ever gets renamed.
     const candidates: Locator[] = [
-      page.locator('ms-chat-turn .chat-turn-container.model .turn-content').last(),
-      page.locator('.chat-turn-container.model .turn-content').last(),
-      page.locator('ms-chat-turn .turn-content').last(),
-      page.locator('ms-chat-turn').last(),
+      page.locator("message-content").last(),
+      page.locator(".model-response-text").last(),
+      page.locator("model-response .markdown").last(),
+      page.locator("model-response").last(),
     ];
 
     for (const locator of candidates) {
       if (await locator.count().then((n) => n > 0).catch(() => false)) {
         const raw = await locator.innerText().catch(() => "");
-        const cleaned = stripChromeFromTurn(raw);
+        // <model-response> includes a "Gemini said" prefix; strip it.
+        const cleaned = raw.replace(/^Gemini said\s*/i, "").trim();
         if (cleaned) return cleaned;
       }
     }
@@ -167,14 +149,14 @@ export class GeminiAdapter implements ChatProvider {
     const stableMs = options.stableMs ?? 2_000;
     const deadline = Date.now() + timeoutMs;
 
-    // Phase 1: wait for streaming to begin (stop button appears).
+    // Phase 1: wait for the stop button (streaming started).
     await this.waitForStopButton(page, { timeoutMs: 15_000 }).catch(() => undefined);
 
-    // Phase 2: wait for streaming to end.
+    // Phase 2: stop button disappears (streaming ended).
     const remaining = Math.max(deadline - Date.now(), 5_000);
     await this.waitForStopButtonGone(page, remaining).catch(() => undefined);
 
-    // Phase 3: text stability backstop.
+    // Phase 3: text-stability backstop.
     const stable = await waitUntilStable(
       () => this.extractLastAssistantMessage(page).catch(() => ""),
       {
@@ -184,107 +166,34 @@ export class GeminiAdapter implements ChatProvider {
         onProgress: options.onProgress,
       },
     );
-
-    if (!stable) {
-      throw new ResponseTimeoutError(this.name, timeoutMs);
-    }
-
-    // Critical: AI Studio shows upstream errors as the model turn body
-    // (e.g. "An internal error has occurred." / "Failed to generate
-    // content: permission denied."). Those LOOK like normal assistant
-    // replies to extractLastAssistantMessage but they are real failures.
-    // Detect known error patterns and throw typed errors so downstream
-    // (ai-sdk, daemon, UI) can route them as turn_failed instead of
-    // surfacing a confusing "An internal error has occurred." to the user
-    // as if Gemini had answered with that text.
-    await this.throwIfKnownUpstreamError(page, stable);
-
+    if (!stable) throw new ResponseTimeoutError(this.name, timeoutMs);
     return stable;
   }
 
   /**
-   * Inspect the page + the freshly-extracted "assistant" text and raise
-   * a typed error if this is actually an upstream failure (e.g. no API
-   * key, permission denied). Pure side-effect of throwing — returns
-   * void on the happy path.
+   * Conversation id from `gemini.google.com/app/{id}`. Gemini's id is
+   * typically a 16-hex-char string (e.g. "372437d29c30422f"), not a
+   * UUID — the regex accepts both shapes.
    */
-  private async throwIfKnownUpstreamError(page: Page, text: string): Promise<void> {
-    const lower = text.toLowerCase();
-
-    // 1. "An internal error has occurred." is AI Studio's catch-all when
-    //    a turn fails for ANY reason. Drill into the page to figure out
-    //    which reason — typically API-key or permission related.
-    if (lower.includes("an internal error has occurred")) {
-      const detected = await this.detectFailureCause(page);
-      if (detected === "no-api-key") {
-        throw new ProviderApiKeyRequiredError(
-          this.name,
-          'AI Studio shows "No API key selected"; the model cannot run without one.',
-        );
-      }
-      if (detected === "permission-denied") {
-        throw new ProviderPermissionDeniedError(this.name, text);
-      }
-      // Unknown root cause — still fail loudly, don't pretend it's a reply.
-      throw new ProviderPermissionDeniedError(this.name, text);
-    }
-
-    // 2. "Failed to generate content" is the explicit Gemini error string
-    //    that sometimes appears WITHOUT the generic "internal error"
-    //    wrapper. Same routing.
-    if (lower.includes("failed to generate content")) {
-      if (lower.includes("permission denied")) {
-        throw new ProviderPermissionDeniedError(this.name, text);
-      }
-      throw new ProviderPermissionDeniedError(this.name, text);
-    }
-  }
-
-  /**
-   * Best-effort root-cause detection for AI Studio turn failures.
-   * Returns:
-   *   - "no-api-key" if the page has the "No API key selected" indicator
-   *   - "permission-denied" if a "permission denied" string is visible
-   *   - "" otherwise
-   */
-  private async detectFailureCause(
-    page: Page,
-  ): Promise<"no-api-key" | "permission-denied" | ""> {
-    // The "No API key selected" button is the most reliable signal.
-    const noKey = await page
-      .locator('button[aria-label="No API key selected"]')
-      .first()
-      .isVisible()
-      .catch(() => false);
-    if (noKey) return "no-api-key";
-
-    // Fall back to scanning visible body text for known phrases.
-    const found = await page
-      .evaluate(() => {
-        const t = (document.body.innerText || "").toLowerCase();
-        if (t.includes("permission denied")) return "permission-denied";
-        if (t.includes("no api key") || t.includes("get api key")) return "no-api-key";
-        return "";
-      })
-      .catch(() => "");
-    if (found === "permission-denied" || found === "no-api-key") return found;
-    return "";
+  getConversationId(page: Page): string | null {
+    const url = page.url();
+    const match = url.match(/\/app\/([0-9a-fA-F-]{8,})/);
+    return match ? match[1]! : null;
   }
 
   async newChat(page: Page): Promise<void> {
     const candidates: Locator[] = [
       page.getByRole("button", { name: /new chat|新对话|新建对话/i }).first(),
       page.getByRole("link", { name: /new chat|新对话/i }).first(),
-      page.locator('a[href*="/prompts/new_chat"]').first(),
+      page.locator('a[href$="/app"]').first(),
     ];
-
     for (const locator of candidates) {
       if (await locator.isVisible().catch(() => false)) {
-        await locator.click().catch(() => undefined);
+        await locator.click({ force: true }).catch(() => undefined);
+        await page.waitForTimeout(800);
         return;
       }
     }
-    // Fallback: navigate directly to a fresh chat URL.
     await this.open(page);
   }
 
@@ -303,7 +212,7 @@ export class GeminiAdapter implements ChatProvider {
     }
 
     const assistantMessageCount = await page
-      .locator('ms-chat-turn, ms-prompt-chunk')
+      .locator("message-content")
       .count()
       .catch(() => 0);
 
@@ -328,17 +237,29 @@ export class GeminiAdapter implements ChatProvider {
     };
   }
 
-  private async waitForComposerReady(page: Page, timeoutMs = 15_000): Promise<void> {
-    const sel =
-      'ms-prompt-input textarea, textarea[aria-label*="prompt" i], textarea[placeholder*="Type something" i], textarea';
-    await page.locator(sel).first().waitFor({ state: "visible", timeout: timeoutMs });
+  /** Dismiss any "What's new" / promo overlay covering the composer. */
+  private async dismissOverlays(page: Page): Promise<void> {
+    const closers = [
+      '.cdk-overlay-container button[aria-label*="close" i]',
+      '.cdk-overlay-container button[aria-label*="dismiss" i]',
+      '.cdk-overlay-container button[aria-label*="not now" i]',
+      '.cdk-overlay-container button[aria-label*="maybe later" i]',
+    ];
+    for (const sel of closers) {
+      const loc = page.locator(sel).first();
+      if (await loc.isVisible().catch(() => false)) {
+        await loc.click({ force: true }).catch(() => undefined);
+        await sleep(300);
+      }
+    }
+    // Belt-and-braces: press Escape so any uncloseable popover dismisses.
+    await page.keyboard.press("Escape").catch(() => undefined);
   }
 
-  private async pressRunShortcut(page: Page): Promise<void> {
-    // AI Studio binds Cmd/Ctrl+Enter to "Run". Use the platform-appropriate
-    // modifier so headless runs on Linux/macOS both work.
-    const isMac = process.platform === "darwin";
-    await page.keyboard.press(isMac ? "Meta+Enter" : "Control+Enter");
+  private async waitForComposerReady(page: Page, timeoutMs = 15_000): Promise<void> {
+    const sel =
+      'rich-textarea div[role="textbox"][contenteditable="true"], div[role="textbox"][contenteditable="true"][aria-label*="Gemini" i]';
+    await page.locator(sel).first().waitFor({ state: "visible", timeout: timeoutMs });
   }
 
   private async waitForStopButton(
@@ -370,10 +291,10 @@ export class GeminiAdapter implements ChatProvider {
 
   private async isStopButtonVisible(page: Page): Promise<boolean> {
     const selectors = [
-      'button[aria-label*="Stop" i]',
-      'button[aria-label*="Cancel" i]',
+      'button[aria-label="Stop response"]',
+      'button[aria-label*="Stop response" i]',
+      'button[aria-label*="Stop generating" i]',
       'button[aria-label*="停止" i]',
-      'button[data-test-id="stop-button"]',
     ];
     for (const sel of selectors) {
       const visible = await page.locator(sel).first().isVisible().catch(() => false);
@@ -384,52 +305,14 @@ export class GeminiAdapter implements ChatProvider {
 }
 
 /**
- * Strip the UI chrome that leaks into `innerText` on AI Studio model turns.
- *
- * Observed shape after innerText:
- *
- *   Model 5:54 PM
- *   error
- *   An internal error has occurred.
- *
- * That is — a header line "Model HH:MM AM/PM" (turn role + timestamp),
- * one or more Material icon font ligatures rendered as plain text words
- * (e.g. "error", "edit", "more_vert", "content_copy"), then the actual
- * content. We drop the header and any line that is exactly a single
- * known icon ligature, then re-trim.
+ * Backwards-compat export for tests / callers that still import the
+ * AI-Studio-era chrome-stripping helper. The new gemini.google.com
+ * `<message-content>` doesn't ship the "Model HH:MM AM/PM" header or
+ * Material icon ligatures, so the only chrome we still strip is the
+ * "Gemini said" prefix that `<model-response>` wraps around content.
+ * Exported for the unit test in tests/gemini.test.ts.
  */
 export function stripChromeFromTurn(text: string): string {
   if (!text) return "";
-  const lines = text.split(/\r?\n/);
-  const HEADER = /^(Model|User|System)\s+\d{1,2}:\d{2}\s*(AM|PM)?\s*$/i;
-  const ICON_LIGATURES = new Set([
-    "edit",
-    "more_vert",
-    "error",
-    "content_copy",
-    "thumb_up",
-    "thumb_down",
-    "refresh",
-    "delete",
-    "close",
-    "expand_more",
-    "expand_less",
-    "code",
-    "play_arrow",
-    "stop",
-    "menu",
-  ]);
-
-  const kept: string[] = [];
-  for (const raw of lines) {
-    const trimmed = raw.trim();
-    if (!trimmed) {
-      kept.push(raw);
-      continue;
-    }
-    if (HEADER.test(trimmed)) continue;
-    if (ICON_LIGATURES.has(trimmed)) continue;
-    kept.push(raw);
-  }
-  return kept.join("\n").trim();
+  return text.replace(/^Gemini said\s*/i, "").trim();
 }
