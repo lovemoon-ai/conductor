@@ -13,6 +13,8 @@ export type ChatWebErrorCode =
   | "RESPONSE_EXTRACTION"
   | "PROVIDER_RATE_LIMITED"
   | "PROVIDER_CAPTCHA"
+  | "PROVIDER_API_KEY_REQUIRED"
+  | "PROVIDER_PERMISSION_DENIED"
   | "SELECTOR_VERIFICATION"
   | "UNKNOWN_PROVIDER"
   | "PROFILE_ERROR"
@@ -110,6 +112,32 @@ export class ProviderCaptchaError extends ChatWebError {
       hint: `Run: chat-web login ${provider} and pass the verification flow in the headed browser.`,
     });
     this.name = "ProviderCaptchaError";
+  }
+}
+
+export class ProviderApiKeyRequiredError extends ChatWebError {
+  constructor(provider: string, detail?: string) {
+    const base = `Provider "${provider}" needs an API key configured in its web console.`;
+    super("PROVIDER_API_KEY_REQUIRED", detail ? `${base} ${detail}` : base, {
+      provider,
+      hint:
+        provider === "gemini"
+          ? "Open https://aistudio.google.com/app/apikey, create a key, then in AI Studio click the 'Get API key' / 'No API key selected' button and select that key."
+          : `Configure an API key for ${provider} in its web console.`,
+    });
+    this.name = "ProviderApiKeyRequiredError";
+  }
+}
+
+export class ProviderPermissionDeniedError extends ChatWebError {
+  constructor(provider: string, detail?: string) {
+    const base = `Provider "${provider}" denied the request (permission denied).`;
+    super("PROVIDER_PERMISSION_DENIED", detail ? `${base} ${detail}` : base, {
+      provider,
+      hint:
+        "Common causes: missing/invalid API key, model not enabled on the account, region restriction, quota exhausted. Open the provider's web console to inspect.",
+    });
+    this.name = "ProviderPermissionDeniedError";
   }
 }
 

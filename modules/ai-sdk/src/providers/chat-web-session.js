@@ -483,6 +483,19 @@ export class ChatWebSession extends EventEmitter {
       };
     } catch (error) {
       const message = extractErrorMessage(error);
+      const code = typeof error?.code === "string" ? error.code : "";
+      // Surface chat-web's typed "needs API key" / "permission denied"
+      // errors as auth_required so the UI / daemon can route them
+      // through the same flow as ChatGPT's "not logged in" — they're
+      // all "operator action required" failures, not transient errors.
+      if (code === "PROVIDER_API_KEY_REQUIRED" || code === "PROVIDER_PERMISSION_DENIED") {
+        this.emit("auth_required", {
+          reason: code === "PROVIDER_API_KEY_REQUIRED" ? "api_key_required" : "permission_denied",
+          message,
+          provider: this.chatWebProvider,
+          hint: error?.hint,
+        });
+      }
       await this.emitTerminalWorkingStatus(
         {
           phase: this.currentTurn?.aborted ? "turn_interrupted" : "turn_failed",

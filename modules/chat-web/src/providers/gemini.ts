@@ -2,6 +2,8 @@ import type { Locator, Page } from "playwright";
 
 import {
   InputNotFoundError,
+  ProviderApiKeyRequiredError,
+  ProviderPermissionDeniedError,
   ResponseExtractionError,
   ResponseTimeoutError,
 } from "../core/errors.js";
@@ -186,7 +188,87 @@ export class GeminiAdapter implements ChatProvider {
     if (!stable) {
       throw new ResponseTimeoutError(this.name, timeoutMs);
     }
+
+    // Critical: AI Studio shows upstream errors as the model turn body
+    // (e.g. "An internal error has occurred." / "Failed to generate
+    // content: permission denied."). Those LOOK like normal assistant
+    // replies to extractLastAssistantMessage but they are real failures.
+    // Detect known error patterns and throw typed errors so downstream
+    // (ai-sdk, daemon, UI) can route them as turn_failed instead of
+    // surfacing a confusing "An internal error has occurred." to the user
+    // as if Gemini had answered with that text.
+    await this.throwIfKnownUpstreamError(page, stable);
+
     return stable;
+  }
+
+  /**
+   * Inspect the page + the freshly-extracted "assistant" text and raise
+   * a typed error if this is actually an upstream failure (e.g. no API
+   * key, permission denied). Pure side-effect of throwing — returns
+   * void on the happy path.
+   */
+  private async throwIfKnownUpstreamError(page: Page, text: string): Promise<void> {
+    const lower = text.toLowerCase();
+
+    // 1. "An internal error has occurred." is AI Studio's catch-all when
+    //    a turn fails for ANY reason. Drill into the page to figure out
+    //    which reason — typically API-key or permission related.
+    if (lower.includes("an internal error has occurred")) {
+      const detected = await this.detectFailureCause(page);
+      if (detected === "no-api-key") {
+        throw new ProviderApiKeyRequiredError(
+          this.name,
+          'AI Studio shows "No API key selected"; the model cannot run without one.',
+        );
+      }
+      if (detected === "permission-denied") {
+        throw new ProviderPermissionDeniedError(this.name, text);
+      }
+      // Unknown root cause — still fail loudly, don't pretend it's a reply.
+      throw new ProviderPermissionDeniedError(this.name, text);
+    }
+
+    // 2. "Failed to generate content" is the explicit Gemini error string
+    //    that sometimes appears WITHOUT the generic "internal error"
+    //    wrapper. Same routing.
+    if (lower.includes("failed to generate content")) {
+      if (lower.includes("permission denied")) {
+        throw new ProviderPermissionDeniedError(this.name, text);
+      }
+      throw new ProviderPermissionDeniedError(this.name, text);
+    }
+  }
+
+  /**
+   * Best-effort root-cause detection for AI Studio turn failures.
+   * Returns:
+   *   - "no-api-key" if the page has the "No API key selected" indicator
+   *   - "permission-denied" if a "permission denied" string is visible
+   *   - "" otherwise
+   */
+  private async detectFailureCause(
+    page: Page,
+  ): Promise<"no-api-key" | "permission-denied" | ""> {
+    // The "No API key selected" button is the most reliable signal.
+    const noKey = await page
+      .locator('button[aria-label="No API key selected"]')
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (noKey) return "no-api-key";
+
+    // Fall back to scanning visible body text for known phrases.
+    const found = await page
+      .evaluate(() => {
+        const t = (document.body.innerText || "").toLowerCase();
+        if (t.includes("permission denied")) return "permission-denied";
+        if (t.includes("no api key") || t.includes("get api key")) return "no-api-key";
+        return "";
+      })
+      .catch(() => "");
+    if (found === "permission-denied" || found === "no-api-key") return found;
+    return "";
   }
 
   async newChat(page: Page): Promise<void> {
