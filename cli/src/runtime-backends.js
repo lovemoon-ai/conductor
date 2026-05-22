@@ -8,9 +8,13 @@ import { BUILT_IN_BACKENDS as AI_SDK_BUILT_IN_BACKENDS } from "@love-moon/ai-sdk
 // CLI display order for built-in backends. ai-sdk owns the canonical set of
 // built-in backends; CLI just picks an ordering for "Supported Backends:" log
 // output. The self-check below ensures this list always matches ai-sdk's set.
-const BUILT_IN_RUNTIME_BACKENDS = ["codex", "claude", "kimi", "opencode", "copilot"];
+const BUILT_IN_RUNTIME_BACKENDS = ["codex", "claude", "kimi", "opencode", "copilot", "chat-web"];
 const BUILT_IN_RUNTIME_BACKEND_SET = new Set(BUILT_IN_RUNTIME_BACKENDS);
-const COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKENDS = ["copilot"];
+// Backends that don't shell out to a CLI binary — they run in-process via
+// the SDK and therefore don't need an `allow_cli_list` entry. `copilot`
+// embeds the GitHub Copilot SDK; `chat-web` drives a Chromium browser via
+// Playwright. For both, conductor-fire boots without any installed CLI.
+const COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKENDS = ["copilot", "chat-web"];
 const COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKEND_SET = new Set(COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKENDS);
 
 // Legacy aliases (e.g. "code" → "codex", "kimi-cli" → "kimi") are derived
