@@ -27,7 +27,15 @@ interface TaskItemProps {
   onToggleSelect: (taskId: string) => void;
   onOpenTask?: (taskId: string) => void;
   desktopListPaneMode?: boolean;
-  showProjectInfo?: boolean;
+  /**
+   * Whether to render the project-name chip. Independent of `showDaemonHost`
+   * because a merged cross-daemon view (e.g. the default project whose
+   * same-named siblings on other daemons merge into one logical project)
+   * wants the daemon chip without the redundant project chip.
+   */
+  showProjectName?: boolean;
+  /** Whether to render the daemon-host chip. */
+  showDaemonHost?: boolean;
   projectName?: string | null;
   projectDaemonHost?: string | null;
   activeTaskTypeFilter?: TaskType | null;
@@ -199,7 +207,8 @@ export function TaskItem({
   onToggleSelect,
   onOpenTask,
   desktopListPaneMode = false,
-  showProjectInfo = false,
+  showProjectName = false,
+  showDaemonHost = false,
   projectName = null,
   projectDaemonHost = null,
   activeTaskTypeFilter = null,
@@ -825,7 +834,7 @@ export function TaskItem({
           {worktreeBranch}
         </span>
       ) : null}
-      {showProjectInfo && projectName ? (
+      {showProjectName && projectName ? (
         onFilterByProject && projectId ? (
           <button
             type="button"
@@ -846,7 +855,7 @@ export function TaskItem({
           </span>
         )
       ) : null}
-      {showProjectInfo && projectDaemonHost ? (
+      {showDaemonHost && projectDaemonHost ? (
         onFilterByDaemonHost ? (
           <button
             type="button"

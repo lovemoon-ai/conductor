@@ -13,7 +13,7 @@ let tasksState: {
   deleteTask: typeof deleteTaskMock;
 };
 let projectsState: {
-  projects: Array<{ id: string; name: string }>;
+  projects: Array<{ id: string; name: string; daemonHost?: string | null }>;
   hiddenProjectIds: string[];
 };
 
@@ -30,6 +30,10 @@ vi.mock('./TaskItem', () => ({
   TaskItem: (props: {
     task: { id: string; title: string; projectId: string | null; status: string };
     isActive?: boolean;
+    showProjectName?: boolean;
+    showDaemonHost?: boolean;
+    projectName?: string | null;
+    projectDaemonHost?: string | null;
   }) => {
     taskItemMock(props);
     return (
@@ -122,5 +126,97 @@ describe('TaskList', () => {
     expect(screen.getByText('Task One:idle')).toBeInTheDocument();
     expect(screen.getByText('Task Three:idle')).toBeInTheDocument();
     expect(screen.queryByText('Task Two:idle')).toBeNull();
+  });
+
+  describe('project name / daemon host chip visibility', () => {
+    const lastPropsFor = (taskId: string) => {
+      const calls = taskItemMock.mock.calls.filter(
+        ([call]: Array<{ task: { id: string } }>) => call.task.id === taskId,
+      );
+      const [latest] = calls[calls.length - 1] ?? [];
+      return latest as {
+        showProjectName?: boolean;
+        showDaemonHost?: boolean;
+        projectName?: string | null;
+        projectDaemonHost?: string | null;
+      } | undefined;
+    };
+
+    it('shows both project and daemon chips in the no-filter view (tasks can span projects)', () => {
+      tasksState = {
+        ...tasksState,
+        currentProjectFilter: null,
+      };
+      projectsState = {
+        projects: [
+          { id: 'project-1', name: 'Project One', daemonHost: 'daemon-a' },
+          { id: 'project-2', name: 'Project Two', daemonHost: 'daemon-b' },
+        ],
+        hiddenProjectIds: [],
+      };
+
+      render(<TaskList viewMode="list" />);
+
+      const props = lastPropsFor('task-1');
+      expect(props?.showProjectName).toBe(true);
+      expect(props?.showDaemonHost).toBe(true);
+      expect(props?.projectName).toBe('Project One');
+      expect(props?.projectDaemonHost).toBe('daemon-a');
+    });
+
+    it('hides both chips when filtered to a single project on a single daemon (everything redundant)', () => {
+      projectsState = {
+        projects: [
+          { id: 'project-1', name: 'Project One', daemonHost: 'daemon-a' },
+        ],
+        hiddenProjectIds: [],
+      };
+
+      render(<TaskList viewMode="list" projectFilter="project-1" />);
+
+      const props = lastPropsFor('task-1');
+      expect(props?.showProjectName).toBe(false);
+      expect(props?.showDaemonHost).toBe(false);
+      expect(props?.projectName).toBeNull();
+      expect(props?.projectDaemonHost).toBeNull();
+    });
+
+    it('hides the project chip but keeps the daemon chip in a merged cross-daemon scope (default project case)', () => {
+      // Simulates the default project view: same project name on multiple
+      // daemons merged into one logical project. The list should help the
+      // user tell which daemon each task came from, but the repeated
+      // project-name chip would be noise.
+      tasksState = {
+        ...tasksState,
+        tasks: [
+          { id: 'task-1', title: 'Task One', projectId: 'project-default-a', status: 'running' },
+          { id: 'task-2', title: 'Task Two', projectId: 'project-default-b', status: 'running' },
+        ],
+        currentProjectFilter: null,
+      };
+      projectsState = {
+        projects: [
+          { id: 'project-default-a', name: 'Default', daemonHost: 'daemon-a' },
+          { id: 'project-default-b', name: 'Default', daemonHost: 'daemon-b' },
+        ],
+        hiddenProjectIds: [],
+      };
+
+      render(
+        <TaskList
+          viewMode="list"
+          projectFilter={['project-default-a', 'project-default-b']}
+        />,
+      );
+
+      const taskOneProps = lastPropsFor('task-1');
+      const taskTwoProps = lastPropsFor('task-2');
+      expect(taskOneProps?.showProjectName).toBe(false);
+      expect(taskOneProps?.showDaemonHost).toBe(true);
+      expect(taskOneProps?.projectName).toBeNull();
+      expect(taskOneProps?.projectDaemonHost).toBe('daemon-a');
+      expect(taskTwoProps?.showDaemonHost).toBe(true);
+      expect(taskTwoProps?.projectDaemonHost).toBe('daemon-b');
+    });
   });
 });
