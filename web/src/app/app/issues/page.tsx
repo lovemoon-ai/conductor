@@ -12,8 +12,9 @@ import {
   MoveIssueToDoingDialog,
   useIssuesStore,
 } from '@/features/issues';
+import type { MoveIssueToDoingDaemonOption } from '@/features/issues/components/MoveIssueToDoingDialog';
 import { useProjectsStore } from '@/features/projects';
-import { computeProjectGroups } from '@/features/projects/utils/project-groups';
+import { canMergeProjects, computeProjectGroups } from '@/features/projects/utils/project-groups';
 import { RefreshIcon } from '@/features/tasks';
 import {
   calculateIssueAppendPosition,
@@ -29,6 +30,9 @@ const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
 const isConductorFireHost = (host: string | null | undefined): boolean =>
   typeof host === 'string' && host.startsWith('conductor-fire-');
 
+const normalizeHost = (value: string | null | undefined): string =>
+  typeof value === 'string' ? value.trim() : '';
+
 const pickIssueBackend = (issue: Issue | null): string | null => {
   if (!issue?.metadata || typeof issue.metadata.backendType !== 'string') {
     return null;
@@ -37,41 +41,100 @@ const pickIssueBackend = (issue: Issue | null): string | null => {
   return backendType || null;
 };
 
-const getIssueBackendOptions = (project: Project | null, agents: Agent[]): string[] => {
+/**
+ * Resolve the daemon the dialog should default to. Priority order:
+ *  1. Last daemon the issue was successfully sent to (`metadata.daemonHost`).
+ *     Survives across todo→done→todo cycles so the user does not have to
+ *     re-pick the same machine every time.
+ *  2. The issue's current project's `daemonHost`. For non-merged projects this
+ *     is the only candidate; for merged groups it is "where the issue lives
+ *     right now" — typically the same machine as the most recent run.
+ */
+const pickIssueDaemon = (issue: Issue | null, project: Project | null): string | null => {
+  const fromMetadata = typeof issue?.metadata?.daemonHost === 'string'
+    ? issue.metadata.daemonHost.trim()
+    : '';
+  if (fromMetadata) {
+    return fromMetadata;
+  }
+  const fromProject = normalizeHost(project?.daemonHost);
+  return fromProject || null;
+};
+
+/**
+ * Build the daemon picker option list shown when transitioning a todo issue to
+ * doing. The shape of the list depends on the project kind:
+ *
+ *  - Default project: no fixed daemon binding, so every online non-fire daemon
+ *    is offered as an option. The underlying `projectId` does not change.
+ *  - Bound project: list every cross-daemon merged-group sibling whose daemon
+ *    is currently online. Picking a sibling will re-parent the issue from its
+ *    current daemon's project to the chosen daemon's project. Issues that
+ *    live in a merged group are deliberately NOT pinned to a specific daemon
+ *    until the user makes this choice — the daemon binding lives on the
+ *    task, not on the issue. (See the issue route's `projectChanged` branch
+ *    for the server-side enforcement of the same rule.)
+ */
+const getIssueDaemonOptions = (
+  project: Project | null,
+  projects: Project[],
+  agents: Agent[],
+): MoveIssueToDoingDaemonOption[] => {
   if (!project) {
     return [];
   }
 
-  const defaultProject = Boolean(project.isDefault);
-  const projectDaemonHost = typeof project.daemonHost === 'string' ? project.daemonHost.trim() : '';
-  if (!defaultProject && !projectDaemonHost) {
-    return [];
-  }
-  const scopedAgents = !defaultProject && projectDaemonHost
-    ? agents.filter((agent) => agent.host === projectDaemonHost)
-    : agents.filter((agent) => !isConductorFireHost(agent.host));
+  const seenHost = new Set<string>();
+  const options: MoveIssueToDoingDaemonOption[] = [];
 
-  const seen = new Set<string>();
-  const availableBackends: string[] = [];
-  for (const agent of scopedAgents) {
-    for (const backend of agent.supportedBackends ?? []) {
-      const normalizedBackend = backend.trim();
-      if (!normalizedBackend || seen.has(normalizedBackend)) {
+  if (project.isDefault) {
+    for (const agent of agents) {
+      const host = normalizeHost(agent.host);
+      if (!host || seenHost.has(host) || isConductorFireHost(host)) {
         continue;
       }
-      seen.add(normalizedBackend);
-      availableBackends.push(normalizedBackend);
+      seenHost.add(host);
+      options.push({
+        host,
+        projectId: project.id,
+        supportedBackends: [...(agent.supportedBackends ?? [])],
+      });
     }
+    return options;
   }
 
-  return availableBackends;
+  const projectHost = normalizeHost(project.daemonHost);
+  if (!projectHost) {
+    return [];
+  }
+
+  for (const candidate of projects) {
+    if (candidate.id !== project.id && !canMergeProjects(project, candidate)) {
+      continue;
+    }
+    const host = normalizeHost(candidate.daemonHost);
+    if (!host || seenHost.has(host)) {
+      continue;
+    }
+    const agent = agents.find((entry) => entry.host === host);
+    if (!agent) {
+      continue;
+    }
+    seenHost.add(host);
+    options.push({
+      host,
+      projectId: candidate.id,
+      supportedBackends: [...(agent.supportedBackends ?? [])],
+    });
+  }
+
+  return options;
 };
 
 type PendingIssueStart = {
   issueId: string;
   status: IssueStatus;
   placement: IssueMovePlacement;
-  availableBackends: string[];
 };
 
 function IssuesPageContent() {
@@ -171,7 +234,22 @@ function IssuesPageContent() {
     () => issues.find((issue) => issue.id === pendingIssueStart?.issueId) ?? null,
     [pendingIssueStart?.issueId, issues],
   );
+  const pendingIssueProject = useMemo(
+    () => projects.find((entry) => entry.id === pendingIssue?.projectId) ?? null,
+    [pendingIssue?.projectId, projects],
+  );
+  // Recompute the daemon list every render off the live agents/projects
+  // stores so that, if a sibling daemon goes offline while the dialog is
+  // open, the picker stops offering it instead of relying on a stale
+  // snapshot captured at click time.
+  const pendingIssueDaemonOptions = useMemo<MoveIssueToDoingDaemonOption[]>(
+    () => (pendingIssueProject
+      ? getIssueDaemonOptions(pendingIssueProject, projects, agents)
+      : []),
+    [agents, pendingIssueProject, projects],
+  );
   const pendingIssueInitialBackend = pickIssueBackend(pendingIssue);
+  const pendingIssueInitialDaemon = pickIssueDaemon(pendingIssue, pendingIssueProject);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -252,14 +330,12 @@ function IssuesPageContent() {
 
     if (shouldSelectBackend) {
       const project = projects.find((entry) => entry.id === issue.projectId) ?? null;
-      const availableBackends = getIssueBackendOptions(project, agents);
-      if (availableBackends.length > 0) {
-        setPendingIssueStart({
-          issueId,
-          status,
-          placement,
-          availableBackends,
-        });
+      const daemonOptions = getIssueDaemonOptions(project, projects, agents);
+      const hasAnyBackend = daemonOptions.some((option) => option.supportedBackends.length > 0);
+      if (hasAnyBackend) {
+        // We only need to remember which issue + how it was dragged; the
+        // dialog re-derives the daemon list every render from live state.
+        setPendingIssueStart({ issueId, status, placement });
         return false;
       }
     }
@@ -304,7 +380,11 @@ function IssuesPageContent() {
     }
   };
 
-  const handleConfirmIssueStart = async (backendType: string) => {
+  const handleConfirmIssueStart = async (args: {
+    backendType: string;
+    daemonHost: string;
+    projectId: string;
+  }) => {
     if (!pendingIssueStart) {
       return;
     }
@@ -323,12 +403,19 @@ function IssuesPageContent() {
         pendingIssueStart.placement,
         issue.id,
       );
+      // Re-parent the issue only when the chosen daemon's project differs.
+      // For non-merged projects the picker collapses to a single option whose
+      // `projectId` matches the issue's current project, so this branch is a
+      // no-op and the request behaves exactly like before.
+      const projectChanged = args.projectId !== issue.projectId;
       await updateIssue(issue.id, {
         status: pendingIssueStart.status,
         position: nextPosition,
+        ...(projectChanged ? { projectId: args.projectId } : {}),
         metadata: {
           ...(issue.metadata ?? {}),
-          backendType,
+          backendType: args.backendType,
+          daemonHost: args.daemonHost,
         },
       });
       setPendingIssueStart(null);
@@ -405,7 +492,8 @@ function IssuesPageContent() {
 
       <MoveIssueToDoingDialog
         open={Boolean(pendingIssueStart)}
-        availableBackends={pendingIssueStart?.availableBackends ?? []}
+        daemonOptions={pendingIssueDaemonOptions}
+        initialDaemon={pendingIssueInitialDaemon}
         initialBackend={pendingIssueInitialBackend}
         onClose={() => setPendingIssueStart(null)}
         onConfirm={handleConfirmIssueStart}
