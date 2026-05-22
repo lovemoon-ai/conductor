@@ -37,6 +37,7 @@ export * from "./providers/index.js";
 export * from "./core/errors.js";
 export * from "./core/profile-manager.js";
 export * from "./core/browser.js";
+export * from "./core/install-chromium.js";
 export * from "./core/paths.js";
 export * from "./core/response-watcher.js";
 export * from "./core/snapshot.js";
