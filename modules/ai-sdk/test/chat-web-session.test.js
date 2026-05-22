@@ -141,6 +141,44 @@ describe("ChatWebSession", () => {
     await s.close();
   });
 
+  it("adapts the ai-sdk logger to chat-web's logger shape (regression: logger.debug crash)", async () => {
+    const { mod, state } = createStubChatWebModule();
+    const logs = [];
+    const aiSdkLogger = { log: (m) => logs.push(m) };
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod, logger: aiSdkLogger });
+    await s.boot();
+
+    assert.equal(state.openCalls.length, 1);
+    const passedLogger = state.openCalls[0].options.logger;
+    // Must expose chat-web's { error, warn, info, debug } surface — the
+    // original ai-sdk logger only had `log`, so this proves the adapter ran.
+    for (const level of ["error", "warn", "info", "debug"]) {
+      assert.equal(typeof passedLogger?.[level], "function", `missing ${level}() on adapted logger`);
+    }
+    // Each level must route through to the ai-sdk logger's `log` channel
+    // (this is the exact path that used to crash on chat-web's debug call).
+    passedLogger.debug("hello", { from: "test" });
+    assert.ok(
+      logs.some((line) => line.includes("[chat-web debug]") && line.includes("hello")),
+      `expected adapter to forward debug() to log(); got ${JSON.stringify(logs)}`,
+    );
+
+    await s.close();
+  });
+
+  it("logger adapter survives a missing log() method", async () => {
+    const { mod, state } = createStubChatWebModule();
+    // No-op logger (e.g. when caller passes `{}` or `undefined`). The adapter
+    // must still produce callable functions so chat-web's internal
+    // logger.debug() doesn't blow up.
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod, logger: {} });
+    await s.boot();
+    const passedLogger = state.openCalls[0].options.logger;
+    assert.doesNotThrow(() => passedLogger.debug("anything"));
+    assert.doesNotThrow(() => passedLogger.error(new Error("boom")));
+    await s.close();
+  });
+
   it("runTurn sends through ChatSession.send and emits assistant_message", async () => {
     const { mod, state } = createStubChatWebModule();
     const s = new ChatWebSession("chat-web", { chatWebModule: mod, model: "gemini" });

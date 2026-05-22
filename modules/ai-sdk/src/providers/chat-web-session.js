@@ -37,6 +37,48 @@ function extractErrorMessage(error) {
   return "chat-web turn failed";
 }
 
+/**
+ * Bridges the ai-sdk logger shape (`{ log(msg) }`) to chat-web's shape
+ * (`{ error, warn, info, debug }`). Chat-web internally calls
+ * `logger.debug(...)` and friends during session lifecycle; if we pass
+ * the ai-sdk logger straight through, those calls explode with
+ * "this.logger.debug is not a function" mid-turn.
+ *
+ * Routes every chat-web level into the ai-sdk logger's single `log`
+ * channel, prefixed with the level so downstream observers can still
+ * grep the structure. Safe against undefined / partial loggers.
+ */
+function adaptLoggerForChatWeb(aiSdkLogger) {
+  const sinkLog = typeof aiSdkLogger?.log === "function" ? aiSdkLogger.log.bind(aiSdkLogger) : null;
+  const at = (level) => (...args) => {
+    if (!sinkLog) return;
+    try {
+      sinkLog(`[chat-web ${level}] ${args.map(formatLoggerArg).join(" ")}`);
+    } catch {
+      // best effort
+    }
+  };
+  return {
+    level: "info",
+    error: at("error"),
+    warn: at("warn"),
+    info: at("info"),
+    debug: at("debug"),
+  };
+}
+
+function formatLoggerArg(value) {
+  if (value === undefined) return "undefined";
+  if (value === null) return "null";
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.stack || value.message;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
 function isPlaywrightMissingError(error) {
   const msg = String(error?.message || "").toLowerCase();
   return (
@@ -253,7 +295,11 @@ export class ChatWebSession extends EventEmitter {
 
     this.chatSession = await mod.ChatSession.open(this.chatWebProvider, {
       headless: this.headless,
-      logger: this.logger,
+      // IMPORTANT: chat-web's logger contract is `{ error, warn, info, debug }`;
+      // ai-sdk's normalised logger is `{ log }`. Passing the ai-sdk logger
+      // through verbatim crashes chat-web mid-session with
+      // "this.logger.debug is not a function". Adapt to chat-web's shape.
+      logger: adaptLoggerForChatWeb(this.logger),
     });
 
     if (this.closeRequested) {
