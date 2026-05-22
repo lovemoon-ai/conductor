@@ -10,11 +10,19 @@ import { BUILT_IN_BACKENDS as AI_SDK_BUILT_IN_BACKENDS } from "@love-moon/ai-sdk
 // output. The self-check below ensures this list always matches ai-sdk's set.
 const BUILT_IN_RUNTIME_BACKENDS = ["codex", "claude", "kimi", "opencode", "copilot", "chat-web"];
 const BUILT_IN_RUNTIME_BACKEND_SET = new Set(BUILT_IN_RUNTIME_BACKENDS);
-// Backends that don't shell out to a CLI binary — they run in-process via
-// the SDK and therefore don't need an `allow_cli_list` entry. `copilot`
-// embeds the GitHub Copilot SDK; `chat-web` drives a Chromium browser via
-// Playwright. For both, conductor-fire boots without any installed CLI.
-const COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKENDS = ["copilot", "chat-web"];
+// Backends that don't shell out to a CLI binary AND should be advertised
+// without any user-side allow_cli_list entry. `copilot` is the only such
+// backend today — it ships with @github/copilot-sdk as a hard dep so
+// every install gets it for free.
+//
+// chat-web is intentionally NOT here even though it's also command-optional
+// (it drives a Chromium browser, not a CLI). The reason: chat-web has
+// configurable sub-providers (chatgpt / gemini / deepseek) selected via
+// `--model`, and surfacing a bare `chat-web` backend alongside user
+// aliases like `web-chatgpt` / `web-gemini` is just confusing — the alias
+// IS the sub-provider choice. Users who want chat-web must declare an
+// explicit allow_cli_list entry (which is also where `--model` lives).
+const COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKENDS = ["copilot"];
 const COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKEND_SET = new Set(COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKENDS);
 
 // Legacy aliases (e.g. "code" → "codex", "kimi-cli" → "kimi") are derived
