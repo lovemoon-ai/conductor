@@ -29,6 +29,7 @@ import {
 import { realtimeHub } from '@/lib/realtime/hub';
 import { normalizeIssuePriority, normalizeIssueStatus } from '@/lib/issues/config';
 import { parseIssueMetadata } from '@/lib/issues/serialization';
+import { canMergeProjectsByFields } from '@/lib/projects/grouping';
 import { isConductorFireHost } from '@/lib/subscription/plan-limits';
 import {
   buildIssueInitialContent,
@@ -53,6 +54,7 @@ const issueWithProjectSelect = {
     select: {
       id: true,
       userId: true,
+      name: true,
       collaborationId: true,
       daemonHost: true,
       workspacePath: true,
@@ -60,6 +62,10 @@ const issueWithProjectSelect = {
       worktreeBranch: true,
       lastCommit: true,
       lastCommitAt: true,
+      // Needed to verify a cross-daemon `projectChanged` move stays within
+      // the same merged group when transitioning to doing.
+      gitRemoteUrl: true,
+      mergeOptOut: true,
     },
   },
 };
@@ -291,7 +297,12 @@ export async function PATCH(
   const projectChanged = input.projectId !== undefined && input.projectId !== existing.projectId;
   let targetProject = existing.project;
   if (projectChanged) {
-    if (currentStatus === 'doing' || nextStatus === 'doing') {
+    // Re-parenting a *running* issue is still forbidden — the active task is
+    // glued to its daemon and worktree. The newly-allowed case is the
+    // todo→doing transition for merged-group siblings: the issue had no
+    // committed daemon yet, and the user picks one in the MoveIssueToDoing
+    // dialog. We validate that below by checking `canMergeProjectsByFields`.
+    if (currentStatus === 'doing') {
       return NextResponse.json({ error: 'Move the issue out of doing before changing target project' }, { status: 409 });
     }
     if (currentOwnerUserId !== user.id && issueProjectOwnerId !== user.id) {
@@ -325,7 +336,63 @@ export async function PATCH(
         { status: 400 },
       );
     }
+    if (nextStatus === 'doing') {
+      // Re-parent + spawn means we will execute the task on `targetProject`'s
+      // daemon. That daemon must belong to the current user — otherwise we
+      // would be asking the realtime hub to talk to another member's daemon
+      // (which today fails with a misleading "daemon offline" because
+      // `getAgentsForUser` is per-user, but the right error is "not yours").
+      // Forbid the request explicitly so the boundary stays clear even if
+      // anyone widens the per-user agent scope later.
+      if (requestedProject.userId !== user.id) {
+        return NextResponse.json(
+          { error: 'Target project must belong to the current user to start work on its daemon' },
+          { status: 403 },
+        );
+      }
+      // The only sanctioned reason to switch project IDs while *entering*
+      // doing is the cross-daemon merged group — the client is committing to
+      // a daemon for the first time. Reject any other reshuffle here so a
+      // mis-configured client cannot smuggle the issue into an unrelated
+      // project as a side effect of "start work."
+      const isSibling = canMergeProjectsByFields(
+        {
+          name: existing.project.name,
+          daemonHost: existing.project.daemonHost,
+          gitRemoteUrl: existing.project.gitRemoteUrl,
+          mergeOptOut: existing.project.mergeOptOut,
+        },
+        {
+          name: requestedProject.name,
+          daemonHost: requestedProject.daemonHost,
+          gitRemoteUrl: requestedProject.gitRemoteUrl,
+          mergeOptOut: requestedProject.mergeOptOut,
+        },
+      );
+      if (!isSibling) {
+        return NextResponse.json(
+          { error: 'Target project must be a cross-daemon sibling of the current project to start work there' },
+          { status: 409 },
+        );
+      }
+      // A linked task implies a worktree + session already live on the
+      // original daemon. Restarting it on a different daemon would orphan the
+      // PTY session, so refuse and tell the user to clean up first.
+      if (linkedTaskByIssueId.get(existing.id)) {
+        return NextResponse.json(
+          { error: 'A linked task already exists on the original daemon. Clear it before starting work on a different daemon.' },
+          { status: 409 },
+        );
+      }
+    }
     targetProject = requestedProject;
+    if (nextStatus === 'doing') {
+      // Breadcrumb for "my issue jumped daemons" debugging — fires only on
+      // the merged-group sibling switch path.
+      console.info(
+        `[issues] re-parent on doing transition: issue=${existing.id} userId=${user.id} from=${existing.projectId}(${existing.project.daemonHost ?? '-'}) to=${requestedProject.id}(${requestedProject.daemonHost ?? '-'})`,
+      );
+    }
   }
   const nextOwnerUserId = input.ownerUserId ?? currentOwnerUserId;
   if ((input.ownerUserId || projectChanged) && !(await isAssignableIssueOwner(targetProject, nextOwnerUserId))) {
@@ -378,11 +445,17 @@ export async function PATCH(
   let restartPlan: PlannedInplaceTaskRestart | null = null;
 
   if (shouldSpawnTask && !activeTask) {
-    const executionProject = issueProjectOwnerId === user.id
-      ? existing.project
-      : issueProjectCollaborationId
-        ? (await getUserProjectForCollaboration(user.id, issueProjectCollaborationId))?.project ?? null
-        : null;
+    // When the client just chose a merged-group sibling in the doing dialog,
+    // `targetProject` already points at the daemon the user selected — use it
+    // verbatim so the spawn lands on the new daemon. For the unchanged path,
+    // fall back to the existing owner/collaboration resolution.
+    const executionProject = projectChanged
+      ? targetProject
+      : (issueProjectOwnerId === user.id
+        ? existing.project
+        : issueProjectCollaborationId
+          ? (await getUserProjectForCollaboration(user.id, issueProjectCollaborationId))?.project ?? null
+          : null);
     if (!executionProject) {
       return NextResponse.json({ error: 'No local project available for this collaboration' }, { status: 409 });
     }
@@ -549,6 +622,26 @@ export async function PATCH(
       }
       activeTask = latestTask;
       linkedTask = latestTask;
+    }
+  }
+
+  // When the client supplied `metadata.daemonHost` (the "remember last daemon"
+  // hint set by the doing dialog), make the server the source of truth for
+  // what actually ran: replace the value with the daemon we resolved above.
+  // Without this an SDK/CLI client could PATCH `metadata.daemonHost: "fake"`
+  // and the issue would silently advertise the wrong machine next time.
+  const effectiveDaemonHost = spawnTaskArgs?.agentHost
+    ?? restartPlan?.restartAgentHost
+    ?? null;
+  if (shouldEnterDoing && input.metadata !== undefined && input.metadata !== null) {
+    if (effectiveDaemonHost) {
+      input.metadata = { ...input.metadata, daemonHost: effectiveDaemonHost };
+    } else if ('daemonHost' in input.metadata) {
+      // Doing transition that doesn't actually spawn/restart (e.g., the issue
+      // already had an active task and we skip both paths) — drop the hint so
+      // we don't persist a value nothing on the server validated.
+      const { daemonHost: _dropped, ...rest } = input.metadata;
+      input.metadata = rest;
     }
   }
 

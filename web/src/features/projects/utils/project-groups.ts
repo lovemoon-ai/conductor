@@ -1,4 +1,5 @@
 import type { Project, ProjectGroup } from '@/shared/types';
+import { canMergeProjectsByFields } from '@/lib/projects/grouping';
 
 /**
  * Decide whether two projects can be merged into the same cross-daemon group.
@@ -30,16 +31,7 @@ import type { Project, ProjectGroup } from '@/shared/types';
  */
 export const canMergeProjects = (a: Project, b: Project): boolean => {
   if (a.id === b.id) return true;
-  if (a.name !== b.name) return false;
-  if (a.mergeOptOut === true || b.mergeOptOut === true) return false;
-  const aHost = (a.daemonHost ?? '').trim();
-  const bHost = (b.daemonHost ?? '').trim();
-  if (!aHost || !bHost) return false;
-  if (aHost === bHost) return false;
-  const aUrl = (a.gitRemoteUrl ?? '').trim().toLowerCase();
-  const bUrl = (b.gitRemoteUrl ?? '').trim().toLowerCase();
-  if (aUrl && bUrl && aUrl !== bUrl) return false;
-  return true;
+  return canMergeProjectsByFields(a, b);
 };
 
 /**

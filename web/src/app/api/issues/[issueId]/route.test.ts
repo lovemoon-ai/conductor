@@ -993,6 +993,262 @@ describe('/api/issues/[issueId]', () => {
     expect(db.issue.update).not.toHaveBeenCalled();
   });
 
+  describe('merged-group sibling re-parent on todo→doing', () => {
+    const buildMergedExistingIssue = (overrides: Record<string, unknown> = {}) =>
+      buildExistingIssue({
+        project: {
+          id: 'project-1',
+          userId: 'user-1',
+          collaborationId: null,
+          name: 'MergedApp',
+          daemonHost: 'daemon-a',
+          workspacePath: '/repo/a',
+          repoRoot: '/repo/a',
+          worktreeBranch: 'main',
+          lastCommit: 'aaa111',
+          gitRemoteUrl: 'github.com/foo/merged-app',
+          mergeOptOut: false,
+        },
+        ...overrides,
+      });
+
+    const mockSiblingProject = (overrides: Record<string, unknown> = {}) => {
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: 'project-2',
+        userId: 'user-1',
+        collaborationId: null,
+        name: 'MergedApp',
+        daemonHost: 'daemon-b',
+        workspacePath: '/repo/b',
+        repoRoot: '/repo/b',
+        worktreeBranch: 'main',
+        lastCommit: 'bbb222',
+        gitRemoteUrl: 'github.com/foo/merged-app',
+        mergeOptOut: false,
+        ...overrides,
+      } as any);
+    };
+
+    it('re-parents the issue and spawns on the chosen sibling daemon', async () => {
+      vi.mocked(db.project.findMany).mockResolvedValue([
+        { id: 'project-1', collaborationId: null },
+        { id: 'project-2', collaborationId: null },
+      ] as any);
+      // Default project is project-1 so the sibling (project-2) is NOT default
+      // — it must have a daemon binding to pass the binding-incomplete guard.
+      vi.mocked(db.defaultProject.findUnique).mockResolvedValue({ projectId: 'project-1' } as any);
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildMergedExistingIssue() as any);
+      mockSiblingProject();
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
+        { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'] },
+      ] as any);
+      vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+        task: {
+          id: 'task-sibling',
+          projectId: 'project-2',
+          issueId: 'issue-1',
+          title: 'Board implementation',
+          status: 'init',
+          taskType: 'ai_task',
+          agentHost: 'daemon-b',
+          executionHost: 'daemon-b',
+          backendType: 'claude',
+          sessionId: null,
+          sessionFilePath: null,
+          launchConfig: null,
+          metadata: JSON.stringify({ backendType: 'claude' }),
+          createdAt: new Date('2026-04-14T00:20:00.000Z'),
+          updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+        },
+        initialMessage: null,
+        initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+      } as any);
+      vi.mocked(db.issue.update).mockImplementation(async ({ data }: any) =>
+        buildMergedExistingIssue({
+          projectId: data.projectId,
+          status: data.status,
+          metadata: data.metadata,
+        }) as any,
+      );
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: {
+          projectId: 'project-2',
+          status: 'doing',
+          metadata: { backendType: 'claude', daemonHost: 'daemon-b' },
+        },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+
+      expect(response.status).toBe(200);
+      // Spawn must land on the sibling project's daemon, not the original.
+      const createArgs = vi.mocked(createAiTaskArtifacts).mock.calls[0][0] as any;
+      expect(createArgs.projectId).toBe('project-2');
+      expect(createArgs.agentHost).toBe('daemon-b');
+      expect(createArgs.launchConfig).toEqual(expect.objectContaining({
+        projectRepoRoot: '/repo/b',
+        projectWorkspacePath: '/repo/b',
+      }));
+      // The issue row gets re-parented to the sibling project.
+      const updateCall = vi.mocked(db.issue.update).mock.calls[0][0] as any;
+      expect(updateCall.data.projectId).toBe('project-2');
+      // And its persisted metadata.daemonHost matches the daemon we actually
+      // resolved — even if the client had hand-rolled the value.
+      const persistedMeta = JSON.parse(updateCall.data.metadata as string);
+      expect(persistedMeta.daemonHost).toBe('daemon-b');
+      expect(persistedMeta.backendType).toBe('claude');
+    });
+
+    it('overwrites a fake metadata.daemonHost with the actually-used host even without a project switch', async () => {
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildMergedExistingIssue() as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
+      ] as any);
+      vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+        task: {
+          id: 'task-same',
+          projectId: 'project-1',
+          issueId: 'issue-1',
+          title: 'Board implementation',
+          status: 'init',
+          taskType: 'ai_task',
+          agentHost: 'daemon-a',
+          executionHost: 'daemon-a',
+          backendType: 'claude',
+          sessionId: null,
+          sessionFilePath: null,
+          launchConfig: null,
+          metadata: JSON.stringify({ backendType: 'claude' }),
+          createdAt: new Date('2026-04-14T00:20:00.000Z'),
+          updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+        },
+        initialMessage: null,
+        initialMessageContent: '...',
+      } as any);
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: {
+          status: 'doing',
+          metadata: { backendType: 'claude', daemonHost: 'definitely-fake' },
+        },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+
+      expect(response.status).toBe(200);
+      const updateCall = vi.mocked(db.issue.update).mock.calls[0][0] as any;
+      const persistedMeta = JSON.parse(updateCall.data.metadata as string);
+      expect(persistedMeta.daemonHost).toBe('daemon-a');
+    });
+
+    it('rejects a project switch into doing when the target is not a merged-group sibling', async () => {
+      vi.mocked(db.project.findMany).mockResolvedValue([
+        { id: 'project-1', collaborationId: null },
+        { id: 'project-foreign', collaborationId: null },
+      ] as any);
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildMergedExistingIssue() as any);
+      mockSiblingProject({
+        id: 'project-foreign',
+        // Different remote URL — explicitly NOT a sibling under the merge rule.
+        gitRemoteUrl: 'github.com/other/unrelated',
+      });
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: { projectId: 'project-foreign', status: 'doing' },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toMatch(/cross-daemon sibling/i);
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    });
+
+    it('rejects a project switch into doing when a linked task still exists on the original daemon', async () => {
+      vi.mocked(db.project.findMany).mockResolvedValue([
+        { id: 'project-1', collaborationId: null },
+        { id: 'project-2', collaborationId: null },
+      ] as any);
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildMergedExistingIssue({ status: 'done' }) as any);
+      mockIssueTasks({
+        activeTasks: [],
+        // A still-linked (killed/completed) task implies a worktree on the
+        // original daemon — re-parenting would orphan that PTY.
+        linkedTasks: [buildTask({ status: 'killed' })],
+      });
+      mockSiblingProject();
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: { projectId: 'project-2', status: 'doing' },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toMatch(/linked task/i);
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    });
+
+    it('rejects a project switch into doing when the sibling project belongs to another collaboration member', async () => {
+      // Collaboration scenario: both projects share collaborationId so the
+      // "same collaboration" guard passes; my new userId guard then catches
+      // the cross-member spawn attempt with a 403 before we can land on
+      // someone else's daemon. Standalone (no-collab) attempts to switch to
+      // another user's project still fail earlier with 400 via the existing
+      // collaboration check — covered by the existing test suite.
+      vi.mocked(db.project.findMany).mockResolvedValue([
+        { id: 'project-1', collaborationId: 'collab-1' },
+        { id: 'project-2', collaborationId: 'collab-1' },
+      ] as any);
+      vi.mocked(db.collaborationMember.findMany).mockResolvedValue([
+        { userId: 'user-1', projectId: 'project-1' },
+        { userId: 'user-other', projectId: 'project-2' },
+      ] as any);
+      vi.mocked(db.issue.findFirst).mockResolvedValue(
+        buildMergedExistingIssue({
+          ownerUserId: 'user-1',
+          project: {
+            id: 'project-1',
+            userId: 'user-1',
+            collaborationId: 'collab-1',
+            name: 'MergedApp',
+            daemonHost: 'daemon-a',
+            workspacePath: '/repo/a',
+            repoRoot: '/repo/a',
+            worktreeBranch: 'main',
+            lastCommit: 'aaa111',
+            gitRemoteUrl: 'github.com/foo/merged-app',
+            mergeOptOut: false,
+          },
+        }) as any,
+      );
+      mockSiblingProject({
+        userId: 'user-other',
+        collaborationId: 'collab-1',
+      });
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: { projectId: 'project-2', status: 'doing' },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(403);
+      expect(data.error).toMatch(/current user/i);
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    });
+  });
+
   it('does not spawn a duplicate task when an active linked task already exists', async () => {
     vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue() as any);
     mockIssueTasks({

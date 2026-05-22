@@ -6,6 +6,7 @@ const fetchProjectsMock = vi.fn();
 const fetchAgentsMock = vi.fn();
 const setSelectedProjectIdMock = vi.fn();
 const fetchIssuesMock = vi.fn();
+const fetchIssuesForProjectsMock = vi.fn();
 const moveIssueMock = vi.fn();
 const updateIssueMock = vi.fn();
 const deleteIssueMock = vi.fn();
@@ -37,6 +38,7 @@ let issuesState: {
   }>;
   isLoading: boolean;
   fetchIssues: typeof fetchIssuesMock;
+  fetchIssuesForProjects: typeof fetchIssuesForProjectsMock;
   moveIssue: typeof moveIssueMock;
   updateIssue: typeof updateIssueMock;
   deleteIssue: typeof deleteIssueMock;
@@ -147,24 +149,69 @@ vi.mock('@/features/issues', () => ({
   }) => (open ? <div>create-issue-dialog:{projectId ?? 'none'}</div> : null),
   MoveIssueToDoingDialog: ({
     open,
-    availableBackends,
+    daemonOptions,
+    initialDaemon,
     initialBackend,
     onConfirm,
   }: {
     open: boolean;
-    availableBackends: string[];
+    daemonOptions: Array<{
+      host: string;
+      projectId: string;
+      supportedBackends: string[];
+    }>;
+    initialDaemon?: string | null;
     initialBackend?: string | null;
-    onConfirm: (backendType: string) => Promise<void> | void;
-  }) => (
-    open ? (
+    onConfirm: (args: { backendType: string; daemonHost: string; projectId: string }) => Promise<void> | void;
+  }) => {
+    if (!open) return null;
+    const hostList = daemonOptions.map((option) => option.host).join('|');
+    const backendsByHost = daemonOptions
+      .map((option) => `${option.host}=${option.supportedBackends.join(',')}`)
+      .join(';');
+    const initialOption =
+      daemonOptions.find((option) => option.host === initialDaemon)
+      ?? daemonOptions[0]
+      ?? null;
+    const initialBackendChoice =
+      initialBackend && initialOption?.supportedBackends.includes(initialBackend)
+        ? initialBackend
+        : initialOption?.supportedBackends[0] ?? '';
+    return (
       <div>
-        <div>move-issue-to-doing:{availableBackends.join(',')}:{initialBackend ?? 'none'}</div>
-        <button type="button" onClick={() => void onConfirm(initialBackend ?? availableBackends[0] ?? '')}>
+        <div>move-issue-to-doing:hosts={hostList}:backends={backendsByHost}:initialDaemon={initialDaemon ?? 'none'}:initialBackend={initialBackend ?? 'none'}</div>
+        <button
+          type="button"
+          onClick={() => {
+            if (!initialOption) return;
+            void onConfirm({
+              backendType: initialBackendChoice,
+              daemonHost: initialOption.host,
+              projectId: initialOption.projectId,
+            });
+          }}
+        >
           confirm-move-issue
         </button>
+        {daemonOptions.length > 1 ? (
+          <button
+            type="button"
+            onClick={() => {
+              const sibling = daemonOptions[1];
+              if (!sibling) return;
+              void onConfirm({
+                backendType: sibling.supportedBackends[0] ?? '',
+                daemonHost: sibling.host,
+                projectId: sibling.projectId,
+              });
+            }}
+          >
+            confirm-move-issue-second
+          </button>
+        ) : null}
       </div>
-    ) : null
-  ),
+    );
+  },
 }));
 
 vi.mock('@/features/tasks', () => ({
@@ -196,6 +243,7 @@ describe('IssuesPage', () => {
     fetchAgentsMock.mockReset();
     setSelectedProjectIdMock.mockReset();
     fetchIssuesMock.mockReset();
+    fetchIssuesForProjectsMock.mockReset();
     moveIssueMock.mockReset();
     updateIssueMock.mockReset();
     deleteIssueMock.mockReset();
@@ -240,6 +288,7 @@ describe('IssuesPage', () => {
       ],
       isLoading: false,
       fetchIssues: fetchIssuesMock,
+      fetchIssuesForProjects: fetchIssuesForProjectsMock,
       moveIssue: moveIssueMock,
       updateIssue: updateIssueMock,
       deleteIssue: deleteIssueMock,
@@ -403,7 +452,9 @@ describe('IssuesPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'status-issue' }));
 
     expect(moveIssueMock).not.toHaveBeenCalled();
-    expect(screen.getByText('move-issue-to-doing:claude,codex:codex')).toBeInTheDocument();
+    expect(
+      screen.getByText('move-issue-to-doing:hosts=daemon-a:backends=daemon-a=claude,codex:initialDaemon=none:initialBackend=codex'),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'confirm-move-issue' }));
 
@@ -411,7 +462,7 @@ describe('IssuesPage', () => {
       expect(updateIssueMock).toHaveBeenCalledWith('issue-1', {
         status: 'doing',
         position: 0,
-        metadata: { backendType: 'codex' },
+        metadata: { backendType: 'codex', daemonHost: 'daemon-a' },
       });
     });
   });
@@ -452,7 +503,9 @@ describe('IssuesPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'move-issue' }));
     expect(moveIssueMock).not.toHaveBeenCalled();
-    expect(screen.getByText('move-issue-to-doing:claude,codex:none')).toBeInTheDocument();
+    expect(
+      screen.getByText('move-issue-to-doing:hosts=daemon-a:backends=daemon-a=claude,codex:initialDaemon=none:initialBackend=none'),
+    ).toBeInTheDocument();
 
     issuesState = {
       ...issuesState,
@@ -476,7 +529,7 @@ describe('IssuesPage', () => {
       expect(updateIssueMock).toHaveBeenCalledWith('issue-1', {
         status: 'doing',
         position: 40,
-        metadata: { backendType: 'claude' },
+        metadata: { backendType: 'claude', daemonHost: 'daemon-a' },
       });
     });
   });
@@ -533,7 +586,7 @@ describe('IssuesPage', () => {
       expect(updateIssueMock).toHaveBeenCalledWith('issue-1', {
         status: 'doing',
         position: 6,
-        metadata: { backendType: 'claude' },
+        metadata: { backendType: 'claude', daemonHost: 'daemon-a' },
       });
     });
   });
@@ -590,7 +643,7 @@ describe('IssuesPage', () => {
       expect(updateIssueMock).toHaveBeenCalledWith('issue-1', {
         status: 'doing',
         position: 10.5,
-        metadata: { backendType: 'claude' },
+        metadata: { backendType: 'claude', daemonHost: 'daemon-a' },
       });
     });
   });
@@ -608,6 +661,138 @@ describe('IssuesPage', () => {
     expect(fetchIssuesMock).toHaveBeenCalledWith(null);
     expect(replaceMock).toHaveBeenCalledWith('/app/issues?view=board', { scroll: false });
     expect(screen.getByText('issue-board:2:ready')).toBeInTheDocument();
+  });
+
+  it('surfaces every online sibling daemon for a merged-group issue and re-parents on switch', async () => {
+    searchParamsState = new URLSearchParams('projectId=project-merged-a');
+    agentsState = {
+      agents: [
+        { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude', 'codex'] },
+        { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['claude'] },
+      ],
+      fetchAgents: fetchAgentsMock,
+    };
+    projectsState = {
+      projects: [
+        {
+          id: 'project-merged-a',
+          name: 'Merged',
+          daemonHost: 'daemon-a',
+          // The grouping helper expects matching git remotes when both sides
+          // have one — keep them identical so canMergeProjects returns true.
+          gitRemoteUrl: 'github.com/foo/merged',
+        } as any,
+        {
+          id: 'project-merged-b',
+          name: 'Merged',
+          daemonHost: 'daemon-b',
+          gitRemoteUrl: 'github.com/foo/merged',
+        } as any,
+      ],
+      hiddenProjectIds: [],
+      isLoading: false,
+      fetchProjects: fetchProjectsMock,
+      setSelectedProjectId: setSelectedProjectIdMock,
+    };
+    issuesState = {
+      ...issuesState,
+      issues: [
+        {
+          id: 'issue-1',
+          projectId: 'project-merged-a',
+          title: 'Cross-daemon work',
+          status: 'todo',
+          position: 0,
+          createdAt: '2026-04-14T00:00:00.000Z',
+        },
+      ],
+    };
+
+    render(<IssuesPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'status-issue' }));
+
+    expect(moveIssueMock).not.toHaveBeenCalled();
+    // Both daemons appear in the picker; backend list differs per daemon so
+    // the dialog can re-filter when the user switches sibling.
+    expect(
+      screen.getByText(
+        'move-issue-to-doing:hosts=daemon-a|daemon-b:backends=daemon-a=claude,codex;daemon-b=claude:initialDaemon=daemon-a:initialBackend=none',
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'confirm-move-issue-second' }));
+
+    await waitFor(() => {
+      expect(updateIssueMock).toHaveBeenCalledWith('issue-1', {
+        status: 'doing',
+        position: 0,
+        projectId: 'project-merged-b',
+        metadata: { backendType: 'claude', daemonHost: 'daemon-b' },
+      });
+    });
+  });
+
+  it('keeps the issue on its current project when the user picks the same daemon', async () => {
+    searchParamsState = new URLSearchParams('projectId=project-merged-a');
+    agentsState = {
+      agents: [
+        { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude', 'codex'] },
+        { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['claude'] },
+      ],
+      fetchAgents: fetchAgentsMock,
+    };
+    projectsState = {
+      projects: [
+        {
+          id: 'project-merged-a',
+          name: 'Merged',
+          daemonHost: 'daemon-a',
+          gitRemoteUrl: 'github.com/foo/merged',
+        } as any,
+        {
+          id: 'project-merged-b',
+          name: 'Merged',
+          daemonHost: 'daemon-b',
+          gitRemoteUrl: 'github.com/foo/merged',
+        } as any,
+      ],
+      hiddenProjectIds: [],
+      isLoading: false,
+      fetchProjects: fetchProjectsMock,
+      setSelectedProjectId: setSelectedProjectIdMock,
+    };
+    issuesState = {
+      ...issuesState,
+      issues: [
+        {
+          id: 'issue-1',
+          projectId: 'project-merged-a',
+          title: 'Cross-daemon work',
+          status: 'todo',
+          position: 0,
+          createdAt: '2026-04-14T00:00:00.000Z',
+          metadata: { daemonHost: 'daemon-a' },
+        },
+      ],
+    };
+
+    render(<IssuesPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'status-issue' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'confirm-move-issue' }));
+
+    await waitFor(() => {
+      const call = updateIssueMock.mock.calls.find(([id]) => id === 'issue-1');
+      expect(call).toBeDefined();
+      // No projectId field — staying on daemon-a means no re-parent.
+      expect(call?.[1]).toEqual({
+        status: 'doing',
+        position: 0,
+        metadata: { backendType: 'claude', daemonHost: 'daemon-a' },
+      });
+    });
   });
 
   it('clears a hidden projectId and fetches visible all-project issues', () => {
