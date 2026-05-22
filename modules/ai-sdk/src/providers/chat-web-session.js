@@ -385,10 +385,11 @@ export class ChatWebSession extends EventEmitter {
       case "chatgpt":
         return `https://chatgpt.com/c/${this.providerConversationId}`;
       case "gemini":
-        // gemini.google.com (consumer chat) uses /app/{conversation-id}.
-        // NB: this is intentionally NOT aistudio.google.com — AI Studio
-        // is a separate developer playground that requires an API key.
-        return `https://gemini.google.com/app/${this.providerConversationId}`;
+        // chat-web's `gemini` provider targets AI Studio
+        // (aistudio.google.com/prompts/new_chat) — that's the free web
+        // chat surface users call "Gemini". Once a prompt is saved,
+        // the URL becomes /prompts/{slug}.
+        return `https://aistudio.google.com/prompts/${this.providerConversationId}`;
       default:
         return undefined;
     }

@@ -3,49 +3,61 @@ import { describe, expect, it } from "vitest";
 import { GeminiAdapter, stripChromeFromTurn } from "../src/providers/gemini.js";
 
 describe("GeminiAdapter — target product", () => {
-  it("points at the consumer chat (gemini.google.com), not the AI Studio playground", () => {
+  it("points at AI Studio's prompts/new_chat (what users mean by 'Gemini' free web chat)", () => {
     const adapter = new GeminiAdapter();
-    // AI Studio (aistudio.google.com) requires an API key and is a
-    // developer playground — wrong product surface for chat-web's
-    // consumer-chat automation model. The consumer chat is at
-    // gemini.google.com and matches the chatgpt.com persistent-profile UX.
-    expect(adapter.homeUrl).toMatch(/^https:\/\/gemini\.google\.com\/app(\b|$)/);
-    expect(adapter.homeUrl).not.toMatch(/aistudio/);
+    expect(adapter.homeUrl).toMatch(/^https:\/\/aistudio\.google\.com\/prompts\/new_chat(\b|$)/);
   });
 });
 
-describe("stripChromeFromTurn (gemini.google.com)", () => {
-  it("strips the 'Gemini said' prefix that <model-response> wraps around content", () => {
-    expect(stripChromeFromTurn("Gemini said\n\nHello!")).toBe("Hello!");
-  });
-
-  it("is case-insensitive and tolerant of extra whitespace", () => {
-    expect(stripChromeFromTurn("gemini said\nhi")).toBe("hi");
-    expect(stripChromeFromTurn("Gemini said   actual content")).toBe("actual content");
-  });
-
-  it("returns text verbatim when there is no chrome prefix", () => {
-    expect(stripChromeFromTurn("Hello! Thanks for dropping in.")).toBe(
-      "Hello! Thanks for dropping in.",
+describe("GeminiAdapter.stripChromeFromTurn", () => {
+  it("removes the 'Model HH:MM AM/PM' turn header that leaks from innerText", () => {
+    const raw = [
+      "edit",
+      "more_vert",
+      "Model 5:54 PM",
+      "Gemini 是 Google 开发的多模态大语言模型家族。",
+      "content_copy",
+      "thumb_up",
+      "thumb_down",
+    ].join("\n");
+    expect(stripChromeFromTurn(raw)).toBe(
+      "Gemini 是 Google 开发的多模态大语言模型家族。",
     );
   });
 
-  it("preserves multi-paragraph content after the prefix", () => {
-    expect(stripChromeFromTurn("Gemini said\n\npara 1\n\npara 2")).toBe("para 1\n\npara 2");
+  it("keeps multi-line content while dropping chrome", () => {
+    const raw = ["Model 9:01 AM", "error", "Real model output here.", "content_copy"].join("\n");
+    expect(stripChromeFromTurn(raw)).toBe("Real model output here.");
   });
 
-  it("returns '' for empty input", () => {
+  it("does NOT drop a line where the ligature word is embedded in a sentence", () => {
+    const raw = ["Model 1:23 PM", "an error occurred while parsing"].join("\n");
+    expect(stripChromeFromTurn(raw)).toBe("an error occurred while parsing");
+  });
+
+  it("handles 24-hour-style headers", () => {
+    const raw = ["Model 14:05", "Hello"].join("\n");
+    expect(stripChromeFromTurn(raw)).toBe("Hello");
+  });
+
+  it("returns '' when only chrome is present", () => {
+    const raw = ["edit", "more_vert", "Model 5:54 PM", "content_copy"].join("\n");
+    expect(stripChromeFromTurn(raw)).toBe("");
+  });
+
+  it("preserves intentional blank lines between paragraphs", () => {
+    const raw = [
+      "Model 5:54 PM",
+      "Paragraph one.",
+      "",
+      "Paragraph two.",
+      "content_copy",
+    ].join("\n");
+    expect(stripChromeFromTurn(raw)).toBe("Paragraph one.\n\nParagraph two.");
+  });
+
+  it("returns '' on empty input", () => {
     expect(stripChromeFromTurn("")).toBe("");
-  });
-
-  it("does NOT strip the legacy AI Studio chrome — that was a different product", () => {
-    // AI Studio's leaks (Model HH:MM AM/PM header, "edit"/"more_vert"
-    // icon ligatures) don't appear on gemini.google.com's
-    // <message-content>, so we no longer remove them. If they ever
-    // show up, the right fix is a new helper, not extending this one.
-    const aiStudioStyle = ["edit", "more_vert", "Model 5:54 PM", "real content"].join("\n");
-    // Output is identical because no "Gemini said" prefix is present.
-    expect(stripChromeFromTurn(aiStudioStyle)).toBe(aiStudioStyle.trim());
   });
 });
 
@@ -56,40 +68,21 @@ describe("GeminiAdapter.getConversationId", () => {
 
   const adapter = new GeminiAdapter();
 
-  it("extracts the conversation id from gemini.google.com/app/{id}", () => {
+  it("returns null on the placeholder /prompts/new_chat URL", () => {
+    expect(adapter.getConversationId(pageStub("https://aistudio.google.com/prompts/new_chat"))).toBeNull();
     expect(
-      adapter.getConversationId(pageStub("https://gemini.google.com/app/372437d29c30422f")),
-    ).toBe("372437d29c30422f");
-  });
-
-  it("works with trailing slash / query / hash", () => {
-    expect(
-      adapter.getConversationId(pageStub("https://gemini.google.com/app/abc12345abcd1234/")),
-    ).toBe("abc12345abcd1234");
-    expect(
-      adapter.getConversationId(pageStub("https://gemini.google.com/app/abc12345abcd1234?foo=bar")),
-    ).toBe("abc12345abcd1234");
-    expect(
-      adapter.getConversationId(pageStub("https://gemini.google.com/app/abc12345abcd1234#anchor")),
-    ).toBe("abc12345abcd1234");
-  });
-
-  it("also accepts UUID-shaped ids", () => {
-    expect(
-      adapter.getConversationId(
-        pageStub("https://gemini.google.com/app/6a103f7e-bd94-83ea-ae46-9652657bbedf"),
-      ),
-    ).toBe("6a103f7e-bd94-83ea-ae46-9652657bbedf");
-  });
-
-  it("returns null on the bare /app home (no conversation yet)", () => {
-    expect(adapter.getConversationId(pageStub("https://gemini.google.com/app"))).toBeNull();
-    expect(adapter.getConversationId(pageStub("https://gemini.google.com/app/"))).toBeNull();
-  });
-
-  it("returns null on auth / signin pages", () => {
-    expect(
-      adapter.getConversationId(pageStub("https://accounts.google.com/signin/v2/identifier")),
+      adapter.getConversationId(pageStub("https://aistudio.google.com/prompts/new_chat?model=gemini-2.5-flash")),
     ).toBeNull();
+  });
+
+  it("extracts the slug from /prompts/{slug} once the prompt is saved", () => {
+    expect(
+      adapter.getConversationId(pageStub("https://aistudio.google.com/prompts/abc12345-deadbeef")),
+    ).toBe("abc12345-deadbeef");
+  });
+
+  it("returns null for unrelated paths", () => {
+    expect(adapter.getConversationId(pageStub("https://aistudio.google.com/"))).toBeNull();
+    expect(adapter.getConversationId(pageStub("https://accounts.google.com/signin"))).toBeNull();
   });
 });

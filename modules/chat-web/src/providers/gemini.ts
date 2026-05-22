@@ -11,56 +11,51 @@ import type { ChatProvider, ProviderDiagnostics, WaitOptions } from "../core/pro
 import { sleep, waitUntilStable } from "../core/response-watcher.js";
 
 /**
- * Google Gemini (gemini.google.com) consumer chat provider adapter.
+ * Google AI Studio (aistudio.google.com/prompts/new_chat) provider
+ * adapter.
  *
- * Why gemini.google.com and not aistudio.google.com? AI Studio is the
- * developer playground and requires an API key per request — that's a
- * separate operational model. chat-web is a consumer-chat automation
- * runtime in the same league as ChatGPT (chatgpt.com), so the right
- * Gemini surface is the consumer chat at gemini.google.com, which is
- * free with a Google login and matches our persistent-profile design.
+ * This is what users colloquially mean by "Gemini" — the free web-chat
+ * interface that lets you talk to Gemini models without an API key
+ * (the "No API key selected" button on the page is a separate, optional
+ * feature for users who want to use their own key; the page is fully
+ * usable without it). chat-web does NOT target gemini.google.com — in
+ * practice many networks block that domain while AI Studio reaches
+ * fine, and AI Studio is the surface users actually expect.
  *
  * Observed structure (2026-05):
- *   - Composer: `<rich-textarea>` wrapping a Quill editor
- *     (`div[role="textbox"][contenteditable="true"].ql-editor`).
- *     `aria-label="Enter a prompt for Gemini"`,
- *     `data-placeholder="Ask Gemini"`.
- *   - Send button: `<button aria-label="Send message">`.
- *   - Stop / streaming: `<button aria-label="Stop response">` while
- *     the model is generating.
- *   - Assistant message: `<message-content>` custom element; clean
- *     text without "Gemini said" / "edit" / "more_vert" chrome.
- *     Equivalent: `.model-response-text`, `.markdown`.
- *   - Conversation id: URL becomes
- *     `https://gemini.google.com/app/{conversation-id}` after the first
- *     turn — same pattern as ChatGPT's `/c/{uuid}` (but the id is
- *     usually a 16-hex-char string, not a UUID).
+ *   - Composer: `<ms-prompt-box>` (Angular Material) wrapping a textarea
+ *     with `aria="Enter a prompt"`, `placeholder="Start typing..."`.
+ *   - Run button: NO aria-label; visible text is "Run" + two Material
+ *     icon font ligatures (`keyboard_command_key`, `keyboard_return`).
+ *     `type="submit"`. Use `getByRole("button", { name: /^Run$/ })`.
+ *   - Stop: the same submit button flips to a stop state; its
+ *     aria-label changes to include "Stop". Detect via aria-label
+ *     substring.
+ *   - Assistant turn: `<ms-chat-turn>` containing a
+ *     `.chat-turn-container.model` with `.turn-content`. innerText
+ *     leaks "Model HH:MM AM/PM" headers and Material icon font
+ *     ligatures (`edit`, `more_vert`, `error`, ...) as plain text —
+ *     stripped by {@link stripChromeFromTurn}.
+ *   - Conversation id: `/prompts/{slug}` once the prompt is saved; the
+ *     placeholder `/prompts/new_chat` does NOT count.
  */
 export class GeminiAdapter implements ChatProvider {
   readonly name = "gemini";
-  readonly homeUrl = "https://gemini.google.com/app";
+  readonly homeUrl = "https://aistudio.google.com/prompts/new_chat";
 
   async open(page: Page): Promise<void> {
-    // gotoWithRetry uses waitUntil:"commit" + exponential-backoff retries.
-    // gemini.google.com is heavier than chatgpt.com (Firebase, GStatic,
-    // fonts, analytics) and waiting on `load` blows the budget on slow
-    // / DPI-proxied networks. The composer wait below is the real
-    // readiness check.
     await gotoOrThrowNetworkError(page, this.homeUrl, this.name);
     await this.waitForComposerReady(page).catch(() => undefined);
-    // Best-effort: dismiss any promo / "what's new" overlay that intercepts
-    // pointer events on the composer.
-    await this.dismissOverlays(page).catch(() => undefined);
   }
 
   async isLoggedIn(page: Page): Promise<boolean> {
     const url = page.url();
     if (url.includes("accounts.google.com") || url.includes("/signin/")) return false;
-    // Signed-in users always see the Quill composer.
     const candidates = [
-      'div[role="textbox"][contenteditable="true"][aria-label*="Gemini" i]',
-      'rich-textarea div[role="textbox"]',
-      'div[role="textbox"][contenteditable="true"]',
+      'ms-prompt-box textarea',
+      'textarea[aria-label="Enter a prompt"]',
+      'textarea[aria-label*="prompt" i]',
+      'textarea',
     ];
     for (const sel of candidates) {
       const visible = await page.locator(sel).first().isVisible().catch(() => false);
@@ -71,14 +66,11 @@ export class GeminiAdapter implements ChatProvider {
 
   async findInput(page: Page): Promise<Locator> {
     const candidates: Locator[] = [
-      page
-        .locator('rich-textarea div[role="textbox"][contenteditable="true"]')
-        .first(),
-      page
-        .locator('div[role="textbox"][contenteditable="true"][aria-label*="Gemini" i]')
-        .first(),
-      page.locator('div[role="textbox"][contenteditable="true"]').first(),
-      page.locator('.ql-editor[contenteditable="true"]').first(),
+      page.locator('ms-prompt-box textarea').first(),
+      page.locator('textarea[aria-label="Enter a prompt"]').first(),
+      page.locator('textarea[aria-label*="prompt" i]').first(),
+      page.locator('textarea[placeholder*="Start typing" i]').first(),
+      page.locator('textarea').first(),
     ];
     for (const locator of candidates) {
       if (await locator.isVisible().catch(() => false)) return locator;
@@ -87,10 +79,14 @@ export class GeminiAdapter implements ChatProvider {
   }
 
   async findSendButton(page: Page): Promise<Locator | null> {
+    // The Run button has NO aria-label — getByRole("button", { name: /^Run$/ })
+    // resolves the accessible name from visible "Run" text, then we fall
+    // back to type=submit / :has-text("Run").
     const candidates: Locator[] = [
-      page.locator('button[aria-label="Send message"]').first(),
-      page.locator('button[aria-label*="Send message" i]').first(),
-      page.locator('button[aria-label*="发送" i]').first(),
+      page.getByRole("button", { name: /^Run$/i }).first(),
+      page.locator('ms-prompt-box button[type="submit"]').first(),
+      page.locator('button[type="submit"]').first(),
+      page.locator('ms-prompt-box button:has-text("Run")').first(),
     ];
     for (const locator of candidates) {
       if (await locator.isVisible().catch(() => false)) return locator;
@@ -100,69 +96,66 @@ export class GeminiAdapter implements ChatProvider {
 
   async sendMessage(page: Page, message: string): Promise<void> {
     const input = await this.findInput(page);
-
-    // The Quill editor (`.ql-editor`) listens for real key events to
-    // toggle the Send button between disabled/enabled. `locator.fill`
-    // is a no-op on contenteditable, and stuck overlays sometimes
-    // intercept normal clicks — `{ force: true }` is necessary even
-    // when the input itself is visible.
-    await input.click({ force: true });
-    await input.focus().catch(() => undefined);
+    await input.click();
+    // typeMultiline preserves newlines correctly. Angular Material's
+    // form state requires real input events (locator.fill() leaves Run
+    // disabled forever).
     await typeMultiline(page, message);
-    await sleep(150);
+    await sleep(200);
 
     const send = await this.findSendButton(page);
     if (send && (await send.isEnabled().catch(() => false))) {
-      await send.click({ force: true }).catch(async () => {
-        // Enter is "submit" in the Gemini composer too; Shift+Enter is
-        // the soft line break that typeMultiline already used between
-        // segments, so a bare Enter at the end is safe.
-        await page.keyboard.press("Enter");
+      await send.click().catch(async () => {
+        await this.pressRunShortcut(page);
       });
     } else {
-      await page.keyboard.press("Enter");
+      await this.pressRunShortcut(page);
     }
   }
 
   async extractLastAssistantMessage(page: Page): Promise<string> {
-    // `<message-content>` is Gemini's clean per-turn container — no
-    // "Gemini said" chrome, no copy/feedback icon ligatures. Prefer it
-    // and fall back to `.model-response-text` / `.markdown` if the
-    // custom element ever gets renamed.
     const candidates: Locator[] = [
-      page.locator("message-content").last(),
-      page.locator(".model-response-text").last(),
-      page.locator("model-response .markdown").last(),
-      page.locator("model-response").last(),
+      page.locator('ms-chat-turn .chat-turn-container.model .turn-content').last(),
+      page.locator('.chat-turn-container.model .turn-content').last(),
+      page.locator('ms-chat-turn .turn-content').last(),
+      page.locator('ms-chat-turn').last(),
     ];
-
     for (const locator of candidates) {
       if (await locator.count().then((n) => n > 0).catch(() => false)) {
         const raw = await locator.innerText().catch(() => "");
-        // <model-response> includes a "Gemini said" prefix; strip it.
-        const cleaned = raw.replace(/^Gemini said\s*/i, "").trim();
+        const cleaned = stripChromeFromTurn(raw);
         if (cleaned) return cleaned;
       }
     }
-
     throw new ResponseExtractionError(this.name);
   }
 
   async waitForResponse(page: Page, options: WaitOptions = {}): Promise<string> {
-    const timeoutMs = options.timeoutMs ?? 120_000;
+    // AI Studio defaults to a high "Thinking level" + Grounding with
+    // Google Search (the chip is on at first visit) — a single prompt
+    // routinely takes 2-4 minutes. Bump the default budget to 5 min so
+    // we don't time out before the model finishes streaming. Callers
+    // who want a tighter cap pass an explicit timeoutMs.
+    const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000;
     const stableMs = options.stableMs ?? 2_000;
     const deadline = Date.now() + timeoutMs;
 
-    // Phase 1: wait for the stop button (streaming started).
+    // Phase 1: wait for streaming to begin (stop button appears).
     await this.waitForStopButton(page, { timeoutMs: 15_000 }).catch(() => undefined);
 
-    // Phase 2: stop button disappears (streaming ended).
+    // Phase 2: wait for streaming to end.
     const remaining = Math.max(deadline - Date.now(), 5_000);
     await this.waitForStopButtonGone(page, remaining).catch(() => undefined);
 
-    // Phase 3: text-stability backstop.
+    // Phase 3: text stability — but treat the "Thinking" placeholder
+    // (rendered while AI Studio is generating) as "not yet" so we don't
+    // accidentally return that as the final answer.
     const stable = await waitUntilStable(
-      () => this.extractLastAssistantMessage(page).catch(() => ""),
+      async () => {
+        const text = await this.extractLastAssistantMessage(page).catch(() => "");
+        if (isThinkingPlaceholder(text)) return "";
+        return text;
+      },
       {
         timeoutMs: Math.max(deadline - Date.now(), 1_500),
         stableMs,
@@ -175,26 +168,29 @@ export class GeminiAdapter implements ChatProvider {
   }
 
   /**
-   * Conversation id from `gemini.google.com/app/{id}`. Gemini's id is
-   * typically a 16-hex-char string (e.g. "372437d29c30422f"), not a
-   * UUID — the regex accepts both shapes.
+   * AI Studio's per-prompt URL is `/prompts/{slug}` after the prompt is
+   * saved. Until then the URL stays at `/prompts/new_chat` (no
+   * conversation id).
    */
   getConversationId(page: Page): string | null {
     const url = page.url();
-    const match = url.match(/\/app\/([0-9a-fA-F-]{8,})/);
-    return match ? match[1]! : null;
+    const match = url.match(/\/prompts\/([^/?#]+)/);
+    if (!match) return null;
+    const slug = match[1]!;
+    if (slug === "new_chat" || slug === "") return null;
+    return slug;
   }
 
   async newChat(page: Page): Promise<void> {
     const candidates: Locator[] = [
-      page.getByRole("button", { name: /new chat|新对话|新建对话/i }).first(),
-      page.getByRole("link", { name: /new chat|新对话/i }).first(),
-      page.locator('a[href$="/app"]').first(),
+      page.getByRole("button", { name: /new (chat|prompt)|新对话|新建对话/i }).first(),
+      page.getByRole("link", { name: /new (chat|prompt)|新对话/i }).first(),
+      page.locator('a[href*="/prompts/new_chat"]').first(),
     ];
     for (const locator of candidates) {
       if (await locator.isVisible().catch(() => false)) {
-        await locator.click({ force: true }).catch(() => undefined);
-        await page.waitForTimeout(800);
+        await locator.click().catch(() => undefined);
+        await page.waitForTimeout(500);
         return;
       }
     }
@@ -216,7 +212,7 @@ export class GeminiAdapter implements ChatProvider {
     }
 
     const assistantMessageCount = await page
-      .locator("message-content")
+      .locator("ms-chat-turn, ms-prompt-chunk")
       .count()
       .catch(() => 0);
 
@@ -241,28 +237,15 @@ export class GeminiAdapter implements ChatProvider {
     };
   }
 
-  /** Dismiss any "What's new" / promo overlay covering the composer. */
-  private async dismissOverlays(page: Page): Promise<void> {
-    const closers = [
-      '.cdk-overlay-container button[aria-label*="close" i]',
-      '.cdk-overlay-container button[aria-label*="dismiss" i]',
-      '.cdk-overlay-container button[aria-label*="not now" i]',
-      '.cdk-overlay-container button[aria-label*="maybe later" i]',
-    ];
-    for (const sel of closers) {
-      const loc = page.locator(sel).first();
-      if (await loc.isVisible().catch(() => false)) {
-        await loc.click({ force: true }).catch(() => undefined);
-        await sleep(300);
-      }
-    }
-    // Belt-and-braces: press Escape so any uncloseable popover dismisses.
-    await page.keyboard.press("Escape").catch(() => undefined);
+  private async pressRunShortcut(page: Page): Promise<void> {
+    // AI Studio binds Cmd/Ctrl+Enter to Run.
+    const isMac = process.platform === "darwin";
+    await page.keyboard.press(isMac ? "Meta+Enter" : "Control+Enter");
   }
 
   private async waitForComposerReady(page: Page, timeoutMs = 15_000): Promise<void> {
     const sel =
-      'rich-textarea div[role="textbox"][contenteditable="true"], div[role="textbox"][contenteditable="true"][aria-label*="Gemini" i]';
+      'ms-prompt-box textarea, textarea[aria-label="Enter a prompt"], textarea[aria-label*="prompt" i], textarea';
     await page.locator(sel).first().waitFor({ state: "visible", timeout: timeoutMs });
   }
 
@@ -295,10 +278,10 @@ export class GeminiAdapter implements ChatProvider {
 
   private async isStopButtonVisible(page: Page): Promise<boolean> {
     const selectors = [
-      'button[aria-label="Stop response"]',
-      'button[aria-label*="Stop response" i]',
-      'button[aria-label*="Stop generating" i]',
+      'button[aria-label*="Stop" i]',
+      'button[aria-label*="Cancel" i]',
       'button[aria-label*="停止" i]',
+      'button[data-test-id="stop-button"]',
     ];
     for (const sel of selectors) {
       const visible = await page.locator(sel).first().isVisible().catch(() => false);
@@ -309,14 +292,73 @@ export class GeminiAdapter implements ChatProvider {
 }
 
 /**
- * Backwards-compat export for tests / callers that still import the
- * AI-Studio-era chrome-stripping helper. The new gemini.google.com
- * `<message-content>` doesn't ship the "Model HH:MM AM/PM" header or
- * Material icon ligatures, so the only chrome we still strip is the
- * "Gemini said" prefix that `<model-response>` wraps around content.
- * Exported for the unit test in tests/gemini.test.ts.
+ * Strip the UI chrome that leaks into `innerText` on AI Studio model
+ * turns. Removes:
+ *   - The "Model HH:MM AM/PM" turn header
+ *   - Single-line Material icon font ligatures (rendered as plain text
+ *     words because the icon-font substitution doesn't affect text
+ *     extraction): edit, more_vert, error, content_copy, thumb_up,
+ *     thumb_down, refresh, delete, close, expand_more, expand_less,
+ *     code, play_arrow, stop, menu.
+ *
+ * Does NOT remove lines where the same word appears INSIDE a sentence
+ * (e.g. "an error occurred during parsing" stays as-is).
  */
 export function stripChromeFromTurn(text: string): string {
   if (!text) return "";
-  return text.replace(/^Gemini said\s*/i, "").trim();
+  const lines = text.split(/\r?\n/);
+  const HEADER = /^(Model|User|System)\s+\d{1,2}:\d{2}\s*(AM|PM)?\s*$/i;
+  const ICON_LIGATURES = new Set([
+    "edit",
+    "more_vert",
+    "error",
+    "content_copy",
+    "thumb_up",
+    "thumb_down",
+    "refresh",
+    "delete",
+    "close",
+    "expand_more",
+    "expand_less",
+    "code",
+    "play_arrow",
+    "stop",
+    "menu",
+  ]);
+  const kept: string[] = [];
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      kept.push(raw);
+      continue;
+    }
+    if (HEADER.test(trimmed)) continue;
+    if (ICON_LIGATURES.has(trimmed)) continue;
+    kept.push(raw);
+  }
+  return kept.join("\n").trim();
+}
+
+/**
+ * AI Studio renders "Thinking" / "Thought for Ns" / "正在思考" while the
+ * model is reasoning before its first content token. Those strings
+ * appear in the model turn's innerText for a while; treating them as
+ * "the final answer" is the same class of bug as ChatGPT's pre-stream
+ * `Thinking` placeholder.
+ */
+function isThinkingPlaceholder(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  if (t.length > 80) return false;
+  const lower = t.toLowerCase();
+  return (
+    lower === "thinking" ||
+    lower === "thinking…" ||
+    lower === "thinking..." ||
+    lower.startsWith("thinking\n") ||
+    lower.startsWith("thought for ") ||
+    lower.startsWith("reasoning") ||
+    lower.startsWith("思考") ||
+    lower.startsWith("正在思考")
+  );
 }
