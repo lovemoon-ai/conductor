@@ -41,6 +41,13 @@ export interface SendResult {
   response: string;
   /** Wall-clock duration of this send (ms). */
   durationMs: number;
+  /**
+   * Provider-side conversation id, when the provider exposes one. For
+   * ChatGPT this is the UUID at `chatgpt.com/c/{uuid}`. Stable across
+   * turns within the same conversation, undefined on the first response
+   * if the provider hasn't navigated to its conversation URL yet.
+   */
+  conversationId?: string;
 }
 
 /**
@@ -109,6 +116,8 @@ export class ChatSession {
   private turnCounter = 0;
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
+  /** Provider-side conversation id (e.g. ChatGPT `/c/{uuid}`), set after the first turn lands. */
+  private providerConversationId: string | undefined;
 
   private constructor(
     private readonly providerImpl: ChatProvider,
@@ -177,13 +186,48 @@ export class ChatSession {
       const turnIndex = this.turnCounter;
       this.turnCounter += 1;
 
+      // Capture the provider-side conversation id (e.g. ChatGPT's
+      // /c/{uuid}). The URL is navigated by the provider *during* the
+      // reply, so we read it after waitForResponse settles. We also
+      // remember it on the session for cross-turn access and emit a
+      // session-info update so listeners (ai-sdk) see the change.
+      const conversationId = this.captureConversationId();
+
       return {
         turnIndex,
         message,
         response,
         durationMs: Date.now() - started,
+        conversationId,
       };
     });
+  }
+
+  /**
+   * Provider-side conversation id (e.g. ChatGPT's /c/{uuid}). `undefined`
+   * before the first turn has landed, then stable for the rest of this
+   * `ChatSession` unless `newChat()` is called.
+   */
+  get conversationId(): string | undefined {
+    return this.providerConversationId;
+  }
+
+  /**
+   * Read the conversation id from the current page (provider permitting)
+   * and store it on the session. Idempotent — repeated calls within the
+   * same conversation will see the same id; the first call captures it.
+   */
+  private captureConversationId(): string | undefined {
+    if (typeof this.providerImpl.getConversationId !== "function") return undefined;
+    try {
+      const next = this.providerImpl.getConversationId(this.pageImpl) ?? undefined;
+      if (next && next !== this.providerConversationId) {
+        this.providerConversationId = next;
+      }
+      return this.providerConversationId;
+    } catch {
+      return this.providerConversationId;
+    }
   }
 
   /** Start a fresh conversation while keeping the session/browser open. */
@@ -199,6 +243,9 @@ export class ChatSession {
       await this.providerImpl.open(this.pageImpl);
       // Reset the turn counter — a new chat is a new conversation.
       this.turnCounter = 0;
+      // A new chat means a new provider-side conversation id; clear so
+      // we don't leak the old UUID into the next turn's session info.
+      this.providerConversationId = undefined;
     });
   }
 

@@ -242,6 +242,23 @@ export class ChatGPTAdapter implements ChatProvider {
     return stable;
   }
 
+  /**
+   * Extract the ChatGPT conversation UUID from the page URL.
+   *
+   * Once a turn lands, ChatGPT navigates the page to
+   *   `https://chatgpt.com/c/{conversation-uuid}`
+   * The fresh-chat URL (`/` or `/?model=...`) has no UUID — return `null`
+   * in that case. The UUID is the natural cross-process session id and is
+   * what we plumb into ai-sdk's session model and onward to the UI.
+   */
+  getConversationId(page: Page): string | null {
+    const url = page.url();
+    // The path can have a trailing slash, query string, or hash; pull
+    // out exactly the path segment after `/c/`.
+    const match = url.match(/\/c\/([0-9a-fA-F-]{8,})/);
+    return match ? match[1]! : null;
+  }
+
   async newChat(page: Page): Promise<void> {
     const candidates: Locator[] = [
       page.locator('a[href="/"]').first(),

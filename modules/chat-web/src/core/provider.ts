@@ -38,6 +38,18 @@ export interface ChatProvider {
 
   /** For doctor: cheap summary numbers (counts + booleans). */
   diagnose?(page: Page): Promise<ProviderDiagnostics>;
+
+  /**
+   * Provider-side conversation identifier as exposed by the web UI.
+   *
+   * For ChatGPT this is the UUID at `https://chatgpt.com/c/{uuid}`. For
+   * Gemini AI Studio it would be the prompts/* id segment. Implement when
+   * the provider exposes a stable per-conversation id in its URL/state;
+   * the SDK surfaces it as the canonical session id and pushes it through
+   * `ChatSession.conversationId` / `SendResult.conversationId` so callers
+   * (ai-sdk, frontend) can render real-provider-side links.
+   */
+  getConversationId?(page: Page): string | null;
 }
 
 export interface ProviderDiagnostics {

@@ -130,12 +130,16 @@ export class ChatWebSession extends EventEmitter {
         ? options.cwd.trim()
         : process.cwd();
 
-    // chat-web doesn't expose a conversation ID. We synthesise one purely
-    // so ai-sdk's downstream threading works.
+    // Synthetic id used until the provider exposes its real conversation
+    // id (e.g. ChatGPT navigates to /c/{uuid} after the first turn). The
+    // synthetic value lets callers thread on `sessionId` immediately,
+    // before the browser has even opened.
     this.sessionId =
       typeof options.resumeSessionId === "string" && options.resumeSessionId.trim()
         ? options.resumeSessionId.trim()
         : `chat-web-${this.chatWebProvider}-${Date.now().toString(36)}`;
+    /** Real provider-side conversation id, populated after the first turn lands. */
+    this.providerConversationId = undefined;
     this.sessionInfo = {
       backend: this.backend,
       sessionId: this.sessionId,
@@ -187,10 +191,14 @@ export class ChatWebSession extends EventEmitter {
       sessionId: this.sessionId,
       sessionInfo: this.getSessionInfo(),
       useSessionFileReplyStream: this.usesSessionFileReplyStream(),
-      resumeReady: false,
-      manualResume: null,
+      resumeReady: Boolean(this.providerConversationId),
+      manualResume: this.providerConversationUrl()
+        ? { ready: true, command: this.providerConversationUrl() }
+        : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
       chatWebProvider: this.chatWebProvider,
+      providerConversationId: this.providerConversationId,
+      providerUrl: this.providerConversationUrl(),
     };
   }
 
@@ -325,6 +333,53 @@ export class ChatWebSession extends EventEmitter {
     this.emit("session", this.getSessionInfo());
   }
 
+  /**
+   * Adopt the provider-side conversation id (ChatGPT /c/{uuid} or
+   * equivalent) as our canonical sessionId, update sessionInfo, and emit
+   * a fresh `session` event so downstream consumers (ai-sdk runner,
+   * conductor daemon, web UI) pick up the change.
+   *
+   * Idempotent on identical values. Once promoted, the id stays stable
+   * for the rest of this ChatWebSession (next runTurn won't re-promote
+   * to something else unless the provider session truly changes).
+   */
+  applyProviderConversationId(conversationId) {
+    const normalized = typeof conversationId === "string" ? conversationId.trim() : "";
+    if (!normalized) return;
+    if (normalized === this.providerConversationId) return;
+    this.providerConversationId = normalized;
+    this.sessionId = normalized;
+    this.sessionInfo = {
+      ...(this.sessionInfo || {}),
+      backend: this.backend,
+      sessionId: normalized,
+      model: this.chatWebProvider,
+      modelProvider: "chat-web",
+      providerConversationId: normalized,
+      providerUrl: this.providerConversationUrl(),
+    };
+    this.trace(`adopted provider conversation id ${normalized}`);
+    this.emit("session", this.getSessionInfo());
+  }
+
+  /**
+   * Build a deep-link to the provider's conversation page so the UI can
+   * render "open in ChatGPT" / "open in AI Studio" links.
+   */
+  providerConversationUrl() {
+    if (!this.providerConversationId) return undefined;
+    switch (this.chatWebProvider) {
+      case "chatgpt":
+        return `https://chatgpt.com/c/${this.providerConversationId}`;
+      case "gemini":
+        // AI Studio's per-prompt URL pattern; if it changes, callers
+        // should fall back to the bare provider home.
+        return `https://aistudio.google.com/prompts/${this.providerConversationId}`;
+      default:
+        return undefined;
+    }
+  }
+
   async runTurn(promptText, { onProgress = null } = {}) {
     const prompt = String(promptText || "").trim();
     if (!prompt) {
@@ -379,6 +434,22 @@ export class ChatWebSession extends EventEmitter {
       });
 
       const text = String(result?.response ?? "").trim();
+
+      // Adopt the provider's real conversation id once it lands (e.g.
+      // ChatGPT's /c/{uuid}). This replaces the synthetic
+      // "chat-web-{provider}-{ts}" id we minted at construction so
+      // downstream callers (UI, daemon, persistence) see the real
+      // provider-side id and can deep-link straight to chatgpt.com/c/...
+      const conversationId =
+        typeof result?.conversationId === "string" && result.conversationId.trim()
+          ? result.conversationId.trim()
+          : typeof this.chatSession?.conversationId === "string" && this.chatSession.conversationId.trim()
+            ? this.chatSession.conversationId.trim()
+            : "";
+      if (conversationId && conversationId !== this.sessionId) {
+        this.applyProviderConversationId(conversationId);
+      }
+
       if (text) {
         this.history.push({ role: "assistant", content: text });
         await this.emitAssistantMessage(text);
@@ -404,6 +475,8 @@ export class ChatWebSession extends EventEmitter {
           source: CHAT_WEB_SESSION_VARIANT,
           sessionId: this.sessionId,
           chatWebProvider: this.chatWebProvider,
+          conversationId: this.providerConversationId,
+          providerUrl: this.providerConversationUrl(),
           turnIndex: result?.turnIndex,
           durationMs: result?.durationMs,
         },

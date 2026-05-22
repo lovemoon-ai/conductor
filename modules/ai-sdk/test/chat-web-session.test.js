@@ -31,6 +31,7 @@ function createStubChatWebModule({
       this.openOptions = options || {};
       this.closed = false;
       this.turnCounter = 0;
+      this.conversationId = undefined;
     }
 
     async isLoggedIn() {
@@ -45,7 +46,9 @@ function createStubChatWebModule({
       }
       state.sendCalls.push({ provider: this.provider, message, options });
       if (typeof sendImpl === "function") {
-        return await sendImpl(message, options, this);
+        const result = await sendImpl(message, options, this);
+        if (result?.conversationId) this.conversationId = result.conversationId;
+        return result;
       }
       const turnIndex = this.turnCounter++;
       return {
@@ -264,6 +267,98 @@ describe("ChatWebSession", () => {
       return true;
     });
     await first;
+    await s.close();
+  });
+
+  it("adopts the ChatGPT /c/{uuid} conversation id as the session id after the first turn", async () => {
+    const conversationUuid = "6a103f7e-bd94-83ea-ae46-9652657bbedf";
+    const sendImpl = async (message) => ({
+      turnIndex: 0,
+      message,
+      response: "reply",
+      durationMs: 1,
+      conversationId: conversationUuid,
+    });
+    const { mod } = createStubChatWebModule({ sendImpl });
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod });
+
+    const initialId = s.sessionId;
+    // Synthetic id at construction, BEFORE first turn.
+    assert.match(initialId, /^chat-web-chatgpt-/);
+
+    const sessionEvents = [];
+    s.on("session", (info) => sessionEvents.push(info));
+
+    const result = await s.runTurn("hello");
+
+    // sessionId promoted to the conversation UUID.
+    assert.equal(s.sessionId, conversationUuid);
+    assert.equal(s.providerConversationId, conversationUuid);
+    assert.equal(result.metadata.conversationId, conversationUuid);
+    assert.equal(result.metadata.providerUrl, `https://chatgpt.com/c/${conversationUuid}`);
+
+    // A `session` event fires for the promotion so the daemon / UI can react.
+    const promotion = sessionEvents.find((e) => e?.sessionId === conversationUuid);
+    assert.ok(promotion, "expected a session event after conversation id promotion");
+    assert.equal(promotion.providerConversationId, conversationUuid);
+
+    await s.close();
+  });
+
+  it("falls back to ChatSession.conversationId if SendResult doesn't include it", async () => {
+    const conversationUuid = "11111111-2222-3333-4444-555555555555";
+    // The stub's `send()` calls `sendImpl(message, options, this)` —
+    // `this` is the third argument, not the function's receiver. Set
+    // the conversationId on the session object via that 3rd arg so we
+    // simulate the case where the adapter populated it via post-nav
+    // capture but didn't include it on the SendResult.
+    const sendImpl = async (message, _options, session) => {
+      session.conversationId = conversationUuid;
+      return { turnIndex: 0, message, response: "reply", durationMs: 1 };
+    };
+    const { mod } = createStubChatWebModule({ sendImpl });
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod });
+
+    const result = await s.runTurn("hi");
+    assert.equal(s.sessionId, conversationUuid);
+    assert.equal(result.metadata.conversationId, conversationUuid);
+
+    await s.close();
+  });
+
+  it("does not promote sessionId when no conversation id is available", async () => {
+    const { mod } = createStubChatWebModule(); // default sendImpl never sets conversationId
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod, chatWebProvider: "gemini" });
+    const initialId = s.sessionId;
+    const result = await s.runTurn("hello");
+    assert.equal(s.sessionId, initialId);
+    assert.equal(result.metadata.conversationId, undefined);
+    assert.equal(result.metadata.providerUrl, undefined);
+    await s.close();
+  });
+
+  it("idempotent: re-promoting the same conversation id does not emit a duplicate session event", async () => {
+    const conversationUuid = "abcabcab-0000-0000-0000-abcabcabcabc";
+    const sendImpl = async (message) => ({
+      turnIndex: 0,
+      message,
+      response: "reply",
+      durationMs: 1,
+      conversationId: conversationUuid,
+    });
+    const { mod } = createStubChatWebModule({ sendImpl });
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod });
+    const sessionEvents = [];
+    s.on("session", (info) => sessionEvents.push(info));
+
+    await s.runTurn("turn 1");
+    await s.runTurn("turn 2");
+
+    // Two turns, same conversation id → exactly one promotion-shaped session
+    // event (plus the initial session-ready event from boot).
+    const promotions = sessionEvents.filter((e) => e?.sessionId === conversationUuid);
+    assert.equal(promotions.length, 1, `expected exactly one promotion event, got ${promotions.length}`);
+
     await s.close();
   });
 
