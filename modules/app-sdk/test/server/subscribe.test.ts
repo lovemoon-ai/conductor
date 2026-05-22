@@ -775,3 +775,585 @@ describe('AppClient.close() shutdown semantics (M2)', () => {
   });
 
 });
+
+/**
+ * History catch-up: when a terminal envelope arrives but the realtime path
+ * dropped the final assistant message_appended (multi-instance broadcast
+ * without a backplane, idempotent retries that bypass projection, WS drops
+ * during the reconnect window…), tasks.subscribe should backfill from REST.
+ */
+describe('tasks.subscribe history catch-up', () => {
+  function makeFetchReturningHistory(
+    messagesByCall: Array<Array<Record<string, unknown>>>,
+  ): {
+    fetch: typeof globalThis.fetch;
+    historyCalls: number;
+  } {
+    let historyCalls = 0;
+    const fetch = (async (
+      input: RequestInfo | URL,
+      _init?: RequestInit,
+    ): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/messages')) {
+        const idx = Math.min(historyCalls, messagesByCall.length - 1);
+        historyCalls += 1;
+        return new Response(
+          JSON.stringify({
+            messages: messagesByCall[idx] ?? [],
+            pagination: { has_more_before: false, oldest_message_id: null },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response('{}', { status: 200 });
+    }) as never;
+    return {
+      fetch,
+      get historyCalls() {
+        return historyCalls;
+      },
+    } as { fetch: typeof globalThis.fetch; historyCalls: number };
+  }
+
+  it('emits synthetic message_appended after task_finished when realtime dropped the assistant message', async () => {
+    resetFakeSocket();
+    const { fetch } = makeFetchReturningHistory([
+      [
+        {
+          id: 'm_late',
+          task_id: 't_1',
+          role: 'assistant',
+          content: 'late reply',
+          created_at: '2026-05-17T00:00:05Z',
+        },
+      ],
+    ]);
+    const client = await connect({
+      baseUrl: 'http://localhost:6152',
+      bearerToken: 'tok',
+      fetch,
+      webSocketImpl: FakeSocket as never,
+    });
+
+    const events: ChatEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of client.tasks.subscribe('t_1')) {
+        events.push(ev);
+        const hasFinished = events.some((e) => e.type === 'task_finished');
+        const hasMessage = events.some((e) => e.type === 'message_appended');
+        if (hasFinished && hasMessage) break;
+      }
+    })();
+
+    await tick();
+    const socket = FakeSocket.instances[0];
+    // Terminal envelope arrives without any preceding message_appended —
+    // simulating the missed-broadcast scenario.
+    socket.pushEnvelope({
+      type: 'task_status_update',
+      payload: { task_id: 't_1', status: 'finished' },
+    });
+
+    await consumer;
+    await client.close();
+
+    const messageEvents = events.filter((e) => e.type === 'message_appended');
+    expect(messageEvents).toHaveLength(1);
+    expect((messageEvents[0] as { message: { id: string } }).message.id).toBe(
+      'm_late',
+    );
+  });
+
+  it('dedupes against an earlier real-time message_appended (same id is not re-emitted)', async () => {
+    resetFakeSocket();
+    const { fetch } = makeFetchReturningHistory([
+      [
+        {
+          id: 'm_real',
+          task_id: 't_1',
+          role: 'assistant',
+          content: 'real reply',
+          created_at: '2026-05-17T00:00:03Z',
+        },
+      ],
+    ]);
+    const client = await connect({
+      baseUrl: 'http://localhost:6152',
+      bearerToken: 'tok',
+      fetch,
+      webSocketImpl: FakeSocket as never,
+    });
+
+    const events: ChatEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of client.tasks.subscribe('t_1')) {
+        events.push(ev);
+        if (ev.type === 'task_finished') {
+          // Wait for the catch-up's 500ms timer + REST round-trip to land
+          // before stopping. Otherwise the test races the consumer-break
+          // and may miss a (correctly de-duplicated) zero events.
+          await new Promise((r) => setTimeout(r, 800));
+          break;
+        }
+      }
+    })();
+
+    await tick();
+    const socket = FakeSocket.instances[0];
+    socket.pushEnvelope({
+      type: 'task_sdk_message',
+      payload: {
+        id: 'm_real',
+        task_id: 't_1',
+        role: 'assistant',
+        content: 'real reply',
+        created_at: '2026-05-17T00:00:03Z',
+      },
+    });
+    socket.pushEnvelope({
+      type: 'task_status_update',
+      payload: { task_id: 't_1', status: 'finished' },
+    });
+
+    await consumer;
+    await client.close();
+
+    // Exactly one message_appended for 'm_real' — the real one. The catch-up
+    // saw it in history but skipped it because knownIds already had the id.
+    const messageEvents = events.filter(
+      (e) =>
+        e.type === 'message_appended' &&
+        (e as { message: { id: string } }).message.id === 'm_real',
+    );
+    expect(messageEvents).toHaveLength(1);
+  });
+
+  it('triggers catch-up on runtime_status replyInProgress true→false transition', async () => {
+    resetFakeSocket();
+    const { fetch } = makeFetchReturningHistory([
+      [
+        {
+          id: 'm_after_reply',
+          task_id: 't_1',
+          role: 'assistant',
+          content: 'final',
+          created_at: '2026-05-17T00:00:04Z',
+        },
+      ],
+    ]);
+    const client = await connect({
+      baseUrl: 'http://localhost:6152',
+      bearerToken: 'tok',
+      fetch,
+      webSocketImpl: FakeSocket as never,
+    });
+
+    const events: ChatEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of client.tasks.subscribe('t_1')) {
+        events.push(ev);
+        if (ev.type === 'message_appended') break;
+      }
+    })();
+
+    await tick();
+    const socket = FakeSocket.instances[0];
+    // First runtime_status: reply in progress.
+    socket.pushEnvelope({
+      type: 'task_runtime_status',
+      payload: {
+        task_id: 't_1',
+        state: 'thinking',
+        reply_in_progress: true,
+      },
+    });
+    // Then: reply ended. Catch-up should fire.
+    socket.pushEnvelope({
+      type: 'task_runtime_status',
+      payload: {
+        task_id: 't_1',
+        state: 'idle',
+        reply_in_progress: false,
+      },
+    });
+
+    await consumer;
+    await client.close();
+
+    const messageEvents = events.filter((e) => e.type === 'message_appended');
+    expect(messageEvents.length).toBeGreaterThanOrEqual(1);
+    expect(
+      (messageEvents[0] as { message: { id: string } }).message.id,
+    ).toBe('m_after_reply');
+  });
+
+  it('does NOT trigger catch-up when disableHistoryCatchUp is true', async () => {
+    resetFakeSocket();
+    let historyHits = 0;
+    const fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      if (String(input).includes('/messages')) historyHits += 1;
+      return new Response(
+        JSON.stringify({ messages: [], pagination: {} }),
+        { status: 200 },
+      );
+    }) as never;
+    const client = await connect({
+      baseUrl: 'http://localhost:6152',
+      bearerToken: 'tok',
+      fetch,
+      webSocketImpl: FakeSocket as never,
+    });
+
+    const events: ChatEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of client.tasks.subscribe('t_1', {
+        disableHistoryCatchUp: true,
+      })) {
+        events.push(ev);
+        if (ev.type === 'task_finished') {
+          // Give any (incorrectly) scheduled catch-up a chance to run before
+          // we bail. 700ms covers the 500ms delay + a comfortable margin.
+          await new Promise((r) => setTimeout(r, 700));
+          break;
+        }
+      }
+    })();
+
+    await tick();
+    const socket = FakeSocket.instances[0];
+    socket.pushEnvelope({
+      type: 'task_status_update',
+      payload: { task_id: 't_1', status: 'finished' },
+    });
+
+    await consumer;
+    await client.close();
+
+    expect(historyHits).toBe(0);
+    expect(events.filter((e) => e.type === 'message_appended')).toHaveLength(
+      0,
+    );
+  });
+
+  it('triggers catch-up on connection_state reconnecting → connected', async () => {
+    resetFakeSocket();
+    const { fetch } = makeFetchReturningHistory([
+      [
+        {
+          id: 'm_missed_during_reconnect',
+          task_id: 't_1',
+          role: 'assistant',
+          content: 'arrived offline',
+          created_at: '2026-05-17T00:00:10Z',
+        },
+      ],
+    ]);
+    const client = await connect({
+      baseUrl: 'http://localhost:6152',
+      bearerToken: 'tok',
+      fetch,
+      webSocketImpl: FakeSocket as never,
+    });
+
+    const events: ChatEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of client.tasks.subscribe('t_1')) {
+        events.push(ev);
+        if (ev.type === 'message_appended') break;
+      }
+    })();
+
+    await tick();
+    const firstSocket = FakeSocket.instances[0];
+    // Drop the socket — this triggers the reconnect cycle. The SDK emits
+    // connection_state: 'reconnecting' then (after reopen) 'connected'.
+    // We use the default backoff (250ms initial with jitter); `await consumer`
+    // below is unbounded, so the test waits as long as needed for the
+    // reconnect to land and the catch-up to inject `message_appended`.
+    firstSocket.close();
+
+    await consumer;
+    await client.close();
+
+    const stateTransitions = events
+      .filter((e) => e.type === 'connection_state')
+      .map((e) => (e as { state: string }).state);
+    expect(stateTransitions).toContain('reconnecting');
+    expect(stateTransitions).toContain('connected');
+
+    const messageEvents = events.filter((e) => e.type === 'message_appended');
+    expect(messageEvents.length).toBeGreaterThanOrEqual(1);
+    expect(
+      (messageEvents[0] as { message: { id: string } }).message.id,
+    ).toBe('m_missed_during_reconnect');
+  });
+
+  it('triggers catch-up on task_failed (parity with task_finished)', async () => {
+    resetFakeSocket();
+    const { fetch } = makeFetchReturningHistory([
+      [
+        {
+          id: 'm_persisted_before_failure',
+          task_id: 't_1',
+          role: 'assistant',
+          content: 'partial reply',
+          created_at: '2026-05-17T00:00:05Z',
+        },
+      ],
+    ]);
+    const client = await connect({
+      baseUrl: 'http://localhost:6152',
+      bearerToken: 'tok',
+      fetch,
+      webSocketImpl: FakeSocket as never,
+    });
+
+    const events: ChatEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of client.tasks.subscribe('t_1')) {
+        events.push(ev);
+        if (ev.type === 'message_appended') break;
+      }
+    })();
+
+    await tick();
+    const socket = FakeSocket.instances[0];
+    // task_status_update with status=failed maps to task_failed in the SDK
+    // envelope layer; that's the realistic path. Push it directly.
+    socket.pushEnvelope({
+      type: 'task_status_update',
+      payload: {
+        task_id: 't_1',
+        status: 'failed',
+        summary: 'simulated upstream failure',
+      },
+    });
+
+    await consumer;
+    await client.close();
+
+    const messageEvents = events.filter((e) => e.type === 'message_appended');
+    expect(messageEvents).toHaveLength(1);
+    expect(
+      (messageEvents[0] as { message: { id: string } }).message.id,
+    ).toBe('m_persisted_before_failure');
+  });
+
+  it('coalesces bursty terminal events into a single history fetch', async () => {
+    resetFakeSocket();
+    let historyHits = 0;
+    const fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      if (String(input).includes('/messages')) {
+        historyHits += 1;
+        return new Response(
+          JSON.stringify({
+            messages: [
+              {
+                id: 'm_final',
+                task_id: 't_1',
+                role: 'assistant',
+                content: 'done',
+                created_at: '2026-05-17T00:00:06Z',
+              },
+            ],
+            pagination: {},
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response('{}', { status: 200 });
+    }) as never;
+    const client = await connect({
+      baseUrl: 'http://localhost:6152',
+      bearerToken: 'tok',
+      fetch,
+      webSocketImpl: FakeSocket as never,
+    });
+
+    const events: ChatEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of client.tasks.subscribe('t_1')) {
+        events.push(ev);
+        if (ev.type === 'message_appended') {
+          // Wait a bit past the 500ms catch-up delay window so any
+          // (incorrectly) duplicated fetch has time to surface.
+          await new Promise((r) => setTimeout(r, 600));
+          break;
+        }
+      }
+    })();
+
+    await tick();
+    const socket = FakeSocket.instances[0];
+    // Burst: runtime_status flips true→false, then task_finished arrives
+    // ~immediately. Both events trigger a catch-up; the wrapper must
+    // coalesce them into a single REST round-trip.
+    socket.pushEnvelope({
+      type: 'task_runtime_status',
+      payload: { task_id: 't_1', state: 'thinking', reply_in_progress: true },
+    });
+    socket.pushEnvelope({
+      type: 'task_runtime_status',
+      payload: { task_id: 't_1', state: 'idle', reply_in_progress: false },
+    });
+    socket.pushEnvelope({
+      type: 'task_status_update',
+      payload: { task_id: 't_1', status: 'finished' },
+    });
+
+    await consumer;
+    await client.close();
+
+    // Within the 500ms delay window, both triggers should collapse: only one
+    // setTimeout actually schedules a fetch, and the in-flight check on the
+    // second trigger flips `needAnotherCatchUp` rather than spawning a new
+    // request. The needAnother pass then runs once more (re-fetches), so
+    // total acceptable count is 1 or 2 — never higher.
+    expect(historyHits).toBeGreaterThanOrEqual(1);
+    expect(historyHits).toBeLessThanOrEqual(2);
+  });
+
+  it('catch-up REST failure does not break the live stream', async () => {
+    resetFakeSocket();
+    const fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      if (String(input).includes('/messages')) {
+        // Simulate a transient upstream failure.
+        return new Response(JSON.stringify({ error: 'boom' }), { status: 500 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as never;
+    const client = await connect({
+      baseUrl: 'http://localhost:6152',
+      bearerToken: 'tok',
+      fetch,
+      webSocketImpl: FakeSocket as never,
+    });
+
+    // Silence the expected console.warn so test output stays clean.
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+
+    try {
+      const events: ChatEvent[] = [];
+      const consumer = (async () => {
+        for await (const ev of client.tasks.subscribe('t_1')) {
+          events.push(ev);
+          if (
+            ev.type === 'message_appended' &&
+            (ev as { message: { id: string } }).message.id === 'm_after_failure'
+          ) {
+            break;
+          }
+        }
+      })();
+
+      await tick();
+      const socket = FakeSocket.instances[0];
+      // First: terminal event triggers a catch-up that will fail.
+      socket.pushEnvelope({
+        type: 'task_status_update',
+        payload: { task_id: 't_1', status: 'finished' },
+      });
+      // Wait for the failed catch-up to complete + console.warn to fire.
+      await new Promise((r) => setTimeout(r, 700));
+      // Then: a real-time message arrives via the live stream. The failed
+      // catch-up must not have torn down the subscription.
+      socket.pushEnvelope({
+        type: 'task_sdk_message',
+        payload: {
+          id: 'm_after_failure',
+          task_id: 't_1',
+          role: 'assistant',
+          content: 'live event still flowing',
+          created_at: '2026-05-17T00:00:07Z',
+        },
+      });
+
+      await consumer;
+      await client.close();
+
+      expect(warnings.length).toBeGreaterThanOrEqual(1);
+      expect(String(warnings[0]?.[0] ?? '')).toMatch(/catch-up failed/);
+      expect(
+        events.some(
+          (e) =>
+            e.type === 'message_appended' &&
+            (e as { message: { id: string } }).message.id === 'm_after_failure',
+        ),
+      ).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it('consumer return() aborts an in-flight catch-up fetch', async () => {
+    resetFakeSocket();
+    let fetchStarted = false;
+    let fetchAborted = false;
+    const fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      if (String(input).includes('/messages')) {
+        fetchStarted = true;
+        // Hang until aborted — this simulates a slow / stuck upstream.
+        return new Promise<Response>((_, reject) => {
+          const signal = init?.signal;
+          if (signal) {
+            signal.addEventListener('abort', () => {
+              fetchAborted = true;
+              const err = new Error('aborted');
+              (err as { name: string }).name = 'AbortError';
+              reject(err);
+            });
+          }
+        });
+      }
+      return new Response('{}', { status: 200 });
+    }) as never;
+
+    const client = await connect({
+      baseUrl: 'http://localhost:6152',
+      bearerToken: 'tok',
+      fetch,
+      webSocketImpl: FakeSocket as never,
+    });
+
+    const events: ChatEvent[] = [];
+    const iter = client.tasks.subscribe('t_1')[Symbol.asyncIterator]();
+    // Pull until we see task_finished, then call return() while the
+    // catch-up's fetch is still hanging.
+    const consumer = (async () => {
+      while (true) {
+        const r = await iter.next();
+        if (r.done) break;
+        events.push(r.value);
+        if (r.value.type === 'task_finished') break;
+      }
+    })();
+
+    await tick();
+    const socket = FakeSocket.instances[0];
+    socket.pushEnvelope({
+      type: 'task_status_update',
+      payload: { task_id: 't_1', status: 'finished' },
+    });
+
+    await consumer;
+    // Give the catch-up's setTimeout time to elapse and start the fetch.
+    await new Promise((r) => setTimeout(r, 600));
+    expect(fetchStarted).toBe(true);
+
+    // Now return() — should abort the in-flight fetch.
+    await iter.return!();
+    // Allow the abort to propagate through the fetch mock.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fetchAborted).toBe(true);
+
+    await client.close();
+  });
+});
