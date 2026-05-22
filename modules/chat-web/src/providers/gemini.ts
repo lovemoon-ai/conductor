@@ -42,9 +42,9 @@ export class GeminiAdapter implements ChatProvider {
     const url = page.url();
     if (url.includes("accounts.google.com") || url.includes("/signin/")) return false;
     const candidates = [
-      'ms-prompt-input textarea',
+      'ms-prompt-box textarea',
+      'textarea[aria-label="Enter a prompt"]',
       'textarea[aria-label*="prompt" i]',
-      'textarea[aria-label*="Type something" i]',
       'textarea',
     ];
     for (const sel of candidates) {
@@ -56,11 +56,13 @@ export class GeminiAdapter implements ChatProvider {
 
   async findInput(page: Page): Promise<Locator> {
     const candidates: Locator[] = [
-      page.locator('ms-prompt-input textarea').first(),
+      // AI Studio's composer is `<ms-prompt-box>` wrapping a textarea with
+      // aria-label="Enter a prompt" and a CSS placeholder. The textarea is
+      // the real input; there is no fallback layer like ChatGPT.
+      page.locator('ms-prompt-box textarea').first(),
+      page.locator('textarea[aria-label="Enter a prompt"]').first(),
       page.locator('textarea[aria-label*="prompt" i]').first(),
-      page.locator('textarea[placeholder*="Type something" i]').first(),
-      page.locator('textarea[aria-label*="Type something" i]').first(),
-      page.locator('div[contenteditable="true"]').first(),
+      page.locator('textarea[placeholder*="Start typing" i]').first(),
       page.locator('textarea').first(),
     ];
 
@@ -73,14 +75,17 @@ export class GeminiAdapter implements ChatProvider {
   }
 
   async findSendButton(page: Page): Promise<Locator | null> {
+    // The Run button on AI Studio has NO aria-label — only the visible
+    // text "Run" plus two Material icon font ligatures
+    // ("keyboard_command_key keyboard_return"). It's a type=submit button.
     const candidates: Locator[] = [
-      page.locator('button[aria-label="Run"]').first(),
+      page.getByRole("button", { name: /^Run$/i }).first(),
+      page.locator('ms-prompt-box button[type="submit"]').first(),
+      page.locator('button[type="submit"]').first(),
       page.locator('button[aria-label*="Run" i]').first(),
       page.locator('button[aria-label*="Send" i]').first(),
-      page.locator('button[type="submit"]').first(),
-      // AI Studio sometimes renders the submit as a circular icon button
-      // next to the composer — anchor by proximity to the textarea form.
-      page.locator('ms-prompt-input button').last(),
+      // Last-ditch: any button inside the composer with text containing "Run".
+      page.locator('ms-prompt-box button:has-text("Run")').first(),
     ];
 
     for (const locator of candidates) {
@@ -95,47 +100,52 @@ export class GeminiAdapter implements ChatProvider {
     const input = await this.findInput(page);
     await input.click();
 
-    // AI Studio's textarea accepts both `fill` (for plain text) and
-    // keyboard insertText; prefer `fill` which clears any placeholder
-    // formatting reliably, fall back to insertText if Angular intercepts.
-    const filled = await input.fill(message).then(
-      () => true,
-      () => false,
-    );
-    if (!filled) {
-      await page.keyboard.insertText(message);
-    }
+    // CRITICAL: do NOT use `locator.fill()`. AI Studio's Angular form
+    // listens for `input` events to toggle the Run button between
+    // disabled/enabled. `fill()` programmatically sets the textarea value
+    // without firing the same event sequence Angular expects, leaving
+    // the Run button stuck on disabled. Typing via keyboard fires real
+    // events and Angular flips the button correctly.
+    await page.keyboard.type(message);
 
-    // AI Studio binds Cmd/Ctrl+Enter as the "Run" shortcut. Using the
-    // keyboard avoids races with the form's click handlers that sometimes
-    // gate the visible "Run" button on a debounced focus check.
+    // Give Angular a beat to run change detection and enable Run.
+    await sleep(200);
+
     const send = await this.findSendButton(page);
     if (send && (await send.isEnabled().catch(() => false))) {
       await send.click().catch(async () => {
         await this.pressRunShortcut(page);
       });
     } else {
+      // Fall back to the Cmd/Ctrl+Enter shortcut AI Studio binds to Run.
       await this.pressRunShortcut(page);
     }
   }
 
   async extractLastAssistantMessage(page: Page): Promise<string> {
+    // AI Studio shape (2026-05):
+    //   <ms-chat-turn>
+    //     <div class="chat-turn-container ... model render">
+    //       <div class="actions-container">…</div>
+    //       <div class="turn-content">…actual text + chrome…</div>
+    //     </div>
+    //   </ms-chat-turn>
+    // We target the model turn's `.turn-content`, then strip the
+    // "Model HH:MM AM/PM" header and Material icon font ligatures that
+    // leak into innerText (icon glyphs render as words like "edit",
+    // "more_vert", "error", "content_copy", ...).
     const candidates: Locator[] = [
-      // AI Studio wraps each turn in <ms-chat-turn>; the model turn carries
-      // a role attribute or class. Try several selectors so we don't have
-      // to guess the exact internal name.
-      page.locator('ms-chat-turn[data-turn-role="model"] ms-prompt-chunk').last(),
+      page.locator('ms-chat-turn .chat-turn-container.model .turn-content').last(),
+      page.locator('.chat-turn-container.model .turn-content').last(),
+      page.locator('ms-chat-turn .turn-content').last(),
       page.locator('ms-chat-turn').last(),
-      page.locator('[data-turn-role="model"]').last(),
-      page.locator('ms-prompt-chunk').last(),
-      page.locator('.markdown, .prose, .model-response').last(),
-      page.locator('main article').last(),
     ];
 
     for (const locator of candidates) {
       if (await locator.count().then((n) => n > 0).catch(() => false)) {
-        const text = await locator.innerText().catch(() => "");
-        if (text && text.trim()) return text.trim();
+        const raw = await locator.innerText().catch(() => "");
+        const cleaned = stripChromeFromTurn(raw);
+        if (cleaned) return cleaned;
       }
     }
 
@@ -281,4 +291,55 @@ export class GeminiAdapter implements ChatProvider {
     }
     return false;
   }
+}
+
+/**
+ * Strip the UI chrome that leaks into `innerText` on AI Studio model turns.
+ *
+ * Observed shape after innerText:
+ *
+ *   Model 5:54 PM
+ *   error
+ *   An internal error has occurred.
+ *
+ * That is — a header line "Model HH:MM AM/PM" (turn role + timestamp),
+ * one or more Material icon font ligatures rendered as plain text words
+ * (e.g. "error", "edit", "more_vert", "content_copy"), then the actual
+ * content. We drop the header and any line that is exactly a single
+ * known icon ligature, then re-trim.
+ */
+export function stripChromeFromTurn(text: string): string {
+  if (!text) return "";
+  const lines = text.split(/\r?\n/);
+  const HEADER = /^(Model|User|System)\s+\d{1,2}:\d{2}\s*(AM|PM)?\s*$/i;
+  const ICON_LIGATURES = new Set([
+    "edit",
+    "more_vert",
+    "error",
+    "content_copy",
+    "thumb_up",
+    "thumb_down",
+    "refresh",
+    "delete",
+    "close",
+    "expand_more",
+    "expand_less",
+    "code",
+    "play_arrow",
+    "stop",
+    "menu",
+  ]);
+
+  const kept: string[] = [];
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      kept.push(raw);
+      continue;
+    }
+    if (HEADER.test(trimmed)) continue;
+    if (ICON_LIGATURES.has(trimmed)) continue;
+    kept.push(raw);
+  }
+  return kept.join("\n").trim();
 }
