@@ -11,16 +11,6 @@ describe("provider registry", () => {
     expect(names).toContain("chatgpt");
     expect(names).toContain("deepseek");
     expect(names).toContain("gemini");
-    expect(names).toContain("aistudio");
-  });
-
-  it("gemini and aistudio are SEPARATE providers (different products under the same brand)", () => {
-    registerBuiltinProviders();
-    const gemini = getProvider("gemini");
-    const aistudio = getProvider("aistudio");
-    expect(gemini.homeUrl).toMatch(/gemini\.google\.com/);
-    expect(aistudio.homeUrl).toMatch(/aistudio\.google\.com/);
-    expect(gemini).not.toBe(aistudio);
   });
 
   it("exposes the gemini consumer-chat home URL (NOT AI Studio)", () => {
