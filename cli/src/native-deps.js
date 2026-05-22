@@ -87,6 +87,44 @@ export function mergeBuiltDependencies(existing, required) {
   return [...merged];
 }
 
+export function parsePnpmIgnoredBuildsOutput(value) {
+  const ignored = [];
+  for (const rawLine of String(value || "").split(/\r?\n/)) {
+    const line = rawLine
+      .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+      .trim();
+    if (!line || line.toLowerCase().includes("none")) {
+      continue;
+    }
+    const match = line.match(/^(?:[-*]\s*)?(@?[^@\s][^\s@]*)(?:@[\w.-]+)?$/);
+    if (!match) {
+      continue;
+    }
+    const name = match[1].trim();
+    if (name && !ignored.includes(name)) {
+      ignored.push(name);
+    }
+  }
+  return ignored;
+}
+
+export async function detectPnpmIgnoredBuilds({
+  runCommand = defaultRunCommand,
+  cwd = process.cwd(),
+} = {}) {
+  const result = await runCommand("pnpm", ["ignored-builds"], { cwd });
+  if (!result.success) {
+    return [];
+  }
+  return parsePnpmIgnoredBuildsOutput(result.stdout);
+}
+
+export function buildPnpmAllowBuildArgs(dependencies = ["node-pty"]) {
+  return normalizeBuiltDependencyList(dependencies).flatMap((dependency) => [
+    `--allow-build=${dependency}`,
+  ]);
+}
+
 export async function ensurePnpmOnlyBuiltDependencies({
   runCommand = defaultRunCommand,
   dependencies = ["node-pty"],
@@ -322,6 +360,22 @@ export async function repairAndVerifyGlobalNodePty({
   });
 
   if (packageManager === "pnpm") {
+    const ignoredBuilds = await detectPnpmIgnoredBuilds({
+      runCommand,
+      cwd: packageDirectory,
+    });
+    const blockedDependencies = normalizeBuiltDependencyList(dependencies).filter((dependency) =>
+      ignoredBuilds.includes(dependency),
+    );
+    if (blockedDependencies.length > 0) {
+      throw new Error(
+        `pnpm ignored native build scripts for ${blockedDependencies.join(
+          ", ",
+        )}. Reinstall Conductor with pnpm's build allowlist enabled, for example: pnpm add -g ${buildPnpmAllowBuildArgs(
+          blockedDependencies,
+        ).join(" ")} ${packageName}@latest`,
+      );
+    }
     const rebuildResult = await runCommand("pnpm", ["rebuild", ...dependencies], {
       cwd: packageDirectory,
     });

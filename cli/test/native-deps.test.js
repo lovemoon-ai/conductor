@@ -3,10 +3,13 @@ import assert from "node:assert/strict";
 
 import {
   ensurePnpmOnlyBuiltDependencies,
+  buildPnpmAllowBuildArgs,
   buildNodePtyVerificationScript,
+  detectPnpmIgnoredBuilds,
   ensureNodePtySpawnHelperExecutableForPackageDirectory,
   mergeBuiltDependencies,
   normalizeBuiltDependencyList,
+  parsePnpmIgnoredBuildsOutput,
   repairAndVerifyGlobalNodePty,
   shouldIgnoreNodePtyVerificationErrorMessage,
 } from "../src/native-deps.js";
@@ -26,6 +29,48 @@ describe("native deps helpers", () => {
       mergeBuiltDependencies(["foo", "node-pty"], ["node-pty", "bar"]),
       ["foo", "node-pty", "bar"],
     );
+  });
+
+  it("builds pnpm allow-build flags", () => {
+    assert.deepStrictEqual(buildPnpmAllowBuildArgs(["node-pty", "@roamhq/wrtc"]), [
+      "--allow-build=node-pty",
+      "--allow-build=@roamhq/wrtc",
+    ]);
+  });
+
+  it("parses pnpm ignored-builds output", () => {
+    assert.deepStrictEqual(
+      parsePnpmIgnoredBuildsOutput(`Automatically ignored builds during installation:
+  node-pty
+hint: To allow the execution of build scripts for a package, add its name to "pnpm.onlyBuiltDependencies"`),
+      ["node-pty"],
+    );
+    assert.deepStrictEqual(
+      parsePnpmIgnoredBuildsOutput(`Automatically ignored builds during installation:
+  None`),
+      [],
+    );
+  });
+
+  it("detects pnpm ignored builds from a project directory", async () => {
+    const calls = [];
+    const ignored = await detectPnpmIgnoredBuilds({
+      cwd: "/tmp/global/node_modules/@love-moon/conductor-cli",
+      runCommand: async (command, args, options) => {
+        calls.push([command, args, options]);
+        return {
+          success: true,
+          code: 0,
+          stdout: "Automatically ignored builds during installation:\n  node-pty\n",
+          stderr: "",
+        };
+      },
+    });
+
+    assert.deepStrictEqual(ignored, ["node-pty"]);
+    assert.deepStrictEqual(calls, [
+      ["pnpm", ["ignored-builds"], { cwd: "/tmp/global/node_modules/@love-moon/conductor-cli" }],
+    ]);
   });
 
   it("writes pnpm onlyBuiltDependencies when node-pty is missing", async () => {
@@ -133,6 +178,9 @@ describe("native deps helpers", () => {
         if (command === "pnpm" && args[0] === "root") {
           return { success: true, code: 0, stdout: `${packageRoot}\n`, stderr: "" };
         }
+        if (command === "pnpm" && args[0] === "ignored-builds") {
+          return { success: true, code: 0, stdout: "Automatically ignored builds during installation:\n  None\n", stderr: "" };
+        }
         return { success: true, code: 0, stdout: "", stderr: "" };
       },
     });
@@ -141,8 +189,41 @@ describe("native deps helpers", () => {
     assert.deepStrictEqual(calls, [
       ["pnpm", ["config", "get", "--global", "onlyBuiltDependencies", "--json"], {}],
       ["pnpm", ["root", "-g"], {}],
+      ["pnpm", ["ignored-builds"], { cwd: packageDirectory }],
       ["pnpm", ["rebuild", "node-pty"], { cwd: packageDirectory }],
       ["/usr/bin/node", ["-e", buildNodePtyVerificationScript(), packageDirectory], { timeoutMs: 15_000 }],
     ]);
+  });
+
+  it("fails pnpm repair when node-pty build scripts are still ignored", async () => {
+    const packageRoot = "/tmp/global/node_modules";
+    const packageDirectory = `${packageRoot}/@love-moon/conductor-cli`;
+
+    await assert.rejects(
+      repairAndVerifyGlobalNodePty({
+        packageManager: "pnpm",
+        packageName: "@love-moon/conductor-cli",
+        nodeExecutable: "/usr/bin/node",
+        runCommand: async (command, args) => {
+          if (command === "pnpm" && args[0] === "config" && args[1] === "get") {
+            return { success: true, code: 0, stdout: '"node-pty"', stderr: "" };
+          }
+          if (command === "pnpm" && args[0] === "root") {
+            return { success: true, code: 0, stdout: `${packageRoot}\n`, stderr: "" };
+          }
+          if (command === "pnpm" && args[0] === "ignored-builds") {
+            return {
+              success: true,
+              code: 0,
+              stdout: "Automatically ignored builds during installation:\n  node-pty\n",
+              stderr: "",
+            };
+          }
+          return { success: true, code: 0, stdout: "", stderr: "" };
+        },
+      }),
+      /pnpm ignored native build scripts for node-pty/,
+    );
+    assert.strictEqual(packageDirectory, "/tmp/global/node_modules/@love-moon/conductor-cli");
   });
 });

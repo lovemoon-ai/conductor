@@ -39,6 +39,7 @@ import {
   resolveInstallMethod,
 } from "./version-check.js";
 import {
+  buildPnpmAllowBuildArgs,
   ensurePnpmOnlyBuiltDependencies,
   repairAndVerifyGlobalNodePty,
 } from "./native-deps.js";
@@ -2342,7 +2343,7 @@ export function startDaemon(config = {}, deps = {}) {
       switch (pm) {
         case "pnpm":
           cmd = "pnpm";
-          args = ["add", "-g", pkgSpec];
+          args = ["add", "-g", ...buildPnpmAllowBuildArgs(["node-pty"]), pkgSpec];
           break;
         case "yarn":
           cmd = "yarn";
