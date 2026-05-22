@@ -69,9 +69,6 @@ export class ChatGPTSSECollector {
 
   private currentTurn: TurnState = freshTurn();
 
-  /** Most recent assistant text we managed to reconstruct, across all turns. */
-  private lastAssistantText = "";
-
   /** Attach to a Playwright Page. Idempotent. */
   attach(page: Page): void {
     if (this.detach) return;
@@ -117,9 +114,28 @@ export class ChatGPTSSECollector {
     });
   }
 
-  /** Latest assistant text across all completed turns. */
+  /**
+   * Assistant text accumulated for the CURRENT turn only.
+   *
+   * Returns "" until SSE events for the current turn arrive. NEVER returns
+   * text from a previous turn — that would leak stale answers into the
+   * next prompt's extraction fallback. Bug fixed in this method: an
+   * earlier implementation also returned the latest *finalized* turn's
+   * text, which made the DOM-fallback path silently substitute the prior
+   * turn's reply when the current turn's SSE was empty / racy.
+   */
+  getCurrentTurnText(): string {
+    return this.bestAssistantText();
+  }
+
+  /**
+   * @deprecated Use {@link getCurrentTurnText}. Kept as a hard error so
+   * callers fail loudly rather than silently consume stale data.
+   */
   getLastAssistantText(): string {
-    return this.lastAssistantText;
+    throw new Error(
+      "ChatGPTSSECollector.getLastAssistantText() was removed; use getCurrentTurnText() — it never returns stale text from a prior turn.",
+    );
   }
 
   /** Has the current turn's SSE stream ended? */
@@ -277,7 +293,6 @@ export class ChatGPTSSECollector {
   private finishPendingTurn(): void {
     if (!this.pendingTurn) return;
     const text = this.bestAssistantText();
-    if (text) this.lastAssistantText = text;
     if (this.pendingTurn.timer) clearTimeout(this.pendingTurn.timer);
     const { resolve } = this.pendingTurn;
     this.pendingTurn = undefined;

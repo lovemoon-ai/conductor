@@ -40,7 +40,7 @@ describe("ChatGPTSSECollector — full message snapshots", () => {
     const c = new ChatGPTSSECollector();
     c.beginTurn();
     c.ingest(body);
-    expect(c.getLastAssistantText()).toBe(
+    expect(c.getCurrentTurnText()).toBe(
       "- alpha\n- beta\n```python\ndef f():\n    pass\n```",
     );
   });
@@ -58,7 +58,7 @@ describe("ChatGPTSSECollector — full message snapshots", () => {
     const c = new ChatGPTSSECollector();
     c.beginTurn();
     c.ingest(body);
-    expect(c.getLastAssistantText()).toBe("partial complete");
+    expect(c.getCurrentTurnText()).toBe("partial complete");
   });
 });
 
@@ -85,7 +85,7 @@ describe("ChatGPTSSECollector — v1 delta encoding", () => {
     const c = new ChatGPTSSECollector();
     c.beginTurn();
     c.ingest(body);
-    expect(c.getLastAssistantText()).toBe("Hello, world!");
+    expect(c.getCurrentTurnText()).toBe("Hello, world!");
     expect(c.isStreamComplete()).toBe(true);
   });
 
@@ -102,7 +102,7 @@ describe("ChatGPTSSECollector — v1 delta encoding", () => {
     const c = new ChatGPTSSECollector();
     c.beginTurn();
     c.ingest(body);
-    expect(c.getLastAssistantText()).toBe("right");
+    expect(c.getCurrentTurnText()).toBe("right");
   });
 
   it("ignores deltas targeting paths other than message parts", () => {
@@ -118,7 +118,7 @@ describe("ChatGPTSSECollector — v1 delta encoding", () => {
     const c = new ChatGPTSSECollector();
     c.beginTurn();
     c.ingest(body);
-    expect(c.getLastAssistantText()).toBe("body");
+    expect(c.getCurrentTurnText()).toBe("body");
   });
 
   it("handles patch arrays of sub-deltas", () => {
@@ -134,7 +134,7 @@ describe("ChatGPTSSECollector — v1 delta encoding", () => {
     const c = new ChatGPTSSECollector();
     c.beginTurn();
     c.ingest(body);
-    expect(c.getLastAssistantText()).toBe("AB");
+    expect(c.getCurrentTurnText()).toBe("AB");
   });
 
   it("processes a real-shape closing patch with empty top-level path", () => {
@@ -159,7 +159,7 @@ describe("ChatGPTSSECollector — v1 delta encoding", () => {
     const c = new ChatGPTSSECollector();
     c.beginTurn();
     c.ingest(body);
-    expect(c.getLastAssistantText()).toBe("```python\nprint(1)\n```");
+    expect(c.getCurrentTurnText()).toBe("```python\nprint(1)\n```");
   });
 });
 
@@ -221,7 +221,10 @@ describe("ChatGPTSSECollector — beginTurn behavior", () => {
     await expect(wait).resolves.toBe("");
   });
 
-  it("preserves text across turns via getLastAssistantText", () => {
+  it("getCurrentTurnText returns '' after beginTurn until the new turn ingests data (no stale leak)", () => {
+    // Regression for task 09b34cf4-…: an earlier impl returned the
+    // previous turn's text as a cross-turn cache, which leaked the
+    // "1+1=2" answer into the next prompt's extraction fallback.
     const c = new ChatGPTSSECollector();
     c.beginTurn();
     c.ingest(
@@ -232,11 +235,20 @@ describe("ChatGPTSSECollector — beginTurn behavior", () => {
         "",
       ].join("\n"),
     );
-    expect(c.getLastAssistantText()).toBe("first answer");
+    expect(c.getCurrentTurnText()).toBe("first answer");
 
-    // Next turn — once a new turn starts but no events ingested yet,
-    // we still remember the previous turn's text.
+    // After a new turn starts and BEFORE any events arrive, the text
+    // MUST be empty — not the previous turn's answer.
     c.beginTurn();
-    expect(c.getLastAssistantText()).toBe("first answer");
+    expect(c.getCurrentTurnText()).toBe("");
+  });
+
+  it("getLastAssistantText is removed and throws if called (loud failure on legacy callers)", () => {
+    const c = new ChatGPTSSECollector();
+    // Cast through unknown — TypeScript should already flag the call,
+    // but legacy JS callers would silently get stale data; we now throw.
+    expect(() => (c as unknown as { getLastAssistantText: () => string }).getLastAssistantText()).toThrow(
+      /getLastAssistantText\(\) was removed/,
+    );
   });
 });

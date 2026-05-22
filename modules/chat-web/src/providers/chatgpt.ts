@@ -5,6 +5,7 @@ import {
   ResponseExtractionError,
   ResponseTimeoutError,
 } from "../core/errors.js";
+import { typeMultiline } from "../core/keyboard.js";
 import type { ChatProvider, ProviderDiagnostics, WaitOptions } from "../core/provider.js";
 import { sleep, waitUntilStable } from "../core/response-watcher.js";
 
@@ -126,7 +127,12 @@ export class ChatGPTAdapter implements ChatProvider {
     // no-op on contenteditable and `insertText` skips IME handling.
     await input.click({ force: true });
     await input.focus().catch(() => undefined);
-    await page.keyboard.type(message);
+    // CRITICAL: use `typeMultiline`, not `page.keyboard.type(message)`.
+    // ChatGPT's ProseMirror binds Enter to "submit prompt"; `keyboard.type`
+    // emits a literal Enter key event for every "\n" in the message, which
+    // causes multi-line prompts to be submitted line-by-line. The helper
+    // converts newlines into Shift+Enter (soft line break) presses.
+    await typeMultiline(page, message);
 
     // Prefer clicking the send button — it gives us a cleaner state
     // transition (the button toggles to "Stop generating" while streaming).
@@ -150,9 +156,15 @@ export class ChatGPTAdapter implements ChatProvider {
   async extractLastAssistantMessage(page: Page): Promise<string> {
     // Path 1: SSE collector. When wiring is healthy this gives us the
     // model's original markdown (code fences, list prefixes, link URLs).
+    //
+    // IMPORTANT: use `getCurrentTurnText`, not `getLastAssistantText`.
+    // The latter used to return the most-recent *finalized* turn's text,
+    // which silently leaked the previous turn's answer when the current
+    // turn's SSE was empty / racy (task 09b34cf4-… symptom: "1+1=2" reply
+    // showing up under a long arXiv prompt).
     const collector = this.collectors.get(page);
     if (collector) {
-      const sseText = collector.getLastAssistantText();
+      const sseText = collector.getCurrentTurnText();
       if (sseText && sseText.trim()) return sseText.trim();
     }
 

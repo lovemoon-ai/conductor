@@ -5,6 +5,7 @@ import {
   ResponseExtractionError,
   ResponseTimeoutError,
 } from "../core/errors.js";
+import { typeMultiline } from "../core/keyboard.js";
 import type { ChatProvider, ProviderDiagnostics, WaitOptions } from "../core/provider.js";
 import { sleep, waitUntilStable } from "../core/response-watcher.js";
 
@@ -106,7 +107,14 @@ export class GeminiAdapter implements ChatProvider {
     // without firing the same event sequence Angular expects, leaving
     // the Run button stuck on disabled. Typing via keyboard fires real
     // events and Angular flips the button correctly.
-    await page.keyboard.type(message);
+    //
+    // Use `typeMultiline` rather than `page.keyboard.type(message)` so
+    // multi-line prompts don't submit on every `\n`: AI Studio binds
+    // Cmd/Ctrl+Enter to Run, but plain Enter still inserts a newline
+    // here, so a bare Enter wouldn't submit — BUT we want behaviour
+    // consistent with ChatGPT, and the Shift+Enter form is universally
+    // safe on every modern chat composer we've seen.
+    await typeMultiline(page, message);
 
     // Give Angular a beat to run change detection and enable Run.
     await sleep(200);
