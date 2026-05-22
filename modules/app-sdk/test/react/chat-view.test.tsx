@@ -363,6 +363,171 @@ describe('<ChatView /> integration', () => {
     expect(root!.style.getPropertyValue('--accent')).toBe('#abcdef');
     await unmount();
   });
+
+  it('history catch-up after runtime_status replyInProgress true→false displays the message', async () => {
+    // Regression for the "AI reply doesn't show up until refresh" issue:
+    // simulate a deployment where the final message_appended is lost in the
+    // realtime path but the row is in DB. The catch-up triggered on the
+    // runtime_status flip should pull it via fetchHistory and surface it.
+    const handlers = new Set<(event: ChatEvent) => void>();
+    let fetchHistoryCalls = 0;
+    const adapter: ChatAdapter = {
+      async fetchHistory(_taskId, _opts) {
+        fetchHistoryCalls += 1;
+        // First call: initial hydration — no messages yet.
+        // Subsequent calls (the catch-up): include the late assistant reply.
+        if (fetchHistoryCalls === 1) {
+          return { messages: [], hasMoreBefore: false, oldestMessageId: null };
+        }
+        return {
+          messages: [
+            {
+              id: 'm_late_reply',
+              taskId: 't_1',
+              role: 'assistant',
+              content: 'recovered via catch-up',
+              metadata: null,
+              attachments: [],
+              createdAt: '2026-05-17T00:00:05Z',
+            },
+          ],
+          hasMoreBefore: false,
+          oldestMessageId: 'm_late_reply',
+        };
+      },
+      subscribe(_taskId, handler) {
+        handlers.add(handler);
+        queueMicrotask(() =>
+          handler({ type: 'connection_state', state: 'connected' }),
+        );
+        return {
+          unsubscribe() {
+            handlers.delete(handler);
+          },
+        };
+      },
+      async sendMessage() {
+        throw new Error('not used');
+      },
+      async interrupt() {
+        /* noop */
+      },
+    };
+
+    const { container, unmount } = await mount(
+      <ChatView taskId="t_1" adapter={adapter} />,
+    );
+
+    // No bubbles initially.
+    expect(container.querySelectorAll('.conductor-bubble')).toHaveLength(0);
+
+    // Push the runtime_status flip that the realtime path actually does
+    // emit reliably. The final message_appended never arrives via realtime
+    // — this models the broken realtime path. Catch-up must recover it.
+    await act(async () => {
+      for (const h of handlers) {
+        h({
+          type: 'runtime_status',
+          status: { taskId: 't_1', state: 'thinking', replyInProgress: true },
+        });
+      }
+    });
+    await act(async () => {
+      for (const h of handlers) {
+        h({
+          type: 'runtime_status',
+          status: { taskId: 't_1', state: 'idle', replyInProgress: false },
+        });
+      }
+    });
+
+    // Wait for the 500ms scheduled catch-up + fetch resolution.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 700));
+    });
+
+    // The catch-up must have run and the recovered message must render.
+    expect(fetchHistoryCalls).toBeGreaterThanOrEqual(2);
+    const bubbles = container.querySelectorAll('.conductor-bubble');
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0].textContent).toBe('recovered via catch-up');
+
+    await unmount();
+  });
+
+  it('catch-up dedupes against a message_appended already received in real time', async () => {
+    // The real-time path delivered the assistant reply correctly; the
+    // catch-up triggered on task_finished pulls history that contains the
+    // same id. The reducer's id-keyed dedup must keep the UI to exactly
+    // one bubble.
+    const handlers = new Set<(event: ChatEvent) => void>();
+    let fetchHistoryCalls = 0;
+    const sharedMessage = {
+      id: 'm_realtime',
+      taskId: 't_1',
+      role: 'assistant',
+      content: 'arrived once',
+      metadata: null,
+      attachments: [],
+      createdAt: '2026-05-17T00:00:03Z',
+    } as const;
+    const adapter: ChatAdapter = {
+      async fetchHistory() {
+        fetchHistoryCalls += 1;
+        if (fetchHistoryCalls === 1) {
+          return { messages: [], hasMoreBefore: false, oldestMessageId: null };
+        }
+        return {
+          messages: [{ ...sharedMessage }],
+          hasMoreBefore: false,
+          oldestMessageId: sharedMessage.id,
+        };
+      },
+      subscribe(_taskId, handler) {
+        handlers.add(handler);
+        return {
+          unsubscribe() {
+            handlers.delete(handler);
+          },
+        };
+      },
+      async sendMessage() {
+        throw new Error('not used');
+      },
+      async interrupt() {
+        /* noop */
+      },
+    };
+
+    const { container, unmount } = await mount(
+      <ChatView taskId="t_1" adapter={adapter} />,
+    );
+
+    // Real-time delivery first.
+    await act(async () => {
+      for (const h of handlers) {
+        h({ type: 'message_appended', message: { ...sharedMessage } });
+      }
+    });
+    expect(container.querySelectorAll('.conductor-bubble')).toHaveLength(1);
+
+    // Then terminal event triggers a catch-up that pulls the same message.
+    await act(async () => {
+      for (const h of handlers) {
+        h({ type: 'task_finished', taskId: 't_1' });
+      }
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 700));
+    });
+
+    // Still exactly one bubble — dedup-by-id kept the duplicate out.
+    const bubbles = container.querySelectorAll('.conductor-bubble');
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0].textContent).toBe('arrived once');
+
+    await unmount();
+  });
 });
 
 describe('<ChatProvider /> context value freshness', () => {

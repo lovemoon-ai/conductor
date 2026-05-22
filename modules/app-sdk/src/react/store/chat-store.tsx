@@ -301,6 +301,90 @@ export function ChatProvider(props: ChatProviderProps) {
     const activeAdapter = adapterRef.current;
     let cancelled = false;
     const abort = new AbortController();
+
+    // ---------------------------------------------------------------------
+    // History catch-up (defense-in-depth against missed `message_appended`)
+    //
+    // Why: not every Conductor deployment guarantees real-time delivery of
+    // `task_sdk_message`. Multi-instance broadcast hubs without a pub/sub
+    // backplane, idempotent retries that bypass projection, and momentary
+    // WS disconnects can all swallow the final assistant message envelope.
+    // Refreshing the page would show the message (it lives in DB history).
+    // This catch-up emulates that refresh transparently.
+    //
+    // When: after `task_finished` / `task_failed`, after `runtime_status`
+    // transitions `replyInProgress` true→false, and after the underlying
+    // connection transitions `reconnecting → connected` (so we backfill
+    // anything that arrived while we were offline).
+    //
+    // Safety: the reducer's `dedupSorted` already keys on `message.id`, so
+    // re-dispatching a message we already have is a no-op for the UI.
+    // Errors here are logged but never poison chat state.
+    // ---------------------------------------------------------------------
+    let catchUpTimer: ReturnType<typeof setTimeout> | null = null;
+    let catchUpInFlight = false;
+    let needAnotherCatchUp = false;
+    let catchUpAbort: AbortController | null = null;
+    let prevReplyInProgress: boolean | undefined;
+    let prevConnectionState:
+      | 'connected'
+      | 'reconnecting'
+      | 'offline'
+      | undefined;
+
+    const runCatchUp = async (): Promise<void> => {
+      if (cancelled) return;
+      catchUpInFlight = true;
+      // Note: we don't abort `catchUpAbort` here because `scheduleCatchUp`
+      // already guarantees runCatchUp isn't invoked while a previous fetch
+      // is in flight (the in-flight check returns early). The controller
+      // is created fresh per run; cleanup aborts whatever's active.
+      catchUpAbort = new AbortController();
+      try {
+        const page = await activeAdapter.fetchHistory(taskId, {
+          limit: 20,
+          signal: catchUpAbort.signal,
+        });
+        if (cancelled) return;
+        for (const m of page.messages) {
+          if (!m.id) continue;
+          dispatch({ type: 'APPEND_MESSAGE', message: m });
+        }
+      } catch (err) {
+        // Aborts come back two ways: raw `AbortError` from fetch itself, or
+        // a `ConductorAppError { code: 'stream_aborted' }` if the adapter
+        // wraps it (the default REST adapter does). Treat both as silent.
+        const name = (err as { name?: string } | null)?.name;
+        const code = (err as { code?: string } | null)?.code;
+        if (name === 'AbortError' || code === 'stream_aborted') return;
+        // eslint-disable-next-line no-console
+        console.warn('[app-sdk] history catch-up failed', err);
+      } finally {
+        catchUpInFlight = false;
+        if (needAnotherCatchUp && !cancelled) {
+          needAnotherCatchUp = false;
+          void runCatchUp();
+        }
+      }
+    };
+
+    const scheduleCatchUp = (delayMs: number): void => {
+      if (cancelled) return;
+      // Coalesce: if a catch-up is already in flight, mark that we should run
+      // one more pass when it completes. This collapses bursty terminal
+      // events (e.g. runtime_status flips immediately followed by
+      // task_finished) into at most one extra round-trip.
+      if (catchUpInFlight) {
+        needAnotherCatchUp = true;
+        return;
+      }
+      if (catchUpTimer) clearTimeout(catchUpTimer);
+      catchUpTimer = setTimeout(() => {
+        catchUpTimer = null;
+        void runCatchUp();
+      }, delayMs);
+    };
+
     dispatch({ type: 'LOADING_HISTORY', loading: true });
     activeAdapter
       .fetchHistory(taskId, { signal: abort.signal })
@@ -334,11 +418,21 @@ export function ChatProvider(props: ChatProviderProps) {
         case 'message_updated':
           dispatch({ type: 'UPDATE_MESSAGE', message: event.message });
           break;
-        case 'runtime_status':
+        case 'runtime_status': {
           dispatch({ type: 'SET_RUNTIME', status: event.status });
+          // Reply just ended? Backfill in case the final assistant message
+          // envelope was lost in the realtime path. Delay 500ms so the
+          // server has time to commit + project the row before we read it.
+          const now = event.status.replyInProgress;
+          if (prevReplyInProgress === true && now === false) {
+            scheduleCatchUp(500);
+          }
+          prevReplyInProgress = now;
           break;
+        }
         case 'task_finished':
           dispatch({ type: 'TASK_FINISHED' });
+          scheduleCatchUp(500);
           break;
         case 'task_failed': {
           // Preserve the full ChatEventError payload so host UIs can surface
@@ -357,11 +451,27 @@ export function ChatProvider(props: ChatProviderProps) {
           // intentional shape choices on the producer side. Hosts that need
           // it read it from `error.details`.
           dispatch({ type: 'TASK_FAILED', error: taskErr });
+          // Some `task_failed` events are synthetic — emitted by the SDK
+          // when the WS closes — and the actual last assistant message may
+          // still be persisted server-side. Run a catch-up so the user
+          // doesn't lose it.
+          scheduleCatchUp(500);
           break;
         }
-        case 'connection_state':
+        case 'connection_state': {
           dispatch({ type: 'SET_CONNECTION', state: event.state });
+          // After a transient WS drop, the broadcast we missed during the
+          // reconnect window is gone forever (Conductor's /ws/app does not
+          // replay). Backfill immediately on `reconnecting → connected`.
+          if (
+            event.state === 'connected' &&
+            prevConnectionState === 'reconnecting'
+          ) {
+            scheduleCatchUp(0);
+          }
+          prevConnectionState = event.state;
           break;
+        }
       }
     });
 
@@ -369,6 +479,11 @@ export function ChatProvider(props: ChatProviderProps) {
       cancelled = true;
       abort.abort();
       sub.unsubscribe();
+      if (catchUpTimer) {
+        clearTimeout(catchUpTimer);
+        catchUpTimer = null;
+      }
+      catchUpAbort?.abort();
     };
   }, [taskId]);
 
