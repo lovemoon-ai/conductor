@@ -6,7 +6,9 @@ import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 import { useAgentsStore } from '@/features/agents';
 import { getApiClient } from '@/shared/api/client';
 import { useAiManagerStore } from '../store';
+import type { StatusResponse, Tool } from '../types';
 import { CodexAccountSwitcher } from './CodexAccountSwitcher';
+import { CustomCommandsPanel } from './CustomCommandsPanel';
 import { QuotaBar } from './QuotaBar';
 import { ToolStatusRow } from './ToolStatusRow';
 
@@ -18,6 +20,59 @@ interface AiManagerPanelProps {
 /** Daemons that accept ai_manager_request. Excludes ephemeral fire hosts. */
 function isManageableHost(host: string): boolean {
   return !host.startsWith('conductor-fire-');
+}
+
+const MANAGED_TOOL_ORDER: Tool[] = ['codex', 'claude', 'kimi', 'copilot'];
+const TOOL_ALIASES: Record<string, Tool> = {
+  codex: 'codex',
+  code: 'codex',
+  claude: 'claude',
+  'claude-code': 'claude',
+  kimi: 'kimi',
+  'kimi-cli': 'kimi',
+  'kimi-code': 'kimi',
+  copilot: 'copilot',
+};
+
+function normalizeManagedTool(value: unknown): Tool | null {
+  if (typeof value !== 'string') return null;
+  return TOOL_ALIASES[value.trim().toLowerCase()] ?? null;
+}
+
+function supportedManagedTools(
+  supportedBackends: string[],
+  runtimeBackendMap?: Record<string, string>,
+): Tool[] {
+  const seen = new Set<Tool>();
+
+  for (const backend of supportedBackends) {
+    const normalizedBackend = backend.trim().toLowerCase();
+    const runtimeBackend = runtimeBackendMap?.[backend] ?? runtimeBackendMap?.[normalizedBackend];
+    const tool = normalizeManagedTool(runtimeBackend) ?? normalizeManagedTool(backend);
+    if (tool) seen.add(tool);
+  }
+
+  return MANAGED_TOOL_ORDER.filter((tool) => seen.has(tool));
+}
+
+// Until daemon status is loaded we can't say a tool is installed *and*
+// reachable, so we must not treat it as available — otherwise the Quota
+// section would render advertised backends for a tool that may be uninstalled
+// or unreachable once status finally arrives, which contradicts the
+// "hide unavailable tools" requirement. Sections that want to show a
+// loading state during the initial fetch should branch on
+// `state.loading.status && !status` themselves (as both AI tools and Quota
+// do below).
+function isToolAvailable(tool: Tool, status: StatusResponse | null): boolean {
+  if (!status) return false;
+  return status.install[tool]?.installed === true && status.network[tool]?.reachable === true;
+}
+
+function quotaGridClass(count: number): string {
+  if (count <= 1) return 'md:grid-cols-1';
+  if (count === 2) return 'md:grid-cols-2';
+  if (count === 3) return 'md:grid-cols-3';
+  return 'md:grid-cols-4';
 }
 
 export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
@@ -80,11 +135,14 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
   const host = selectedHost ?? visibleDaemons[0]?.host ?? '';
   const selectedDaemon = visibleDaemons.find((daemon) => daemon.host === host) ?? null;
   const supportsRestart = selectedDaemon?.capabilities?.includes('restart_daemon') ?? false;
+  const supportsCustomCommands = selectedDaemon?.capabilities?.includes('custom_commands') ?? false;
   const supportedBackends = selectedDaemon?.supportedBackends ?? [];
+  const managedTools = supportedManagedTools(supportedBackends, selectedDaemon?.runtimeBackendMap);
   const daemonVersion = selectedDaemon?.version ?? null;
   const isRestarting = restartingHost === host;
   const state = byHost[host];
   const status = state?.status ?? null;
+  const availableTools = managedTools.filter((tool) => isToolAvailable(tool, status));
   const quota = state?.quota ?? null;
   const accounts = state?.accounts?.accounts ?? [];
   const codexQuotaByAccount = state?.codexQuotaByAccount ?? {};
@@ -163,12 +221,22 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
       </SectionCard>
 
       <SectionCard title="AI tools">
-        <div className="flex flex-col divide-y divide-border">
-          <ToolStatusRow tool="codex" install={status?.install.codex} network={status?.network.codex} />
-          <ToolStatusRow tool="claude" install={status?.install.claude} network={status?.network.claude} />
-          <ToolStatusRow tool="kimi" install={status?.install.kimi} network={status?.network.kimi} />
-          <ToolStatusRow tool="copilot" install={status?.install.copilot} network={status?.network.copilot} />
-        </div>
+        {state?.loading?.status && !status ? (
+          <p className="text-sm text-muted">Loading AI tools...</p>
+        ) : status && availableTools.length > 0 ? (
+          <div className="flex flex-col divide-y divide-border">
+            {availableTools.map((tool) => (
+              <ToolStatusRow
+                key={tool}
+                tool={tool}
+                install={status.install[tool]}
+                network={status.network[tool]}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted">No available AI tools on this daemon.</p>
+        )}
         {state?.error?.status ? (
           <p className="mt-2 text-xs text-[var(--error)]">{state.error.status}</p>
         ) : null}
@@ -181,92 +249,119 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
             Codex email, long Copilot login, or long reset-time label can push
             the column past the viewport on mobile and bleed through the
             SectionCard border. */}
-        <div className="grid gap-5 md:grid-cols-4">
-          <div className="flex min-w-0 flex-col gap-3">
-            <div className="text-sm font-semibold text-ink">Codex</div>
-            <CodexAccountSwitcher
-              agentHost={host}
-              accounts={accounts}
-              codexQuotaByAccount={codexQuotaByAccount}
-              loading={state?.loading?.accounts ?? false}
-              errorMessage={state?.error?.accounts}
-            />
-            {unattributedCodexError ? (
-              <p className="text-xs text-[var(--error)]">{unattributedCodexError}</p>
-            ) : null}
+        {state?.loading?.status && !status ? (
+          <p className="text-sm text-muted">Loading quota...</p>
+        ) : availableTools.length > 0 ? (
+          <div className={`grid gap-5 ${quotaGridClass(availableTools.length)}`}>
+            {availableTools.map((tool) => {
+              if (tool === 'codex') {
+                return (
+                  <div key={tool} className="flex min-w-0 flex-col gap-3">
+                    <div className="text-sm font-semibold text-ink">Codex</div>
+                    <CodexAccountSwitcher
+                      agentHost={host}
+                      accounts={accounts}
+                      codexQuotaByAccount={codexQuotaByAccount}
+                      loading={state?.loading?.accounts ?? false}
+                      errorMessage={state?.error?.accounts}
+                    />
+                    {unattributedCodexError ? (
+                      <p className="text-xs text-[var(--error)]">{unattributedCodexError}</p>
+                    ) : null}
+                  </div>
+                );
+              }
+
+              if (tool === 'claude') {
+                return (
+                  <div key={tool} className="flex min-w-0 flex-col gap-3">
+                    <div className="text-sm font-semibold text-ink">
+                      Claude
+                      {quota?.claude?.overallStatus ? (
+                        <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
+                          {quota.claude.overallStatus}
+                        </span>
+                      ) : null}
+                    </div>
+                    <QuotaBar label="5h" window={quota?.claude?.fiveHour} />
+                    <QuotaBar label="Weekly" window={quota?.claude?.weekly} />
+                    {quota?.claude?.weeklySonnet ? (
+                      <QuotaBar label="Weekly · Sonnet" window={quota.claude.weeklySonnet} />
+                    ) : null}
+                    {quota?.claude?.error ? (
+                      <p className="text-xs text-[var(--error)]">{quota.claude.error}</p>
+                    ) : null}
+                  </div>
+                );
+              }
+
+              if (tool === 'kimi') {
+                return (
+                  <div key={tool} className="flex min-w-0 flex-col gap-3">
+                    <div className="text-sm font-semibold text-ink">
+                      Kimi
+                      {quota?.kimi?.membership ? (
+                        <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
+                          {quota.kimi.membership.replace(/^LEVEL_/, '').toLowerCase()}
+                        </span>
+                      ) : null}
+                    </div>
+                    <QuotaBar label="5h" window={quota?.kimi?.fiveHour} />
+                    <QuotaBar label="Weekly" window={quota?.kimi?.weekly} />
+                    {quota?.kimi?.error ? (
+                      <p className="text-xs text-[var(--error)]">{quota.kimi.error}</p>
+                    ) : null}
+                  </div>
+                );
+              }
+
+              return (
+                <div key={tool} className="flex min-w-0 flex-col gap-3">
+                  <div className="text-sm font-semibold text-ink">
+                    Copilot
+                    {quota?.copilot?.primary?.status ? (
+                      <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
+                        {quota.copilot.primary.status.replaceAll('_', ' ')}
+                      </span>
+                    ) : null}
+                    {quota?.copilot?.login ? (
+                      <span className="ml-2 text-xs font-normal text-muted">
+                        ({quota.copilot.login}
+                        {quota.copilot.loginSource === 'github_token' ? ' via GITHUB_TOKEN' : ''})
+                      </span>
+                    ) : null}
+                  </div>
+                  {quota?.copilot?.premiumInteractions || !quota?.copilot ? (
+                    <QuotaBar label="Premium" window={quota?.copilot?.premiumInteractions} />
+                  ) : null}
+                  {!quota?.copilot?.premiumInteractions &&
+                  quota?.copilot?.primary &&
+                  !quota.copilot.chat &&
+                  !quota.copilot.completions ? (
+                    <QuotaBar label="Primary" window={quota.copilot.primary} />
+                  ) : null}
+                  {quota?.copilot?.chat ? (
+                    <QuotaBar label="Chat" window={quota.copilot.chat} />
+                  ) : null}
+                  {quota?.copilot?.completions ? (
+                    <QuotaBar label="Completions" window={quota.copilot.completions} />
+                  ) : null}
+                  {quota?.copilot?.error ? (
+                    <p className="text-xs text-[var(--error)]">{quota.copilot.error}</p>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
-          <div className="flex min-w-0 flex-col gap-3">
-            <div className="text-sm font-semibold text-ink">
-              Claude
-              {quota?.claude?.overallStatus ? (
-                <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
-                  {quota.claude.overallStatus}
-                </span>
-              ) : null}
-            </div>
-            <QuotaBar label="5h" window={quota?.claude?.fiveHour} />
-            <QuotaBar label="Weekly" window={quota?.claude?.weekly} />
-            {quota?.claude?.weeklySonnet ? (
-              <QuotaBar label="Weekly · Sonnet" window={quota.claude.weeklySonnet} />
-            ) : null}
-            {quota?.claude?.error ? (
-              <p className="text-xs text-[var(--error)]">{quota.claude.error}</p>
-            ) : null}
-          </div>
-          <div className="flex min-w-0 flex-col gap-3">
-            <div className="text-sm font-semibold text-ink">
-              Kimi
-              {quota?.kimi?.membership ? (
-                <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
-                  {quota.kimi.membership.replace(/^LEVEL_/, '').toLowerCase()}
-                </span>
-              ) : null}
-            </div>
-            <QuotaBar label="5h" window={quota?.kimi?.fiveHour} />
-            <QuotaBar label="Weekly" window={quota?.kimi?.weekly} />
-            {quota?.kimi?.error ? (
-              <p className="text-xs text-[var(--error)]">{quota.kimi.error}</p>
-            ) : null}
-          </div>
-          <div className="flex min-w-0 flex-col gap-3">
-            <div className="text-sm font-semibold text-ink">
-              Copilot
-              {quota?.copilot?.primary?.status ? (
-                <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
-                  {quota.copilot.primary.status.replaceAll('_', ' ')}
-                </span>
-              ) : null}
-              {quota?.copilot?.login ? (
-                <span className="ml-2 text-xs font-normal text-muted">
-                  ({quota.copilot.login}
-                  {quota.copilot.loginSource === 'github_token' ? ' via GITHUB_TOKEN' : ''})
-                </span>
-              ) : null}
-            </div>
-            {quota?.copilot?.premiumInteractions || !quota?.copilot ? (
-              <QuotaBar label="Premium" window={quota?.copilot?.premiumInteractions} />
-            ) : null}
-            {!quota?.copilot?.premiumInteractions &&
-            quota?.copilot?.primary &&
-            !quota.copilot.chat &&
-            !quota.copilot.completions ? (
-              <QuotaBar label="Primary" window={quota.copilot.primary} />
-            ) : null}
-            {quota?.copilot?.chat ? (
-              <QuotaBar label="Chat" window={quota.copilot.chat} />
-            ) : null}
-            {quota?.copilot?.completions ? (
-              <QuotaBar label="Completions" window={quota.copilot.completions} />
-            ) : null}
-            {quota?.copilot?.error ? (
-              <p className="text-xs text-[var(--error)]">{quota.copilot.error}</p>
-            ) : null}
-          </div>
-        </div>
+        ) : (
+          <p className="text-sm text-muted">No quota-capable AI tools available on this daemon.</p>
+        )}
         {state?.error?.quota ? (
           <p className="mt-2 text-xs text-[var(--error)]">{state.error.quota}</p>
         ) : null}
       </SectionCard>
+
+      <CustomCommandsPanel agentHost={host} supported={supportsCustomCommands} />
 
       <SectionCard title="Danger zone">
         <div className="flex justify-end">
