@@ -17,6 +17,11 @@ import {
 } from "@love-moon/conductor-sdk";
 import { DaemonLogCollector } from "./log-collector.js";
 import { createAiManagerHandlers, handleAiManagerRequest } from "./ai-manager-handlers.js";
+import {
+  CUSTOM_COMMANDS_CAPABILITY,
+  createCustomCommandHandlers,
+  handleCustomCommandsRequest,
+} from "./custom-command-handlers.js";
 import { resolveResumeContext } from "./fire/resume.js";
 import {
   filterRuntimeSupportedAllowCliList,
@@ -1966,7 +1971,12 @@ export function startDaemon(config = {}, deps = {}) {
     "x-conductor-backends": SUPPORTED_BACKENDS.join(","),
     "x-conductor-version": cliVersion,
   };
-  const advertisedCapabilities = ["project_path_validation", "restart_daemon", "refresh_session_inplace"];
+  const advertisedCapabilities = [
+    "project_path_validation",
+    "restart_daemon",
+    "refresh_session_inplace",
+    CUSTOM_COMMANDS_CAPABILITY,
+  ];
   if (ptyTaskCapabilityEnabled) {
     advertisedCapabilities.push("pty_task", "terminal_snapshot");
   }
@@ -1974,6 +1984,7 @@ export function startDaemon(config = {}, deps = {}) {
     extraHeaders["x-conductor-capabilities"] = advertisedCapabilities.join(",");
   }
   const aiManagerHandlers = createAiManagerHandlers({ configPath: config.CONFIG_FILE });
+  const customCommandHandlers = createCustomCommandHandlers({ configPath: config.CONFIG_FILE });
 
   const client = createWebSocketClient(sdkConfig, {
     extraHeaders,
@@ -4187,6 +4198,11 @@ export function startDaemon(config = {}, deps = {}) {
     if (event.type === "ai_manager_request") {
       handleAiManagerRequest(client, aiManagerHandlers, event.payload).catch((error) => {
         logError(`Unhandled ai_manager_request failure: ${error?.message || error}`);
+      });
+    }
+    if (event.type === "custom_commands_request") {
+      handleCustomCommandsRequest(client, customCommandHandlers, event.payload).catch((error) => {
+        logError(`Unhandled custom_commands_request failure: ${error?.message || error}`);
       });
     }
     if (event.type === "restart_daemon") {

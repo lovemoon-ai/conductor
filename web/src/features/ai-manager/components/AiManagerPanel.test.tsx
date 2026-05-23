@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AiManagerPanel } from './AiManagerPanel';
+import type { StatusResponse, Tool } from '../types';
 
 const fetchAgentsMock = vi.fn();
 const setSelectedHostMock = vi.fn();
@@ -16,6 +17,7 @@ let agentsState = {
     id: string;
     host: string;
     supportedBackends?: string[];
+    runtimeBackendMap?: Record<string, string>;
     capabilities?: string[];
     version?: string;
   }>,
@@ -53,6 +55,64 @@ vi.mock('@/shared/api/client', () => ({
     post: apiPostMock,
   }),
 }));
+
+const MANAGED_TOOLS: Tool[] = ['codex', 'claude', 'kimi', 'copilot'];
+
+function makeStatus(
+  overrides: Partial<Record<Tool, { installed?: boolean; reachable?: boolean }>> = {},
+): StatusResponse {
+  return {
+    install: Object.fromEntries(
+      MANAGED_TOOLS.map((tool) => [
+        tool,
+        { installed: overrides[tool]?.installed ?? true },
+      ]),
+    ) as StatusResponse['install'],
+    network: Object.fromEntries(
+      MANAGED_TOOLS.map((tool) => [
+        tool,
+        { reachable: overrides[tool]?.reachable ?? true, endpoint: '' },
+      ]),
+    ) as StatusResponse['network'],
+    currentCodexAccount: null,
+  };
+}
+
+function makeHostState(status: StatusResponse) {
+  return {
+    status,
+    quota: {
+      codex: {
+        tool: 'codex',
+        source: 'fresh',
+        fiveHour: { usedPercent: 10, remainingPercent: 90 },
+        weekly: { usedPercent: 20, remainingPercent: 80 },
+      },
+      claude: {
+        tool: 'claude',
+        source: 'fresh',
+        fiveHour: { usedPercent: 10, remainingPercent: 90 },
+        weekly: { usedPercent: 20, remainingPercent: 80 },
+      },
+      kimi: {
+        tool: 'kimi',
+        source: 'fresh',
+        fiveHour: { usedPercent: 10, remainingPercent: 90 },
+        weekly: { usedPercent: 20, remainingPercent: 80 },
+      },
+      copilot: {
+        tool: 'copilot',
+        source: 'fresh',
+        primary: { usedPercent: 10, remainingPercent: 90, status: 'allowed' },
+        snapshots: {},
+      },
+    },
+    accounts: { accounts: [] },
+    codexQuotaByAccount: {},
+    loading: { status: false, quota: false, accounts: false, switching: false },
+    error: {},
+  };
+}
 
 describe('AiManagerPanel', () => {
   beforeEach(() => {
@@ -182,6 +242,106 @@ describe('AiManagerPanel', () => {
     expect(backendsValue?.textContent).toBe('—');
   });
 
+  it('renders AI tool and quota sections only for known tools advertised by the selected daemon', () => {
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-a',
+        supportedBackends: ['codex-gamma', 'web-gemini', 'copilot'],
+        runtimeBackendMap: {
+          'codex-gamma': 'codex',
+          'web-gemini': 'chat-web',
+          copilot: 'copilot',
+        },
+        capabilities: ['restart_daemon'],
+      },
+    ];
+    aiManagerState.selectedHost = 'daemon-a';
+    aiManagerState.byHost = {
+      'daemon-a': makeHostState(makeStatus()),
+    };
+
+    render(<AiManagerPanel initialAgentHost="daemon-a" />);
+
+    const aiToolsSection = screen.getByRole('heading', { name: 'AI tools' }).closest('section');
+    expect(aiToolsSection).not.toBeNull();
+    expect(within(aiToolsSection!).getByText('Codex')).toBeInTheDocument();
+    expect(within(aiToolsSection!).getByText('Copilot')).toBeInTheDocument();
+    expect(within(aiToolsSection!).queryByText('Claude')).not.toBeInTheDocument();
+    expect(within(aiToolsSection!).queryByText('Kimi')).not.toBeInTheDocument();
+
+    const quotaSection = screen.getByRole('heading', { name: 'Quota' }).closest('section');
+    expect(quotaSection).not.toBeNull();
+    expect(within(quotaSection!).getByText('Codex')).toBeInTheDocument();
+    expect(within(quotaSection!).getByText(/Copilot/)).toBeInTheDocument();
+    expect(within(quotaSection!).queryByText('Claude')).not.toBeInTheDocument();
+    expect(within(quotaSection!).queryByText('Kimi')).not.toBeInTheDocument();
+  });
+
+  it('hides advertised tools when install or network status marks them unavailable', () => {
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-a',
+        supportedBackends: ['codex', 'claude', 'kimi', 'copilot'],
+        capabilities: ['restart_daemon'],
+      },
+    ];
+    aiManagerState.selectedHost = 'daemon-a';
+    aiManagerState.byHost = {
+      'daemon-a': makeHostState(makeStatus({
+        claude: { installed: false },
+        kimi: { reachable: false },
+      })),
+    };
+
+    render(<AiManagerPanel initialAgentHost="daemon-a" />);
+
+    const aiToolsSection = screen.getByRole('heading', { name: 'AI tools' }).closest('section');
+    expect(aiToolsSection).not.toBeNull();
+    expect(within(aiToolsSection!).getByText('Codex')).toBeInTheDocument();
+    expect(within(aiToolsSection!).getByText('Copilot')).toBeInTheDocument();
+    expect(within(aiToolsSection!).queryByText('Claude')).not.toBeInTheDocument();
+    expect(within(aiToolsSection!).queryByText('Kimi')).not.toBeInTheDocument();
+
+    const quotaSection = screen.getByRole('heading', { name: 'Quota' }).closest('section');
+    expect(quotaSection).not.toBeNull();
+    expect(within(quotaSection!).getByText('Codex')).toBeInTheDocument();
+    expect(within(quotaSection!).getByText(/Copilot/)).toBeInTheDocument();
+    expect(within(quotaSection!).queryByText('Claude')).not.toBeInTheDocument();
+    expect(within(quotaSection!).queryByText('Kimi')).not.toBeInTheDocument();
+  });
+
+  it('does not render advertised tools in Quota until status confirms they are installed and reachable', () => {
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-a',
+        supportedBackends: ['codex', 'claude', 'kimi', 'copilot'],
+        capabilities: ['restart_daemon'],
+      },
+    ];
+    aiManagerState.selectedHost = 'daemon-a';
+    // status not yet loaded (initial fetch in flight).
+    aiManagerState.byHost = {
+      'daemon-a': {
+        status: null,
+        loading: { status: true, quota: false, accounts: false, switching: false },
+        error: {},
+      },
+    };
+
+    render(<AiManagerPanel initialAgentHost="daemon-a" />);
+
+    const quotaSection = screen.getByRole('heading', { name: 'Quota' }).closest('section');
+    expect(quotaSection).not.toBeNull();
+    // While status is still loading, the Quota section should show a
+    // loading state — not advertised-but-unverified tool cards.
+    expect(within(quotaSection!).getByText('Loading quota...')).toBeInTheDocument();
+    expect(within(quotaSection!).queryByText('Codex')).not.toBeInTheDocument();
+    expect(within(quotaSection!).queryByText(/Copilot/)).not.toBeInTheDocument();
+  });
+
   it('shows the Copilot login label inline with the header when quota data includes account info', () => {
     agentsState.agents = [
       {
@@ -194,6 +354,15 @@ describe('AiManagerPanel', () => {
     aiManagerState.selectedHost = 'daemon-a';
     aiManagerState.byHost = {
       'daemon-a': {
+        // Without status the Quota section now correctly hides every tool
+        // (P2 fix). Provide a minimal status that marks Copilot
+        // installed + reachable so this test exercises the inline-login
+        // rendering it actually cares about.
+        status: {
+          install: { copilot: { installed: true } },
+          network: { copilot: { reachable: true, endpoint: '' } },
+          currentCodexAccount: null,
+        },
         quota: {
           copilot: {
             tool: 'copilot',

@@ -119,6 +119,20 @@ type AiManagerWaiter = {
   expectedAgentHost: string;
 };
 
+export type CustomCommandsResponse = {
+  request_id: string;
+  action: string;
+  result?: unknown;
+  error?: string | null;
+};
+
+type CustomCommandsWaiter = {
+  resolve: (result: CustomCommandsResponse | null) => void;
+  timeout: NodeJS.Timeout;
+  expectedUserId: string;
+  expectedAgentHost: string;
+};
+
 type TerminalDetachResult = {
   detachedTaskIds: string[];
   releasedWriterTaskIds: string[];
@@ -141,6 +155,7 @@ export class RealtimeHub {
   private projectPathValidationWaiters = new Map<string, ProjectPathValidationWaiter>();
   private taskWorktreeCleanupWaiters = new Map<string, TaskWorktreeCleanupWaiter>();
   private aiManagerWaiters = new Map<string, AiManagerWaiter>();
+  private customCommandsWaiters = new Map<string, CustomCommandsWaiter>();
   private terminalSubscriptions = new Map<string, Set<string>>();
   private appTerminalTasks = new Map<string, Set<string>>();
   private terminalWriters = new Map<string, string>();
@@ -726,6 +741,52 @@ export class RealtimeHub {
     if (!waiter) return;
     clearTimeout(waiter.timeout);
     this.aiManagerWaiters.delete(requestId);
+    waiter.resolve(null);
+  }
+
+  waitForCustomCommandsResponse(
+    requestId: string,
+    timeoutMs: number,
+    expectedUserId: string,
+    expectedAgentHost: string,
+  ): Promise<CustomCommandsResponse | null> {
+    return new Promise<CustomCommandsResponse | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.customCommandsWaiters.delete(requestId);
+        resolve(null);
+      }, timeoutMs);
+      this.customCommandsWaiters.set(requestId, {
+        resolve,
+        timeout,
+        expectedUserId,
+        expectedAgentHost,
+      });
+    });
+  }
+
+  resolveCustomCommandsResponse(
+    result: CustomCommandsResponse,
+    sourceUserId: string,
+    sourceAgentHost: string,
+  ) {
+    const waiter = this.customCommandsWaiters.get(result.request_id);
+    if (!waiter) return;
+    if (waiter.expectedUserId !== sourceUserId || waiter.expectedAgentHost !== sourceAgentHost) {
+      console.warn(
+        `[realtimeHub] dropped custom_commands_response: requestId=${result.request_id}, expected=${waiter.expectedUserId}/${waiter.expectedAgentHost}, got=${sourceUserId}/${sourceAgentHost}`,
+      );
+      return;
+    }
+    clearTimeout(waiter.timeout);
+    this.customCommandsWaiters.delete(result.request_id);
+    waiter.resolve(result);
+  }
+
+  cancelCustomCommandsResponse(requestId: string) {
+    const waiter = this.customCommandsWaiters.get(requestId);
+    if (!waiter) return;
+    clearTimeout(waiter.timeout);
+    this.customCommandsWaiters.delete(requestId);
     waiter.resolve(null);
   }
 

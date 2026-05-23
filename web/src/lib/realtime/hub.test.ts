@@ -249,6 +249,49 @@ describe('RealtimeHub ai_manager waiter', () => {
   });
 });
 
+describe('RealtimeHub custom commands waiter', () => {
+  it('resolves only when source userId+host match the registered waiter', async () => {
+    const hub = new RealtimeHub();
+    const pending = hub.waitForCustomCommandsResponse('req-command-1', 5000, 'user-1', 'daemon-a');
+    hub.resolveCustomCommandsResponse(
+      { request_id: 'req-command-1', action: 'list', result: { commands: [] } },
+      'user-1',
+      'daemon-a',
+    );
+    const result = await pending;
+    expect(result).toMatchObject({ request_id: 'req-command-1', action: 'list' });
+  });
+
+  it('drops custom command responses from a different host', async () => {
+    vi.useFakeTimers();
+    try {
+      const hub = new RealtimeHub();
+      const pending = hub.waitForCustomCommandsResponse('req-command-2', 5000, 'user-1', 'daemon-a');
+      hub.resolveCustomCommandsResponse(
+        { request_id: 'req-command-2', action: 'status', result: { hijacked: true } },
+        'user-1',
+        'daemon-imposter',
+      );
+      vi.advanceTimersByTime(5000);
+      expect(await pending).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancelCustomCommandsResponse after resolve is a no-op', async () => {
+    const hub = new RealtimeHub();
+    const pending = hub.waitForCustomCommandsResponse('req-command-3', 5000, 'user-1', 'daemon-a');
+    hub.resolveCustomCommandsResponse(
+      { request_id: 'req-command-3', action: 'run', result: { started: true } },
+      'user-1',
+      'daemon-a',
+    );
+    await pending;
+    expect(() => hub.cancelCustomCommandsResponse('req-command-3')).not.toThrow();
+  });
+});
+
 describe('RealtimeHub agent command ack waiter', () => {
   it('resolves true when any expected host accepts the command', async () => {
     const hub = new RealtimeHub();

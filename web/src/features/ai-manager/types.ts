@@ -136,3 +136,42 @@ export interface SwitchResponse {
   newName: string;
   backupPath: string;
 }
+
+export interface CustomCommandInfo {
+  key: string;
+  running?: boolean;
+  runId?: string;
+}
+
+export interface CustomCommandsResponse {
+  commands: CustomCommandInfo[];
+}
+
+export type CustomCommandRunStatusValue = 'running' | 'completed' | 'failed';
+
+export interface CustomCommandRunResponse {
+  started: boolean;
+  key: string;
+  runId: string;
+  status: CustomCommandRunStatusValue;
+  pid?: number | null;
+  exitCode?: number | null;
+  signal?: string | null;
+  error?: string | null;
+  startedAt: string;
+  finishedAt?: string | null;
+}
+
+export interface CustomCommandRunStatus {
+  runId: string;
+  key: string;
+  status: CustomCommandRunStatusValue;
+  pid?: number | null;
+  exitCode?: number | null;
+  signal?: string | null;
+  stdoutTail?: string;
+  stderrTail?: string;
+  error?: string | null;
+  startedAt: string;
+  finishedAt?: string | null;
+}

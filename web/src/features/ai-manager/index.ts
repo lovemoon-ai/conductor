@@ -10,5 +10,9 @@ export type {
   QuotaResponse,
   AccountsResponse,
   SwitchResponse,
+  CustomCommandInfo,
+  CustomCommandsResponse,
+  CustomCommandRunResponse,
+  CustomCommandRunStatus,
   Tool,
 } from './types';
