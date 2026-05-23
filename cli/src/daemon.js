@@ -1993,6 +1993,13 @@ export function startDaemon(config = {}, deps = {}) {
       sendAgentResume(isReconnect).catch((error) => {
         logError(`sendAgentResume failed: ${error?.message || error}`);
       });
+      // RFC 0029: regardless of first connect / reconnect, immediately
+      // declare which tasks this daemon believes are still alive so the
+      // backend can revoke any `daemon_disconnected` killed-flags it set
+      // while the ws was silent. We deliberately fire-and-forget — a stale
+      // backend that doesn't understand the event just ignores it, and the
+      // existing reconcile loop catches anything this push misses.
+      void pushAgentAliveTasks(isReconnect ? "agent_reconnect" : "agent_first_connect");
       if (!didRecoverStaleTasks) {
         didRecoverStaleTasks = true;
         recoverStaleTasks().catch((error) => {
@@ -2797,6 +2804,34 @@ export function startDaemon(config = {}, deps = {}) {
     } catch (error) {
       logError(`reconcileAssignedTasks error: ${error?.message || error}`);
     }
+  }
+
+  // RFC 0029: after every (re)connect push an agent_alive_tasks snapshot so
+  // the backend can pre-emptively revoke `killed_reason=daemon_disconnected`
+  // for tasks whose fire processes never actually died (e.g. host sleep, ws
+  // half-close). Fires raise their own ws to backend independently — this is
+  // the daemon's *own* belief about which tasks it is hosting. The backend
+  // arbitrates between this push and the persisted task state.
+  function pushAgentAliveTasks(reason) {
+    const aliveTaskIds = getActiveTaskIds();
+    if (aliveTaskIds.length === 0) {
+      return Promise.resolve();
+    }
+    return client
+      .sendJson({
+        type: "agent_alive_tasks",
+        payload: {
+          agent_host: AGENT_NAME || os.hostname(),
+          alive_task_ids: aliveTaskIds,
+          reason: typeof reason === "string" && reason ? reason : "agent_reconnect",
+          reported_at: new Date().toISOString(),
+        },
+      })
+      .catch((err) => {
+        logError(
+          `Failed to push agent_alive_tasks (${aliveTaskIds.length} task(s)): ${err?.message || err}`,
+        );
+      });
   }
 
   async function sendAgentResume(isReconnect = false) {
@@ -4054,6 +4089,21 @@ export function startDaemon(config = {}, deps = {}) {
         });
         return;
       }
+      if (event.type === "reclaim_task") {
+        // Reject the reclaim during shutdown so the backend immediately
+        // falls back to spawn restart instead of waiting out the 60s ack
+        // timeout. We never touch the task state — backend owns the next
+        // step.
+        const requestId = event?.payload?.request_id ? String(event.payload.request_id) : "";
+        const taskId = event?.payload?.task_id ? String(event.payload.task_id) : "";
+        sendAgentCommandAck({
+          requestId,
+          taskId,
+          eventType: "reclaim_task",
+          accepted: false,
+        }).catch(() => {});
+        return;
+      }
       if (event.type === "create_pty_task") {
         rejectCreatePtyTaskDuringShutdown(event.payload);
         return;
@@ -4085,6 +4135,14 @@ export function startDaemon(config = {}, deps = {}) {
     }
     if (event.type === "restart_task") {
       void handleRestartTask(event.payload);
+      return;
+    }
+    if (event.type === "reclaim_task") {
+      // RFC 0029: backend asks us to confirm an "assumed killed" fire is
+      // actually still alive so it can avoid spawning a new one.
+      void handleReclaimTask(event.payload).catch((error) => {
+        logError(`Unhandled reclaim_task failure: ${error?.message || error}`);
+      });
       return;
     }
     if (event.type === "create_pty_task") {
@@ -4448,6 +4506,110 @@ export function startDaemon(config = {}, deps = {}) {
 
   function shouldDaemonReportFireChildTerminalStatus(record) {
     return Boolean(record?.forceDaemonTerminalStatusReport) || !Boolean(record?.managedByFireBridge);
+  }
+
+  // RFC 0029: confirm that a task the backend believes is dead is actually
+  // still hosting a live fire on this daemon. The check is intentionally
+  // conservative:
+  //   * activeTaskProcesses must hold an entry for the task — that's the
+  //     daemon's own bookkeeping of fires it spawned and hasn't reaped;
+  //   * for tmux-mode fires (the common case) we re-probe `tmux has-session`
+  //     so we don't accept stale entries left over from a previously crashed
+  //     reaper. The activeTaskProcesses entry is updated on the spot if the
+  //     session has gone away;
+  //   * for non-tmux fires (rare; only used in dev) we accept as long as the
+  //     child process record still exists. The exit handler removes the
+  //     entry on real exit, so a present entry implies a live pid.
+  //
+  // We do NOT validate `expected_session_id` or `expected_backend_type`
+  // against the in-tmux fire — the daemon has no IPC into a detached fire
+  // process, so that comparison can only happen on the backend or via fire's
+  // own ws back to the backend (the agent_alive_tasks push in this RFC).
+  // What we *do* check is that they were sent (purely defensive — old web
+  // clients won't include them, and that's fine).
+  async function handleReclaimTask(payload) {
+    const taskId = payload?.task_id ? String(payload.task_id) : "";
+    const requestId = payload?.request_id ? String(payload.request_id) : "";
+    const expectedSessionId = payload?.expected_session_id
+      ? String(payload.expected_session_id)
+      : "";
+    const expectedBackendType = payload?.expected_backend_type
+      ? String(payload.expected_backend_type)
+      : "";
+
+    if (!taskId) {
+      logError(`Invalid reclaim_task payload: ${JSON.stringify(payload)}`);
+      if (requestId) {
+        sendAgentCommandAck({
+          requestId,
+          taskId,
+          eventType: "reclaim_task",
+          accepted: false,
+        }).catch(() => {});
+      }
+      return;
+    }
+
+    if (requestId && !markRequestSeen(requestId)) {
+      log(
+        `Duplicate reclaim_task ignored for ${taskId} (request_id=${requestId})`,
+      );
+      sendAgentCommandAck({
+        requestId,
+        taskId,
+        eventType: "reclaim_task",
+        accepted: completedCommandRequestAckResults.get(requestId) ?? false,
+      }).catch(() => {});
+      return;
+    }
+
+    const finalize = (accepted, summary) => {
+      if (requestId) {
+        rememberCommandRequestAckResult(requestId, accepted);
+      }
+      sendAgentCommandAck({
+        requestId,
+        taskId,
+        eventType: "reclaim_task",
+        accepted,
+      }).catch((err) => {
+        logError(
+          `Failed to report agent_command_ack(reclaim_task) for ${taskId}: ${err?.message || err}`,
+        );
+      });
+      log(
+        `reclaim_task ${taskId} -> ${accepted ? "alive" : "stale"}${
+          summary ? ` (${summary})` : ""
+        }${expectedSessionId ? ` expected_session=${expectedSessionId}` : ""}${
+          expectedBackendType ? ` expected_backend=${expectedBackendType}` : ""
+        }`,
+      );
+    };
+
+    let entry = activeTaskProcesses.get(taskId);
+    if (entry?.tmuxMode && entry.tmuxSession) {
+      const alive = await tmuxSessionExists(entry.tmuxSession);
+      if (!alive) {
+        if (activeTaskProcesses.get(taskId) === entry) {
+          if (entry.stopForceKillTimer) {
+            clearTimeout(entry.stopForceKillTimer);
+            entry.stopForceKillTimer = null;
+          }
+          activeTaskProcesses.delete(taskId);
+        }
+        entry = undefined;
+      }
+    } else if (entry?.child && entry.child.exitCode !== null) {
+      // Non-tmux fire has already exited; treat as stale.
+      entry = undefined;
+    }
+
+    if (!entry) {
+      finalize(false, "no live fire");
+      return;
+    }
+
+    finalize(true, entry.tmuxMode ? `tmux=${entry.tmuxSession}` : `pid=${entry.child?.pid ?? "unknown"}`);
   }
 
   function handleStopTask(payload) {

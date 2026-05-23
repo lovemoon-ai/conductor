@@ -15,6 +15,11 @@ import {
   isMissingAnyNewSchemaError,
   taskSelectWithoutIssueId,
 } from "@/lib/tasks/pty-compat";
+import {
+  buildKilledPatch,
+  withKilledReasonFallback,
+  type KilledReason,
+} from "@/lib/tasks/killed-reason";
 
 type TaskOwnershipRecord = {
   id: string;
@@ -348,6 +353,25 @@ export async function commitTaskStatusUpdate(input: {
     };
   }
 
+  // RFC 0029: decide the killed_reason discriminator when the daemon reports a
+  // task transitioning into `killed`. If the previous status was `killing`,
+  // the user (or an API consumer mirroring the user intent) explicitly asked
+  // for the stop and we should NOT reclaim on the next restart. Any other
+  // transition into `killed` means the fire/SDK side ended on its own —
+  // tag it `fire_exit` (crashes are upstream of this hub event and get a
+  // different label by their handler).
+  const transitioningToKilled = status === "killed" && currentStatus !== "killed";
+  const killedReason: KilledReason | null = transitioningToKilled
+    ? currentStatus === "killing"
+      ? "user_stopped"
+      : "fire_exit"
+    : null;
+  const baseUpdateData: Record<string, unknown> = { status };
+  const buildKilledUpdateData = (): Record<string, unknown> =>
+    killedReason
+      ? { ...baseUpdateData, ...buildKilledPatch(killedReason) }
+      : baseUpdateData;
+
   let duplicate = false;
   if (statusEventId) {
     const existing = await db.taskStatusEvent.findUnique({
@@ -357,8 +381,8 @@ export async function commitTaskStatusUpdate(input: {
     if (existing) {
       duplicate = true;
     } else {
-      try {
-        await db.$transaction([
+      const runStatusEventTransaction = (taskData: Record<string, unknown>) =>
+        db.$transaction([
           db.taskStatusEvent.create({
             data: {
               taskId: task.id,
@@ -369,9 +393,18 @@ export async function commitTaskStatusUpdate(input: {
           }),
           db.task.update({
             where: { id: task.id },
-            data: { status },
+            data: taskData,
           }),
         ]);
+      try {
+        if (transitioningToKilled) {
+          await withKilledReasonFallback(
+            () => runStatusEventTransaction(buildKilledUpdateData()),
+            () => runStatusEventTransaction(baseUpdateData),
+          );
+        } else {
+          await runStatusEventTransaction(baseUpdateData);
+        }
       } catch (error) {
         if (
           error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -383,10 +416,23 @@ export async function commitTaskStatusUpdate(input: {
         }
       }
     }
+  } else if (transitioningToKilled) {
+    await withKilledReasonFallback(
+      () =>
+        db.task.update({
+          where: { id: task.id },
+          data: buildKilledUpdateData(),
+        }),
+      () =>
+        db.task.update({
+          where: { id: task.id },
+          data: baseUpdateData,
+        }),
+    );
   } else {
     await db.task.update({
       where: { id: task.id },
-      data: { status },
+      data: baseUpdateData,
     });
   }
 

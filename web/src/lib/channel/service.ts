@@ -5,6 +5,10 @@ import { enqueueAndAttemptAgentCommand } from '@/lib/realtime/agent-outbox';
 import { realtimeHub } from '@/lib/realtime/hub';
 import { isConductorFireHost } from '@/lib/subscription/plan-limits';
 import { appendUserMessageToTask, createTaskForUser } from '@/lib/channel/task-ingress-service';
+import {
+  buildKilledPatch,
+  withKilledReasonFallback,
+} from '@/lib/tasks/killed-reason';
 import { getFeishuProviderConfigForUser } from './provider-config';
 import type { NormalizedInboundEvent, NormalizedOutboundMessage } from './types';
 
@@ -352,7 +356,21 @@ async function handleCommand(context: Awaited<ReturnType<typeof requireBoundAcco
     if (!context!.conversation.taskId) {
       return { outputs: [{ text: 'No active task attached to this conversation.' }] };
     }
-    await db.task.update({ where: { id: context!.conversation.taskId }, data: { status: 'killed' } });
+    // RFC 0029: explicit user-driven stop from a channel command — tag the
+    // killed_reason so the next restart will spawn a fresh fire instead of
+    // attempting to reclaim the one the user just asked to stop.
+    await withKilledReasonFallback(
+      () =>
+        db.task.update({
+          where: { id: context!.conversation.taskId },
+          data: buildKilledPatch('user_stopped'),
+        }),
+      () =>
+        db.task.update({
+          where: { id: context!.conversation.taskId },
+          data: { status: 'killed' },
+        }),
+    );
     await enqueueAndAttemptAgentCommand(
       {
         userId: context!.account.userId,

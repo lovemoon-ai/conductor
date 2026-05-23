@@ -1,6 +1,10 @@
 import { db } from "@/lib/db";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { isConductorFireHost } from "@/lib/subscription/plan-limits";
+import {
+  buildKilledPatch,
+  withKilledReasonFallback,
+} from "@/lib/tasks/killed-reason";
 
 export type RecoverableTaskRecord = {
   id: string;
@@ -110,13 +114,28 @@ export async function recoverStaleDisconnectedAgentTasks(
     if (now - Number(offlineSince) < recoveryTimeoutMs) continue;
 
     recoveries.push((async () => {
-      await db.task.update({
-        where: { id: task.id },
-        data: {
-          status: "killed",
-          executionHost: null,
-        },
-      });
+      // RFC 0029: this is the *defensive* kill path (agent ws went stale).
+      // Tag with `daemon_disconnected` so the restart route can attempt a
+      // reclaim against the still-alive fire instead of spawning a new one.
+      const killedPatch = buildKilledPatch("daemon_disconnected");
+      await withKilledReasonFallback(
+        () =>
+          db.task.update({
+            where: { id: task.id },
+            data: {
+              ...killedPatch,
+              executionHost: null,
+            },
+          }),
+        () =>
+          db.task.update({
+            where: { id: task.id },
+            data: {
+              status: "killed",
+              executionHost: null,
+            },
+          }),
+      );
       task.status = "killed";
       task.executionHost = null;
       if (typeof (realtimeHub as any).unbindTask === "function") {

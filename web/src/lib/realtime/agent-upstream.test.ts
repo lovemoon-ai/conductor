@@ -90,7 +90,10 @@ describe("commitTaskStatusUpdate", () => {
     expect(projectTaskStatusUpdate).not.toHaveBeenCalled();
   });
 
-  it("allows a terminal update to finish killing", async () => {
+  it("allows a terminal update to finish killing and tags killed_reason=user_stopped", async () => {
+    // RFC 0029: transitioning from `killing` (which only the explicit user
+    // PATCH path writes) into `killed` means the user is the cause of death,
+    // so the next restart must spawn a fresh fire instead of reclaiming.
     const result = await commitTaskStatusUpdate({
       userId: "user-1",
       agentHost: "daemon-a",
@@ -101,7 +104,11 @@ describe("commitTaskStatusUpdate", () => {
 
     expect(db.task.update).toHaveBeenCalledWith({
       where: { id: "task-1" },
-      data: { status: "killed" },
+      data: expect.objectContaining({
+        status: "killed",
+        killedReason: "user_stopped",
+        killedAt: expect.any(Date),
+      }),
     });
     expect(projectTaskStatusUpdate).toHaveBeenCalledWith({
       userId: "user-1",
@@ -111,6 +118,36 @@ describe("commitTaskStatusUpdate", () => {
       summary: "Stopped",
     });
     expect(result.status).toBe("killed");
+  });
+
+  it("tags killed_reason=fire_exit when the daemon reports a non-killing -> killed transition", async () => {
+    // The defensive case: the fire ended on its own (graceful exit / crash)
+    // and the task was never in `killing`. We default to `fire_exit` so the
+    // reclaim path skips it (fires that already exited cannot be reclaimed).
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      taskType: "ai_task",
+    } as any);
+
+    await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      taskId: "task-1",
+      status: "killed",
+    });
+
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-1" },
+      data: expect.objectContaining({
+        status: "killed",
+        killedReason: "fire_exit",
+        killedAt: expect.any(Date),
+      }),
+    });
   });
 
   it("rejects stale fire interrupt acknowledgements for another execution host", async () => {
