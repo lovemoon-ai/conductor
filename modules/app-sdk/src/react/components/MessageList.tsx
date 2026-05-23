@@ -1,21 +1,53 @@
 /**
  * MessageList: scrollable list of message bubbles for the current task.
  *
- * v0.1 implementation: functional but visually minimal. The eventual
- * extraction from `web/src/features/chat/components/MessageBubble.tsx` will
- * bring in markdown rendering, attachments, and the polished bubble styling.
- * For now we render plain text bubbles with role-based alignment so the
- * widget is usable end-to-end without external dependencies.
+ * v0.1 implementation: functional but visually minimal. Bubble *containers*
+ * (role-based alignment, pending state, data attributes) are owned by the
+ * SDK; the rendered *content inside* each bubble is plain text by default
+ * but pluggable via `renderMessageContent` so hosts can wire in markdown,
+ * syntax highlighting, math, or anything else without forking the widget.
+ *
+ * Adding markdown directly here would force every consumer to pay the
+ * react-markdown bundle cost (~150KB) whether they want it or not, and
+ * pre-decides which markdown library wins. The slot keeps the SDK lean
+ * and lets each app pick its own renderer.
  */
+import type { ReactNode } from 'react';
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import { useChat } from '../store/chat-store.js';
 import type { ChatViewLabels } from '../ChatView.js';
+import type { Message } from '../../types/message.js';
+
+/**
+ * Custom content renderer. Receives the full `Message` so the renderer can
+ * branch on `role` / `metadata` / `attachments` if it wants to. Return any
+ * ReactNode; the SDK still wraps it in `<div class="conductor-bubble">` and
+ * applies role-based alignment / pending styling.
+ *
+ * Returning `null` (or `undefined`) renders an empty bubble — equivalent to
+ * a message with empty content. If you want to suppress the bubble entirely,
+ * filter the message upstream (e.g. via your own MessageList).
+ */
+export type RenderMessageContent = (message: Message) => ReactNode;
 
 export interface MessageListProps {
   labels: ChatViewLabels;
+  /**
+   * Optional override for how each message's content is rendered inside its
+   * bubble. Defaults to plain text (`message.content`). Pass e.g. a
+   * `react-markdown` renderer here to enable markdown formatting:
+   *
+   *   <MessageList
+   *     labels={...}
+   *     renderMessageContent={(m) => (
+   *       <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+   *     )}
+   *   />
+   */
+  renderMessageContent?: RenderMessageContent;
 }
 
-export function MessageList({ labels }: MessageListProps) {
+export function MessageList({ labels, renderMessageContent }: MessageListProps) {
   const { state, loadEarlier } = useChat();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastMessageCountRef = useRef(state.messages.length);
@@ -64,6 +96,14 @@ export function MessageList({ labels }: MessageListProps) {
       {state.messages.map((m) => {
         const isUser = m.role === 'user' || m.role === 'sdk';
         const isPending = m.id.startsWith('pending:');
+        // Default to plain text so consumers without a custom renderer keep
+        // the v0.1 behavior. The render-prop is intentionally NOT memoized
+        // here — wrapping it in useCallback would force every consumer to
+        // do the same to avoid spurious re-renders, and message-bubble
+        // content rendering is not a hot path.
+        const content = renderMessageContent
+          ? renderMessageContent(m)
+          : m.content;
         return (
           <div
             key={m.id}
@@ -75,7 +115,7 @@ export function MessageList({ labels }: MessageListProps) {
             data-role={m.role}
             data-message-id={m.id}
           >
-            <div className="conductor-bubble">{m.content}</div>
+            <div className="conductor-bubble">{content}</div>
           </div>
         );
       })}

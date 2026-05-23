@@ -20,6 +20,10 @@ export type {
 } from './ChatView.js';
 
 export { MessageList } from './components/MessageList.js';
+export type {
+  MessageListProps,
+  RenderMessageContent,
+} from './components/MessageList.js';
 export { MessageInput } from './components/MessageInput.js';
 export { RuntimeStatusBar } from './components/RuntimeStatusBar.js';
 
