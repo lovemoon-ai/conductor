@@ -21,7 +21,10 @@
  */
 import type { CSSProperties } from 'react';
 import { ChatProvider } from './store/chat-store.js';
-import { MessageList } from './components/MessageList.js';
+import {
+  MessageList,
+  type RenderMessageContent,
+} from './components/MessageList.js';
 import { MessageInput } from './components/MessageInput.js';
 import { RuntimeStatusBar } from './components/RuntimeStatusBar.js';
 import type { ChatAdapter } from '../types/adapter.js';
@@ -47,6 +50,26 @@ export interface ChatViewProps {
    * "via <self>" self-reference loop.
    */
   showAppOriginChip?: boolean;
+
+  /**
+   * Override how each message's content is rendered inside its bubble.
+   * Defaults to plain text. Common use: wire in a markdown renderer.
+   *
+   *   import ReactMarkdown from 'react-markdown';
+   *   import remarkGfm from 'remark-gfm';
+   *
+   *   <ChatView
+   *     taskId={taskId}
+   *     adapter={adapter}
+   *     renderMessageContent={(m) => (
+   *       <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+   *     )}
+   *   />
+   *
+   * The SDK still owns the bubble container (role-based alignment, pending
+   * state, data attributes). Only the content inside is replaced.
+   */
+  renderMessageContent?: RenderMessageContent;
 
   onError?: (error: unknown) => void;
 
@@ -104,7 +127,10 @@ export function ChatView(props: ChatViewProps) {
     >
       <ChatProvider taskId={props.taskId} adapter={props.adapter} onError={props.onError}>
         <RuntimeStatusBar labels={labels} />
-        <MessageList labels={labels} />
+        <MessageList
+          labels={labels}
+          renderMessageContent={props.renderMessageContent}
+        />
         <MessageInput labels={labels} disabled={props.readOnly} />
       </ChatProvider>
     </div>

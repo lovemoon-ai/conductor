@@ -455,6 +455,123 @@ describe('<ChatView /> integration', () => {
     await unmount();
   });
 
+  it('renders default plain-text content when renderMessageContent is not provided', async () => {
+    // Regression guard: existing consumers that never set the new prop must
+    // keep getting the v0.1 plain-text rendering. Specifically, content with
+    // markdown-looking characters (`**bold**`) must NOT be parsed — it must
+    // come through as literal text.
+    const ctl = makeMockAdapter([
+      {
+        id: 'm_plain',
+        taskId: 't_1',
+        role: 'assistant',
+        content: '**hello** _world_',
+        metadata: null,
+        attachments: [],
+        createdAt: '2026-05-17T00:00:00Z',
+      },
+    ]);
+    const { container, unmount } = await mount(
+      <ChatView taskId="t_1" adapter={ctl.adapter} />,
+    );
+
+    const bubble = container.querySelector('.conductor-bubble');
+    expect(bubble).not.toBeNull();
+    // Literal characters preserved; no <strong> / <em> elements injected.
+    expect(bubble!.textContent).toBe('**hello** _world_');
+    expect(bubble!.querySelector('strong')).toBeNull();
+    expect(bubble!.querySelector('em')).toBeNull();
+    await unmount();
+  });
+
+  it('uses renderMessageContent to replace bubble inner content', async () => {
+    const ctl = makeMockAdapter([
+      {
+        id: 'm_md',
+        taskId: 't_1',
+        role: 'assistant',
+        content: '**bold** text',
+        metadata: null,
+        attachments: [],
+        createdAt: '2026-05-17T00:00:00Z',
+      },
+    ]);
+
+    // Fake "markdown" renderer — emits a <strong> element if the content
+    // starts with `**`. Realistic enough to verify the slot is wired in
+    // without pulling react-markdown into the test dependencies.
+    const renderMessageContent = (m: Message) => {
+      const match = /^\*\*(.+?)\*\*\s*(.*)$/.exec(m.content);
+      if (!match) return m.content;
+      return (
+        <>
+          <strong data-testid={`md-strong-${m.id}`}>{match[1]}</strong>
+          {match[2] ? ` ${match[2]}` : null}
+        </>
+      );
+    };
+
+    const { container, unmount } = await mount(
+      <ChatView
+        taskId="t_1"
+        adapter={ctl.adapter}
+        renderMessageContent={renderMessageContent}
+      />,
+    );
+
+    const bubble = container.querySelector('.conductor-bubble');
+    expect(bubble).not.toBeNull();
+    // The bubble container itself is still owned by the SDK — same class /
+    // structure as the default render.
+    expect(bubble!.closest('.conductor-message')).not.toBeNull();
+    // But the inner content was replaced by our custom renderer.
+    const strong = bubble!.querySelector('strong');
+    expect(strong).not.toBeNull();
+    expect(strong!.textContent).toBe('bold');
+    expect(strong!.getAttribute('data-testid')).toBe('md-strong-m_md');
+    expect(bubble!.textContent).toBe('bold text');
+    await unmount();
+  });
+
+  it('renderMessageContent receives the full Message (role, metadata, attachments)', async () => {
+    const ctl = makeMockAdapter([
+      {
+        id: 'm_with_meta',
+        taskId: 't_1',
+        role: 'assistant',
+        content: 'irrelevant',
+        metadata: { audit: { actor: 'fire' } },
+        attachments: [],
+        createdAt: '2026-05-17T00:00:00Z',
+      },
+    ]);
+
+    const received: Message[] = [];
+    const renderMessageContent = (m: Message) => {
+      received.push(m);
+      return `[${m.role}] ${m.content}`;
+    };
+
+    const { container, unmount } = await mount(
+      <ChatView
+        taskId="t_1"
+        adapter={ctl.adapter}
+        renderMessageContent={renderMessageContent}
+      />,
+    );
+
+    expect(received.length).toBeGreaterThanOrEqual(1);
+    const last = received[received.length - 1];
+    expect(last.id).toBe('m_with_meta');
+    expect(last.role).toBe('assistant');
+    // The renderer can branch on metadata too — confirm it's passed through.
+    expect(last.metadata).toEqual({ audit: { actor: 'fire' } });
+
+    const bubble = container.querySelector('.conductor-bubble');
+    expect(bubble!.textContent).toBe('[assistant] irrelevant');
+    await unmount();
+  });
+
   it('catch-up dedupes against a message_appended already received in real time', async () => {
     // The real-time path delivered the assistant reply correctly; the
     // catch-up triggered on task_finished pulls history that contains the
