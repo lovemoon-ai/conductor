@@ -5,8 +5,18 @@ import { TaskList } from './TaskList';
 const deleteTaskMock = vi.fn();
 const taskItemMock = vi.fn();
 
+type FakeTask = {
+  id: string;
+  title: string;
+  projectId: string | null;
+  status: string;
+  metadata?: Record<string, unknown> | null;
+  agentHost?: string | null;
+  executionHost?: string | null;
+};
+
 let tasksState: {
-  tasks: Array<{ id: string; title: string; projectId: string | null; status: string }>;
+  tasks: FakeTask[];
   isLoading: boolean;
   unreadTaskIds: Set<string>;
   currentProjectFilter: string | null;
@@ -217,6 +227,53 @@ describe('TaskList', () => {
       expect(taskOneProps?.projectDaemonHost).toBe('daemon-a');
       expect(taskTwoProps?.showDaemonHost).toBe(true);
       expect(taskTwoProps?.projectDaemonHost).toBe('daemon-b');
+    });
+
+    it('shows daemon chip for Default Project tasks where project.daemonHost is null (uses metadata.daemonName)', () => {
+      // The server-side "Default Project" is a single global record with no
+      // daemonHost binding. Tasks on it carry the true daemon in
+      // `metadata.daemonName`. The chip must still render and the per-card
+      // value must come from each task's own metadata, not from the project
+      // (which is null for everyone).
+      tasksState = {
+        ...tasksState,
+        tasks: [
+          {
+            id: 'task-1',
+            title: 'Task One',
+            projectId: 'default-project',
+            status: 'running',
+            metadata: { daemonName: 'debug' },
+          },
+          {
+            id: 'task-2',
+            title: 'Task Two',
+            projectId: 'default-project',
+            status: 'running',
+            metadata: { daemonName: 'qa-daemon-2' },
+          },
+        ],
+        currentProjectFilter: null,
+      };
+      projectsState = {
+        projects: [
+          { id: 'default-project', name: 'Default Project', daemonHost: null },
+        ],
+        hiddenProjectIds: [],
+      };
+
+      render(<TaskList viewMode="list" projectFilter="default-project" />);
+
+      const taskOneProps = lastPropsFor('task-1');
+      const taskTwoProps = lastPropsFor('task-2');
+      // Single-project filter → project-name chip stays hidden (redundant)…
+      expect(taskOneProps?.showProjectName).toBe(false);
+      // …but the visible tasks span two daemons, so the daemon chip lights up
+      // even though the project itself has no daemonHost.
+      expect(taskOneProps?.showDaemonHost).toBe(true);
+      expect(taskOneProps?.projectDaemonHost).toBe('debug');
+      expect(taskTwoProps?.showDaemonHost).toBe(true);
+      expect(taskTwoProps?.projectDaemonHost).toBe('qa-daemon-2');
     });
   });
 });

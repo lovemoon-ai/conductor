@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Task } from '@/shared/types';
-import { filterTasksByProject } from './task-filter';
+import { filterTasksByProject, resolveTaskDaemonHost } from './task-filter';
 
 const makeTask = (id: string, projectId: string | null): Task => ({
   id,
@@ -70,5 +70,50 @@ describe('filterTasksByProject', () => {
     expect(
       filterTasksByProject(tasks, ['proj-a'], ['proj-a']),
     ).toEqual([]);
+  });
+});
+
+describe('resolveTaskDaemonHost', () => {
+  const baseTask = (overrides: Partial<Task>): Task => ({
+    ...makeTask('t', 'proj-a'),
+    ...overrides,
+  });
+
+  it('prefers task.metadata.daemonName — the only signal for Default Project tasks', () => {
+    // The server-side Default Project has `daemonHost=null`, so the only
+    // reliable signal for "which daemon does this task live on" is the
+    // `daemonName` the daemon writes into task metadata at registration.
+    const task = baseTask({
+      projectId: 'default-project',
+      metadata: { daemonName: 'qa-daemon-2' },
+    });
+    const map = new Map<string, string | null>([['default-project', null]]);
+    expect(resolveTaskDaemonHost(task, map)).toBe('qa-daemon-2');
+  });
+
+  it('falls back to executionHost when metadata is missing', () => {
+    const task = baseTask({ metadata: null, executionHost: 'fire-7' });
+    expect(resolveTaskDaemonHost(task, null)).toBe('fire-7');
+  });
+
+  it('falls back to agentHost when metadata and executionHost are missing', () => {
+    const task = baseTask({ metadata: null, executionHost: null, agentHost: 'daemon-a' });
+    expect(resolveTaskDaemonHost(task, null)).toBe('daemon-a');
+  });
+
+  it('falls back to the project map when task-level fields are missing', () => {
+    const task = baseTask({ projectId: 'proj-bound', metadata: null });
+    const map = new Map<string, string | null>([['proj-bound', 'bound-daemon']]);
+    expect(resolveTaskDaemonHost(task, map)).toBe('bound-daemon');
+  });
+
+  it('ignores blank metadata.daemonName and uses the next fallback', () => {
+    const task = baseTask({ metadata: { daemonName: '   ' }, executionHost: 'fire-1' });
+    expect(resolveTaskDaemonHost(task, null)).toBe('fire-1');
+  });
+
+  it('returns null when no signal is available', () => {
+    const task = baseTask({ projectId: 'unknown', metadata: null });
+    expect(resolveTaskDaemonHost(task, new Map())).toBeNull();
   });
 });

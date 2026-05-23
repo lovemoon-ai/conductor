@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { TaskType } from '@/lib/tasks/task-config';
 import { useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
-import { filterTasksByProject, getStableTaskBackend } from '../utils/task-filter';
+import { filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } from '../utils/task-filter';
 import { TaskItem } from './TaskItem';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { EmptyState } from '@/components/common/EmptyState';
@@ -112,21 +112,6 @@ export function TaskList({
     [runningFilteredTasks, taskTypeFilter],
   );
 
-  // Two independent visibility rules — historically they were a single
-  // `showProjectInfo` flag, but the project-name chip and the daemon-host
-  // chip carry different signals:
-  //
-  //  - Project name: useful only when tasks could belong to *different*
-  //    projects. That happens in the no-filter "all tasks" view; in a
-  //    single-project or merged-cross-daemon view every visible task shares
-  //    the same project name (the merge criterion), so the chip is redundant.
-  //  - Daemon host: useful whenever tasks could come from *different*
-  //    daemons. That happens in the no-filter view AND in the merged-scope
-  //    view (which is the path the default project takes when its same-named
-  //    siblings on other daemons merge into one logical project). A
-  //    single-project, single-daemon view never benefits from it.
-  const showProjectName = effectiveProjectFilterIds.length === 0;
-  const showDaemonHost = effectiveProjectFilterIds.length === 0 || isMergedScope;
   const projectMap = useMemo(() => {
     const map = new Map<
       string,
@@ -140,14 +125,21 @@ export function TaskList({
     }
     return map;
   }, [projects]);
+  // Project-keyed daemon-host map for the resolver. The resolver itself
+  // prefers `task.metadata.daemonName` so this fallback only kicks in when
+  // the task's metadata is missing.
+  const projectDaemonHostMap = useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const project of projects) {
+      map.set(project.id, project.daemonHost ?? null);
+    }
+    return map;
+  }, [projects]);
   const daemonFilteredTasks = useMemo(
     () => daemonHostFilter
-      ? typeFilteredTasks.filter((task) => {
-          const host = task.projectId ? projectMap.get(task.projectId)?.daemonHost ?? null : null;
-          return host === daemonHostFilter;
-        })
+      ? typeFilteredTasks.filter((task) => resolveTaskDaemonHost(task, projectDaemonHostMap) === daemonHostFilter)
       : typeFilteredTasks,
-    [typeFilteredTasks, daemonHostFilter, projectMap],
+    [typeFilteredTasks, daemonHostFilter, projectDaemonHostMap],
   );
   const visibleTasks = useMemo(
     () => backendFilter
@@ -155,6 +147,43 @@ export function TaskList({
       : daemonFilteredTasks,
     [daemonFilteredTasks, backendFilter],
   );
+
+  // Two independent visibility rules — historically they were a single
+  // `showProjectInfo` flag, but the project-name chip and the daemon-host
+  // chip carry different signals:
+  //
+  //  - Project name: useful only when tasks could belong to *different*
+  //    projects. That happens in the no-filter "all tasks" view; in a
+  //    single-project or merged-cross-daemon view every visible task shares
+  //    the same project name (the merge criterion), so the chip is redundant.
+  //  - Daemon host: useful whenever tasks could come from *different*
+  //    daemons. Three triggers:
+  //      • no project filter at all (different projects → different daemons);
+  //      • merged cross-daemon project group (the canonical case for
+  //        bound projects with the same name on multiple daemons);
+  //      • single-project view whose tasks span multiple daemons — this
+  //        applies to the server-side "Default Project", which has no
+  //        per-daemon binding so it can't go through the merge path, but
+  //        accumulates tasks from every daemon (with `metadata.daemonName`
+  //        recording the true owner). Detection runs on `typeFilteredTasks`
+  //        (i.e. *before* the daemon-host filter) so the chip stays
+  //        visible after the user clicks it to filter — otherwise the
+  //        very control that activated the filter would vanish.
+  const visibleTasksSpanMultipleDaemons = useMemo(() => {
+    const seen = new Set<string>();
+    for (const task of typeFilteredTasks) {
+      const host = resolveTaskDaemonHost(task, projectDaemonHostMap);
+      if (!host) continue;
+      seen.add(host);
+      if (seen.size > 1) return true;
+    }
+    return false;
+  }, [typeFilteredTasks, projectDaemonHostMap]);
+  const showProjectName = effectiveProjectFilterIds.length === 0;
+  const showDaemonHost =
+    effectiveProjectFilterIds.length === 0
+    || isMergedScope
+    || visibleTasksSpanMultipleDaemons;
   // For the merged-group case every member has the same name, so the first
   // member's name is a faithful header label.
   const currentProjectName = effectiveProjectFilterIds.length > 0
@@ -435,6 +464,13 @@ export function TaskList({
       <div className="space-y-3">
         {visibleTasks.map((task) => {
           const projectEntry = projectMap.get(task.projectId ?? '');
+          // Resolve the per-card daemon via the same fallback chain used by
+          // the filter / detection helpers above so that, e.g., tasks on the
+          // server-side Default Project (project.daemonHost is null) still
+          // render their daemon chip from `task.metadata.daemonName`.
+          const taskDaemonHost = showDaemonHost
+            ? resolveTaskDaemonHost(task, projectDaemonHostMap)
+            : null;
           return (
           <div
             key={task.id}
@@ -453,7 +489,7 @@ export function TaskList({
               showProjectName={showProjectName}
               showDaemonHost={showDaemonHost}
               projectName={showProjectName ? projectEntry?.name ?? null : null}
-              projectDaemonHost={showDaemonHost ? projectEntry?.daemonHost ?? null : null}
+              projectDaemonHost={taskDaemonHost}
               activeTaskTypeFilter={taskTypeFilter}
               activeProjectFilter={
                 // In merged cross-daemon scope no single id is "the" filter,
