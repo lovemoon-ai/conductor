@@ -6246,7 +6246,7 @@ describe("Daemon", () => {
       assert.ok(typeof handler === "function");
       assert.strictEqual(
         webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-        "project_path_validation,restart_daemon,refresh_session_inplace,pty_task,terminal_snapshot",
+        "project_path_validation,restart_daemon,refresh_session_inplace,custom_commands,pty_task,terminal_snapshot",
       );
 
       handler({
@@ -6276,7 +6276,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,restart_daemon,refresh_session_inplace,pty_task,terminal_snapshot",
+      "project_path_validation,restart_daemon,refresh_session_inplace,custom_commands,pty_task,terminal_snapshot",
     );
 
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -6549,7 +6549,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,restart_daemon,refresh_session_inplace",
+      "project_path_validation,restart_daemon,refresh_session_inplace,custom_commands",
     );
 
     handler({

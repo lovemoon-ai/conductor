@@ -42,6 +42,7 @@ vi.mock("./hub", () => ({
     broadcast: vi.fn(),
     notifyTaskStatus: vi.fn(),
     resolveAiManagerResponse: vi.fn(),
+    resolveCustomCommandsResponse: vi.fn(),
   },
 }));
 
@@ -905,6 +906,90 @@ describe("agent-gateway ownership handling", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(realtimeHub.resolveAiManagerResponse).not.toHaveBeenCalled();
+    const errorSends = (socket.send as any).mock.calls.filter((call: any[]) => {
+      try {
+        return JSON.parse(String(call[0])).type === "error";
+      } catch {
+        return false;
+      }
+    });
+    expect(errorSends.length).toBeGreaterThan(0);
+    const lastError = JSON.parse(String(errorSends[errorSends.length - 1][0]));
+    expect(lastError.payload.message).toMatch(/request_id/);
+  });
+
+  it("custom_commands_response forwards user.id + agentHost to the hub on resolve", async () => {
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+    const socket = new FakeSocket();
+    const wss = setupAgentGateway();
+    const request = {
+      headers: { authorization: "Bearer test-token", "x-conductor-host": "daemon-commands" },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as any;
+
+    wss.emit("connection", socket as any, request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    socket.emit(
+      "message",
+      Buffer.from(
+        JSON.stringify({
+          type: "custom_commands_response",
+          payload: {
+            request_id: "req-command-1",
+            action: "list",
+            result: { commands: [{ key: "refresh-cache" }] },
+            error: null,
+          },
+        }),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(realtimeHub.resolveCustomCommandsResponse).toHaveBeenCalledWith(
+      {
+        request_id: "req-command-1",
+        action: "list",
+        result: { commands: [{ key: "refresh-cache" }] },
+        error: null,
+      },
+      "user-1",
+      "daemon-commands",
+    );
+  });
+
+  it("custom_commands_response with missing request_id sends an error envelope and does not resolve", async () => {
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+    const socket = new FakeSocket();
+    const wss = setupAgentGateway();
+    const request = {
+      headers: { authorization: "Bearer test-token", "x-conductor-host": "daemon-commands-2" },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as any;
+
+    wss.emit("connection", socket as any, request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    socket.emit(
+      "message",
+      Buffer.from(
+        JSON.stringify({
+          type: "custom_commands_response",
+          payload: { action: "list", result: { commands: [] } },
+        }),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(realtimeHub.resolveCustomCommandsResponse).not.toHaveBeenCalled();
     const errorSends = (socket.send as any).mock.calls.filter((call: any[]) => {
       try {
         return JSON.parse(String(call[0])).type === "error";
