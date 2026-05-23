@@ -47,6 +47,7 @@ export function IssueBoard({
   onMoveIssue,
   onStatusChange,
   ownerOptionsByProjectId,
+  multiDaemonProjectIds,
   onDeleteIssue,
 }: {
   issues: Issue[];
@@ -61,6 +62,7 @@ export function IssueBoard({
   ) => Promise<boolean | void> | boolean | void;
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
   ownerOptionsByProjectId?: Map<string, IssueOwnerOption[]>;
+  multiDaemonProjectIds?: ReadonlySet<string>;
   onDeleteIssue?: (issueId: string) => Promise<void> | void;
 }) {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
@@ -189,6 +191,7 @@ export function IssueBoard({
               statusMenuDisabled={effectiveStatusMenuDisabled}
               onStatusChange={onStatusChange}
               ownerOptionsByProjectId={ownerOptionsByProjectId}
+              multiDaemonProjectIds={multiDaemonProjectIds}
               onDeleteIssue={onDeleteIssue}
               onOpenDetails={handleOpenDetails}
             />
@@ -197,7 +200,13 @@ export function IssueBoard({
       </div>
 
       <DragOverlay>
-        {activeIssue ? <IssueCardOverlay issue={activeIssue} ownerOptions={activeOwnerOptions} /> : null}
+        {activeIssue ? (
+          <IssueCardOverlay
+            issue={activeIssue}
+            ownerOptions={activeOwnerOptions}
+            multiDaemonContext={multiDaemonProjectIds?.has(activeIssue.projectId) ?? false}
+          />
+        ) : null}
       </DragOverlay>
 
       <IssueDetailsDialog

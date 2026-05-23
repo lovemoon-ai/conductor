@@ -170,6 +170,39 @@ function IssueStatusMenu({
   );
 }
 
+/**
+ * Pull the daemon this issue has actually been committed to (i.e. some task
+ * has run or is running for it). Returns null when the issue is still floating
+ * in todo with no daemon binding — that's the "could run on any daemon" state
+ * we deliberately do NOT advertise on the card.
+ *
+ * Resolution priority:
+ *   1. `activeTask.agentHost`        — currently running, freshest signal
+ *   2. `linkedTask.agentHost`        — historical last run
+ *   3. `metadata.daemonHost`         — written by the MoveIssueToDoing dialog
+ *      when no task has actually started yet (rare; covers in-flight cases)
+ *
+ * `issue.daemonHost` (the API-populated project daemon) is intentionally NOT
+ * included as a fallback — that field reflects the project's currently-bound
+ * daemon, which is exactly what we want to hide pre-commitment in merged or
+ * multi-daemon-default contexts.
+ */
+const pickCommittedDaemon = (issue: Issue): string | null => {
+  const activeHost = typeof issue.activeTask?.agentHost === 'string'
+    ? issue.activeTask.agentHost.trim()
+    : '';
+  if (activeHost) return activeHost;
+  const linkedHost = typeof issue.linkedTask?.agentHost === 'string'
+    ? issue.linkedTask.agentHost.trim()
+    : '';
+  if (linkedHost) return linkedHost;
+  const metadataHost = typeof issue.metadata?.daemonHost === 'string'
+    ? issue.metadata.daemonHost.trim()
+    : '';
+  if (metadataHost) return metadataHost;
+  return null;
+};
+
 function IssueCardBody({
   issue,
   elevated = false,
@@ -181,6 +214,7 @@ function IssueCardBody({
   ownerOptions,
   onDelete,
   onOpenDetails,
+  multiDaemonContext = false,
 }: {
   issue: Issue;
   elevated?: boolean;
@@ -192,6 +226,15 @@ function IssueCardBody({
   ownerOptions?: IssueOwnerOption[];
   onDelete?: (issueId: string) => Promise<void> | void;
   onOpenDetails?: (issue: Issue) => void;
+  /**
+   * True only when the issue's project is in a multi-daemon scenario — either
+   * part of a cross-daemon merged group, OR a default project with 2+ online
+   * non-fire daemons. Single-daemon projects pass false so the daemon chip
+   * stays hidden (the daemon is implicit there). The parent owns this
+   * computation because it requires both the projects list and the live
+   * agents list.
+   */
+  multiDaemonContext?: boolean;
 }) {
   const description = issue.description?.trim();
   const activeTask = issue.activeTask ?? null;
@@ -277,24 +320,39 @@ function IssueCardBody({
           )}
         </div>
 
-        {issue.daemonHost ? (
-          // Daemon attribution chip — surfaced when the parent view is showing
-          // issues from multiple daemons (merged cross-daemon project group).
-          // Single-daemon views leave `daemonHost` unset so this stays hidden.
-          <div className="mt-2 flex items-center gap-1.5">
-            <span
-              title={
-                issue.projectName
-                  ? `${issue.projectName} on ${issue.daemonHost}`
-                  : issue.daemonHost
-              }
-              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${pickDaemonBadgeClass(issue.daemonHost)}`}
-            >
-              <span aria-hidden="true" className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-80" />
-              {issue.daemonHost}
-            </span>
-          </div>
-        ) : null}
+        {(() => {
+          // Three-stage gate per product spec:
+          //   - multiDaemonContext: the parent decided the project is in a
+          //     merged group OR is a default project with 2+ online daemons.
+          //     Anything else (single-daemon bound project) suppresses the
+          //     chip entirely — the daemon is implicit there.
+          //   - status must be past `todo`. A todo issue is still floating
+          //     "could run on any daemon", so even if metadata.daemonHost
+          //     lingers from a previous doing→todo bounce, the card stays
+          //     honest by hiding the chip.
+          //   - committedDaemon: the issue has actually been bound to a
+          //     specific daemon via task spawn / metadata. Belt-and-braces
+          //     in case the status check passes but no signal exists yet.
+          if (!multiDaemonContext) return null;
+          if (issue.status === 'todo') return null;
+          const committedDaemon = pickCommittedDaemon(issue);
+          if (!committedDaemon) return null;
+          return (
+            <div className="mt-2 flex items-center gap-1.5">
+              <span
+                title={
+                  issue.projectName
+                    ? `${issue.projectName} on ${committedDaemon}`
+                    : committedDaemon
+                }
+                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${pickDaemonBadgeClass(committedDaemon)}`}
+              >
+                <span aria-hidden="true" className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-80" />
+                {committedDaemon}
+              </span>
+            </div>
+          );
+        })()}
 
         {description ? (
           <p
@@ -364,6 +422,7 @@ export function IssueCard({
   ownerOptions,
   onDelete,
   onOpenDetails,
+  multiDaemonContext = false,
 }: {
   issue: Issue;
   disabled?: boolean;
@@ -372,6 +431,7 @@ export function IssueCard({
   ownerOptions?: IssueOwnerOption[];
   onDelete?: (issueId: string) => Promise<void> | void;
   onOpenDetails?: (issue: Issue) => void;
+  multiDaemonContext?: boolean;
 }) {
   const {
     attributes,
@@ -403,6 +463,7 @@ export function IssueCard({
         onDelete={onDelete}
         onOpenDetails={onOpenDetails}
         statusAttributes={{ ...attributes, ...listeners }}
+        multiDaemonContext={multiDaemonContext}
       />
     </div>
   );
@@ -411,9 +472,19 @@ export function IssueCard({
 export function IssueCardOverlay({
   issue,
   ownerOptions,
+  multiDaemonContext = false,
 }: {
   issue: Issue;
   ownerOptions?: IssueOwnerOption[];
+  multiDaemonContext?: boolean;
 }) {
-  return <IssueCardBody issue={issue} ownerOptions={ownerOptions} elevated interactive={false} />;
+  return (
+    <IssueCardBody
+      issue={issue}
+      ownerOptions={ownerOptions}
+      elevated
+      interactive={false}
+      multiDaemonContext={multiDaemonContext}
+    />
+  );
 }
