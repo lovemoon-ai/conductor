@@ -101,6 +101,13 @@ function buildConfigEntryLines(cli, info, { commented = false } = {}) {
   if (cli === "opencode") {
     lines.push(`${commentPrefix}opencode runs via ai-sdk server mode with permission=allow`);
   }
+  if (cli === "chat-web") {
+    // chat-web defaults to its `chatgpt` sub-provider. The CLI extracts
+    // `--model` from this line and forwards it to ai-sdk; the command
+    // itself is never spawned (chat-web is an in-process SDK).
+    lines.push(`${commentPrefix}chat-web drives a real Chromium browser via @love-moon/chat-web`);
+    lines.push(`${commentPrefix}defaults to ChatGPT; use \`chat-web --model gemini\` for AI Studio (Gemini)`);
+  }
 
   lines.push(`${entryPrefix}${cli}: ${fullCommand}`);
   return lines;
