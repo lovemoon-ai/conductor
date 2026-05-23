@@ -993,6 +993,118 @@ describe('/api/issues/[issueId]', () => {
     expect(db.issue.update).not.toHaveBeenCalled();
   });
 
+  describe('explicit daemon pick via metadata.daemonHost', () => {
+    it('honors metadata.daemonHost on a default project so the dialog picker actually controls the spawn', async () => {
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue() as any);
+      // Default project: no daemon binding; resolver falls back to
+      // "pick any compatible agent" UNLESS the user explicitly chose one.
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
+        { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'] },
+      ] as any);
+      vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+        task: {
+          id: 'task-pick',
+          projectId: 'project-1',
+          issueId: 'issue-1',
+          title: 'Board implementation',
+          status: 'init',
+          taskType: 'ai_task',
+          agentHost: 'daemon-b',
+          executionHost: 'daemon-b',
+          backendType: 'claude',
+          sessionId: null,
+          sessionFilePath: null,
+          launchConfig: null,
+          metadata: null,
+          createdAt: new Date('2026-04-14T00:20:00.000Z'),
+          updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+        },
+        initialMessage: null,
+        initialMessageContent: '...',
+      } as any);
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: {
+          status: 'doing',
+          metadata: { backendType: 'claude', daemonHost: 'daemon-b' },
+        },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+
+      expect(response.status).toBe(200);
+      const createArgs = vi.mocked(createAiTaskArtifacts).mock.calls[0][0] as any;
+      // Critical: the spawn lands on daemon-b (the user's pick), not on the
+      // resolver's auto-pick which would have been daemon-a (first match).
+      expect(createArgs.agentHost).toBe('daemon-b');
+    });
+
+    it('rejects metadata.daemonHost that conflicts with a project-bound daemon', async () => {
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+        project: {
+          id: 'project-1',
+          userId: 'user-1',
+          collaborationId: null,
+          name: 'BoundApp',
+          daemonHost: 'daemon-a',
+          workspacePath: '/repo',
+          repoRoot: '/repo',
+          worktreeBranch: 'main',
+          lastCommit: 'aaa',
+          gitRemoteUrl: null,
+          mergeOptOut: false,
+        },
+      }) as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
+        { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'] },
+      ] as any);
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: {
+          status: 'doing',
+          // The project is bound to daemon-a, but the client is asking for
+          // daemon-b without switching projectId. Refuse — it would mean
+          // running the task on a daemon that does not match the project
+          // binding.
+          metadata: { backendType: 'claude', daemonHost: 'daemon-b' },
+        },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toMatch(/does not match/i);
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    });
+
+    it('rejects metadata.daemonHost when the requested daemon is offline', async () => {
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue() as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
+      ] as any);
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: {
+          status: 'doing',
+          metadata: { backendType: 'claude', daemonHost: 'daemon-ghost' },
+        },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toMatch(/offline/i);
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    });
+  });
+
   describe('merged-group sibling re-parent on todo→doing', () => {
     const buildMergedExistingIssue = (overrides: Record<string, unknown> = {}) =>
       buildExistingIssue({
@@ -1102,7 +1214,12 @@ describe('/api/issues/[issueId]', () => {
       expect(persistedMeta.backendType).toBe('claude');
     });
 
-    it('overwrites a fake metadata.daemonHost with the actually-used host even without a project switch', async () => {
+    it('persists metadata.daemonHost as the actually-resolved host when the client honors the project binding', async () => {
+      // Sibling re-parent is the only path where metadata.daemonHost can differ
+      // from the project's bound daemon; here we exercise the simpler case
+      // where the client respects the binding (metadata.daemonHost matches
+      // existing.project.daemonHost) and confirm the value the server writes
+      // back is sourced from the resolver, not the request payload.
       vi.mocked(db.issue.findFirst).mockResolvedValue(buildMergedExistingIssue() as any);
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
         { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
@@ -1133,7 +1250,7 @@ describe('/api/issues/[issueId]', () => {
         method: 'PATCH',
         body: {
           status: 'doing',
-          metadata: { backendType: 'claude', daemonHost: 'definitely-fake' },
+          metadata: { backendType: 'claude', daemonHost: 'daemon-a' },
         },
       }), {
         params: Promise.resolve({ issueId: 'issue-1' }),

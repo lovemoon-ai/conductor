@@ -42,7 +42,7 @@ const MERGED_DAEMONS: MoveIssueToDoingDaemonOption[] = [
 ];
 
 describe('MoveIssueToDoingDialog', () => {
-  it('hides the daemon picker when only one daemon is available', () => {
+  it('shows the daemon picker even when only one daemon is available so the user sees where the task will spawn', () => {
     render(
       <MoveIssueToDoingDialog
         open
@@ -52,7 +52,11 @@ describe('MoveIssueToDoingDialog', () => {
       />,
     );
 
-    expect(screen.queryByLabelText('Daemon')).toBeNull();
+    const daemonSelect = screen.getByLabelText('Daemon');
+    expect(daemonSelect).toHaveValue('daemon-a');
+    // Disabled because there is nothing else to switch to — but it remains
+    // visible so the affordance "you are picking a daemon" is preserved.
+    expect(daemonSelect).toBeDisabled();
     expect(screen.getByLabelText('Backend')).toHaveValue('claude');
   });
 
