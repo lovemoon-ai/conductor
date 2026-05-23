@@ -29,6 +29,10 @@ import {
   withPtySchemaFallback,
 } from "@/lib/tasks/pty-compat";
 import { normalizeTaskStatus } from "@/lib/tasks/task-config";
+import {
+  buildKilledPatch,
+  withKilledReasonFallback,
+} from "@/lib/tasks/killed-reason";
 
 export const AGENT_WS_PATH = "/ws/agent";
 
@@ -241,6 +245,20 @@ type AgentEvent =
         error?: string | null;
       };
     }
+  | {
+      // RFC 0029: daemon proactively asserts which tasks it still believes
+      // are alive so the backend can revoke speculative `daemon_disconnected`
+      // killed flags. `agent_host` lets backend reject cross-host claims;
+      // `reason` is informational ("agent_reconnect" / "agent_first_connect"
+      // / "agent_periodic" / etc.).
+      type: "agent_alive_tasks";
+      payload: {
+        agent_host?: string;
+        alive_task_ids?: string[];
+        reason?: string;
+        reported_at?: string;
+      };
+    }
   | { type: "heartbeat"; payload?: Record<string, unknown> };
 
 const persistTaskExecutionHost = async (
@@ -366,6 +384,145 @@ export const processAgentResume = async (args: {
     boundCount,
     source,
   };
+};
+
+/**
+ * RFC 0029: revoke speculative `killed_reason=daemon_disconnected` flags for
+ * tasks the daemon claims are still running. Conservative by design:
+ *   * scoped to the calling user + agent host (no cross-tenant escalation);
+ *   * only touches rows whose status is *still* `killed` AND whose reason is
+ *     `daemon_disconnected` — user_stopped / fire_exit / crash never get
+ *     auto-revoked;
+ *   * does NOT rewrite `agentHost` or `executionHost`. Manual-fire ai_task
+ *     rows have `agentHost=daemon-Y, executionHost=conductor-fire-X`; if we
+ *     restamped executionHost to the calling daemon we'd misroute future
+ *     sdk_message envelopes away from the still-alive fire (the daemon ws
+ *     cannot relay messages into a detached in-tmux fire — only the fire's
+ *     own ws can). The next inbound commitSdkMessage from the actual
+ *     executor will repopulate executionHost via persistTaskExecutionHost,
+ *     so leaving it null for a few ms after revoke is harmless;
+ *   * only re-binds the in-memory hub for *pure-daemon* tasks
+ *     (`agentHost == args.agentHost`). For manual-fire tasks we leave the
+ *     hub binding as-is so sdk_message keeps routing into the fire process;
+ *   * broadcasts a `task_status_update` per revoked task so the UI clears
+ *     its "killed" badge without an explicit refresh.
+ *
+ * Returns the set of task ids that were actually revoked so callers can log
+ * a meaningful count.
+ */
+export const processAgentAliveTasks = async (args: {
+  userId: string;
+  agentHost: string;
+  payload: Extract<AgentEvent, { type: "agent_alive_tasks" }>["payload"];
+}): Promise<{ revokedTaskIds: string[]; consideredCount: number; reason: string }> => {
+  const reason =
+    typeof args.payload.reason === "string" && args.payload.reason.trim()
+      ? args.payload.reason.trim()
+      : "agent_reconnect";
+  const candidates = Array.isArray(args.payload.alive_task_ids)
+    ? Array.from(
+        new Set(
+          args.payload.alive_task_ids
+            .map((value) => (typeof value === "string" ? value.trim() : ""))
+            .filter(Boolean),
+        ),
+      )
+    : [];
+
+  if (candidates.length === 0) {
+    return { revokedTaskIds: [], consideredCount: 0, reason };
+  }
+
+  // Find the subset that is both owned by this user AND currently flagged
+  // `killed/daemon_disconnected` AND still claims this agent host as its
+  // last-known binding. Anything else is left alone.
+  let revocableTasks: Array<{
+    id: string;
+    projectId: string;
+    agentHost: string | null;
+  }>;
+  try {
+    revocableTasks = await db.task.findMany({
+      where: {
+        id: { in: candidates },
+        project: { userId: args.userId },
+        status: "killed",
+        // The killed_reason column is gated by the 20260523120000 migration.
+        // Pre-migration installs simply skip this push (and continue using
+        // the user-initiated restart path), so we don't shim a fallback.
+        killedReason: "daemon_disconnected",
+        OR: [
+          { agentHost: args.agentHost },
+          { executionHost: args.agentHost },
+        ],
+      },
+      select: { id: true, projectId: true, agentHost: true },
+    });
+  } catch (error) {
+    console.warn(
+      `[agent-gateway] agent_alive_tasks lookup failed for ${args.agentHost}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return { revokedTaskIds: [], consideredCount: candidates.length, reason };
+  }
+
+  if (revocableTasks.length === 0) {
+    return { revokedTaskIds: [], consideredCount: candidates.length, reason };
+  }
+
+  const revokedIds: string[] = [];
+  for (const task of revocableTasks) {
+    try {
+      // Optimistic single-row update guarded by the same predicate so a
+      // concurrent user-initiated restart (which flips status to `running`)
+      // wins and we don't accidentally re-bind to a stale fire.
+      const result = await db.task.updateMany({
+        where: {
+          id: task.id,
+          status: "killed",
+          killedReason: "daemon_disconnected",
+        },
+        data: {
+          status: "running",
+          killedReason: null,
+          killedAt: null,
+          // Intentionally NOT touching agentHost / executionHost — see the
+          // function docstring. The fire (or daemon) that next commits a
+          // message will re-stamp executionHost correctly.
+        },
+      });
+      if (result.count > 0) {
+        revokedIds.push(task.id);
+        const isPureDaemonTask =
+          normalizeOptionalString(task.agentHost) === args.agentHost;
+        if (isPureDaemonTask) {
+          // Pure daemon ai_task — the daemon ws is the message-delivery
+          // channel, so rebind to it. Manual-fire tasks (agentHost = daemon,
+          // executionHost = fire) deliberately skip this rebind: their
+          // sdk_message envelopes must keep flowing into the fire ws.
+          realtimeHub.bindTaskToAgent(task.id, args.agentHost);
+        }
+        realtimeHub.broadcast(args.userId, task.projectId, {
+          type: "task_status_update",
+          payload: {
+            task_id: task.id,
+            project_id: task.projectId,
+            status: "running",
+            summary: `Revoked stale killed flag after ${reason}`,
+          },
+        });
+      }
+    } catch (error) {
+      console.warn(
+        `[agent-gateway] failed to revoke killed flag for ${task.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  return { revokedTaskIds: revokedIds, consideredCount: candidates.length, reason };
 };
 
 const getOwnedPtyTask = async (userId: string, taskId: string) =>
@@ -1341,6 +1498,46 @@ export const setupAgentGateway = (): WebSocketServer => {
               payload: {
                 active_task_count: boundCount,
                 source,
+              },
+            });
+            break;
+          }
+          case "agent_alive_tasks": {
+            const claimedHost =
+              normalizeOptionalString((event.payload as { agent_host?: unknown }).agent_host) ??
+              agentHost;
+            if (claimedHost !== agentHost) {
+              // Defence-in-depth: never let a daemon revoke killed flags for
+              // tasks bound to a different host (would break the
+              // single-source-of-truth invariant the hub relies on).
+              sendEnvelope(socket, {
+                type: "error",
+                payload: {
+                  message: `agent_alive_tasks agent_host mismatch (claimed=${claimedHost}, actual=${agentHost})`,
+                },
+              });
+              break;
+            }
+            const { revokedTaskIds, consideredCount, reason } = await processAgentAliveTasks({
+              userId: user.id,
+              agentHost,
+              payload: event.payload,
+            });
+            if (consideredCount > 0) {
+              // Log even when revoked=0: the gap between considered and
+              // revoked is the operational dial we tune during rollout.
+              // 0/N is a strong "daemon thinks it owns N tasks the backend
+              // doesn't consider revocable" signal.
+              console.log(
+                `[agent-gateway] agent_alive_tasks revoked ${revokedTaskIds.length}/${consideredCount} killed flag(s) for ${agentHost} (${reason})`,
+              );
+            }
+            sendEnvelope(socket, {
+              type: "agent_alive_tasks_recorded",
+              payload: {
+                considered_count: consideredCount,
+                revoked_count: revokedTaskIds.length,
+                revoked_task_ids: revokedTaskIds,
               },
             });
             break;

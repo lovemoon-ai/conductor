@@ -320,9 +320,17 @@ describe("/api/tasks/[taskId]", () => {
     const data = await extractJson(response);
 
     expect(response.status).toBe(200);
+    // RFC 0029: the stale-recovery defensive kill path now tags the row
+    // with killed_reason=daemon_disconnected so the next restart can attempt
+    // a reclaim against the still-alive fire process.
     expect(db.task.update).toHaveBeenCalledWith({
       where: { id: "task-fire-1" },
-      data: { status: "killed", executionHost: null },
+      data: expect.objectContaining({
+        status: "killed",
+        executionHost: null,
+        killedReason: "daemon_disconnected",
+        killedAt: expect.any(Date),
+      }),
     });
     expect(realtimeHub.broadcast).toHaveBeenCalledWith(
       "user-1",

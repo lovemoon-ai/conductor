@@ -45,9 +45,20 @@ import {
   RESTARTABLE_SOURCE_STATUSES,
   STOPPED_TASK_STATUSES,
 } from "@/lib/tasks/restart";
+import {
+  buildKilledRevokePatch,
+  RECLAIMABLE_KILLED_REASON,
+} from "@/lib/tasks/killed-reason";
+import { isTaskReclaimEnabled } from "@/lib/tasks/reclaim-config";
+import { isMissingAgentOutboxTableError } from "@/lib/realtime/agent-outbox";
 
 const appendBackendSuffix = (title: string, backend: string): string => `${title} [${backend}]`;
 const REFRESH_SESSION_ACK_TIMEOUT_MS = 60_000;
+// RFC 0029: 60s mirrors the worst-case fire ↔ daemon round-trip when the
+// SDK worker is mid-provider-call. Long enough that a brief hang doesn't
+// false-negative; short enough that a truly dead fire doesn't park the
+// restart UI behind it.
+const RECLAIM_TASK_ACK_TIMEOUT_MS = 60_000;
 
 const normalizeRestartMode = (value: unknown): "refresh_session" | null => {
   if (typeof value !== "string") {
@@ -521,6 +532,153 @@ export async function POST(
       { status: 409 },
     );
   }
+
+  // RFC 0029: Reclaim attempt. When the source task was defensively killed
+  // because the daemon went silent (not because the user pressed Stop) and
+  // there is still a fire bound to the original host, try a non-spawning
+  // reclaim before falling through to the existing spawn path. The reclaim
+  // is intentionally tightly gated:
+  //   * feature-flag must be on (CONDUCTOR_TASK_RECLAIM_ENABLED);
+  //   * killed_reason must equal `daemon_disconnected`;
+  //   * restart must be in-place on the same backend (cross-backend goes
+  //     through the new_task forking path which has no live fire to reuse);
+  //   * the previously-bound agent host must still be online — otherwise
+  //     we'd be waiting 60s for an ack that cannot come.
+  // Any failure (ack=false, timeout, schema fallback hit) cleans up the
+  // outbox row and falls through to the original `restart_task` flow, so
+  // the user experience never regresses past today's behavior.
+  const reclaimEnabled = isTaskReclaimEnabled();
+  const sourceKilledReason =
+    typeof (sourceTask as { killedReason?: unknown }).killedReason === "string"
+      ? (sourceTask as { killedReason?: string }).killedReason
+      : null;
+  const boundReclaimHost = normalizeOptionalString(
+    realtimeHub.getTaskAgentHost(sourceTask.id),
+  );
+  const shouldAttemptReclaim =
+    reclaimEnabled &&
+    isInplaceRestart &&
+    !isBackendSwitch &&
+    sourceStatus === "killed" &&
+    sourceKilledReason === RECLAIMABLE_KILLED_REASON &&
+    Boolean(boundReclaimHost) &&
+    boundReclaimHost === restartAgentHost;
+
+  if (shouldAttemptReclaim && boundReclaimHost) {
+    const reclaimRequestId = randomUUID();
+    let reclaimOutboxCreated = false;
+    try {
+      try {
+        await db.agentOutbox.create({
+          data: {
+            userId: user.id,
+            agentHost: boundReclaimHost,
+            taskId: sourceTask.id,
+            eventType: "reclaim_task",
+            requestId: reclaimRequestId,
+            payloadJson: JSON.stringify({
+              type: "reclaim_task",
+              payload: {
+                task_id: sourceTask.id,
+                project_id: sourceTask.projectId,
+                expected_session_id: sourceSessionId,
+                expected_backend_type: sourceBackend,
+                ack_timeout_ms: RECLAIM_TASK_ACK_TIMEOUT_MS,
+                request_id: reclaimRequestId,
+              },
+            }),
+            status: "pending",
+            attemptCount: 0,
+            nextRetryAt: null,
+          },
+        });
+        reclaimOutboxCreated = true;
+      } catch (outboxError) {
+        // The outbox table is gated by an older migration; if it's missing
+        // we cannot persist a reclaim request, so silently fall back to the
+        // legacy spawn restart below. Anything else propagates.
+        if (!isMissingAgentOutboxTableError(outboxError)) {
+          throw outboxError;
+        }
+      }
+
+      if (reclaimOutboxCreated) {
+        const reclaimAckPromise = realtimeHub.waitForAgentCommandAck(
+          sourceTask.id,
+          reclaimRequestId,
+          RECLAIM_TASK_ACK_TIMEOUT_MS,
+          {
+            expectedHosts: [boundReclaimHost],
+            eventType: "reclaim_task",
+          },
+        );
+        deliverAgentOutboxForHost({
+          userId: user.id,
+          agentHost: boundReclaimHost,
+          sendToAgentHost: ({ userId: targetUserId, agentHost, envelope }) =>
+            realtimeHub.sendToAgentHost(targetUserId, agentHost, envelope),
+          resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),
+        }).catch(() => {});
+
+        const reclaimAcked = await reclaimAckPromise;
+        if (reclaimAcked === true) {
+          // Fire is alive and reclaimed; revoke the defensive killed flags
+          // so the next observer sees the task as `running` without ever
+          // having spawned a new fire. We intentionally do NOT bump
+          // executionHost — the binding never moved.
+          const revokePatch = buildKilledRevokePatch();
+          const reclaimedTask = await updateTaskWithRestartFallback(
+            db.task,
+            {
+              where: { id: sourceTask.id },
+              data: {
+                ...revokePatch,
+                updatedAt: now,
+              },
+            },
+            sourceTask.issueId ?? null,
+          );
+          realtimeHub.bindTaskToAgent(sourceTask.id, boundReclaimHost);
+          return NextResponse.json({
+            mode: "reclaim",
+            source_task_id: sourceTask.id,
+            reclaim_host: boundReclaimHost,
+            task: serializeTaskResponse(reclaimedTask),
+          });
+        }
+
+        // ack === false (explicit failure) or null (timeout). Tag the
+        // outbox row failed so it doesn't ride the normal retry loop and
+        // resurrect later, then fall through to spawn.
+        await db.agentOutbox
+          .updateMany({
+            where: {
+              userId: user.id,
+              requestId: reclaimRequestId,
+              status: { in: ["pending", "sent"] },
+            },
+            data: {
+              status: "failed",
+              nextRetryAt: null,
+              lastError:
+                reclaimAcked === false
+                  ? "reclaim_rejected"
+                  : "reclaim_ack_timeout",
+            },
+          })
+          .catch(() => {});
+      }
+    } catch (reclaimError) {
+      console.warn(
+        `[restart] reclaim attempt failed for ${sourceTask.id}, falling back to spawn restart: ${
+          reclaimError instanceof Error ? reclaimError.message : String(reclaimError)
+        }`,
+      );
+      // Best-effort: cancel the in-memory waiter so we don't leak it.
+      realtimeHub.cancelAgentCommandAck?.(sourceTask.id, reclaimRequestId);
+    }
+  }
+
   if (isInplaceRestart) {
     const updatedTask = await db.$transaction(async (tx) => {
       if (inheritedWorktreeLaunchConfig) {

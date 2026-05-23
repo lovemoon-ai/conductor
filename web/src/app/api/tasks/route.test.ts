@@ -492,9 +492,16 @@ describe("/api/tasks", () => {
       const data = await extractJson(response);
 
       expect(response.status).toBe(200);
+      // RFC 0029: defensive stale-recovery kills now carry the discriminator
+      // so the restart route can choose reclaim vs. spawn.
       expect(db.task.update).toHaveBeenCalledWith({
         where: { id: "task-fire-1" },
-        data: { status: "killed", executionHost: null },
+        data: expect.objectContaining({
+          status: "killed",
+          executionHost: null,
+          killedReason: "daemon_disconnected",
+          killedAt: expect.any(Date),
+        }),
       });
       expect(realtimeHub.broadcast).toHaveBeenCalledWith(
         "user-1",
@@ -548,9 +555,16 @@ describe("/api/tasks", () => {
       const data = await extractJson(response);
 
       expect(response.status).toBe(200);
+      // RFC 0029: daemon-side stale recovery tags killed_reason so reclaim
+      // is available next time around.
       expect(db.task.update).toHaveBeenCalledWith({
         where: { id: "task-daemon-1" },
-        data: { status: "killed", executionHost: null },
+        data: expect.objectContaining({
+          status: "killed",
+          executionHost: null,
+          killedReason: "daemon_disconnected",
+          killedAt: expect.any(Date),
+        }),
       });
       expect(realtimeHub.broadcast).toHaveBeenCalledWith(
         "user-1",

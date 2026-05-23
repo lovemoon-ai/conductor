@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/api/tasks/[taskId]/restart/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
 import * as authService from "@/lib/auth/service";
@@ -10,11 +10,13 @@ vi.mock("@/lib/realtime/hub", () => ({
     bindTaskToAgent: vi.fn(),
     sendToAgentHost: vi.fn().mockReturnValue(true),
     waitForAgentCommandAck: vi.fn().mockResolvedValue(true),
+    cancelAgentCommandAck: vi.fn(),
   },
 }));
 
 vi.mock("@/lib/realtime/agent-outbox", () => ({
   deliverAgentOutboxForHost: vi.fn().mockResolvedValue({ attempted: 1, delivered: 1 }),
+  isMissingAgentOutboxTableError: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -1771,5 +1773,165 @@ describe("/api/tasks/[taskId]/restart", () => {
       }),
     );
     expect(JSON.parse(payloadJson).payload.target_launch_config).toEqual(worktreeLaunchConfig);
+  });
+
+  // RFC 0029: Reclaim path tests. The reclaim attempt is feature-flagged via
+  // CONDUCTOR_TASK_RECLAIM_ENABLED; flip it on for these tests and restore at
+  // the end so we don't pollute other suites in the same vitest worker.
+  describe("RFC 0029 reclaim path", () => {
+    const ORIGINAL_RECLAIM_FLAG = process.env.CONDUCTOR_TASK_RECLAIM_ENABLED;
+    beforeEach(() => {
+      process.env.CONDUCTOR_TASK_RECLAIM_ENABLED = "1";
+    });
+    afterAll(() => {
+      if (ORIGINAL_RECLAIM_FLAG === undefined) {
+        delete process.env.CONDUCTOR_TASK_RECLAIM_ENABLED;
+      } else {
+        process.env.CONDUCTOR_TASK_RECLAIM_ENABLED = ORIGINAL_RECLAIM_FLAG;
+      }
+    });
+
+    it("reclaims a daemon_disconnected killed task instead of spawning a new fire", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(
+        buildTask({
+          status: "killed",
+          killedReason: "daemon_disconnected",
+          killedAt: new Date("2026-05-23T11:00:00.000Z"),
+        }) as any,
+      );
+      vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("daemon-1");
+      vi.mocked(realtimeHub.waitForAgentCommandAck).mockResolvedValue(true);
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {},
+        }),
+        { params: Promise.resolve({ taskId: "task-1" }) },
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.mode).toBe("reclaim");
+      expect(data.reclaim_host).toBe("daemon-1");
+      expect(data.task.status).toBe("running");
+      // The reclaim path writes the reclaim_task outbox event and revokes
+      // the killed flags — it must NOT also queue a restart_task event.
+      const outboxEventTypes = vi.mocked(db.agentOutbox.create).mock.calls.map(
+        ([{ data: outboxData }]: any) => outboxData?.eventType,
+      );
+      expect(outboxEventTypes).toContain("reclaim_task");
+      expect(outboxEventTypes).not.toContain("restart_task");
+      const taskUpdateCalls = vi.mocked(db.task.update).mock.calls;
+      const lastTaskUpdate = taskUpdateCalls.at(-1)?.[0]?.data as Record<string, unknown>;
+      expect(lastTaskUpdate).toMatchObject({
+        status: "running",
+        killedReason: null,
+        killedAt: null,
+      });
+    });
+
+    it("falls back to the spawn restart when the user explicitly stopped the task", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(
+        buildTask({
+          status: "killed",
+          killedReason: "user_stopped",
+          killedAt: new Date("2026-05-23T11:00:00.000Z"),
+        }) as any,
+      );
+      vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("daemon-1");
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {},
+        }),
+        { params: Promise.resolve({ taskId: "task-1" }) },
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.mode).toBe("inplace_restart");
+      // No reclaim outbox event should have been written — the user pressed
+      // Stop, so we honour that intent and spawn a fresh fire.
+      const outboxEventTypes = vi.mocked(db.agentOutbox.create).mock.calls.map(
+        ([{ data: outboxData }]: any) => outboxData?.eventType,
+      );
+      expect(outboxEventTypes).toContain("restart_task");
+      expect(outboxEventTypes).not.toContain("reclaim_task");
+    });
+
+    it("falls back to the spawn restart when the reclaim ack times out", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(
+        buildTask({
+          status: "killed",
+          killedReason: "daemon_disconnected",
+        }) as any,
+      );
+      vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("daemon-1");
+      // null === timeout per waitForAgentCommandAck contract
+      vi.mocked(realtimeHub.waitForAgentCommandAck).mockResolvedValueOnce(null);
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {},
+        }),
+        { params: Promise.resolve({ taskId: "task-1" }) },
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.mode).toBe("inplace_restart");
+      const outboxEventTypes = vi.mocked(db.agentOutbox.create).mock.calls.map(
+        ([{ data: outboxData }]: any) => outboxData?.eventType,
+      );
+      expect(outboxEventTypes).toContain("reclaim_task");
+      expect(outboxEventTypes).toContain("restart_task");
+      // The reclaim row should be flipped to `failed` so the retry loop
+      // doesn't resurrect it after the spawn succeeds.
+      expect(db.agentOutbox.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: { in: ["pending", "sent"] },
+          }),
+          data: expect.objectContaining({
+            status: "failed",
+            lastError: "reclaim_ack_timeout",
+          }),
+        }),
+      );
+    });
+
+    it("skips reclaim entirely when the feature flag is off", async () => {
+      process.env.CONDUCTOR_TASK_RECLAIM_ENABLED = "0";
+      vi.mocked(db.task.findFirst).mockResolvedValue(
+        buildTask({
+          status: "killed",
+          killedReason: "daemon_disconnected",
+        }) as any,
+      );
+      vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("daemon-1");
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {},
+        }),
+        { params: Promise.resolve({ taskId: "task-1" }) },
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.mode).toBe("inplace_restart");
+      const outboxEventTypes = vi.mocked(db.agentOutbox.create).mock.calls.map(
+        ([{ data: outboxData }]: any) => outboxData?.eventType,
+      );
+      expect(outboxEventTypes).not.toContain("reclaim_task");
+    });
   });
 });

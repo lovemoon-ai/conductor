@@ -917,3 +917,110 @@ describe("agent-gateway ownership handling", () => {
     expect(lastError.payload.message).toMatch(/request_id/);
   });
 });
+
+// RFC 0029: processAgentAliveTasks must (a) only touch
+// killed/daemon_disconnected rows, (b) not clobber agentHost/executionHost,
+// and (c) skip the in-memory rebind for manual-fire tasks so sdk_message
+// continues to flow to the fire ws.
+describe("processAgentAliveTasks", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("revokes killed flags but leaves agentHost/executionHost untouched for pure-daemon tasks", async () => {
+    vi.mocked(db.task.findMany).mockResolvedValue([
+      { id: "task-d1", projectId: "proj-1", agentHost: "daemon-Y" },
+    ] as any);
+    vi.mocked(db.task.updateMany).mockResolvedValue({ count: 1 } as any);
+
+    const { processAgentAliveTasks } = await import("./agent-gateway");
+    const result = await processAgentAliveTasks({
+      userId: "user-1",
+      agentHost: "daemon-Y",
+      payload: {
+        agent_host: "daemon-Y",
+        alive_task_ids: ["task-d1"],
+        reason: "agent_reconnect",
+      },
+    });
+
+    expect(result.revokedTaskIds).toEqual(["task-d1"]);
+    expect(result.consideredCount).toBe(1);
+    expect(db.task.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "task-d1",
+        status: "killed",
+        killedReason: "daemon_disconnected",
+      },
+      data: {
+        status: "running",
+        killedReason: null,
+        killedAt: null,
+        // Critically: no executionHost / agentHost writes.
+      },
+    });
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-d1", "daemon-Y");
+  });
+
+  it("does NOT rebind the realtime hub for manual-fire tasks (agentHost != calling daemon)", async () => {
+    vi.mocked(db.task.findMany).mockResolvedValue([
+      {
+        id: "task-mf1",
+        projectId: "proj-1",
+        // Manual-fire task: logical owner is daemon-Y, executor is fire-X.
+        // The push came in via daemon-Y (executionHost match path).
+        agentHost: "conductor-fire-X",
+      },
+    ] as any);
+    vi.mocked(db.task.updateMany).mockResolvedValue({ count: 1 } as any);
+
+    const { processAgentAliveTasks } = await import("./agent-gateway");
+    const result = await processAgentAliveTasks({
+      userId: "user-1",
+      agentHost: "daemon-Y",
+      payload: {
+        agent_host: "daemon-Y",
+        alive_task_ids: ["task-mf1"],
+        reason: "agent_reconnect",
+      },
+    });
+
+    expect(result.revokedTaskIds).toEqual(["task-mf1"]);
+    // The hub must not be re-bound to daemon-Y, otherwise sdk_message would
+    // route to the daemon ws (which cannot relay into a detached in-tmux
+    // fire) instead of to the fire's own ws.
+    expect(realtimeHub.bindTaskToAgent).not.toHaveBeenCalled();
+  });
+
+  it("ignores empty payloads without touching the DB", async () => {
+    const { processAgentAliveTasks } = await import("./agent-gateway");
+    const result = await processAgentAliveTasks({
+      userId: "user-1",
+      agentHost: "daemon-Y",
+      payload: { agent_host: "daemon-Y", alive_task_ids: [] },
+    });
+
+    expect(result).toEqual({
+      revokedTaskIds: [],
+      consideredCount: 0,
+      reason: "agent_reconnect",
+    });
+    expect(db.task.findMany).not.toHaveBeenCalled();
+    expect(db.task.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("returns gracefully when the killedReason column is missing (pre-migration DB)", async () => {
+    vi.mocked(db.task.findMany).mockRejectedValue(
+      prismaError("P2022", "Column `tasks.killed_reason` does not exist"),
+    );
+    const { processAgentAliveTasks } = await import("./agent-gateway");
+    const result = await processAgentAliveTasks({
+      userId: "user-1",
+      agentHost: "daemon-Y",
+      payload: { agent_host: "daemon-Y", alive_task_ids: ["task-x"] },
+    });
+    expect(result.revokedTaskIds).toEqual([]);
+    expect(result.consideredCount).toBe(1);
+    expect(db.task.updateMany).not.toHaveBeenCalled();
+  });
+});
