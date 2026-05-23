@@ -42,6 +42,14 @@ const DEFAULT_CLIs = {
     execArgs: "",
     description: "GitHub Copilot (built in via SDK)"
   },
+  "chat-web": {
+    command: "chat-web",
+    // Add `--model gemini` to use Google AI Studio's Gemini instead of
+    // the default ChatGPT. The CLI parses --model from this entry and
+    // forwards it to ai-sdk; it doesn't actually exec the command line.
+    execArgs: "",
+    description: "Chat web automation (ChatGPT / Gemini via @love-moon/chat-web)"
+  },
 };
 
 const backendUrl =
@@ -72,6 +80,13 @@ function isBuiltInCopilotAvailable() {
   return Boolean(
     packageJson?.dependencies?.["@github/copilot-sdk"] ||
     packageJson?.optionalDependencies?.["@github/copilot-sdk"],
+  );
+}
+
+function isBuiltInChatWebAvailable() {
+  return Boolean(
+    packageJson?.dependencies?.["@love-moon/chat-web"] ||
+    packageJson?.optionalDependencies?.["@love-moon/chat-web"],
   );
 }
 
@@ -291,6 +306,10 @@ function detectInstalledCLIs() {
       continue;
     }
     if (key === "copilot" && isBuiltInCopilotAvailable()) {
+      detected.push(key);
+      continue;
+    }
+    if (key === "chat-web" && isBuiltInChatWebAvailable()) {
       detected.push(key);
       continue;
     }

@@ -37,17 +37,20 @@
     "yargs": "^17.7.2"
   },
   "optionalDependencies": {
-    "@roamhq/wrtc": "^0.10.0"
+    "@roamhq/wrtc": "^0.10.0",
+    "@love-moon/chat-web": "0.1.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
       "node-pty",
-      "@roamhq/wrtc"
+      "@roamhq/wrtc",
+      "playwright"
     ],
     "overrides": {
       "@love-moon/ai-sdk": "file:../modules/ai-sdk",
       "@love-moon/ai-manager": "file:../modules/ai-manager",
-      "@love-moon/conductor-sdk": "file:../modules/conductor-sdk"
+      "@love-moon/conductor-sdk": "file:../modules/conductor-sdk",
+      "@love-moon/chat-web": "file:../modules/chat-web"
     }
   }
 }

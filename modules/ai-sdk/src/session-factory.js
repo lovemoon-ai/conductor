@@ -1,5 +1,6 @@
 import {
   BUILT_IN_BACKENDS,
+  CHAT_WEB_SESSION_VARIANT,
   CLAUDE_AGENT_SDK_VARIANT,
   CODEX_APP_SERVER_VARIANT,
   CODEX_EXEC_VARIANT,
@@ -12,6 +13,7 @@ import {
   listBuiltInBackends,
   normalizeBuiltInBackend,
 } from "./built-in-backends.js";
+import { ChatWebSession } from "./providers/chat-web-session.js";
 import { CodexAppServerSession } from "./providers/codex-app-server-session.js";
 import { CodexExecSession } from "./providers/codex-exec-session.js";
 import { ClaudeAgentSdkSession } from "./providers/claude-agent-sdk-session.js";
@@ -31,6 +33,7 @@ export const COPILOT_PROVIDER_VARIANT = COPILOT_SDK_VARIANT;
 export const KIMI_PROVIDER_VARIANT = KIMI_CLI_WIRE_VARIANT;
 export const KIMI_PRINT_PROVIDER_VARIANT = KIMI_CLI_PRINT_VARIANT;
 export const OPENCODE_PROVIDER_VARIANT = OPENCODE_SDK_VARIANT;
+export const CHAT_WEB_PROVIDER_VARIANT = CHAT_WEB_SESSION_VARIANT;
 
 const SESSION_FACTORIES_BY_BACKEND = new Map([
   [
@@ -50,6 +53,7 @@ const SESSION_FACTORIES_BY_BACKEND = new Map([
         : new KimiCliSession(backend, options),
   ],
   ["opencode", (backend, options) => new OpencodeSdkSession(backend, options)],
+  ["chat-web", (backend, options) => new ChatWebSession(backend, options)],
 ]);
 
 function hasStructuredOutputPreference(options = {}) {
@@ -137,6 +141,7 @@ export async function createLocalAiSession(backend, options = {}) {
 }
 
 export { BUILT_IN_BACKENDS };
+export { ChatWebSession };
 export { CodexAppServerSession };
 export { CodexExecSession };
 export { ClaudeAgentSdkSession };
