@@ -13,7 +13,7 @@ import { TaskDetailPane } from '@/features/tasks';
 import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
 import { computeProjectGroups } from '@/features/projects/utils/project-groups';
-import { filterTasksByProject, getStableTaskBackend } from '@/features/tasks';
+import { filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } from '@/features/tasks';
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
 import { parseTaskType, type TaskType } from '@/lib/tasks/task-config';
 
@@ -104,10 +104,7 @@ function TasksPageContent() {
   );
   const daemonFilteredTasks = useMemo(
     () => daemonHostFilter
-      ? typeFilteredTasks.filter((task) => {
-          const host = task.projectId ? projectDaemonHostMap.get(task.projectId) ?? null : null;
-          return host === daemonHostFilter;
-        })
+      ? typeFilteredTasks.filter((task) => resolveTaskDaemonHost(task, projectDaemonHostMap) === daemonHostFilter)
       : typeFilteredTasks,
     [typeFilteredTasks, daemonHostFilter, projectDaemonHostMap],
   );

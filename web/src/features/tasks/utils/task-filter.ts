@@ -1,6 +1,41 @@
 import type { Task } from '@/shared/types';
 
 /**
+ * Resolve the daemon host responsible for a task, falling back across the
+ * sources in the order that gives the most useful display value:
+ *
+ *  1. `task.metadata.daemonName` — populated by the daemon as it registers
+ *     the task and is the only reliable signal for tasks attached to the
+ *     server-side "Default Project" (which has no `daemonHost` of its own,
+ *     so per-project lookup would always return `null`).
+ *  2. `task.executionHost` — set when an agent claims/resumes a task; may
+ *     differ from `agentHost` after a fire takeover.
+ *  3. `task.agentHost` — the daemon that originally created the task.
+ *  4. `project.daemonHost` — owner of the task's project; the original
+ *     pre-default-project behaviour.
+ *
+ * Callers that only have project-side data can pass either a project lookup
+ * `Map<projectId, daemonHost>` or `null` to skip step 4.
+ */
+export function resolveTaskDaemonHost(
+  task: Pick<Task, 'projectId' | 'agentHost' | 'executionHost' | 'metadata'>,
+  projectDaemonHostMap: Map<string, string | null> | null = null,
+): string | null {
+  const meta = task.metadata as Record<string, unknown> | null | undefined;
+  const fromMetadata = typeof meta?.daemonName === 'string' ? meta.daemonName.trim() : '';
+  if (fromMetadata) return fromMetadata;
+  const fromExecution = typeof task.executionHost === 'string' ? task.executionHost.trim() : '';
+  if (fromExecution) return fromExecution;
+  const fromAgent = typeof task.agentHost === 'string' ? task.agentHost.trim() : '';
+  if (fromAgent) return fromAgent;
+  if (projectDaemonHostMap && task.projectId) {
+    const fromProject = projectDaemonHostMap.get(task.projectId);
+    if (typeof fromProject === 'string' && fromProject.trim()) return fromProject.trim();
+  }
+  return null;
+}
+
+/**
  * Derive the backend name for a task using only stable, persistent sources
  * (so display and filter agree without depending on ephemeral runtime state).
  * Order mirrors the fallback chain used in TaskItem for the backend chip.
