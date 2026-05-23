@@ -123,7 +123,11 @@ export class ProviderApiKeyRequiredError extends ChatWebError {
       provider,
       hint:
         provider === "gemini"
-          ? "Open https://aistudio.google.com/app/apikey, create a key, then in AI Studio click the 'Get API key' / 'No API key selected' button and select that key."
+          ? "Two common causes: (a) you've hit AI Studio's free-tier daily quota " +
+            "— wait a day for the quota to reset, OR (b) no API key is configured. " +
+            "If you need uninterrupted access, open https://aistudio.google.com/app/apikey, " +
+            "create a key, then in AI Studio click the 'Get API key' / 'No API key selected' " +
+            "button and select that key."
           : `Configure an API key for ${provider} in its web console.`,
     });
     this.name = "ProviderApiKeyRequiredError";

@@ -2,7 +2,10 @@ import type { Locator, Page } from "playwright";
 
 import {
   InputNotFoundError,
+  ProviderApiKeyRequiredError,
   ProviderAutomationBlockedError,
+  ProviderPermissionDeniedError,
+  ProviderRateLimitedError,
   ResponseExtractionError,
   ResponseTimeoutError,
 } from "../core/errors.js";
@@ -211,7 +214,80 @@ export class GeminiAdapter implements ChatProvider {
       }
       throw new ResponseTimeoutError(this.name, timeoutMs);
     }
+
+    // AI Studio renders upstream errors AS the model turn body (so
+    // "stable" successfully extracts an "answer" that's actually an
+    // error message). Catch the well-known patterns and throw typed
+    // errors instead of surfacing the error string as the model's reply.
+    await this.throwIfKnownUpstreamError(page, stable);
+
     return stable;
+  }
+
+  /**
+   * Inspect the freshly-extracted "assistant" text and raise a typed
+   * error if it's really an upstream failure that AI Studio just
+   * rendered in the model turn slot.
+   *
+   * Known patterns:
+   *   - "An internal error has occurred."  → typically quota /
+   *     server-side error (the user has reproduced this when their
+   *     free-tier daily quota was exhausted).
+   *   - "Failed to generate content: permission denied."  → API key
+   *     missing or model not enabled on the account.
+   *
+   * The actual root cause for "internal error" varies (preview model
+   * outage, daily quota cap, region restriction, transient backend
+   * error). We don't try to disambiguate further — the hint just lists
+   * the common ones so the user knows where to look.
+   */
+  private async throwIfKnownUpstreamError(page: Page, text: string): Promise<void> {
+    const lower = text.toLowerCase();
+
+    if (lower.includes("an internal error has occurred")) {
+      const cause = await this.detectFailureCause(page);
+      if (cause === "no-api-key") {
+        throw new ProviderApiKeyRequiredError(
+          this.name,
+          'AI Studio shows "No API key selected"; configure an API key to run prompts.',
+        );
+      }
+      if (cause === "permission-denied") {
+        throw new ProviderPermissionDeniedError(this.name, text);
+      }
+      // No specific UI indicator — surface as a rate-limited / quota
+      // problem since that's the most common cause of an opaque
+      // "internal error" on the free tier.
+      throw new ProviderRateLimitedError(this.name);
+    }
+
+    if (lower.includes("failed to generate content")) {
+      if (lower.includes("permission denied")) {
+        throw new ProviderPermissionDeniedError(this.name, text);
+      }
+      throw new ProviderPermissionDeniedError(this.name, text);
+    }
+  }
+
+  private async detectFailureCause(
+    page: Page,
+  ): Promise<"no-api-key" | "permission-denied" | ""> {
+    const noKey = await page
+      .locator('button[aria-label="No API key selected"]')
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (noKey) return "no-api-key";
+    const found = await page
+      .evaluate(() => {
+        const t = (document.body.innerText || "").toLowerCase();
+        if (t.includes("permission denied")) return "permission-denied";
+        if (t.includes("no api key") || t.includes("get api key")) return "no-api-key";
+        return "";
+      })
+      .catch(() => "");
+    if (found === "permission-denied" || found === "no-api-key") return found;
+    return "";
   }
 
   /**

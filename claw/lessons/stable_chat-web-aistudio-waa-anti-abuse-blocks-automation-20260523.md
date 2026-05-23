@@ -4,6 +4,18 @@
 - Module: `modules/chat-web/src/providers/gemini.ts`
 - Surfaced by: 用户在 conductor UI 任务里 `1+1=` 永远卡在 "Thinking" 没回复
 
+## 2026-05-23 后续更新
+
+第二天再测，"Thinking" 永远不出回复的现象**消失**，改成 3.6s 直接拿到 `"An internal error has occurred."` + 页面显示 "No API key selected" 按钮。
+
+**原因更可能是 AI Studio 免费层每日 quota 用完，不是 WAA 阻断**。Quota 重置后又能用。WAA 那一波（WASM challenge 重试不停、`GenerateContent` 永远不发）也是真现象，但触发场景大概是：
+- 当 quota / model 状态正常时：JS 调 WAA 解 challenge → 解出 → 发 GenerateContent
+- 当 quota 已超时：服务端某条路径让 WAA 进入失败循环（既不返回错误也不让 GenerateContent 发），UI 卡 Thinking
+
+第二天测试时 quota 重置 + 但又超了一次，所以错误回到了"显式 internal error"路径，没有 WAA 循环了。
+
+**当前 chat-web 的处理**：在 `waitForResponse` settle 之后调 `throwIfKnownUpstreamError`，匹配 `"an internal error has occurred"` → 检查页面是否有 "No API key selected" 按钮 → 抛 `PROVIDER_API_KEY_REQUIRED`（带 hint 说明 quota 或 api-key 两条解法）。没有指向 button 的时候改抛 `PROVIDER_RATE_LIMITED`。
+
 ## 症状
 
 `https://aistudio.google.com/prompts/new_chat` 这个页面在用户日常浏览器里能用（输入 → 几秒内回复）。但 chat-web 用 Playwright（无论 headless / headed / `channel: "chrome"`）打开同一页面、登录态正常、用户消息提交成功，**模型回复永远是 "Thinking" 占位文本，永不出真回复**。
