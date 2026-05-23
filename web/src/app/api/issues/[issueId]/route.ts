@@ -133,8 +133,23 @@ const resolveIssueSpawnAgentHost = (args: {
   connectedAgents: ConnectedAgent[];
   projectDaemonHost: string | null;
   requestedBackendType: string | null;
+  /**
+   * Daemon the client explicitly picked in the MoveIssueToDoing dialog
+   * (forwarded via `metadata.daemonHost`). When the project is bound to a
+   * daemon, the request and the binding must agree. When the project is
+   * unbound (default project), the explicit pick wins over the auto-pick
+   * fallback — otherwise the picker the user sees is cosmetic.
+   */
+  requestedDaemonHost: string | null;
 }): IssueSpawnAgentHostResult => {
   if (args.projectDaemonHost) {
+    if (args.requestedDaemonHost && args.requestedDaemonHost !== args.projectDaemonHost) {
+      return {
+        ok: false,
+        error: `Requested daemon ${args.requestedDaemonHost} does not match the project's bound daemon ${args.projectDaemonHost}`,
+        status: 409,
+      };
+    }
     const projectAgent = args.connectedAgents.find((agent) => agent.host === args.projectDaemonHost) ?? null;
     if (!projectAgent) {
       return {
@@ -162,6 +177,31 @@ const resolveIssueSpawnAgentHost = (args: {
     return {
       ok: true,
       agentHost: args.projectDaemonHost,
+    };
+  }
+
+  // Unbound project (e.g. default project). If the client explicitly chose a
+  // daemon, that choice wins — checking online + backend compatibility — so
+  // the dialog's daemon picker actually controls where the task spawns.
+  if (args.requestedDaemonHost) {
+    const requestedAgent = args.connectedAgents.find((agent) => agent.host === args.requestedDaemonHost) ?? null;
+    if (!requestedAgent) {
+      return {
+        ok: false,
+        error: `Daemon ${args.requestedDaemonHost} is offline`,
+        status: 409,
+      };
+    }
+    if (!supportsRequestedBackend(requestedAgent.supportedBackends, args.requestedBackendType)) {
+      return {
+        ok: false,
+        error: `Daemon ${args.requestedDaemonHost} does not support backend ${args.requestedBackendType ?? '(unspecified)'}`,
+        status: 409,
+      };
+    }
+    return {
+      ok: true,
+      agentHost: args.requestedDaemonHost,
     };
   }
 
@@ -284,6 +324,14 @@ export async function PATCH(
   const existingMetadata = parseIssueMetadata(existing.metadata);
   const nextMetadata = input.metadata !== undefined ? input.metadata : existingMetadata;
   const requestedBackendType = normalizeBackendType(nextMetadata?.backendType);
+  // The doing dialog passes the user-selected daemon through metadata so the
+  // server can (a) honor it on unbound projects where projectDaemonHost is
+  // null, and (b) detect a conflict with a project-bound daemon. We only read
+  // it; the value persisted back to metadata is rewritten below with the
+  // actually-resolved agentHost so a fake client value never sticks.
+  const requestedDaemonHost = typeof nextMetadata?.daemonHost === 'string'
+    ? (normalizeOptionalString(nextMetadata.daemonHost) ?? null)
+    : null;
   const currentStatus = normalizeIssueStatus(existing.status);
   const currentPriority = normalizeIssuePriority(
     'priority' in existing ? existing.priority : undefined,
@@ -484,6 +532,7 @@ export async function PATCH(
       connectedAgents,
       projectDaemonHost,
       requestedBackendType,
+      requestedDaemonHost,
     });
     if (!resolvedAgentHost.ok) {
       return NextResponse.json(

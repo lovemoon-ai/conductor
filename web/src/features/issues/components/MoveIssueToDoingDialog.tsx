@@ -63,7 +63,15 @@ export function MoveIssueToDoingDialog({
     return map;
   }, [daemonOptions]);
   const orderedHosts = useMemo(() => Array.from(optionByHost.keys()), [optionByHost]);
-  const showDaemonPicker = orderedHosts.length > 1;
+  // Show the daemon row whenever we have at least one candidate, even if it
+  // is the only one. The first time an issue enters doing the user explicitly
+  // expects to *see* which daemon is going to take it — hiding the row when
+  // there happens to be only one online sibling makes the "issue is not bound
+  // to a daemon until this dialog" promise invisible. We disable the select
+  // when nothing is selectable, so the affordance still telegraphs "this is
+  // the daemon the task will spawn on."
+  const showDaemonPicker = orderedHosts.length >= 1;
+  const daemonPickerDisabled = orderedHosts.length <= 1;
 
   const currentOption = optionByHost.get(daemonHost) ?? null;
   const availableBackends = useMemo(
@@ -169,7 +177,7 @@ export function MoveIssueToDoingDialog({
               value={daemonHost}
               onChange={(event) => setDaemonHost(event.target.value)}
               className="w-full webapp-input"
-              disabled={isSubmitting}
+              disabled={isSubmitting || daemonPickerDisabled}
             >
               {orderedHosts.map((host) => {
                 const option = optionByHost.get(host);
