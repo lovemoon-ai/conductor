@@ -42,7 +42,11 @@ const MERGED_DAEMONS: MoveIssueToDoingDaemonOption[] = [
 ];
 
 describe('MoveIssueToDoingDialog', () => {
-  it('shows the daemon picker even when only one daemon is available so the user sees where the task will spawn', () => {
+  it('hides the daemon picker when only one daemon is available so the dialog stays focused on backend selection', () => {
+    // Per product spec rule #1: single-daemon projects (and merged-group
+    // projects that only have one daemon currently online) do not need a
+    // daemon row — there is no choice to make. The IssueCard daemon tag
+    // continues to surface "where the task ran" after the fact.
     render(
       <MoveIssueToDoingDialog
         open
@@ -52,11 +56,7 @@ describe('MoveIssueToDoingDialog', () => {
       />,
     );
 
-    const daemonSelect = screen.getByLabelText('Daemon');
-    expect(daemonSelect).toHaveValue('daemon-a');
-    // Disabled because there is nothing else to switch to — but it remains
-    // visible so the affordance "you are picking a daemon" is preserved.
-    expect(daemonSelect).toBeDisabled();
+    expect(screen.queryByLabelText('Daemon')).toBeNull();
     expect(screen.getByLabelText('Backend')).toHaveValue('claude');
   });
 

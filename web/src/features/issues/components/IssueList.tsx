@@ -20,11 +20,14 @@ export function IssueList({
   issues,
   onStatusChange,
   ownerOptionsByProjectId,
+  multiDaemonProjectIds,
   onDeleteIssue,
 }: {
   issues: Issue[];
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
   ownerOptionsByProjectId?: Map<string, IssueOwnerOption[]>;
+  /** See IssueBoard.tsx — set of projects whose issues should render the daemon chip. */
+  multiDaemonProjectIds?: ReadonlySet<string>;
   onDeleteIssue?: (issueId: string) => Promise<void> | void;
 }) {
   const columns = useMemo(() => buildIssueColumns(issues), [issues]);
@@ -95,6 +98,7 @@ export function IssueList({
               disabled
               onStatusChange={onStatusChange}
               ownerOptions={ownerOptionsByProjectId?.get(issue.projectId)}
+              multiDaemonContext={multiDaemonProjectIds?.has(issue.projectId) ?? false}
               onDelete={onDeleteIssue}
               onOpenDetails={handleOpenDetails}
             />

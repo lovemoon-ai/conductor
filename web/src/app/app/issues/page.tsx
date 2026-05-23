@@ -205,6 +205,35 @@ function IssuesPageContent() {
       ? issues
       : issues.filter((issue) => !hiddenProjectIdSet.has(issue.projectId))
   ), [hiddenProjectIdSet, issues, resolvedProjectId]);
+  // A project is in "multi-daemon context" — and therefore should show the
+  // daemon chip on its issue cards after a commitment — when:
+  //   - it has at least one sibling project (merged cross-daemon group), OR
+  //   - it is the default project AND 2+ non-fire daemons are connected.
+  // Anything else (single-daemon bound project, default with 1 daemon) is
+  // single-daemon by definition and the chip stays hidden — per product
+  // spec, "issue 不显示 daemon" when there is no real daemon choice to make.
+  const multiDaemonProjectIds = useMemo<ReadonlySet<string>>(() => {
+    const nonFireOnlineDaemonCount = agents.reduce(
+      (count, agent) => (isConductorFireHost(agent.host) ? count : count + 1),
+      0,
+    );
+    const result = new Set<string>();
+    for (const project of projects) {
+      if (project.isDefault) {
+        if (nonFireOnlineDaemonCount > 1) {
+          result.add(project.id);
+        }
+        continue;
+      }
+      const hasSibling = projects.some(
+        (other) => other.id !== project.id && canMergeProjects(project, other),
+      );
+      if (hasSibling) {
+        result.add(project.id);
+      }
+    }
+    return result;
+  }, [agents, projects]);
   const ownerOptionsByProjectId = useMemo(() => {
     const result = new Map<string, IssueOwnerOption[]>();
     for (const project of projects) {
@@ -469,6 +498,7 @@ function IssuesPageContent() {
             issues={visibleIssues}
             onStatusChange={handleStatusChange}
             ownerOptionsByProjectId={ownerOptionsByProjectId}
+            multiDaemonProjectIds={multiDaemonProjectIds}
             onDeleteIssue={handleDeleteIssue}
           />
         ) : (
@@ -479,6 +509,7 @@ function IssuesPageContent() {
             onMoveIssue={handleMoveIssue}
             onStatusChange={handleStatusChange}
             ownerOptionsByProjectId={ownerOptionsByProjectId}
+            multiDaemonProjectIds={multiDaemonProjectIds}
             onDeleteIssue={handleDeleteIssue}
           />
         )}

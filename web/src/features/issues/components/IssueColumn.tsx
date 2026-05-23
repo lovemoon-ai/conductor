@@ -17,6 +17,7 @@ export function IssueColumn({
   statusMenuDisabled = false,
   onStatusChange,
   ownerOptionsByProjectId,
+  multiDaemonProjectIds,
   onDeleteIssue,
   onOpenDetails,
 }: {
@@ -26,6 +27,13 @@ export function IssueColumn({
   statusMenuDisabled?: boolean;
   onStatusChange?: (issueId: string, status: Issue['status']) => Promise<void> | void;
   ownerOptionsByProjectId?: Map<string, IssueOwnerOption[]>;
+  /**
+   * Set of project ids whose issues should render the daemon attribution
+   * chip — i.e. projects that are part of a cross-daemon merged group OR
+   * the default project when multiple non-fire daemons are online. The
+   * computation lives in the page because it needs the live agents store.
+   */
+  multiDaemonProjectIds?: ReadonlySet<string>;
   onDeleteIssue?: (issueId: string) => Promise<void> | void;
   onOpenDetails?: (issue: Issue) => void;
 }) {
@@ -56,6 +64,7 @@ export function IssueColumn({
                 statusMenuDisabled={statusMenuDisabled}
                 onStatusChange={onStatusChange}
                 ownerOptions={ownerOptionsByProjectId?.get(issue.projectId)}
+                multiDaemonContext={multiDaemonProjectIds?.has(issue.projectId) ?? false}
                 onDelete={onDeleteIssue}
                 onOpenDetails={onOpenDetails}
               />
