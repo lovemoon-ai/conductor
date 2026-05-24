@@ -3,19 +3,36 @@
  *
  * When an Issue's description starts with `/goal ...`, the Issue → Doing flow
  * routes the spawned task through fire's native goal mode (`session.runGoal`)
- * instead of the normal single-turn flow. The contract with the daemon and CLI
- * layers (owned by sibling agents) is:
+ * instead of the normal single-turn flow.
  *
- *   - `launchConfig.aiMode = "goal"` tells the daemon to spawn fire with
- *     `--goal` so fire interprets the prefill as the goal objective.
- *   - `launchConfig.goal = { objective, source: "issue", issueId }` carries
- *     the parsed objective. The initial message content delivered to fire is
- *     the *objective text*, never the raw `/goal ...` line — the `--goal`
- *     flag is what makes fire treat it as a goal.
+ * Per-message detection design: the daemon delivers `initial_content` to fire
+ * verbatim, and fire inspects EACH user message for a leading `/goal` line
+ * (see `parseGoalDirectiveFromMessage` in `cli/bin/conductor-fire.js`). The
+ * web layer's job is to:
+ *   1. Stamp `metadata.aiMode = "goal"` on the task for UI surfaces (this is
+ *      informational only — fire does not read it back).
+ *   2. Deliver an initial content string that STARTS WITH `/goal\n` so fire's
+ *      first-turn detector picks it up.
+ *
+ * There is no longer a `--goal` spawn flag; the daemon no longer reads
+ * `launchConfig.aiMode` to make spawn decisions. Goal mode is a per-message
+ * runtime concept now, not a launch-time flag.
  */
 
-/** Hard cap on objective length so we never blow past fire's prompt budget. */
+/**
+ * Hard cap on objective length so we never blow past fire's prompt budget.
+ * The `/goal\n` prefix (7 chars) added by `buildIssueGoalInitialContent` is
+ * accounted for separately at build time so the parsed objective itself
+ * remains bounded by this number.
+ */
 export const MAX_GOAL_OBJECTIVE_LENGTH = 4000;
+
+/**
+ * Prefix that tells fire's per-message detector "treat the rest of this
+ * message as a goal objective." Must match the directive grammar accepted by
+ * `parseGoalDirective` and by the CLI's `parseGoalDirectiveFromMessage`.
+ */
+const GOAL_DIRECTIVE_PREFIX = '/goal\n';
 
 /**
  * Backends that currently understand goal mode.
@@ -137,22 +154,30 @@ export const parseGoalDirective = (
  * Build the initial content delivered to fire when the issue spawns in goal
  * mode.
  *
- * Single source of truth: this returns the SAME canonical objective string
- * that we persist as `launch_config.goal.objective`, the `Message` row
- * content, and `metadata.initialContent`. We intentionally do NOT prepend an
- * `Issue: <title>` framing line here — the task already carries the title in
- * its own column, and any framing would create the three-way divergence the
- * code reviewer flagged (the daemon prefill is just the bare objective).
+ * Per the per-message detection design, the returned string is
+ * `"/goal\n<objective>"` so fire's `parseGoalDirectiveFromMessage` (see
+ * `cli/bin/conductor-fire.js`) sees the directive on the first turn and
+ * dispatches `session.runGoal`. The daemon does NOT special-case this string
+ * — it ships the content to fire verbatim.
  *
- * The `title` arg is accepted for forward compatibility / call-site symmetry
- * with `buildIssueInitialContent`, but it is unused in the returned string.
+ * The objective body is still bounded by `MAX_GOAL_OBJECTIVE_LENGTH` (the
+ * prefix is reserved separately), so callers who persist the trimmed
+ * objective elsewhere (e.g. `launch_config.goal.objective`) can rely on that
+ * bound. The full returned string is `prefix.length + objective.length`.
+ *
+ * We intentionally do NOT prepend an `Issue: <title>` framing line — the task
+ * already carries the title in its own column, and any framing would
+ * recreate the three-way divergence the code reviewer flagged. The `title`
+ * arg is kept for call-site symmetry with `buildIssueInitialContent` and is
+ * deliberately unused.
  */
 export const buildIssueGoalInitialContent = (args: {
   title: string;
   objective: string;
 }): string => {
   void args.title;
-  return truncateObjective(args.objective.trim());
+  const trimmed = truncateObjective(args.objective.trim());
+  return `${GOAL_DIRECTIVE_PREFIX}${trimmed}`;
 };
 
 /** True when the backend supports goal-mode dispatch today. */

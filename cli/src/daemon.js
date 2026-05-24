@@ -484,46 +484,22 @@ function normalizeLaunchConfig(value) {
 }
 
 /**
- * Detect whether a launch_config envelope is asking for goal-mode execution.
- *
- * The web app sets `aiMode: "goal"` on the create-task envelope, and may also
- * include a `goal: { objective, source, ... }` block. Either signal counts —
- * we accept the presence of a non-empty goal block even if aiMode was omitted,
- * since dropping the signal silently would be the worse failure mode.
- */
-export function isGoalModeLaunchConfig(launchConfig) {
-  if (!launchConfig || typeof launchConfig !== "object" || Array.isArray(launchConfig)) {
-    return false;
-  }
-  const aiMode = typeof launchConfig.aiMode === "string" ? launchConfig.aiMode.trim().toLowerCase() : "";
-  const altMode = typeof launchConfig.ai_mode === "string" ? launchConfig.ai_mode.trim().toLowerCase() : "";
-  if (aiMode === "goal" || altMode === "goal") {
-    return true;
-  }
-  const goalBlock = launchConfig.goal && typeof launchConfig.goal === "object" ? launchConfig.goal : null;
-  if (goalBlock && typeof goalBlock.objective === "string" && goalBlock.objective.trim()) {
-    return true;
-  }
-  return false;
-}
-
-/**
  * Build the argv passed to the `conductor-fire` child process. Centralized so
  * both production daemon code and tests can exercise the same logic.
  *
- * - When goal mode is requested via launch_config, `--goal` is appended.
- * - When launch_config carries an explicit `goal.objective`, that string wins
- *   over the prefill that came on the envelope, since web is the source of
- *   truth for goal text. Falls back to `initialContent` otherwise.
+ * Per-message `/goal` detection lives inside fire itself
+ * (`parseGoalDirectiveFromMessage`), so the daemon never appends a `--goal`
+ * flag. When `launch_config.goal.objective` is present we still prefer it over
+ * the bare `initialContent` for backward-compat with older envelopes; the new
+ * web envelope already prefixes the objective with `/goal\n` so fire's
+ * per-message detector kicks in on the first turn.
  */
 export function buildFireSpawnArgs({ selectedBackend, initialContent, launchConfig } = {}) {
   const args = [];
   if (selectedBackend) {
     args.push("--backend", String(selectedBackend));
   }
-  const goalMode = isGoalModeLaunchConfig(launchConfig);
   const goalObjective =
-    goalMode &&
     launchConfig &&
     typeof launchConfig === "object" &&
     launchConfig.goal &&
@@ -532,49 +508,12 @@ export function buildFireSpawnArgs({ selectedBackend, initialContent, launchConf
       ? launchConfig.goal.objective.trim()
       : "";
   const prefill = typeof initialContent === "string" ? initialContent : "";
-  const effectivePrefill = goalObjective || prefill;
+  const effectivePrefill = prefill || goalObjective;
   if (effectivePrefill) {
     args.push("--prefill", effectivePrefill);
   }
-  if (goalMode) {
-    args.push("--goal");
-  }
   args.push("--");
   return args;
-}
-
-/**
- * Build the additional env vars that the daemon must set on the spawned fire
- * process so it can construct the `source` object passed to
- * `session.runGoal({ objective, source })`.
- *
- * The contract is intentionally minimal — two string env vars — so the fire
- * process does not need to parse the launch_config envelope a second time.
- *
- * Returns `{}` when goal mode is not requested (in which case fire will use
- * its own default of `manual`).
- */
-export function buildFireSpawnGoalEnv({ launchConfig } = {}) {
-  if (!isGoalModeLaunchConfig(launchConfig)) {
-    return {};
-  }
-  const goalBlock =
-    launchConfig && typeof launchConfig === "object" && launchConfig.goal && typeof launchConfig.goal === "object"
-      ? launchConfig.goal
-      : {};
-  const rawSource = typeof goalBlock.source === "string" ? goalBlock.source.trim().toLowerCase() : "";
-  const sourceType = rawSource === "issue" || rawSource === "manual" ? rawSource : "manual";
-  const env = { CONDUCTOR_GOAL_SOURCE_TYPE: sourceType };
-  const rawIssueId =
-    typeof goalBlock.issueId === "string"
-      ? goalBlock.issueId.trim()
-      : typeof goalBlock.issue_id === "string"
-        ? goalBlock.issue_id.trim()
-        : "";
-  if (rawIssueId) {
-    env.CONDUCTOR_GOAL_ISSUE_ID = rawIssueId;
-  }
-  return env;
 }
 
 function normalizeBooleanFlag(value) {
@@ -5190,7 +5129,6 @@ export function startDaemon(config = {}, deps = {}) {
         CONDUCTOR_TASK_ID: taskId,
         CONDUCTOR_LAUNCHED_BY_DAEMON: "1",
         ...(cliCommand ? { CONDUCTOR_CLI_COMMAND: cliCommand } : {}),
-        ...buildFireSpawnGoalEnv({ launchConfig }),
       };
       if (config.CONFIG_FILE) {
         env.CONDUCTOR_CONFIG = config.CONFIG_FILE;
@@ -5833,7 +5771,6 @@ export function startDaemon(config = {}, deps = {}) {
       CONDUCTOR_TASK_ID: normalizedTargetTaskId,
       CONDUCTOR_LAUNCHED_BY_DAEMON: "1",
       ...(cliCommand ? { CONDUCTOR_CLI_COMMAND: cliCommand } : {}),
-      ...buildFireSpawnGoalEnv({ launchConfig: targetLaunchConfig }),
     };
     env.CONDUCTOR_RESUME_CWD = resolvedResumeCwd;
     if (config.CONFIG_FILE) {

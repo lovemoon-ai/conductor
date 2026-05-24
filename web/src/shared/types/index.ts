@@ -270,6 +270,15 @@ export interface TaskRuntimeStatus {
   sessionFilePath?: string;
   tokenUsagePercent?: number;
   contextUsagePercent?: number;
+  /**
+   * The mode of the most recently dispatched turn, as reported by fire on
+   * every dispatch. Live runtime field — consumers should prefer this over
+   * the task's persisted `metadata.aiMode` when both are available, since the
+   * user can flip modes mid-chat by typing `/goal ...` (or by completing the
+   * goal back to a normal turn). Undefined until fire has dispatched at
+   * least one turn for this task.
+   */
+  aiMode?: 'goal' | 'turn';
   createdAt?: string;
 }
 

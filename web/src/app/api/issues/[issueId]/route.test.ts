@@ -1843,17 +1843,18 @@ describe('/api/issues/[issueId]', () => {
           source: 'issue',
           issueId: 'issue-1',
         }),
-        // Single source of truth: initial message content equals goal.objective
-        // (no leading "Issue: <title>" framing — that would diverge from the
-        // bare objective the daemon prefills).
-        initialMessageContent: 'ship the feature\n\nsupporting context',
+        // Per the per-message detection design, the initial content delivered
+        // to fire MUST start with `/goal\n` so fire's per-message detector
+        // picks it up on the first turn. The bare objective still lives on
+        // `goal.objective` for UI/analytics.
+        initialMessageContent: '/goal\nship the feature\n\nsupporting context',
         requestedBackendType: 'claude',
       }),
       expect.any(Object),
     );
   });
 
-  it('goal mode: metadata.initialContent === launch_config.goal.objective === Message.content (single source of truth)', async () => {
+  it('goal mode: metadata.initialContent === Message.content (`/goal`-prefixed); launch_config.goal.objective stays bare', async () => {
     vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
       description: '/goal ship the feature\n\nsupporting context',
     }) as any);
@@ -1904,17 +1905,21 @@ describe('/api/issues/[issueId]', () => {
 
     const spawnCall = vi.mocked(createAiTaskArtifacts).mock.calls.at(-1)?.[0];
     expect(spawnCall).toBeDefined();
-    const canonical = 'ship the feature\n\nsupporting context';
+    const bareObjective = 'ship the feature\n\nsupporting context';
+    const prefilled = `/goal\n${bareObjective}`;
 
-    // 1) metadata.initialContent (the JSON field on the issue metadata)
+    // 1) metadata.initialContent — the prefill we ship to the daemon, with
+    //    the `/goal\n` directive so fire's per-message detector picks it up.
     const metadata = spawnCall?.metadata as Record<string, unknown> | undefined;
-    expect(metadata?.initialContent).toBe(canonical);
+    expect(metadata?.initialContent).toBe(prefilled);
 
-    // 2) launch_config.goal.objective (delivered to the daemon)
-    expect(spawnCall?.goal?.objective).toBe(canonical);
+    // 2) launch_config.goal.objective — informational metadata only, kept as
+    //    the BARE objective for UI/analytics surfaces.
+    expect(spawnCall?.goal?.objective).toBe(bareObjective);
 
-    // 3) Initial Message content (persisted, broadcast to client)
-    expect(spawnCall?.initialMessageContent).toBe(canonical);
+    // 3) Initial Message content — equals metadata.initialContent so the user
+    //    sees the same prefilled text in the chat history.
+    expect(spawnCall?.initialMessageContent).toBe(prefilled);
   });
 
   it('PATCH updating body to /goal without doing transition does not spawn a task or set aiMode', async () => {

@@ -38,12 +38,18 @@ type CreateAiTaskArgs = {
   initialMessageContent?: string | null;
   status?: string | null;
   /**
-   * When set to `"goal"`, the daemon spawns fire with `--goal` so the
-   * `initialMessageContent` is interpreted as the goal objective. Stamped onto
-   * `launchConfig.aiMode` + `metadata.aiMode`, and the initial message gets
-   * `metadata.goal = true` so the timeline can label the bubble. Goal mode is
-   * gated to goal-capable backends by the caller — this helper just persists
-   * what it is given.
+   * When set to `"goal"`, the task was created from a `/goal` directive (or
+   * equivalent) and should be displayed as a goal-mode task in UI surfaces.
+   *
+   * Per the per-message detection design (May 2026), this value is
+   * informational metadata only — the daemon no longer spawns fire with a
+   * `--goal` flag. Instead, the caller is expected to deliver
+   * `initialMessageContent` already prefixed with `/goal\n` so fire's
+   * per-message detector picks it up on the first turn. We still stamp it
+   * onto `launchConfig.aiMode` + `metadata.aiMode` for UI/analytics, and
+   * `metadata.goal = true` on the initial message so the timeline can label
+   * the bubble. Goal mode is gated to goal-capable backends by the caller —
+   * this helper just persists what it is given.
    */
   aiMode?: 'goal' | null;
   goal?: AiTaskGoalDescriptor | null;
@@ -107,6 +113,13 @@ const normalizeInitialMessageContent = (value: string | null | undefined): strin
  * Merge `aiMode` + `goal` (when present) into the launchConfig persisted on
  * the task and shipped to the daemon, without dropping anything the caller
  * already put in launchConfig (e.g. worktree fields).
+ *
+ * IMPORTANT: per the per-message detection design (May 2026), this metadata
+ * is informational only. The daemon delivers `initial_content` to fire
+ * as-is, and fire detects `/goal` per-message — there is no `--goal` spawn
+ * flag derived from `launch_config.aiMode` anymore. We keep stamping these
+ * fields so UI surfaces (Issue board, Runtime Details, analytics) can render
+ * goal badges without re-parsing the initial content.
  */
 const applyGoalToLaunchConfig = (
   launchConfig: JsonObject | null,
@@ -363,9 +376,13 @@ export async function finalizeAiTaskCreation(
   const requestId = randomUUID();
   // Reuse the launchConfig computed by `createAiTaskArtifacts` (which already
   // merged `aiMode` + `goal`). Recomputing here would create a second source
-  // of truth that could drift from what was persisted to the task row. The
-  // CLI agent reads `launch_config.aiMode` here to decide whether to append
-  // `--goal` to fire's spawn args.
+  // of truth that could drift from what was persisted to the task row.
+  //
+  // Per the per-message detection design, `launch_config.aiMode` is shipped
+  // to the daemon for informational use only — the daemon no longer reads it
+  // to derive spawn flags; fire detects `/goal` per-message from
+  // `initial_content` itself (the web layer pre-pends `/goal\n` when
+  // appropriate, see `buildIssueGoalInitialContent`).
   const dispatchLaunchConfig = args.effectiveLaunchConfig
     ?? applyGoalToLaunchConfig(
       args.launchConfig ?? null,

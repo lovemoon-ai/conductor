@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { ConnectionStatus } from './ConnectionStatus';
+import { ConnectionStatus, resolveEffectiveAiMode } from './ConnectionStatus';
 
 const useParamsMock = vi.fn();
 const useWebSocketStoreMock = vi.fn();
@@ -170,6 +170,130 @@ describe('ConnectionStatus', () => {
     expect(screen.getByTestId('ai-mode-value').textContent).toBe('normal');
   });
 
+  it('runtime aiMode "goal" wins over metadata.aiMode "turn"', () => {
+    // Runtime is the source of truth for the current turn — the user just
+    // typed `/goal ...` mid-chat on a task that started in turn mode.
+    useRuntimeStoreMock.mockImplementation((selector: (state: { byTask: Record<string, unknown> }) => unknown) =>
+      selector({
+        byTask: {
+          'task-123': {
+            taskId: 'task-123',
+            daemon: 'daemon-a',
+            pid: 2345,
+            backend: 'codex',
+            sessionId: 'session-xyz',
+            tokenUsagePercent: 12,
+            contextUsagePercent: 34,
+            aiMode: 'goal',
+          },
+        },
+      }),
+    );
+    useTasksStoreMock.mockImplementation((selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
+      selector({
+        tasks: [
+          {
+            id: 'task-123',
+            executionHost: 'daemon-a',
+            // Persisted metadata says turn — runtime should override.
+            metadata: { aiMode: 'turn' },
+          },
+        ],
+      }),
+    );
+
+    render(<ConnectionStatus detailsEnabled />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open connection details' }));
+
+    expect(screen.getByTestId('ai-mode-value').textContent).toBe('goal');
+  });
+
+  it('runtime aiMode "turn" wins over metadata.aiMode "goal"', () => {
+    // Goal task finished its objective and dispatched a normal follow-up
+    // turn — runtime should override the persisted "goal" stamp.
+    useRuntimeStoreMock.mockImplementation((selector: (state: { byTask: Record<string, unknown> }) => unknown) =>
+      selector({
+        byTask: {
+          'task-123': {
+            taskId: 'task-123',
+            daemon: 'daemon-a',
+            pid: 2345,
+            backend: 'codex',
+            sessionId: 'session-xyz',
+            tokenUsagePercent: 12,
+            contextUsagePercent: 34,
+            aiMode: 'turn',
+          },
+        },
+      }),
+    );
+    useTasksStoreMock.mockImplementation((selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
+      selector({
+        tasks: [
+          {
+            id: 'task-123',
+            executionHost: 'daemon-a',
+            metadata: {
+              aiMode: 'goal',
+              goal: { source: 'issue', issueId: 'I-7', status: 'created' },
+              initialContent: '/goal\nship the release',
+            },
+            launchConfig: {
+              aiMode: 'goal',
+              goal: { objective: 'ship the release', source: 'issue' },
+            },
+          },
+        ],
+      }),
+    );
+
+    render(<ConnectionStatus detailsEnabled />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open connection details' }));
+
+    expect(screen.getByTestId('ai-mode-value').textContent).toBe('normal');
+  });
+
+  it('falls back to metadata.aiMode when runtime has not reported aiMode yet', () => {
+    // First-load case: persisted task metadata says "goal", runtime store has
+    // no aiMode field yet (no dispatch event received) — UI should show goal.
+    useRuntimeStoreMock.mockImplementation((selector: (state: { byTask: Record<string, unknown> }) => unknown) =>
+      selector({
+        byTask: {
+          'task-123': {
+            taskId: 'task-123',
+            daemon: 'daemon-a',
+            pid: 2345,
+            backend: 'codex',
+            sessionId: 'session-xyz',
+            tokenUsagePercent: 12,
+            contextUsagePercent: 34,
+            // no aiMode here
+          },
+        },
+      }),
+    );
+    useTasksStoreMock.mockImplementation((selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
+      selector({
+        tasks: [
+          {
+            id: 'task-123',
+            executionHost: 'daemon-a',
+            metadata: {
+              aiMode: 'goal',
+              goal: { source: 'issue', issueId: 'I-7' },
+              initialContent: '/goal\nship the release',
+            },
+          },
+        ],
+      }),
+    );
+
+    render(<ConnectionStatus detailsEnabled />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open connection details' }));
+
+    expect(screen.getByTestId('ai-mode-value').textContent).toBe('goal');
+  });
+
   it('uses a dark panel with white text for pty tasks', () => {
     useTasksStoreMock.mockImplementation((selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
       selector({
@@ -263,5 +387,22 @@ describe('ConnectionStatus', () => {
 
     expect(screen.getByText('codex')).toBeInTheDocument();
     expect(screen.getByText('session-persisted-1')).toBeInTheDocument();
+  });
+});
+
+describe('resolveEffectiveAiMode', () => {
+  it('returns the runtime value when it is "goal"', () => {
+    expect(resolveEffectiveAiMode('goal', false)).toBe('goal');
+    expect(resolveEffectiveAiMode('goal', true)).toBe('goal');
+  });
+
+  it('returns the runtime value when it is "turn"', () => {
+    expect(resolveEffectiveAiMode('turn', true)).toBe('turn');
+    expect(resolveEffectiveAiMode('turn', false)).toBe('turn');
+  });
+
+  it('falls back to the metadata flag when runtime is undefined', () => {
+    expect(resolveEffectiveAiMode(undefined, true)).toBe('goal');
+    expect(resolveEffectiveAiMode(undefined, false)).toBe('turn');
   });
 });

@@ -124,29 +124,33 @@ describe('parseGoalDirective', () => {
 });
 
 describe('buildIssueGoalInitialContent', () => {
-  it('returns the bare objective with no framing (single source of truth)', () => {
-    // The reviewer asked us to eliminate three-way divergence between
-    // `metadata.initialContent`, the persisted Message content, and
-    // `launch_config.goal.objective`. The objective is now the canonical text;
-    // no `Issue: <title>` prefix is added here.
+  it('prepends the `/goal\\n` directive so fire\'s per-message detector sees it', () => {
+    // Per the per-message detection design, the daemon ships initial content
+    // verbatim and fire decides goal-vs-turn from the first line of the
+    // message. We MUST include the `/goal` prefix here so fire's first-turn
+    // detector picks it up — there is no longer a `--goal` spawn flag.
     expect(
       buildIssueGoalInitialContent({ title: 'Implement X', objective: 'do the thing' }),
-    ).toBe('do the thing');
+    ).toBe('/goal\ndo the thing');
   });
 
   it('ignores the title regardless of whether it is empty or set', () => {
     expect(
       buildIssueGoalInitialContent({ title: '   ', objective: 'do the thing' }),
-    ).toBe('do the thing');
+    ).toBe('/goal\ndo the thing');
   });
 
-  it('does not exceed the global cap', () => {
+  it('keeps the objective body bounded by the global cap (prefix is separate budget)', () => {
     const result = buildIssueGoalInitialContent({
       title: 'T',
       objective: 'x'.repeat(MAX_GOAL_OBJECTIVE_LENGTH * 2),
     });
-    expect(result.length).toBeLessThanOrEqual(MAX_GOAL_OBJECTIVE_LENGTH);
-    expect(result.endsWith('...[truncated]')).toBe(true);
+    // The objective body (after the `/goal\n` prefix) is the bounded part —
+    // that's what consumers persist into `launch_config.goal.objective`.
+    expect(result.startsWith('/goal\n')).toBe(true);
+    const body = result.slice('/goal\n'.length);
+    expect(body.length).toBeLessThanOrEqual(MAX_GOAL_OBJECTIVE_LENGTH);
+    expect(body.endsWith('...[truncated]')).toBe(true);
   });
 });
 
