@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { CODEX_APP_SERVER_VARIANT } from "../built-in-backends.js";
 import { CodexAppServerTransport } from "../transports/codex-app-server-transport.js";
 import {
+  TERMINAL_GOAL_STATUSES,
   emitLog,
   getBoundedEnvInt,
   loadEnvConfig,
@@ -10,6 +11,12 @@ import {
   proxyToEnv,
   sanitizeForLog,
 } from "../shared.js";
+
+const TERMINAL_GOAL_STATUSES_LOCAL = new Set(TERMINAL_GOAL_STATUSES);
+
+function isTerminalGoalStatusLocal(status) {
+  return typeof status === "string" && TERMINAL_GOAL_STATUSES_LOCAL.has(status);
+}
 
 const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
 const MIN_TURN_DEADLINE_MS = 30 * 1000;
@@ -216,6 +223,20 @@ function createTurnError(message, extras = {}) {
 }
 
 export class CodexAppServerSession extends EventEmitter {
+  /**
+   * Optional feature flags surfaced to callers via {@link getSnapshot}.
+   * Treat as read-only.
+   * @type {Readonly<import("../shared.js").SessionCapabilities>}
+   */
+  static capabilities = Object.freeze({ goal: true });
+
+  /**
+   * @returns {import("../shared.js").SessionCapabilities}
+   */
+  getCapabilities() {
+    return { ...CodexAppServerSession.capabilities };
+  }
+
   constructor(backend, options = {}) {
     super();
     this.backend = normalizeCodexBackend(backend);
@@ -255,6 +276,13 @@ export class CodexAppServerSession extends EventEmitter {
     this.bootPromise = null;
     this.booted = false;
 
+    this.goalMode = options.goalMode === true;
+    this.currentGoal = null;
+    // Goal-mode lifecycle is decoupled from `currentTurn` so that goal events
+    // that arrive after a per-turn `turn/completed` still route correctly.
+    // See `runGoal` for the shape; `null` means no goal is currently running.
+    this.currentGoalRun = null;
+
     const envConfig = loadEnvConfig(options.configFile);
     const proxyEnv = proxyToEnv(envConfig);
     const extraEnv = envConfig && typeof envConfig === "object" ? { ...envConfig, ...proxyEnv } : proxyEnv;
@@ -271,6 +299,7 @@ export class CodexAppServerSession extends EventEmitter {
         },
       },
       commandLine: options.commandLine,
+      enableGoals: this.goalMode || options.enableGoals === true,
     });
     this.transport.on("notification", ({ method, params }) => {
       void this.handleNotification(method, params);
@@ -319,6 +348,7 @@ export class CodexAppServerSession extends EventEmitter {
           }
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
+      capabilities: this.getCapabilities(),
       pid: this.transport.pid || undefined,
     };
   }
@@ -733,8 +763,25 @@ export class CodexAppServerSession extends EventEmitter {
       return null;
     }
     const turnId = typeof params?.turnId === "string" ? params.turnId.trim() : "";
-    if (turnId && currentTurn.turnId && currentTurn.turnId !== turnId) {
+    if (!turnId) {
+      return currentTurn;
+    }
+    if (currentTurn.turnId && currentTurn.turnId !== turnId) {
+      // In goal mode, the second turn's delta may arrive before
+      // `turn/started` for that turn. Adopt the new turnId in that case so
+      // the delta isn't dropped (the caller is presumed to be in goal mode
+      // because non-goal turns spawn a fresh `currentTurn` per call).
+      if (currentTurn.goalMode) {
+        currentTurn.turnId = turnId;
+        return currentTurn;
+      }
       return null;
+    }
+    if (!currentTurn.turnId) {
+      // First event we've seen for this turn — bind the id eagerly so later
+      // events match. Particularly important for goal mode where multiple
+      // turns share the same `currentTurn`.
+      currentTurn.turnId = turnId;
     }
     return currentTurn;
   }
@@ -786,6 +833,18 @@ export class CodexAppServerSession extends EventEmitter {
               : "";
         if (turnId) {
           currentTurn.turnId = turnId;
+        }
+        // Flush any deltas queued for this turn before `turn/started`.
+        // This races between the server emitting a delta and the
+        // `turn/started` notification (common for goal mode's 2nd+ turn).
+        if (turnId && this.currentGoalRun && this.currentGoalRun.pendingDeltasByTurnId) {
+          const queue = this.currentGoalRun.pendingDeltasByTurnId.get(turnId);
+          if (queue && queue.length > 0) {
+            this.currentGoalRun.pendingDeltasByTurnId.delete(turnId);
+            for (const queued of queue) {
+              await this.queueAssistantDelta(queued.delta, { messageId: queued.messageId });
+            }
+          }
         }
         await this.emitWorkingStatus({
           phase: "turn_started",
@@ -863,13 +922,21 @@ export class CodexAppServerSession extends EventEmitter {
         });
         return;
       case "item/agentMessage/delta": {
-        const currentTurn = this.ensureCurrentTurn(params);
-        if (!currentTurn) {
-          return;
-        }
         const delta = typeof params?.delta === "string" ? params.delta : "";
         const messageId = normalizeItemId(params?.itemId || params?.item_id);
         if (!delta) {
+          return;
+        }
+        const currentTurn = this.ensureCurrentTurn(params);
+        if (!currentTurn) {
+          // Goal mode race: delta arrived for a turn we haven't seen
+          // `turn/started` for yet. Queue it; we'll flush in `turn/started`.
+          const deltaTurnId = typeof params?.turnId === "string" ? params.turnId.trim() : "";
+          if (this.currentGoalRun && deltaTurnId) {
+            const queue = this.currentGoalRun.pendingDeltasByTurnId.get(deltaTurnId) || [];
+            queue.push({ delta, messageId });
+            this.currentGoalRun.pendingDeltasByTurnId.set(deltaTurnId, queue);
+          }
           return;
         }
         await this.emitWorkingStatus({
@@ -886,6 +953,29 @@ export class CodexAppServerSession extends EventEmitter {
       case "account/rateLimits/updated":
         this.rateLimits = params?.rateLimits && typeof params.rateLimits === "object" ? { ...params.rateLimits } : null;
         return;
+      case "thread/goal/updated": {
+        const goalPayload = this.normalizeGoalPayload(params?.goal ?? params);
+        if (!goalPayload) {
+          return;
+        }
+        this.currentGoal = goalPayload;
+        const goalRun = this.currentGoalRun;
+        if (goalRun && typeof goalRun.handleGoalUpdate === "function") {
+          goalRun.handleGoalUpdate(goalPayload);
+        }
+        this.emit("goal_update", { ...goalPayload });
+        return;
+      }
+      case "thread/goal/cleared": {
+        const previous = this.currentGoal;
+        this.currentGoal = null;
+        const goalRun = this.currentGoalRun;
+        if (goalRun && typeof goalRun.handleGoalCleared === "function") {
+          goalRun.handleGoalCleared(previous);
+        }
+        this.emit("goal_cleared", previous ? { ...previous } : null);
+        return;
+      }
       case "turn/completed": {
         const currentTurn = this.ensureCurrentTurn(params);
         if (!currentTurn) {
@@ -910,8 +1000,38 @@ export class CodexAppServerSession extends EventEmitter {
             reply_in_progress: false,
             status_done_line: `codex failed (${status})`,
           });
-          currentTurn.reject(error);
-          this.currentTurn = null;
+          if (currentTurn.goalMode) {
+            // Propagate to the goal-run completion so callers see the failure.
+            const goalRun = this.currentGoalRun;
+            if (goalRun && typeof goalRun.handleTurnFailed === "function") {
+              goalRun.handleTurnFailed(error);
+            }
+          } else {
+            currentTurn.reject(error);
+            this.currentTurn = null;
+          }
+          return;
+        }
+        // In goal mode, do NOT resolve/clear currentTurn on per-turn completion.
+        // The goal may span multiple turns and resolves on a terminal
+        // `thread/goal/updated` status (or `thread/goal/cleared`). The
+        // per-turn text is folded into `currentGoalRun.fullText` so it
+        // survives the per-turn reset.
+        if (currentTurn.goalMode) {
+          const goalRun = this.currentGoalRun;
+          if (goalRun) {
+            const turnText = currentTurn.fullText || "";
+            if (turnText) {
+              goalRun.fullText = `${goalRun.fullText || ""}${turnText}`;
+              goalRun.lastTurnText = turnText;
+            }
+          }
+          // Reset per-turn accumulator state but keep the goal-scoped turn alive
+          // so subsequent `turn/started` / `item/*` events continue to be handled.
+          currentTurn.turnId = "";
+          currentTurn.fullText = "";
+          currentTurn.activeAssistantMessageId = "";
+          currentTurn.activeAssistantMessageText = "";
           return;
         }
         await this.emitWorkingStatus({
@@ -932,6 +1052,13 @@ export class CodexAppServerSession extends EventEmitter {
   }
 
   handleTransportFailure(error) {
+    if (this.currentGoalRun && typeof this.currentGoalRun.handleTurnFailed === "function") {
+      try {
+        this.currentGoalRun.handleTurnFailed(error);
+      } catch {
+        // best effort
+      }
+    }
     if (this.currentTurn) {
       this.currentTurn.reject(error);
       this.currentTurn = null;
@@ -946,9 +1073,13 @@ export class CodexAppServerSession extends EventEmitter {
       stderr: payload?.stderr,
     });
     this.closed = true;
+    // Reject in-flight goal-runs / per-turn callers with the precise
+    // `transport_exited` error BEFORE we flip `closeRequested` / flush close
+    // waiters. Otherwise the closeGuard would win the Promise.race and the
+    // caller would see a generic `session_closed` instead of the real cause.
+    this.handleTransportFailure(exitError);
     this.closeRequested = true;
     this.flushCloseWaiters();
-    this.handleTransportFailure(exitError);
     this.emit("process.exited", {
       pid: this.transport.pid || null,
       code: payload?.code,
@@ -1100,6 +1231,370 @@ export class CodexAppServerSession extends EventEmitter {
     }
   }
 
+  /**
+   * Normalize a goal payload from a codex `thread/goal/*` notification into
+   * the cross-layer {@link GoalState} shape.
+   *
+   * @param {unknown} payload
+   * @returns {(import("../shared.js").GoalState & { raw?: unknown }) | null}
+   */
+  normalizeGoalPayload(payload) {
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+    const raw = /** @type {Record<string, unknown>} */ (payload);
+    const objective =
+      typeof raw.objective === "string"
+        ? raw.objective
+        : typeof raw.goal === "string"
+          ? raw.goal
+          : "";
+    const status =
+      typeof raw.status === "string" && raw.status.trim()
+        ? /** @type {import("../shared.js").GoalStatus} */ (raw.status.trim())
+        : "active";
+    const id =
+      typeof raw.id === "string"
+        ? raw.id
+        : typeof raw.goalId === "string"
+          ? raw.goalId
+          : undefined;
+    const threadId =
+      typeof raw.threadId === "string"
+        ? raw.threadId
+        : this.sessionId || undefined;
+    const tokenBudget =
+      raw.tokenBudget === null
+        ? null
+        : Number.isFinite(Number(raw.tokenBudget))
+          ? Number(raw.tokenBudget)
+          : undefined;
+    return {
+      id,
+      threadId,
+      objective,
+      status,
+      tokenBudget,
+    };
+  }
+
+  /**
+   * Trigger Codex's experimental `thread/goal/set` JSON-RPC. Requires the
+   * app-server to have been booted with `--enable goals`; dynamic enablement
+   * is NOT supported. Pass `{ goalMode: true }` to the session factory so the
+   * transport spawns with the right flag.
+   *
+   * Resolves when the goal reaches a terminal status (`complete`, `blocked`,
+   * `usageLimited`, `budgetLimited`) or when a `thread/goal/cleared`
+   * notification arrives.
+   *
+   * @param {import("../shared.js").GoalRequest} goal
+   * @param {object} [options]
+   * @returns {Promise<import("../shared.js").GoalResult>}
+   */
+  async runGoal(goal, options = {}) {
+    if (this.closeRequested) {
+      throw this.createSessionClosedError();
+    }
+    const objective = typeof goal?.objective === "string" ? goal.objective.trim() : "";
+    if (!objective) {
+      throw createTurnError("runGoal requires a non-empty objective", {
+        reason: "invalid_goal",
+      });
+    }
+    if (this.currentTurn || this.currentGoalRun) {
+      throw createTurnError("Codex app-server turn already running", {
+        reason: "turn_already_running",
+      });
+    }
+
+    this.markTurnStartedStatus();
+    try {
+      await this.boot();
+    } catch (error) {
+      await this.failPendingTurnStart(error);
+      throw error;
+    }
+
+    const tokenBudget =
+      goal?.tokenBudget === null || Number.isFinite(Number(goal?.tokenBudget))
+        ? goal.tokenBudget ?? null
+        : null;
+
+    const closeGuard = this.createCloseGuard();
+    const turnTimeoutGuard = this.createTurnTimeoutGuard();
+
+    let resolveGoal = null;
+    let rejectGoal = null;
+    const completion = new Promise((resolve, reject) => {
+      resolveGoal = resolve;
+      rejectGoal = reject;
+    });
+
+    // Goal-scoped state. Tracks accumulated text across multiple turns and
+    // serves as the routing target for `thread/goal/*` notifications so that
+    // goal lifecycle is decoupled from per-turn (`currentTurn`) lifecycle.
+    const goalRun = {
+      id: undefined,
+      threadId: this.sessionId || undefined,
+      objective,
+      status: "active",
+      tokenBudget,
+      fullText: "",
+      lastTurnText: "",
+      latestGoal: null,
+      completion,
+      pendingDeltasByTurnId: new Map(),
+      handleGoalUpdate: (payload) => {
+        if (!payload) {
+          return;
+        }
+        goalRun.latestGoal = { ...payload, objective: payload.objective || objective };
+        goalRun.status = payload.status || goalRun.status;
+        if (isTerminalGoalStatusLocal(payload.status)) {
+          resolveGoal?.({
+            goal: { ...goalRun.latestGoal },
+            usage: this.tokenUsage ? { ...this.tokenUsage } : null,
+            cleared: false,
+          });
+        }
+      },
+      handleGoalCleared: (previous) => {
+        const finalGoal = goalRun.latestGoal || previous || {
+          objective,
+          status: "complete",
+          threadId: this.sessionId || undefined,
+          tokenBudget,
+        };
+        resolveGoal?.({
+          goal: { ...finalGoal, status: finalGoal.status || "complete" },
+          usage: this.tokenUsage ? { ...this.tokenUsage } : null,
+          cleared: true,
+        });
+      },
+      handleTurnFailed: (error) => {
+        rejectGoal?.(error);
+      },
+    };
+    this.currentGoalRun = goalRun;
+
+    // `currentTurn` is still installed so that turn-scoped notification
+    // handling (turn/started, item/started, item/agentMessage/delta, etc.)
+    // continues to work. Its `resolve`/`reject` are stubs; goal completion
+    // is signaled via the `completion` promise above.
+    const currentTurn = {
+      turnId: "",
+      fullText: "",
+      activeAssistantMessageId: "",
+      activeAssistantMessageText: "",
+      resolve: () => {},
+      reject: (error) => {
+        rejectGoal?.(error);
+      },
+      goalMode: true,
+    };
+    this.currentTurn = currentTurn;
+
+    try {
+      let setResult;
+      try {
+        setResult = await this.transport.request("thread/goal/set", {
+          threadId: this.sessionId,
+          objective,
+          status: "active",
+          tokenBudget,
+        });
+      } catch (error) {
+        const message = String(error?.message || "");
+        if (/goals?\s+feature\s+is\s+disabled/i.test(message) || /unsupported.*goal/i.test(message)) {
+          const hint = new Error(
+            `Codex goals feature is disabled. Re-create the session with { goalMode: true } so the app-server spawns with "--enable goals". (${message})`,
+          );
+          hint.reason = "goals_feature_disabled";
+          hint.cause = error;
+          throw hint;
+        }
+        throw error;
+      }
+
+      const initialGoalPayload =
+        setResult && Object.prototype.hasOwnProperty.call(setResult, "goal")
+          ? setResult.goal
+          : setResult;
+      const initialGoal = this.normalizeGoalPayload(initialGoalPayload);
+      if (initialGoal) {
+        this.currentGoal = initialGoal;
+        goalRun.latestGoal = initialGoal;
+        goalRun.id = initialGoal.id ?? goalRun.id;
+        goalRun.threadId = initialGoal.threadId ?? goalRun.threadId;
+        goalRun.status = initialGoal.status || goalRun.status;
+        if (isTerminalGoalStatusLocal(initialGoal.status)) {
+          resolveGoal?.({
+            goal: { ...initialGoal },
+            usage: this.tokenUsage ? { ...this.tokenUsage } : null,
+            cleared: false,
+          });
+        }
+      }
+
+      const goalResult = await Promise.race([
+        completion,
+        closeGuard.promise,
+        turnTimeoutGuard.promise,
+      ]);
+
+      // Fold any in-flight per-turn text into the goal's aggregate text.
+      await this.finalizeActiveAssistantMessage(currentTurn, {
+        messageId: currentTurn.activeAssistantMessageId,
+      });
+      if (currentTurn.fullText) {
+        goalRun.fullText = `${goalRun.fullText || ""}${currentTurn.fullText}`;
+      }
+
+      const goalState = goalResult?.goal || {
+        objective,
+        status: "complete",
+        threadId: this.sessionId || undefined,
+        tokenBudget,
+      };
+
+      await this.emitWorkingStatus({
+        phase: "turn_completed",
+        reply_in_progress: false,
+        status_done_line: `codex goal ${goalState.status}`,
+      });
+
+      if (goalRun.fullText) {
+        this.history.push({ role: "assistant", content: goalRun.fullText });
+      }
+
+      return {
+        text: goalRun.fullText,
+        goal: {
+          id: goalState.id,
+          threadId: goalState.threadId || this.sessionId || undefined,
+          objective: goalState.objective || objective,
+          status: goalState.status,
+          tokenBudget: goalState.tokenBudget !== undefined ? goalState.tokenBudget : tokenBudget,
+        },
+        usage: goalResult?.usage || (this.tokenUsage ? { ...this.tokenUsage } : null),
+        metadata: {
+          source: CODEX_APP_SERVER_VARIANT,
+          threadId: this.sessionId,
+          threadPath: this.threadPath || undefined,
+          nativeSessionId: this.nativeSessionId || undefined,
+          goalCleared: Boolean(goalResult?.cleared),
+        },
+      };
+    } catch (error) {
+      if (error?.reason === "turn_timeout") {
+        await this.interruptCurrentTurn();
+      }
+      if (!this.closeRequested && error?.reason !== "session_closed") {
+        await this.emitWorkingStatus({
+          phase: "turn_failed",
+          reply_in_progress: false,
+          status_done_line: error instanceof Error ? error.message : String(error),
+        });
+      }
+      this.maybeEmitAuthRequired(error);
+      throw error;
+    } finally {
+      // Always clear goal-run state (NOT currentTurn — that's done by per-turn
+      // lifecycle). currentTurn is also cleared here because the goal owns it.
+      if (this.currentGoalRun === goalRun) {
+        this.currentGoalRun = null;
+      }
+      if (this.currentTurn === currentTurn) {
+        this.currentTurn = null;
+      }
+      closeGuard.cleanup();
+      turnTimeoutGuard.cleanup();
+    }
+  }
+
+  /**
+   * Fetch the current goal via `thread/goal/get`.
+   *
+   * @returns {Promise<import("../shared.js").GoalState | null>}
+   */
+  async getGoal() {
+    await this.boot();
+    try {
+      const result = await this.transport.request("thread/goal/get", {
+        threadId: this.sessionId,
+      });
+      const hasGoalField = result && Object.prototype.hasOwnProperty.call(result, "goal");
+      if (hasGoalField) {
+        // Server explicitly told us about the goal (including null for
+        // "no active goal"). Update in-memory state to match.
+        const normalized = this.normalizeGoalPayload(result.goal);
+        this.currentGoal = normalized;
+        return normalized;
+      }
+      if (result === null || result === undefined) {
+        // Transport hiccup (e.g. error mapped to a null result). Do NOT
+        // wipe a previously known goal — return the cached state instead.
+        return this.currentGoal ? { ...this.currentGoal } : null;
+      }
+      // Older codex builds returned the goal payload as the root result.
+      const normalized = this.normalizeGoalPayload(result);
+      if (normalized) {
+        this.currentGoal = normalized;
+      }
+      return normalized;
+    } catch (error) {
+      const message = String(error?.message || "");
+      if (/goals?\s+feature\s+is\s+disabled/i.test(message)) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Clear the current goal via `thread/goal/clear`.
+   *
+   * If a {@link runGoal} call is in flight when this is invoked externally,
+   * the pending `currentGoalRun.completion` is unblocked with a synthetic
+   * "cleared" payload so the caller's `await runGoal(...)` resolves promptly
+   * instead of waiting for the turn-timeout. The server-initiated
+   * `thread/goal/clear` does not emit a `thread/goal/cleared` notification
+   * (it's the response to OUR own RPC), so we have to wake the goal-run
+   * ourselves here.
+   *
+   * @returns {Promise<boolean>} true if a goal was cleared, false if there was nothing to clear.
+   */
+  async clearGoal() {
+    await this.boot();
+    const goalRun = this.currentGoalRun;
+    try {
+      const result = await this.transport.request("thread/goal/clear", {
+        threadId: this.sessionId,
+      });
+      const cleared =
+        result === undefined || result === null
+          ? Boolean(this.currentGoal)
+          : result?.cleared !== false;
+      const previous = this.currentGoal;
+      this.currentGoal = null;
+      if (goalRun && typeof goalRun.handleGoalCleared === "function") {
+        try {
+          goalRun.handleGoalCleared(previous);
+        } catch {
+          // best effort — never let the wake-up throw past clearGoal
+        }
+      }
+      return cleared;
+    } catch (error) {
+      const message = String(error?.message || "");
+      if (/no\s+goal/i.test(message) || /not\s+set/i.test(message)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
   async close() {
     if (this.closed) {
       return;
@@ -1113,3 +1608,4 @@ export class CodexAppServerSession extends EventEmitter {
     this.closed = true;
   }
 }
+

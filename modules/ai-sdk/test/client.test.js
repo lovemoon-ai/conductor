@@ -552,4 +552,175 @@ describe("ai-sdk client boundary", () => {
       await session.close();
     });
   });
+
+  it("forwards runGoal through the worker proxy with onProgress", async () => {
+    await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      const session = createAiSession("test-external-alias", {
+        cwd: process.cwd(),
+        logger: { log: () => {} },
+      });
+      await session.readyPromise;
+      assert.ok(session instanceof RemoteAiSession);
+
+      const progressEvents = [];
+      const result = await session.runGoal(
+        { objective: "ship feature X", source: { type: "issue", issueId: "I-1" } },
+        {
+          onProgress: (payload) => {
+            progressEvents.push(payload);
+          },
+        },
+      );
+
+      assert.equal(result.text, "external-goal:ship feature X");
+      assert.equal(result.goal.status, "complete");
+      assert.equal(result.goal.objective, "ship feature X");
+      assert.equal(progressEvents.length, 1);
+      assert.equal(progressEvents[0].phase, "goal_started");
+
+      const persisted = await session.getGoal();
+      assert.equal(persisted?.status, "complete");
+
+      assert.equal(await session.clearGoal(), true);
+      assert.equal(await session.getGoal(), null);
+
+      await session.close();
+    });
+  });
+
+  it("forwards runGoal through the local proxy when worker is disabled", async () => {
+    await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      process.env.CONDUCTOR_AI_SDK_DISABLE_WORKER = "1";
+      const session = createAiSession("test-external-alias", {
+        cwd: process.cwd(),
+        logger: { log: () => {} },
+      });
+
+      const result = await session.runGoal({ objective: "do work", source: { type: "manual" } });
+      assert.equal(result.text, "external-goal:do work");
+      assert.equal(result.goal.status, "complete");
+
+      assert.equal((await session.getGoal()).status, "complete");
+      assert.equal(await session.clearGoal(), true);
+      assert.equal(await session.getGoal(), null);
+
+      await session.close();
+    });
+  });
+
+  it("exposes capabilities.goal=true on the codex app-server snapshot through RemoteAiSession", async () => {
+    const session = createAiSession("code", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+    });
+    try {
+      await session.readyPromise;
+      const snapshot = session.getSnapshot();
+      assert.equal(snapshot.capabilities?.goal, true);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("RemoteAiSession.runGoal throws unsupported_goal when capabilities.goal === false", async () => {
+    await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      const session = createAiSession("test-external-no-goal", {
+        cwd: process.cwd(),
+        logger: { log: () => {} },
+      });
+      try {
+        await session.readyPromise;
+        const snapshot = session.getSnapshot();
+        assert.equal(snapshot.capabilities?.goal, false);
+        await assert.rejects(
+          () => session.runGoal({ objective: "should fail" }),
+          (error) => error?.reason === "unsupported_goal",
+        );
+        // getGoal/clearGoal short-circuit without round-trips.
+        assert.equal(await session.getGoal(), null);
+        assert.equal(await session.clearGoal(), false);
+      } finally {
+        await session.close();
+      }
+    });
+  });
+
+  it("RemoteAiSession.runGoal propagates session-creation errors instead of masking as unsupported_goal (N3)", async () => {
+    // No external provider is configured, so `createAiSession("totally-unknown-backend")`
+    // will reject `readyPromise` with an "unsupported backend" creation error.
+    // runGoal/getGoal/clearGoal must surface that underlying error rather than
+    // swallowing it and returning `unsupported_goal`.
+    const session = createAiSession("totally-unknown-backend", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+    });
+    try {
+      await assert.rejects(
+        () => session.runGoal({ objective: "should propagate the real error" }),
+        (error) => {
+          // The error MUST NOT be the masked unsupported_goal sentinel.
+          assert.notEqual(error?.reason, "unsupported_goal");
+          // It should look like the underlying creation error.
+          return /AISDK_PROVIDER_PATH|unsupported|external providers/i.test(String(error?.message || ""));
+        },
+      );
+      await assert.rejects(
+        () => session.getGoal(),
+        (error) => error?.reason !== "unsupported_goal",
+      );
+      await assert.rejects(
+        () => session.clearGoal(),
+        (error) => error?.reason !== "unsupported_goal",
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("LocalAiSessionProxy.getSnapshot returns referentially stable capabilities across calls (N5)", async () => {
+    await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      process.env.CONDUCTOR_AI_SDK_DISABLE_WORKER = "1";
+      const session = createAiSession("test-external-alias", {
+        cwd: process.cwd(),
+        logger: { log: () => {} },
+      });
+      try {
+        await session.readyPromise;
+        const first = session.getSnapshot();
+        const second = session.getSnapshot();
+        const third = session.getSnapshot();
+        // Referential stability matters for React selectors / memoization on
+        // the snapshot.capabilities reference. Without the N5 cache the
+        // capabilities object would be re-resolved on every call.
+        assert.strictEqual(first.capabilities, second.capabilities);
+        assert.strictEqual(second.capabilities, third.capabilities);
+        assert.equal(first.capabilities?.goal, true);
+      } finally {
+        await session.close();
+      }
+    });
+  });
+
+  it("LocalAiSessionProxy.runGoal throws unsupported_goal when underlying snapshot says goal=false", async () => {
+    await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      process.env.CONDUCTOR_AI_SDK_DISABLE_WORKER = "1";
+      const session = createAiSession("test-external-no-goal", {
+        cwd: process.cwd(),
+        logger: { log: () => {} },
+      });
+      try {
+        await session.readyPromise;
+        const snapshot = session.getSnapshot();
+        assert.equal(snapshot.capabilities?.goal, false);
+        await assert.rejects(
+          () => session.runGoal({ objective: "should fail" }),
+          (error) => error?.reason === "unsupported_goal",
+        );
+        assert.equal(await session.getGoal(), null);
+        assert.equal(await session.clearGoal(), false);
+      } finally {
+        await session.close();
+      }
+    });
+  });
 });

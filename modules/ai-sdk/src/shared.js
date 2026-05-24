@@ -4,6 +4,127 @@ import path from "node:path";
 
 import yaml from "js-yaml";
 
+/**
+ * Goal-mode capability typedefs shared by AI SDK providers that implement
+ * the optional {@link runGoal} method.
+ *
+ * Callers should treat goal support as opt-in: detect with
+ * `typeof session.runGoal === "function"`. When unsupported, do NOT silently
+ * fall back to {@link runTurn} — surface a clear error instead.
+ *
+ * Session creation may also accept `{ goalMode: true }` so the underlying
+ * transport can adjust its spawn arguments (e.g. Codex app-server requires
+ * `--enable goals` at boot time; dynamic enablement is not supported).
+ *
+ * @typedef {"active"|"paused"|"blocked"|"usageLimited"|"budgetLimited"|"complete"} GoalStatus
+ *
+ * @typedef {Object} GoalRequest
+ * @property {string} objective
+ * @property {number|null} [tokenBudget]
+ * @property {{ type: "issue"|"manual", issueId?: string, taskId?: string }} [source]
+ *
+ * @typedef {Object} GoalState
+ * @property {string} [id]
+ * @property {string} [threadId]
+ * @property {string} objective
+ * @property {GoalStatus} status
+ * @property {number|null} [tokenBudget]
+ *
+ * @typedef {Object} GoalResult
+ * @property {string} text
+ * @property {GoalState} goal
+ * @property {unknown} [usage]
+ * @property {Record<string, unknown>} [metadata]
+ */
+
+/**
+ * Runtime list of valid {@link GoalStatus} values. Useful for validation.
+ * Terminal statuses are everything except "active" and "paused".
+ * @type {ReadonlyArray<GoalStatus>}
+ */
+export const GOAL_STATUSES = Object.freeze([
+  "active",
+  "paused",
+  "blocked",
+  "usageLimited",
+  "budgetLimited",
+  "complete",
+]);
+
+/**
+ * Terminal goal statuses (the goal will not produce further updates).
+ * @type {ReadonlyArray<GoalStatus>}
+ */
+export const TERMINAL_GOAL_STATUSES = Object.freeze([
+  "blocked",
+  "usageLimited",
+  "budgetLimited",
+  "complete",
+]);
+
+/**
+ * @param {unknown} value
+ * @returns {value is GoalStatus}
+ */
+export function isGoalStatus(value) {
+  return typeof value === "string" && GOAL_STATUSES.includes(/** @type {GoalStatus} */ (value));
+}
+
+/**
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isTerminalGoalStatus(value) {
+  return typeof value === "string" && TERMINAL_GOAL_STATUSES.includes(/** @type {GoalStatus} */ (value));
+}
+
+/**
+ * Session capability flags advertised in {@link SessionSnapshot.capabilities}.
+ *
+ * Providers may declare optional features (e.g. `goal`) so that callers can
+ * detect support without reflecting on method names (which is unreliable when
+ * a wrapping proxy unconditionally forwards every method).
+ *
+ * @typedef {Object} SessionCapabilities
+ * @property {boolean} [goal]
+ */
+
+/**
+ * Default capabilities assigned to providers that do not opt into any optional
+ * feature. Treat the returned object as read-only; clone before mutating.
+ *
+ * @type {Readonly<SessionCapabilities>}
+ */
+export const DEFAULT_SESSION_CAPABILITIES = Object.freeze({ goal: false });
+
+/**
+ * Resolve a session's capability snapshot, falling back to
+ * {@link DEFAULT_SESSION_CAPABILITIES}.
+ *
+ * @param {unknown} session
+ * @returns {SessionCapabilities}
+ */
+export function resolveSessionCapabilities(session) {
+  if (session && typeof session === "object") {
+    const obj = /** @type {Record<string, unknown>} */ (session);
+    if (typeof obj.getCapabilities === "function") {
+      const raw = /** @type {() => unknown} */ (obj.getCapabilities).call(session);
+      if (raw && typeof raw === "object") {
+        return { ...DEFAULT_SESSION_CAPABILITIES, ...raw };
+      }
+    }
+    const constructor = /** @type {{ capabilities?: unknown }} */ (
+      (session.constructor && typeof session.constructor === "function"
+        ? session.constructor
+        : null) || {}
+    );
+    if (constructor && constructor.capabilities && typeof constructor.capabilities === "object") {
+      return { ...DEFAULT_SESSION_CAPABILITIES, ...constructor.capabilities };
+    }
+  }
+  return { ...DEFAULT_SESSION_CAPABILITIES };
+}
+
 export function normalizeLogger(logger) {
   if (typeof logger === "function") {
     return { log: logger };

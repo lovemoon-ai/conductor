@@ -37,4 +37,87 @@ describe("codex app-server transport", () => {
       await transport.close();
     }
   });
+
+  it("injects --enable goals before --listen when enableGoals is true", () => {
+    const transport = new CodexAppServerTransport({
+      cwd: process.cwd(),
+      commandLine: "codex app-server --listen stdio://",
+      enableGoals: true,
+      logger: { log: () => {} },
+    });
+    assert.deepEqual(transport.args, ["app-server", "--enable", "goals", "--listen", "stdio://"]);
+    assert.equal(transport.enableGoals, true);
+  });
+
+  it("leaves spawn args unchanged when enableGoals is not set", () => {
+    const transport = new CodexAppServerTransport({
+      cwd: process.cwd(),
+      commandLine: "codex app-server --listen stdio://",
+      logger: { log: () => {} },
+    });
+    assert.deepEqual(transport.args, ["app-server", "--listen", "stdio://"]);
+    assert.equal(transport.enableGoals, false);
+  });
+
+  it("does not duplicate --enable goals when already present in commandLine", () => {
+    const transport = new CodexAppServerTransport({
+      cwd: process.cwd(),
+      commandLine: "codex app-server --enable goals --listen stdio://",
+      enableGoals: true,
+      logger: { log: () => {} },
+    });
+    assert.deepEqual(transport.args, ["app-server", "--enable", "goals", "--listen", "stdio://"]);
+  });
+
+  it("does not duplicate when commandLine already passes --enable=goals (equals form)", () => {
+    const transport = new CodexAppServerTransport({
+      cwd: process.cwd(),
+      commandLine: "codex app-server --enable=goals --listen stdio://",
+      enableGoals: true,
+      logger: { log: () => {} },
+    });
+    assert.deepEqual(transport.args, ["app-server", "--enable=goals", "--listen", "stdio://"]);
+  });
+
+  it("does not duplicate when commandLine passes --enable=goals,foo comma list", () => {
+    const transport = new CodexAppServerTransport({
+      cwd: process.cwd(),
+      commandLine: "codex app-server --enable=goals,otherflag --listen stdio://",
+      enableGoals: true,
+      logger: { log: () => {} },
+    });
+    assert.deepEqual(transport.args, [
+      "app-server",
+      "--enable=goals,otherflag",
+      "--listen",
+      "stdio://",
+    ]);
+  });
+
+  it("still injects --enable goals when commandLine has --enable=other (no goals)", () => {
+    const transport = new CodexAppServerTransport({
+      cwd: process.cwd(),
+      commandLine: "codex app-server --enable=other --listen stdio://",
+      enableGoals: true,
+      logger: { log: () => {} },
+    });
+    assert.deepEqual(transport.args, [
+      "app-server",
+      "--enable=other",
+      "--enable",
+      "goals",
+      "--listen",
+      "stdio://",
+    ]);
+  });
+
+  it("appends --enable goals when --listen is absent", () => {
+    const transport = new CodexAppServerTransport({
+      cwd: process.cwd(),
+      commandLine: "codex app-server",
+      enableGoals: true,
+      logger: { log: () => {} },
+    });
+    assert.deepEqual(transport.args, ["app-server", "--enable", "goals"]);
+  });
 });

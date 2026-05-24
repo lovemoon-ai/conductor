@@ -17,6 +17,12 @@ import {
 } from '@/lib/tasks/task-config';
 import { isConductorFireHost } from '@/lib/subscription/plan-limits';
 
+export type AiTaskGoalDescriptor = {
+  objective: string;
+  source: 'issue' | 'manual';
+  issueId?: string | null;
+};
+
 type CreateAiTaskArgs = {
   userId: string;
   projectId: string;
@@ -31,6 +37,16 @@ type CreateAiTaskArgs = {
   metadata?: JsonObject | null;
   initialMessageContent?: string | null;
   status?: string | null;
+  /**
+   * When set to `"goal"`, the daemon spawns fire with `--goal` so the
+   * `initialMessageContent` is interpreted as the goal objective. Stamped onto
+   * `launchConfig.aiMode` + `metadata.aiMode`, and the initial message gets
+   * `metadata.goal = true` so the timeline can label the bubble. Goal mode is
+   * gated to goal-capable backends by the caller — this helper just persists
+   * what it is given.
+   */
+  aiMode?: 'goal' | null;
+  goal?: AiTaskGoalDescriptor | null;
 };
 
 type CreatedAiTask = {
@@ -66,6 +82,14 @@ type CreatedAiTaskArtifacts = {
   task: CreatedAiTask;
   initialMessage: CreatedAiTaskMessage | null;
   initialMessageContent: string | null;
+  /**
+   * The launchConfig with `aiMode` + `goal` already merged in, computed once
+   * in `createAiTaskArtifacts` so `finalizeAiTaskCreation` can reuse it
+   * verbatim. Previously both helpers each recomputed via
+   * `applyGoalToLaunchConfig` on `args.launchConfig`, opening a divergence
+   * window if the inputs ever drifted between calls. Single source of truth.
+   */
+  effectiveLaunchConfig: JsonObject | null;
 };
 
 const resolveDefaultAiTaskStatus = (args: Pick<CreateAiTaskArgs, 'status' | 'agentHost'>): string =>
@@ -78,6 +102,77 @@ const normalizeInitialMessageContent = (value: string | null | undefined): strin
   typeof value === 'string' && value.trim()
     ? value.trim()
     : null;
+
+/**
+ * Merge `aiMode` + `goal` (when present) into the launchConfig persisted on
+ * the task and shipped to the daemon, without dropping anything the caller
+ * already put in launchConfig (e.g. worktree fields).
+ */
+const applyGoalToLaunchConfig = (
+  launchConfig: JsonObject | null,
+  aiMode: 'goal' | null | undefined,
+  goal: AiTaskGoalDescriptor | null | undefined,
+): JsonObject | null => {
+  if (!aiMode && !goal) {
+    return launchConfig;
+  }
+  const base: JsonObject = launchConfig ? { ...launchConfig } : {};
+  if (aiMode) {
+    base.aiMode = aiMode;
+  }
+  if (goal) {
+    base.goal = {
+      objective: goal.objective,
+      source: goal.source,
+      ...(goal.issueId ? { issueId: goal.issueId } : {}),
+    };
+  }
+  return base;
+};
+
+/**
+ * Mirror goal state onto the task's `metadata` JSON column so UI surfaces
+ * (board / issue detail) can render "Goal" badges without re-parsing
+ * launchConfig.
+ *
+ * The caller is responsible for gating goal-mode dispatch to goal-capable
+ * backends (see `isGoalCapableBackend` in `web/src/app/api/issues/goal.ts`
+ * and `GOAL_CAPABLE_BACKENDS` in `cli/bin/conductor-fire.js`). This helper
+ * trusts the caller on that front.
+ *
+ * Defensive guard (N6): if `aiMode === 'goal'` arrives without a
+ * `goal.objective`, we treat it as a no-op and DON'T stamp `metadata.aiMode`.
+ * This catches "caller forgot to set goal but set aiMode" bugs where the UI
+ * would otherwise render a phantom Goal badge for a task that has no goal.
+ */
+const applyGoalToMetadata = (
+  metadata: JsonObject | null | undefined,
+  aiMode: 'goal' | null | undefined,
+  goal: AiTaskGoalDescriptor | null | undefined,
+): JsonObject | null => {
+  if (!aiMode && !goal) {
+    return metadata ?? null;
+  }
+  // Defensive: aiMode='goal' without a valid objective is a caller bug — skip
+  // the stamp rather than producing a metadata.aiMode that lies about reality.
+  const objective = typeof goal?.objective === 'string' ? goal.objective.trim() : '';
+  const effectiveAiMode = aiMode === 'goal' && !objective ? null : aiMode;
+  if (!effectiveAiMode && !goal) {
+    return metadata ?? null;
+  }
+  const base: JsonObject = metadata ? { ...metadata } : {};
+  if (effectiveAiMode) {
+    base.aiMode = effectiveAiMode;
+  }
+  if (goal && objective) {
+    base.goal = {
+      source: goal.source,
+      status: 'created',
+      ...(goal.issueId ? { issueId: goal.issueId } : {}),
+    };
+  }
+  return base;
+};
 
 const createAiTaskRecord = async (
   taskStore: AiTaskDbClient['task'],
@@ -177,8 +272,21 @@ export async function createAiTaskArtifacts(
   args: CreateAiTaskArgs,
   dbClient: AiTaskDbClient = db,
 ): Promise<CreatedAiTaskArtifacts> {
+  const effectiveLaunchConfig = applyGoalToLaunchConfig(
+    args.launchConfig ?? null,
+    args.aiMode ?? null,
+    args.goal ?? null,
+  );
+  const effectiveMetadata = applyGoalToMetadata(
+    args.metadata ?? null,
+    args.aiMode ?? null,
+    args.goal ?? null,
+  );
+
   const task = await createAiTaskRecord(dbClient.task, {
     ...args,
+    launchConfig: effectiveLaunchConfig,
+    metadata: effectiveMetadata,
     status: resolveDefaultAiTaskStatus(args),
   });
 
@@ -186,11 +294,13 @@ export async function createAiTaskArtifacts(
 
   let initialMessage: CreatedAiTaskMessage | null = null;
   if (initialMessageContent) {
+    const messageMetadata = args.aiMode === 'goal' ? { goal: true } : null;
     initialMessage = await dbClient.message.create({
       data: {
         taskId: task.id,
         role: 'user',
         content: initialMessageContent,
+        ...(messageMetadata ? { metadata: JSON.stringify(messageMetadata) } : {}),
       },
       select: {
         id: true,
@@ -220,6 +330,7 @@ export async function createAiTaskArtifacts(
     task,
     initialMessage,
     initialMessageContent,
+    effectiveLaunchConfig,
   };
 }
 
@@ -250,6 +361,17 @@ export async function finalizeAiTaskCreation(
   }
 
   const requestId = randomUUID();
+  // Reuse the launchConfig computed by `createAiTaskArtifacts` (which already
+  // merged `aiMode` + `goal`). Recomputing here would create a second source
+  // of truth that could drift from what was persisted to the task row. The
+  // CLI agent reads `launch_config.aiMode` here to decide whether to append
+  // `--goal` to fire's spawn args.
+  const dispatchLaunchConfig = args.effectiveLaunchConfig
+    ?? applyGoalToLaunchConfig(
+      args.launchConfig ?? null,
+      args.aiMode ?? null,
+      args.goal ?? null,
+    );
   await enqueueAndAttemptAgentCommand(
     {
       userId: args.userId,
@@ -265,7 +387,7 @@ export async function finalizeAiTaskCreation(
           title: args.task.title,
           backend_type: args.task.backendType ?? args.metadata?.backendType,
           initial_content: args.initialMessageContent ?? undefined,
-          launch_config: args.launchConfig ?? undefined,
+          launch_config: dispatchLaunchConfig ?? undefined,
           request_id: requestId,
         },
       },

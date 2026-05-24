@@ -44,6 +44,11 @@ import {
   serializeIssueWithTasks,
   withIssuePrioritySchemaFallback,
 } from '../shared';
+import {
+  buildIssueGoalInitialContent,
+  isGoalCapableBackend,
+  parseGoalDirective,
+} from '../goal';
 
 const issueSelect = issueSerializationSelect;
 const issueSelectWithPriority = issueSerializationWithPrioritySelect;
@@ -542,10 +547,33 @@ export async function PATCH(
     }
 
     const agentHost = resolvedAgentHost.agentHost;
-    const initialContent = buildIssueInitialContent({
-      title: input.title ?? existing.title,
-      description: input.description ?? existing.description,
-    });
+    // Detect `/goal ...` on the *current* (post-PATCH) description and decide
+    // whether this todo→doing transition should dispatch as a native goal run
+    // instead of a normal turn. We only honor goal mode on backends that today
+    // know how to consume it; for other backends we fall back to the regular
+    // turn flow and log a warning so debuggers can see why a `/goal` issue
+    // didn't route through fire's --goal path.
+    // TODO: extend GOAL_CAPABLE_BACKENDS in `../goal.ts` when new providers
+    // implement session.runGoal.
+    const resolvedTitle = input.title ?? existing.title;
+    const resolvedDescription = input.description ?? existing.description;
+    const goalParse = parseGoalDirective(resolvedDescription);
+    const useGoalMode = goalParse.mode === 'goal' && isGoalCapableBackend(requestedBackendType);
+    if (goalParse.mode === 'goal' && !useGoalMode) {
+      console.warn(
+        `[issues] /goal directive ignored for issue=${existing.id} — backend ${requestedBackendType ?? '(unspecified)'} does not support goal mode`,
+      );
+    }
+
+    const initialContent = useGoalMode
+      ? buildIssueGoalInitialContent({
+          title: resolvedTitle,
+          objective: goalParse.objective,
+        })
+      : buildIssueInitialContent({
+          title: resolvedTitle,
+          description: resolvedDescription,
+        });
     const metadata = {
       ...(requestedBackendType ? { backendType: requestedBackendType } : {}),
       ...(initialContent ? { initialContent } : {}),
@@ -582,13 +610,23 @@ export async function PATCH(
       userId: user.id,
       projectId: executionProject.id,
       issueId: existing.id,
-      title: input.title ?? existing.title,
+      title: resolvedTitle,
       agentHost,
       requestedBackendType,
       requestedId: requestedTaskId,
       launchConfig,
       metadata: Object.keys(metadata).length > 0 ? metadata : null,
       initialMessageContent: initialContent,
+      ...(useGoalMode
+        ? {
+            aiMode: 'goal' as const,
+            goal: {
+              objective: goalParse.objective,
+              source: 'issue' as const,
+              issueId: existing.id,
+            },
+          }
+        : {}),
     };
   }
 

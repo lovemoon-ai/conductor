@@ -38,10 +38,18 @@ export const CHAT_WEB_PROVIDER_VARIANT = CHAT_WEB_SESSION_VARIANT;
 const SESSION_FACTORIES_BY_BACKEND = new Map([
   [
     "codex",
-    (backend, options) =>
-      hasStructuredOutputPreference(options)
+    (backend, options) => {
+      // Goal mode requires the app-server transport (codex-exec has no
+      // `thread/goal/set` JSON-RPC). When goalMode is requested we always
+      // pick the app-server variant, even if a structured-output preference
+      // would otherwise route to codex-exec.
+      if (options?.goalMode === true) {
+        return new CodexAppServerSession(backend, options);
+      }
+      return hasStructuredOutputPreference(options)
         ? new CodexExecSession(backend, options)
-        : new CodexAppServerSession(backend, options),
+        : new CodexAppServerSession(backend, options);
+    },
   ],
   ["claude", (backend, options) => new ClaudeAgentSdkSession(backend, options)],
   ["copilot", (backend, options) => new CopilotSdkSession(backend, options)],

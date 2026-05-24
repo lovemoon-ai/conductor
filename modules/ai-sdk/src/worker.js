@@ -3,7 +3,25 @@
 import readline from "node:readline";
 
 import { createLocalAiSession } from "./session-factory.js";
-import { serializeError } from "./shared.js";
+import {
+  DEFAULT_SESSION_CAPABILITIES,
+  resolveSessionCapabilities,
+  serializeError,
+} from "./shared.js";
+
+function buildReadySnapshot(aiSession) {
+  const snapshot = typeof aiSession?.getSnapshot === "function" ? aiSession.getSnapshot() : null;
+  const base = snapshot && typeof snapshot === "object" ? { ...snapshot } : {};
+  // Always include a capabilities field so the parent process can do the
+  // declarative `capabilities.goal === false` short-circuit without needing
+  // to inspect method names through the IPC boundary.
+  if (!base.capabilities || typeof base.capabilities !== "object") {
+    base.capabilities = resolveSessionCapabilities(aiSession);
+  } else {
+    base.capabilities = { ...DEFAULT_SESSION_CAPABILITIES, ...base.capabilities };
+  }
+  return base;
+}
 
 let session = null;
 let sessionCreated = false;
@@ -54,7 +72,7 @@ async function handleCreate(message) {
   attachSessionEvents(session);
   send({
     type: "ready",
-    snapshot: typeof session.getSnapshot === "function" ? session.getSnapshot() : null,
+    snapshot: buildReadySnapshot(session),
     workerPid: process.pid,
     workerProcessPid: process.pid,
   });
@@ -69,8 +87,8 @@ async function handleRequest(message) {
     throw new Error(`Unsupported worker method: ${method}`);
   }
   const args = Array.isArray(message.args) ? [...message.args] : [];
-  if (method === "runTurn") {
-    const prompt = args[0];
+  if (method === "runTurn" || method === "runGoal") {
+    const firstArg = args[0];
     const options = args[1] && typeof args[1] === "object" ? { ...args[1] } : {};
     options.onProgress = (payload) => {
       send({
@@ -79,7 +97,7 @@ async function handleRequest(message) {
         payload,
       });
     };
-    args[0] = prompt;
+    args[0] = firstArg;
     args[1] = options;
   }
   const result = await session[method](...args);
