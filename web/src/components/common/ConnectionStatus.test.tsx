@@ -85,10 +85,93 @@ describe('ConnectionStatus', () => {
       'Daemon',
       'PID',
       'Backend',
+      'AI Mode',
       'Session ID',
       'Token Usage',
       'Context Usage',
     ]);
+    // No goal => Turn label, no badge, no objective row
+    expect(screen.getByText('Turn')).toBeInTheDocument();
+    expect(screen.queryByTestId('goal-mode-badge')).toBeNull();
+    expect(screen.queryByText('Goal Objective')).toBeNull();
+  });
+
+  it('shows the Goal badge and objective when task metadata.aiMode is goal', () => {
+    useTasksStoreMock.mockImplementation((selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
+      selector({
+        tasks: [
+          {
+            id: 'task-123',
+            executionHost: 'daemon-a',
+            metadata: {
+              aiMode: 'goal',
+              goal: { source: 'issue', issueId: 'I-7', status: 'created' },
+              initialContent: 'ship the release end-to-end',
+            },
+            launchConfig: {
+              aiMode: 'goal',
+              goal: {
+                objective: 'ship the release end-to-end',
+                source: 'issue',
+                issueId: 'I-7',
+              },
+            },
+          },
+        ],
+      }),
+    );
+
+    render(<ConnectionStatus detailsEnabled />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open connection details' }));
+
+    const badge = screen.getByTestId('goal-mode-badge');
+    expect(badge).toBeInTheDocument();
+    expect(badge.textContent).toContain('Goal');
+    expect(screen.getByText('Goal Objective')).toBeInTheDocument();
+    expect(screen.getByText('ship the release end-to-end')).toBeInTheDocument();
+    // source + status hint
+    expect(screen.getByText(/via issue.*created/)).toBeInTheDocument();
+  });
+
+  it('falls back to launchConfig.goal.objective when metadata.initialContent is absent', () => {
+    useTasksStoreMock.mockImplementation((selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
+      selector({
+        tasks: [
+          {
+            id: 'task-123',
+            executionHost: 'daemon-a',
+            metadata: { aiMode: 'goal', goal: { source: 'manual' } },
+            launchConfig: { aiMode: 'goal', goal: { objective: 'manual cli goal', source: 'manual' } },
+          },
+        ],
+      }),
+    );
+
+    render(<ConnectionStatus detailsEnabled />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open connection details' }));
+
+    expect(screen.getByTestId('goal-mode-badge')).toBeInTheDocument();
+    expect(screen.getByText('manual cli goal')).toBeInTheDocument();
+  });
+
+  it('does not show the Goal badge for normal turn-mode tasks', () => {
+    useTasksStoreMock.mockImplementation((selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
+      selector({
+        tasks: [
+          {
+            id: 'task-123',
+            executionHost: 'daemon-a',
+            metadata: { aiMode: 'turn' },
+          },
+        ],
+      }),
+    );
+
+    render(<ConnectionStatus detailsEnabled />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open connection details' }));
+
+    expect(screen.queryByTestId('goal-mode-badge')).toBeNull();
+    expect(screen.getByText('Turn')).toBeInTheDocument();
   });
 
   it('uses a dark panel with white text for pty tasks', () => {

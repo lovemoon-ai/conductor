@@ -25,6 +25,68 @@ function formatPercent(value?: number): string {
   return `${rounded}%`;
 }
 
+/**
+ * Extract goal-mode info from a task's persisted metadata + launchConfig.
+ *
+ * Backend contract (see `web/src/lib/tasks/create-ai-task.ts` and
+ * `cli/src/daemon.js`):
+ *   - `metadata.aiMode === "goal"` is the canonical "this task runs in
+ *     /goal mode" flag.
+ *   - `metadata.goal = { source, issueId?, status? }` carries provenance.
+ *   - `launchConfig.goal.objective` (or `metadata.initialContent`) carries
+ *     the objective text (single source of truth per the I2 review fix).
+ *   - `metadata.initialContent` is byte-equal to `launchConfig.goal.objective`
+ *     so we prefer `launchConfig` first for explicitness.
+ */
+function extractGoalInfo(
+  metadata?: Record<string, unknown> | null,
+  launchConfig?: Record<string, unknown> | null,
+): {
+  active: boolean;
+  source?: string;
+  status?: string;
+  objective?: string;
+  issueId?: string;
+} {
+  if (!metadata || typeof metadata !== 'object') {
+    return { active: false };
+  }
+  const aiMode = typeof metadata.aiMode === 'string' ? metadata.aiMode : '';
+  const goalBlock =
+    metadata.goal && typeof metadata.goal === 'object' && !Array.isArray(metadata.goal)
+      ? (metadata.goal as Record<string, unknown>)
+      : null;
+  const objectiveFromLaunch =
+    launchConfig &&
+    typeof launchConfig === 'object' &&
+    launchConfig.goal &&
+    typeof launchConfig.goal === 'object' &&
+    !Array.isArray(launchConfig.goal)
+      ? ((launchConfig.goal as Record<string, unknown>).objective as string | undefined)
+      : undefined;
+  const objectiveFromMetadata =
+    typeof metadata.initialContent === 'string' ? (metadata.initialContent as string) : undefined;
+
+  // We treat the task as goal-mode if EITHER aiMode says so OR the goal block
+  // carries an objective (defensive — matches `isGoalModeLaunchConfig` on the
+  // daemon side which accepts either signal).
+  const inferred =
+    aiMode === 'goal' ||
+    (goalBlock && typeof goalBlock.objective === 'string' && (goalBlock.objective as string).trim().length > 0);
+
+  if (!inferred) {
+    return { active: false };
+  }
+
+  return {
+    active: true,
+    source: typeof goalBlock?.source === 'string' ? (goalBlock?.source as string) : undefined,
+    status: typeof goalBlock?.status === 'string' ? (goalBlock?.status as string) : undefined,
+    issueId: typeof goalBlock?.issueId === 'string' ? (goalBlock?.issueId as string) : undefined,
+    objective: (objectiveFromLaunch || objectiveFromMetadata || '').trim() || undefined,
+  };
+}
+
 export function ConnectionStatus({
   detailsEnabled = false,
   taskId: taskIdOverride,
@@ -94,6 +156,10 @@ export function ConnectionStatus({
   const tokenUsagePercent = formatPercent(runtime?.tokenUsagePercent);
   const contextUsagePercent = formatPercent(runtime?.contextUsagePercent);
   const backend = runtime?.backend || currentTask?.backendType || 'n/a';
+  const goalInfo = useMemo(
+    () => extractGoalInfo(currentTask?.metadata, currentTask?.launchConfig),
+    [currentTask?.metadata, currentTask?.launchConfig],
+  );
 
   useEffect(() => {
     if (!open) {
@@ -162,6 +228,51 @@ export function ConnectionStatus({
             <span className={isPtyTask ? 'text-white' : 'text-ink'}>{pid ?? 'n/a'}</span>
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Backend</span>
             <span className={`truncate ${isPtyTask ? 'text-white' : 'text-ink'}`}>{backend}</span>
+            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>AI Mode</span>
+            <span className={`flex items-center gap-1.5 ${isPtyTask ? 'text-white' : 'text-ink'}`}>
+              {goalInfo.active ? (
+                <>
+                  <span
+                    data-testid="goal-mode-badge"
+                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                      isPtyTask
+                        ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/40'
+                        : 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-300'
+                    }`}
+                    title={goalInfo.objective || 'Native /goal mode'}
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    Goal
+                  </span>
+                  <span
+                    data-testid="goal-mode-hint"
+                    className={`text-[11px] opacity-70 ${isPtyTask ? 'text-white' : 'text-ink'}`}
+                  >
+                    {[goalInfo.source && `via ${goalInfo.source}`, goalInfo.status]
+                      .filter(Boolean)
+                      .join(' · ') || 'native'}
+                  </span>
+                </>
+              ) : (
+                <span
+                  data-testid="ai-mode-turn-label"
+                  className={`opacity-60 ${isPtyTask ? 'text-white' : 'text-ink'}`}
+                >
+                  Turn
+                </span>
+              )}
+            </span>
+            {goalInfo.active && goalInfo.objective ? (
+              <>
+                <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Goal Objective</span>
+                <span
+                  className={`break-words line-clamp-3 ${isPtyTask ? 'text-white' : 'text-ink'}`}
+                  title={goalInfo.objective}
+                >
+                  {goalInfo.objective}
+                </span>
+              </>
+            ) : null}
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Session ID</span>
             <span className={`break-all ${isPtyTask ? 'text-white' : 'text-ink'}`}>{sessionId}</span>
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Token Usage</span>
