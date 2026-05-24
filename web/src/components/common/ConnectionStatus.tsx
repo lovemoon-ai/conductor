@@ -28,15 +28,17 @@ function formatPercent(value?: number): string {
 /**
  * Extract goal-mode info from a task's persisted metadata + launchConfig.
  *
- * Backend contract (see `web/src/lib/tasks/create-ai-task.ts` and
- * `cli/src/daemon.js`):
- *   - `metadata.aiMode === "goal"` is the canonical "this task runs in
- *     /goal mode" flag.
+ * Backend contract (see `web/src/lib/tasks/create-ai-task.ts`):
+ *   - `metadata.aiMode === "goal"` is the persisted "this task was created
+ *     in /goal mode" flag — used as a fallback when the live runtime has not
+ *     yet reported `aiMode` (e.g. before the first turn dispatch). The live
+ *     runtime field is the source of truth for the CURRENT turn's mode.
  *   - `metadata.goal = { source, issueId?, status? }` carries provenance.
- *   - `launchConfig.goal.objective` (or `metadata.initialContent`) carries
- *     the objective text (single source of truth per the I2 review fix).
- *   - `metadata.initialContent` is byte-equal to `launchConfig.goal.objective`
- *     so we prefer `launchConfig` first for explicitness.
+ *   - `launchConfig.goal.objective` carries the bare objective text for UI
+ *     display, with `metadata.initialContent` as a secondary fallback. Note
+ *     these may differ from the actual prefill delivered to fire — which
+ *     now includes a `/goal\n` prefix so fire's per-message detector picks
+ *     it up.
  */
 function extractGoalInfo(
   metadata?: Record<string, unknown> | null,
@@ -85,6 +87,33 @@ function extractGoalInfo(
     issueId: typeof goalBlock?.issueId === 'string' ? (goalBlock?.issueId as string) : undefined,
     objective: (objectiveFromLaunch || objectiveFromMetadata || '').trim() || undefined,
   };
+}
+
+/**
+ * Decide which `aiMode` to render in the Runtime Details panel.
+ *
+ * Precedence (highest first):
+ *   1. The live runtime field reported by fire on each dispatch
+ *      (`runtimeAiMode`). The user can flip modes mid-chat by typing
+ *      `/goal ...` at any time, so this is the only source that reflects the
+ *      CURRENT turn's mode.
+ *   2. The task's persisted `metadata.aiMode` (surfaced via `goalInfo.active`).
+ *      Used as a fallback for the brief window before the first turn has
+ *      dispatched, or for tasks where the runtime hasn't reported yet (e.g.
+ *      the page just loaded and we have not received any runtime event).
+ *
+ * Returns the internal mode name ("goal" or "turn"); the UI layer is
+ * responsible for translating that to the user-facing label ("goal" /
+ * "normal").
+ */
+export function resolveEffectiveAiMode(
+  runtimeAiMode: 'goal' | 'turn' | undefined,
+  metadataGoalActive: boolean,
+): 'goal' | 'turn' {
+  if (runtimeAiMode === 'goal' || runtimeAiMode === 'turn') {
+    return runtimeAiMode;
+  }
+  return metadataGoalActive ? 'goal' : 'turn';
 }
 
 export function ConnectionStatus({
@@ -160,6 +189,12 @@ export function ConnectionStatus({
     () => extractGoalInfo(currentTask?.metadata, currentTask?.launchConfig),
     [currentTask?.metadata, currentTask?.launchConfig],
   );
+  // Prefer the live runtime mode (set by fire on each dispatch). Fall back to
+  // the task's persisted metadata.aiMode for the brief window before the
+  // first turn has been dispatched (or for tasks where runtime hasn't
+  // reported yet).
+  const effectiveAiMode = resolveEffectiveAiMode(runtime?.aiMode, goalInfo.active);
+  const aiModeLabel = effectiveAiMode === 'goal' ? 'goal' : 'normal';
 
   useEffect(() => {
     if (!open) {
@@ -231,10 +266,10 @@ export function ConnectionStatus({
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>AI Mode</span>
             <span
               data-testid="ai-mode-value"
-              title={goalInfo.active && goalInfo.objective ? goalInfo.objective : undefined}
+              title={effectiveAiMode === 'goal' && goalInfo.objective ? goalInfo.objective : undefined}
               className={isPtyTask ? 'text-white' : 'text-ink'}
             >
-              {goalInfo.active ? 'goal' : 'normal'}
+              {aiModeLabel}
             </span>
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Session ID</span>
             <span className={`break-all ${isPtyTask ? 'text-white' : 'text-ink'}`}>{sessionId}</span>
