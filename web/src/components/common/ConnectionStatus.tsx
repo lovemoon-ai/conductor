@@ -229,50 +229,13 @@ export function ConnectionStatus({
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Backend</span>
             <span className={`truncate ${isPtyTask ? 'text-white' : 'text-ink'}`}>{backend}</span>
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>AI Mode</span>
-            <span className={`flex items-center gap-1.5 ${isPtyTask ? 'text-white' : 'text-ink'}`}>
-              {goalInfo.active ? (
-                <>
-                  <span
-                    data-testid="goal-mode-badge"
-                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                      isPtyTask
-                        ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/40'
-                        : 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-300'
-                    }`}
-                    title={goalInfo.objective || 'Native /goal mode'}
-                  >
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                    Goal
-                  </span>
-                  <span
-                    data-testid="goal-mode-hint"
-                    className={`text-[11px] opacity-70 ${isPtyTask ? 'text-white' : 'text-ink'}`}
-                  >
-                    {[goalInfo.source && `via ${goalInfo.source}`, goalInfo.status]
-                      .filter(Boolean)
-                      .join(' · ') || 'native'}
-                  </span>
-                </>
-              ) : (
-                <span
-                  data-testid="ai-mode-turn-label"
-                  className={`opacity-60 ${isPtyTask ? 'text-white' : 'text-ink'}`}
-                >
-                  Turn
-                </span>
-              )}
+            <span
+              data-testid="ai-mode-value"
+              title={goalInfo.active && goalInfo.objective ? goalInfo.objective : undefined}
+              className={isPtyTask ? 'text-white' : 'text-ink'}
+            >
+              {goalInfo.active ? 'goal' : 'normal'}
             </span>
-            {goalInfo.active && goalInfo.objective ? (
-              <>
-                <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Goal Objective</span>
-                <span
-                  className={`break-words line-clamp-3 ${isPtyTask ? 'text-white' : 'text-ink'}`}
-                  title={goalInfo.objective}
-                >
-                  {goalInfo.objective}
-                </span>
-              </>
-            ) : null}
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Session ID</span>
             <span className={`break-all ${isPtyTask ? 'text-white' : 'text-ink'}`}>{sessionId}</span>
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Token Usage</span>
