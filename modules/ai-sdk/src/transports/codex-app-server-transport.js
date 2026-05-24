@@ -12,6 +12,50 @@ import {
 
 const DEFAULT_CODEX_APP_SERVER_COMMAND = "codex app-server --listen stdio://";
 
+/**
+ * Add `--enable goals` to the codex app-server spawn args when goal mode is
+ * requested. Dynamic enablement via `experimentalFeature/enablement/set` is
+ * NOT supported by codex, so the feature must be enabled at boot. Idempotent:
+ * does not double-add when the user already passed any of the supported
+ * spellings (`--enable goals`, `--enable=goals`, `--enable=goals,foo`) in the
+ * command line.
+ *
+ * @param {string[]} args
+ * @param {boolean} enableGoals
+ * @returns {string[]}
+ */
+function injectEnableGoalsArgs(args, enableGoals) {
+  const normalized = Array.isArray(args) ? [...args] : [];
+  if (!enableGoals) {
+    return normalized;
+  }
+  for (let index = 0; index < normalized.length; index += 1) {
+    const token = normalized[index];
+    if (typeof token !== "string") {
+      continue;
+    }
+    // Two-token form: ["--enable", "goals"]
+    if (token === "--enable" && normalized[index + 1] === "goals") {
+      return normalized;
+    }
+    // Equals form: "--enable=goals" or comma list "--enable=goals,foo"
+    if (token.startsWith("--enable=")) {
+      const value = token.slice("--enable=".length);
+      const features = value
+        .split(",")
+        .map((entry) => entry.trim().toLowerCase())
+        .filter(Boolean);
+      if (features.includes("goals")) {
+        return normalized;
+      }
+    }
+  }
+  const listenIndex = normalized.indexOf("--listen");
+  const insertAt = listenIndex >= 0 ? listenIndex : normalized.length;
+  normalized.splice(insertAt, 0, "--enable", "goals");
+  return normalized;
+}
+
 function createRpcError(payload) {
   const message = String(payload?.message || payload?.error?.message || "Codex app-server request failed");
   const error = new Error(message);
@@ -45,7 +89,8 @@ export class CodexAppServerTransport extends EventEmitter {
       throw new Error("Invalid codex app-server command");
     }
     this.command = command;
-    this.args = args;
+    this.enableGoals = options.enableGoals === true;
+    this.args = injectEnableGoalsArgs(args, this.enableGoals);
     this.env = options.env && typeof options.env === "object" ? { ...options.env } : {};
     this.ignoreCodexApiKey = options.ignoreCodexApiKey === true;
     this.child = null;

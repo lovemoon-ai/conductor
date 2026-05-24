@@ -4,6 +4,7 @@ import { CLAUDE_AGENT_SDK_VARIANT as CLAUDE_PROVIDER_VARIANT } from "../built-in
 import {
   emitLog,
   getBoundedEnvInt,
+  isGoalStatus,
   loadEnvConfig,
   normalizeLogger,
   proxyToEnv,
@@ -152,6 +153,15 @@ function sanitizeSummary(value, maxLen = 180) {
 }
 
 export class ClaudeAgentSdkSession extends EventEmitter {
+  // Capability advertised via getSnapshot().capabilities so worker proxies
+  // can short-circuit runGoal without an IPC round trip. Claude exposes
+  // native `/goal` slash command, so this is true.
+  static capabilities = Object.freeze({ goal: true });
+
+  getCapabilities() {
+    return { ...ClaudeAgentSdkSession.capabilities };
+  }
+
   constructor(backend, options = {}) {
     super();
     this.backend = normalizeClaudeBackend(backend);
@@ -245,6 +255,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
           }
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
+      capabilities: this.getCapabilities(),
     };
   }
 
@@ -998,6 +1009,122 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         // best effort
       }
     }
+  }
+
+  /**
+   * Trigger Claude's native `/goal` slash command. Implemented by sending the
+   * prompt `"/goal <objective>"` through {@link runTurn}, which the Claude
+   * Agent SDK natively recognizes as a long-running goal request.
+   *
+   * Callers should detect support via `typeof session.runGoal === "function"`.
+   * When a provider does not support goals it should leave this method
+   * undefined; callers MUST surface a clear error rather than silently falling
+   * back to {@link runTurn}.
+   *
+   * Implementation note (N8): Claude's `/goal` slash command resolves the
+   * entire goal within a single `query()` iteration. {@link runTurn} drains
+   * the SDK iterator to completion (`for await (const message of query)`)
+   * before returning, so `turnResult.items` is the full, terminal sequence of
+   * messages. If the SDK emits multiple `goal_status` items (e.g. an
+   * intermediate "active" followed by a terminal "complete"), we select the
+   * LAST one rather than the first so the goal's final state is reflected.
+   * When no `goal_status` item is present we fall back to "active" and emit a
+   * debug log; that fallback is a signal that the contract has drifted.
+   *
+   * @param {import("../shared.js").GoalRequest} goal
+   * @param {object} [options]
+   * @returns {Promise<import("../shared.js").GoalResult>}
+   */
+  async runGoal(goal, options = {}) {
+    const objective = typeof goal?.objective === "string" ? goal.objective.trim() : "";
+    if (!objective) {
+      throw createTurnError("runGoal requires a non-empty objective", {
+        reason: "invalid_goal",
+      });
+    }
+
+    const prompt = `/goal ${objective}`;
+    const turnResult = await this.runTurn(prompt, options);
+
+    const items = Array.isArray(turnResult?.items) ? turnResult.items : [];
+    // Walk from the end so we settle on the LAST goal_status item the SDK
+    // emitted. The single-shot `query()` iteration has been drained by
+    // `runTurn`, so this is the terminal status.
+    let goalStatusItem = null;
+    for (let idx = items.length - 1; idx >= 0; idx -= 1) {
+      const item = items[idx];
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+      if (
+        item.type === "goal_status" ||
+        item.subtype === "goal_status" ||
+        (item.goal_status && typeof item.goal_status === "object")
+      ) {
+        goalStatusItem = item;
+        break;
+      }
+    }
+
+    const parsedStatus = (() => {
+      if (!goalStatusItem) {
+        return null;
+      }
+      const candidate =
+        goalStatusItem.goal_status && typeof goalStatusItem.goal_status === "object"
+          ? goalStatusItem.goal_status
+          : goalStatusItem;
+      const status = typeof candidate?.status === "string" ? candidate.status : null;
+      const id = typeof candidate?.id === "string" ? candidate.id : undefined;
+      const tokenBudget =
+        candidate?.tokenBudget === null || Number.isFinite(Number(candidate?.tokenBudget))
+          ? candidate.tokenBudget
+          : undefined;
+      return { status, id, tokenBudget };
+    })();
+
+    if (!goalStatusItem) {
+      // Contract drift: the SDK did not surface a goal_status item in the
+      // single query iteration. Log so operators notice; downstream we
+      // default to "active" so a still-running goal isn't misclassified as
+      // terminal.
+      this.trace(
+        `runGoal: no goal_status item found in SDK message stream (${items.length} items); defaulting status to "active"`,
+      );
+    }
+
+    // Validate the SDK-reported status against the known GoalStatus enum
+    // before exposing it. An unknown / typo'd status (e.g. "weird") would
+    // otherwise leak through and confuse downstream goal-status consumers
+    // (the realtime hub uses isTerminalGoalStatus to decide when to stop
+    // polling). Default to "active" so a still-running goal is not
+    // misclassified as terminal.
+    const rawStatus =
+      typeof parsedStatus?.status === "string" ? parsedStatus.status.trim() : "";
+    const validatedStatus = isGoalStatus(rawStatus) ? rawStatus : "active";
+
+    const goalState = {
+      id: parsedStatus?.id,
+      threadId: this.sessionId || undefined,
+      objective,
+      status: validatedStatus,
+      tokenBudget:
+        goal?.tokenBudget !== undefined
+          ? goal.tokenBudget
+          : parsedStatus?.tokenBudget !== undefined
+            ? parsedStatus.tokenBudget
+            : null,
+    };
+
+    return {
+      text: turnResult?.text || "",
+      goal: goalState,
+      usage: turnResult?.usage || null,
+      metadata: {
+        ...(turnResult?.metadata && typeof turnResult.metadata === "object" ? turnResult.metadata : {}),
+        goalPrompt: prompt,
+      },
+    };
   }
 
   async close() {

@@ -583,6 +583,22 @@ async function main() {
     return;
   }
 
+  // I4 early gate: refuse `--goal` for backends that we know cannot honor it.
+  // This avoids spawning a doomed codex-app-server transport just to discover
+  // it has no goal capability moments later. The post-spawn capability snapshot
+  // check below acts as a belt-and-suspenders safety net for backends whose
+  // goal support depends on runtime negotiation.
+  if (cliArgs.goalMode) {
+    const backendForGate = String(cliArgs.sessionBackend || cliArgs.backend || "").trim().toLowerCase();
+    if (backendForGate && !GOAL_CAPABLE_BACKENDS.includes(backendForGate)) {
+      throw new Error(
+        `Goal mode requested for backend "${backendForGate}" which does not support native goals. ` +
+          `Supported backends: ${GOAL_CAPABLE_BACKENDS.join(", ")}. ` +
+          `Either remove --goal or switch backend.`,
+      );
+    }
+  }
+
   const allowCliList = await loadAllowCliList(cliArgs.configFile);
   const { supportedBackends, externalBackends, discoveryError } = await listAdvertisedBackends(allowCliList, {
     configFilePath: cliArgs.configFile,
@@ -933,10 +949,22 @@ async function main() {
           configFile: cliArgs.configFile,
           ...(cliArgs.sessionOptions || {}),
           ...(sessionCommandLine ? { commandLine: sessionCommandLine } : {}),
+          // When --goal is set, the ai-sdk transport is responsible for adding
+          // `--enable goals` to the codex app-server invocation. We just
+          // forward the boolean here under the agreed `goalMode` name.
+          ...(cliArgs.goalMode ? { goalMode: true } : {}),
           logger: { log },
           sessionStoreKey: taskContext.taskId ? `task-${taskContext.taskId}` : undefined,
           resumePersistedSession: Boolean(!nextResumeSessionId && taskContext.taskId),
         });
+
+        // I4 post-spawn capability check. The ai-sdk only learns whether the
+        // underlying transport (codex/claude/etc.) actually negotiated goal
+        // support after the ready handshake completes — exposed via
+        // session.getSnapshot().capabilities.goal. Catch the unsupported case
+        // here so users get a clean message instead of a deep `unsupported_goal`
+        // throw mid-turn.
+        await assertBackendSupportsGoalsIfRequested(backendSession, cliArgs);
 
         const runner = new BridgeRunner({
           backendSession,
@@ -952,6 +980,7 @@ async function main() {
           daemonName: resolvedDaemonName,
           prePrompt: resolvedPrePrompt || "",
           shouldProcessPrePrompt: Boolean(resolvedPrePrompt) && nextShouldProcessPrePrompt,
+          goalMode: Boolean(cliArgs.goalMode),
         });
         reconnectRunner = runner;
         if (pendingRemoteStopEvent) {
@@ -1121,6 +1150,7 @@ const CONDUCTOR_BOOLEAN_FLAGS = new Set([
   "-v",
   "--help",
   "-h",
+  "--goal",
 ]);
 
 const CONDUCTOR_VALUE_FLAGS = new Set([
@@ -1221,6 +1251,10 @@ export async function parseCliArgs(argvInput = process.argv) {
       type: "string",
       describe: "Optional initial prompt forwarded to Conductor on task creation",
       hidden: true,
+    })
+    .option("goal", {
+      type: "boolean",
+      describe: "Run the first turn in goal mode (requires goal-capable backend session)",
     })
     .option("version", {
       alias: "v",
@@ -1349,6 +1383,8 @@ Environment:
     throw new Error("--resume requires a session id");
   }
 
+  const goalMode = Boolean(conductorArgs.goal);
+
   return {
     backend,
     initialPrompt: prompt || conductorArgs.prefill || "",
@@ -1361,6 +1397,7 @@ Environment:
     sessionBackend,
     sessionOptions,
     resumeSessionId,
+    goalMode,
     showVersion: Boolean(conductorArgs.version) || versionWithoutSeparator,
     listBackends: Boolean(conductorArgs.listBackends) || listBackendsWithoutSeparator,
   };
@@ -1392,12 +1429,287 @@ function normalizeTaskId(value) {
   return value.trim();
 }
 
-function resolveFireStateDir(workingDirectory = process.cwd()) {
+function resolveFireStateDir(workingDirectory) {
+  // Priority:
+  //   1. CONDUCTOR_FIRE_STATE_DIR env override (used by tests to isolate the
+  //      marker dir into a tmpdir; also handy for ops to relocate state).
+  //   2. Explicit `workingDirectory` argument (legacy callers).
+  //   3. ~/.conductor/state — matches the conductor convention used by the
+  //      session bootstrap locks (see line ~311).
+  //
+  // We deliberately do NOT default to process.cwd(), which would pollute
+  // every project directory a user runs `conductor fire --goal` from and
+  // cause tests to leak marker files into the repo.
+  const envOverride =
+    typeof process.env.CONDUCTOR_FIRE_STATE_DIR === "string" &&
+    process.env.CONDUCTOR_FIRE_STATE_DIR.trim()
+      ? process.env.CONDUCTOR_FIRE_STATE_DIR.trim()
+      : "";
+  if (envOverride) {
+    return path.resolve(envOverride);
+  }
   const baseDir =
     typeof workingDirectory === "string" && workingDirectory.trim()
       ? path.resolve(workingDirectory.trim())
-      : process.cwd();
+      : os.homedir();
   return path.join(baseDir, ".conductor", "state");
+}
+
+const GOAL_DISPATCHED_PREFIX = "goal-dispatched.task_";
+
+/**
+ * In-process backstop for the on-disk goal-dispatched marker (see N2 in the
+ * code review). If `writeGoalDispatchedMarker` fails (e.g. read-only homedir
+ * on a locked-down CI box), this Set keeps the SAME fire process from
+ * re-dispatching runGoal across BridgeRunner reconnects. A DIFFERENT process
+ * picking up the same task can't see this Set and must rely on the disk
+ * marker; if the marker is missing the warning emitted by
+ * `writeGoalDispatchedMarker` tells operators to investigate.
+ */
+const goalDispatchedTaskIdsInProcess = new Set();
+
+export function markGoalDispatchedInProcess(taskId) {
+  const normalized = normalizeTaskId(taskId);
+  if (!normalized) {
+    return;
+  }
+  goalDispatchedTaskIdsInProcess.add(normalized);
+}
+
+export function hasGoalDispatchedInProcess(taskId) {
+  const normalized = normalizeTaskId(taskId);
+  if (!normalized) {
+    return false;
+  }
+  return goalDispatchedTaskIdsInProcess.has(normalized);
+}
+
+export function clearGoalDispatchedInProcess(taskId) {
+  if (taskId === undefined) {
+    goalDispatchedTaskIdsInProcess.clear();
+    return;
+  }
+  const normalized = normalizeTaskId(taskId);
+  if (normalized) {
+    goalDispatchedTaskIdsInProcess.delete(normalized);
+  }
+}
+
+/**
+ * Backends that ship a native goal protocol via the ai-sdk. Used both for the
+ * early `--goal` gate in `main()` (avoids spawning a doomed session) and as
+ * documentation for the post-spawn capability check.
+ *
+ * N7 / goal-mode contract drift: this list MUST mirror the
+ * `static capabilities = { goal: true }` declarations on the ai-sdk session
+ * providers (currently `claude-agent-sdk-session.js` and
+ * `codex-app-server-session.js`). The post-spawn capability snapshot check
+ * inside `assertBackendSupportsGoalsIfRequested` is the authoritative source
+ * of truth; this list is an early-gate optimization to avoid spawning a
+ * doomed transport.
+ *
+ * Sibling lists that must be kept in sync (Option A: documented mirroring):
+ *   - `web/src/app/api/issues/goal.ts` → `GOAL_CAPABLE_BACKENDS` Set
+ *   - `modules/ai-sdk/src/providers/*.js` → `static capabilities.goal`
+ *
+ * If you add a new goal-capable backend, update ALL THREE locations and run
+ * `cd cli && pnpm test` + `cd web && pnpm test`.
+ */
+export const GOAL_CAPABLE_BACKENDS = ["claude", "codex"];
+
+/**
+ * Read the goal-source descriptor for `session.runGoal()` from the env vars
+ * that the daemon set on the spawned fire process. When fire is invoked
+ * directly from the CLI (no daemon), we treat the goal as a manual user-typed
+ * objective.
+ */
+export function resolveGoalSourceFromEnv(env = process.env) {
+  const rawType = typeof env?.CONDUCTOR_GOAL_SOURCE_TYPE === "string"
+    ? env.CONDUCTOR_GOAL_SOURCE_TYPE.trim().toLowerCase()
+    : "";
+  const type = rawType === "issue" || rawType === "manual" ? rawType : "manual";
+  const rawIssueId = typeof env?.CONDUCTOR_GOAL_ISSUE_ID === "string"
+    ? env.CONDUCTOR_GOAL_ISSUE_ID.trim()
+    : "";
+  const source = { type };
+  if (rawIssueId) {
+    source.issueId = rawIssueId;
+  }
+  return source;
+}
+
+function resolveGoalDispatchMarkerPath(taskId, workingDirectory) {
+  const normalizedTaskId = normalizeTaskId(taskId);
+  if (!normalizedTaskId) {
+    return "";
+  }
+  const stateDir = resolveFireStateDir(workingDirectory);
+  return path.join(stateDir, `${GOAL_DISPATCHED_PREFIX}${normalizedTaskId}.json`);
+}
+
+/**
+ * Persist a marker recording that we have already dispatched the initial
+ * `runGoal()` for `taskId`. The marker lives in the same per-cwd state dir as
+ * the active-fire marker so it survives a reconnect / daemon restart.
+ *
+ * We chose disk persistence (option A in the I3 design) over a memory flag or
+ * a pre-flight `session.getGoal()` RPC because:
+ *   1. It is deterministic — no race with a still-bootstrapping codex session.
+ *   2. It works for every backend that wires runGoal, not just codex.
+ *   3. A brand-new task has a brand-new taskId so no stale marker can exist.
+ *
+ * Returns `{ markerPath, persisted }` so the caller can tell whether the disk
+ * write actually succeeded. When `persisted` is false the caller should set an
+ * in-process flag so the SAME fire process doesn't re-fire runGoal on a
+ * subsequent reconnect; a DIFFERENT process won't see that flag and may
+ * re-dispatch — at that point operators should grep logs for the warning this
+ * function emits (see N2 in the goal-mode code review).
+ *
+ * `taskCwd` is the optional task working directory recorded into the marker
+ * for debug purposes. We pass it as a separate argument rather than recording
+ * `workingDirectory` (which is the STATE dir, not the task cwd) so the cwd
+ * field in the marker JSON actually reflects what readers expect (N4).
+ */
+export function writeGoalDispatchedMarker(taskId, workingDirectory, taskCwd) {
+  const markerPath = resolveGoalDispatchMarkerPath(taskId, workingDirectory);
+  if (!markerPath) {
+    return { markerPath: "", persisted: false };
+  }
+  const resolvedTaskCwd =
+    typeof taskCwd === "string" && taskCwd.trim()
+      ? path.resolve(taskCwd.trim())
+      : undefined;
+  try {
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+    fs.writeFileSync(
+      markerPath,
+      `${JSON.stringify(
+        {
+          source: "conductor-fire",
+          taskId: normalizeTaskId(taskId),
+          ...(resolvedTaskCwd ? { cwd: resolvedTaskCwd } : {}),
+          dispatchedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    return { markerPath, persisted: true };
+  } catch (error) {
+    // Marker persistence is best-effort on disk; failing here would force the
+    // runner to re-dispatch on reconnect, which is wrong but not catastrophic
+    // for the SAME process (the in-process flag in BridgeRunner guards that
+    // case). For a DIFFERENT process picking up this task we may genuinely
+    // re-fire runGoal — surface a warning so operators can find it.
+    log(
+      `[goal-mode] WARNING: goal-dispatched marker write failed for task ${normalizeTaskId(taskId)}: ${error?.message || error}. Reconnect may re-fire runGoal.`,
+    );
+    return { markerPath, persisted: false };
+  }
+}
+
+export function hasGoalDispatchedMarker(taskId, workingDirectory) {
+  const markerPath = resolveGoalDispatchMarkerPath(taskId, workingDirectory);
+  if (!markerPath) {
+    return false;
+  }
+  try {
+    return fs.existsSync(markerPath);
+  } catch {
+    return false;
+  }
+}
+
+export function clearGoalDispatchedMarker(taskId, workingDirectory) {
+  const markerPath = resolveGoalDispatchMarkerPath(taskId, workingDirectory);
+  if (!markerPath) {
+    return;
+  }
+  try {
+    fs.unlinkSync(markerPath);
+  } catch {
+    // ignore missing/locked marker
+  }
+}
+
+/**
+ * After the ai-sdk session has reached ready, verify it actually negotiated
+ * goal support. We do this here (before the first runGoal call) so the user
+ * sees a clean error instead of a deep transport-level `unsupported_goal`
+ * exception mid-turn.
+ *
+ * Tolerant of older ai-sdk versions: if `getSnapshot`/`readyPromise` are
+ * missing we fall back to the legacy `typeof session.runGoal === "function"`
+ * check.
+ */
+export async function assertBackendSupportsGoalsIfRequested(session, cliArgs) {
+  if (!cliArgs || !cliArgs.goalMode) {
+    return;
+  }
+  const backendForError = String(cliArgs.sessionBackend || cliArgs.backend || "unknown");
+  if (!session || typeof session !== "object") {
+    throw new Error(
+      `Goal mode requested but the "${backendForError}" backend did not return a session.`,
+    );
+  }
+  if (session.readyPromise && typeof session.readyPromise.then === "function") {
+    try {
+      await session.readyPromise;
+    } catch (error) {
+      throw new Error(
+        `Goal mode requested but the "${backendForError}" backend failed to initialize: ${error?.message || error}`,
+      );
+    }
+  }
+  let goalSupported = false;
+  if (typeof session.getSnapshot === "function") {
+    try {
+      const snapshot = session.getSnapshot();
+      goalSupported = Boolean(snapshot && snapshot.capabilities && snapshot.capabilities.goal === true);
+    } catch {
+      goalSupported = false;
+    }
+  } else if (typeof session.runGoal === "function") {
+    // Legacy fallback: no capability snapshot, but runGoal is wired.
+    goalSupported = true;
+  }
+  if (!goalSupported) {
+    throw new Error(
+      `Goal mode requested for backend "${backendForError}" which does not support native goals. ` +
+        `Supported backends: ${GOAL_CAPABLE_BACKENDS.join(", ")}. ` +
+        `Either remove --goal or switch backend.`,
+    );
+  }
+}
+
+/**
+ * Compute the initial `initialGoalPending` flag for a fresh BridgeRunner.
+ *
+ * - If goalMode is off, never pending.
+ * - If we have a marker on disk for this task, the previous fire (or a
+ *   previous incarnation of this fire across reconnect) already dispatched
+ *   runGoal; this is a continuation, not a fresh goal turn.
+ * - Otherwise the next turn dispatches runGoal.
+ */
+export function resolveInitialGoalPending({
+  goalMode,
+  taskId,
+  workingDirectory,
+} = {}) {
+  if (!goalMode) {
+    return false;
+  }
+  // In-process flag wins (N2): if the SAME fire process already dispatched
+  // runGoal for this task and the disk marker write failed, we still must
+  // not re-fire on a same-process reconnect.
+  if (taskId && hasGoalDispatchedInProcess(taskId)) {
+    return false;
+  }
+  if (taskId && hasGoalDispatchedMarker(taskId, workingDirectory)) {
+    return false;
+  }
+  return true;
 }
 
 export function injectResolvedTaskId(taskId, env = process.env) {
@@ -1821,6 +2133,7 @@ export class BridgeRunner {
     daemonName,
     prePrompt,
     shouldProcessPrePrompt,
+    goalMode = false,
   }) {
     this.backendSession = backendSession;
     this.conductor = conductor;
@@ -1853,6 +2166,25 @@ export class BridgeRunner {
     this.prePrompt =
       typeof prePrompt === "string" && prePrompt.trim() ? prePrompt.trim() : "";
     this.shouldProcessPrePrompt = Boolean(shouldProcessPrePrompt) && Boolean(this.prePrompt);
+    this.goalMode = Boolean(goalMode);
+    // The first user-turn (initial prompt OR the first inbound message after
+    // attach) gets routed to backendSession.runGoal() when goal mode is on.
+    // Follow-up messages are normal runTurn calls.
+    //
+    // For reconnects / daemon restarts, a persisted marker on disk tells us
+    // the previous fire incarnation already dispatched the initial runGoal —
+    // in that case we must NOT re-fire it (otherwise codex would receive a
+    // second `thread/goal/set` and corrupt its state machine).
+    this.initialGoalPending = resolveInitialGoalPending({
+      goalMode: this.goalMode,
+      taskId: this.taskId,
+    });
+    // In-process backstop for the disk marker (see N2). If
+    // `writeGoalDispatchedMarker` fails (e.g. read-only homedir, permission
+    // denied) we still flip this flag so the SAME fire process won't re-fire
+    // runGoal on a subsequent reconnect / refreshBackendSession. A different
+    // process won't see this flag and must rely on the disk marker.
+    this.goalDispatchedInThisProcess = false;
     this.sessionStreamReplyCounts = new Map();
     this.lastRuntimeStatusSignature = null;
     this.lastRuntimeStatusPayload = null;
@@ -2984,7 +3316,7 @@ export class BridgeRunner {
         );
       }
 
-      const turnPromise = this.backendSession.runTurn(content, {
+      const turnPromise = this.dispatchBackendTurn(content, {
         useInitialImages,
         onProgress: (payload) => {
           void this.reportRuntimeStatus(payload, replyTo);
@@ -3141,6 +3473,90 @@ export class BridgeRunner {
     });
   }
 
+  /**
+   * Persist the "initial runGoal already dispatched" marker for this task.
+   * Pulled out to a method so tests can spy/stub it.
+   *
+   * Always flips the in-process flag regardless of whether the disk write
+   * succeeds — see `goalDispatchedInThisProcess`. Returns the structured
+   * `{ markerPath, persisted }` from `writeGoalDispatchedMarker` so callers /
+   * tests can introspect.
+   */
+  markGoalDispatched() {
+    // The in-process flag MUST be set even when taskId is empty (no marker
+    // path possible) so the runner can fall back to memory-only guard.
+    this.goalDispatchedInThisProcess = true;
+    if (!this.taskId) {
+      return { markerPath: "", persisted: false };
+    }
+    // Module-level backstop: even if the disk write below throws or returns
+    // persisted: false, a same-process reconnect won't re-dispatch runGoal.
+    markGoalDispatchedInProcess(this.taskId);
+    try {
+      // Default to homedir-based state dir (see resolveFireStateDir). Matches
+      // the read-side default in resolveInitialGoalPending so the marker we
+      // write here is the same one a reconnect will see. `process.cwd()` is
+      // passed as the task cwd (N4) so the marker JSON records the actual
+      // working directory rather than the state dir.
+      return writeGoalDispatchedMarker(this.taskId, undefined, process.cwd());
+    } catch (error) {
+      log(
+        `[goal-mode] WARNING: markGoalDispatched threw unexpectedly for task ${this.taskId}: ${error?.message || error}`,
+      );
+      return { markerPath: "", persisted: false };
+    }
+  }
+
+  /**
+   * Execute the next turn against the backend session. When goal mode is active
+   * and this is the first turn, dispatch through `session.runGoal()`; otherwise
+   * fall back to the normal `session.runTurn()`.
+   *
+   * Returns the same `{ text, items, usage, metadata, ... }` shape as runTurn
+   * so callers can keep their existing event-stream / persistence logic.
+   */
+  async dispatchBackendTurn(content, options = {}) {
+    if (this.goalMode && this.initialGoalPending) {
+      if (typeof this.backendSession?.runGoal !== "function") {
+        const backendType =
+          this.backendSession?.constructor?.name || typeof this.backendSession;
+        throw new Error(
+          `Goal mode requested but the backend session (${backendType}) does not implement runGoal(). ` +
+            `Update @love-moon/ai-sdk to a goal-capable version, or unset --goal.`,
+        );
+      }
+      this.initialGoalPending = false;
+      const goalSource = resolveGoalSourceFromEnv(process.env);
+      const goalResult = await this.backendSession.runGoal(
+        { objective: content, source: goalSource },
+        options,
+      );
+      // Persist a "goal dispatched" marker so a reconnect / daemon restart
+      // (which rebuilds a new BridgeRunner with goalMode=true) does not re-fire
+      // runGoal. See `resolveInitialGoalPending` for the resume-side check.
+      this.markGoalDispatched();
+      // Goal SDK is expected to return `{ text, goal, usage, metadata }`. We
+      // normalize back into the runTurn-compatible shape downstream consumers
+      // expect (text, items, usage, metadata, provider, events). `runGoal`
+      // does NOT today return `provider` or `events` — runTurn does — so we
+      // carry them through with sensible fallbacks (this.backendName for
+      // provider, [] for events) to keep the result shape consistent for any
+      // downstream code that destructures these fields.
+      return {
+        text: goalResult?.text || "",
+        items: Array.isArray(goalResult?.items) ? goalResult.items : [],
+        usage: goalResult?.usage || null,
+        provider: goalResult?.provider || this.backendName,
+        events: Array.isArray(goalResult?.events) ? goalResult.events : [],
+        metadata: {
+          ...(goalResult?.metadata || {}),
+          ...(goalResult?.goal ? { goal: goalResult.goal } : {}),
+        },
+      };
+    }
+    return this.backendSession.runTurn(content, options);
+  }
+
   async handlePrePromptMessage(content) {
     const text = typeof content === "string" ? content.trim() : "";
     if (!text) {
@@ -3205,7 +3621,7 @@ export class BridgeRunner {
       }
     }
     try {
-      const result = await this.backendSession.runTurn(content, {
+      const result = await this.dispatchBackendTurn(content, {
         useInitialImages: Boolean(includeImages),
         onProgress: (payload) => {
           void this.reportRuntimeStatus(payload, replyTarget);

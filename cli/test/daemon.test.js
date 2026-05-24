@@ -3555,8 +3555,16 @@ describe("Daemon", () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
 
     assert.ok(typeof handler === "function");
-    assert.ok(String(webSocketClientOptions.extraHeaders["x-conductor-backends"]).includes("my-external"));
-    assert.ok(!String(webSocketClientOptions.extraHeaders["x-conductor-backends"]).includes("test-external"));
+    {
+      const backendList = String(webSocketClientOptions.extraHeaders["x-conductor-backends"]).split(",");
+      assert.ok(backendList.includes("my-external"));
+      // `test-external` (the raw backend) is aliased as `my-external`, so it
+      // must NOT advertise its raw name. Use array-membership rather than
+      // substring `.includes()` to avoid a false positive against
+      // `test-external-no-goal`, which is a second unaliased provider in the
+      // same fixture.
+      assert.ok(!backendList.includes("test-external"));
+    }
 
     handler({
       type: "create_task",

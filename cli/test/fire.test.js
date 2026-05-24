@@ -370,10 +370,14 @@ describe("conductor-fire backends", () => {
         "test-external": "test-external --profile fast",
         "yaml-list-external": "yaml-list-cli",
       });
-      assert.deepEqual(advertisedBackends.supportedBackends, ["test-external", "yaml-list-external", "copilot"]);
+      // `test-external-no-goal` is also exposed by the fake-external-provider
+      // fixture as a second provider (for capability-detection tests in
+      // ai-sdk). It surfaces here unaliased.
+      assert.deepEqual(advertisedBackends.supportedBackends, ["test-external", "yaml-list-external", "test-external-no-goal", "copilot"]);
       assert.deepEqual(advertisedBackends.runtimeBackendMap, {
         "test-external": "test-external",
         "yaml-list-external": "yaml-list-external",
+        "test-external-no-goal": "test-external-no-goal",
         "copilot": "copilot",
       });
     } finally {
@@ -400,10 +404,16 @@ describe("conductor-fire backends", () => {
       }, { configFilePath: configPath });
       const advertisedBackends = await listAdvertisedBackends(allowCliList, { configFilePath: configPath });
 
-      assert.deepEqual(advertisedBackends.supportedBackends, ["my-external", "copilot"]);
-      assert.deepEqual(advertisedBackends.externalBackends, []);
+      // The fake-external-provider fixture exposes two providers:
+      //   - `test-external` (aliased here as `my-external`, so the raw name is hidden)
+      //   - `test-external-no-goal` (no alias, so it surfaces as a raw external backend)
+      // The point of this test is that aliased externals get hidden; the
+      // unaliased `test-external-no-goal` is expected to come through.
+      assert.deepEqual(advertisedBackends.supportedBackends, ["my-external", "test-external-no-goal", "copilot"]);
+      assert.deepEqual(advertisedBackends.externalBackends, ["test-external-no-goal"]);
       assert.deepEqual(advertisedBackends.runtimeBackendMap, {
         "my-external": "test-external",
+        "test-external-no-goal": "test-external-no-goal",
         "copilot": "copilot",
       });
     } finally {

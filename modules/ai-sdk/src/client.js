@@ -8,7 +8,20 @@ import {
   createLocalAiSession,
   providerVariantForBackend,
 } from "./session-factory.js";
-import { normalizeLogger, reviveError } from "./shared.js";
+import {
+  DEFAULT_SESSION_CAPABILITIES,
+  normalizeLogger,
+  resolveSessionCapabilities,
+  reviveError,
+} from "./shared.js";
+
+function createUnsupportedGoalError(name) {
+  const err = new Error(
+    `runGoal() is not supported by backend session (${name || "unknown"}).`,
+  );
+  err.reason = "unsupported_goal";
+  return err;
+}
 
 const WORKER_PATH = fileURLToPath(new URL("./worker.js", import.meta.url));
 
@@ -57,6 +70,7 @@ export class RemoteAiSession extends EventEmitter {
       sessionId: this.threadIdValue || undefined,
       useSessionFileReplyStream: this.useSessionFileReplyStreamValue,
       workerReady: false,
+      capabilities: { ...DEFAULT_SESSION_CAPABILITIES },
     };
     this.sessionMessageHandler = null;
     this.workingStatusHandler = null;
@@ -210,6 +224,46 @@ export class RemoteAiSession extends EventEmitter {
     });
   }
 
+  async runGoal(goal, options = {}) {
+    // Wait for the worker bootstrap to finish so we can consult the snapshot's
+    // capability flags. Critically, we must NOT swallow a `readyPromise`
+    // rejection: when the worker fails to come up (binary missing, config
+    // error, transport crash on init), the real error has to surface — masking
+    // it as `unsupported_goal` would mislead operators about what's wrong.
+    // See N3 in the review.
+    await this.readyPromise;
+    // Cheap capability gate: when the worker has reported a snapshot with
+    // `capabilities.goal === false`, short-circuit instead of paying for an
+    // IPC round-trip just to surface `unsupported_goal`.
+    if (this.snapshot?.capabilities && this.snapshot.capabilities.goal === false) {
+      throw createUnsupportedGoalError(this.snapshot.provider || this.snapshot.backend);
+    }
+    const { onProgress, ...restOptions } = options || {};
+    return this.callWorker("runGoal", [goal, restOptions], {
+      progressHandler: typeof onProgress === "function" ? onProgress : null,
+    });
+  }
+
+  async getGoal() {
+    // Propagate worker-creation errors instead of masking them as "no goal".
+    // See N3 in the review.
+    await this.readyPromise;
+    if (this.snapshot?.capabilities && this.snapshot.capabilities.goal === false) {
+      return null;
+    }
+    return this.callWorker("getGoal", []);
+  }
+
+  async clearGoal() {
+    // Propagate worker-creation errors instead of masking them as "nothing
+    // to clear". See N3 in the review.
+    await this.readyPromise;
+    if (this.snapshot?.capabilities && this.snapshot.capabilities.goal === false) {
+      return false;
+    }
+    return this.callWorker("clearGoal", []);
+  }
+
   async close() {
     if (this.closed) {
       return;
@@ -329,9 +383,14 @@ export class RemoteAiSession extends EventEmitter {
 
   applyReadyPayload(payload) {
     const snapshot = payload?.snapshot && typeof payload.snapshot === "object" ? payload.snapshot : {};
+    const capabilities =
+      snapshot && typeof snapshot.capabilities === "object" && snapshot.capabilities !== null
+        ? { ...DEFAULT_SESSION_CAPABILITIES, ...snapshot.capabilities }
+        : { ...DEFAULT_SESSION_CAPABILITIES };
     this.snapshot = {
       ...this.snapshot,
       ...snapshot,
+      capabilities,
       workerReady: true,
       workerPid: payload?.workerPid || undefined,
       workerProcessPid: payload?.workerProcessPid || undefined,
@@ -471,6 +530,7 @@ class LocalAiSessionProxy extends EventEmitter {
       sessionId: this.threadIdValue || undefined,
       useSessionFileReplyStream: this.useSessionFileReplyStreamValue,
       workerReady: false,
+      capabilities: { ...DEFAULT_SESSION_CAPABILITIES },
     };
     this.readyPromise = this.initializeSession(backend, options);
     this.readyPromise.catch(() => {
@@ -529,6 +589,13 @@ class LocalAiSessionProxy extends EventEmitter {
         : snapshot.sessionInfo && typeof snapshot.sessionInfo === "object"
           ? { ...snapshot.sessionInfo }
           : this.sessionInfo;
+    // Capability resolution: prefer the snapshot's `capabilities`, then fall
+    // back to a runtime resolver that checks `session.getCapabilities()` and
+    // `session.constructor.capabilities`.
+    const capabilities =
+      snapshot && typeof snapshot.capabilities === "object" && snapshot.capabilities !== null
+        ? { ...DEFAULT_SESSION_CAPABILITIES, ...snapshot.capabilities }
+        : resolveSessionCapabilities(session);
     this.snapshot = {
       ...this.snapshot,
       ...snapshot,
@@ -539,6 +606,7 @@ class LocalAiSessionProxy extends EventEmitter {
         typeof session.getCurrentTurnStatus === "function" ? session.getCurrentTurnStatus() : this.currentTurnStatus,
       useSessionFileReplyStream: this.useSessionFileReplyStreamValue,
       workerReady: true,
+      capabilities,
     };
     return session;
   }
@@ -554,6 +622,16 @@ class LocalAiSessionProxy extends EventEmitter {
   getSnapshot() {
     const sessionSnapshot = typeof this.session?.getSnapshot === "function" ? this.session.getSnapshot() : null;
     if (sessionSnapshot) {
+      // N5: capabilities were resolved once during `initializeSession` and are
+      // immutable for the lifetime of the underlying session. Reuse the cached
+      // value instead of re-resolving on every `getSnapshot()` call — this
+      // avoids per-call object identity flicker that breaks callers that
+      // memoize on the snapshot reference (e.g. React selectors).
+      const capabilities = this.snapshot?.capabilities
+        ? this.snapshot.capabilities
+        : sessionSnapshot && typeof sessionSnapshot.capabilities === "object" && sessionSnapshot.capabilities !== null
+          ? { ...DEFAULT_SESSION_CAPABILITIES, ...sessionSnapshot.capabilities }
+          : resolveSessionCapabilities(this.session);
       return {
         ...this.snapshot,
         ...sessionSnapshot,
@@ -567,6 +645,7 @@ class LocalAiSessionProxy extends EventEmitter {
           typeof this.session?.getSessionInfo === "function"
             ? this.session.getSessionInfo()
             : sessionSnapshot.sessionInfo || this.sessionInfo || null,
+        capabilities,
       };
     }
     return {
@@ -644,6 +723,45 @@ class LocalAiSessionProxy extends EventEmitter {
   async runTurn(promptText, options = {}) {
     const session = await this.readyPromise;
     return await session.runTurn(promptText, options);
+  }
+
+  async runGoal(goal, options = {}) {
+    const session = await this.readyPromise;
+    // Capability check: declarative `capabilities.goal === false` wins over
+    // method presence. This matters because a proxy may unconditionally
+    // forward runGoal and the per-method check would mis-report support.
+    const capabilities = resolveSessionCapabilities(session);
+    if (capabilities.goal === false) {
+      throw createUnsupportedGoalError(session?.constructor?.name);
+    }
+    if (typeof session.runGoal !== "function") {
+      throw createUnsupportedGoalError(session?.constructor?.name);
+    }
+    return await session.runGoal(goal, options);
+  }
+
+  async getGoal() {
+    const session = await this.readyPromise;
+    const capabilities = resolveSessionCapabilities(session);
+    if (capabilities.goal === false) {
+      return null;
+    }
+    if (typeof session.getGoal !== "function") {
+      return null;
+    }
+    return await session.getGoal();
+  }
+
+  async clearGoal() {
+    const session = await this.readyPromise;
+    const capabilities = resolveSessionCapabilities(session);
+    if (capabilities.goal === false) {
+      return false;
+    }
+    if (typeof session.clearGoal !== "function") {
+      return false;
+    }
+    return await session.clearGoal();
   }
 
   async close() {

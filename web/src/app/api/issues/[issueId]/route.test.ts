@@ -1794,6 +1794,224 @@ describe('/api/issues/[issueId]', () => {
     expect(persistedAiSessionCall).toBeDefined();
   });
 
+  it('routes /goal issues into goal mode for goal-capable backends', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      description: '/goal ship the feature\n\nsupporting context',
+    }) as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
+    ] as any);
+    vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+      task: {
+        id: 'task-goal',
+        projectId: 'project-1',
+        issueId: 'issue-1',
+        title: 'Board implementation',
+        status: 'init',
+        taskType: 'ai_task',
+        agentHost: 'daemon-a',
+        executionHost: 'daemon-a',
+        backendType: 'claude',
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: null,
+        createdAt: new Date('2026-04-14T00:20:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+      },
+      initialMessage: null,
+      initialMessageContent: 'ship the feature\n\nsupporting context',
+      effectiveLaunchConfig: null,
+    } as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: {
+        status: 'doing',
+        metadata: { backendType: 'claude' },
+      },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(createAiTaskArtifacts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        aiMode: 'goal',
+        goal: expect.objectContaining({
+          objective: 'ship the feature\n\nsupporting context',
+          source: 'issue',
+          issueId: 'issue-1',
+        }),
+        // Single source of truth: initial message content equals goal.objective
+        // (no leading "Issue: <title>" framing — that would diverge from the
+        // bare objective the daemon prefills).
+        initialMessageContent: 'ship the feature\n\nsupporting context',
+        requestedBackendType: 'claude',
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it('goal mode: metadata.initialContent === launch_config.goal.objective === Message.content (single source of truth)', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      description: '/goal ship the feature\n\nsupporting context',
+    }) as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
+    ] as any);
+    vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+      task: {
+        id: 'task-goal-canonical',
+        projectId: 'project-1',
+        issueId: 'issue-1',
+        title: 'Board implementation',
+        status: 'init',
+        taskType: 'ai_task',
+        agentHost: 'daemon-a',
+        executionHost: 'daemon-a',
+        backendType: 'claude',
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: null,
+        createdAt: new Date('2026-04-14T00:20:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+      },
+      initialMessage: { id: 'msg-1', createdAt: new Date('2026-04-14T00:20:00.000Z') },
+      initialMessageContent: 'ship the feature\n\nsupporting context',
+      effectiveLaunchConfig: {
+        cwd: '/repo',
+        aiMode: 'goal',
+        goal: {
+          objective: 'ship the feature\n\nsupporting context',
+          source: 'issue',
+          issueId: 'issue-1',
+        },
+      },
+    } as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: {
+        status: 'doing',
+        metadata: { backendType: 'claude' },
+      },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    expect(response.status).toBe(200);
+
+    const spawnCall = vi.mocked(createAiTaskArtifacts).mock.calls.at(-1)?.[0];
+    expect(spawnCall).toBeDefined();
+    const canonical = 'ship the feature\n\nsupporting context';
+
+    // 1) metadata.initialContent (the JSON field on the issue metadata)
+    const metadata = spawnCall?.metadata as Record<string, unknown> | undefined;
+    expect(metadata?.initialContent).toBe(canonical);
+
+    // 2) launch_config.goal.objective (delivered to the daemon)
+    expect(spawnCall?.goal?.objective).toBe(canonical);
+
+    // 3) Initial Message content (persisted, broadcast to client)
+    expect(spawnCall?.initialMessageContent).toBe(canonical);
+  });
+
+  it('PATCH updating body to /goal without doing transition does not spawn a task or set aiMode', async () => {
+    // Reviewer gap #5: a plain body edit that introduces `/goal ...` must NOT
+    // dispatch a goal task or stamp goal metadata. Only the todo→doing
+    // transition is allowed to trigger goal-mode dispatch.
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      status: 'todo',
+    }) as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
+    ] as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: {
+        // body update only — no `status: 'doing'`
+        description: '/goal ship the feature',
+        metadata: { backendType: 'claude' },
+      },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    // No spawn => no goal-mode dispatch.
+    expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    expect(finalizeAiTaskCreation).not.toHaveBeenCalled();
+
+    // The persisted issue.metadata must not carry aiMode anywhere — only
+    // doing-transition spawns are allowed to stamp it.
+    const issueUpdateCalls = vi.mocked(db.issue.update).mock.calls;
+    for (const [callArgs] of issueUpdateCalls) {
+      const data = (callArgs as { data?: Record<string, unknown> } | undefined)?.data ?? {};
+      const metadataJson = data.metadata;
+      if (typeof metadataJson === 'string') {
+        const parsed = JSON.parse(metadataJson);
+        expect(parsed).not.toHaveProperty('aiMode');
+        expect(parsed?.goal).toBeUndefined();
+      }
+    }
+  });
+
+  it('ignores /goal directive when the selected backend is not goal-capable', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      description: '/goal kimi cannot do this',
+    }) as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['kimi'] },
+    ] as any);
+    vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+      task: {
+        id: 'task-kimi',
+        projectId: 'project-1',
+        issueId: 'issue-1',
+        title: 'Board implementation',
+        status: 'init',
+        taskType: 'ai_task',
+        agentHost: 'daemon-a',
+        executionHost: 'daemon-a',
+        backendType: 'kimi',
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: null,
+        createdAt: new Date('2026-04-14T00:20:00.000Z'),
+        updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+      },
+      initialMessage: null,
+      initialMessageContent: 'Issue: Board implementation\n\n/goal kimi cannot do this',
+      effectiveLaunchConfig: null,
+    } as any);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: {
+        status: 'doing',
+        metadata: { backendType: 'kimi' },
+      },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    const spawnCall = vi.mocked(createAiTaskArtifacts).mock.calls.at(-1)?.[0];
+    expect(spawnCall).toBeDefined();
+    expect(spawnCall).not.toHaveProperty('aiMode');
+    expect(spawnCall).not.toHaveProperty('goal');
+    // Normal flow keeps the full issue description (including the literal
+    // `/goal` line) in the initial content — the directive is treated as
+    // ordinary prose.
+    expect(spawnCall?.initialMessageContent).toContain('/goal kimi cannot do this');
+    warnSpy.mockRestore();
+  });
+
   it('skips task spawn when another request already claimed the todo-to-doing transition', async () => {
     vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue() as any);
     // Simulate concurrent claim: updateMany returns count: 0
