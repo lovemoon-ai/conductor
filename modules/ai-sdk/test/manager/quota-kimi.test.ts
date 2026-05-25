@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseUsagePayload, parseResetTime } from "../src/quota/kimi.ts";
+import { parseUsagePayload, parseResetTime } from "../../src/manager/quota/kimi.ts";
 
 test("parseUsagePayload extracts weekly + 5h windows from real Kimi shape", () => {
   const payload = {

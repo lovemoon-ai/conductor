@@ -22,8 +22,6 @@ export USERPROFILE="$tmp_home"
 
 npm run build --workspace @love-moon/ai-sdk
 npm run test --workspace @love-moon/ai-sdk
-npm run build --workspace @love-moon/ai-manager
-npm run test --workspace @love-moon/ai-manager
 npm run build --workspace @love-moon/app-sdk
 npm run test --workspace @love-moon/app-sdk
 npm run test:bundle --workspace @love-moon/app-sdk

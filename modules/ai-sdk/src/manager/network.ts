@@ -1,4 +1,4 @@
-import type { NetworkStatus, Tool } from "./types.ts";
+import type { NetworkStatus, Tool } from "./types.js";
 
 const ENDPOINTS: Record<Tool, string> = {
   codex: "https://chatgpt.com/",

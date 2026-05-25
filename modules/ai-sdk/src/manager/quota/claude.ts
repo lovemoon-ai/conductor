@@ -2,9 +2,9 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ClaudeQuota, QuotaWindow } from "../types.ts";
-import { headersToMap, num, str } from "./headers.ts";
-import { cacheFile, fingerprintKey, isFresh, readCache, writeCache } from "./cache.ts";
+import type { ClaudeQuota, QuotaWindow } from "../types.js";
+import { headersToMap, num, str } from "./headers.js";
+import { cacheFile, fingerprintKey, isFresh, readCache, writeCache } from "./cache.js";
 
 const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const DEFAULT_TTL = 60;

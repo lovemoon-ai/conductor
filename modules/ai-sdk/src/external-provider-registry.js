@@ -158,6 +158,10 @@ function validateDescriptor(descriptor, sourcePath) {
     resolveResumeContext: optionalFn("resolveResumeContext"),
     buildResumeArgs: optionalFn("buildResumeArgs"),
     findSessionPath: optionalFn("findSessionPath"),
+    getQuota: optionalFn("getQuota"),
+    getQuotaList: optionalFn("getQuotaList"),
+    readCachedQuota: optionalFn("readCachedQuota"),
+    readCachedQuotaList: optionalFn("readCachedQuotaList"),
     sourcePath,
   };
 }

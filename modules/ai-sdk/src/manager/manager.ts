@@ -1,25 +1,33 @@
 import { stat } from "node:fs/promises";
-import { loadAiManagerConfig } from "./config.ts";
-import { getCurrentCodexAccount, listCodexAccounts, switchCodexAccount } from "./account.ts";
-import { checkInstall, checkInstallAll } from "./install.ts";
-import { checkNetwork, checkNetworkAll } from "./network.ts";
-import { getCodexQuota, readCachedCodexQuota, type GetCodexQuotaOptions } from "./quota/codex.ts";
-import { getClaudeQuota, type GetClaudeQuotaOptions } from "./quota/claude.ts";
-import { getKimiQuota, type GetKimiQuotaOptions } from "./quota/kimi.ts";
-import { getCopilotQuota, type GetCopilotQuotaOptions } from "./quota/copilot.ts";
-import { DEFAULT_CODEX_AUTH, DEFAULT_CONDUCTOR_CONFIG } from "./paths.ts";
+import { loadAiManagerConfig } from "./config.js";
+import { getCurrentCodexAccount, listCodexAccounts, switchCodexAccount } from "./account.js";
+import { checkInstall, checkInstallAll } from "./install.js";
+import { checkNetwork, checkNetworkAll } from "./network.js";
+import { getCodexQuota, readCachedCodexQuota, type GetCodexQuotaOptions } from "./quota/codex.js";
+import { getClaudeQuota, type GetClaudeQuotaOptions } from "./quota/claude.js";
+import { getKimiQuota, type GetKimiQuotaOptions } from "./quota/kimi.js";
+import { getCopilotQuota, type GetCopilotQuotaOptions } from "./quota/copilot.js";
+import {
+  getExternalQuota,
+  getExternalQuotaList,
+  type GetExternalQuotaListOptions,
+  type GetExternalQuotaOptions,
+} from "./quota/external.js";
+import { DEFAULT_CODEX_AUTH, DEFAULT_CONDUCTOR_CONFIG } from "./paths.js";
 import type {
   AiManagerConfig,
   CodexAccount,
   CodexQuota,
   ClaudeQuota,
+  ExternalQuota,
+  ExternalQuotaList,
   KimiQuota,
   CopilotQuota,
   InstallStatus,
   NetworkStatus,
   SwitchResult,
   Tool,
-} from "./types.ts";
+} from "./types.js";
 
 export interface AiManagerOptions {
   /** Path to conductor config.yaml. Default: ~/.conductor/config.yaml */
@@ -114,6 +122,14 @@ export class AiManager {
 
   getCopilotQuota(opts?: GetCopilotQuotaOptions): Promise<CopilotQuota> {
     return getCopilotQuota(opts);
+  }
+
+  getExternalQuota(opts: GetExternalQuotaOptions): Promise<ExternalQuota> {
+    return getExternalQuota({ configPath: this.configPath, ...opts });
+  }
+
+  getExternalQuotaList(opts: GetExternalQuotaListOptions): Promise<ExternalQuotaList> {
+    return getExternalQuotaList({ configPath: this.configPath, ...opts });
   }
 
   async listCodexAccounts(): Promise<CodexAccount[]> {

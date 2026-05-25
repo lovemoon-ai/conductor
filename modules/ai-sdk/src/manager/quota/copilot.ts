@@ -5,8 +5,8 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { CopilotClientOptions } from "@github/copilot-sdk";
-import type { CopilotQuota, CopilotQuotaSnapshot, QuotaWindow } from "../types.ts";
-import { cacheFile, fingerprintKey, isFresh, readCache, writeCache } from "./cache.ts";
+import type { CopilotQuota, CopilotQuotaSnapshot, QuotaWindow } from "../types.js";
+import { cacheFile, fingerprintKey, isFresh, readCache, writeCache } from "./cache.js";
 
 const DEFAULT_TTL = 60;
 const DEFAULT_TIMEOUT_MS = 20_000;

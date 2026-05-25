@@ -1,4 +1,5 @@
 export type Tool = "codex" | "claude" | "kimi" | "copilot";
+export type QuotaSource = "fresh" | "cached" | "stale" | "unknown";
 
 export interface InstallStatus {
   installed: boolean;
@@ -48,7 +49,7 @@ export interface CodexQuota {
     unlimited: boolean;
   };
   fetchedAt: number;
-  source: "fresh" | "cached" | "stale" | "unknown";
+  source: QuotaSource;
   email?: string;
   accountId?: string;
   raw?: Record<string, string>;
@@ -67,7 +68,7 @@ export interface ClaudeQuota {
     disabledReason?: string;
   };
   fetchedAt: number;
-  source: "fresh" | "cached" | "stale" | "unknown";
+  source: QuotaSource;
   raw?: Record<string, string>;
   error?: string;
 }
@@ -81,7 +82,7 @@ export interface KimiQuota {
   weekly: QuotaWindow;
   parallelLimit?: number;
   fetchedAt: number;
-  source: "fresh" | "cached" | "stale" | "unknown";
+  source: QuotaSource;
   raw?: Record<string, unknown>;
   error?: string;
 }
@@ -110,7 +111,37 @@ export interface CopilotQuota {
   loginSource?: "sdk" | "github_token";
   snapshots: Record<string, CopilotQuotaSnapshot>;
   fetchedAt: number;
-  source: "fresh" | "cached" | "stale" | "unknown";
+  source: QuotaSource;
+  raw?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface ExternalQuota {
+  backend?: string;
+  model: string;
+  daily: QuotaWindow;
+  fetchedAt: number;
+  source: QuotaSource;
+  username?: string;
+  organization?: string;
+  label?: string;
+  limitSource?: string;
+  quotaReleaseMode?: string;
+  quotaResetTime?: string;
+  raw?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface ExternalQuotaList {
+  backend?: string;
+  fetchedAt: number;
+  source: QuotaSource;
+  username?: string;
+  organization?: string;
+  label?: string;
+  count: number;
+  quotas: ExternalQuota[];
+  quotaByModel: Record<string, ExternalQuota>;
   raw?: Record<string, unknown>;
   error?: string;
 }

@@ -9,7 +9,6 @@ This repository now separates web deployment from npm package publishing.
   require an npm release.
 - Published npm packages are versioned independently with changesets:
   - `@love-moon/ai-sdk`
-  - `@love-moon/ai-manager`
   - `@love-moon/app-sdk`
   - `@love-moon/conductor-sdk`
   - `@love-moon/conductor-cli`
@@ -49,7 +48,6 @@ behavior for any published package:
 
 - `cli/**`
 - `modules/ai-sdk/**`
-- `modules/ai-manager/**`
 - `modules/app-sdk/**`
 - `modules/conductor-sdk/**`
 

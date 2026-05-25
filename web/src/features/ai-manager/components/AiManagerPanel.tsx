@@ -6,7 +6,7 @@ import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 import { useAgentsStore } from '@/features/agents';
 import { getApiClient } from '@/shared/api/client';
 import { useAiManagerStore } from '../store';
-import type { StatusResponse, Tool } from '../types';
+import type { ExternalQuota, StatusResponse, Tool } from '../types';
 import { CodexAccountSwitcher } from './CodexAccountSwitcher';
 import { CustomCommandsPanel } from './CustomCommandsPanel';
 import { QuotaBar } from './QuotaBar';
@@ -75,6 +75,38 @@ function quotaGridClass(count: number): string {
   return 'md:grid-cols-4';
 }
 
+function externalQuotaBackends(
+  backends: string[],
+  runtimeBackendMap?: Record<string, string>,
+): string[] {
+  const out = new Set<string>();
+
+  for (const backend of backends) {
+    const normalizedBackend = backend.trim().toLowerCase();
+    if (!normalizedBackend) continue;
+    const runtimeBackend = runtimeBackendMap?.[backend] ?? runtimeBackendMap?.[normalizedBackend];
+    if (normalizeManagedTool(runtimeBackend) || normalizeManagedTool(backend)) continue;
+    out.add(normalizedBackend);
+  }
+
+  return [...out];
+}
+
+function formatPercent(value: number | undefined): string | null {
+  if (value === undefined || !Number.isFinite(value)) return null;
+  const normalized = Math.max(0, Math.min(100, value));
+  return `${normalized.toFixed(0)}%`;
+}
+
+function formatExternalModelMeta(quota: ExternalQuota): string {
+  const used = formatPercent(quota.daily.usedPercent);
+  const remaining = formatPercent(quota.daily.remainingPercent);
+  return [
+    used ? `已用 ${used}` : null,
+    remaining ? `剩余 ${remaining}` : null,
+  ].filter(Boolean).join(' · ');
+}
+
 export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
   const agents = useAgentsStore((s) => s.agents);
   const fetchAgents = useAgentsStore((s) => s.fetchAgents);
@@ -114,13 +146,24 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
     }
   }, [initialAgentHost, visibleDaemons, selectedHost, setSelectedHost]);
 
+  const host = selectedHost ?? visibleDaemons[0]?.host ?? '';
+  const selectedDaemon = visibleDaemons.find((daemon) => daemon.host === host) ?? null;
+  const supportsRestart = selectedDaemon?.capabilities?.includes('restart_daemon') ?? false;
+  const supportsCustomCommands = selectedDaemon?.capabilities?.includes('custom_commands') ?? false;
+  const supportedBackends = selectedDaemon?.supportedBackends ?? [];
+  const managedTools = supportedManagedTools(supportedBackends, selectedDaemon?.runtimeBackendMap);
+  const externalBackends = externalQuotaBackends(supportedBackends, selectedDaemon?.runtimeBackendMap);
+  const externalBackendKey = externalBackends.join(',');
+  const daemonVersion = selectedDaemon?.version ?? null;
+  const isRestarting = restartingHost === host;
+
   // Fetch + poll whenever the selection changes.
   useEffect(() => {
     if (!selectedHost) return;
-    void fetchAll(selectedHost);
-    startPolling(selectedHost);
+    void fetchAll(selectedHost, { externalQuotaBackends: externalBackends });
+    startPolling(selectedHost, { externalQuotaBackends: externalBackends });
     return () => stopPolling();
-  }, [selectedHost, fetchAll, startPolling, stopPolling]);
+  }, [selectedHost, externalBackendKey, fetchAll, startPolling, stopPolling]);
 
   if (visibleDaemons.length === 0 && !selectedHost) {
     return (
@@ -132,14 +175,6 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
     );
   }
 
-  const host = selectedHost ?? visibleDaemons[0]?.host ?? '';
-  const selectedDaemon = visibleDaemons.find((daemon) => daemon.host === host) ?? null;
-  const supportsRestart = selectedDaemon?.capabilities?.includes('restart_daemon') ?? false;
-  const supportsCustomCommands = selectedDaemon?.capabilities?.includes('custom_commands') ?? false;
-  const supportedBackends = selectedDaemon?.supportedBackends ?? [];
-  const managedTools = supportedManagedTools(supportedBackends, selectedDaemon?.runtimeBackendMap);
-  const daemonVersion = selectedDaemon?.version ?? null;
-  const isRestarting = restartingHost === host;
   const state = byHost[host];
   const status = state?.status ?? null;
   const availableTools = managedTools.filter((tool) => isToolAvailable(tool, status));
@@ -353,9 +388,64 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
               );
             })}
           </div>
-        ) : (
+        ) : externalBackends.length === 0 ? (
           <p className="text-sm text-muted">No quota-capable AI tools available on this daemon.</p>
-        )}
+        ) : null}
+        {externalBackends.length > 0 ? (
+          <div className={availableTools.length > 0 ? 'mt-5 border-t border-border pt-5' : ''}>
+            <div className="mb-3 text-sm font-semibold text-ink">
+              External providers
+            </div>
+            <div className="flex flex-col gap-4">
+              {externalBackends.map((backend) => {
+                const providerQuota = quota?.external?.[backend];
+                const providerLabel = providerQuota?.label ?? backend;
+                return (
+                  <div key={backend} className="min-w-0">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold text-ink">
+                        {providerLabel}
+                        {providerQuota?.source ? (
+                          <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
+                            {providerQuota.source}
+                          </span>
+                        ) : null}
+                      </div>
+                      {providerQuota?.username || providerQuota?.organization ? (
+                        <div className="min-w-0 truncate text-right text-xs text-muted">
+                          {[providerQuota.username, providerQuota.organization].filter(Boolean).join(' · ')}
+                        </div>
+                      ) : null}
+                    </div>
+                    {providerQuota?.quotas && providerQuota.quotas.length > 0 ? (
+                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                        {providerQuota.quotas.map((modelQuota) => {
+                          const meta = formatExternalModelMeta(modelQuota);
+                          return (
+                            <div
+                              key={`${backend}:${modelQuota.model}`}
+                              className="min-w-0 rounded-lg border border-border bg-paper/50 p-3"
+                            >
+                              <QuotaBar label={modelQuota.model} window={modelQuota.daily} />
+                              {meta ? (
+                                <p className="mt-1 truncate text-xs text-muted">{meta}</p>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted">No external model quota data yet.</p>
+                    )}
+                    {providerQuota?.error ? (
+                      <p className="mt-2 text-xs text-[var(--error)]">{providerQuota.error}</p>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
         {state?.error?.quota ? (
           <p className="mt-2 text-xs text-[var(--error)]">{state.error.quota}</p>
         ) : null}

@@ -223,3 +223,72 @@ describe('fetchAccounts seeds codexQuotaByAccount from daemon cache', () => {
     expect(state.codexQuotaByAccount.alice?.fiveHour.usedPercent).toBe(99);
   });
 });
+
+describe('fetchQuota', () => {
+  beforeEach(() => {
+    apiGetMock.mockReset();
+    useAiManagerStore.setState({ selectedHost: null, byHost: {} });
+  });
+
+  it('passes external quota backends through to the quota route', async () => {
+    apiGetMock.mockResolvedValueOnce({
+      external: {
+        'private-ext': {
+          backend: 'private-ext',
+          source: 'fresh',
+          count: 0,
+          quotas: [],
+        },
+      },
+    });
+
+    await useAiManagerStore.getState().fetchQuota('daemon-a', {
+      forceRefresh: true,
+      externalQuotaBackends: ['private-ext'],
+    });
+
+    expect(apiGetMock).toHaveBeenCalledWith(
+      '/ai-manager/quota?agentHost=daemon-a&forceRefresh=1&externalQuotaBackend=private-ext',
+    );
+  });
+
+  it('preserves existing external quota when a base quota refresh omits it', async () => {
+    useAiManagerStore.setState({
+      byHost: {
+        'daemon-a': {
+          status: null,
+          quota: {
+            external: {
+              'private-ext': {
+                backend: 'private-ext',
+                source: 'fresh',
+                count: 1,
+                quotas: [
+                  {
+                    backend: 'private-ext',
+                    model: 'model-x',
+                    source: 'fresh',
+                    daily: { usedPercent: 1, remainingPercent: 99 },
+                  },
+                ],
+              },
+            },
+          },
+          accounts: null,
+          codexQuotaByAccount: {},
+          loading: { status: false, quota: false, accounts: false, switching: false },
+          error: {},
+        },
+      },
+    });
+    apiGetMock.mockResolvedValueOnce({
+      codex: makeQuota({ plan: 'PLUS' }),
+    });
+
+    await useAiManagerStore.getState().fetchQuota('daemon-a');
+
+    const state = useAiManagerStore.getState().byHost['daemon-a'];
+    expect(state.quota?.codex?.plan).toBe('PLUS');
+    expect(state.quota?.external?.['private-ext']?.quotas[0]?.model).toBe('model-x');
+  });
+});

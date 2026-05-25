@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useLayoutEffect, useRef } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Header } from '@/components/layout/Header';
+import { useAgentsStore } from '@/features/agents';
 import { AiManagerPanel } from '@/features/ai-manager';
 import { useAiManagerStore } from '@/features/ai-manager';
 import { SETTINGS_ROOT_PATH, useSettingsNavStore } from '@/features/settings';
@@ -26,6 +27,15 @@ import { RefreshIcon } from '@/features/tasks';
 // mechanism the chat view uses, proven to survive `<Link>` navigation.
 
 const SCROLL_STORAGE_PREFIX = 'conductor-daemon-scroll:';
+const BUILT_IN_AI_BACKENDS = new Set(['codex', 'claude', 'kimi', 'copilot']);
+
+function externalQuotaBackends(backends: string[] | undefined): string[] {
+  return [...new Set(
+    (backends ?? [])
+      .map((backend) => backend.trim().toLowerCase())
+      .filter((backend) => backend && !BUILT_IN_AI_BACKENDS.has(backend)),
+  )];
+}
 
 function scrollStorageKey(host: string): string {
   return `${SCROLL_STORAGE_PREFIX}${host}`;
@@ -104,6 +114,12 @@ function AiManagerPageInner() {
     const host = agentHost ?? selectedHost;
     return host ? s.byHost[host] : undefined;
   });
+  const selectedAgent = useAgentsStore((s) => {
+    const host = selectedHost ?? agentHost;
+    return host ? s.agents.find((agent) => agent.host === host) : undefined;
+  });
+  const externalBackendKey = externalQuotaBackends(selectedAgent?.supportedBackends).join(',');
+  const externalBackends = externalBackendKey ? externalBackendKey.split(',') : [];
   const isLoading = useAiManagerStore((s) => {
     const host = selectedHost ?? agentHost;
     if (!host) return false;
@@ -135,10 +151,11 @@ function AiManagerPageInner() {
   useEffect(() => {
     const host = agentHost ?? selectedHost;
     if (!host) return;
-    if (lastForceRefreshedHostRef.current === host) return;
-    lastForceRefreshedHostRef.current = host;
-    void fetchQuota(host, { forceRefresh: true });
-  }, [agentHost, selectedHost, fetchQuota]);
+    const refreshKey = `${host}:${externalBackends.join(',') || 'base'}`;
+    if (lastForceRefreshedHostRef.current === refreshKey) return;
+    lastForceRefreshedHostRef.current = refreshKey;
+    void fetchQuota(host, { forceRefresh: true, externalQuotaBackends: externalBackends });
+  }, [agentHost, selectedHost, externalBackendKey, fetchQuota]);
 
   // Persist scrollTop per host. Listens on both the inner div AND window so we
   // capture whichever element the OS/browser actually scrolls — iOS Safari in
@@ -239,8 +256,8 @@ function AiManagerPageInner() {
   const handleRefresh = () => {
     const host = selectedHost ?? agentHost;
     if (!host) return;
-    void fetchAll(host);
-    void fetchQuota(host, { forceRefresh: true });
+    void fetchAll(host, { externalQuotaBackends: externalBackends });
+    void fetchQuota(host, { forceRefresh: true, externalQuotaBackends: externalBackends });
   };
 
   const handleBackToSettings = () => {

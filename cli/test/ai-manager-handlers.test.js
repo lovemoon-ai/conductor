@@ -113,13 +113,16 @@ test("dispatch switch_account rejects missing name argument", async () => {
   assert.match(client.sent[0].payload.error, /requires a `name`/);
 });
 
-test("dispatch quota includes copilot by default", async () => {
+test("dispatch quota includes copilot but not external providers by default", async () => {
   const { createAiManagerHandlers } = await import("../src/ai-manager-handlers.js");
   const handlers = createAiManagerHandlers({ configPath: "/nonexistent/config.yaml" });
   handlers.manager.getCodexQuota = async () => ({ tool: "codex", source: "fresh" });
   handlers.manager.getClaudeQuota = async () => ({ tool: "claude", source: "fresh" });
   handlers.manager.getKimiQuota = async () => ({ tool: "kimi", source: "fresh" });
   handlers.manager.getCopilotQuota = async () => ({ tool: "copilot", source: "fresh" });
+  handlers.manager.getExternalQuotaList = async () => {
+    throw new Error("external provider should not be called by default");
+  };
 
   const out = await handlers.dispatch({ action: "quota", args: {} });
   assert.deepEqual(Object.keys(out.result).sort(), ["claude", "codex", "copilot", "kimi"]);
@@ -147,6 +150,59 @@ test("dispatch quota probes selected providers concurrently", async () => {
 
   assert.deepEqual(Object.keys(out.result).sort(), ["claude", "codex", "copilot", "kimi"]);
   assert.ok(maxActive > 1, "quota probes should overlap instead of running serially");
+});
+
+test("dispatch quota includes external providers when requested", async () => {
+  const { createAiManagerHandlers } = await import("../src/ai-manager-handlers.js");
+  const handlers = createAiManagerHandlers({ configPath: "/nonexistent/config.yaml" });
+  handlers.manager.getCodexQuota = async () => ({ tool: "codex", source: "fresh" });
+  handlers.manager.getClaudeQuota = async () => ({ tool: "claude", source: "fresh" });
+  handlers.manager.getKimiQuota = async () => ({ tool: "kimi", source: "fresh" });
+  handlers.manager.getCopilotQuota = async () => ({ tool: "copilot", source: "fresh" });
+  handlers.manager.getExternalQuotaList = async ({ backend }) => ({
+    backend,
+    source: "fresh",
+    count: 1,
+    quotas: [],
+  });
+
+  const out = await handlers.dispatch({
+    action: "quota",
+    args: { externalQuotaBackends: ["private-ext"] },
+  });
+
+  assert.deepEqual(Object.keys(out.result).sort(), ["claude", "codex", "copilot", "external", "kimi"]);
+  assert.equal(out.result.external["private-ext"].backend, "private-ext");
+});
+
+test("dispatch quota can filter to an external provider only", async () => {
+  const { createAiManagerHandlers } = await import("../src/ai-manager-handlers.js");
+  const handlers = createAiManagerHandlers({ configPath: "/nonexistent/config.yaml" });
+  let externalCalls = 0;
+  handlers.manager.getCodexQuota = async () => {
+    throw new Error("codex should not be called");
+  };
+  handlers.manager.getClaudeQuota = async () => {
+    throw new Error("claude should not be called");
+  };
+  handlers.manager.getKimiQuota = async () => {
+    throw new Error("kimi should not be called");
+  };
+  handlers.manager.getCopilotQuota = async () => {
+    throw new Error("copilot should not be called");
+  };
+  handlers.manager.getExternalQuotaList = async ({ backend }) => {
+    externalCalls += 1;
+    return { backend, source: "fresh", count: 0, quotas: [] };
+  };
+
+  const out = await handlers.dispatch({ action: "quota", args: { tool: "private-ext" } });
+  assert.deepEqual(out.result, {
+    external: {
+      "private-ext": { backend: "private-ext", source: "fresh", count: 0, quotas: [] },
+    },
+  });
+  assert.equal(externalCalls, 1);
 });
 
 test("dispatch quota can filter to copilot only", async () => {

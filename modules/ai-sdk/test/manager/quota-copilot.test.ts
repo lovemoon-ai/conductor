@@ -8,7 +8,7 @@ import {
   parseCopilotQuotaSnapshots,
   parseCopilotUserQuota,
   resolveBundledCopilotCliPath,
-} from "../src/quota/copilot.ts";
+} from "../../src/manager/quota/copilot.ts";
 
 function withTmp<T>(fn: (dir: string) => Promise<T> | T): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "ai-manager-copilot-"));

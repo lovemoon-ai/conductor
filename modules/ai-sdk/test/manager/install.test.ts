@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { findPackageVersionForEntry } from "../src/install.ts";
+import { findPackageVersionForEntry } from "../../src/manager/install.ts";
 
 test("findPackageVersionForEntry returns the owning package version", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ai-manager-install-"));

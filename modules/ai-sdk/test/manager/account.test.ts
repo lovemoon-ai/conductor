@@ -7,7 +7,7 @@ import {
   accountNameFromPath,
   listCodexAccounts,
   switchCodexAccount,
-} from "../src/account.ts";
+} from "../../src/manager/account.ts";
 import { writeAuthJson } from "./fixtures/make-auth.ts";
 
 test("accountNameFromPath strips auth_ prefix and .json suffix", () => {

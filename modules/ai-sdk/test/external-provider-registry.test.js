@@ -81,6 +81,10 @@ describe("external-provider-registry descriptor validation", () => {
          async resolveResumeContext(sessionId) { return { provider: "full-hooks-ext", sessionId, cwd: process.cwd() }; },
          buildResumeArgs(sessionId) { return ["--resume", sessionId]; },
          async findSessionPath() { return null; },
+         async getQuota() { return { tool: "fake", source: "fresh" }; },
+         async getQuotaList() { return { tool: "fake", source: "fresh", quotas: [] }; },
+         async readCachedQuota() { return null; },
+         async readCachedQuotaList() { return null; },
          isSupported() { return true; },
        }];\n`,
     );
@@ -93,10 +97,14 @@ describe("external-provider-registry descriptor validation", () => {
       assert.equal(typeof descriptor.buildResumeArgs, "function");
       assert.equal(typeof descriptor.findSessionPath, "function");
       assert.equal(typeof descriptor.isSupported, "function");
+      assert.equal(typeof descriptor.getQuota, "function");
+      assert.equal(typeof descriptor.getQuotaList, "function");
+      assert.equal(typeof descriptor.readCachedQuota, "function");
+      assert.equal(typeof descriptor.readCachedQuotaList, "function");
     });
   });
 
-  for (const field of ["resolveResumeContext", "buildResumeArgs", "findSessionPath", "isSupported"]) {
+  for (const field of ["resolveResumeContext", "buildResumeArgs", "findSessionPath", "isSupported", "getQuota", "getQuotaList", "readCachedQuota", "readCachedQuotaList"]) {
     it(`rejects descriptors where ${field} is provided but not a function`, async () => {
       const modulePath = writeProviderModule(
         tempDir,

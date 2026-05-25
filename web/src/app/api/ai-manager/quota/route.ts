@@ -10,8 +10,15 @@ export async function GET(request: NextRequest) {
   const tool = params.get("tool");
   const forceRefresh = params.get("forceRefresh") === "1";
   const args: Record<string, unknown> = { forceRefresh };
-  if (tool === "codex" || tool === "claude" || tool === "kimi" || tool === "copilot") {
+  if (tool) {
     args.tool = tool;
+  }
+  const externalQuotaBackends = params.getAll("externalQuotaBackend")
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (externalQuotaBackends.length > 0) {
+    args.externalQuotaBackends = externalQuotaBackends;
   }
 
   return callAgent(ctx, "quota", args, 30_000);

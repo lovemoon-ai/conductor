@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import type { InstallStatus, Tool } from "./types.ts";
+import type { InstallStatus, Tool } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 3000;
 const require = createRequire(import.meta.url);
