@@ -13,7 +13,7 @@ First establish the following deployment contexts before starting deployment:
 - The content that will actually be deployed must already exist on `origin/main`; local uncommitted or unpushed changes will not appear on the production machine.
 - `M web/next-env.d.ts` often appears on the remote end. This is a by-product of Next construction and usually does not need to be treated as a dirty business change.
 - If the diff to be deployed hits `web/prisma/schema.prisma` or `web/prisma/migrations/`, you must first migrate the database and then restart the service.
-- The repository root declares npm as its package manager. Use `npm --prefix web ...` for production Web maintenance commands, matching `scripts/deploy-prod.sh`; do not invoke `pnpm -C web ...` from the repository root.
+- The repository root declares npm as its package manager. Use npm for production Web maintenance commands, matching `scripts/deploy-prod.sh`; do not invoke `pnpm -C web ...` from the repository root. Use `npm --prefix web run ...` for package scripts, and execute Prisma CLI migration commands from the `web/` working directory so `web/prisma.config.ts` is loaded.
 - If the diff to be deployed hits `web/package.json` or `web/pnpm-lock.yaml`, `npm --prefix web install` must be manually executed on the production machine; `scripts/deploy-prod.sh` will automatically install dependencies only if `web/node_modules` does not exist.
 3. Signals that must be checked during deployment
 - Local `git status --short`
@@ -52,7 +52,7 @@ First establish the following deployment contexts before starting deployment:
 - `export $(grep -v '^#' web/.env.production.local | xargs)`
 - `npm --prefix web install`
 - `npm --prefix web run db:generate`
-- `npm --prefix web exec -- prisma migrate deploy`
+- `(cd web && npm exec -- prisma migrate deploy)`
 - `bash scripts/deploy-prod.sh`
 - `curl -I --max-time 5 http://127.0.0.1:6152/api/health`
 - `curl -I --max-time 5 http://127.0.0.1/`

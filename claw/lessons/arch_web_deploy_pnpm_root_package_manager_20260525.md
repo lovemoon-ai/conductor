@@ -12,16 +12,19 @@ This project is configured to use npm because package.json has a
 
 ## Root Cause
 
-The deployment script had already migrated to `npm --prefix web`, but the
-manual migration commands in the production SOP still used `pnpm -C web`.
-Once the repository root declared npm as its package manager, Corepack rejected
-the stale pnpm command.
+The deployment script had already migrated to npm, but the manual migration
+commands in the production SOP still used `pnpm -C web`. Once the repository
+root declared npm as its package manager, Corepack rejected the stale pnpm
+command. The first replacement also used `npm --prefix web exec`, which does
+not change Prisma's working directory and therefore could not locate
+`web/prisma.config.ts`.
 
 ## Fix
 
 Update the production deployment SOP to use `npm --prefix web` for dependency
-installation, Prisma generation, and migration, matching the executable deploy
-script.
+installation and Prisma generation, matching the executable deploy script. Run
+`npm exec -- prisma migrate deploy` from the `web/` directory so Prisma resolves
+its application-local configuration and schema.
 
 ## Prevention
 
