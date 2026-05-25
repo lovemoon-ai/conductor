@@ -195,12 +195,20 @@ jobs:
             | grep -vE '(^\.changeset/README\.md$|^\.changeset/config\.json$)' \
             || true)
 
+          # The generated version PR consumes and deletes its source changesets.
+          consumed_changesets=$(git diff --name-only --diff-filter=D "$base...$head" -- '.changeset/*.md' \
+            | grep -vE '(^\.changeset/README\.md$|^\.changeset/config\.json$)' \
+            || true)
+
           {
             echo 'touched_published<<EOF'
             echo "$touched_published"
             echo 'EOF'
             echo 'new_changesets<<EOF'
             echo "$new_changesets"
+            echo 'EOF'
+            echo 'consumed_changesets<<EOF'
+            echo "$consumed_changesets"
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
@@ -214,13 +222,24 @@ jobs:
             echo "New changeset(s):"
             echo "$new_changesets"
           fi
+          if [[ -n "$consumed_changesets" ]]; then
+            echo "Consumed changeset(s):"
+            echo "$consumed_changesets"
+          fi
 
       - name: Enforce
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         shell: bash
         run: |
           set -euo pipefail
           touched='${{ steps.detect.outputs.touched_published }}'
           changesets='${{ steps.detect.outputs.new_changesets }}'
+          consumed='${{ steps.detect.outputs.consumed_changesets }}'
+          if [[ "$HEAD_REF" == "changeset-release/main" && -n "$consumed" ]]; then
+            echo "OK: generated version packages PR consumes existing changesets."
+            exit 0
+          fi
           if [[ -n "$touched" && -z "$changesets" ]]; then
             echo "::error::This PR modifies a published package (cli/ or modules/*) but does not include a .changeset/*.md file. Run 'npm run changeset' and commit the result. See claw/lessons/arch_release-packages-pnpm-changesets-20260512.md."
             echo ""
