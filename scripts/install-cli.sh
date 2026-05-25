@@ -5,7 +5,9 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 DEV_BIN_DIR="$ROOT_DIR/bin"
 DEV_BIN="$DEV_BIN_DIR/conductor-dev"
 
-echo "==> Building local SDK packages"
+echo "==> Building local CLI packages"
+pnpm -C "$ROOT_DIR/modules/chat-web" install
+pnpm -C "$ROOT_DIR/modules/chat-web" run build
 pnpm -C "$ROOT_DIR/modules/ai-sdk" install
 pnpm -C "$ROOT_DIR/modules/ai-sdk" run build
 pnpm -C "$ROOT_DIR/modules/conductor-sdk" install
@@ -30,6 +32,9 @@ chmod +x "$DEV_BIN"
 
 echo "==> Verifying Claude ai-sdk provider"
 pnpm -C "$ROOT_DIR/cli" exec node --input-type=module -e "import { createAiSession } from '@love-moon/ai-sdk'; const session = createAiSession('claude'); await session.readyPromise; const snapshot = session.getSnapshot(); if (snapshot.provider !== 'claude-agent-sdk') { throw new Error(\`Unexpected Claude provider: \${snapshot.provider}\`); } await session.close(); console.log('Verified provider:', snapshot.provider);"
+
+echo "==> Verifying chat-web runtime module"
+pnpm -C "$ROOT_DIR/cli" exec node --input-type=module -e "const chatWeb = await import('@love-moon/chat-web'); if (typeof chatWeb.ChatSession?.open !== 'function') { throw new Error('Unexpected @love-moon/chat-web export surface'); } console.log('Verified provider runtime: @love-moon/chat-web');"
 
 echo "==> Verifying node-pty native binding"
 pnpm -C "$ROOT_DIR/cli" exec node "$ROOT_DIR/cli/bin/conductor-verify-node-pty.js" "$ROOT_DIR/cli"
