@@ -280,9 +280,11 @@ describe('AiManagerPanel', () => {
     expect(within(quotaSection!).getByText(/Copilot/)).toBeInTheDocument();
     expect(within(quotaSection!).queryByText('Claude')).not.toBeInTheDocument();
     expect(within(quotaSection!).queryByText('Kimi')).not.toBeInTheDocument();
-    expect(within(quotaSection!).getByText('External providers')).toBeInTheDocument();
-    expect(within(quotaSection!).getByText('web-gemini')).toBeInTheDocument();
+    expect(within(quotaSection!).queryByText('External providers')).not.toBeInTheDocument();
+    expect(within(quotaSection!).queryByText('web-gemini')).not.toBeInTheDocument();
     expect(within(quotaSection!).queryByText('codex-gamma')).not.toBeInTheDocument();
+    expect(fetchAllMock).toHaveBeenCalledWith('daemon-a', { externalQuotaBackends: [] });
+    expect(startPollingMock).toHaveBeenCalledWith('daemon-a', { externalQuotaBackends: [] });
   });
 
   it('hides advertised tools when install or network status marks them unavailable', () => {
@@ -452,5 +454,61 @@ describe('AiManagerPanel', () => {
     expect(screen.getByText('model-paygo')).toBeInTheDocument();
     expect(screen.getByText('已用 40% · 剩余 60%')).toBeInTheDocument();
     expect(screen.queryByText('120,000 / 200,000 tokens')).not.toBeInTheDocument();
+  });
+
+  it('hides external backends when the provider returns no model quota data', () => {
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-a',
+        supportedBackends: ['private-ext', 'empty-ext'],
+        capabilities: ['restart_daemon'],
+      },
+    ];
+    aiManagerState.selectedHost = 'daemon-a';
+    aiManagerState.byHost = {
+      'daemon-a': {
+        quota: {
+          external: {
+            'private-ext': {
+              backend: 'private-ext',
+              source: 'fresh',
+              count: 1,
+              label: 'Private Provider',
+              quotas: [
+                {
+                  backend: 'private-ext',
+                  model: 'model-paygo',
+                  source: 'fresh',
+                  daily: {
+                    usedPercent: 40,
+                    remainingPercent: 60,
+                  },
+                },
+              ],
+            },
+            'empty-ext': {
+              backend: 'empty-ext',
+              source: 'unknown',
+              count: 0,
+              label: 'Empty Provider',
+              quotas: [],
+              error: 'external provider quota list hook unavailable',
+            },
+          },
+        },
+      },
+    };
+
+    render(<AiManagerPanel initialAgentHost="daemon-a" />);
+
+    expect(fetchAllMock).toHaveBeenCalledWith('daemon-a', {
+      externalQuotaBackends: ['private-ext', 'empty-ext'],
+    });
+    expect(screen.getByText('External providers')).toBeInTheDocument();
+    expect(screen.getByText('Private Provider')).toBeInTheDocument();
+    expect(screen.getByText('model-paygo')).toBeInTheDocument();
+    expect(screen.queryByText('Empty Provider')).not.toBeInTheDocument();
+    expect(screen.queryByText('No external model quota data yet.')).not.toBeInTheDocument();
   });
 });

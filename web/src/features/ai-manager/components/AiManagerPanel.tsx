@@ -6,7 +6,7 @@ import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 import { useAgentsStore } from '@/features/agents';
 import { getApiClient } from '@/shared/api/client';
 import { useAiManagerStore } from '../store';
-import type { ExternalQuota, StatusResponse, Tool } from '../types';
+import type { ExternalQuota, ExternalQuotaList, StatusResponse, Tool } from '../types';
 import { CodexAccountSwitcher } from './CodexAccountSwitcher';
 import { CustomCommandsPanel } from './CustomCommandsPanel';
 import { QuotaBar } from './QuotaBar';
@@ -23,6 +23,7 @@ function isManageableHost(host: string): boolean {
 }
 
 const MANAGED_TOOL_ORDER: Tool[] = ['codex', 'claude', 'kimi', 'copilot'];
+const BUILT_IN_NON_QUOTA_BACKENDS = new Set(['chat-web', 'opencode']);
 const TOOL_ALIASES: Record<string, Tool> = {
   codex: 'codex',
   code: 'codex',
@@ -86,6 +87,12 @@ function externalQuotaBackends(
     if (!normalizedBackend) continue;
     const runtimeBackend = runtimeBackendMap?.[backend] ?? runtimeBackendMap?.[normalizedBackend];
     if (normalizeManagedTool(runtimeBackend) || normalizeManagedTool(backend)) continue;
+    if (
+      BUILT_IN_NON_QUOTA_BACKENDS.has(String(runtimeBackend || '').trim().toLowerCase()) ||
+      BUILT_IN_NON_QUOTA_BACKENDS.has(normalizedBackend)
+    ) {
+      continue;
+    }
     out.add(normalizedBackend);
   }
 
@@ -105,6 +112,16 @@ function formatExternalModelMeta(quota: ExternalQuota): string {
     used ? `已用 ${used}` : null,
     remaining ? `剩余 ${remaining}` : null,
   ].filter(Boolean).join(' · ');
+}
+
+type ExternalQuotaListWithData = ExternalQuotaList & {
+  quotas: [ExternalQuota, ...ExternalQuota[]];
+};
+
+function hasExternalQuotaData(
+  providerQuota: ExternalQuotaList | undefined,
+): providerQuota is ExternalQuotaListWithData {
+  return Array.isArray(providerQuota?.quotas) && providerQuota.quotas.length > 0;
 }
 
 export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
@@ -179,6 +196,10 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
   const status = state?.status ?? null;
   const availableTools = managedTools.filter((tool) => isToolAvailable(tool, status));
   const quota = state?.quota ?? null;
+  const visibleExternalQuotaEntries = externalBackends.flatMap((backend) => {
+    const providerQuota = quota?.external?.[backend];
+    return hasExternalQuotaData(providerQuota) ? [{ backend, providerQuota }] : [];
+  });
   const accounts = state?.accounts?.accounts ?? [];
   const codexQuotaByAccount = state?.codexQuotaByAccount ?? {};
 
@@ -388,17 +409,16 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
               );
             })}
           </div>
-        ) : externalBackends.length === 0 ? (
+        ) : visibleExternalQuotaEntries.length === 0 ? (
           <p className="text-sm text-muted">No quota-capable AI tools available on this daemon.</p>
         ) : null}
-        {externalBackends.length > 0 ? (
+        {visibleExternalQuotaEntries.length > 0 ? (
           <div className={availableTools.length > 0 ? 'mt-5 border-t border-border pt-5' : ''}>
             <div className="mb-3 text-sm font-semibold text-ink">
               External providers
             </div>
             <div className="flex flex-col gap-4">
-              {externalBackends.map((backend) => {
-                const providerQuota = quota?.external?.[backend];
+              {visibleExternalQuotaEntries.map(({ backend, providerQuota }) => {
                 const providerLabel = providerQuota?.label ?? backend;
                 return (
                   <div key={backend} className="min-w-0">
@@ -417,26 +437,22 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
                         </div>
                       ) : null}
                     </div>
-                    {providerQuota?.quotas && providerQuota.quotas.length > 0 ? (
-                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                        {providerQuota.quotas.map((modelQuota) => {
-                          const meta = formatExternalModelMeta(modelQuota);
-                          return (
-                            <div
-                              key={`${backend}:${modelQuota.model}`}
-                              className="min-w-0 rounded-lg border border-border bg-paper/50 p-3"
-                            >
-                              <QuotaBar label={modelQuota.model} window={modelQuota.daily} />
-                              {meta ? (
-                                <p className="mt-1 truncate text-xs text-muted">{meta}</p>
-                              ) : null}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-muted">No external model quota data yet.</p>
-                    )}
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                      {providerQuota.quotas.map((modelQuota) => {
+                        const meta = formatExternalModelMeta(modelQuota);
+                        return (
+                          <div
+                            key={`${backend}:${modelQuota.model}`}
+                            className="min-w-0 rounded-lg border border-border bg-paper/50 p-3"
+                          >
+                            <QuotaBar label={modelQuota.model} window={modelQuota.daily} />
+                            {meta ? (
+                              <p className="mt-1 truncate text-xs text-muted">{meta}</p>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
                     {providerQuota?.error ? (
                       <p className="mt-2 text-xs text-[var(--error)]">{providerQuota.error}</p>
                     ) : null}
