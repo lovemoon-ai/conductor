@@ -13,7 +13,8 @@ First establish the following deployment contexts before starting deployment:
 - The content that will actually be deployed must already exist on `origin/main`; local uncommitted or unpushed changes will not appear on the production machine.
 - `M web/next-env.d.ts` often appears on the remote end. This is a by-product of Next construction and usually does not need to be treated as a dirty business change.
 - If the diff to be deployed hits `web/prisma/schema.prisma` or `web/prisma/migrations/`, you must first migrate the database and then restart the service.
-- If the diff to be deployed hits `web/package.json` or `web/pnpm-lock.yaml`, `pnpm -C web install` must be manually executed on the production machine; `scripts/deploy-prod.sh` will automatically install dependencies only if `web/node_modules` does not exist.
+- The repository root declares npm as its package manager. Use `npm --prefix web ...` for production Web maintenance commands, matching `scripts/deploy-prod.sh`; do not invoke `pnpm -C web ...` from the repository root.
+- If the diff to be deployed hits `web/package.json` or `web/pnpm-lock.yaml`, `npm --prefix web install` must be manually executed on the production machine; `scripts/deploy-prod.sh` will automatically install dependencies only if `web/node_modules` does not exist.
 3. Signals that must be checked during deployment
 - Local `git status --short`
 - Local `git status --short`- local `git push origin main` is successful
@@ -32,7 +33,7 @@ First establish the following deployment contexts before starting deployment:
 - SSH to the production machine and enter the remote warehouse directory. First check the current commit and workspace status.
 - If the remote end only has `M web/next-env.d.ts`, you can generally continue; if there are other dirty changes, confirm the source first and do not overwrite it directly.
 - Execute `git pull --rebase --autostash origin main` to pull the latest code.
-- If dependency changes are involved, execute `pnpm -C web install` first.
+- If dependency changes are involved, execute `npm --prefix web install` first.
 - If database changes are involved, load the production environment variables first, and then execute Prisma generate and `prisma migrate deploy`.
 - Execute `bash scripts/deploy-prod.sh` to complete the build, restart and basic health check.
 - Finally, open `https://conductor-ai.top` for manual regression; perform login and critical path verification if necessary.
@@ -49,9 +50,9 @@ First establish the following deployment contexts before starting deployment:
 - `git status --short`
 - `git pull --rebase --autostash origin main`
 - `export $(grep -v '^#' web/.env.production.local | xargs)`
-- `pnpm -C web install`
-- `pnpm -C web db:generate`
-- `pnpm -C web exec prisma migrate deploy`
+- `npm --prefix web install`
+- `npm --prefix web run db:generate`
+- `npm --prefix web exec -- prisma migrate deploy`
 - `bash scripts/deploy-prod.sh`
 - `curl -I --max-time 5 http://127.0.0.1:6152/api/health`
 - `curl -I --max-time 5 http://127.0.0.1/`
@@ -67,7 +68,7 @@ First establish the following deployment contexts before starting deployment:
 - There are other unexplained dirty changes on the remote end
 - Stop first to confirm the source; do not assume safe coverage.- diff hits Prisma schema or migration
 - Database migration must be performed first, and then the startup script is executed.- diff hits `web/package.json` or `web/pnpm-lock.yaml`
-- Execute `pnpm -C web install` first, don't just rely on the startup script.
+- Execute `npm --prefix web install` first, don't just rely on the startup script.
 - `web/.env.production.local` does not exist
 - Stop the deployment directly; the startup script will fail.
 - `bash scripts/deploy-prod.sh` succeeded, but the health check is not the expected status code
@@ -84,7 +85,7 @@ First establish the following deployment contexts before starting deployment:
 - `git pull` failed
 - Prioritize dirty changes in the remote workspace, rebase conflicts, and whether branches deviate from `origin/main`.
 - `git pull` failed
-- Prioritize Node / pnpm environment, lock file conflicts, network or registry issues.
+- Prioritize Node / npm environment, lock file conflicts, network or registry issues.
 - `git pull` failed
 - Prioritize the production database connection, migration file integrity, and whether environment variables are loaded correctly.
 - `git pull` failed
@@ -94,7 +95,7 @@ First establish the following deployment contexts before starting deployment:
 9. Output requirements
 - Give the conclusion first, then the evidence.
 - Clearly write out the commit hash of this launch.
-- Clearly write out whether `pnpm -C web install` was executed.
+- Clearly write out whether `npm --prefix web install` was executed.
 - Clearly write out whether database migration has been performed.
 - Clearly write out the status code results of the three local health checks.
 - If human flesh returns, clearly indicate which page or path was verified.
