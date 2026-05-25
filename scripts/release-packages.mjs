@@ -7,6 +7,8 @@ import path from "node:path";
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REGISTRY_URL = process.env.NPM_REGISTRY_URL || "https://registry.npmjs.org";
+const PUBLISH_VISIBILITY_ATTEMPTS = 12;
+const PUBLISH_VISIBILITY_DELAY_MS = 5_000;
 
 const PACKAGES = [
   { path: "modules/chat-web/package.json" },
@@ -56,6 +58,22 @@ async function packageVersionExists(name, version) {
     throw new Error(`Failed to query npm for ${name}@${version}: ${response.status} ${response.statusText}`);
   }
   return true;
+}
+
+async function waitForPackageVersion(name, version) {
+  for (let attempt = 1; attempt <= PUBLISH_VISIBILITY_ATTEMPTS; attempt += 1) {
+    if (await packageVersionExists(name, version)) {
+      return true;
+    }
+    if (attempt < PUBLISH_VISIBILITY_ATTEMPTS) {
+      console.warn(
+        `[release-packages] ${name}@${version} is not visible on npm yet; retrying ` +
+          `in ${PUBLISH_VISIBILITY_DELAY_MS / 1000}s (${attempt}/${PUBLISH_VISIBILITY_ATTEMPTS}).`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, PUBLISH_VISIBILITY_DELAY_MS));
+    }
+  }
+  return false;
 }
 
 async function getPendingPackages() {
@@ -147,11 +165,12 @@ async function publishCommand() {
   // and archive-dispatch steps must still run as long as the packages
   // actually shipped, otherwise an operator has to push tags by hand.
   //
-  // Catch the spawn failure here, then derive the published set from a
-  // direct npm registry probe. We only re-throw if some pending package
-  // is still missing from the registry. If everything is on npm we log a
-  // warning and continue so GitHub Actions outputs get set and the next
-  // step (cli-release-archives dispatch) fires.
+  // Catch the spawn failure here, then derive the published set from direct
+  // npm registry probes. A freshly-published scoped version can take several
+  // seconds to become visible on the exact-version endpoint, so post-publish
+  // confirmation retries for a bounded interval before declaring it missing.
+  // If everything is on npm we log a warning and continue so GitHub Actions
+  // outputs get set and the next step (cli-release-archives dispatch) fires.
   // `--no-git-tag` skips changesets' default behavior of running
   // `git tag <pkg>@<version> -m <msg>` after each successful publish.
   // Annotated tag creation requires `user.name` / `user.email` to be
@@ -177,7 +196,7 @@ async function publishCommand() {
   const stillMissing = [];
   const confirmed = [];
   for (const pkg of pending) {
-    const exists = await packageVersionExists(pkg.name, pkg.version);
+    const exists = await waitForPackageVersion(pkg.name, pkg.version);
     if (exists) {
       confirmed.push(pkg);
     } else {
