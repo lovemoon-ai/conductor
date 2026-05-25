@@ -34,7 +34,6 @@ web/package-lock.json
 conductor.log
 conductor-terminal.log
 .conductor/state
-.aiden
 web/.conductor-data/
 .worktrees/
 

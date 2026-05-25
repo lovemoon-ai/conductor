@@ -1,14 +1,15 @@
-// Daemon-side glue between the realtime WebSocket and the @love-moon/ai-manager module.
+// Daemon-side glue between the realtime WebSocket and the @love-moon/ai-sdk manager facade.
 // The web backend sends `ai_manager_request`; we dispatch by `action`, run it, and
 // reply with `ai_manager_response` carrying the same `request_id`.
 
-import { AiManager } from "@love-moon/ai-manager";
+import { AiManager } from "@love-moon/ai-sdk";
 
 const VALID_ACTIONS = new Set(["status", "quota", "list_accounts", "switch_account"]);
+const BASE_QUOTA_TOOLS = ["codex", "claude", "kimi", "copilot"];
 
 /**
  * @param {object} opts
- * @param {string} [opts.configPath] Path to ~/.conductor/config.yaml. Defaults to ai-manager's default.
+ * @param {string} [opts.configPath] Path to ~/.conductor/config.yaml. Defaults to the manager facade default.
  */
 export function createAiManagerHandlers(opts = {}) {
   const manager = new AiManager(opts.configPath ? { configPath: opts.configPath } : undefined);
@@ -69,10 +70,30 @@ export function createAiManagerHandlers(opts = {}) {
     addJob("copilot", () => manager.getCopilotQuota({
       forceRefresh,
     }));
+    const externalBackends = pickExternalQuotaBackends(args);
+    for (const backend of externalBackends) {
+      if (!tools.has(backend)) {
+        continue;
+      }
+      jobs.push((async () => {
+        try {
+          const result = await manager.getExternalQuotaList({ backend, forceRefresh });
+          return ["external", backend, result];
+        } catch (err) {
+          return ["external", backend, { backend, error: errMsg(err), source: "unknown" }];
+        }
+      })());
+    }
 
     const entries = await Promise.all(jobs);
-    for (const [tool, result] of entries) {
-      out[tool] = result;
+    for (const entry of entries) {
+      const [kind, key, result] = entry;
+      if (kind === "external") {
+        out.external = out.external || {};
+        out.external[key] = result;
+      } else {
+        out[kind] = key;
+      }
     }
     return out;
   }
@@ -169,8 +190,24 @@ export async function handleAiManagerRequest(client, handlers, payload) {
 
 function pickToolFilter(args = {}) {
   const tool = typeof args.tool === "string" ? args.tool.trim().toLowerCase() : "";
-  if (tool && ["codex", "claude", "kimi", "copilot"].includes(tool)) return new Set([tool]);
-  return new Set(["codex", "claude", "kimi", "copilot"]);
+  if (tool) return new Set([tool]);
+  return new Set([...BASE_QUOTA_TOOLS, ...pickExternalQuotaBackends(args)]);
+}
+
+function pickExternalQuotaBackends(args = {}) {
+  const fromArray = Array.isArray(args.externalQuotaBackends) ? args.externalQuotaBackends : [];
+  const fromString = typeof args.externalQuotaBackends === "string"
+    ? args.externalQuotaBackends.split(",")
+    : [];
+  const backends = [...fromArray, ...fromString]
+    .map((item) => String(item || "").trim().toLowerCase())
+    .filter(Boolean)
+    .filter((backend) => !BASE_QUOTA_TOOLS.includes(backend));
+  const tool = typeof args.tool === "string" ? args.tool.trim().toLowerCase() : "";
+  if (tool && !BASE_QUOTA_TOOLS.includes(tool)) {
+    backends.push(tool);
+  }
+  return [...new Set(backends)];
 }
 
 function errMsg(err) {

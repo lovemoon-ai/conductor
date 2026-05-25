@@ -31,11 +31,11 @@ interface AiManagerState {
   byHost: Record<string, PerHostState>;
   setSelectedHost(host: string | null): void;
   fetchStatus(host: string): Promise<void>;
-  fetchQuota(host: string, opts?: { forceRefresh?: boolean }): Promise<void>;
+  fetchQuota(host: string, opts?: { forceRefresh?: boolean; externalQuotaBackends?: string[] }): Promise<void>;
   fetchAccounts(host: string): Promise<void>;
-  fetchAll(host: string): Promise<void>;
+  fetchAll(host: string, opts?: { externalQuotaBackends?: string[] }): Promise<void>;
   switchAccount(host: string, name: string): Promise<SwitchResponse | null>;
-  startPolling(host: string): void;
+  startPolling(host: string, opts?: { externalQuotaBackends?: string[] }): void;
   stopPolling(): void;
   reset(): void;
 }
@@ -132,23 +132,30 @@ export const useAiManagerStore = create<AiManagerState>()((set, get) => ({
     try {
       const params = new URLSearchParams({ agentHost: host });
       if (opts.forceRefresh) params.set('forceRefresh', '1');
+      for (const backend of opts.externalQuotaBackends ?? []) {
+        params.append('externalQuotaBackend', backend);
+      }
       const data = await getApiClient().get<QuotaResponse>(`/ai-manager/quota?${params.toString()}`);
       const cur = get().byHost[host] ?? emptyHostState();
+      const quota =
+        (opts.externalQuotaBackends?.length ?? 0) === 0 && cur.quota?.external && !data.external
+          ? { ...data, external: cur.quota.external }
+          : data;
       const accountName = resolveCodexAccountName(
-        data.codex,
+        quota.codex,
         cur.accounts?.accounts,
         cur.status,
       );
       const codexQuotaByAccount =
-        accountName && data.codex
-          ? { ...cur.codexQuotaByAccount, [accountName]: data.codex }
+        accountName && quota.codex
+          ? { ...cur.codexQuotaByAccount, [accountName]: quota.codex }
           : cur.codexQuotaByAccount;
       set({
         byHost: {
           ...get().byHost,
           [host]: {
             ...cur,
-            quota: data,
+            quota,
             codexQuotaByAccount,
             loading: { ...cur.loading, quota: false },
           },
@@ -215,8 +222,12 @@ export const useAiManagerStore = create<AiManagerState>()((set, get) => ({
     }
   },
 
-  async fetchAll(host) {
-    await Promise.all([get().fetchStatus(host), get().fetchQuota(host), get().fetchAccounts(host)]);
+  async fetchAll(host, opts = {}) {
+    await Promise.all([
+      get().fetchStatus(host),
+      get().fetchQuota(host, { externalQuotaBackends: opts.externalQuotaBackends }),
+      get().fetchAccounts(host),
+    ]);
   },
 
   async switchAccount(host, name) {
@@ -258,11 +269,11 @@ export const useAiManagerStore = create<AiManagerState>()((set, get) => ({
     }
   },
 
-  startPolling(host) {
+  startPolling(host, opts = {}) {
     get().stopPolling();
     pollHost = host;
     pollTimer = setInterval(() => {
-      void get().fetchQuota(host);
+      void get().fetchQuota(host, { externalQuotaBackends: opts.externalQuotaBackends });
       void get().fetchStatus(host);
       // Refresh accounts too: when the user edits `ai_manager.codex.auth_json`
       // in ~/.conductor/config.yaml on the daemon machine, the new entries

@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { readCachedCodexQuota } from "../src/quota/codex.ts";
-import { cacheFile, fingerprintKey, writeCache } from "../src/quota/cache.ts";
-import { parseAuthFile } from "../src/auth-parser.ts";
-import type { CodexQuota } from "../src/types.ts";
+import { readCachedCodexQuota } from "../../src/manager/quota/codex.ts";
+import { cacheFile, fingerprintKey, writeCache } from "../../src/manager/quota/cache.ts";
+import { parseAuthFile } from "../../src/manager/auth-parser.ts";
+import type { CodexQuota } from "../../src/manager/types.ts";
 
 function withTmp<T>(fn: (dir: string) => Promise<T> | T): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "ai-manager-codex-cached-"));

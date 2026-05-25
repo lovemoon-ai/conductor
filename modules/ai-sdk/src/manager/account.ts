@@ -5,9 +5,9 @@ import {
   parseAuthFile,
   parseAuthFileContents,
   type CodexAuthFile,
-} from "./auth-parser.ts";
-import { DEFAULT_CODEX_AUTH } from "./paths.ts";
-import type { AiManagerConfig, CodexAccount, SwitchResult } from "./types.ts";
+} from "./auth-parser.js";
+import { DEFAULT_CODEX_AUTH } from "./paths.js";
+import type { AiManagerConfig, CodexAccount, SwitchResult } from "./types.js";
 
 /** Derive the short account name from the file path. */
 export function accountNameFromPath(path: string): string {

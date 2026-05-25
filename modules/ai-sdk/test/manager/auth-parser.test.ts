@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseAuthFile, parseAuthFileContents } from "../src/auth-parser.ts";
+import { parseAuthFile, parseAuthFileContents } from "../../src/manager/auth-parser.ts";
 import { makeAuthJson, writeAuthJson } from "./fixtures/make-auth.ts";
 
 test("parseAuthFileContents extracts email, plan, fingerprint from id_token", () => {

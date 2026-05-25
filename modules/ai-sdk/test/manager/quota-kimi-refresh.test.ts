@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { getKimiQuota, refreshKimiToken, type KimiCredential } from "../src/quota/kimi.ts";
+import { getKimiQuota, refreshKimiToken, type KimiCredential } from "../../src/manager/quota/kimi.ts";
 
 interface FetchCall {
   url: string;

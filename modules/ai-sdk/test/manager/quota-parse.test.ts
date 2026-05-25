@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { headersToMap, num, str, bool } from "../src/quota/headers.ts";
+import { headersToMap, num, str, bool } from "../../src/manager/quota/headers.ts";
 
 test("headersToMap lowercases keys", () => {
   const h = new Headers({ "X-Foo": "1", "X-Bar": "hi" });

@@ -7,6 +7,7 @@ const setSelectedHostMock = vi.fn();
 const fetchAllMock = vi.fn();
 const startPollingMock = vi.fn();
 const stopPollingMock = vi.fn();
+const fetchQuotaMock = vi.fn();
 const confirmMock = vi.fn();
 const pushToastMock = vi.fn();
 const apiPostMock = vi.fn();
@@ -27,6 +28,7 @@ let aiManagerState = {
   byHost: {} as Record<string, any>,
   setSelectedHost: setSelectedHostMock,
   fetchAll: fetchAllMock,
+  fetchQuota: fetchQuotaMock,
   startPolling: startPollingMock,
   stopPolling: stopPollingMock,
 };
@@ -59,6 +61,7 @@ describe('AiManagerPanel', () => {
     vi.clearAllMocks();
     fetchAgentsMock.mockResolvedValue(undefined);
     fetchAllMock.mockResolvedValue(undefined);
+    fetchQuotaMock.mockResolvedValue(undefined);
     confirmMock.mockResolvedValue(true);
     apiPostMock.mockResolvedValue({});
     agentsState = {
@@ -70,6 +73,7 @@ describe('AiManagerPanel', () => {
       byHost: {},
       setSelectedHost: setSelectedHostMock,
       fetchAll: fetchAllMock,
+      fetchQuota: fetchQuotaMock,
       startPolling: startPollingMock,
       stopPolling: stopPollingMock,
     };
@@ -226,5 +230,55 @@ describe('AiManagerPanel', () => {
     // transform and does not affect textContent, so we match case-insensitively
     // — what we actually care about is the structure/order.
     expect(headerRow?.textContent ?? '').toMatch(/^Copilot\s*allowed\s*\(octocat via GITHUB_TOKEN\)/i);
+  });
+
+  it('requests and renders external model quotas for external-capable daemons', () => {
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-a',
+        supportedBackends: ['private-ext'],
+        capabilities: ['restart_daemon'],
+      },
+    ];
+    aiManagerState.selectedHost = 'daemon-a';
+    aiManagerState.byHost = {
+      'daemon-a': {
+        quota: {
+          external: {
+            'private-ext': {
+              backend: 'private-ext',
+              source: 'fresh',
+              count: 1,
+              username: 'dui',
+              label: 'Private Provider',
+              quotas: [
+                {
+                  backend: 'private-ext',
+                  model: 'model-paygo',
+                  source: 'fresh',
+                  daily: {
+                    usedPercent: 40,
+                    remainingPercent: 60,
+                    remaining: 120_000,
+                    limit: 200_000,
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    render(<AiManagerPanel initialAgentHost="daemon-a" />);
+
+    expect(fetchAllMock).toHaveBeenCalledWith('daemon-a', { externalQuotaBackends: ['private-ext'] });
+    expect(startPollingMock).toHaveBeenCalledWith('daemon-a', { externalQuotaBackends: ['private-ext'] });
+    expect(screen.getByText('External providers')).toBeInTheDocument();
+    expect(screen.getByText('Private Provider')).toBeInTheDocument();
+    expect(screen.getByText('model-paygo')).toBeInTheDocument();
+    expect(screen.getByText('已用 40% · 剩余 60%')).toBeInTheDocument();
+    expect(screen.queryByText('120,000 / 200,000 tokens')).not.toBeInTheDocument();
   });
 });

@@ -50,11 +50,6 @@ const RELEASE_PACKAGES = [
     changelog: path.join(ROOT_DIR, "modules", "ai-sdk", "CHANGELOG.md"),
   },
   {
-    name: "@love-moon/ai-manager",
-    packageJson: path.join(ROOT_DIR, "modules", "ai-manager", "package.json"),
-    changelog: path.join(ROOT_DIR, "modules", "ai-manager", "CHANGELOG.md"),
-  },
-  {
     name: "@love-moon/app-sdk",
     packageJson: path.join(ROOT_DIR, "modules", "app-sdk", "package.json"),
     changelog: path.join(ROOT_DIR, "modules", "app-sdk", "CHANGELOG.md"),

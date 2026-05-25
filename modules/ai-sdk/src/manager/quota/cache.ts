@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
-import { DEFAULT_QUOTA_CACHE_DIR } from "../paths.ts";
+import { DEFAULT_QUOTA_CACHE_DIR } from "../paths.js";
 
 export interface CacheEntry<T> {
   fetchedAt: number;

@@ -1,7 +1,8 @@
-// Mirror of @love-moon/ai-manager response shapes (loose; daemon may add fields).
+// Mirror of @love-moon/ai-sdk manager response shapes (loose; daemon may add fields).
 // We intentionally avoid importing the SDK directly so frontend bundles stay small.
 
 export type Tool = 'codex' | 'claude' | 'kimi' | 'copilot';
+export type QuotaSource = 'fresh' | 'cached' | 'stale' | 'unknown';
 
 export interface InstallStatus {
   installed: boolean;
@@ -58,7 +59,7 @@ export interface CodexQuota {
   weekly: QuotaWindow;
   credits?: { hasCredits: boolean; balance?: string; unlimited: boolean };
   fetchedAt?: number;
-  source: 'fresh' | 'cached' | 'stale' | 'unknown';
+  source: QuotaSource;
   error?: string;
 }
 
@@ -70,7 +71,7 @@ export interface ClaudeQuota {
   weeklySonnet?: QuotaWindow;
   overage?: { status?: string; disabledReason?: string };
   fetchedAt?: number;
-  source: 'fresh' | 'cached' | 'stale' | 'unknown';
+  source: QuotaSource;
   error?: string;
 }
 
@@ -89,7 +90,7 @@ export interface KimiQuota {
   weekly: QuotaWindow;
   parallelLimit?: number;
   fetchedAt?: number;
-  source: 'fresh' | 'cached' | 'stale' | 'unknown';
+  source: QuotaSource;
   error?: string;
 }
 
@@ -116,7 +117,35 @@ export interface CopilotQuota {
   loginSource?: 'sdk' | 'github_token';
   snapshots: Record<string, CopilotQuotaSnapshot>;
   fetchedAt?: number;
-  source: 'fresh' | 'cached' | 'stale' | 'unknown';
+  source: QuotaSource;
+  error?: string;
+}
+
+export interface ExternalQuota {
+  backend?: string;
+  model: string;
+  daily: QuotaWindow;
+  fetchedAt?: number;
+  source: QuotaSource;
+  username?: string;
+  organization?: string;
+  label?: string;
+  limitSource?: string;
+  quotaReleaseMode?: string;
+  quotaResetTime?: string;
+  error?: string;
+}
+
+export interface ExternalQuotaList {
+  backend?: string;
+  fetchedAt?: number;
+  source: QuotaSource;
+  username?: string;
+  organization?: string;
+  label?: string;
+  count: number;
+  quotas: ExternalQuota[];
+  quotaByModel?: Record<string, ExternalQuota>;
   error?: string;
 }
 
@@ -125,6 +154,7 @@ export interface QuotaResponse {
   claude?: ClaudeQuota;
   kimi?: KimiQuota;
   copilot?: CopilotQuota;
+  external?: Record<string, ExternalQuotaList>;
 }
 
 export interface AccountsResponse {

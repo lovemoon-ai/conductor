@@ -10,7 +10,6 @@ const REGISTRY_URL = process.env.NPM_REGISTRY_URL || "https://registry.npmjs.org
 
 const PACKAGES = [
   { path: "modules/ai-sdk/package.json" },
-  { path: "modules/ai-manager/package.json" },
   { path: "modules/app-sdk/package.json" },
   { path: "modules/conductor-sdk/package.json" },
   { path: "cli/package.json", cli: true },

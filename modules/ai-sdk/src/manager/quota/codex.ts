@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
-import { parseAuthFile } from "../auth-parser.ts";
-import { DEFAULT_CODEX_AUTH, DEFAULT_CODEX_CONFIG } from "../paths.ts";
-import type { CodexQuota, QuotaWindow } from "../types.ts";
-import { bool, headersToMap, num, str } from "./headers.ts";
-import { cacheFile, fingerprintKey, isFresh, readCache, writeCache } from "./cache.ts";
+import { parseAuthFile } from "../auth-parser.js";
+import { DEFAULT_CODEX_AUTH, DEFAULT_CODEX_CONFIG } from "../paths.js";
+import type { CodexQuota, QuotaWindow } from "../types.js";
+import { bool, headersToMap, num, str } from "./headers.js";
+import { cacheFile, fingerprintKey, isFresh, readCache, writeCache } from "./cache.js";
 
 /** Best-effort: read the configured model from ~/.codex/config.toml. */
 async function readConfiguredModel(path: string): Promise<string | undefined> {

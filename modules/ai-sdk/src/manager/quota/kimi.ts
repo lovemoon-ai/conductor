@@ -1,7 +1,7 @@
 import { readFile, writeFile, rename } from "node:fs/promises";
-import { DEFAULT_KIMI_CREDENTIAL } from "../paths.ts";
-import type { KimiQuota, QuotaWindow } from "../types.ts";
-import { cacheFile, fingerprintKey, isFresh, readCache, writeCache } from "./cache.ts";
+import { DEFAULT_KIMI_CREDENTIAL } from "../paths.js";
+import type { KimiQuota, QuotaWindow } from "../types.js";
+import { cacheFile, fingerprintKey, isFresh, readCache, writeCache } from "./cache.js";
 
 const USAGE_URL = "https://api.kimi.com/coding/v1/usages";
 const OAUTH_TOKEN_URL = "https://auth.kimi.com/api/oauth/token";

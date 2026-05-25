@@ -439,14 +439,22 @@ describe("ai-sdk client boundary", () => {
     });
   });
 
-  it("reloads an external provider after an initial descriptor failure", async () => {
+  it("recovers external providers after an initial descriptor failure", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-sdk-provider-"));
     const providerPath = path.join(tempDir, "retryable-provider.js");
+    const recoveredProviderPath = path.join(tempDir, "retryable-provider-recovered.js");
 
     await withExternalProvider(providerPath, async () => {
       fs.writeFileSync(
         providerPath,
-        'export const providers = [{ backend: "retryable-external", variant: "retryable-external-provider" }];\n',
+        [
+          "export const providers = [{",
+          '  backend: "retryable-external",',
+          '  variant: "retryable-external-provider",',
+          "  createSession: 42,",
+          "}];",
+          "",
+        ].join("\n"),
         "utf8",
       );
 
@@ -455,9 +463,10 @@ describe("ai-sdk client boundary", () => {
         logger: { log: () => {} },
       });
       await assert.rejects(() => brokenSession.readyPromise, /missing provider.createSession/);
+      await brokenSession.close();
 
       fs.writeFileSync(
-        providerPath,
+        recoveredProviderPath,
         [
           "class RetryableExternalSession {",
           "  constructor(backend, options = {}) {",
@@ -522,6 +531,8 @@ describe("ai-sdk client boundary", () => {
         ].join("\n"),
         "utf8",
       );
+      process.env.AISDK_PROVIDER_PATH = recoveredProviderPath;
+      resetExternalProviderRegistryForTests();
 
       const recoveredSession = createAiSession("retryable-external", {
         cwd: process.cwd(),

@@ -23,7 +23,6 @@
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "@love-moon/ai-manager": "0.3.2",
     "@love-moon/ai-sdk": "0.3.2",
     "@love-moon/conductor-sdk": "0.3.2",
     "@github/copilot-sdk": "^0.2.2",
@@ -46,7 +45,6 @@
     ],
     "overrides": {
       "@love-moon/ai-sdk": "file:../modules/ai-sdk",
-      "@love-moon/ai-manager": "file:../modules/ai-manager",
       "@love-moon/conductor-sdk": "file:../modules/conductor-sdk"
     }
   }

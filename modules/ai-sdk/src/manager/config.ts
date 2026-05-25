@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
-import { DEFAULT_CONDUCTOR_CONFIG, expandHome } from "./paths.ts";
-import type { AiManagerConfig } from "./types.ts";
+import { DEFAULT_CONDUCTOR_CONFIG, expandHome } from "./paths.js";
+import type { AiManagerConfig } from "./types.js";
 
 const EMPTY: AiManagerConfig = { codex: { authJson: [] } };
 

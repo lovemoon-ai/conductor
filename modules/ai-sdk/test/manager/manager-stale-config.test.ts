@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { AiManager } from "../src/manager.ts";
+import { AiManager } from "../../src/manager/manager.ts";
 import { writeAuthJson } from "./fixtures/make-auth.ts";
 
 function withTmp<T>(fn: (dir: string) => Promise<T>): Promise<T> {

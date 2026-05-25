@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadAiManagerConfig } from "../src/config.ts";
+import { loadAiManagerConfig } from "../../src/manager/config.ts";
 
 function withTmp<T>(fn: (dir: string) => Promise<T> | T): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "ai-manager-"));
