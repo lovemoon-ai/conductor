@@ -1,5 +1,23 @@
 # @love-moon/conductor-cli
 
+## 0.4.0
+
+### Minor Changes
+
+- 4ecc359: Publish the chat-web browser runtime and wire it into the CLI and AI SDK for
+  ChatGPT and Gemini web sessions, including provider error handling and local
+  development installation support.
+
+  Ship app SDK realtime history catch-up and the CLI/AI SDK goal-mode and custom
+  command runtime updates included in this release.
+
+### Patch Changes
+
+- d83cb65: Fix pnpm-installed daemon PTY support by allowing the `node-pty` build script during pnpm CLI updates and by failing native dependency repair with a clear error when pnpm has already recorded `node-pty` under ignored builds.
+- Updated dependencies [4ecc359]
+  - @love-moon/ai-sdk@0.4.0
+  - @love-moon/conductor-sdk@0.4.0
+
 ## 0.3.2
 
 ### Patch Changes

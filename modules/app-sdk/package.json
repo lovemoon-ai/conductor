@@ -1,6 +1,6 @@
 {
   "name": "@love-moon/app-sdk",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Conductor App SDK: third-party backend SDK + React chat widget for embedding Conductor AI tools",
   "repository": {
     "type": "git",
@@ -60,8 +60,12 @@
     "react-dom": ">=18.0.0"
   },
   "peerDependenciesMeta": {
-    "react": { "optional": true },
-    "react-dom": { "optional": true }
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

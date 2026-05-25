@@ -1,5 +1,16 @@
 # @love-moon/app-sdk
 
+## 0.4.0
+
+### Patch Changes
+
+- 4ecc359: Publish the chat-web browser runtime and wire it into the CLI and AI SDK for
+  ChatGPT and Gemini web sessions, including provider error handling and local
+  development installation support.
+
+  Ship app SDK realtime history catch-up and the CLI/AI SDK goal-mode and custom
+  command runtime updates included in this release.
+
 ## 0.3.2
 
 ### Changed
@@ -26,10 +37,13 @@
   silent for minutes) can opt out by passing `idleTimeoutMs: 0`:
 
   ```ts
-  for await (const delta of client.tasks.streamReply(taskId, { idleTimeoutMs: 0 })) {
+  for await (const delta of client.tasks.streamReply(taskId, {
+    idleTimeoutMs: 0,
+  })) {
     // never time out — caller is responsible for cancelling via signal
   }
   ```
+
 - **Locked down the public `.d.ts` surface.** Internal transport types —
   `Fetcher`, `FetcherOptions`, `RequestOptions`, `AppWebSocket`,
   `AppWebSocketOptions`, `TasksRestApi` — are now tagged
@@ -89,7 +103,7 @@ Initial implementation, RFC 0027 milestones M0–M3.
   subscribe; yields `text` deltas from `reply_preview` plus a terminal `done`
   on the assistant message (or `error` on `task_status_update=failed`).
 - Unified `ConductorAppError` with named error codes mapped from HTTP status
-  + backend error strings.
+  - backend error strings.
 - Custom fetch / WebSocket / bearerToken providers for SSR + test injection.
 
 ### Added — `/react` (M2)
@@ -106,7 +120,7 @@ Initial implementation, RFC 0027 milestones M0–M3.
 - Optimistic send → server confirm flow with pending-message replacement.
 - Pre-compiled CSS at `@love-moon/app-sdk/react/styles.css`; CSS-variable
   theming via the `theme` prop; mobile/desktop layout via responsive CSS
-  + an explicit `layout` prop override.
+  - an explicit `layout` prop override.
 - jsdom integration tests covering hydration, live events, runtime status,
   interrupt button visibility, and optimistic send.
 

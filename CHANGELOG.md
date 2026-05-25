@@ -18,6 +18,34 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.4.0] - 2026-05-25
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.4.0`
+- `@love-moon/conductor-sdk` `0.4.0`
+- `@love-moon/ai-sdk` `0.4.0`
+- `@love-moon/app-sdk` `0.4.0`
+- `@love-moon/chat-web` `0.4.0`
+
+### Changes
+
+### Minor Changes
+
+- 4ecc359: Publish the chat-web browser runtime and wire it into the CLI and AI SDK for
+  ChatGPT and Gemini web sessions, including provider error handling and local
+  development installation support.
+
+  Ship app SDK realtime history catch-up and the CLI/AI SDK goal-mode and custom
+  command runtime updates included in this release.
+
+### Patch Changes
+
+- d83cb65: Fix pnpm-installed daemon PTY support by allowing the `node-pty` build script during pnpm CLI updates and by failing native dependency repair with a clear error when pnpm has already recorded `node-pty` under ignored builds.
+- Updated dependencies [4ecc359]
+  - @love-moon/ai-sdk@0.4.0
+  - @love-moon/conductor-sdk@0.4.0
+
 ## [0.3.2] - 2026-05-18
 
 ### Released packages
