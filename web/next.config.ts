@@ -36,7 +36,7 @@ function resolveCliPackageInfo(): CliPackageInfo {
 const cliInfo = resolveCliPackageInfo();
 
 const nextConfig: NextConfig = {
-  // Allow deploy-prod.sh to build into .next.tmp and atomically swap afterwards
+  // Allow deploy-prod.sh to build into .next.build and atomically swap afterwards
   // so the live server never reads a half-written .next.
   distDir: process.env.NEXT_DIST_DIR || ".next",
   turbopack: {

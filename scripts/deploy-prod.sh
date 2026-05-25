@@ -80,26 +80,26 @@ cat > web/public/build-info.json <<EOF
 EOF
 echo "   commit=$COMMIT_SHORT buildTime=$BUILD_TIME"
 
-# 4. Atomic production build: compile into .next.tmp, validate, then swap.
+# 4. Atomic production build: compile into .next.build, validate, then swap.
 # The live server keeps reading the old .next until the swap, so mid-build
 # requests can't see half-written files. distDir is picked up from
 # NEXT_DIST_DIR by next.config.ts.
-echo "🔨 Building production bundle (into .next.tmp)..."
-rm -rf web/.next.tmp
-(cd web && NEXT_DIST_DIR=.next.tmp npx next build)
+echo "🔨 Building production bundle (into .next.build)..."
+rm -rf web/.next.build
+(cd web && NEXT_DIST_DIR=.next.build npx next build)
 
-if [[ ! -f web/.next.tmp/BUILD_ID ]]; then
-  echo "❌ Build did not produce web/.next.tmp/BUILD_ID; aborting (old .next left untouched)."
-  rm -rf web/.next.tmp
+if [[ ! -f web/.next.build/BUILD_ID ]]; then
+  echo "❌ Build did not produce web/.next.build/BUILD_ID; aborting (old .next left untouched)."
+  rm -rf web/.next.build
   exit 1
 fi
 
-echo "🔁 Swapping .next <- .next.tmp..."
+echo "🔁 Swapping .next <- .next.build..."
 rm -rf web/.next.old
 if [[ -d web/.next ]]; then
   mv web/.next web/.next.old
 fi
-mv web/.next.tmp web/.next
+mv web/.next.build web/.next
 rm -rf web/.next.old
 
 # Make sure Nginx can read the static files
