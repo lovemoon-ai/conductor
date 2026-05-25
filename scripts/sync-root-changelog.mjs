@@ -54,6 +54,11 @@ const RELEASE_PACKAGES = [
     packageJson: path.join(ROOT_DIR, "modules", "app-sdk", "package.json"),
     changelog: path.join(ROOT_DIR, "modules", "app-sdk", "CHANGELOG.md"),
   },
+  {
+    name: "@love-moon/chat-web",
+    packageJson: path.join(ROOT_DIR, "modules", "chat-web", "package.json"),
+    changelog: path.join(ROOT_DIR, "modules", "chat-web", "CHANGELOG.md"),
+  },
 ];
 const PRIMARY_PACKAGE = RELEASE_PACKAGES.find((pkg) => pkg.primary) ?? RELEASE_PACKAGES[0];
 

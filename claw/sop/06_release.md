@@ -10,6 +10,7 @@ This repository now separates web deployment from npm package publishing.
 - Published npm packages are versioned independently with changesets:
   - `@love-moon/ai-sdk`
   - `@love-moon/app-sdk`
+  - `@love-moon/chat-web`
   - `@love-moon/conductor-sdk`
   - `@love-moon/conductor-cli`
 - CLI archive releases are still built by `.github/workflows/cli-release-archives.yml`.
@@ -49,6 +50,7 @@ behavior for any published package:
 - `cli/**`
 - `modules/ai-sdk/**`
 - `modules/app-sdk/**`
+- `modules/chat-web/**`
 - `modules/conductor-sdk/**`
 
 Skip `npm run changeset` when the diff is release-neutral, for example:
@@ -140,6 +142,32 @@ gh api -X PUT orgs/lovemoon-ai/actions/permissions/workflow \
   -F can_approve_pull_request_reviews=true
 ```
 After that the release flow is fully unattended.
+
+## New Public Package Bootstrap
+
+Trusted publishing is configured from an existing npm package's settings page.
+When a new public package is introduced and does not yet exist on npm, a
+maintainer must bootstrap its baseline version before merging the generated
+`version packages` PR:
+
+1. Push the feature branch/main commit that adds the package metadata and its
+   changeset, allowing the workflow to prepare (but not publish) the version PR.
+2. From an npm-authenticated maintainer environment using modern npm, publish
+   only the new package's current baseline version. Disable provenance for this
+   bootstrap publish because the package does not have a trusted publisher yet:
+   ```bash
+   npm login
+   npm publish --workspace @love-moon/chat-web --access public --provenance=false
+   ```
+3. In npm package settings for the newly created package, configure the GitHub
+   trusted publisher for `lovemoon-ai/conductor` and
+   `.github/workflows/release-packages.yml`.
+4. Merge the `version packages` PR. CI then publishes the new bumped version
+   alongside the existing fixed-version packages.
+
+This is a one-time bootstrap for a new package. Provenance begins with the
+subsequent CI/OIDC release; do not manually publish normal version bumps after
+trusted publishing has been configured.
 
 ## Pre-release Notes Gate
 

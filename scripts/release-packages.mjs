@@ -9,6 +9,7 @@ const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const REGISTRY_URL = process.env.NPM_REGISTRY_URL || "https://registry.npmjs.org";
 
 const PACKAGES = [
+  { path: "modules/chat-web/package.json" },
   { path: "modules/ai-sdk/package.json" },
   { path: "modules/app-sdk/package.json" },
   { path: "modules/conductor-sdk/package.json" },

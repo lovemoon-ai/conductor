@@ -1,8 +1,12 @@
 {
   "name": "@love-moon/chat-web",
-  "version": "0.1.0",
+  "version": "0.3.2",
   "description": "Dedicated chat-web automation runtime for ChatGPT / DeepSeek and similar web chat products.",
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lovemoon-ai/conductor.git",
+    "directory": "modules/chat-web"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,8 +14,13 @@
     "chat-web": "dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -19,7 +28,8 @@
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
   },
   "engines": {
     "node": ">=18"

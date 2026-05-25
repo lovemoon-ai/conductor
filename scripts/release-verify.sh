@@ -20,6 +20,8 @@ trap cleanup EXIT
 export HOME="$tmp_home"
 export USERPROFILE="$tmp_home"
 
+npm run build --workspace @love-moon/chat-web
+npm run test --workspace @love-moon/chat-web
 npm run build --workspace @love-moon/ai-sdk
 npm run test --workspace @love-moon/ai-sdk
 npm run build --workspace @love-moon/app-sdk

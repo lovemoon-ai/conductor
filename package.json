@@ -6,6 +6,7 @@
     "cli",
     "modules/ai-sdk",
     "modules/app-sdk",
+    "modules/chat-web",
     "modules/conductor-sdk"
   ],
   "scripts": {

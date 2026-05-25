@@ -17,6 +17,8 @@ type TaskWithLegacyFallback = {
   taskType?: string | null;
   launchConfig?: unknown;
   ptySession?: unknown;
+  killedReason?: string | null;
+  killedAt?: Date | null;
 };
 
 export const legacyTaskSelect = {
@@ -50,6 +52,8 @@ export const taskSelectWithoutIssueId = {
   sessionId: true,
   sessionFilePath: true,
   launchConfig: true,
+  killedReason: true,
+  killedAt: true,
   metadata: true,
   createdAt: true,
   updatedAt: true,
@@ -78,15 +82,21 @@ export const isMissingLaunchConfigColumnError = (error: unknown): boolean =>
 export const isMissingIssueIdColumnError = (error: unknown): boolean =>
   hasErrorCode(error, "P2022") && includesAny(errorMessage(error), ["issue_id", "issueId"]);
 
+export const isMissingKilledStateColumnError = (error: unknown): boolean =>
+  hasErrorCode(error, "P2022") &&
+  includesAny(errorMessage(error), ["killed_reason", "killedReason", "killed_at", "killedAt"]);
+
 /**
- * Returns true only when genuinely PTY-related schema is missing
- * (pty_sessions table, task_type column, or launch_config column).
+ * Returns true when task fields required by the current runtime are missing.
+ * This historically handled PTY fields; killed-state fields join the same
+ * legacy-shape fallback so rolling deployment can read pre-migration rows.
  * Missing issue_id is NOT included — it has its own fallback path.
  */
 export const isMissingPtySchemaError = (error: unknown): boolean =>
   isMissingPtySessionTableError(error) ||
   isMissingTaskTypeColumnError(error) ||
-  isMissingLaunchConfigColumnError(error);
+  isMissingLaunchConfigColumnError(error) ||
+  isMissingKilledStateColumnError(error);
 
 /**
  * Returns true when the error is caused by a missing issue_id column only.
@@ -153,9 +163,13 @@ export async function withPtySchemaFallback<T>(
 
 export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
   task: T,
-): T extends null ? null : T & { taskType: string; launchConfig: null; ptySession: null } => {
+): T extends null
+  ? null
+  : T & { taskType: string; launchConfig: null; ptySession: null; killedReason: null; killedAt: null } => {
   if (!task) {
-    return null as T extends null ? null : T & { taskType: string; launchConfig: null; ptySession: null };
+    return null as T extends null
+      ? null
+      : T & { taskType: string; launchConfig: null; ptySession: null; killedReason: null; killedAt: null };
   }
   return {
     ...task,
@@ -163,7 +177,11 @@ export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
     taskType: DEFAULT_TASK_TYPE,
     launchConfig: null,
     ptySession: null,
-  } as T extends null ? null : T & { taskType: string; launchConfig: null; ptySession: null };
+    killedReason: null,
+    killedAt: null,
+  } as T extends null
+    ? null
+    : T & { taskType: string; launchConfig: null; ptySession: null; killedReason: null; killedAt: null };
 };
 
 export const PTY_SCHEMA_UNAVAILABLE_MESSAGE =

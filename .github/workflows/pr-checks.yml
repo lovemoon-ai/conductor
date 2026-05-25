@@ -186,7 +186,7 @@ jobs:
 
           # Files under any published-package path
           touched_published=$(git diff --name-only "$base...$head" \
-            -- 'cli/**' 'modules/ai-sdk/**' 'modules/ai-manager/**' 'modules/app-sdk/**' 'modules/conductor-sdk/**' \
+            -- 'cli/**' 'modules/ai-sdk/**' 'modules/app-sdk/**' 'modules/chat-web/**' 'modules/conductor-sdk/**' \
             | grep -vE '(^cli/CHANGELOG\.md$|^modules/[^/]+/CHANGELOG\.md$|/\.gitignore$|/README\.md$|/dist/)' \
             || true)
 

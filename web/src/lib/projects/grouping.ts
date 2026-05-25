@@ -17,7 +17,7 @@
  */
 export type ProjectGroupingFields = {
   name: string;
-  daemonHost: string | null | undefined;
+  daemonHost?: string | null;
   gitRemoteUrl?: string | null | undefined;
   mergeOptOut?: boolean | null | undefined;
 };
