@@ -157,8 +157,11 @@ maintainer must bootstrap its baseline version before merging the generated
    bootstrap publish because the package does not have a trusted publisher yet:
    ```bash
    npm login
-   NPM_CONFIG_PROVENANCE=false npm publish --workspace @love-moon/chat-web --access public
+   npm publish --workspace @love-moon/chat-web --access public --provenance=false
    ```
+   Use the CLI flag here rather than `NPM_CONFIG_PROVENANCE=false`: package
+   `publishConfig.provenance` is applied during `npm publish`, while an
+   explicit CLI flag overrides it for this one bootstrap operation.
 3. Configure the newly created package's GitHub trusted publisher. The npm UI
    workflow field takes only the filename (`release-packages.yml`), not the
    `.github/workflows/` path. With an authenticated npm CLI `>= 11.10.0`, the
