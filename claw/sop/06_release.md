@@ -157,11 +157,19 @@ maintainer must bootstrap its baseline version before merging the generated
    bootstrap publish because the package does not have a trusted publisher yet:
    ```bash
    npm login
-   npm publish --workspace @love-moon/chat-web --access public --provenance=false
+   NPM_CONFIG_PROVENANCE=false npm publish --workspace @love-moon/chat-web --access public
    ```
-3. In npm package settings for the newly created package, configure the GitHub
-   trusted publisher for `lovemoon-ai/conductor` and
-   `.github/workflows/release-packages.yml`.
+3. Configure the newly created package's GitHub trusted publisher. The npm UI
+   workflow field takes only the filename (`release-packages.yml`), not the
+   `.github/workflows/` path. With an authenticated npm CLI `>= 11.10.0`, the
+   equivalent command is:
+   ```bash
+   npm trust github @love-moon/chat-web \
+     --repo lovemoon-ai/conductor \
+     --file release-packages.yml \
+     --allow-publish \
+     --yes
+   ```
 4. Merge the `version packages` PR. CI then publishes the new bumped version
    alongside the existing fixed-version packages.
 
