@@ -922,7 +922,7 @@ export function ProjectItem({
                     title={`${groupMembers.length} daemons share this project`}
                     className="flex items-center gap-1 rounded bg-[var(--accent)]/15 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]"
                   >
-                    merged · {groupMembers.length} daemons
+                    {groupMembers.length} daemons
                   </span>
                 ) : null}
                 {!isMergedGroup && isUnavailable ? (

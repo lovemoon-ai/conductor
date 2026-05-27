@@ -623,8 +623,8 @@ describe('ProjectItem', () => {
       // Both daemon hosts surface as their own chips.
       expect(screen.getByText('daemon-a')).toBeInTheDocument();
       expect(screen.getByText('daemon-b')).toBeInTheDocument();
-      // Group summary chip ("merged · 2 daemons") is rendered.
-      expect(screen.getByText(/merged · 2 daemons/i)).toBeInTheDocument();
+      // Group summary chip ("2 daemons") is rendered.
+      expect(screen.getByText(/2 daemons/i)).toBeInTheDocument();
       // The single-mode "Daemon offline" / "Binding pending" chips MUST NOT
       // render under merged mode — those are per-card states.
       expect(screen.queryByText('Daemon offline')).toBeNull();
