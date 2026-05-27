@@ -58,5 +58,40 @@ Then restart the production `m1` daemon so it reconnects with updated
 
 ## Status
 
-Diagnosed only. Production config and daemon process were not changed during
-this investigation.
+Resolved.
+
+### Operational fix applied
+
+`~/.conductor/config.yaml` now contains both aliases:
+
+```yaml
+allow_cli_list:
+  ...
+  web-chatgpt: chat-web --model chatgpt
+  web-gemini: chat-web --model gemini
+```
+
+The `m1` daemon was restarted after the edit. Verified from
+`~/.conductor/logs/conductor-daemon.log`:
+
+- First restart with the updated config at `2026-05-25T23:04:32`:
+  `Supported Backends: codex, claude, kimi, copilot, web-chatgpt, web-gemini, codex-fast, claude-fast`.
+- A task was created against `web-chatgpt` on `2026-05-26T10:35:37`,
+  confirming end-to-end routing works through the new aliases.
+- Latest restart (current daemon process, started `2026-05-27T08:26:05`)
+  still advertises the same set, so the fix has survived an upgrade cycle.
+
+### Codebase fix to prevent recurrence
+
+The original `conductor config` bootstrap wrote a single
+`chat-web: chat-web` entry, which is the wrong shape — it would
+advertise the bare runtime backend name instead of a sub-provider alias.
+Future fresh installs would have hit this same bug.
+
+Updated `cli/bin/conductor-config.js` so that whenever
+`@love-moon/chat-web` is bundled, the generated config contains both
+canonical aliases (`web-chatgpt`, `web-gemini`) by default. Added a
+regression test in `cli/test/conductor-config.test.js`.
+
+See `claw/lessons/misc_chat-web-default-config-aliases-20260527.md` for
+the full root-cause writeup.

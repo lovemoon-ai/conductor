@@ -36,6 +36,10 @@ importers:
       typescript:
         specifier: ^5.6.3
         version: 5.9.3
+    optionalDependencies:
+      '@love-moon/chat-web':
+        specifier: ^0.4.0
+        version: 0.4.0
 
 packages:
 
@@ -334,6 +338,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@love-moon/chat-web@0.4.0':
+    resolution: {integrity: sha512-ujVQS4nNDgw+gpidNPN2v4GLjCe9sqBbBZbFkjNPqrRLaLUf5fbxNjqua9XhQhngEhwcD1/2FIWlEoO3z1kWJA==}
+    engines: {node: '>=18'}
+    hasBin: true
+
   '@opencode-ai/sdk@1.2.26':
     resolution: {integrity: sha512-HPB+0pfvTMPj2KEjNLF3oqgldKW8koTJ7ssqXwzndazqxS+gUynzvdIKIQP4+QIInNcc5nJMG9JtfLcePGgTLQ==}
 
@@ -348,6 +357,11 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  fsevents@2.3.2:
+    resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
+    engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
+    os: [darwin]
+
   fsevents@2.3.3:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
@@ -355,6 +369,16 @@ packages:
 
   js-yaml@4.1.1:
     resolution: {integrity: sha512-qQKT4zQxXl8lLwBtHMWwaTcGfFOZviOJet3Oy/xmGk2gZH677CJM9EvtfdSkgWcATZhj/55JZ0rmy3myCT5lsA==}
+    hasBin: true
+
+  playwright-core@1.60.0:
+    resolution: {integrity: sha512-9bW6zvX/m0lEbgTKJ6YppOKx8H3VOPBMOCFh2irXFOT4BbHgrx5hPjwJYLT40Lu+4qtD36qKc/Hn56StUW57IA==}
+    engines: {node: '>=18'}
+    hasBin: true
+
+  playwright@1.60.0:
+    resolution: {integrity: sha512-hheHdokM8cdqCb0lcE3s+zT4t4W+vvjpGxsZlDnikarzx8tSzMebh3UiFtgqwFwnTnjYQcsyMF8ei2mCO/tpeA==}
+    engines: {node: '>=18'}
     hasBin: true
 
   tsx@4.22.3:
@@ -571,6 +595,11 @@ snapshots:
   '@img/sharp-win32-x64@0.34.5':
     optional: true
 
+  '@love-moon/chat-web@0.4.0':
+    dependencies:
+      playwright: 1.60.0
+    optional: true
+
   '@opencode-ai/sdk@1.2.26': {}
 
   '@types/node@22.19.15':
@@ -608,12 +637,25 @@ snapshots:
       '@esbuild/win32-ia32': 0.28.0
       '@esbuild/win32-x64': 0.28.0
 
+  fsevents@2.3.2:
+    optional: true
+
   fsevents@2.3.3:
     optional: true
 
   js-yaml@4.1.1:
     dependencies:
       argparse: 2.0.1
+
+  playwright-core@1.60.0:
+    optional: true
+
+  playwright@1.60.0:
+    dependencies:
+      playwright-core: 1.60.0
+    optionalDependencies:
+      fsevents: 2.3.2
+    optional: true
 
   tsx@4.22.3:
     dependencies:
