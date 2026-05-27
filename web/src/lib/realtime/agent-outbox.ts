@@ -280,7 +280,9 @@ export async function deliverAgentOutboxForHost(options: DeliverAgentOutboxOptio
           ...retryWindowFilter,
         ],
       },
-      orderBy: [{ createdAt: "asc" }, { requestId: "asc" }],
+      // Fresh pending commands must not be starved behind old sent rows that
+      // are being retried for ack cleanup.
+      orderBy: [{ status: "asc" }, { createdAt: "asc" }, { requestId: "asc" }],
       take: batchSize,
     });
   } catch (error) {

@@ -21,6 +21,9 @@ vi.mock("@/lib/db", () => ({
       update: vi.fn(),
       updateMany: vi.fn(),
     },
+    agentOutbox: {
+      findFirst: vi.fn(),
+    },
     taskStatusEvent: {
       create: vi.fn(),
       findUnique: vi.fn(),
@@ -66,6 +69,7 @@ describe("commitTaskStatusUpdate", () => {
       taskType: "ai_task",
     } as any);
     vi.mocked(db.task.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(db.agentOutbox.findFirst).mockResolvedValue(null as any);
     vi.mocked(acknowledgeAgentCommand).mockResolvedValue({ count: 1 } as any);
     vi.mocked(deliverAgentOutboxForHost).mockResolvedValue({ attempted: 0, delivered: 0 });
     vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(null);
@@ -210,5 +214,59 @@ describe("commitTaskStatusUpdate", () => {
       accepted: true,
       eventType: "interrupt_turn",
     });
+  });
+
+  it("acks a stale command when the task was deleted after outbox delivery", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(null as any);
+    vi.mocked(db.agentOutbox.findFirst).mockResolvedValue({
+      taskId: "deleted-task-1",
+      agentHost: "daemon-a",
+      eventType: "restart_task",
+    } as any);
+
+    await expect(
+      commitAgentCommandAck({
+        userId: "user-1",
+        agentHost: "daemon-a",
+        taskId: "deleted-task-1",
+        requestId: "restart-1",
+        eventType: "restart_task",
+        accepted: true,
+      }),
+    ).resolves.toEqual({
+      requestId: "restart-1",
+      accepted: true,
+      duplicate: false,
+    });
+
+    expect(realtimeHub.acknowledgeAgentCommand).not.toHaveBeenCalled();
+    expect(acknowledgeAgentCommand).toHaveBeenCalledWith({
+      userId: "user-1",
+      requestId: "restart-1",
+      accepted: true,
+      eventType: "restart_task",
+    });
+  });
+
+  it("rejects stale command acknowledgements from the wrong host", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(null as any);
+    vi.mocked(db.agentOutbox.findFirst).mockResolvedValue({
+      taskId: "deleted-task-1",
+      agentHost: "daemon-a",
+      eventType: "restart_task",
+    } as any);
+
+    await expect(
+      commitAgentCommandAck({
+        userId: "user-1",
+        agentHost: "daemon-b",
+        taskId: "deleted-task-1",
+        requestId: "restart-1",
+        eventType: "restart_task",
+        accepted: true,
+      }),
+    ).rejects.toThrow("Task deleted-task-1 not found");
+
+    expect(acknowledgeAgentCommand).not.toHaveBeenCalled();
   });
 });

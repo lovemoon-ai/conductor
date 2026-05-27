@@ -6,7 +6,11 @@ import {
   resolvePublicBackendUrl,
 } from "@/lib/auth/config-utils";
 import { db } from "@/lib/db";
-import { deliverAgentOutboxForHost } from "@/lib/realtime/agent-outbox";
+import {
+  deliverAgentOutboxForHost,
+  deliverAgentOutboxRow,
+  isMissingAgentOutboxTableError,
+} from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { serializeTaskResponse } from "@/lib/tasks/serialization";
 import {
@@ -50,7 +54,6 @@ import {
   RECLAIMABLE_KILLED_REASON,
 } from "@/lib/tasks/killed-reason";
 import { isTaskReclaimEnabled } from "@/lib/tasks/reclaim-config";
-import { isMissingAgentOutboxTableError } from "@/lib/realtime/agent-outbox";
 
 const appendBackendSuffix = (title: string, backend: string): string => `${title} [${backend}]`;
 const REFRESH_SESSION_ACK_TIMEOUT_MS = 60_000;
@@ -801,7 +804,7 @@ export async function POST(
     );
   }
 
-  const createdTask = await db.$transaction(async (tx) => {
+  const { task: createdTask, restartOutboxRow } = await db.$transaction(async (tx) => {
     if (inheritedWorktreeLaunchConfig) {
       await acquireTaskWorktreeMutationLock(
         tx as any,
@@ -863,7 +866,7 @@ export async function POST(
       select: { id: true },
     });
 
-    await tx.agentOutbox.create({
+    const restartOutboxRow = await tx.agentOutbox.create({
       data: {
         userId: user.id,
         agentHost: restartAgentHost,
@@ -898,11 +901,11 @@ export async function POST(
       },
     });
 
-    return task;
+    return { task, restartOutboxRow };
   });
 
   realtimeHub.bindTaskToAgent(successorTaskId, restartAgentHost);
-  await deliverAgentOutboxForHost({
+  await deliverAgentOutboxRow(restartOutboxRow, {
     userId: user.id,
     agentHost: restartAgentHost,
     sendToAgentHost: ({ userId: targetUserId, agentHost, envelope }) =>

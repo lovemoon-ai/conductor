@@ -18,6 +18,9 @@ vi.mock("@/lib/db", () => ({
       findUnique: vi.fn(),
       create: vi.fn(),
     },
+    agentOutbox: {
+      findFirst: vi.fn(),
+    },
     $transaction: vi.fn(),
   },
 }));
@@ -39,6 +42,7 @@ vi.mock("@/lib/realtime/agent-outbox", () => ({
   deliverAgentOutboxForHost: vi.fn().mockResolvedValue({ attempted: 0, delivered: 0 }),
   acknowledgeAgentCommand: vi.fn().mockResolvedValue({ count: 1 }),
   acknowledgeAgentCommandsThroughCursor: vi.fn().mockResolvedValue({ count: 0 }),
+  isMissingAgentOutboxTableError: vi.fn().mockReturnValue(false),
 }));
 
 const { db } = await import("@/lib/db");
@@ -74,6 +78,7 @@ describe("/api/agent/events", () => {
     vi.mocked(db.taskStatusEvent.create).mockResolvedValue({
       id: "status-row-1",
     } as any);
+    vi.mocked(db.agentOutbox.findFirst).mockResolvedValue(null as any);
     vi.mocked(db.$transaction).mockImplementation(async (operations: any) => {
       if (Array.isArray(operations)) {
         return Promise.all(operations);
