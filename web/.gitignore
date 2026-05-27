@@ -16,6 +16,7 @@ prisma/*.db-journal
 .env.production.vercel
 .env.production.volcengine
 .env.*.local
+.env.bak.*
 
 # IDE
 .idea/
