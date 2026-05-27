@@ -27,6 +27,13 @@ export interface AuthSession {
 export interface Project {
   id: string;
   name: string;
+  /**
+   * User-supplied icon override read from `.conductor/settings.yaml` (top-level
+   * `icon:` or nested `project.icon`). Falls through to the default folder
+   * icon when null/undefined. Typical values are a single emoji or short text;
+   * `http(s)://…` URLs are rendered as an `<img>`.
+   */
+  icon?: string | null;
   collaborationId?: string | null;
   collaboration?: ProjectCollaboration | null;
   metadata?: Record<string, unknown> | null;

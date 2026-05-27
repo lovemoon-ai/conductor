@@ -8,6 +8,7 @@ import {
   ProjectBindingValidationError,
   validateProjectBindingWithDaemon,
 } from "@/lib/projects/daemon-binding";
+import { readProjectSettingsYaml } from "@/lib/projects/project-settings-yaml";
 import { realtimeHub } from "@/lib/realtime/hub";
 import {
   buildTaskWorktreeCleanupOutboxData,
@@ -256,9 +257,24 @@ export const GET = requireActiveSubscription(async (_request: NextRequest, user)
     counts[normalizedStatus] = (counts[normalizedStatus] ?? 0) + group._count._all;
   }
 
+  // Read `.conductor/settings.yaml` for each project so the list can surface
+  // an `icon` override on the project card. Reads are short-circuited by the
+  // helper's in-process cache, but we still parallelize so a dozen projects
+  // don't serialize their fs hits one after another.
+  const sortedProjects = [...projects].sort(compareProjectsForDisplay);
+  const iconsByProject = new Map<string, string | null>(
+    await Promise.all(
+      sortedProjects.map(async (project) => {
+        const settings = await readProjectSettingsYaml(project.workspacePath);
+        return [project.id, settings.icon] as const;
+      }),
+    ),
+  );
+
   return NextResponse.json(
-    [...projects].sort(compareProjectsForDisplay).map((p) => ({
+    sortedProjects.map((p) => ({
       ...serializeProject(p, defaultProjectIds.has(p.id)),
+      icon: iconsByProject.get(p.id) ?? null,
       taskStatusCounts: taskCountsByProject.get(p.id) ?? {},
       task_status_counts: taskCountsByProject.get(p.id) ?? {},
     }))

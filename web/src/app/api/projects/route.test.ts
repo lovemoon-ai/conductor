@@ -77,7 +77,12 @@ vi.mock("@/lib/tasks/task-stop", () => ({
   stopTaskBeforeRelaunch: vi.fn(),
 }));
 
+vi.mock("@/lib/projects/project-settings-yaml", () => ({
+  readProjectSettingsYaml: vi.fn(),
+}));
+
 const { db } = await import("@/lib/db");
+const { readProjectSettingsYaml } = await import("@/lib/projects/project-settings-yaml");
 const { deleteTaskAttachmentDirectory } = await import("@/lib/tasks/task-file-storage");
 const { realtimeHub } = await import("@/lib/realtime/hub");
 const { stopTaskBeforeRelaunch } = await import("@/lib/tasks/task-stop");
@@ -125,6 +130,8 @@ describe("/api/projects", () => {
         : callback,
     );
     vi.mocked(validateProjectBindingWithDaemon).mockReset();
+    vi.mocked(readProjectSettingsYaml).mockReset();
+    vi.mocked(readProjectSettingsYaml).mockResolvedValue({ icon: null });
     vi.mocked(db.user.findUnique).mockResolvedValue({
       id: "user-1",
       email: "test@example.com",
@@ -182,6 +189,59 @@ describe("/api/projects", () => {
       expect(data[0].id).toBe("proj-1");
       expect(data[0].name).toBe("Project 1");
       expect(data[0].metadata).toEqual({ key: "value" });
+    });
+
+    it("surfaces the icon read from .conductor/settings.yaml on each project", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findMany).mockResolvedValue([
+        {
+          id: "proj-with-icon",
+          name: "With Icon",
+          userId: "user-1",
+          daemonHost: "daemon-1",
+          workspacePath: "/Users/duo/ws/with-icon",
+          repoRoot: null,
+          worktreeBranch: null,
+          lastCommit: null,
+          fileCount: null,
+          sortOrder: 0,
+          metadata: null,
+          createdAt: new Date("2024-01-01"),
+          updatedAt: new Date("2024-01-01"),
+        },
+        {
+          id: "proj-without-icon",
+          name: "No Icon",
+          userId: "user-1",
+          daemonHost: "daemon-1",
+          workspacePath: "/Users/duo/ws/no-icon",
+          repoRoot: null,
+          worktreeBranch: null,
+          lastCommit: null,
+          fileCount: null,
+          sortOrder: 1,
+          metadata: null,
+          createdAt: new Date("2024-01-02"),
+          updatedAt: new Date("2024-01-02"),
+        },
+      ] as any);
+      vi.mocked(readProjectSettingsYaml).mockImplementation(async (workspacePath) => {
+        if (workspacePath === "/Users/duo/ws/with-icon") {
+          return { icon: "🚀" };
+        }
+        return { icon: null };
+      });
+
+      const response = await GET(createMockRequest({ token: createTestToken("user-1") }));
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      const byId = Object.fromEntries(
+        (data as Array<{ id: string; icon: string | null }>).map((entry) => [entry.id, entry.icon]),
+      );
+      expect(byId["proj-with-icon"]).toBe("🚀");
+      expect(byId["proj-without-icon"]).toBeNull();
     });
 
     it("returns projects in stable sort order with legacy null values last", async () => {

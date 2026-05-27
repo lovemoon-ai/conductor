@@ -230,9 +230,16 @@ export const normalizeProject = (raw: unknown): Project | null => {
     pickString(record.hiddenAt) ?? pickString(record.hidden_at) ?? null;
   const hidden = hiddenFlag ?? Boolean(hiddenAtValue);
 
+  // `icon` is computed server-side from `.conductor/settings.yaml` and only
+  // exposed via the camelCase key on the GET response. Treat empty strings as
+  // unset so a `icon: ""` line in YAML still shows the default folder icon.
+  const rawIcon = pickString(record.icon);
+  const icon = rawIcon && rawIcon.trim() ? rawIcon.trim() : null;
+
   return {
     id,
     name,
+    icon,
     collaborationId: pickString(record.collaborationId) ?? pickString(record.collaboration_id),
     collaboration: normalizeCollaboration(record.collaboration),
     daemonHost: pickString(record.daemonHost) ?? pickString(record.daemon_host),

@@ -174,6 +174,14 @@ export function ProjectItem({
 
   const projectRecord = project as Project & Record<string, unknown>;
   const isDefault = Boolean(projectRecord.isDefault);
+  // `icon` is sourced from `.conductor/settings.yaml`. The server resolves
+  // filesystem paths to `data:` URIs server-side, so by the time we get here
+  // an "image" icon always starts with `http(s)://`, `data:`, or `/`. Anything
+  // else (emoji, short text) is rendered as inline text. Empty/whitespace is
+  // treated as unset so we fall through to the default folder SVG.
+  const customIconRaw = typeof projectRecord.icon === 'string' ? projectRecord.icon.trim() : '';
+  const customIcon = customIconRaw || null;
+  const isImageIcon = customIcon ? /^(https?:\/\/|data:|\/)/i.test(customIcon) : false;
   const daemonHost = typeof projectRecord.daemonHost === 'string' ? projectRecord.daemonHost : null;
   const workspacePath = typeof projectRecord.workspacePath === 'string' ? projectRecord.workspacePath : null;
   const repoRoot = typeof projectRecord.repoRoot === 'string' ? projectRecord.repoRoot : null;
@@ -780,7 +788,19 @@ export function ProjectItem({
             aria-label="Drag project"
             aria-describedby={projectTitleId}
             title="Hold and drag to reorder"
-            className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 cursor-grab active:cursor-grabbing ${isDefault ? 'webapp-gradient-bg' : isHidden ? 'bg-muted/10' : 'bg-accent/10'}`}
+            className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 cursor-grab active:cursor-grabbing overflow-hidden ${
+              // Default project keeps its branded gradient regardless of the
+              // custom icon so the home card stays recognizable.
+              isDefault
+                ? 'webapp-gradient-bg'
+                : customIcon
+                  ? isHidden
+                    ? 'bg-muted/10'
+                    : 'bg-transparent'
+                  : isHidden
+                    ? 'bg-muted/10'
+                    : 'bg-accent/10'
+            }`}
             style={dragHandleStyle}
             onPointerDown={handleDragHandlePointerDown}
             onMouseDown={handleDragHandleMouseDown}
@@ -788,15 +808,36 @@ export function ProjectItem({
             onClick={handleDragHandleClick}
             onKeyDown={handleDragHandleKeyDown}
           >
-            <svg className={`w-5 h-5 ${isDefault ? 'text-white' : isHidden ? 'text-muted opacity-20' : 'text-accent'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap={isHidden ? 'butt' : 'round'}
-                strokeLinejoin="round"
-                strokeWidth={2}
-                strokeDasharray={isHidden ? '0.5 1.5' : undefined}
-                d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-              />
-            </svg>
+            {customIcon && !isDefault ? (
+              isImageIcon ? (
+                <img
+                  src={customIcon}
+                  alt=""
+                  draggable={false}
+                  // Hidden projects render the icon as a grey "template" — full
+                  // grayscale + low opacity matches the muted treatment the
+                  // default folder icon already uses for the hidden state.
+                  className={`w-full h-full object-cover ${isHidden ? 'grayscale opacity-30' : ''}`}
+                />
+              ) : (
+                <span
+                  aria-hidden="true"
+                  className={`text-xl leading-none select-none ${isHidden ? 'grayscale opacity-30' : ''}`}
+                >
+                  {customIcon}
+                </span>
+              )
+            ) : (
+              <svg className={`w-5 h-5 ${isDefault ? 'text-white' : isHidden ? 'text-muted opacity-20' : 'text-accent'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap={isHidden ? 'butt' : 'round'}
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  strokeDasharray={isHidden ? '0.5 1.5' : undefined}
+                  d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                />
+              </svg>
+            )}
           </div>
           <div className="flex-1">
             <div className="flex items-center gap-2">
