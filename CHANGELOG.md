@@ -18,6 +18,25 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.4.2] - 2026-05-27
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.4.2`
+- `@love-moon/conductor-sdk` `0.4.2`
+- `@love-moon/ai-sdk` `0.4.2`
+- `@love-moon/app-sdk` `0.4.2`
+- `@love-moon/chat-web` `0.4.2`
+
+### Changes
+
+### Patch Changes
+
+- e8936fb: Upgrade the GitHub Copilot SDK permission protocol so Copilot-backed tasks auto-approve tool calls with current Copilot CLI releases instead of failing with `unexpected user permission response`.
+- Updated dependencies [e8936fb]
+  - @love-moon/ai-sdk@0.4.2
+  - @love-moon/conductor-sdk@0.4.2
+
 ## [0.4.1] - 2026-05-27
 
 ### Released packages
