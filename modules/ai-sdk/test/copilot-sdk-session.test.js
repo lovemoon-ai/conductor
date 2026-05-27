@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
+import { approveAll as approveAllCopilotPermissions } from "@github/copilot-sdk";
+
 import { CopilotSdkSession } from "../src/session-factory.js";
 import { resolveBundledCopilotCliPath } from "../src/providers/copilot-sdk-session.js";
 
@@ -132,13 +134,40 @@ function createCopilotSdkHarness({ onCreateSession, onResumeSession, onDisconnec
   return {
     sdkModule: {
       CopilotClient: FakeCopilotClient,
-      approveAll: () => ({ kind: "approved" }),
+      approveAll: () => ({ kind: "approve-once" }),
     },
     state,
   };
 }
 
 describe("copilot sdk session", () => {
+  it("loads a Copilot SDK whose approval decision matches Copilot CLI 1.x", async () => {
+    assert.deepEqual(await approveAllCopilotPermissions({ kind: "read" }), {
+      kind: "approve-once",
+    });
+  });
+
+  it("uses a protocol-compatible permission fallback when the SDK helper is unavailable", async () => {
+    const harness = createCopilotSdkHarness({
+      async onCreateSession(config, state) {
+        assert.deepEqual(await config.onPermissionRequest({ kind: "read" }), {
+          kind: "approve-once",
+        });
+        return new FakeCopilotSession("copilot-session-fallback-permission", state);
+      },
+    });
+    delete harness.sdkModule.approveAll;
+
+    const session = new CopilotSdkSession("copilot", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      sdkModule: harness.sdkModule,
+    });
+
+    await session.runTurn("hello");
+    await session.close();
+  });
+
   it("resolves the bundled Copilot platform executable before the JS loader", () => {
     const resolved = resolveBundledCopilotCliPath({
       platform: "darwin",
@@ -339,6 +368,23 @@ describe("copilot sdk session", () => {
     assert.equal(result.text, "hello from copilot");
     assertBundledCopilotCliPath(harness.state.clientOptions[0]?.cliPath);
     assert.equal(harness.state.clientOptions[0]?.cliArgs, undefined);
+
+    await session.close();
+  });
+
+  it("forwards an explicit GitHub token using the SDK 0.3 client option name", async () => {
+    const harness = createCopilotSdkHarness();
+    const session = new CopilotSdkSession("copilot", {
+      cwd: process.cwd(),
+      githubToken: "explicit-token",
+      logger: { log: () => {} },
+      sdkModule: harness.sdkModule,
+    });
+
+    await session.runTurn("hello");
+
+    assert.equal(harness.state.clientOptions[0]?.gitHubToken, "explicit-token");
+    assert.equal(harness.state.clientOptions[0]?.githubToken, undefined);
 
     await session.close();
   });

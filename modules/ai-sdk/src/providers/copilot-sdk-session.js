@@ -480,11 +480,11 @@ function buildCopilotClientOptions(options, cwd, env) {
     typeof options.githubToken === "string" && options.githubToken.trim()
       ? options.githubToken.trim()
       : "";
-  if (clientOptions.githubToken === undefined && explicitGithubToken) {
-    clientOptions.githubToken = explicitGithubToken;
+  if (clientOptions.gitHubToken === undefined && explicitGithubToken) {
+    clientOptions.gitHubToken = explicitGithubToken;
   }
   const hasExplicitGithubToken =
-    typeof clientOptions.githubToken === "string" && clientOptions.githubToken.trim();
+    typeof clientOptions.gitHubToken === "string" && clientOptions.gitHubToken.trim();
   if (clientOptions.useLoggedInUser === undefined && typeof options.useLoggedInUser === "boolean") {
     clientOptions.useLoggedInUser = options.useLoggedInUser;
   }
@@ -1038,7 +1038,7 @@ export class CopilotSdkSession extends EventEmitter {
     const permissionHandler =
       typeof sdkModule.approveAll === "function"
         ? sdkModule.approveAll
-        : () => ({ kind: "approved" });
+        : () => ({ kind: "approve-once" });
     const clientOptions = buildCopilotClientOptions(this.options, this.cwd, this.env);
     this.client = new sdkModule.CopilotClient(clientOptions);
     const cleanupIfClosedDuringBoot = async (session = null) => {

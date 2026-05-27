@@ -269,7 +269,7 @@ test("getCopilotQuota defaults to logged-in auth and ignores GitHub token env", 
       const first = await getCopilotQuota({ cacheDir: dir, ttlSeconds: 60, sdkModule });
       assert.equal(first.source, "fresh");
       assert.equal(first.chat?.remainingPercent, 70);
-      assert.equal(captured[0]?.githubToken, undefined);
+      assert.equal(captured[0]?.gitHubToken, undefined);
       assert.equal(captured[0]?.useLoggedInUser, true);
       assert.equal(captured[0]?.env?.COPILOT_GITHUB_TOKEN, undefined);
       assert.equal(captured[0]?.env?.GH_TOKEN, undefined);
@@ -600,7 +600,7 @@ test("getCopilotQuota fetches through SDK RPC and returns cached quota", async (
       cacheDir: dir,
       ttlSeconds: 60,
       sdkModule,
-      clientOptions: { githubToken: "token-a" },
+      clientOptions: { gitHubToken: "token-a" },
     });
     assert.equal(first.source, "fresh");
     assert.equal(first.primary?.remainingPercent, 90);
@@ -611,7 +611,7 @@ test("getCopilotQuota fetches through SDK RPC and returns cached quota", async (
       cacheDir: dir,
       ttlSeconds: 60,
       sdkModule: makeSdk({ quotaSnapshots: {} }, state),
-      clientOptions: { githubToken: "token-a" },
+      clientOptions: { gitHubToken: "token-a" },
     });
     assert.equal(second.source, "cached");
     assert.equal(second.primary?.remainingPercent, 90);
@@ -641,7 +641,7 @@ test("getCopilotQuota returns stale cache when SDK fetch fails", async () => {
       cacheDir: dir,
       ttlSeconds: 60,
       sdkModule,
-      clientOptions: { githubToken: "token-b" },
+      clientOptions: { gitHubToken: "token-b" },
     });
     assert.equal(first.source, "fresh");
 
@@ -664,7 +664,7 @@ test("getCopilotQuota returns stale cache when SDK fetch fails", async () => {
       ttlSeconds: 0,
       forceRefresh: true,
       sdkModule: failingSdk,
-      clientOptions: { githubToken: "token-b" },
+      clientOptions: { gitHubToken: "token-b" },
     });
     assert.equal(second.source, "stale");
     assert.match(second.error ?? "", /auth failed/);
