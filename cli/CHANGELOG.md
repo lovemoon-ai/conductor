@@ -1,5 +1,16 @@
 # @love-moon/conductor-cli
 
+## 0.4.1
+
+### Patch Changes
+
+- aada753: Add explicit ChatGPT and Gemini web backend aliases, expose project icon
+  configuration in generated CLI settings, and default browser-backed session
+  checks to headed mode for reliable authenticated detection.
+- Updated dependencies [aada753]
+  - @love-moon/ai-sdk@0.4.1
+  - @love-moon/conductor-sdk@0.4.1
+
 ## 0.4.0
 
 ### Minor Changes

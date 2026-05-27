@@ -1,5 +1,13 @@
 # @love-moon/chat-web
 
+## 0.4.1
+
+### Patch Changes
+
+- aada753: Add explicit ChatGPT and Gemini web backend aliases, expose project icon
+  configuration in generated CLI settings, and default browser-backed session
+  checks to headed mode for reliable authenticated detection.
+
 ## 0.4.0
 
 ### Minor Changes
