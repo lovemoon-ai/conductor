@@ -103,7 +103,7 @@ function isPlaywrightMissingError(error) {
  *
  * Lifecycle:
  *   - `boot()` lazily imports `@love-moon/chat-web`, registers its built-in
- *     providers, and opens a long-lived `ChatSession` (headless by default).
+ *     providers, and opens a long-lived `ChatSession` (headed by default).
  *   - `runTurn(prompt)` calls `session.send(prompt)` and emits a single
  *     `assistant_message` with the model's reply.
  *   - `close()` tears the Chromium context down.
