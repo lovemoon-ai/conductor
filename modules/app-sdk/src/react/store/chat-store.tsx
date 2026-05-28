@@ -243,6 +243,13 @@ interface ChatContextValue {
   send: (content: string, opts?: { metadata?: Record<string, unknown> }) => Promise<void>;
   interrupt: () => Promise<void>;
   loadEarlier: () => Promise<void>;
+  /**
+   * Restart the task's AI session. No-op when the adapter doesn't implement
+   * `restart` — check `restartSupported` before surfacing restart UI.
+   */
+  restart: (opts?: { restartMode?: string }) => Promise<void>;
+  /** True when the active adapter implements `restart`. */
+  restartSupported: boolean;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
@@ -564,7 +571,29 @@ export function ChatProvider(props: ChatProviderProps) {
       }
     };
 
-    return { state, taskId, adapter, send, interrupt, loadEarlier };
+    const restart = async (opts?: { restartMode?: string }) => {
+      const fn = adapterRef.current.restart;
+      if (!fn) return;
+      try {
+        await fn(taskIdRef.current, opts);
+      } catch (err) {
+        onErrorRef.current?.(err);
+        dispatch({ type: 'SET_ERROR', error: extractError(err) });
+      }
+    };
+
+    return {
+      state,
+      taskId,
+      adapter,
+      send,
+      interrupt,
+      loadEarlier,
+      restart,
+      // `adapter` is in the dep array, so this re-derives whenever the adapter
+      // reference changes (the next subscribe also picks up the change).
+      restartSupported: typeof adapter.restart === 'function',
+    };
     // Include `taskId` and `adapter` so consumers reading `useChat().taskId`
     // see the updated value after a prop change.
   }, [state, taskId, adapter]);

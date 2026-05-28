@@ -26,6 +26,9 @@ const adapter = createRestAdapter({
   baseUrl: '/api/conductor',
   // No authToken — we trust the browser session and let the BFF authenticate
   // upstream via its server-held Conductor token.
+  // Opt into restart: the catch-all route forwards POST /tasks/:id/restart to
+  // client.tasks.restart(). Omit this to hide all restart UI.
+  enableRestart: true,
 });
 
 export default function Page() {

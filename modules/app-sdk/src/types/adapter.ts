@@ -30,6 +30,17 @@ export interface ChatAdapter {
 
   interrupt(taskId: string, opts: { targetReplyTo: string }): Promise<void>;
 
+  /**
+   * Optional. Restart the task's AI session. Adapters that don't support
+   * restart may omit it — the widget hides all restart affordances (empty-
+   * state button + bubble action) when this method is absent.
+   *
+   * `restartMode` mirrors Conductor's REST contract (e.g. `'refresh_session'`
+   * to refresh the running session in place). When omitted the BFF decides
+   * the default.
+   */
+  restart?(taskId: string, opts?: { restartMode?: string }): Promise<void>;
+
   /** Optional. Adapters that don't support attachments may omit. */
   uploadAttachment?(
     taskId: string,

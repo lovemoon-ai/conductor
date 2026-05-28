@@ -114,6 +114,15 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
       return NextResponse.json({ ok: true });
     }
 
+    if (op === 'restart') {
+      // Only reached when the widget's adapter is created with
+      // `enableRestart: true` (see app/page.tsx). Forward to Conductor.
+      const restartMode =
+        typeof body?.restart_mode === 'string' ? body.restart_mode : 'refresh_session';
+      await client.tasks.restart(taskId, { restartMode });
+      return NextResponse.json({ ok: true });
+    }
+
     return notFound();
   } catch (err) {
     return errorResponse(err);

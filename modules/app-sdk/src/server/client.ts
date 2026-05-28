@@ -205,6 +205,15 @@ export class TasksApi {
     return this.rest.interrupt(taskId, opts);
   }
 
+  /** Restart the task's AI session (e.g. `restartMode: 'refresh_session'`). */
+  restart(
+    taskId: string,
+    opts?: { restartMode?: string; signal?: AbortSignal },
+  ): Promise<void> {
+    this.assertOpen();
+    return this.rest.restart(taskId, opts);
+  }
+
   /**
    * Subscribe to a task's event stream. Yields ChatEvents until the caller
    * breaks out of the `for await` loop, calls `signal.abort()`, or the
