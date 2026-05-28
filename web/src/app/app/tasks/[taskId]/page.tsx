@@ -1,5 +1,6 @@
 'use client';
 
+import { Suspense } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { TaskDetailPane } from '@/features/tasks';
 import { useTasksStore } from '@/features/tasks/store';
@@ -15,18 +16,20 @@ const buildTaskListHref = (projectId?: string | null) => {
 
 export default function TaskDetailPage() {
   const params = useParams();
-  const router = useRouter();
+  const { push } = useRouter();
   const taskId = params.taskId as string;
   const task = useTasksStore((state) => state.tasks.find((item) => item.id === taskId));
   const selectedProjectId = useProjectsStore((state) => state.selectedProjectId);
   const backProjectId = task?.projectId || selectedProjectId;
 
   return (
-    <TaskDetailPane
-      taskId={taskId}
-      showBack
-      onBack={() => router.push(buildTaskListHref(backProjectId))}
-      showConnectionStatus
-    />
+    <Suspense fallback={null}>
+      <TaskDetailPane
+        taskId={taskId}
+        showBack
+        onBack={() => push(buildTaskListHref(backProjectId))}
+        showConnectionStatus
+      />
+    </Suspense>
   );
 }

@@ -92,15 +92,18 @@ function generateUserCode(): string {
 }
 
 async function generateUniqueUserCode(): Promise<string> {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const candidate = generateUserCode();
-    const existing = await deviceAuthSessions.findUnique({
-      where: { userCode: candidate },
-      select: { id: true },
-    });
-    if (!existing) {
-      return candidate;
-    }
+  const candidates = Array.from({ length: 10 }, () => generateUserCode());
+  const existingSessions = await Promise.all(
+    candidates.map((candidate) =>
+      deviceAuthSessions.findUnique({
+        where: { userCode: candidate },
+        select: { id: true },
+      })
+    ),
+  );
+  const availableIndex = existingSessions.findIndex((existing) => !existing);
+  if (availableIndex !== -1) {
+    return candidates[availableIndex];
   }
   throw new Error("Failed to allocate device authorization code");
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useReducer, useState } from 'react';
 import { Dialog } from '@/components/common/Dialog';
 import { HelpTip } from '@/components/common/HelpTip';
 import { InlineNotice } from '@/components/common/InlineNotice';
@@ -78,26 +78,89 @@ const TASK_TYPE_OPTIONS: Array<{
   },
 ];
 
+interface CreateTaskDialogFormState {
+  title: string;
+  projectId: string;
+  taskType: TaskType;
+  createWorktree: boolean;
+  agentHost: string;
+  backendType: string;
+  submitError: string | null;
+}
+
+type CreateTaskDialogAction =
+  | { type: 'reset' }
+  | { type: 'set-title'; title: string }
+  | { type: 'set-project'; projectId: string }
+  | { type: 'set-task-type'; taskType: TaskType }
+  | { type: 'set-create-worktree'; createWorktree: boolean }
+  | { type: 'set-agent-host'; agentHost: string }
+  | { type: 'set-backend'; backendType: string }
+  | { type: 'set-submit-error'; submitError: string | null };
+
+const initialCreateTaskDialogFormState: CreateTaskDialogFormState = {
+  title: '',
+  projectId: '',
+  taskType: 'ai_task',
+  createWorktree: false,
+  agentHost: '',
+  backendType: '',
+  submitError: null,
+};
+
+function createTaskDialogReducer(
+  state: CreateTaskDialogFormState,
+  action: CreateTaskDialogAction,
+): CreateTaskDialogFormState {
+  switch (action.type) {
+    case 'reset':
+      return initialCreateTaskDialogFormState;
+    case 'set-title':
+      return { ...state, title: action.title, submitError: null };
+    case 'set-project':
+      return { ...state, projectId: action.projectId, createWorktree: false, submitError: null };
+    case 'set-task-type':
+      return {
+        ...state,
+        taskType: action.taskType,
+        createWorktree: action.taskType === 'ai_task' ? state.createWorktree : false,
+        submitError: null,
+      };
+    case 'set-create-worktree':
+      return { ...state, createWorktree: action.createWorktree, submitError: null };
+    case 'set-agent-host':
+      return { ...state, agentHost: action.agentHost, backendType: '', submitError: null };
+    case 'set-backend':
+      return { ...state, backendType: action.backendType, submitError: null };
+    case 'set-submit-error':
+      return { ...state, submitError: action.submitError };
+    default:
+      return state;
+  }
+}
+
 export function CreateTaskDialog({
   open,
   onClose,
   onCreatedTask,
   defaultProjectId = null,
 }: CreateTaskDialogProps) {
-  const router = useRouter();
-  const [title, setTitle] = useState('');
-  const [projectId, setProjectId] = useState<string>('');
-  const [taskType, setTaskType] = useState<TaskType>('ai_task');
-  const [createWorktree, setCreateWorktree] = useState(false);
-  const [agentHost, setAgentHost] = useState<string>('');
-  const [backendType, setBackendType] = useState<string>('');
+  const { push } = useRouter();
+  const [form, dispatch] = useReducer(createTaskDialogReducer, initialCreateTaskDialogFormState);
+  const {
+    title,
+    projectId: requestedProjectId,
+    taskType,
+    createWorktree: requestedCreateWorktree,
+    agentHost: requestedAgentHost,
+    backendType: requestedBackendType,
+    submitError,
+  } = form;
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const createTask = useTasksStore((state) => state.createTask);
   const projects = useProjectsStore((state) => state.projects);
   const agents = useAgentsStore((state) => state.agents);
-  const wasOpenRef = useRef(false);
   const daemons = agents.filter((agent) => !agent.host.startsWith('conductor-fire-'));
   const selectableProjects = projects.filter((project) => Boolean(project.isDefault) || Boolean(project.daemonHost));
   // Merge same-name git projects across daemons into one picker entry; the
@@ -117,42 +180,17 @@ export function CreateTaskDialog({
     }
     return projectGroups[0].members[0].id;
   }, [defaultProjectId, projectGroups, selectableProjects]);
-  const effectiveProjectId = projectId || resolvedDefaultProjectId;
-  const selectedProject = selectableProjects.find((project) => project.id === effectiveProjectId) ?? null;
+  const normalizedProjectId = requestedProjectId && selectableProjects.some((project) => project.id === requestedProjectId)
+    ? requestedProjectId
+    : '';
+  const baseProjectId = normalizedProjectId || resolvedDefaultProjectId;
   const currentGroup = useMemo(() => {
-    if (!effectiveProjectId) return null;
+    if (!baseProjectId) return null;
     return projectGroups.find((group) =>
-      group.members.some((member) => member.id === effectiveProjectId),
+      group.members.some((member) => member.id === baseProjectId),
     ) ?? null;
-  }, [effectiveProjectId, projectGroups]);
+  }, [baseProjectId, projectGroups]);
   const isMergedGroup = (currentGroup?.members.length ?? 0) > 1;
-  // Picker value tracks the group's primary member id so the option matches
-  // even when projectId points at a non-primary member (i.e. the user picked
-  // a specific daemon inside a merged group).
-  const projectPickerValue = currentGroup?.members[0]?.id ?? effectiveProjectId;
-  const projectRecord = selectedProject as (Project & Record<string, unknown>) | null;
-  const isDefaultProject = Boolean(projectRecord?.isDefault);
-  const boundDaemonHost = projectRecord && typeof projectRecord.daemonHost === 'string'
-    ? projectRecord.daemonHost
-    : null;
-  const boundWorkspacePath = projectRecord && typeof projectRecord.workspacePath === 'string'
-    ? projectRecord.workspacePath
-    : null;
-  const projectRepoRoot = projectRecord && typeof projectRecord.repoRoot === 'string'
-    ? projectRecord.repoRoot
-    : null;
-  const isBoundProject = Boolean(boundDaemonHost) && !isDefaultProject;
-  const selectedProjectSupportsWorktree = Boolean(projectRepoRoot);
-  const canCreateTaskWorktree = taskType === 'ai_task' && selectedProjectSupportsWorktree;
-  const hasReadyProjectBinding = isDefaultProject || Boolean(boundDaemonHost);
-  const boundDaemonAgent = isBoundProject
-    ? daemons.find((agent) => agent.host === boundDaemonHost) ?? null
-    : null;
-  const boundDaemonOnline = isBoundProject ? Boolean(boundDaemonAgent) : true;
-  const boundDaemonSupportsPty = isBoundProject
-    ? Boolean(boundDaemonAgent && supportsPtyTask(boundDaemonAgent.capabilities))
-    : true;
-  const boundBindingLabel = boundDaemonHost ? formatBindingLabel(boundDaemonHost, boundWorkspacePath) : null;
   // For merged cross-daemon groups, daemon scope is the set of online
   // daemons that own a member of the group. Picking a daemon in this case
   // also re-points the projectId at that daemon's underlying member.
@@ -169,6 +207,46 @@ export function CreateTaskDialog({
         entry !== null,
       );
   }, [currentGroup, daemons, isMergedGroup]);
+  const projectId = useMemo(() => {
+    if (!baseProjectId) {
+      return '';
+    }
+    if (!isMergedGroup || !mergedGroupDaemonOptions || mergedGroupDaemonOptions.length === 0) {
+      return baseProjectId;
+    }
+    return mergedGroupDaemonOptions.some((entry) => entry.memberId === baseProjectId)
+      ? baseProjectId
+      : mergedGroupDaemonOptions[0].memberId;
+  }, [baseProjectId, isMergedGroup, mergedGroupDaemonOptions]);
+  // Picker value tracks the group's primary member id so the option matches
+  // even when projectId points at a non-primary member (i.e. the user picked
+  // a specific daemon inside a merged group).
+  const projectPickerValue = currentGroup?.members[0]?.id ?? projectId;
+  const selectedProject = selectableProjects.find((project) => project.id === projectId) ?? null;
+  const projectRecord = selectedProject as (Project & Record<string, unknown>) | null;
+  const isDefaultProject = Boolean(projectRecord?.isDefault);
+  const boundDaemonHost = projectRecord && typeof projectRecord.daemonHost === 'string'
+    ? projectRecord.daemonHost
+    : null;
+  const boundWorkspacePath = projectRecord && typeof projectRecord.workspacePath === 'string'
+    ? projectRecord.workspacePath
+    : null;
+  const projectRepoRoot = projectRecord && typeof projectRecord.repoRoot === 'string'
+    ? projectRecord.repoRoot
+    : null;
+  const isBoundProject = Boolean(boundDaemonHost) && !isDefaultProject;
+  const selectedProjectSupportsWorktree = Boolean(projectRepoRoot);
+  const canCreateTaskWorktree = taskType === 'ai_task' && selectedProjectSupportsWorktree;
+  const createWorktree = canCreateTaskWorktree ? requestedCreateWorktree : false;
+  const hasReadyProjectBinding = isDefaultProject || Boolean(boundDaemonHost);
+  const boundDaemonAgent = isBoundProject
+    ? daemons.find((agent) => agent.host === boundDaemonHost) ?? null
+    : null;
+  const boundDaemonOnline = isBoundProject ? Boolean(boundDaemonAgent) : true;
+  const boundDaemonSupportsPty = isBoundProject
+    ? Boolean(boundDaemonAgent && supportsPtyTask(boundDaemonAgent.capabilities))
+    : true;
+  const boundBindingLabel = boundDaemonHost ? formatBindingLabel(boundDaemonHost, boundWorkspacePath) : null;
   const daemonScope = isMergedGroup && mergedGroupDaemonOptions
     ? mergedGroupDaemonOptions
         .map((entry) => entry.agent)
@@ -179,15 +257,21 @@ export function CreateTaskDialog({
   const eligibleDaemons = taskType === 'pty_task'
     ? daemonScope.filter((agent) => supportsPtyTask(agent.capabilities))
     : daemonScope;
-  const effectiveAgentHost = isMergedGroup
-    ? (boundDaemonHost ?? '')
-    : isBoundProject
-      ? (boundDaemonHost ?? '')
-      : (agentHost || eligibleDaemons[0]?.host || '');
-  const selectedAgent = effectiveAgentHost
-    ? eligibleDaemons.find((agent) => agent.host === effectiveAgentHost) ?? null
+  const agentHost = useMemo(() => {
+    if (isMergedGroup || isBoundProject) {
+      return boundDaemonHost ?? '';
+    }
+    return requestedAgentHost && eligibleDaemons.some((daemon) => daemon.host === requestedAgentHost)
+      ? requestedAgentHost
+      : (eligibleDaemons[0]?.host || '');
+  }, [boundDaemonHost, eligibleDaemons, isBoundProject, isMergedGroup, requestedAgentHost]);
+  const selectedAgent = agentHost
+    ? eligibleDaemons.find((agent) => agent.host === agentHost) ?? null
     : null;
   const availableBackends = selectedAgent?.supportedBackends || [];
+  const backendType = requestedBackendType && availableBackends.includes(requestedBackendType)
+    ? requestedBackendType
+    : (availableBackends[0] ?? '');
   const canCreatePtyTask = isMergedGroup && mergedGroupDaemonOptions
     ? mergedGroupDaemonOptions.some(
         (entry) => entry.agent && supportsPtyTask(entry.agent.capabilities),
@@ -206,131 +290,43 @@ export function CreateTaskDialog({
   // the member's projectId as the option value so onChange can re-point the
   // submission target. Other modes keep the previous (host-keyed) behavior.
   const daemonSelectOptions = isMergedGroup && mergedGroupDaemonOptions
-    ? mergedGroupDaemonOptions
-        .filter((entry) => {
-          if (!entry.agent) return false;
-          if (taskType === 'pty_task') {
-            return supportsPtyTask(entry.agent.capabilities);
-          }
-          return true;
-        })
-        .map((entry) => ({
+    ? mergedGroupDaemonOptions.flatMap((entry) => {
+        if (!entry.agent) return [];
+        if (taskType === 'pty_task' && !supportsPtyTask(entry.agent.capabilities)) {
+          return [];
+        }
+        return [{
           value: entry.memberId,
           host: entry.host,
           label: entry.host,
-        }))
+        }];
+      })
     : isBoundProject && boundDaemonHost
       ? [{ value: boundDaemonHost, host: boundDaemonHost, label: boundDaemonOnline ? boundDaemonHost : `${boundDaemonHost} (offline)` }]
       : eligibleDaemons.map((daemon) => ({ value: daemon.host, host: daemon.host, label: daemon.host }));
 
-  useEffect(() => {
-    if (selectableProjects.length === 0) {
-      setProjectId('');
-      wasOpenRef.current = open;
-      return;
-    }
-
-    const justOpened = open && !wasOpenRef.current;
-    wasOpenRef.current = open;
-    if (justOpened) {
-      setProjectId(resolvedDefaultProjectId);
-      setCreateWorktree(false);
-      return;
-    }
-
-    if (!projectId || !selectableProjects.some((project) => project.id === projectId)) {
-      setProjectId(resolvedDefaultProjectId);
-    }
-  }, [open, projectId, resolvedDefaultProjectId, selectableProjects]);
-
-  useEffect(() => {
-    // Merged groups drive the daemon via projectId (see daemon picker below);
-    // skip the unbound-mode `agentHost` pinning so we don't fight the merged
-    // selection logic.
-    if (isMergedGroup) {
-      return;
-    }
-    if (isBoundProject) {
-      if (boundDaemonHost && agentHost !== boundDaemonHost) {
-        setAgentHost(boundDaemonHost);
-      }
-      return;
-    }
-    if (eligibleDaemons.length === 0) {
-      setAgentHost('');
-      return;
-    }
-    if (!agentHost || !eligibleDaemons.some((daemon) => daemon.host === agentHost)) {
-      setAgentHost(eligibleDaemons[0].host);
-    }
-  }, [agentHost, boundDaemonHost, eligibleDaemons, isBoundProject, isMergedGroup]);
-
-  // When a merged group is selected but the current projectId points at an
-  // offline / pty-incapable member, hop to the first eligible member so the
-  // backend dropdown stays usable. Without this, switching task types could
-  // strand the form on a projectId whose daemon is filtered out.
-  useEffect(() => {
-    if (!isMergedGroup || !daemonSelectOptions || daemonSelectOptions.length === 0) {
-      return;
-    }
-    const currentMemberId = effectiveProjectId;
-    const stillAvailable = daemonSelectOptions.some(
-      (option) => option.value === currentMemberId,
-    );
-    if (!stillAvailable) {
-      setProjectId(daemonSelectOptions[0].value);
-    }
-  }, [daemonSelectOptions, effectiveProjectId, isMergedGroup]);
-
-  useEffect(() => {
-    if (availableBackends.length === 0) {
-      setBackendType('');
-      return;
-    }
-    if (!backendType || !availableBackends.includes(backendType)) {
-      setBackendType(availableBackends[0]);
-    }
-  }, [availableBackends, backendType]);
-
-  useEffect(() => {
-    if (!canCreateTaskWorktree && createWorktree) {
-      setCreateWorktree(false);
-    }
-  }, [canCreateTaskWorktree, createWorktree]);
-
-  useEffect(() => {
-    if (!open) {
-      setSubmitError(null);
-    }
-  }, [open]);
-
-  const resetForm = () => {
-    setTitle('');
-    setProjectId('');
-    setTaskType('ai_task');
-    setCreateWorktree(false);
-    setAgentHost('');
-    setBackendType('');
-    setSubmitError(null);
+  const handleCloseDialog = () => {
+    dispatch({ type: 'reset' });
+    onClose();
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !effectiveProjectId) {
+    if (!title.trim() || !projectId) {
       return;
     }
-    if (taskType === 'pty_task' && !effectiveAgentHost) {
+    if (taskType === 'pty_task' && !agentHost) {
       return;
     }
 
     setIsSubmitting(true);
-    setSubmitError(null);
+    dispatch({ type: 'set-submit-error', submitError: null });
     try {
       const task = await createTask({
         title: title.trim(),
-        projectId: effectiveProjectId || undefined,
+        projectId: projectId || undefined,
         taskType,
-        agentHost: effectiveAgentHost || undefined,
+        agentHost: agentHost || undefined,
         backendType: taskType === 'ai_task' ? backendType || undefined : undefined,
         launchConfig:
           taskType === 'pty_task'
@@ -339,15 +335,15 @@ export function CreateTaskDialog({
               }
             : (createWorktree ? { worktree: true } : null),
       });
+      dispatch({ type: 'reset' });
       onClose();
-      resetForm();
       if (onCreatedTask) {
         onCreatedTask(task.id);
         return;
       }
-      router.push(`/app/tasks/${task.id}`);
+      push(`/app/tasks/${task.id}`);
     } catch (error) {
-      setSubmitError(getCreateTaskErrorMessage(error));
+      dispatch({ type: 'set-submit-error', submitError: getCreateTaskErrorMessage(error) });
     } finally {
       setIsSubmitting(false);
     }
@@ -356,7 +352,7 @@ export function CreateTaskDialog({
   return (
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={handleCloseDialog}
       title="Create New Task"
       maxWidthClassName="max-w-2xl"
     >
@@ -372,16 +368,13 @@ export function CreateTaskDialog({
             <input
               id="create-task-title"
               type="text"
+              aria-label="Task title"
               value={title}
               onChange={(e) => {
-                setTitle(e.target.value);
-                if (submitError) {
-                  setSubmitError(null);
-                }
+                dispatch({ type: 'set-title', title: e.target.value });
               }}
               placeholder="What do you want to accomplish?"
               className="webapp-input w-full"
-              autoFocus
             />
           </div>
 
@@ -401,11 +394,7 @@ export function CreateTaskDialog({
                 // Picker option value is always the group's primary member id.
                 // For merged groups, the daemon dropdown then narrows down to
                 // a specific member.
-                setProjectId(e.target.value);
-                setCreateWorktree(false);
-                if (submitError) {
-                  setSubmitError(null);
-                }
+                dispatch({ type: 'set-project', projectId: e.target.value });
               }}
               className="webapp-input w-full"
               disabled={projectGroups.length === 0}
@@ -442,12 +431,12 @@ export function CreateTaskDialog({
                   <input
                     type="radio"
                     name="task-type"
+                    aria-label={option.label}
                     value={option.value}
                     checked={checked}
                     disabled={disabled}
                     onChange={() => {
-                      setTaskType(option.value);
-                      setSubmitError(null);
+                      dispatch({ type: 'set-task-type', taskType: option.value });
                     }}
                     className="sr-only"
                   />
@@ -471,7 +460,7 @@ export function CreateTaskDialog({
                       }`}
                       aria-hidden="true"
                     >
-                      <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                      <svg className="size-3.5" viewBox="0 0 20 20" fill="currentColor">
                         <path d="M16.704 5.29a1 1 0 010 1.42l-7.2 7.2a1 1 0 01-1.414 0l-3-3a1 1 0 111.414-1.42l2.293 2.294 6.493-6.494a1 1 0 011.414 0z" />
                       </svg>
                     </span>
@@ -507,12 +496,12 @@ export function CreateTaskDialog({
               <input
                 id="create-task-worktree"
                 type="checkbox"
+                aria-label="Create task in a separate worktree"
                 checked={createWorktree}
                 onChange={(e) => {
-                  setCreateWorktree(e.target.checked);
-                  setSubmitError(null);
+                  dispatch({ type: 'set-create-worktree', createWorktree: e.target.checked });
                 }}
-                className="mt-0.5 h-4 w-4 rounded border-border text-[var(--accent)] focus:ring-[var(--accent)]"
+                className="mt-0.5 size-4 rounded border-border text-[var(--accent)] focus:ring-[var(--accent)]"
               />
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
@@ -572,18 +561,16 @@ export function CreateTaskDialog({
                 </div>
                 <select
                   id="create-task-daemon"
-                  value={isMergedGroup ? effectiveProjectId : agentHost}
+                  value={isMergedGroup ? projectId : agentHost}
                   onChange={(e) => {
                     if (isMergedGroup) {
                       // For merged groups the option value IS the member's
                       // projectId — switching daemon means switching which
                       // daemon's underlying project receives the task.
-                      setProjectId(e.target.value);
+                      dispatch({ type: 'set-project', projectId: e.target.value });
                     } else {
-                      setAgentHost(e.target.value);
+                      dispatch({ type: 'set-agent-host', agentHost: e.target.value });
                     }
-                    setBackendType('');
-                    setSubmitError(null);
                   }}
                   className="webapp-input w-full"
                   disabled={!isMergedGroup && isBoundProject}
@@ -611,8 +598,7 @@ export function CreateTaskDialog({
                       id="create-task-backend"
                       value={backendType}
                       onChange={(e) => {
-                        setBackendType(e.target.value);
-                        setSubmitError(null);
+                        dispatch({ type: 'set-backend', backendType: e.target.value });
                       }}
                       className="webapp-input w-full"
                     >
@@ -629,7 +615,7 @@ export function CreateTaskDialog({
                   )}
                 </div>
               ) : (
-                <div className="rounded-2xl border border-dashed border-border bg-panel/70 px-4 py-4">
+                <div className="rounded-2xl border border-dashed border-border bg-panel/70 p-4">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-medium text-ink">Terminal entrypoint</p>
                     <HelpTip label="terminal entrypoint" align="right">
@@ -661,10 +647,7 @@ export function CreateTaskDialog({
         <div className="flex justify-end gap-3 border-t border-border pt-4">
           <button
             type="button"
-            onClick={() => {
-              setSubmitError(null);
-              onClose();
-            }}
+            onClick={handleCloseDialog}
             className="rounded-lg px-4 py-2.5 text-sm font-medium transition-colors hover:bg-[var(--border)]/50"
           >
             Cancel

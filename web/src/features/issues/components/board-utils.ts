@@ -21,13 +21,13 @@ const toTimestamp = (value: string | null | undefined): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-export const createEmptyIssueColumns = (): IssueBoardColumns => ({
+const createEmptyIssueColumns = (): IssueBoardColumns => ({
   todo: [],
   doing: [],
   done: [],
 });
 
-export const sortIssuesForBoard = (issues: Issue[]): Issue[] => {
+const sortIssuesForBoard = (issues: Issue[]): Issue[] => {
   return issues.slice().sort((left, right) => {
     const leftStatusIndex = ISSUE_STATUSES.indexOf(normalizeIssueStatus(left.status));
     const rightStatusIndex = ISSUE_STATUSES.indexOf(normalizeIssueStatus(right.status));
@@ -166,7 +166,7 @@ const getColumnIssues = (
   excludeIssueId ? issues.filter((issue) => issue.id !== excludeIssueId) : issues,
 )[status];
 
-export const getIssueMoveAnchors = (issues: Issue[], issueId: string): IssueMoveAnchors => {
+const getIssueMoveAnchors = (issues: Issue[], issueId: string): IssueMoveAnchors => {
   const index = issues.findIndex((issue) => issue.id === issueId);
   if (index === -1) {
     return {

@@ -31,9 +31,10 @@ const BUILT_IN_AI_BACKENDS = new Set(['codex', 'claude', 'kimi', 'copilot']);
 
 function externalQuotaBackends(backends: string[] | undefined): string[] {
   return [...new Set(
-    (backends ?? [])
-      .map((backend) => backend.trim().toLowerCase())
-      .filter((backend) => backend && !BUILT_IN_AI_BACKENDS.has(backend)),
+    (backends ?? []).flatMap((backend) => {
+      const normalized = backend.trim().toLowerCase();
+      return normalized && !BUILT_IN_AI_BACKENDS.has(normalized) ? [normalized] : [];
+    }),
   )];
 }
 
@@ -89,7 +90,7 @@ function applyScrollTop(div: HTMLElement | null, target: number): void {
 }
 
 function AiManagerPageInner() {
-  const router = useRouter();
+  const { push } = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const agentHost = searchParams.get('agentHost') ?? undefined;
@@ -261,7 +262,7 @@ function AiManagerPageInner() {
   };
 
   const handleBackToSettings = () => {
-    router.push(SETTINGS_ROOT_PATH);
+    push(SETTINGS_ROOT_PATH);
   };
 
   return (
@@ -272,7 +273,7 @@ function AiManagerPageInner() {
         showBack
         onBack={handleBackToSettings}
         actions={
-          <button
+          <button type="button"
             onClick={handleRefresh}
             disabled={isLoading}
             aria-label={isLoading ? 'Refreshing' : 'Refresh'}

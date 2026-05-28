@@ -1,5 +1,6 @@
 'use client';
 
+import DOMPurify from 'isomorphic-dompurify';
 import { useEffect, useRef, useState } from 'react';
 
 interface MermaidDiagramProps {
@@ -67,7 +68,7 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
     <div
       ref={containerRef}
       className="p-4 bg-panel border border-border rounded-lg overflow-x-auto"
-      dangerouslySetInnerHTML={{ __html: svg }}
+      dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(svg) }}
     />
   );
 }

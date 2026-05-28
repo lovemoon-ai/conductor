@@ -82,8 +82,9 @@ export async function POST(request: NextRequest) {
   }
 
   const { agent_host: agentHost, events } = parsed.data;
+  // Process events sequentially to preserve causal ordering within a batch
+  // (e.g. messages must be committed before the final status update).
   const results = [];
-
   for (const event of events) {
     if (event.event_type === "sdk_message") {
       const result = await commitSdkMessage({
@@ -100,10 +101,7 @@ export async function POST(request: NextRequest) {
         message_id: result.messageId,
         duplicate: result.duplicate,
       });
-      continue;
-    }
-
-    if (event.event_type === "task_status_update") {
+    } else if (event.event_type === "task_status_update") {
       const result = await commitTaskStatusUpdate({
         userId: user.id,
         agentHost,
@@ -118,10 +116,7 @@ export async function POST(request: NextRequest) {
         status: result.status,
         duplicate: result.duplicate,
       });
-      continue;
-    }
-
-    if (event.event_type === "task_stop_ack") {
+    } else if (event.event_type === "task_stop_ack") {
       const result = await commitTaskStopAck({
         userId: user.id,
         agentHost,
@@ -136,23 +131,22 @@ export async function POST(request: NextRequest) {
         accepted: result.accepted,
         duplicate: result.duplicate,
       });
-      continue;
+    } else {
+      const result = await commitAgentCommandAck({
+        userId: user.id,
+        agentHost,
+        requestId: event.request_id,
+        taskId: event.task_id,
+        eventType: event.command_event_type,
+        accepted: event.accepted,
+      });
+      results.push({
+        event_type: event.event_type,
+        request_id: result.requestId,
+        accepted: result.accepted,
+        duplicate: result.duplicate,
+      });
     }
-
-    const result = await commitAgentCommandAck({
-      userId: user.id,
-      agentHost,
-      requestId: event.request_id,
-      taskId: event.task_id,
-      eventType: event.command_event_type,
-      accepted: event.accepted,
-    });
-    results.push({
-      event_type: event.event_type,
-      request_id: result.requestId,
-      accepted: result.accepted,
-      duplicate: result.duplicate,
-    });
   }
 
   return NextResponse.json({ results });

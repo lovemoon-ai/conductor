@@ -486,13 +486,17 @@ async function collectFireLogs(params: {
   }
 
   let bestFailureSummary: FireLogSummary | null = null;
-  for (const daemonHost of daemonHosts) {
-    const summary = await collectFireLogsFromDaemon({
-      userId,
-      taskId,
-      daemonHost,
-      since,
-    });
+  const summaries = await Promise.all(
+    daemonHosts.map((daemonHost) =>
+      collectFireLogsFromDaemon({
+        userId,
+        taskId,
+        daemonHost,
+        since,
+      })
+    ),
+  );
+  for (const summary of summaries) {
     if (!summary.error) {
       return summary;
     }
@@ -752,30 +756,30 @@ export async function buildTaskDiagnosticsPayload(params: {
     return null;
   }
 
-  const latestTaskStatusEvent = await db.taskStatusEvent.findFirst({
-    where: { taskId: task.id },
-    orderBy: { createdAt: "desc" },
-    select: {
-      summary: true,
-      createdAt: true,
-    },
-  });
-
-  const recentMessages = await db.message.findMany({
-    where: { taskId: task.id },
-    orderBy: { createdAt: "desc" },
-    take: RECENT_MESSAGE_SAMPLE_SIZE,
-    select: {
-      id: true,
-      role: true,
-      content: true,
-      createdAt: true,
-    },
-  });
-
-  const totalMessageCount = await db.message.count({
-    where: { taskId: task.id },
-  });
+  const [latestTaskStatusEvent, recentMessages, totalMessageCount] = await Promise.all([
+    db.taskStatusEvent.findFirst({
+      where: { taskId: task.id },
+      orderBy: { createdAt: "desc" },
+      select: {
+        summary: true,
+        createdAt: true,
+      },
+    }),
+    db.message.findMany({
+      where: { taskId: task.id },
+      orderBy: { createdAt: "desc" },
+      take: RECENT_MESSAGE_SAMPLE_SIZE,
+      select: {
+        id: true,
+        role: true,
+        content: true,
+        createdAt: true,
+      },
+    }),
+    db.message.count({
+      where: { taskId: task.id },
+    }),
+  ]);
 
   const latestUserMessage =
     recentMessages.find((message) => normalizeRole(message.role) === "user") ?? null;

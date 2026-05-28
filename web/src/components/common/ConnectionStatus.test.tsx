@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { ConnectionStatus, resolveEffectiveAiMode } from './ConnectionStatus';
+import { ConnectionStatus } from './ConnectionStatus';
+import { resolveEffectiveAiMode } from './ConnectionStatus.utils';
 
 const useParamsMock = vi.fn();
 const useWebSocketStoreMock = vi.fn();

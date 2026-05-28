@@ -186,8 +186,10 @@ export async function POST(
   if (userResult instanceof Response) return userResult;
   const user = userResult;
 
-  const { taskId } = await params;
-  const body = await request.json().catch(() => null);
+  const [{ taskId }, body] = await Promise.all([
+    params,
+    request.json().catch(() => null),
+  ]);
   const normalizedBody =
     body && typeof body === "object" && !Array.isArray(body)
       ? (body as Record<string, unknown>)
@@ -274,16 +276,17 @@ export async function POST(
     projectDaemonHost && !isConductorFireHost(projectDaemonHost)
       ? projectDaemonHost
       : null;
-  const manualFireDaemonHostCandidates: string[] = [];
+  const manualFireDaemonHostCandidates = new Set<string>();
   for (const candidate of [
     sourceMetadataDaemonCandidate,
     sourceExecutionDaemonHost,
     projectDaemonCandidate,
   ]) {
-    if (candidate && !manualFireDaemonHostCandidates.includes(candidate)) {
-      manualFireDaemonHostCandidates.push(candidate);
+    if (candidate) {
+      manualFireDaemonHostCandidates.add(candidate);
     }
   }
+  const manualFireDaemonHosts = Array.from(manualFireDaemonHostCandidates);
   const refreshSessionFireHostCandidates = uniqueHosts([
     boundFireHost && (
       sourceExecutionFireHost
@@ -297,7 +300,7 @@ export async function POST(
     sourceExecutionFireHost,
     sourceAgentFireHost,
   ]);
-  const preferredManualFireDaemonHost = manualFireDaemonHostCandidates[0] ?? null;
+  const preferredManualFireDaemonHost = manualFireDaemonHosts[0] ?? null;
 
   const hasExplicitBackendTarget =
     Object.prototype.hasOwnProperty.call(normalizedBody, "backend_type") ||
@@ -345,7 +348,7 @@ export async function POST(
     )
     : isManualFireTask
       ? (
-        manualFireDaemonHostCandidates.find((host) =>
+        manualFireDaemonHosts.find((host) =>
           connectedAgents.some((agent) => agent.host === host),
         ) ?? preferredManualFireDaemonHost
       )
@@ -836,43 +839,42 @@ export async function POST(
     // the user does not stare at an empty conversation while the new AI
     // fetches the transcript URL. Failure here is non-fatal: the AI will
     // still start correctly; the user just won't see the notice bubble.
-    await tx.message
-      .create({
-        data: {
-          taskId: successorTaskId,
-          role: "sdk",
-          content: buildHandoffNoticeContent({
-            sourceTitle: sourceTask.title,
-            sourceBackend,
-            targetBackend,
-          }),
-          metadata: JSON.stringify(HANDOFF_NOTICE_METADATA),
-        },
-      })
-      .catch((error) => {
-        console.error("[restart] failed to insert handoff notice message", error);
-      });
-
-    await tx.task.update({
-      where: { id: sourceTask.id },
-      data: {
-        metadata: JSON.stringify({
-          ...sourceMetadata,
-          successorTaskId,
-          restartRequestId: requestId,
-          ...(isBackendSwitch ? { backendSwitchRequestId: requestId } : {}),
+    const [, , restartOutboxRow] = await Promise.all([
+      tx.message
+        .create({
+          data: {
+            taskId: successorTaskId,
+            role: "sdk",
+            content: buildHandoffNoticeContent({
+              sourceTitle: sourceTask.title,
+              sourceBackend,
+              targetBackend,
+            }),
+            metadata: JSON.stringify(HANDOFF_NOTICE_METADATA),
+          },
+        })
+        .catch((error: unknown) => {
+          console.error("[restart] failed to insert handoff notice message", error);
         }),
-      },
-      select: { id: true },
-    });
-
-    const restartOutboxRow = await tx.agentOutbox.create({
-      data: {
-        userId: user.id,
-        agentHost: restartAgentHost,
-        taskId: successorTaskId,
-        eventType: "restart_task",
-        requestId,
+      tx.task.update({
+        where: { id: sourceTask.id },
+        data: {
+          metadata: JSON.stringify({
+            ...sourceMetadata,
+            successorTaskId,
+            restartRequestId: requestId,
+            ...(isBackendSwitch ? { backendSwitchRequestId: requestId } : {}),
+          }),
+        },
+        select: { id: true },
+      }),
+      tx.agentOutbox.create({
+        data: {
+          userId: user.id,
+          agentHost: restartAgentHost,
+          taskId: successorTaskId,
+          eventType: "restart_task",
+          requestId,
           payloadJson: JSON.stringify({
             type: "restart_task",
             payload: {
@@ -880,26 +882,27 @@ export async function POST(
               source_task_id: sourceTask.id,
               target_task_id: successorTaskId,
               project_id: sourceTask.projectId,
-            title: successorTitle,
-            source_backend_type: sourceBackend,
-            source_session_id: sourceSessionId,
-            source_session_file_path: sourceTask.sessionFilePath ?? undefined,
-            target_backend_type: targetBackend,
-            target_launch_config:
-              Object.keys(successorLaunchConfig).length > 0
-                ? successorLaunchConfig
-                : undefined,
-            // Plain-text transcript URL the successor backend should fetch as
-            // its resume context (replaces JSONL session translation).
-            resume_context_url: resumeContextUrl,
-            request_id: requestId,
-          },
-        }),
-        status: "pending",
-        attemptCount: 0,
-        nextRetryAt: null,
-      },
-    });
+              title: successorTitle,
+              source_backend_type: sourceBackend,
+              source_session_id: sourceSessionId,
+              source_session_file_path: sourceTask.sessionFilePath ?? undefined,
+              target_backend_type: targetBackend,
+              target_launch_config:
+                Object.keys(successorLaunchConfig).length > 0
+                  ? successorLaunchConfig
+                  : undefined,
+              // Plain-text transcript URL the successor backend should fetch as
+              // its resume context (replaces JSONL session translation).
+              resume_context_url: resumeContextUrl,
+              request_id: requestId,
+            },
+          }),
+          status: "pending",
+          attemptCount: 0,
+          nextRetryAt: null,
+        },
+      }),
+    ]);
 
     return { task, restartOutboxRow };
   });

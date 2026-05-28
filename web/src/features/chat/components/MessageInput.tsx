@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { Message } from '@/shared/types';
 import { useChatStore } from '../store';
 
@@ -29,13 +29,56 @@ interface MessageInputProps {
   interruptEnabled?: boolean;
   interruptPending?: boolean;
   autoFocus?: boolean;
-  resendRequest?: {
-    id: number;
-    content: string;
-  } | null;
+}
+
+export interface MessageInputHandle {
+  resend: (content: string) => void;
 }
 
 const getDraftStorageKey = (taskId: string) => `${DRAFT_STORAGE_PREFIX}${taskId}`;
+
+const readStoredDraft = (taskId: string) => {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  try {
+    return window.sessionStorage.getItem(getDraftStorageKey(taskId)) ?? '';
+  } catch {
+    return '';
+  }
+};
+
+const persistDraft = (taskId: string, nextContent: string) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    const key = getDraftStorageKey(taskId);
+    if (!nextContent) {
+      window.sessionStorage.removeItem(key);
+      return;
+    }
+    window.sessionStorage.setItem(key, nextContent);
+  } catch {
+    // ignore storage errors
+  }
+};
+
+interface ComposerLayoutState {
+  isInputScrollable: boolean;
+  hasExplicitNewLine: boolean;
+  isWrappedToMultipleLines: boolean;
+  isNearSendButton: boolean;
+}
+
+const INITIAL_LAYOUT_STATE: ComposerLayoutState = {
+  isInputScrollable: false,
+  hasExplicitNewLine: false,
+  isWrappedToMultipleLines: false,
+  isNearSendButton: false,
+};
 
 // Derive the "previous prompt" history for ArrowUp/ArrowDown from the chat
 // store's message log. This walks the persisted chat history from newest to
@@ -70,7 +113,7 @@ const deriveSentHistoryFromMessages = (messages: Message[]): string[] => {
   return reversed;
 };
 
-export function MessageInput({
+const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(function MessageInputInner({
   taskId,
   onSend,
   onInterrupt,
@@ -79,11 +122,9 @@ export function MessageInput({
   interruptEnabled = false,
   interruptPending = false,
   autoFocus = false,
-  resendRequest = null,
-}: MessageInputProps) {
-  const [content, setContent] = useState('');
-  const [isSendOnNextLine, setIsSendOnNextLine] = useState(false);
-  const [isInputScrollable, setIsInputScrollable] = useState(false);
+}: MessageInputProps, ref) {
+  const [content, setContent] = useState(() => readStoredDraft(taskId));
+  const [layoutState, setLayoutState] = useState(INITIAL_LAYOUT_STATE);
   const taskMessages = useChatStore((state) => state.messagesByTask[taskId]);
   const sentHistory = useMemo(
     () => deriveSentHistoryFromMessages(taskMessages ?? []),
@@ -94,7 +135,6 @@ export function MessageInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const isComposingRef = useRef(false);
-  const skipStoreEffectRef = useRef(true);
   // Track which history entry is currently displayed by content rather than
   // by numeric index. `sentHistory` is derived from `messagesByTask[taskId]`,
   // so it can grow (websocket push of another user prompt) or shift
@@ -103,28 +143,25 @@ export function MessageInput({
   // its position in the list changed since the previous keypress.
   const historyCursorRef = useRef<string | null>(null);
   const historyDraftRef = useRef('');
-  const lastResendRequestIdRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    skipStoreEffectRef.current = true;
-    const key = getDraftStorageKey(taskId);
-    try {
-      const savedContent = window.sessionStorage.getItem(key);
-      setContent(savedContent ?? '');
-    } catch {
-      // ignore storage errors
-    }
+  const updateContent = useCallback((nextContent: string) => {
+    setContent(nextContent);
+    persistDraft(taskId, nextContent);
   }, [taskId]);
 
-  useEffect(() => {
-    // Reset the history browsing cursor and the stashed draft whenever the
-    // active task changes. The actual list of previous prompts is derived
-    // from the chat store, so there is no per-task buffer to rehydrate here.
-    historyCursorRef.current = null;
-    historyDraftRef.current = '';
-    setPlaceholderIndex(0);
-  }, [taskId]);
+  const isSendOnNextLine = useMemo(() => (
+    Boolean(content) && (
+      layoutState.hasExplicitNewLine
+      || layoutState.isWrappedToMultipleLines
+      || layoutState.isNearSendButton
+    )
+  ), [
+    content,
+    layoutState.hasExplicitNewLine,
+    layoutState.isNearSendButton,
+    layoutState.isWrappedToMultipleLines,
+  ]);
+  const isInputScrollable = layoutState.isInputScrollable;
 
   useEffect(() => {
     if (content || disabled) {
@@ -150,25 +187,7 @@ export function MessageInput({
     textarea.focus({ preventScroll: true });
     const nextPosition = textarea.value.length;
     textarea.setSelectionRange(nextPosition, nextPosition);
-  }, [autoFocus, disabled, taskId]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (skipStoreEffectRef.current) {
-      skipStoreEffectRef.current = false;
-      return;
-    }
-    const key = getDraftStorageKey(taskId);
-    try {
-      if (!content) {
-        window.sessionStorage.removeItem(key);
-        return;
-      }
-      window.sessionStorage.setItem(key, content);
-    } catch {
-      // ignore storage errors
-    }
-  }, [content, taskId]);
+  }, [autoFocus, disabled]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -186,17 +205,9 @@ export function MessageInput({
     const nextHeightPx = shouldEnableScroll ? maxHeightPx : textarea.scrollHeight;
     textarea.style.height = `${nextHeightPx}px`;
     textarea.style.overflowY = shouldEnableScroll ? 'auto' : 'hidden';
-    setIsInputScrollable((previous) => (
-      previous === shouldEnableScroll ? previous : shouldEnableScroll
-    ));
-
-    if (!content) {
-      setIsSendOnNextLine(false);
-      return;
-    }
 
     const hasExplicitNewLine = content.includes('\n');
-    const isWrappedToMultipleLines = textarea.scrollHeight > lineHeight * 1.5;
+    const isWrappedToMultipleLines = Boolean(content) && textarea.scrollHeight > lineHeight * 1.5;
 
     const composerWidth = composerRef.current?.clientWidth ?? 0;
     const inlineTextWidth =
@@ -221,9 +232,21 @@ export function MessageInput({
       }
     }
 
-    const nextLayout = hasExplicitNewLine || isWrappedToMultipleLines || isNearSendButton;
-    setIsSendOnNextLine((previous) => (previous === nextLayout ? previous : nextLayout));
-  }, [content, isInputScrollable, isSendOnNextLine]);
+    const nextLayoutState: ComposerLayoutState = {
+      isInputScrollable: shouldEnableScroll,
+      hasExplicitNewLine,
+      isWrappedToMultipleLines,
+      isNearSendButton,
+    };
+    setLayoutState((previous) => (
+      previous.isInputScrollable === nextLayoutState.isInputScrollable
+      && previous.hasExplicitNewLine === nextLayoutState.hasExplicitNewLine
+      && previous.isWrappedToMultipleLines === nextLayoutState.isWrappedToMultipleLines
+      && previous.isNearSendButton === nextLayoutState.isNearSendButton
+        ? previous
+        : nextLayoutState
+    ));
+  }, [content]);
 
   const canSend = Boolean(content.trim()) && !disabled && !sendDisabled;
 
@@ -249,26 +272,24 @@ export function MessageInput({
     // here beyond resetting the browsing cursor.
     historyCursorRef.current = null;
     historyDraftRef.current = '';
-    setContent('');
+    updateContent('');
     return true;
-  }, [disabled, onSend, sendDisabled]);
+  }, [disabled, onSend, sendDisabled, updateContent]);
 
-  useEffect(() => {
-    if (!resendRequest || lastResendRequestIdRef.current === resendRequest.id) {
-      return;
-    }
-
-    lastResendRequestIdRef.current = resendRequest.id;
-    const nextContent = resendRequest.content;
-    setContent(nextContent);
+  const handleResend = useCallback((nextContent: string) => {
     historyCursorRef.current = null;
     historyDraftRef.current = '';
 
     const didSubmit = submitContent(nextContent);
     if (!didSubmit) {
+      updateContent(nextContent);
       moveCaretToEnd(nextContent);
     }
-  }, [moveCaretToEnd, resendRequest, submitContent]);
+  }, [moveCaretToEnd, submitContent, updateContent]);
+
+  useImperativeHandle(ref, () => ({
+    resend: handleResend,
+  }), [handleResend]);
 
   const handleSubmit = () => {
     submitContent(content);
@@ -316,7 +337,7 @@ export function MessageInput({
         }
       }
       historyCursorRef.current = nextHistory;
-      setContent(nextHistory);
+      updateContent(nextHistory);
       moveCaretToEnd(nextHistory);
       return;
     }
@@ -335,13 +356,13 @@ export function MessageInput({
         // Either the anchored prompt is gone, or we're already at/past the
         // newest — exit browsing mode and restore the stashed draft.
         historyCursorRef.current = null;
-        setContent(historyDraftRef.current);
+        updateContent(historyDraftRef.current);
         moveCaretToEnd(historyDraftRef.current);
         return;
       }
       const nextHistory = sentHistory[currentIndex + 1];
       historyCursorRef.current = nextHistory;
-      setContent(nextHistory);
+      updateContent(nextHistory);
       moveCaretToEnd(nextHistory);
       return;
     }
@@ -370,7 +391,7 @@ export function MessageInput({
       const start = textarea.selectionStart;
       const end = textarea.selectionEnd;
       const newContent = content.slice(0, start) + '\n' + content.slice(end);
-      setContent(newContent);
+      updateContent(newContent);
       setTimeout(() => {
         textarea.selectionStart = textarea.selectionEnd = start + 1;
       }, 0);
@@ -386,13 +407,14 @@ export function MessageInput({
         <div
           ref={composerRef}
           data-testid="message-input-composer"
-          className="w-full min-h-11 rounded-2xl border border-zinc-50 bg-paper px-3 py-3 transition-all dark:border-zinc-700/70 focus-within:border-accent focus-within:shadow-[0_0_0_4px_rgba(228,87,46,0.1)]"
+          className="w-full min-h-11 rounded-2xl border border-zinc-50 bg-paper p-3 transition-all dark:border-zinc-700/70 focus-within:border-accent focus-within:shadow-[0_0_0_4px_rgba(228,87,46,0.1)]"
         >
           <div className={isSendOnNextLine ? 'flex flex-col gap-2' : 'flex items-center gap-2'}>
             <textarea
               ref={textareaRef}
+              aria-label="Message input"
               value={content}
-              onChange={(e) => setContent(e.target.value)}
+              onChange={(e) => updateContent(e.target.value)}
               onKeyDown={handleKeyDown}
               onCompositionStart={() => { isComposingRef.current = true; }}
               onCompositionEnd={() => { isComposingRef.current = false; }}
@@ -407,7 +429,7 @@ export function MessageInput({
               }`}
             />
             <div className={isSendOnNextLine ? 'flex w-full justify-end' : 'flex shrink-0'}>
-              <button
+              <button type="button"
                 onClick={handleSubmit}
                 disabled={!canSend}
                 className={`flex h-8 w-8 items-center justify-center rounded-md transition-all ${
@@ -418,7 +440,7 @@ export function MessageInput({
                 title={sendDisabled ? 'Sending will be available when the session is ready' : 'Send'}
                 aria-label="Send message"
               >
-                <svg className="h-3.5 w-3.5 translate-x-px" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <svg className="size-3.5 translate-x-px" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                   <path d="M4 3l12 7-12 7V3z" />
                 </svg>
               </button>
@@ -428,4 +450,12 @@ export function MessageInput({
       </div>
     </div>
   );
-}
+});
+
+MessageInputInner.displayName = 'MessageInputInner';
+
+export const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(function MessageInput(props, ref) {
+  return <MessageInputInner key={props.taskId} ref={ref} {...props} />;
+});
+
+MessageInput.displayName = 'MessageInput';

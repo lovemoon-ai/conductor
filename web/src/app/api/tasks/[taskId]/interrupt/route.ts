@@ -82,8 +82,10 @@ export async function POST(
   }
   const user = userResult;
 
-  const { taskId } = await params;
-  const body = await request.json().catch(() => ({}));
+  const [{ taskId }, body] = await Promise.all([
+    params,
+    request.json().catch(() => ({})),
+  ]);
   const targetReplyTo = normalizeOptionalString(body?.target_reply_to ?? body?.targetReplyTo);
   if (!targetReplyTo) {
     return NextResponse.json({ error: "target_reply_to required" }, { status: 400 });

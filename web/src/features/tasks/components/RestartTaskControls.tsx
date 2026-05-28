@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { Task } from '@/shared/types';
 import { useAgentsStore } from '@/features/agents';
@@ -26,16 +26,15 @@ const isRestartableStatus = (status: Task['status']): boolean =>
   status === 'running' || status === 'completed' || status === 'killed' || status === 'unknown';
 
 export function RestartTaskControls({ task, open, onClose }: RestartTaskControlsProps) {
-  const router = useRouter();
+  const { push, replace } = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const agents = useAgentsStore((state) => state.agents);
   const projects = useProjectsStore((state) => state.projects);
   const restartTask = useTasksStore((state) => state.restartTask);
   const { pushToast } = useToast();
-  const [selectedBackend, setSelectedBackend] = useState(task.backendType ?? '');
+  const [selectedBackend, setSelectedBackend] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const previousTaskIdRef = useRef(task.id);
 
   const sourceAgentHost = typeof task.agentHost === 'string' ? task.agentHost.trim() : '';
   const sourceExecutionHost = typeof task.executionHost === 'string' ? task.executionHost.trim() : '';
@@ -64,16 +63,17 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
     () => agents.find((agent) => agent.host === restartSourceHost) ?? null,
     [agents, restartSourceHost],
   );
-  const supportedBackends = Array.isArray(sourceAgent?.supportedBackends)
-    ? sourceAgent.supportedBackends
-    : [];
+  const supportedBackends = useMemo(
+    () => (Array.isArray(sourceAgent?.supportedBackends) ? sourceAgent.supportedBackends : []),
+    [sourceAgent],
+  );
   const backendOptions = useMemo(
     () => getCompatibleRestartBackends(currentBackend, supportedBackends),
     [currentBackend, supportedBackends],
   );
   const currentBackendSupported = currentBackend ? backendOptions.includes(currentBackend) : false;
 
-  const getDefaultBackend = useCallback(() => {
+  const defaultBackend = useMemo(() => {
     if (currentBackendSupported) {
       return currentBackend;
     }
@@ -82,29 +82,10 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
     }
     return currentBackend;
   }, [backendOptions, currentBackend, currentBackendSupported]);
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    if (previousTaskIdRef.current !== task.id) {
-      previousTaskIdRef.current = task.id;
-      setSelectedBackend(getDefaultBackend());
-      return;
-    }
-
-    setSelectedBackend((previousSelectedBackend) => {
-      const normalizedPrevious =
-        typeof previousSelectedBackend === 'string' ? previousSelectedBackend.trim() : '';
-
-      if (normalizedPrevious && backendOptions.includes(normalizedPrevious)) {
-        return normalizedPrevious;
-      }
-
-      return getDefaultBackend();
-    });
-  }, [backendOptions, currentBackend, currentBackendSupported, getDefaultBackend, open, task.id]);
+  const effectiveSelectedBackend =
+    selectedBackend && backendOptions.includes(selectedBackend)
+      ? selectedBackend
+      : defaultBackend;
 
   const disabledReason = useMemo(() => {
     if ((task.taskType ?? 'ai_task') !== 'ai_task') {
@@ -134,22 +115,21 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
         ? 'No compatible backend available on the original daemon'
         : 'No compatible backend available on the source daemon';
     }
-    if (!selectedBackend) {
+    if (!effectiveSelectedBackend) {
       return 'Select a backend first';
     }
-    if (!canCreateSuccessorTask(currentBackend, selectedBackend)) {
-      return `Creating a new task from ${currentBackend} to ${selectedBackend} is not supported`;
+    if (!canCreateSuccessorTask(currentBackend, effectiveSelectedBackend)) {
+      return `Creating a new task from ${currentBackend} to ${effectiveSelectedBackend} is not supported`;
     }
     return null;
   }, [
     backendOptions.length,
     currentBackend,
     isManualFireTask,
-    selectedBackend,
+    effectiveSelectedBackend,
     sourceAgent,
     sourceAgentHost,
     sourceExecutionDaemonHost,
-    sourceProjectDaemonHost,
     task.sessionId,
     task.status,
     task.taskType,
@@ -160,21 +140,21 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
       const nextQuery = new URLSearchParams(searchParams?.toString() ?? '');
       nextQuery.set('taskId', nextTaskId);
       const query = nextQuery.toString();
-      router.replace(query ? `/app/tasks?${query}` : '/app/tasks', { scroll: false });
+      replace(query ? `/app/tasks?${query}` : '/app/tasks', { scroll: false });
       return;
     }
-    router.push(`/app/tasks/${nextTaskId}`);
+    push(`/app/tasks/${nextTaskId}`);
   };
 
   const handleRestart = async () => {
-    if (disabledReason || !selectedBackend || isSubmitting) {
+    if (disabledReason || !effectiveSelectedBackend || isSubmitting) {
       return;
     }
 
     try {
       setIsSubmitting(true);
       const result = await restartTask(task.id, {
-        backendType: selectedBackend,
+        backendType: effectiveSelectedBackend,
         strategy: 'new_task',
       });
       navigateToTask(result.task.id);
@@ -204,7 +184,7 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
           </label>
           <select
             id={`restart-backend-${task.id}`}
-            value={selectedBackend}
+            value={effectiveSelectedBackend}
             onChange={(event) => setSelectedBackend(event.target.value)}
             disabled={Boolean(disabledReason) || isSubmitting}
             className="w-full rounded-xl border border-border bg-paper px-3 py-2 text-sm text-ink disabled:cursor-not-allowed disabled:opacity-60"

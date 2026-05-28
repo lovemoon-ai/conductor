@@ -2,11 +2,11 @@ import { randomBytes } from "crypto";
 import { db } from "@/lib/db";
 import type { Prisma } from "@prisma/client";
 
-export const INVITE_REWARD_DAYS_ON_REGISTER = 1;
-export const INVITE_REWARD_DAYS_ON_PLUS = 7;
+const INVITE_REWARD_DAYS_ON_REGISTER = 1;
+const INVITE_REWARD_DAYS_ON_PLUS = 7;
 export const SEED_INVITE_CODE = "GEQ8BXKK";
-export const SEED_INVITEE_PLUS_DAYS = 180;
-export const SEED_OWNER_PLUS_DAYS = 360;
+const SEED_INVITEE_PLUS_DAYS = 180;
+const SEED_OWNER_PLUS_DAYS = 360;
 
 const INVITE_CODE_LENGTH = 8;
 const INVITE_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -30,7 +30,7 @@ function normalizeInviteCode(inviteCode: string | null | undefined): string {
   return (inviteCode ?? "").trim().toUpperCase();
 }
 
-export function isSeedInviteCode(inviteCode: string | null | undefined): boolean {
+function isSeedInviteCode(inviteCode: string | null | undefined): boolean {
   return normalizeInviteCode(inviteCode) === SEED_INVITE_CODE;
 }
 
@@ -45,12 +45,16 @@ function generateCandidateCode(): string {
 }
 
 async function generateUniqueInviteCode(): Promise<string> {
-  for (let attempt = 0; attempt < MAX_GENERATION_ATTEMPTS; attempt += 1) {
-    const candidate = generateCandidateCode();
-    const existing = await db.user.findUnique({ where: { inviteCode: candidate } });
-    if (!existing) {
-      return candidate;
-    }
+  const candidates = Array.from(
+    { length: MAX_GENERATION_ATTEMPTS },
+    () => generateCandidateCode(),
+  );
+  const existingUsers = await Promise.all(
+    candidates.map((candidate) => db.user.findUnique({ where: { inviteCode: candidate } })),
+  );
+  const availableIndex = existingUsers.findIndex((existing) => !existing);
+  if (availableIndex !== -1) {
+    return candidates[availableIndex];
   }
   throw new Error("Failed to generate unique invite code");
 }
@@ -104,7 +108,7 @@ function addDays(base: Date, days: number): Date {
  * Extend a user's PLUS entitlement window by the given number of days.
  * This reward always grants PLUS access, even if the user is currently FREE.
  */
-export async function extendUserAccessDays(userId: string, days: number, client?: DbClient) {
+async function extendUserAccessDays(userId: string, days: number, client?: DbClient) {
   const prisma = client ?? db;
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) {
@@ -135,7 +139,7 @@ export async function extendUserAccessDays(userId: string, days: number, client?
  * Ensure a user's PLUS entitlement window has at least `days` days from now.
  * If current entitlement is already longer, keep it unchanged.
  */
-export async function ensureUserAccessDays(userId: string, days: number, client?: DbClient) {
+async function ensureUserAccessDays(userId: string, days: number, client?: DbClient) {
   const prisma = client ?? db;
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) {
@@ -172,7 +176,7 @@ export async function ensureUserAccessDays(userId: string, days: number, client?
   });
 }
 
-export async function grantInviteRegisterReward(inviterUserId: string, client?: DbClient) {
+async function grantInviteRegisterReward(inviterUserId: string, client?: DbClient) {
   const prisma = client ?? db;
   const inviter = await prisma.user.findUnique({
     where: { id: inviterUserId },
@@ -190,7 +194,7 @@ export async function grantInviteRegisterReward(inviterUserId: string, client?: 
   await extendUserAccessDays(inviterUserId, INVITE_REWARD_DAYS_ON_REGISTER, prisma);
 }
 
-export async function grantInvitePlusReward(inviterUserId: string, client?: DbClient) {
+async function grantInvitePlusReward(inviterUserId: string, client?: DbClient) {
   const prisma = client ?? db;
   const inviter = await prisma.user.findUnique({
     where: { id: inviterUserId },

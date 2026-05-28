@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { Issue } from '@/shared/types';
 import {
   ISSUE_STATUSES,
@@ -32,8 +32,7 @@ export function IssueList({
 }) {
   const columns = useMemo(() => buildIssueColumns(issues), [issues]);
   const defaultVisibleStatus = useMemo(() => getDefaultVisibleStatus(issues), [issues]);
-  const [visibleStatus, setVisibleStatus] = useState<Issue['status']>(defaultVisibleStatus);
-  const [hasCustomizedFilter, setHasCustomizedFilter] = useState(false);
+  const [selectedStatus, setSelectedStatus] = useState<Issue['status'] | null>(null);
   const [detailsIssueId, setDetailsIssueId] = useState<string | null>(null);
 
   const handleOpenDetails = useCallback((issue: Issue) => {
@@ -50,17 +49,11 @@ export function IssueList({
   );
   const detailsOwnerOptions = detailsIssue ? ownerOptionsByProjectId?.get(detailsIssue.projectId) : undefined;
 
-  useEffect(() => {
-    if (!hasCustomizedFilter) {
-      setVisibleStatus(defaultVisibleStatus);
-    }
-  }, [defaultVisibleStatus, hasCustomizedFilter]);
-
+  const visibleStatus = selectedStatus ?? defaultVisibleStatus;
   const visibleIssues = columns[visibleStatus];
 
   const handleToggleStatus = (status: Issue['status']) => {
-    setHasCustomizedFilter(true);
-    setVisibleStatus(status);
+    setSelectedStatus(status);
   };
 
   return (

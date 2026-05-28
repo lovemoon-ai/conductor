@@ -224,15 +224,22 @@ export async function readProjectSettingsYaml(
     return cached.value;
   }
 
+  const settingsResults = await Promise.all(
+    SETTINGS_FILE_CANDIDATES.map(async (candidate) => {
+      const candidatePath = path.join(trimmed, candidate);
+      return {
+        candidatePath,
+        icon: await readSettingsFromCandidate(candidatePath),
+      };
+    }),
+  );
+
   let rawIcon: string | null = null;
   let settingsDir: string | null = null;
-  for (const candidate of SETTINGS_FILE_CANDIDATES) {
-    const candidatePath = path.join(trimmed, candidate);
-    const icon = await readSettingsFromCandidate(candidatePath);
-    if (icon === undefined) continue;
-    rawIcon = icon;
-    settingsDir = path.dirname(candidatePath);
-    break;
+  const firstSettingsResult = settingsResults.find((entry) => entry.icon !== undefined);
+  if (firstSettingsResult) {
+    rawIcon = firstSettingsResult.icon ?? null;
+    settingsDir = path.dirname(firstSettingsResult.candidatePath);
   }
 
   let resolvedIcon = rawIcon;

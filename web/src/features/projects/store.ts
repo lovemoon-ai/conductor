@@ -18,7 +18,7 @@ const HIDDEN_PROJECTS_STORAGE_KEY = 'conductor-hidden-project-ids';
 const SHOW_HIDDEN_PROJECTS_STORAGE_KEY = 'conductor-show-hidden-projects';
 
 const collectHiddenProjectIds = (projects: Project[]): string[] =>
-  projects.filter((project) => project.hidden === true).map((project) => project.id);
+  projects.flatMap((project) => (project.hidden === true ? [project.id] : []));
 
 const readStoredSelectedProjectId = (): string | null => {
   if (typeof window === 'undefined') {
@@ -62,10 +62,13 @@ const readStoredHiddenProjectIds = (): string[] => {
     if (!Array.isArray(parsed)) {
       return [];
     }
-    const ids = parsed
-      .filter((entry): entry is string => typeof entry === 'string')
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0);
+    const ids = parsed.flatMap((entry) => {
+      if (typeof entry !== 'string') {
+        return [];
+      }
+      const trimmed = entry.trim();
+      return trimmed.length > 0 ? [trimmed] : [];
+    });
     return [...new Set(ids)];
   } catch {
     return [];
@@ -717,7 +720,10 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
   },
 
   hideProjectGroup: (projectIds) => {
-    const targets = [...new Set(projectIds.map((id) => id.trim()).filter(Boolean))];
+    const targets = [...new Set(projectIds.flatMap((id) => {
+      const trimmed = id.trim();
+      return trimmed ? [trimmed] : [];
+    }))];
     for (const id of targets) {
       // Reuse the optimistic single-project flow per member; failures roll back
       // independently (acceptable since members are independent DB rows).
@@ -726,14 +732,20 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
   },
 
   unhideProjectGroup: (projectIds) => {
-    const targets = [...new Set(projectIds.map((id) => id.trim()).filter(Boolean))];
+    const targets = [...new Set(projectIds.flatMap((id) => {
+      const trimmed = id.trim();
+      return trimmed ? [trimmed] : [];
+    }))];
     for (const id of targets) {
       get().unhideProject(id);
     }
   },
 
   deleteProjectGroup: async (projectIds) => {
-    const targets = [...new Set(projectIds.map((id) => id.trim()).filter(Boolean))];
+    const targets = [...new Set(projectIds.flatMap((id) => {
+      const trimmed = id.trim();
+      return trimmed ? [trimmed] : [];
+    }))];
     // Sequential: each daemon may need to clean up worktrees before its
     // project row can be deleted; running them in parallel would multiply
     // failure modes when daemons share state.

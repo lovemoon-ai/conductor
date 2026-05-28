@@ -67,26 +67,26 @@ export function TaskStatusBadge({
     const parsed = Date.parse(statusStartedAt);
     return Number.isFinite(parsed) ? parsed : null;
   }, [status, statusStartedAt]);
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [, setTick] = useState(0);
 
   useEffect(() => {
     if (status !== 'killing') {
       return;
     }
-    setNowMs(Date.now());
     const interval = window.setInterval(() => {
-      setNowMs(Date.now());
+      setTick((tick) => tick + 1);
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [status, killingStartedAtMs]);
+  }, [status]);
 
   const effectiveTimeoutMs =
     typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0
       ? timeoutMs
       : DEFAULT_KILLING_TIMEOUT_MS;
+  const nowMs = status === 'killing' ? Date.now() : null;
   const killingElapsedMs =
     status === 'killing'
-      ? Math.max(0, nowMs - (killingStartedAtMs ?? nowMs))
+      ? Math.max(0, (nowMs ?? 0) - (killingStartedAtMs ?? (nowMs ?? 0)))
       : 0;
   const killingElapsedSeconds = Math.floor(killingElapsedMs / 1000);
   const killingTimedOut = status === 'killing' && killingElapsedSeconds * 1000 >= effectiveTimeoutMs;
@@ -110,9 +110,9 @@ export function TaskStatusBadge({
       ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
       : tone === 'warning'
         ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300'
-      : status === 'killing' && killingTimedOut
-        ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-      : `${config.bg} ${config.text}`;
+        : status === 'killing' && killingTimedOut
+          ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+        : `${config.bg} ${config.text}`;
   const className = `inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium ${toneClassName}`;
   const shouldPulse = (status === 'running' || status === 'killing') && !labelOverride;
 
@@ -131,7 +131,7 @@ export function TaskStatusBadge({
         className={`${className} transition-colors hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-70`}
       >
         {shouldPulse ? (
-          <span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-current animate-pulse" />
+          <span className="mr-1.5 size-1.5 rounded-full bg-current animate-pulse" />
         ) : null}
         {label}
       </button>
@@ -144,7 +144,7 @@ export function TaskStatusBadge({
       title={resolvedTitle}
     >
       {shouldPulse && (
-        <span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-current animate-pulse" />
+        <span className="mr-1.5 size-1.5 rounded-full bg-current animate-pulse" />
       )}
       {label}
     </span>

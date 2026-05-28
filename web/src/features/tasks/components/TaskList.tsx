@@ -13,7 +13,7 @@ import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 export type TaskListViewMode = 'list';
 
 const EmptyIcon = () => (
-  <svg className="h-16 w-16 text-muted/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="size-16 text-muted/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
   </svg>
 );
@@ -189,10 +189,14 @@ export function TaskList({
   const currentProjectName = effectiveProjectFilterIds.length > 0
     ? projects.find((project) => project.id === effectiveProjectFilterIds[0])?.name
     : null;
-  const selectedCount = selectedTaskIds.size;
+  const allTaskIds = useMemo(() => visibleTasks.map((task) => task.id), [visibleTasks]);
+  const visibleTaskIdSet = useMemo(() => new Set(allTaskIds), [allTaskIds]);
+  const selectedTaskIdSet = useMemo(() => new Set(
+    [...selectedTaskIds].filter((taskId) => visibleTaskIdSet.has(taskId)),
+  ), [selectedTaskIds, visibleTaskIdSet]);
+  const selectedCount = selectedTaskIdSet.size;
   const selectionMode = selectedCount > 0;
   const hasToolbarContent = selectionMode;
-  const allTaskIds = useMemo(() => visibleTasks.map((task) => task.id), [visibleTasks]);
   const allSelected = allTaskIds.length > 0 && selectedCount === allTaskIds.length;
 
   useEffect(() => (
@@ -202,17 +206,6 @@ export function TaskList({
       }
     }
   ), []);
-
-  useEffect(() => {
-    setSelectedTaskIds((prev) => {
-      const activeTaskIds = new Set(allTaskIds);
-      const filteredTaskIds = [...prev].filter((taskId) => activeTaskIds.has(taskId));
-      if (filteredTaskIds.length === prev.size) {
-        return prev;
-      }
-      return new Set(filteredTaskIds);
-    });
-  }, [allTaskIds]);
 
   useLayoutEffect(() => {
     const currentRects = new Map<string, DOMRect>();
@@ -247,9 +240,11 @@ export function TaskList({
           return;
         }
 
-        node.style.transition = 'none';
-        node.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
-        node.style.willChange = 'transform';
+        Object.assign(node.style, {
+          transition: 'none',
+          transform: `translate(${deltaX}px, ${deltaY}px)`,
+          willChange: 'transform',
+        });
         animatedNodes.push(node);
       });
 
@@ -259,8 +254,10 @@ export function TaskList({
         }
         animationFrameRef.current = window.requestAnimationFrame(() => {
           animatedNodes.forEach((node) => {
-            node.style.transition = `transform ${TASK_REORDER_ANIMATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
-            node.style.transform = '';
+            Object.assign(node.style, {
+              transition: `transform ${TASK_REORDER_ANIMATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
+              transform: '',
+            });
           });
           animationFrameRef.current = null;
         });
@@ -281,7 +278,7 @@ export function TaskList({
 
   const toggleTaskSelection = (taskId: string) => {
     setSelectedTaskIds((prev) => {
-      const next = new Set(prev);
+      const next = new Set([...prev].filter((id) => visibleTaskIdSet.has(id)));
       if (next.has(taskId)) {
         next.delete(taskId);
       } else {
@@ -300,11 +297,11 @@ export function TaskList({
   };
 
   const handleBatchDelete = async () => {
-    if (selectedTaskIds.size === 0 || isDeletingSelected) {
+    if (selectedTaskIdSet.size === 0 || isDeletingSelected) {
       return;
     }
     const accepted = await confirm({
-      title: `Delete ${selectedTaskIds.size} selected task(s)?`,
+      title: `Delete ${selectedTaskIdSet.size} selected task(s)?`,
       description: 'This action cannot be undone.',
       confirmLabel: 'Delete',
       tone: 'danger',
@@ -315,7 +312,7 @@ export function TaskList({
 
     setIsDeletingSelected(true);
     try {
-      await Promise.all([...selectedTaskIds].map((taskId) => deleteTask(taskId)));
+      await Promise.all([...selectedTaskIdSet].map((taskId) => deleteTask(taskId)));
       setSelectedTaskIds(new Set());
     } catch {
       pushToast({
@@ -442,13 +439,13 @@ export function TaskList({
           <div className="flex flex-wrap items-center gap-2">
             {selectionMode ? (
               <>
-                <button
+                <button type="button"
                   onClick={toggleSelectAll}
                   className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted transition-colors hover:bg-[var(--paper)] hover:text-ink"
                 >
                   {allSelected ? 'Clear All' : 'Select All'}
                 </button>
-                <button
+                <button type="button"
                   onClick={handleBatchDelete}
                   disabled={isDeletingSelected}
                   className="rounded-lg border border-[var(--error)]/30 px-2.5 py-1.5 text-xs font-medium text-[var(--error)] transition-colors hover:bg-[var(--error)]/10 disabled:opacity-50"

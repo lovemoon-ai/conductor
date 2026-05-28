@@ -73,7 +73,10 @@ export function filterTasksByProject(
   projectFilter: string | string[] | null | undefined,
   hiddenProjectIds: string[] = [],
 ): Task[] {
-  const hiddenProjectIdSet = new Set(hiddenProjectIds.map((id) => id.trim()).filter(Boolean));
+  const hiddenProjectIdSet = new Set(hiddenProjectIds.flatMap((id) => {
+    const trimmed = id.trim();
+    return trimmed ? [trimmed] : [];
+  }));
 
   const rawIds = Array.isArray(projectFilter)
     ? projectFilter
@@ -81,7 +84,10 @@ export function filterTasksByProject(
       ? [projectFilter]
       : [];
   const normalizedIds = Array.from(
-    new Set(rawIds.map((id) => id.trim()).filter(Boolean)),
+    new Set(rawIds.flatMap((id) => {
+      const trimmed = id.trim();
+      return trimmed ? [trimmed] : [];
+    })),
   );
 
   if (normalizedIds.length > 0) {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   closestCenter,
   DndContext,
@@ -99,7 +99,10 @@ export function ProjectList() {
   } = useProjectsStore();
   const agents = useAgentsStore((state) => state.agents);
   const onlineDaemonHosts = useMemo(
-    () => new Set(agents.map((agent) => agent.host.trim()).filter(Boolean)),
+    () => new Set(agents.flatMap((agent) => {
+      const host = agent.host.trim();
+      return host ? [host] : [];
+    })),
     [agents],
   );
   const hiddenProjectIdSet = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
@@ -141,49 +144,44 @@ export function ProjectList() {
   // projects. Single-member groups behave like the old single-project rows;
   // merged groups render one card with multiple daemon badges.
   const visibleGroups = useMemo(() => computeProjectGroups(visibleProjects), [visibleProjects]);
-  const [orderedVisibleGroups, setOrderedVisibleGroups] = useState<ProjectGroup[]>(visibleGroups);
+  const [dragOrderKeys, setDragOrderKeys] = useState<string[] | null>(null);
   const [activeGroupKey, setActiveGroupKey] = useState<string | null>(null);
 
-  const visibleGroupKeys = useMemo(() => visibleGroups.map((group) => group.key).join(','), [visibleGroups]);
-
-  const prevVisibleGroupsRef = useRef(visibleGroups);
-
-  useEffect(() => {
-    if (activeGroupKey !== null) {
-      return;
+  const orderedVisibleGroups = useMemo(() => {
+    if (!dragOrderKeys) {
+      return visibleGroups;
     }
 
-    const prev = prevVisibleGroupsRef.current;
-    prevVisibleGroupsRef.current = visibleGroups;
-
-    if (prev === visibleGroups) {
-      return;
+    const byKey = new Map<string, ProjectGroup>();
+    for (const group of visibleGroups) {
+      byKey.set(group.key, group);
     }
 
-    setOrderedVisibleGroups((current) => {
-      const currentKeys = current.map((g) => g.key).join(',');
-      if (currentKeys !== visibleGroupKeys) {
-        // Key set changed (project added/removed/regrouped) — full reset.
-        return visibleGroups;
+    const seen = new Set<string>();
+    const ordered = dragOrderKeys.flatMap((key) => {
+      const group = byKey.get(key);
+      if (!group) {
+        return [];
       }
-      // Keys unchanged but contents may have updated (rename, refresh) —
-      // swap in fresh group objects without disturbing the user's order.
-      const byKey = new Map<string, ProjectGroup>();
-      for (const g of visibleGroups) byKey.set(g.key, g);
-      const next = current.map((g) => byKey.get(g.key) ?? g);
-      const changed = next.some((g, i) => g !== current[i]);
-      return changed ? next : current;
+      seen.add(key);
+      return [group];
     });
-  }, [activeGroupKey, visibleGroupKeys, visibleGroups]);
+
+    for (const group of visibleGroups) {
+      if (!seen.has(group.key)) {
+        ordered.push(group);
+      }
+    }
+
+    return ordered;
+  }, [dragOrderKeys, visibleGroups]);
 
   const activeGroup = useMemo(() => {
     if (!activeGroupKey) {
       return null;
     }
-    return orderedVisibleGroups.find((group) => group.key === activeGroupKey)
-      ?? visibleGroups.find((group) => group.key === activeGroupKey)
-      ?? null;
-  }, [activeGroupKey, orderedVisibleGroups, visibleGroups]);
+    return orderedVisibleGroups.find((group) => group.key === activeGroupKey) ?? null;
+  }, [activeGroupKey, orderedVisibleGroups]);
 
   const commitOrder = useCallback((nextVisibleGroups: ProjectGroup[]) => {
     // Reorder uses individual project ids — flatten the groups back to a flat
@@ -210,29 +208,31 @@ export function ProjectList() {
 
     const activeId = String(event.active.id);
     const overId = String(event.over.id);
-    setOrderedVisibleGroups((current) => reorderProjectGroupsLocally(current, activeId, overId));
-  }, []);
+    const nextVisibleGroups = reorderProjectGroupsLocally(orderedVisibleGroups, activeId, overId);
+    setDragOrderKeys(nextVisibleGroups.map((group) => group.key));
+  }, [orderedVisibleGroups]);
 
   const handleDragCancel = useCallback((_event: DragCancelEvent) => {
     setActiveGroupKey(null);
-    setOrderedVisibleGroups(visibleGroups);
-  }, [visibleGroups]);
+    setDragOrderKeys(null);
+  }, []);
 
   const handleDragEnd = useCallback(async (event: DragEndEvent) => {
     if (!event.over) {
       setActiveGroupKey(null);
-      setOrderedVisibleGroups(visibleGroups);
+      setDragOrderKeys(null);
       return;
     }
 
     const activeId = String(event.active.id);
     const overId = String(event.over.id);
     const nextVisibleGroups = reorderProjectGroupsLocally(orderedVisibleGroups, activeId, overId);
-    setOrderedVisibleGroups(nextVisibleGroups);
+    const nextOrderKeys = nextVisibleGroups.map((group) => group.key);
+    setDragOrderKeys(nextOrderKeys);
     setActiveGroupKey(null);
 
     const previousOrder = visibleGroups.map((group) => group.key).join(',');
-    const nextOrder = nextVisibleGroups.map((group) => group.key).join(',');
+    const nextOrder = nextOrderKeys.join(',');
     if (previousOrder === nextOrder) {
       return;
     }
@@ -262,7 +262,7 @@ export function ProjectList() {
 
     return (
       <div className="flex flex-col items-center justify-center h-64 text-muted">
-        <svg className="w-16 h-16 mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg className="size-16 mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
         </svg>
         <p className="text-lg font-medium">{emptyTitle}</p>

@@ -10,29 +10,10 @@ import {
   ISSUE_STATUS_BADGE_CLASSNAMES,
   ISSUE_STATUS_LABELS,
 } from '@/lib/issues/config';
+import { pickDaemonBadgeClass } from './IssueCard.utils';
 
 const stopEventPropagation = (event: SyntheticEvent) => {
   event.stopPropagation();
-};
-
-/**
- * Hash a daemon host into one of a small palette so a given daemon stays the
- * same color across cards in a session. Pure function, no React state.
- */
-const DAEMON_BADGE_PALETTE = [
-  'bg-sky-500/15 text-sky-700 dark:text-sky-300 border-sky-500/30',
-  'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/30',
-  'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30',
-  'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30',
-  'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30',
-  'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/30',
-];
-export const pickDaemonBadgeClass = (daemonHost: string): string => {
-  let hash = 0;
-  for (let i = 0; i < daemonHost.length; i += 1) {
-    hash = (hash * 31 + daemonHost.charCodeAt(i)) | 0;
-  }
-  return DAEMON_BADGE_PALETTE[Math.abs(hash) % DAEMON_BADGE_PALETTE.length];
 };
 
 export type IssueOwnerOption = {
@@ -41,6 +22,8 @@ export type IssueOwnerOption = {
   projectId?: string;
   projectName?: string;
 };
+
+const EMPTY_OWNER_OPTIONS: IssueOwnerOption[] = [];
 
 const getOwnerInitials = (label: string): string => {
   const normalized = label.trim();
@@ -62,7 +45,7 @@ const getOwnerInitials = (label: string): string => {
 
 function IssueOwnerBadge({
   issue,
-  ownerOptions = [],
+  ownerOptions = EMPTY_OWNER_OPTIONS,
 }: {
   issue: Issue;
   ownerOptions?: IssueOwnerOption[];
@@ -74,9 +57,8 @@ function IssueOwnerBadge({
     <span
       aria-label={`Issue owner ${ownerLabel}`}
       title={ownerLabel}
-      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-paper text-[10px] font-semibold text-ink"
+      className="inline-flex size-7 shrink-0 items-center justify-center rounded-full border border-border bg-paper text-[10px] font-semibold text-ink"
       onPointerDown={stopEventPropagation}
-      onClick={stopEventPropagation}
       onDoubleClick={stopEventPropagation}
     >
       {getOwnerInitials(ownerLabel)}
@@ -130,7 +112,6 @@ function IssueStatusMenu({
       ref={menuRef}
       className="relative shrink-0"
       onPointerDown={stopEventPropagation}
-      onClick={stopEventPropagation}
       onDoubleClick={stopEventPropagation}
     >
       <button
@@ -347,7 +328,7 @@ function IssueCardBody({
                 }
                 className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${pickDaemonBadgeClass(committedDaemon)}`}
               >
-                <span aria-hidden="true" className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-80" />
+                <span aria-hidden="true" className="inline-block size-1.5 rounded-full bg-current opacity-80" />
                 {committedDaemon}
               </span>
             </div>
@@ -369,7 +350,6 @@ function IssueCardBody({
           <div
             className="mt-3 flex items-center gap-2"
             onPointerDown={stopEventPropagation}
-            onClick={stopEventPropagation}
             onDoubleClick={stopEventPropagation}
           >
             {openTask ? (

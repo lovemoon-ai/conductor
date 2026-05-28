@@ -100,7 +100,7 @@ export const planInplaceTaskRestart = (args: {
   const sourceMetadataDaemonHost = normalizeOptionalString(sourceTaskMetadata?.daemonName);
   const sourceExecutionHost = normalizeOptionalString(args.sourceTask.executionHost);
   const isManualFireTask = isConductorFireHost(sourceAgentHost);
-  const manualFireDaemonHostCandidates: string[] = [];
+  const manualFireDaemonHostCandidates = new Set<string>();
 
   for (const candidate of [
     sourceMetadataDaemonHost && !isConductorFireHost(sourceMetadataDaemonHost)
@@ -113,15 +113,16 @@ export const planInplaceTaskRestart = (args: {
       ? projectDaemonHost
       : null,
   ]) {
-    if (candidate && !manualFireDaemonHostCandidates.includes(candidate)) {
-      manualFireDaemonHostCandidates.push(candidate);
+    if (candidate) {
+      manualFireDaemonHostCandidates.add(candidate);
     }
   }
 
+  const manualFireDaemonHosts = Array.from(manualFireDaemonHostCandidates);
   let restartAgentHost = isManualFireTask
-    ? manualFireDaemonHostCandidates.find((host) =>
+    ? manualFireDaemonHosts.find((host) =>
         args.connectedAgents.some((agent) => agent.host === host),
-      ) ?? manualFireDaemonHostCandidates[0] ?? null
+      ) ?? manualFireDaemonHosts[0] ?? null
     : sourceAgentHost;
 
   if (projectDaemonHost) {

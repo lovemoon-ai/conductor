@@ -12,7 +12,7 @@ interface HelpTipProps {
 export function HelpTip({ label, children, align = 'left' }: HelpTipProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLSpanElement>(null);
-  const popupRef = useRef<HTMLSpanElement>(null);
+  const popupRef = useRef<HTMLDialogElement>(null);
   const contentId = useId();
   const [popupStyle, setPopupStyle] = useState<CSSProperties>();
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
@@ -123,21 +123,21 @@ export function HelpTip({ label, children, align = 'left' }: HelpTipProps) {
         aria-expanded={open}
         aria-controls={contentId}
         onClick={() => setOpen((prev) => !prev)}
-        className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-border bg-paper text-[11px] font-semibold text-muted transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+        className="inline-flex size-5 items-center justify-center rounded-full border border-border bg-paper text-[11px] font-semibold text-muted transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
       >
         ?
       </button>
       {open && portalTarget
         ? createPortal(
-          <span
+          <dialog
             ref={popupRef}
             id={contentId}
-            role="dialog"
+            open
             style={popupStyle}
             className="z-[9999] w-64 rounded-xl border border-border bg-[var(--surface-panel)] p-3 text-xs leading-5 text-muted shadow-[0_18px_48px_rgba(0,0,0,0.18)]"
           >
             {children}
-          </span>,
+          </dialog>,
           portalTarget,
         )
         : null}

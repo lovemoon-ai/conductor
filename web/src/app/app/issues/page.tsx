@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/common/FeedbackProvider';
 import { Header } from '@/components/layout/Header';
@@ -26,6 +26,24 @@ import type { IssueOwnerOption } from '@/features/issues/components/IssueCard';
 import type { Agent, Issue, IssueStatus, Project } from '@/shared/types';
 
 const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
+
+const subscribeToDesktopViewport = (onStoreChange: () => void) => {
+  if (typeof window === 'undefined') {
+    return () => {};
+  }
+
+  const mediaQuery = window.matchMedia(DESKTOP_MEDIA_QUERY);
+  if (typeof mediaQuery.addEventListener === 'function') {
+    mediaQuery.addEventListener('change', onStoreChange);
+    return () => mediaQuery.removeEventListener('change', onStoreChange);
+  }
+
+  mediaQuery.addListener(onStoreChange);
+  return () => mediaQuery.removeListener(onStoreChange);
+};
+
+const getDesktopViewportSnapshot = () =>
+  typeof window !== 'undefined' && window.matchMedia(DESKTOP_MEDIA_QUERY).matches;
 
 const isConductorFireHost = (host: string | null | undefined): boolean =>
   typeof host === 'string' && host.startsWith('conductor-fire-');
@@ -85,6 +103,13 @@ const getIssueDaemonOptions = (
   }
 
   const seenHost = new Set<string>();
+  const agentByHost = new Map<string, Agent>();
+  for (const agent of agents) {
+    const host = normalizeHost(agent.host);
+    if (host) {
+      agentByHost.set(host, agent);
+    }
+  }
   const options: MoveIssueToDoingDaemonOption[] = [];
 
   if (project.isDefault) {
@@ -116,7 +141,7 @@ const getIssueDaemonOptions = (
     if (!host || seenHost.has(host)) {
       continue;
     }
-    const agent = agents.find((entry) => entry.host === host);
+    const agent = agentByHost.get(host);
     if (!agent) {
       continue;
     }
@@ -138,14 +163,12 @@ type PendingIssueStart = {
 };
 
 function IssuesPageContent() {
-  const router = useRouter();
+  const { replace } = useRouter();
   const searchParams = useSearchParams();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [pendingIssueStart, setPendingIssueStart] = useState<PendingIssueStart | null>(null);
   const [hasRequestedProjects, setHasRequestedProjects] = useState(false);
-  const [isDesktop, setIsDesktop] = useState(
-    typeof window !== 'undefined' ? window.matchMedia(DESKTOP_MEDIA_QUERY).matches : false,
-  );
+  const isDesktop = useSyncExternalStore(subscribeToDesktopViewport, getDesktopViewportSnapshot, () => false);
   const { pushToast } = useToast();
 
   const agents = useAgentsStore((state) => state.agents);
@@ -281,27 +304,6 @@ function IssuesPageContent() {
   const pendingIssueInitialDaemon = pickIssueDaemon(pendingIssue, pendingIssueProject);
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
-    const mediaQuery = window.matchMedia(DESKTOP_MEDIA_QUERY);
-    const updateViewport = () => {
-      setIsDesktop(mediaQuery.matches);
-    };
-
-    updateViewport();
-
-    if (typeof mediaQuery.addEventListener === 'function') {
-      mediaQuery.addEventListener('change', updateViewport);
-      return () => mediaQuery.removeEventListener('change', updateViewport);
-    }
-
-    mediaQuery.addListener(updateViewport);
-    return () => mediaQuery.removeListener(updateViewport);
-  }, []);
-
-  useEffect(() => {
     if (shouldWaitForProjectResolution || !projectIdFromUrl || resolvedProjectId) {
       return;
     }
@@ -309,8 +311,8 @@ function IssuesPageContent() {
     const nextParams = new URLSearchParams(searchParams.toString());
     nextParams.delete('projectId');
     const nextQuery = nextParams.toString();
-    router.replace(nextQuery ? `/app/issues?${nextQuery}` : '/app/issues', { scroll: false });
-  }, [projectIdFromUrl, resolvedProjectId, router, searchParams, shouldWaitForProjectResolution]);
+    replace(nextQuery ? `/app/issues?${nextQuery}` : '/app/issues', { scroll: false });
+  }, [projectIdFromUrl, replace, resolvedProjectId, searchParams, shouldWaitForProjectResolution]);
 
   useEffect(() => {
     if (shouldWaitForProjectResolution) {
@@ -464,7 +466,7 @@ function IssuesPageContent() {
         compact
         actions={
           <div className="flex items-center gap-2">
-            <button
+            <button type="button"
               onClick={handleRefresh}
               disabled={isIssuesLoading || shouldWaitForProjectResolution}
               aria-label={isIssuesLoading ? 'Refreshing issues' : 'Refresh issues'}
@@ -473,14 +475,14 @@ function IssuesPageContent() {
             >
               <RefreshIcon spinning={isIssuesLoading} />
             </button>
-            <button
+            <button type="button"
               onClick={() => setShowCreateDialog(true)}
               aria-label="Create issue"
               title="Create issue"
               disabled={shouldWaitForProjectResolution}
               className="webapp-btn-primary flex items-center justify-center p-2.5 text-sm disabled:opacity-50"
             >
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
             </button>

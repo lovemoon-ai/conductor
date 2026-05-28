@@ -15,12 +15,13 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
   return (
     <div className="prose prose-sm dark:prose-invert max-w-none">
       {parts.map((part, index) => {
+        const partKey = `${part.type}-${index}-${part.content.slice(0, 20)}`;
         if (part.type === 'mermaid') {
-          return <MermaidDiagram key={index} code={part.content} />;
+          return <MermaidDiagram key={partKey} code={part.content} />;
         }
         return (
           <ReactMarkdown
-            key={index}
+            key={partKey}
             remarkPlugins={[remarkGfm]}
             components={{
               code({ className, children, ...props }) {

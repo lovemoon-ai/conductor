@@ -150,7 +150,7 @@ const pickDefaultJoinProjectId = (invite: InviteData): string => {
 export default function CollaborationInvitePage() {
   const params = useParams<{ token: string }>();
   const token = params.token;
-  const router = useRouter();
+  const { push } = useRouter();
   const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const { pushToast } = useToast();
   const [data, setData] = useState<InviteData | null>(null);
@@ -212,7 +212,7 @@ export default function CollaborationInvitePage() {
         title: 'Joined collaboration',
         variant: 'success',
       });
-      router.push(`/app/issues?projectId=${encodeURIComponent(selectedProjectId)}`);
+      push(`/app/issues?projectId=${encodeURIComponent(selectedProjectId)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to join collaboration');
     } finally {
@@ -226,7 +226,7 @@ export default function CollaborationInvitePage() {
       title: 'Joined collaboration',
       variant: 'success',
     });
-    router.push(`/app/issues?projectId=${encodeURIComponent(projectId)}`);
+    push(`/app/issues?projectId=${encodeURIComponent(projectId)}`);
   };
 
   const markSuggestedProjectNameUnavailable = () => {

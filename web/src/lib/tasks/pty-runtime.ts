@@ -26,7 +26,7 @@ export const normalizeBackendType = (value: unknown): string | null => {
 const hasOwn = (value: JsonObject | null, key: string): boolean =>
   Boolean(value) && Object.prototype.hasOwnProperty.call(value, key);
 
-export const parsePositiveTerminalDimension = (value: unknown): number | null =>
+const parsePositiveTerminalDimension = (value: unknown): number | null =>
   normalizePositiveInteger(value);
 
 export const validatePtyLaunchConfig = (launchConfig: JsonObject | null): string | null => {
@@ -96,7 +96,7 @@ export const buildPtySessionRestartPatch = (launchConfig: JsonObject | null) => 
   ...buildPtySessionConfigPatch(launchConfig),
 });
 
-export const resolvePtyRequiredBackend = (
+const resolvePtyRequiredBackend = (
   requestedBackendType: string | null,
   launchConfig: JsonObject | null,
 ): string | null =>
@@ -107,7 +107,7 @@ export const resolvePtyRequiredBackend = (
       launchConfig?.tool_preset,
   );
 
-export const supportsPtyTask = (
+const supportsPtyTask = (
   agent: ConnectedAgent,
   requiredBackendType: string | null,
 ): boolean =>
@@ -117,7 +117,7 @@ export const supportsPtyTask = (
     agent.supportedBackends.length === 0 ||
     agent.supportedBackends.includes(requiredBackendType));
 
-export const pickDefaultPtyAgentHost = (
+const pickDefaultPtyAgentHost = (
   agents: ConnectedAgent[],
   requiredBackendType: string | null,
 ): string | undefined =>

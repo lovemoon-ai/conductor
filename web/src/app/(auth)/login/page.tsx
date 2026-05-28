@@ -13,14 +13,14 @@ function resolveSafeNextPath(value: string | null): string {
 }
 
 function LoginPageContent() {
-  const router = useRouter();
+  const { replace } = useRouter();
   const searchParams = useSearchParams();
   const nextPath = resolveSafeNextPath(searchParams.get("next"));
 
   return (
     <div className="min-h-screen flex items-center justify-center px-6">
       <div className="w-full max-w-md">
-        <LoginForm onSuccess={() => router.replace(nextPath)} />
+        <LoginForm onSuccess={() => replace(nextPath)} />
       </div>
     </div>
   );

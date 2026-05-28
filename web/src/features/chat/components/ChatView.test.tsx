@@ -84,36 +84,50 @@ vi.mock('./MessageBubble', () => ({
   ),
 }));
 
-vi.mock('./MessageInput', () => ({
-  MessageInput: ({
+vi.mock('./MessageInput', async () => {
+  const React = await import('react');
+
+  const MockMessageInput = React.forwardRef(function MockMessageInput({
     onSend,
     onInterrupt,
     sendDisabled,
     interruptEnabled,
     interruptPending,
-    resendRequest,
   }: {
     onSend: (content: string) => void;
     onInterrupt?: () => void;
     sendDisabled?: boolean;
     interruptEnabled?: boolean;
     interruptPending?: boolean;
-    resendRequest?: { id: number; content: string } | null;
-  }) => (
-    <div data-testid="message-input">
-      <button type="button" data-testid="send-button" onClick={() => onSend('hello')}>
-        mock send
-      </button>
-      <button type="button" data-testid="interrupt-button" onClick={() => onInterrupt?.()}>
-        mock interrupt
-      </button>
-      <div data-testid="send-disabled">{String(Boolean(sendDisabled))}</div>
-      <div data-testid="interrupt-enabled">{String(Boolean(interruptEnabled))}</div>
-      <div data-testid="interrupt-pending">{String(Boolean(interruptPending))}</div>
-      <div data-testid="resend-request">{resendRequest?.content ?? ''}</div>
-    </div>
-  ),
-}));
+  }, ref: React.ForwardedRef<{ resend: (content: string) => void }>) {
+    const [resendRequest, setResendRequest] = React.useState('');
+
+    React.useImperativeHandle(ref, () => ({
+      resend: (content: string) => {
+        setResendRequest(content);
+      },
+    }), []);
+
+    return (
+      <div data-testid="message-input">
+        <button type="button" data-testid="send-button" onClick={() => onSend('hello')}>
+          mock send
+        </button>
+        <button type="button" data-testid="interrupt-button" onClick={() => onInterrupt?.()}>
+          mock interrupt
+        </button>
+        <div data-testid="send-disabled">{String(Boolean(sendDisabled))}</div>
+        <div data-testid="interrupt-enabled">{String(Boolean(interruptEnabled))}</div>
+        <div data-testid="interrupt-pending">{String(Boolean(interruptPending))}</div>
+        <div data-testid="resend-request">{resendRequest}</div>
+      </div>
+    );
+  });
+
+  MockMessageInput.displayName = 'MockMessageInput';
+
+  return { MessageInput: MockMessageInput };
+});
 
 vi.mock('@/components/common/LoadingSpinner', () => ({
   LoadingSpinner: () => <div data-testid="loading-spinner" />,
@@ -131,6 +145,10 @@ const makeMessage = (id: string, content = `message-${id}`, metadata: Record<str
   metadata,
   createdAt: '2026-03-07T12:00:00.000Z',
 });
+
+type TestMessage = Omit<ReturnType<typeof makeMessage>, 'role'> & {
+  role: 'sdk' | 'user';
+};
 
 const mockScrollMetrics = (
   element: HTMLDivElement,
@@ -178,7 +196,7 @@ const mockScrollMetrics = (
 
 describe('ChatView', () => {
   let chatState: {
-    messagesByTask: Record<string, Array<ReturnType<typeof makeMessage>>>;
+    messagesByTask: Record<string, TestMessage[]>;
     historyStateByTask: Record<string, { hasMoreBefore: boolean; oldestMessageId: string | null }>;
     loadingTasks: Set<string>;
     fetchMessages: typeof fetchMessagesMock;
@@ -448,7 +466,7 @@ describe('ChatView', () => {
   });
 
   it('disables restart while an interrupt request is pending', async () => {
-    let resolveInterrupt: (() => void) | null = null;
+    let resolveInterrupt!: () => void;
     apiPostMock.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -487,11 +505,11 @@ describe('ChatView', () => {
     expect(restartTaskMock).not.toHaveBeenCalled();
     expect(screen.getByText('Wait for the current interrupt to finish before restarting the AI session.')).toBeInTheDocument();
 
-    resolveInterrupt?.();
+    resolveInterrupt();
   });
 
   it('blocks sends while a restart is already in progress', async () => {
-    let resolveRestart: (() => void) | null = null;
+    let resolveRestart!: () => void;
     restartTaskMock.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -525,7 +543,7 @@ describe('ChatView', () => {
     expect(screen.getByTestId('send-disabled')).toHaveTextContent('true');
     expect(screen.getByText('Restarting the current AI session…')).toBeInTheDocument();
 
-    resolveRestart?.();
+    resolveRestart();
     await waitFor(() => {
       expect(screen.getByTestId('message-restart-pending-msg-user-1')).toHaveTextContent('false');
     });
@@ -915,7 +933,7 @@ describe('ChatView', () => {
 
   it('does not auto-dismiss the in-flight "Restarting the current AI session…" notice', async () => {
     vi.useFakeTimers();
-    let resolveRestart: (() => void) | null = null;
+    let resolveRestart!: () => void;
     restartTaskMock.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -957,7 +975,7 @@ describe('ChatView', () => {
     expect(screen.getByText('Restarting the current AI session…')).toBeInTheDocument();
 
     await act(async () => {
-      resolveRestart?.();
+      resolveRestart();
       await Promise.resolve();
       await Promise.resolve();
     });

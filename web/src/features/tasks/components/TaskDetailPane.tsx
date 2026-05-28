@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Header } from '@/components/layout/Header';
 import { ChatView } from '@/features/chat';
 import { TerminalView } from '@/features/terminal';
@@ -25,46 +25,38 @@ export function TaskDetailPane({
   hideHeader = false,
 }: TaskDetailPaneProps) {
   const { tasks, fetchTask, markTaskRead } = useTasksStore();
-  const [blockingLoadTaskId, setBlockingLoadTaskId] = useState<string | null>(null);
+  const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const task = tasks.find((item) => item.id === taskId);
+  const taskExistsRef = useRef(false);
+  taskExistsRef.current = Boolean(task);
 
   useEffect(() => {
     let cancelled = false;
 
-    if (taskId) {
-      if (!task) {
-        setBlockingLoadTaskId(taskId);
-      } else {
-        setBlockingLoadTaskId((current) => (current === taskId ? null : current));
-      }
-
-      void fetchTask(taskId).finally(() => {
-        if (!cancelled) {
-          setBlockingLoadTaskId((current) => (current === taskId ? null : current));
-        }
-      });
-    } else {
-      setBlockingLoadTaskId(null);
+    if (!taskId) {
+      return () => {
+        cancelled = true;
+      };
     }
+
+    markTaskRead(taskId);
+    const shouldBlock = !taskExistsRef.current;
+    if (shouldBlock) {
+      setPendingTaskId(taskId);
+    }
+
+    void fetchTask(taskId).finally(() => {
+      if (!cancelled && shouldBlock) {
+        setPendingTaskId((current) => (current === taskId ? null : current));
+      }
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [fetchTask, taskId]);
+  }, [fetchTask, markTaskRead, taskId]);
 
-  useEffect(() => {
-    if (task) {
-      setBlockingLoadTaskId((current) => (current === taskId ? null : current));
-    }
-  }, [task, taskId]);
-
-  useEffect(() => {
-    if (taskId) {
-      markTaskRead(taskId);
-    }
-  }, [markTaskRead, taskId]);
-
-  if (!task && blockingLoadTaskId === taskId) {
+  if (!task && pendingTaskId === taskId) {
     return (
       <div className="flex h-full items-center justify-center">
         <LoadingSpinner size="lg" />

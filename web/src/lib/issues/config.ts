@@ -65,7 +65,7 @@ export const normalizeIssueStatus = (value: unknown): IssueStatusValue => {
   return coerceIssueStatus(value) ?? 'todo';
 };
 
-export const isIssueStatus = (value: unknown): value is IssueStatusValue => {
+const isIssueStatus = (value: unknown): value is IssueStatusValue => {
   return typeof value === 'string' && ISSUE_STATUSES.includes(value.trim().toLowerCase() as IssueStatusValue);
 };
 

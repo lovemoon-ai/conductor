@@ -56,10 +56,12 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
     }
     throw error;
   }
-  const currentIds = [...projects].sort(compareProjectsForDisplay).map((project) => project.id);
+  const currentIds = projects
+    .toSorted(compareProjectsForDisplay)
+    .map((project: (typeof projects)[number]) => project.id);
   if (
     currentIds.length !== requestedIds.length ||
-    currentIds.some((id) => !uniqueIds.includes(id))
+    currentIds.some((id: string) => !uniqueIds.includes(id))
   ) {
     return NextResponse.json(
       { error: "projectIds must include every project exactly once" },

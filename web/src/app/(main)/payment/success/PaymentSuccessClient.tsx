@@ -75,9 +75,9 @@ export default function PaymentSuccessClient() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 px-4">
       <div className="max-w-md w-full bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 text-center">
         <div className="mb-6">
-          <div className="mx-auto w-16 h-16 bg-green-100 dark:bg-green-900 rounded-full flex items-center justify-center">
+          <div className="mx-auto size-16 bg-green-100 dark:bg-green-900 rounded-full flex items-center justify-center">
             <svg
-              className="w-10 h-10 text-green-600 dark:text-green-400"
+              className="size-10 text-green-600 dark:text-green-400"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -114,7 +114,7 @@ export default function PaymentSuccessClient() {
           {interpolate(t.paymentSuccess.redirectCountdown, { seconds: countdown })}
         </p>
 
-        <button
+        <button type="button"
           onClick={navigateToHome}
           className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
         >

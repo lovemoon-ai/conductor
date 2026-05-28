@@ -442,7 +442,8 @@ export class RealtimeHub {
       if (conn.kind !== "app" || conn.userId !== userId) {
         continue;
       }
-      if (projectId && !conn.projectIds.includes("*") && !conn.projectIds.includes(projectId)) {
+      const projectIdSet = new Set(conn.projectIds);
+      if (projectId && !projectIdSet.has("*") && !projectIdSet.has(projectId)) {
         continue;
       }
       conn.send(payload);
@@ -455,7 +456,8 @@ export class RealtimeHub {
     let sentCount = 0;
     for (const conn of this.connections.values()) {
       if (conn.userId !== userId) continue;
-      if (conn.projectIds.includes("*") || conn.projectIds.includes(projectId)) {
+      const projectIdSet = new Set(conn.projectIds);
+      if (projectIdSet.has("*") || projectIdSet.has(projectId)) {
         conn.send(payload);
         sentCount++;
       }
@@ -509,9 +511,10 @@ export class RealtimeHub {
     const key = `${taskId}:${requestId}`;
     const normalizedHosts = Array.from(
       new Set(
-        (options.expectedHosts || [])
-          .map((host) => (typeof host === "string" ? host.trim() : ""))
-          .filter(Boolean),
+        (options.expectedHosts || []).flatMap((host) => {
+          const trimmed = typeof host === "string" ? host.trim() : "";
+          return trimmed ? [trimmed] : [];
+        }),
       ),
     );
     const expectedHosts = normalizedHosts.length > 0 ? new Set(normalizedHosts) : null;

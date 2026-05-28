@@ -346,7 +346,7 @@ describe('AiManagerPanel', () => {
     expect(quotaSection).not.toBeNull();
     // While status is still loading, the Quota section should show a
     // loading state — not advertised-but-unverified tool cards.
-    expect(within(quotaSection!).getByText('Loading quota...')).toBeInTheDocument();
+    expect(within(quotaSection!).getByText('Loading quota…')).toBeInTheDocument();
     expect(within(quotaSection!).queryByText('Codex')).not.toBeInTheDocument();
     expect(within(quotaSection!).queryByText(/Copilot/)).not.toBeInTheDocument();
   });

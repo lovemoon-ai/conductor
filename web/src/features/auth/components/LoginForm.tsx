@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useSyncExternalStore } from "react";
 import { useTranslation } from "@/lib/i18n";
 import { useAuthStore } from "@/features/auth";
 import Link from "next/link";
@@ -43,7 +43,7 @@ function dialCodeToNumber(code: string): number {
   return Number.parseInt(code.replace("+", ""), 10);
 }
 
-const COUNTRY_CODES = [...COUNTRY_CODES_RAW].sort((a, b) => {
+const COUNTRY_CODES = COUNTRY_CODES_RAW.toSorted((a, b) => {
   const diff = dialCodeToNumber(a.code) - dialCodeToNumber(b.code);
   if (diff !== 0) return diff;
   return a.country.localeCompare(b.country);
@@ -54,6 +54,48 @@ const COUNTRY_TO_DIAL: Record<string, string> = {};
 COUNTRY_CODES.forEach((c) => {
   COUNTRY_TO_DIAL[c.country] = c.code;
 });
+
+function detectInitialCountryCode(): string {
+  if (typeof window === 'undefined') {
+    return '+86';
+  }
+
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const timezoneToCountry: Record<string, string> = {
+      'Asia/Shanghai': 'CN',
+      'Asia/Hong_Kong': 'HK',
+      'Asia/Taipei': 'TW',
+      'Asia/Tokyo': 'JP',
+      'Asia/Seoul': 'KR',
+      'Asia/Singapore': 'SG',
+      'America/New_York': 'US',
+      'America/Los_Angeles': 'US',
+      'America/Chicago': 'US',
+      'Europe/London': 'GB',
+      'Europe/Paris': 'FR',
+      'Europe/Berlin': 'DE',
+      'Australia/Sydney': 'AU',
+      'Asia/Kolkata': 'IN',
+    };
+
+    const timezoneCountry = timezoneToCountry[timezone];
+    if (timezoneCountry && COUNTRY_TO_DIAL[timezoneCountry]) {
+      return COUNTRY_TO_DIAL[timezoneCountry];
+    }
+
+    const locale = navigator.language || 'en-US';
+    const localeCountry = locale.split('-')[1]?.toUpperCase();
+    if (localeCountry && COUNTRY_TO_DIAL[localeCountry]) {
+      return COUNTRY_TO_DIAL[localeCountry];
+    }
+  } catch {
+  }
+
+  return '+86';
+}
+
+const subscribeToHydration = () => () => {};
 
 function countryToFlag(countryCode: string): string {
   const FLAG_OVERRIDES: Record<string, string> = {
@@ -68,29 +110,15 @@ function countryToFlag(countryCode: string): string {
     .replace(/./g, (char) => String.fromCodePoint(127397 + char.charCodeAt(0)));
 }
 
-async function detectCountryFromIp(): Promise<string | null> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 3000);
-  try {
-    const res = await fetch("https://ipapi.co/json/", { signal: controller.signal });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { country_code?: string };
-    return data.country_code?.toUpperCase() ?? null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
 interface LoginFormProps {
   onSuccess?: (token: string) => void;
   stayOnSuccess?: boolean;
 }
 
 export function LoginForm({ onSuccess, stayOnSuccess = false }: LoginFormProps) {
+  const autoCountryCode = useSyncExternalStore(subscribeToHydration, detectInitialCountryCode, () => "+86");
   const [phone, setPhone] = useState("");
-  const [countryCode, setCountryCode] = useState("+86");
+  const [countryCodeOverride, setCountryCodeOverride] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [showInviteCode, setShowInviteCode] = useState(false);
@@ -100,62 +128,11 @@ export function LoginForm({ onSuccess, stayOnSuccess = false }: LoginFormProps) 
 
   const { t } = useTranslation();
   const establishSession = useAuthStore((state) => state.establishSession);
-
-  // Detect user's country and set a sensible default dial code
-  useEffect(() => {
-    const detectCountry = async () => {
-      try {
-        // First try IP-based geolocation for a more accurate default
-        const ipCountry = await detectCountryFromIp();
-        if (ipCountry && COUNTRY_TO_DIAL[ipCountry]) {
-          setCountryCode(COUNTRY_TO_DIAL[ipCountry]);
-          return;
-        }
-
-        // Common timezone to country mappings
-        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-        const timezoneToCountry: Record<string, string> = {
-          "Asia/Shanghai": "CN",
-          "Asia/Hong_Kong": "HK",
-          "Asia/Taipei": "TW",
-          "Asia/Tokyo": "JP",
-          "Asia/Seoul": "KR",
-          "Asia/Singapore": "SG",
-          "America/New_York": "US",
-          "America/Los_Angeles": "US",
-          "America/Chicago": "US",
-          "Europe/London": "GB",
-          "Europe/Paris": "FR",
-          "Europe/Berlin": "DE",
-          "Australia/Sydney": "AU",
-          "Asia/Kolkata": "IN",
-        };
-
-        let detectedCountry = timezoneToCountry[timezone];
-
-        // Fallback to locale-based detection
-        if (!detectedCountry) {
-          const locale = navigator.language || "en-US";
-          const localeCountry = locale.split("-")[1]?.toUpperCase();
-          if (localeCountry && COUNTRY_TO_DIAL[localeCountry]) {
-            detectedCountry = localeCountry;
-          }
-        }
-
-        if (detectedCountry && COUNTRY_TO_DIAL[detectedCountry]) {
-          setCountryCode(COUNTRY_TO_DIAL[detectedCountry]);
-        }
-      } catch {
-        // Keep default +86 if detection fails
-      }
-    };
-
-    detectCountry();
-  }, []);
+  const countryCode = countryCodeOverride ?? autoCountryCode;
 
   useEffect(() => {
     if (countdown <= 0) return;
-    const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+    const timer = setTimeout(() => setCountdown((prev) => prev - 1), 1000);
     return () => clearTimeout(timer);
   }, [countdown]);
 
@@ -216,7 +193,7 @@ export function LoginForm({ onSuccess, stayOnSuccess = false }: LoginFormProps) 
       <div className="flex h-14 items-center rounded-full border border-[var(--border)] bg-[var(--panel)] px-4 transition-colors focus-within:border-[var(--accent)]">
         <select
           value={countryCode}
-          onChange={(e) => setCountryCode(e.target.value)}
+          onChange={(e) => setCountryCodeOverride(e.target.value)}
           aria-label="country code"
           className="h-full min-w-[64px] appearance-none bg-transparent border-0 p-0 text-base text-[var(--ink)] focus:outline-none"
         >
@@ -254,6 +231,7 @@ export function LoginForm({ onSuccess, stayOnSuccess = false }: LoginFormProps) 
             value={inviteCode}
             onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
             placeholder={t.loginForm.inviteCodePlaceholder}
+            aria-label={t.loginForm.inviteCodeLabel}
             className="h-full w-full bg-transparent border-0 px-1 text-base text-[var(--ink)] focus:outline-none placeholder:text-[var(--muted)]"
           />
         </div>
@@ -267,7 +245,7 @@ export function LoginForm({ onSuccess, stayOnSuccess = false }: LoginFormProps) 
           aria-label={t.loginForm.code}
           className="h-full min-w-0 flex-1 bg-transparent border-0 px-1 text-base text-[var(--ink)] focus:outline-none placeholder:text-[var(--muted)]"
         />
-        <button
+        <button type="button"
           onClick={requestCode}
           disabled={loading || !phone || countdown > 0}
           className="ml-2 shrink-0 border-l border-[var(--border)] pl-3 text-sm text-[var(--accent)] whitespace-nowrap hover:opacity-90 disabled:opacity-50 sm:text-base sm:pl-4"
@@ -286,7 +264,7 @@ export function LoginForm({ onSuccess, stayOnSuccess = false }: LoginFormProps) 
         </Link>
         {t.loginForm.consentSuffix}
       </p>
-      <button
+      <button type="button"
         onClick={login}
         disabled={loading || !phone || !code}
         className="h-14 w-full rounded-full bg-[var(--accent)] text-lg font-semibold text-white hover:opacity-95 disabled:opacity-50"

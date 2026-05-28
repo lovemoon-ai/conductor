@@ -1,4 +1,4 @@
-export const normalizeConfiguredAgentWsUrl = (value: string | undefined): string | null => {
+const normalizeConfiguredAgentWsUrl = (value: string | undefined): string | null => {
   if (typeof value !== "string" || !value.trim()) {
     return null;
   }
