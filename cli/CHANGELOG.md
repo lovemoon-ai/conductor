@@ -1,5 +1,12 @@
 # @love-moon/conductor-cli
 
+## 0.5.0
+
+### Patch Changes
+
+- @love-moon/conductor-sdk@0.5.0
+- @love-moon/ai-sdk@0.5.0
+
 ## 0.4.2
 
 ### Patch Changes
