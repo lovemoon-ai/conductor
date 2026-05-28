@@ -9,7 +9,7 @@
 
 import type { PrismaClient } from "@prisma/client";
 
-export const KILLED_REASONS = [
+const KILLED_REASONS = [
   "user_stopped",
   "daemon_disconnected",
   "fire_exit",
@@ -105,7 +105,7 @@ export async function withKilledReasonFallback<T>(
  * update before this RFC and want to layer the reason in without rewriting
  * the original transaction. Logs and swallows schema-missing errors.
  */
-export async function tagKilledReason(
+async function tagKilledReason(
   db: PrismaClient,
   taskId: string,
   reason: KilledReason,

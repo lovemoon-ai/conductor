@@ -165,7 +165,7 @@ export const acquireTaskWorktreeMutationLock = async (
   });
 };
 
-export const buildTaskStopOutboxData = (args: {
+const buildTaskStopOutboxData = (args: {
   userId: string;
   agentHost: string;
   taskId: string;

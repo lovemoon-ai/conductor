@@ -31,7 +31,7 @@ export default function ProjectsPage() {
           : 'Click to clear project selection. Double-click to show hidden projects.'}
         actions={
           <div className="flex items-center gap-2">
-            <button
+            <button type="button"
               onClick={() => fetchProjects()}
               disabled={isLoading}
               aria-label={isLoading ? 'Refreshing projects' : 'Refresh projects'}
@@ -40,13 +40,13 @@ export default function ProjectsPage() {
             >
               <RefreshIcon spinning={isLoading} />
             </button>
-            <button
+            <button type="button"
               onClick={() => setShowCreateDialog(true)}
               aria-label="Create project"
               title="Create project"
               className="webapp-btn-primary flex items-center justify-center p-2.5 text-sm"
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
             </button>

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createRef } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MessageInput } from './MessageInput';
+import { MessageInput, type MessageInputHandle } from './MessageInput';
 import { useChatStore } from '../store';
 import type { Message } from '@/shared/types';
 
@@ -168,20 +169,19 @@ describe('MessageInput', () => {
 
   it('submits a resend request through the normal send flow', async () => {
     const onSendMock = vi.fn();
-    const { rerender } = render(
+    const inputRef = createRef<MessageInputHandle>();
+
+    render(
       <MessageInput
+        ref={inputRef}
         taskId="task-resend"
         onSend={onSendMock}
       />,
     );
 
-    rerender(
-      <MessageInput
-        taskId="task-resend"
-        onSend={onSendMock}
-        resendRequest={{ id: 1, content: '  repeat this  ' }}
-      />,
-    );
+    act(() => {
+      inputRef.current?.resend('  repeat this  ');
+    });
 
     await waitFor(() => {
       expect(onSendMock).toHaveBeenCalledWith('repeat this');
@@ -191,22 +191,20 @@ describe('MessageInput', () => {
 
   it('keeps a resend request in the composer when sending is disabled', async () => {
     const onSendMock = vi.fn();
-    const { rerender } = render(
+    const inputRef = createRef<MessageInputHandle>();
+
+    render(
       <MessageInput
+        ref={inputRef}
         taskId="task-resend-disabled"
         onSend={onSendMock}
         sendDisabled
       />,
     );
 
-    rerender(
-      <MessageInput
-        taskId="task-resend-disabled"
-        onSend={onSendMock}
-        sendDisabled
-        resendRequest={{ id: 1, content: 'retry when ready' }}
-      />,
-    );
+    act(() => {
+      inputRef.current?.resend('retry when ready');
+    });
 
     await waitFor(() => {
       expect(screen.getByTestId('message-input-textarea')).toHaveValue('retry when ready');

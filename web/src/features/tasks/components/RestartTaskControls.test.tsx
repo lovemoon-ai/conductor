@@ -6,6 +6,7 @@ const pushMock = vi.fn();
 const replaceMock = vi.fn();
 const restartTaskMock = vi.fn();
 const pushToastMock = vi.fn();
+const FIXED_DATE = new Date('2024-01-15T10:00:00Z');
 
 let agentsState = {
   agents: [] as Array<{ host: string; supportedBackends: string[]; runtimeBackendMap?: Record<string, string> }>,
@@ -74,7 +75,7 @@ describe('RestartTaskControls', () => {
           agentHost: 'daemon-1',
           backendType: 'codex',
           sessionId: 'sess-1',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
         }}
       />,
     );
@@ -101,7 +102,7 @@ describe('RestartTaskControls', () => {
           agentHost: 'daemon-1',
           backendType: 'codex',
           sessionId: 'sess-1',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
         }}
       />,
     );
@@ -133,7 +134,7 @@ describe('RestartTaskControls', () => {
           agentHost: 'daemon-1',
           backendType: 'codex',
           sessionId: 'sess-1',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
         }}
       />,
     );
@@ -172,7 +173,7 @@ describe('RestartTaskControls', () => {
           agentHost: 'daemon-1',
           backendType: 'codex',
           sessionId: 'sess-1',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
         }}
       />,
     );
@@ -202,7 +203,7 @@ describe('RestartTaskControls', () => {
           agentHost: 'daemon-1',
           backendType: 'codex',
           sessionId: 'sess-unknown-1',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
         }}
       />,
     );
@@ -223,7 +224,7 @@ describe('RestartTaskControls', () => {
           agentHost: 'daemon-1',
           backendType: 'codex',
           sessionId: 'sess-1',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
         }}
       />,
     );
@@ -252,7 +253,7 @@ describe('RestartTaskControls', () => {
           executionHost: 'daemon-1',
           backendType: 'codex',
           sessionId: 'sess-fire-1',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
         }}
       />,
     );
@@ -276,7 +277,7 @@ describe('RestartTaskControls', () => {
           backendType: 'codex',
           sessionId: 'sess-fire-1b',
           metadata: { daemonName: 'daemon-1' },
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
         }}
       />,
     );
@@ -309,7 +310,7 @@ describe('RestartTaskControls', () => {
           executionHost: 'conductor-fire-mac-1',
           backendType: 'codex',
           sessionId: 'sess-fire-1c',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
         }}
       />,
     );
@@ -333,7 +334,7 @@ describe('RestartTaskControls', () => {
           executionHost: 'conductor-fire-mac-1',
           backendType: 'codex',
           sessionId: 'sess-fire-2',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
         }}
       />,
     );
@@ -366,7 +367,7 @@ describe('RestartTaskControls', () => {
           agentHost: 'daemon-1',
           backendType: 'test-external',
           sessionId: 'sess-external-1',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
         }}
       />,
     );
@@ -403,7 +404,7 @@ describe('RestartTaskControls', () => {
           agentHost: 'daemon-1',
           backendType: 'codex-gamma',
           sessionId: 'sess-codex-gamma-1',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
         }}
       />,
     );
@@ -441,7 +442,7 @@ describe('RestartTaskControls', () => {
           agentHost: 'daemon-1',
           backendType: 'codex-enterprise',
           sessionId: 'sess-codex-enterprise-1',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
         }}
       />,
     );

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { SectionCard } from '@/components/common/SectionCard';
 import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 import { useAgentsStore } from '@/features/agents';
@@ -132,6 +132,12 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
   const { pushToast } = useToast();
   const [restartingHost, setRestartingHost] = useState<string | null>(null);
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearRestartTimer = useCallback(() => {
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+  }, []);
 
   const selectedHost = useAiManagerStore((s) => s.selectedHost);
   const setSelectedHost = useAiManagerStore((s) => s.setSelectedHost);
@@ -142,13 +148,8 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
 
   useEffect(() => {
     void fetchAgents();
-    return () => {
-      if (restartTimerRef.current) {
-        clearTimeout(restartTimerRef.current);
-        restartTimerRef.current = null;
-      }
-    };
-  }, [fetchAgents]);
+    return clearRestartTimer;
+  }, [clearRestartTimer, fetchAgents]);
 
   // Honor the explicit prop on first mount (and whenever it changes), regardless of
   // any prior store selection. Falls back to the first connected manageable daemon
@@ -177,8 +178,9 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
   // Fetch + poll whenever the selection changes.
   useEffect(() => {
     if (!selectedHost) return;
-    void fetchAll(selectedHost, { externalQuotaBackends: externalBackends });
-    startPolling(selectedHost, { externalQuotaBackends: externalBackends });
+    const externalQuotaBackends = externalBackendKey ? externalBackendKey.split(',') : [];
+    void fetchAll(selectedHost, { externalQuotaBackends });
+    startPolling(selectedHost, { externalQuotaBackends });
     return () => stopPolling();
   }, [selectedHost, externalBackendKey, fetchAll, startPolling, stopPolling]);
 
@@ -230,10 +232,7 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
     });
     if (!accepted) return;
 
-    if (restartTimerRef.current) {
-      clearTimeout(restartTimerRef.current);
-      restartTimerRef.current = null;
-    }
+    clearRestartTimer();
     setRestartingHost(host);
     try {
       const api = getApiClient();
@@ -278,7 +277,7 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
 
       <SectionCard title="AI tools">
         {state?.loading?.status && !status ? (
-          <p className="text-sm text-muted">Loading AI tools...</p>
+          <p className="text-sm text-muted">Loading AI tools…</p>
         ) : status && availableTools.length > 0 ? (
           <div className="flex flex-col divide-y divide-border">
             {availableTools.map((tool) => (
@@ -306,7 +305,7 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
             the column past the viewport on mobile and bleed through the
             SectionCard border. */}
         {state?.loading?.status && !status ? (
-          <p className="text-sm text-muted">Loading quota...</p>
+          <p className="text-sm text-muted">Loading quota…</p>
         ) : availableTools.length > 0 ? (
           <div className={`grid gap-5 ${quotaGridClass(availableTools.length)}`}>
             {availableTools.map((tool) => {

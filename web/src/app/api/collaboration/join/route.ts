@@ -110,7 +110,10 @@ export async function POST(request: NextRequest) {
           return { status: 404 as const, body: { error: 'Collaboration invite not found' } };
         }
 
-        const existingMember = collaboration.members.find((member) => member.userId === user.id) ?? null;
+        const memberByUserId = new Map<string, { userId: string; projectId: string }>(
+          collaboration.members.map((member: { userId: string; projectId: string }) => [member.userId, member]),
+        );
+        const existingMember = memberByUserId.get(user.id) ?? null;
         let targetProjectId: string;
         let targetProjectCollaborationId: string | null;
 

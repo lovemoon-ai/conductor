@@ -1,11 +1,11 @@
-export const TASK_TYPE_VALUES = ["ai_task", "pty_task"] as const;
+const TASK_TYPE_VALUES = ["ai_task", "pty_task"] as const;
 
 export type TaskType = (typeof TASK_TYPE_VALUES)[number];
 export type JsonObject = Record<string, unknown>;
 
 export const DEFAULT_TASK_TYPE: TaskType = "ai_task";
 
-export const isJsonObject = (value: unknown): value is JsonObject =>
+const isJsonObject = (value: unknown): value is JsonObject =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
 export const parseTaskType = (value: unknown): TaskType | null => {

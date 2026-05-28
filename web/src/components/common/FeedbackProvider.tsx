@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
+import { createContext, use, useCallback, useMemo, useRef, useState } from 'react';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Toast, type ToastItem, type ToastVariant } from './Toast';
 
@@ -95,7 +95,7 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
 }
 
 export function useToast() {
-  const context = useContext(FeedbackContext);
+  const context = use(FeedbackContext);
 
   return useMemo(() => ({
     pushToast: (input: ToastInput) => {
@@ -111,7 +111,7 @@ export function useToast() {
 }
 
 export function useConfirm() {
-  const context = useContext(FeedbackContext);
+  const context = use(FeedbackContext);
 
   return useMemo(() => ({
     confirm: async (options: ConfirmOptions) => {

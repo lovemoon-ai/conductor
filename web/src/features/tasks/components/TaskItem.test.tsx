@@ -13,6 +13,7 @@ const onOpenTaskMock = vi.fn();
 const confirmMock = vi.fn();
 const pushToastMock = vi.fn();
 const apiPostMock = vi.fn();
+const FIXED_DATE = new Date('2024-01-15T10:00:00Z');
 let runtimeByTask: Record<string, unknown> = {};
 
 vi.mock('next/navigation', () => ({
@@ -111,7 +112,7 @@ describe('TaskItem', () => {
           projectId: null,
           agentHost: 'daemon-a',
           metadata: { backendType: 'claude' },
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -140,7 +141,7 @@ describe('TaskItem', () => {
             worktree: true,
             worktreeBranch: 'abc123',
           },
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -158,7 +159,7 @@ describe('TaskItem', () => {
       id: 'task-kill-1',
       title: 'Killable Task',
       status: 'killed',
-      createdAt: new Date().toISOString(),
+      createdAt: FIXED_DATE.toISOString(),
     });
 
     render(
@@ -169,7 +170,7 @@ describe('TaskItem', () => {
           status: 'running',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -197,7 +198,7 @@ describe('TaskItem', () => {
       id: 'task-kill-pending',
       title: 'Kill Pending Task',
       status: 'killing',
-      createdAt: new Date().toISOString(),
+      createdAt: FIXED_DATE.toISOString(),
     });
 
     render(
@@ -208,7 +209,7 @@ describe('TaskItem', () => {
           status: 'running',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -236,7 +237,7 @@ describe('TaskItem', () => {
           status: 'running',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -278,7 +279,7 @@ describe('TaskItem', () => {
           agentHost: 'daemon-a',
           backendType: 'codex',
           sessionId: 'sess-1',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -313,7 +314,7 @@ describe('TaskItem', () => {
           status: 'unknown',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -345,7 +346,7 @@ describe('TaskItem', () => {
           status: 'init',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -369,7 +370,7 @@ describe('TaskItem', () => {
           projectId: null,
           agentHost: 'conductor-fire-mac-m1-12345',
           metadata: { backendType: 'codex', daemonName: 'mac-studio' },
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -394,7 +395,7 @@ describe('TaskItem', () => {
           projectId: null,
           agentHost: 'daemon-a',
           launchConfig: { toolPreset: 'codex' },
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -426,7 +427,7 @@ describe('TaskItem', () => {
           agentHost: 'daemon-a',
           lastUserMessage: 'Write a landing page with pricing cards',
           lastAssistantMessage: 'Older assistant reply',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -457,7 +458,7 @@ describe('TaskItem', () => {
           status: 'running',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -492,7 +493,7 @@ describe('TaskItem', () => {
             status: 'running',
             projectId: null,
             agentHost: 'daemon-a',
-            createdAt: new Date().toISOString(),
+            createdAt: FIXED_DATE.toISOString(),
             updatedAt: null,
           }}
           isUnread={false}
@@ -507,7 +508,7 @@ describe('TaskItem', () => {
             status: 'running',
             projectId: null,
             agentHost: 'daemon-a',
-            createdAt: new Date().toISOString(),
+            createdAt: FIXED_DATE.toISOString(),
             updatedAt: null,
           }}
           isUnread={false}
@@ -548,7 +549,7 @@ describe('TaskItem', () => {
           status: 'running',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -585,7 +586,7 @@ describe('TaskItem', () => {
           status: 'running',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -623,7 +624,7 @@ describe('TaskItem', () => {
           status: 'running',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -664,7 +665,7 @@ describe('TaskItem', () => {
           status: 'running',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -719,7 +720,7 @@ describe('TaskItem', () => {
           status: 'running',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -752,7 +753,7 @@ describe('TaskItem', () => {
           status: 'running',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread
@@ -784,7 +785,7 @@ describe('TaskItem', () => {
           status: 'running',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread
@@ -817,7 +818,7 @@ describe('TaskItem', () => {
           status: 'running',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}
@@ -856,7 +857,7 @@ describe('TaskItem', () => {
           status: 'running',
           projectId: null,
           agentHost: 'daemon-a',
-          createdAt: new Date().toISOString(),
+          createdAt: FIXED_DATE.toISOString(),
           updatedAt: null,
         }}
         isUnread={false}

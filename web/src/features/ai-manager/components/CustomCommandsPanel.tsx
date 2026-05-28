@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef } from 'react';
 import { SectionCard } from '@/components/common/SectionCard';
 import { useToast } from '@/components/common/FeedbackProvider';
 import { getApiClient } from '@/shared/api/client';
@@ -31,15 +31,47 @@ type CommandRunView = {
   finishedAt?: string | null;
 };
 
+type CustomCommandsPanelState = {
+  commands: CustomCommandInfo[];
+  runsByKey: Record<string, CommandRunView>;
+  runningKeys: Record<string, boolean>;
+  loading: boolean;
+  loaded: boolean;
+  error: string | null;
+};
+
+type CustomCommandsPanelAction =
+  | { type: 'load-start' }
+  | { type: 'load-success'; commands: CustomCommandInfo[] }
+  | { type: 'load-error'; error: string }
+  | { type: 'run-start'; key: string }
+  | { type: 'run-finish'; key: string }
+  | { type: 'run-success'; key: string; run: CommandRunView }
+  | { type: 'poll-success'; status: CustomCommandRunStatus }
+  | { type: 'poll-error'; key: string; run: CommandRunView; error: string };
+
+const initialCustomCommandsPanelState: CustomCommandsPanelState = {
+  commands: [],
+  runsByKey: {},
+  runningKeys: {},
+  loading: false,
+  loaded: false,
+  error: null,
+};
+
 function normalizeCommands(payload: CustomCommandsResponse): CustomCommandInfo[] {
   if (!payload || !Array.isArray(payload.commands)) return [];
-  return payload.commands
-    .filter((command) => typeof command.key === 'string' && command.key.trim())
-    .map((command) => ({
-      key: command.key.trim(),
+  return payload.commands.flatMap((command) => {
+    const key = typeof command.key === 'string' ? command.key.trim() : '';
+    if (!key) {
+      return [];
+    }
+    return [{
+      key,
       running: command.running === true,
       ...(typeof command.runId === 'string' && command.runId ? { runId: command.runId } : {}),
-    }));
+    }];
+  });
 }
 
 function statusBadge(status: CustomCommandRunStatusValue) {
@@ -60,58 +92,158 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
+function mergeRunningCommands(
+  runsByKey: Record<string, CommandRunView>,
+  commands: CustomCommandInfo[],
+): Record<string, CommandRunView> {
+  const nextRunsByKey = { ...runsByKey };
+  for (const command of commands) {
+    if (command.running && command.runId && !nextRunsByKey[command.key]) {
+      nextRunsByKey[command.key] = {
+        runId: command.runId,
+        key: command.key,
+        status: 'running',
+      };
+    }
+  }
+  return nextRunsByKey;
+}
+
+function syncCommandRun(
+  commands: CustomCommandInfo[],
+  key: string,
+  runId: string | undefined,
+  status: CustomCommandRunStatusValue,
+): CustomCommandInfo[] {
+  return commands.map((command) => (
+    command.key === key
+      ? { ...command, running: status === 'running', runId }
+      : command
+  ));
+}
+
+function customCommandsPanelReducer(
+  state: CustomCommandsPanelState,
+  action: CustomCommandsPanelAction,
+): CustomCommandsPanelState {
+  switch (action.type) {
+    case 'load-start':
+      return {
+        ...state,
+        loading: true,
+        error: null,
+      };
+    case 'load-success':
+      return {
+        ...state,
+        commands: action.commands,
+        runsByKey: mergeRunningCommands(state.runsByKey, action.commands),
+        loading: false,
+        loaded: true,
+        error: null,
+      };
+    case 'load-error':
+      return {
+        ...state,
+        loading: false,
+        loaded: true,
+        error: action.error,
+      };
+    case 'run-start':
+      return {
+        ...state,
+        runningKeys: {
+          ...state.runningKeys,
+          [action.key]: true,
+        },
+      };
+    case 'run-finish':
+      return {
+        ...state,
+        runningKeys: {
+          ...state.runningKeys,
+          [action.key]: false,
+        },
+      };
+    case 'run-success':
+      return {
+        ...state,
+        commands: syncCommandRun(state.commands, action.key, action.run.runId, action.run.status),
+        runsByKey: {
+          ...state.runsByKey,
+          [action.key]: action.run,
+        },
+      };
+    case 'poll-success': {
+      const previousRun = state.runsByKey[action.status.key];
+      const nextRun = {
+        ...previousRun,
+        ...action.status,
+      } as CommandRunView;
+      return {
+        ...state,
+        commands: syncCommandRun(state.commands, action.status.key, action.status.runId, action.status.status),
+        runsByKey: {
+          ...state.runsByKey,
+          [action.status.key]: nextRun,
+        },
+      };
+    }
+    case 'poll-error':
+      return {
+        ...state,
+        commands: syncCommandRun(state.commands, action.key, action.run.runId, 'failed'),
+        runsByKey: {
+          ...state.runsByKey,
+          [action.key]: {
+            ...action.run,
+            status: 'failed',
+            error: action.error,
+          },
+        },
+      };
+    default:
+      return state;
+  }
+}
+
 export function CustomCommandsPanel({ agentHost, supported }: CustomCommandsPanelProps) {
+  if (!supported) {
+    return null;
+  }
+
+  return <CustomCommandsPanelContent key={agentHost} agentHost={agentHost} />;
+}
+
+function CustomCommandsPanelContent({ agentHost }: { agentHost: string }) {
   const { pushToast } = useToast();
-  const [commands, setCommands] = useState<CustomCommandInfo[]>([]);
-  const [runsByKey, setRunsByKey] = useState<Record<string, CommandRunView>>({});
-  const [runningKeys, setRunningKeys] = useState<Record<string, boolean>>({});
-  const [loading, setLoading] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [state, dispatch] = useReducer(customCommandsPanelReducer, initialCustomCommandsPanelState);
+  const { commands, runsByKey, runningKeys, loading, loaded, error } = state;
 
   useEffect(() => {
-    setCommands([]);
-    setRunsByKey({});
-    setRunningKeys({});
-    setError(null);
-    setLoaded(false);
-    if (!supported || !agentHost) {
+    if (!agentHost) {
       return;
     }
 
     let cancelled = false;
     const loadCommands = async () => {
-      setLoading(true);
+      dispatch({ type: 'load-start' });
       try {
         const api = getApiClient();
         const payload = await api.get<CustomCommandsResponse>(
           `/agents/${encodeURIComponent(agentHost)}/custom-commands`,
         );
         if (cancelled) return;
-        const nextCommands = normalizeCommands(payload);
-        setCommands(nextCommands);
-        setRunsByKey((prev) => {
-          const next = { ...prev };
-          for (const command of nextCommands) {
-            if (command.running && command.runId && !next[command.key]) {
-              next[command.key] = {
-                runId: command.runId,
-                key: command.key,
-                status: 'running',
-              };
-            }
-          }
-          return next;
+        dispatch({
+          type: 'load-success',
+          commands: normalizeCommands(payload),
         });
-        setError(null);
       } catch (err) {
         if (!cancelled) {
-          setError(errorMessage(err, 'Failed to load custom commands'));
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-          setLoaded(true);
+          dispatch({
+            type: 'load-error',
+            error: errorMessage(err, 'Failed to load custom commands'),
+          });
         }
       }
     };
@@ -120,7 +252,7 @@ export function CustomCommandsPanel({ agentHost, supported }: CustomCommandsPane
     return () => {
       cancelled = true;
     };
-  }, [agentHost, supported]);
+  }, [agentHost]);
 
   // Snapshot the latest runs in a ref so the poll callback can read them
   // without forcing the effect (and its setInterval) to tear down + restart
@@ -146,7 +278,7 @@ export function CustomCommandsPanel({ agentHost, supported }: CustomCommandsPane
   }, [runsByKey]);
 
   useEffect(() => {
-    if (!supported || !agentHost || !activeRunIdsKey) {
+    if (!agentHost || !activeRunIdsKey) {
       return;
     }
 
@@ -163,15 +295,7 @@ export function CustomCommandsPanel({ agentHost, supported }: CustomCommandsPane
               `/agents/${encodeURIComponent(agentHost)}/custom-commands/runs/${encodeURIComponent(run.runId)}`,
             );
             if (cancelled) return;
-            setRunsByKey((prev) => ({
-              ...prev,
-              [status.key]: { ...prev[status.key], ...status },
-            }));
-            setCommands((prev) => prev.map((command) => (
-              command.key === status.key
-                ? { ...command, running: status.status === 'running', runId: status.runId }
-                : command
-            )));
+            dispatch({ type: 'poll-success', status });
             if (status.status === 'completed') {
               pushToast({
                 title: 'Command completed',
@@ -187,17 +311,12 @@ export function CustomCommandsPanel({ agentHost, supported }: CustomCommandsPane
             }
           } catch (err) {
             if (!cancelled) {
-              setCommands((prev) => prev.map((command) => (
-                command.key === run.key ? { ...command, running: false } : command
-              )));
-              setRunsByKey((prev) => ({
-                ...prev,
-                [run.key]: {
-                  ...run,
-                  status: 'failed',
-                  error: errorMessage(err, 'Failed to refresh command status'),
-                },
-              }));
+              dispatch({
+                type: 'poll-error',
+                key: run.key,
+                run,
+                error: errorMessage(err, 'Failed to refresh command status'),
+              });
             }
           }
         }),
@@ -213,13 +332,13 @@ export function CustomCommandsPanel({ agentHost, supported }: CustomCommandsPane
       cancelled = true;
       clearInterval(timer);
     };
-  }, [activeRunIdsKey, agentHost, pushToast, supported]);
+  }, [activeRunIdsKey, agentHost, pushToast]);
 
   const runCommand = async (key: string) => {
     if (!agentHost || runningKeys[key] || runsByKey[key]?.status === 'running') {
       return;
     }
-    setRunningKeys((prev) => ({ ...prev, [key]: true }));
+    dispatch({ type: 'run-start', key });
     try {
       const api = getApiClient();
       const result = await api.post<CustomCommandRunResponse>(
@@ -230,12 +349,7 @@ export function CustomCommandsPanel({ agentHost, supported }: CustomCommandsPane
         ...result,
         status: result.status || 'running',
       };
-      setRunsByKey((prev) => ({ ...prev, [key]: nextRun }));
-      setCommands((prev) => prev.map((command) => (
-        command.key === key
-          ? { ...command, running: nextRun.status === 'running', runId: nextRun.runId }
-          : command
-      )));
+      dispatch({ type: 'run-success', key, run: nextRun });
       pushToast({
         title: 'Command started',
         description: key,
@@ -248,13 +362,10 @@ export function CustomCommandsPanel({ agentHost, supported }: CustomCommandsPane
         variant: 'error',
       });
     } finally {
-      setRunningKeys((prev) => ({ ...prev, [key]: false }));
+      dispatch({ type: 'run-finish', key });
     }
   };
 
-  if (!supported) {
-    return null;
-  }
   if (loaded && commands.length === 0 && !error) {
     return null;
   }
@@ -262,7 +373,7 @@ export function CustomCommandsPanel({ agentHost, supported }: CustomCommandsPane
   return (
     <SectionCard title="Custom Commands">
       {loading && !loaded ? (
-        <p className="text-sm text-muted">Loading custom commands...</p>
+        <p className="text-sm text-muted">Loading custom commands…</p>
       ) : commands.length > 0 ? (
         <div className="flex flex-col divide-y divide-border">
           {commands.map((command) => {

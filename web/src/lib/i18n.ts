@@ -13,7 +13,7 @@ const LANG_CHANGE_EVENT = "langchange";
 /**
  * Get translations for a specific language
  */
-export function getTranslations(lang: Lang): Translations {
+function getTranslations(lang: Lang): Translations {
   switch (lang) {
     case "en":
     default:
@@ -24,7 +24,7 @@ export function getTranslations(lang: Lang): Translations {
 /**
  * Get the stored language from localStorage
  */
-export function getStoredLang(): Lang {
+function getStoredLang(): Lang {
   if (typeof window === "undefined") return "en";
   const stored = localStorage.getItem(STORAGE_KEY);
   if (isLang(stored)) return stored;
@@ -47,12 +47,9 @@ export function setStoredLang(lang: Lang): void {
  * Hook to use translations in components
  */
 export function useTranslation() {
-  const [lang, setLangState] = useState<Lang>("en");
+  const [lang, setLangState] = useState<Lang>(() => getStoredLang());
 
   useEffect(() => {
-    // Initialize from localStorage
-    setLangState(getStoredLang());
-
     // Listen for language changes
     const handleLangChange = () => {
       setLangState(getStoredLang());
@@ -95,11 +92,11 @@ export function interpolate(
   return template.replace(/{(\w+)}/g, (_, key) => String(values[key] ?? `{${key}}`));
 }
 
-export const LANGUAGE_OPTIONS: Array<{ value: Lang; label: string }> = [
+const LANGUAGE_OPTIONS: Array<{ value: Lang; label: string }> = [
   { value: "en", label: "English" },
 ];
 
-export const LANG_TO_LOCALE: Record<Lang, string> = {
+const LANG_TO_LOCALE: Record<Lang, string> = {
   en: "en-US",
 };
 

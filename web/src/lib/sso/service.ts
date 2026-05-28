@@ -8,8 +8,8 @@ import {
   type SsoClientConfig,
 } from "./clients";
 
-export const SSO_AUTHORIZATION_CODE_TTL_SECONDS = 5 * 60;
-export const SSO_CODE_PREFIX_LENGTH = 8;
+const SSO_AUTHORIZATION_CODE_TTL_SECONDS = 5 * 60;
+const SSO_CODE_PREFIX_LENGTH = 8;
 
 const CONNECTED_APP_TOKEN_NAME_PREFIX = "connected-app:";
 
@@ -50,7 +50,7 @@ function buildRedirectUri(redirectUri: string, code: string, state: string | nul
   return `${redirectUri}${separator}${params.join("&")}`;
 }
 
-export function generateAuthorizationCode(): string {
+function generateAuthorizationCode(): string {
   return randomBytes(32).toString("base64url");
 }
 
@@ -152,11 +152,12 @@ export async function consumeSsoAuthorizationCode(
   });
 
   const now = new Date();
-  for (const candidate of candidates) {
-    if (candidate.redirectUri !== input.redirectUri) continue;
-    if (candidate.expiresAt.getTime() <= now.getTime()) continue;
-    if (!verifySecret(code, candidate.codeHash, candidate.codeSalt)) continue;
-
+  const candidate = candidates.find((entry: (typeof candidates)[number]) => (
+    entry.redirectUri === input.redirectUri
+    && entry.expiresAt.getTime() > now.getTime()
+    && verifySecret(code, entry.codeHash, entry.codeSalt)
+  ));
+  if (candidate) {
     // Attempt atomic consume; updateMany returns count to guard against races.
     const consumed = await db.ssoAuthorizationCode.updateMany({
       where: { id: candidate.id, consumedAt: null },

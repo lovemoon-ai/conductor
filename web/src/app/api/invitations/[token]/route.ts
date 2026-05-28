@@ -10,7 +10,7 @@ import {
 
 const suggestSharedProjectName = (collaboration: CollaborationSummaryRecord): string => {
   const inviterProjectName = collaboration.members
-    .find((member) => member.project.name.trim().length > 0)
+    .find((member: CollaborationSummaryRecord['members'][number]) => member.project.name.trim().length > 0)
     ?.project.name.trim();
   return inviterProjectName || 'Shared workspace';
 };
@@ -48,26 +48,31 @@ export async function GET(
     },
   });
 
-  const alreadyJoined = collaboration.members.some((member) => member.userId === user.id);
+  const alreadyJoined = collaboration.members.some(
+    (member: (typeof collaboration.members)[number]) => member.userId === user.id,
+  );
   const isFull = collaboration.members.length >= MAX_COLLABORATION_MEMBERS;
   const suggestedProjectName = suggestSharedProjectName(collaboration);
   const suggestedProjectNameExists = projects.some(
-    (project) => project.name.trim() === suggestedProjectName,
+    (project: (typeof projects)[number]) => project.name.trim() === suggestedProjectName,
   );
-  const candidateProjects = projects
-    .filter((project) => !project.defaultProject)
-    .map((project) => ({
-    id: project.id,
-    name: project.name,
-    daemonHost: project.daemonHost,
-    workspacePath: project.workspacePath,
-    alreadyInCollaboration: Boolean(project.collaborationId),
-    canJoin: !isFull && (!project.collaborationId || project.collaborationId === collaboration.id),
-    daemon_host: project.daemonHost,
-    workspace_path: project.workspacePath,
-    already_in_collaboration: Boolean(project.collaborationId),
-    can_join: !isFull && (!project.collaborationId || project.collaborationId === collaboration.id),
-  }));
+  const candidateProjects = projects.flatMap((project: (typeof projects)[number]) => {
+    if (project.defaultProject) {
+      return [];
+    }
+    return [{
+      id: project.id,
+      name: project.name,
+      daemonHost: project.daemonHost,
+      workspacePath: project.workspacePath,
+      alreadyInCollaboration: Boolean(project.collaborationId),
+      canJoin: !isFull && (!project.collaborationId || project.collaborationId === collaboration.id),
+      daemon_host: project.daemonHost,
+      workspace_path: project.workspacePath,
+      already_in_collaboration: Boolean(project.collaborationId),
+      can_join: !isFull && (!project.collaborationId || project.collaborationId === collaboration.id),
+    }];
+  });
 
   return NextResponse.json({
     collaboration: serializeCollaboration(collaboration),

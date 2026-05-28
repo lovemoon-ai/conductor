@@ -270,24 +270,30 @@ const rollbackFailedPtyPatchRelaunch = async (args: {
   } | null;
 }) => {
   await db.$transaction(async (tx) => {
-    await tx.task.update({
+    const rollbackTaskPromise = tx.task.update({
       where: { id: args.taskId },
       data: buildTaskRollbackData(args.previousTask),
     });
 
     if (args.previousPtySession) {
       const rollbackPtySession = buildPtySessionRollbackWrite(args.previousPtySession);
-      await tx.ptySession.upsert({
-        where: { taskId: args.taskId },
-        update: rollbackPtySession,
-        create: rollbackPtySession,
-      });
+      await Promise.all([
+        rollbackTaskPromise,
+        tx.ptySession.upsert({
+          where: { taskId: args.taskId },
+          update: rollbackPtySession,
+          create: rollbackPtySession,
+        }),
+      ]);
       return;
     }
 
-    await tx.ptySession.deleteMany({
-      where: { taskId: args.taskId },
-    });
+    await Promise.all([
+      rollbackTaskPromise,
+      tx.ptySession.deleteMany({
+        where: { taskId: args.taskId },
+      }),
+    ]);
   });
 };
 
@@ -371,8 +377,10 @@ export async function PATCH(
   if (userResult instanceof Response) return userResult;
   const user = userResult;
 
-  const { taskId } = await params;
-  const parsedBody = await readPatchBody(request);
+  const [{ taskId }, parsedBody] = await Promise.all([
+    params,
+    readPatchBody(request),
+  ]);
   if ("error" in parsedBody) {
     return parsedBody.error;
   }
@@ -589,17 +597,19 @@ export async function PATCH(
   if (nextTaskType === "pty_task") {
     try {
       const result = await db.$transaction(async (tx) => {
-        const updatedTask = await tx.task.update({
-          where: { id: taskId },
-          data: taskUpdateData,
-        });
-        const updatedPtySession = await tx.ptySession.upsert({
-          where: { taskId },
-          update: shouldDispatchPtyTask
-            ? buildPtySessionRestartPatch(nextLaunchConfig)
-            : buildPtySessionConfigPatch(nextLaunchConfig),
-          create: buildPtySessionCreateSeed(taskId, nextLaunchConfig),
-        });
+        const [updatedTask, updatedPtySession] = await Promise.all([
+          tx.task.update({
+            where: { id: taskId },
+            data: taskUpdateData,
+          }),
+          tx.ptySession.upsert({
+            where: { taskId },
+            update: shouldDispatchPtyTask
+              ? buildPtySessionRestartPatch(nextLaunchConfig)
+              : buildPtySessionConfigPatch(nextLaunchConfig),
+            create: buildPtySessionCreateSeed(taskId, nextLaunchConfig),
+          }),
+        ]);
         return {
           task: updatedTask,
           ptySession: updatedPtySession,

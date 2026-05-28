@@ -249,8 +249,10 @@ export async function GET(
   if (userResult instanceof Response) return userResult;
   const user = userResult;
 
-  const { issueId } = await params;
-  const accessibleProjectIds = await getAccessibleProjectIds(user.id);
+  const [{ issueId }, accessibleProjectIds]: [{ issueId: string }, string[]] = await Promise.all([
+    params,
+    getAccessibleProjectIds(user.id),
+  ]);
   const { result: issue } = await withIssuePrioritySchemaFallback(
     'issues.detail',
     () => db.issue.findFirst({
@@ -290,8 +292,11 @@ export async function PATCH(
   if (userResult instanceof Response) return userResult;
   const user = userResult;
 
-  const { issueId } = await params;
-  const accessibleProjectIds = await getAccessibleProjectIds(user.id);
+  const [{ issueId }, accessibleProjectIds, body]: [{ issueId: string }, string[], unknown] = await Promise.all([
+    params,
+    getAccessibleProjectIds(user.id),
+    request.json().catch(() => null),
+  ]);
   const { result: existing, prioritySchemaAvailable } = await withIssuePrioritySchemaFallback(
     'issues.patch.load',
     () => db.issue.findFirst({
@@ -316,7 +321,6 @@ export async function PATCH(
 
   const { activeTaskByIssueId, linkedTaskByIssueId, tasksByIssueId } = await loadIssueTaskMaps(user.id, [existing.id]);
 
-  const body = await request.json().catch(() => null);
   const parsed = issuePatchSchema.safeParse(normalizeIssuePatchBody(body));
   if (!parsed.success) {
     return NextResponse.json(
@@ -783,13 +787,15 @@ export async function PATCH(
         };
       }
 
-      const restartedTask = await restartTaskInPlace({
-        tx,
-        userId: user.id,
-        sourceTask: restartSourceTask,
-        plan: restartPlan,
-      });
-      const updatedIssue = await tx.issue.update(effectiveIssueUpdateArgs);
+      const [restartedTask, updatedIssue] = await Promise.all([
+        restartTaskInPlace({
+          tx,
+          userId: user.id,
+          sourceTask: restartSourceTask,
+          plan: restartPlan,
+        }),
+        tx.issue.update(effectiveIssueUpdateArgs),
+      ]);
       return {
         restartedTask,
         updatedIssue,
@@ -830,8 +836,10 @@ export async function PATCH(
       }
 
       // We own the transition — safe to spawn the task
-      const createdTask = await createAiTaskArtifacts(spawnTaskArgs!, tx);
-      const updatedIssue = await tx.issue.update(effectiveIssueUpdateArgs);
+      const [createdTask, updatedIssue] = await Promise.all([
+        createAiTaskArtifacts(spawnTaskArgs!, tx),
+        tx.issue.update(effectiveIssueUpdateArgs),
+      ]);
       return {
         createdTask,
         updatedIssue,

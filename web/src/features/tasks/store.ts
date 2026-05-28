@@ -106,7 +106,10 @@ interface TasksState {
 }
 
 const normalizeProjectIdList = (projectIds: string[]): string[] =>
-  Array.from(new Set(projectIds.map((id) => id.trim()).filter(Boolean)));
+  Array.from(new Set(projectIds.flatMap((id) => {
+    const trimmed = id.trim();
+    return trimmed ? [trimmed] : [];
+  })));
 
 const projectScopeKey = (projectIds: string[]): string =>
   normalizeProjectIdList(projectIds).slice().sort().join(',');
@@ -203,7 +206,16 @@ export const useTasksStore = create<TasksState>()((set, get) => {
           query.set('recover_stale', '1');
         }
         const suffix = query.toString() ? `?${query.toString()}` : '';
-        const tasks = await api.get<Task[]>(`/tasks${suffix}`);
+        const tasksPromise = api.get<Task[]>(`/tasks${suffix}`);
+        if (
+          get().currentProjectFilter !== requestedProjectId
+          || get().currentProjectIds.length !== 0
+          || requestId !== fetchTasksRequestSequence
+        ) {
+          tasksPromise.catch(() => {});
+          return;
+        }
+        const tasks = await tasksPromise;
         if (
           get().currentProjectFilter !== requestedProjectId
           || get().currentProjectIds.length !== 0
@@ -254,7 +266,15 @@ export const useTasksStore = create<TasksState>()((set, get) => {
           query.set('recover_stale', '1');
         }
         const suffix = `?${query.toString()}`;
-        const tasks = await api.get<Task[]>(`/tasks${suffix}`);
+        const tasksPromise = api.get<Task[]>(`/tasks${suffix}`);
+        if (
+          projectScopeKey(get().currentProjectIds) !== requestedKey
+          || requestId !== fetchTasksRequestSequence
+        ) {
+          tasksPromise.catch(() => {});
+          return;
+        }
+        const tasks = await tasksPromise;
         if (
           projectScopeKey(get().currentProjectIds) !== requestedKey
           || requestId !== fetchTasksRequestSequence

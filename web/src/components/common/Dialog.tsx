@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useId, useRef, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 
 interface DialogProps {
@@ -16,6 +16,8 @@ const stopPointerPropagation = (event: ReactPointerEvent) => {
   event.stopPropagation();
 };
 
+const subscribeToHydration = () => () => {};
+
 export function Dialog({
   open,
   onClose,
@@ -27,14 +29,10 @@ export function Dialog({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const descriptionId = useId();
-  const [mounted, setMounted] = useState(false);
+  const isHydrated = useSyncExternalStore(subscribeToHydration, () => true, () => false);
 
   useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  useEffect(() => {
-    if (!mounted) return;
+    if (!isHydrated) return;
     const dialog = dialogRef.current;
     if (!dialog) return;
 
@@ -45,7 +43,7 @@ export function Dialog({
     } else if (dialog.open) {
       dialog.close();
     }
-  }, [mounted, open]);
+  }, [isHydrated, open]);
 
   const dialogNode = (
     <dialog
@@ -57,7 +55,6 @@ export function Dialog({
       onPointerDown={stopPointerPropagation}
       onPointerMove={stopPointerPropagation}
       onPointerUp={stopPointerPropagation}
-      onClick={(event) => event.stopPropagation()}
     >
       <div className="flex items-start justify-between gap-4 border-b border-border p-5">
         <div className="min-w-0">
@@ -71,10 +68,12 @@ export function Dialog({
           ) : null}
         </div>
         <button
+          type="button"
+          aria-label="Close dialog"
           onClick={onClose}
           className="rounded-lg p-1.5 text-muted transition-colors hover:bg-border/30 hover:text-ink"
         >
-          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
           </svg>
         </button>
@@ -83,7 +82,7 @@ export function Dialog({
     </dialog>
   );
 
-  if (!mounted || typeof document === 'undefined') {
+  if (!isHydrated || typeof document === 'undefined') {
     return null;
   }
 

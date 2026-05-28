@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { db } from '@/lib/db';
 import { sendFeishuReply } from './providers/feishu';
-import { enqueueChannelMessage } from './service';
+import { enqueueChannelMessage } from './channel-message-queue';
 import { getFeishuProviderConfigForUser } from './provider-config';
 
 let pendingChannelOutboxDelivery: Promise<void> | null = null;
@@ -21,8 +21,8 @@ export async function enqueueProjectedTaskUpdate(input: {
     where: { userId: input.userId, taskId: input.taskId, status: 'ACTIVE' },
   });
 
-  for (const conversation of conversations) {
-    await enqueueChannelMessage({
+  await Promise.all(conversations.map((conversation: (typeof conversations)[number]) =>
+    enqueueChannelMessage({
       provider: conversation.provider,
       userId: input.userId,
       conversationId: conversation.id,
@@ -32,8 +32,8 @@ export async function enqueueProjectedTaskUpdate(input: {
       kind: input.kind,
       text: input.text,
       dedupeKey: `${conversation.id}:${input.taskId}:${input.kind}:${randomUUID()}`,
-    });
-  }
+    })
+  ));
 
   if (conversations.length > 0) {
     scheduleChannelOutboxDelivery();
@@ -52,6 +52,7 @@ export async function deliverPendingChannelOutbox(): Promise<{ delivered: number
     take: 50,
   });
 
+  // Process rows sequentially to preserve FIFO delivery order per chat.
   let delivered = 0;
   let failed = 0;
   for (const row of rows) {
@@ -74,13 +75,13 @@ export async function deliverPendingChannelOutbox(): Promise<{ delivered: number
         where: { id: row.id },
         data: { status: 'sent', sentAt: new Date(), lastError: null, attemptCount: { increment: 1 } },
       });
-      delivered += 1;
+      delivered++;
     } catch (error) {
       await channelOutboxModel.update({
         where: { id: row.id },
         data: { status: 'pending', lastError: error instanceof Error ? error.message : String(error), attemptCount: { increment: 1 } },
       });
-      failed += 1;
+      failed++;
     }
   }
 

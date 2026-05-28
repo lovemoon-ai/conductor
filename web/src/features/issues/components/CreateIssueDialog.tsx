@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useReducer, useState } from 'react';
 import { Dialog } from '@/components/common/Dialog';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { useToast } from '@/components/common/FeedbackProvider';
@@ -16,6 +16,41 @@ import { useProjectsStore } from '@/features/projects';
 
 const DEFAULT_STATUS = 'todo' as const;
 
+type CreateIssueFormState = {
+  title: string;
+  description: string;
+  priority: IssuePriorityValue;
+  selectedProjectId: string | null;
+  error: string | null;
+};
+
+type CreateIssueFormAction =
+  | { type: 'set-title'; value: string }
+  | { type: 'set-description'; value: string }
+  | { type: 'set-priority'; value: IssuePriorityValue }
+  | { type: 'set-project'; value: string | null }
+  | { type: 'set-error'; value: string | null };
+
+function createIssueFormReducer(
+  state: CreateIssueFormState,
+  action: CreateIssueFormAction,
+): CreateIssueFormState {
+  switch (action.type) {
+    case 'set-title':
+      return { ...state, title: action.value };
+    case 'set-description':
+      return { ...state, description: action.value };
+    case 'set-priority':
+      return { ...state, priority: action.value };
+    case 'set-project':
+      return { ...state, selectedProjectId: action.value };
+    case 'set-error':
+      return { ...state, error: action.value };
+    default:
+      return state;
+  }
+}
+
 export function CreateIssueDialog({
   open,
   onClose,
@@ -25,34 +60,12 @@ export function CreateIssueDialog({
   onClose: () => void;
   projectId: string | null;
 }) {
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [priority, setPriority] = useState<IssuePriorityValue>(DEFAULT_ISSUE_PRIORITY);
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(projectId);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const projects = useProjectsStore((state) => state.projects);
   const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const createIssue = useIssuesStore((state) => state.createIssue);
-  const error = useIssuesStore((state) => state.error);
-  const clearError = useIssuesStore((state) => state.clearError);
   const { pushToast } = useToast();
-
-  const defaultProjectId = useMemo(
-    () => projectId ?? projects.find((project) => project.isDefault)?.id ?? projects[0]?.id ?? null,
-    [projectId, projects],
-  );
-  const effectiveProjectId = projectId ?? selectedProjectId;
-  const showProjectPicker = !projectId;
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    setTitle('');
-    setDescription('');
-    setPriority(DEFAULT_ISSUE_PRIORITY);
-    clearError();
-  }, [clearError, open]);
 
   useEffect(() => {
     if (!open || projects.length > 0) {
@@ -61,54 +74,16 @@ export function CreateIssueDialog({
     void fetchProjects();
   }, [fetchProjects, open, projects.length]);
 
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    if (projectId) {
-      setSelectedProjectId(projectId);
-      return;
-    }
-    setSelectedProjectId((current) => (
-      current && projects.some((project) => project.id === current)
-        ? current
-        : defaultProjectId
-    ));
-  }, [defaultProjectId, open, projectId, projects]);
+  const defaultProjectId = useMemo(
+    () => projectId ?? projects.find((project) => project.isDefault)?.id ?? projects[0]?.id ?? null,
+    [projectId, projects],
+  );
 
   const handleClose = () => {
     if (isSubmitting) {
       return;
     }
     onClose();
-  };
-
-  const handleSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!effectiveProjectId || !title.trim()) {
-      return;
-    }
-
-    setIsSubmitting(true);
-    try {
-      await createIssue({
-        projectId: effectiveProjectId,
-        title: title.trim(),
-        description: description.trim() ? description.trim() : null,
-        status: DEFAULT_STATUS,
-        priority,
-      });
-      pushToast({
-        title: 'Issue created',
-        description: `Added to ${ISSUE_STATUS_LABELS[DEFAULT_STATUS]}.`,
-        variant: 'success',
-      });
-      onClose();
-    } catch {
-      // Store captures the message; surfaced below.
-    } finally {
-      setIsSubmitting(false);
-    }
   };
 
   return (
@@ -118,98 +93,192 @@ export function CreateIssueDialog({
       title="Create Issue"
       maxWidthClassName="max-w-lg"
     >
-      <form onSubmit={handleSubmit} className="space-y-5">
-        {!effectiveProjectId ? (
-          <InlineNotice variant="warning" title="No project available">
-            Select a project before creating an issue.
-          </InlineNotice>
-        ) : null}
+      {open ? (
+        <CreateIssueDialogContent
+          projectId={projectId}
+          defaultProjectId={defaultProjectId}
+          projects={projects}
+          createIssue={createIssue}
+          isSubmitting={isSubmitting}
+          setIsSubmitting={setIsSubmitting}
+          onClose={onClose}
+          pushToast={pushToast}
+        />
+      ) : null}
+    </Dialog>
+  );
+}
 
-        {showProjectPicker ? (
-          <div>
-            <label htmlFor="create-issue-project" className="mb-2 block text-sm font-medium text-ink">
-              Project
-            </label>
-            <select
-              id="create-issue-project"
-              value={selectedProjectId ?? ''}
-              onChange={(event) => setSelectedProjectId(event.target.value || null)}
-              disabled={projects.length === 0}
-              className="w-full webapp-input"
-            >
-              <option value="" disabled>
-                {projects.length === 0 ? 'No projects available' : 'Select a project'}
-              </option>
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        ) : null}
+function CreateIssueDialogContent({
+  projectId,
+  defaultProjectId,
+  projects,
+  createIssue,
+  isSubmitting,
+  setIsSubmitting,
+  onClose,
+  pushToast,
+}: {
+  projectId: string | null;
+  defaultProjectId: string | null;
+  projects: Array<{ id: string; name: string }>;
+  createIssue: (input: {
+    projectId: string;
+    title: string;
+    description: string | null;
+    status: typeof DEFAULT_STATUS;
+    priority: IssuePriorityValue;
+  }) => Promise<unknown>;
+  isSubmitting: boolean;
+  setIsSubmitting: React.Dispatch<React.SetStateAction<boolean>>;
+  onClose: () => void;
+  pushToast: (payload: { title: string; description?: string; variant: 'success' | 'error' | 'warning' | 'info' }) => void;
+}) {
+  const [state, dispatch] = useReducer(createIssueFormReducer, {
+    title: '',
+    description: '',
+    priority: DEFAULT_ISSUE_PRIORITY,
+    selectedProjectId: null,
+    error: null,
+  });
 
+  const showProjectPicker = !projectId;
+  const hasSelectedProject = Boolean(
+    state.selectedProjectId && projects.some((project) => project.id === state.selectedProjectId),
+  );
+  const effectiveProjectId = projectId ?? (hasSelectedProject ? state.selectedProjectId : defaultProjectId);
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const nextTitle = state.title.trim();
+    if (!effectiveProjectId || !nextTitle) {
+      return;
+    }
+
+    setIsSubmitting(true);
+    dispatch({ type: 'set-error', value: null });
+    try {
+      await createIssue({
+        projectId: effectiveProjectId,
+        title: nextTitle,
+        description: state.description.trim() ? state.description.trim() : null,
+        status: DEFAULT_STATUS,
+        priority: state.priority,
+      });
+      pushToast({
+        title: 'Issue created',
+        description: `Added to ${ISSUE_STATUS_LABELS[DEFAULT_STATUS]}.`,
+        variant: 'success',
+      });
+      onClose();
+    } catch (error) {
+      dispatch({
+        type: 'set-error',
+        value: error instanceof Error ? error.message : 'Failed to create issue.',
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-5">
+      {!effectiveProjectId ? (
+        <InlineNotice variant="warning" title="No project available">
+          Select a project before creating an issue.
+        </InlineNotice>
+      ) : null}
+
+      {showProjectPicker ? (
         <div>
-          <label className="mb-2 block text-sm font-medium text-ink">Title</label>
-          <input
-            type="text"
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder="Summarize the issue"
-            className="w-full webapp-input"
-            autoFocus
-          />
-        </div>
-
-        <div>
-          <label className="mb-2 block text-sm font-medium text-ink">Description</label>
-          <textarea
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            placeholder="Add context, acceptance criteria, or raw requirement notes"
-            className="min-h-32 w-full resize-y webapp-input"
-          />
-        </div>
-
-        <div>
-          <label htmlFor="create-issue-priority" className="mb-2 block text-sm font-medium text-ink">Priority</label>
+          <label htmlFor="create-issue-project" className="mb-2 block text-sm font-medium text-ink">
+            Project
+          </label>
           <select
-            id="create-issue-priority"
-            value={priority}
-            onChange={(event) => setPriority(event.target.value as IssuePriorityValue)}
+            id="create-issue-project"
+            value={effectiveProjectId ?? ''}
+            onChange={(event) => dispatch({ type: 'set-project', value: event.target.value || null })}
+            disabled={projects.length === 0}
             className="w-full webapp-input"
           >
-            {ISSUE_PRIORITIES.map((value) => (
-              <option key={value} value={value}>
-                {ISSUE_PRIORITY_LABELS[value]}
+            <option value="" disabled>
+              {projects.length === 0 ? 'No projects available' : 'Select a project'}
+            </option>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
               </option>
             ))}
           </select>
         </div>
+      ) : null}
 
-        {error ? (
-          <InlineNotice variant="error" title="Issue creation failed">
-            {error}
-          </InlineNotice>
-        ) : null}
+      <div>
+        <label htmlFor="create-issue-title" className="mb-2 block text-sm font-medium text-ink">Title</label>
+        <input
+          id="create-issue-title"
+          type="text"
+          aria-label="Issue title"
+          value={state.title}
+          onChange={(event) => dispatch({ type: 'set-title', value: event.target.value })}
+          placeholder="Summarize the issue"
+          className="w-full webapp-input"
+        />
+      </div>
 
-        <div className="flex justify-end gap-3 pt-2">
-          <button
-            type="button"
-            onClick={handleClose}
-            className="rounded-lg px-4 py-2.5 text-sm text-muted transition-colors hover:bg-border/30 hover:text-ink"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={!effectiveProjectId || !title.trim() || isSubmitting}
-            className="webapp-btn-primary px-5 py-2.5 text-sm"
-          >
-            {isSubmitting ? 'Creating...' : 'Create Issue'}
-          </button>
-        </div>
-      </form>
-    </Dialog>
+      <div>
+        <label htmlFor="create-issue-description" className="mb-2 block text-sm font-medium text-ink">Description</label>
+        <textarea
+          id="create-issue-description"
+          aria-label="Issue description"
+          value={state.description}
+          onChange={(event) => dispatch({ type: 'set-description', value: event.target.value })}
+          placeholder="Add context, acceptance criteria, or raw requirement notes"
+          className="min-h-32 w-full resize-y webapp-input"
+        />
+      </div>
+
+      <div>
+        <label htmlFor="create-issue-priority" className="mb-2 block text-sm font-medium text-ink">Priority</label>
+        <select
+          id="create-issue-priority"
+          value={state.priority}
+          onChange={(event) => dispatch({
+            type: 'set-priority',
+            value: event.target.value as IssuePriorityValue,
+          })}
+          className="w-full webapp-input"
+        >
+          {ISSUE_PRIORITIES.map((value) => (
+            <option key={value} value={value}>
+              {ISSUE_PRIORITY_LABELS[value]}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {state.error ? (
+        <InlineNotice variant="error" title="Issue creation failed">
+          {state.error}
+        </InlineNotice>
+      ) : null}
+
+      <div className="flex justify-end gap-3 pt-2">
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-lg px-4 py-2.5 text-sm text-muted transition-colors hover:bg-border/30 hover:text-ink"
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          disabled={!effectiveProjectId || !state.title.trim() || isSubmitting}
+          className="webapp-btn-primary px-5 py-2.5 text-sm"
+        >
+          {isSubmitting ? 'Creating...' : 'Create Issue'}
+        </button>
+      </div>
+    </form>
   );
 }

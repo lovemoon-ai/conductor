@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuthStore } from "@/features/auth/store";
 import { createApiClientWithToken, ApiRequestError } from "@/shared/api/client";
@@ -47,116 +47,138 @@ function parseParams(
 }
 
 function AuthorizePageInner() {
-  const router = useRouter();
+  const { replace } = useRouter();
   const searchParams = useSearchParams();
   const session = useAuthStore((state) => state.session);
   const isLoading = useAuthStore((state) => state.isLoading);
-  const [storeReady, setStoreReady] = useState(false);
   const [phase, setPhase] = useState<Phase>({ kind: "init" });
-  const [retryCounter, setRetryCounter] = useState(0);
+  const authorizeRunRef = useRef(0);
+  const authorizeTimeoutRef = useRef<number | null>(null);
 
-  // Primitive query string is a stable dep across renders.
   const queryString = useMemo(() => searchParams.toString(), [searchParams]);
   const jwtToken = session?.jwtToken ?? null;
 
-  // Wait for zustand persist hydration to settle before deciding redirect.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    // After mount, let one tick pass so persist middleware can rehydrate.
-    const id = window.setTimeout(() => setStoreReady(true), 0);
-    return () => window.clearTimeout(id);
+  const clearAuthorizeTimeout = useCallback(() => {
+    if (authorizeTimeoutRef.current === null) {
+      return;
+    }
+    window.clearTimeout(authorizeTimeoutRef.current);
+    authorizeTimeoutRef.current = null;
   }, []);
 
-  useEffect(() => {
-    const params = new URLSearchParams(queryString);
-    const parsed = parseParams(params);
-    if (!parsed.ok) {
-      setPhase({ kind: "error", message: parsed.message, retryable: false });
-      return;
-    }
-    if (!storeReady) {
-      return;
-    }
+  const runAuthorization = useCallback(() => {
+    clearAuthorizeTimeout();
+    const runId = authorizeRunRef.current + 1;
+    authorizeRunRef.current = runId;
 
-    const relativePath = queryString ? `/oauth/authorize?${queryString}` : "/oauth/authorize";
+    authorizeTimeoutRef.current = window.setTimeout(() => {
+      authorizeTimeoutRef.current = null;
 
-    if (!jwtToken) {
-      setPhase({ kind: "redirecting-to-login" });
-      router.replace(`/login?next=${encodeURIComponent(relativePath)}`);
-      return;
-    }
+      const isActive = () => authorizeRunRef.current === runId;
+      const params = new URLSearchParams(queryString);
+      const parsed = parseParams(params);
+      if (!parsed.ok) {
+        if (isActive()) {
+          setPhase({ kind: "error", message: parsed.message, retryable: false });
+        }
+        return;
+      }
 
-    let cancelled = false;
-    const run = async () => {
-      setPhase({ kind: "authorizing" });
-      try {
-        const api = createApiClientWithToken(jwtToken);
-        const response = await api.post<{ redirect_uri: string }>("/oauth/authorizations", {
-          client_id: parsed.data.clientId,
-          redirect_uri: parsed.data.redirectUri,
-          state: parsed.data.state,
-          response_type: parsed.data.responseType,
-        });
-        if (cancelled) return;
-        if (!response.redirect_uri) {
-          setPhase({
-            kind: "error",
-            message: "Authorization service returned no redirect URI.",
-            retryable: true,
-          });
+      const relativePath = queryString ? `/oauth/authorize?${queryString}` : "/oauth/authorize";
+
+      if (!jwtToken) {
+        if (isActive()) {
+          setPhase({ kind: "redirecting-to-login" });
+          replace(`/login?next=${encodeURIComponent(relativePath)}`);
+        }
+        return;
+      }
+
+      const authorize = async () => {
+        if (!isActive()) {
           return;
         }
-        setPhase({ kind: "completed" });
-        window.location.replace(response.redirect_uri);
-      } catch (error) {
-        if (cancelled) return;
-        if (error instanceof ApiRequestError) {
-          if (error.status === 401) {
-            setPhase({ kind: "redirecting-to-login" });
-            router.replace(`/login?next=${encodeURIComponent(relativePath)}`);
+
+        setPhase({ kind: "authorizing" });
+
+        try {
+          const api = createApiClientWithToken(jwtToken);
+          const response = await api.post<{ redirect_uri: string }>("/oauth/authorizations", {
+            client_id: parsed.data.clientId,
+            redirect_uri: parsed.data.redirectUri,
+            state: parsed.data.state,
+            response_type: parsed.data.responseType,
+          });
+          if (!isActive()) return;
+          if (!response.redirect_uri) {
+            setPhase({
+              kind: "error",
+              message: "Authorization service returned no redirect URI.",
+              retryable: true,
+            });
             return;
           }
-          if (error.status === 403) {
-            const code = (error.payload as { error?: string })?.error;
-            if (code === "unknown_client") {
-              setPhase({
-                kind: "error",
-                message: "This app is not allowed to sign in with Conductor.",
-                retryable: false,
-              });
+          setPhase({ kind: "completed" });
+          window.location.replace(response.redirect_uri);
+        } catch (error) {
+          if (!isActive()) return;
+          if (error instanceof ApiRequestError) {
+            if (error.status === 401) {
+              setPhase({ kind: "redirecting-to-login" });
+              replace(`/login?next=${encodeURIComponent(relativePath)}`);
               return;
             }
-            if (code === "invalid_redirect_uri") {
-              setPhase({
-                kind: "error",
-                message: "Invalid redirect URI.",
-                retryable: false,
-              });
-              return;
+            if (error.status === 403) {
+              const code = (error.payload as { error?: string })?.error;
+              if (code === "unknown_client") {
+                setPhase({
+                  kind: "error",
+                  message: "This app is not allowed to sign in with Conductor.",
+                  retryable: false,
+                });
+                return;
+              }
+              if (code === "invalid_redirect_uri") {
+                setPhase({
+                  kind: "error",
+                  message: "Invalid redirect URI.",
+                  retryable: false,
+                });
+                return;
+              }
             }
+            setPhase({
+              kind: "error",
+              message: error.payload?.message || error.payload?.error || error.message,
+              retryable: true,
+            });
+            return;
           }
           setPhase({
             kind: "error",
-            message: error.payload?.message || error.payload?.error || error.message,
+            message: error instanceof Error ? error.message : "Failed to create authorization.",
             retryable: true,
           });
-          return;
         }
-        setPhase({
-          kind: "error",
-          message: error instanceof Error ? error.message : "Failed to create authorization.",
-          retryable: true,
-        });
-      }
-    };
-    void run();
+      };
+
+      void authorize();
+    }, 0);
+  }, [clearAuthorizeTimeout, jwtToken, queryString, replace]);
+
+  useEffect(() => {
+    setPhase({ kind: "init" });
+    runAuthorization();
+
     return () => {
-      cancelled = true;
+      authorizeRunRef.current += 1;
+      clearAuthorizeTimeout();
     };
-  }, [queryString, jwtToken, storeReady, router, retryCounter]);
+  }, [clearAuthorizeTimeout, runAuthorization]);
 
   const onRetry = () => {
-    setRetryCounter((value) => value + 1);
+    setPhase({ kind: "init" });
+    runAuthorization();
   };
 
   return (

@@ -37,7 +37,10 @@ const app = next({ dev, hostname, port, dir: resolveAppDir() });
 const handle = app.getRequestHandler();
 
 // CORS configuration
-const corsOrigins = process.env.CORS_ORIGINS?.split(",").map((o) => o.trim()).filter(Boolean) ?? [];
+const corsOrigins = process.env.CORS_ORIGINS?.split(",").flatMap((origin) => {
+  const trimmed = origin.trim();
+  return trimmed ? [trimmed] : [];
+}) ?? [];
 
 function setCorsHeaders(req: IncomingMessage, res: ServerResponse) {
   const origin = req.headers.origin;

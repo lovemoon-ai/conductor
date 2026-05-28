@@ -6,7 +6,7 @@ import { useTranslation, interpolate } from '@/lib/i18n';
 
 export default function PaymentCancelClient() {
   const searchParams = useSearchParams();
-  const router = useRouter();
+  const { push } = useRouter();
   const [countdown, setCountdown] = useState(5);
   const orderId = searchParams.get('order_id');
 
@@ -17,7 +17,7 @@ export default function PaymentCancelClient() {
       setCountdown((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-          router.push('/');
+          push('/');
           return 0;
         }
         return prev - 1;
@@ -25,15 +25,15 @@ export default function PaymentCancelClient() {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [router]);
+  }, [push]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 px-4">
       <div className="max-w-md w-full bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 text-center">
         <div className="mb-6">
-          <div className="mx-auto w-16 h-16 bg-yellow-100 dark:bg-yellow-900 rounded-full flex items-center justify-center">
+          <div className="mx-auto size-16 bg-yellow-100 dark:bg-yellow-900 rounded-full flex items-center justify-center">
             <svg
-              className="w-10 h-10 text-yellow-600 dark:text-yellow-400"
+              className="size-10 text-yellow-600 dark:text-yellow-400"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -68,8 +68,8 @@ export default function PaymentCancelClient() {
           {interpolate(t.paymentCancel.redirectCountdown, { seconds: countdown })}
         </p>
 
-        <button
-          onClick={() => router.push('/')}
+        <button type="button"
+          onClick={() => push('/')}
           className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
         >
           {t.paymentCancel.returnNow}

@@ -321,8 +321,10 @@ const listPersistedResumeSnapshotKeys = (storage: Storage): string[] => {
 
 const evictPersistedResumeSnapshots = (storage: Storage, preserveKey: string): void => {
   const candidates = listPersistedResumeSnapshotKeys(storage)
-    .filter((key) => key !== preserveKey)
-    .map((key) => {
+    .flatMap((key) => {
+      if (key === preserveKey) {
+        return [];
+      }
       let updatedAt = 0;
       try {
         const raw = storage.getItem(key);
@@ -332,7 +334,7 @@ const evictPersistedResumeSnapshots = (storage: Storage, preserveKey: string): v
           updatedAt = normalizedUpdatedAt ? Date.parse(normalizedUpdatedAt) : 0;
         }
       } catch {}
-      return { key, updatedAt };
+      return [{ key, updatedAt }];
     })
     .sort((left, right) => left.updatedAt - right.updatedAt);
 

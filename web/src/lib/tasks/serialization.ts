@@ -45,7 +45,7 @@ type SerializableTask = {
   ptySession?: SerializablePtySession | null;
 };
 
-export const serializePtySession = (ptySession: SerializablePtySession | null) =>
+const serializePtySession = (ptySession: SerializablePtySession | null) =>
   ptySession
     ? {
         id: ptySession.id,

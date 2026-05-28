@@ -37,11 +37,11 @@ export async function GET(request: NextRequest) {
     // 2. 处理待发送消息
     const processResult = await outboxProcessor.processPendingMessages();
 
-    // 3. 清理旧的死信队列消息
-    const cleanedCount = await outboxProcessor.cleanupOldDLQ();
-
-    // 4. 获取队列统计
-    const stats = await outboxProcessor.getStats();
+    // 3. 清理旧的死信队列消息 / 4. 获取队列统计
+    const [cleanedCount, stats] = await Promise.all([
+      outboxProcessor.cleanupOldDLQ(),
+      outboxProcessor.getStats(),
+    ]);
 
     const duration = Date.now() - startTime;
 

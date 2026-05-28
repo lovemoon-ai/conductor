@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import type { Issue } from '@/shared/types';
-import { IssueCard, pickDaemonBadgeClass } from './IssueCard';
+import { IssueCard } from './IssueCard';
+import { pickDaemonBadgeClass } from './IssueCard.utils';
 
 // dnd-kit pulls in browser APIs we don't need for these visibility tests; stub
 // `useSortable` to a no-op so the card renders deterministically.

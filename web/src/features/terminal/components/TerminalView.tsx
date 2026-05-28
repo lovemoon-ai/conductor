@@ -112,19 +112,19 @@ const clearPendingTerminalDetach = (taskId: string) => {
 };
 
 const RefreshIcon = () => (
-  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+  <svg className="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
   </svg>
 );
 
 const CloseIcon = () => (
-  <svg className="h-2 w-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+  <svg className="size-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M6 6l12 12M18 6L6 18" />
   </svg>
 );
 
 const FullscreenIcon = () => (
-  <svg className="h-2 w-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+  <svg className="size-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M8 4H4v4M16 4h4v4M8 20H4v-4M20 20h-4v-4" />
   </svg>
 );
@@ -217,7 +217,7 @@ export function TerminalView({ task }: TerminalViewProps) {
     rtcPeerRef.current = null;
   };
 
-  const sendAttach = (reason: 'initial' | 'reconnect' | 'manual') => {
+  const sendAttach = useCallback((reason: 'initial' | 'reconnect' | 'manual') => {
     clearPendingTerminalDetach(task.id);
     if (!isTerminalReady || websocketStatus !== 'connected') {
       return;
@@ -243,7 +243,7 @@ export function TerminalView({ task }: TerminalViewProps) {
         ...(shouldRequestResumeSnapshot ? { resume_strategy: 'snapshot' } : {}),
       },
     });
-  };
+  }, [beginFreshResumeAttach, isTerminalReady, markAttaching, send, task.id, websocketStatus]);
 
   const handleRefresh = useCallback(() => {
     if (!canRefreshTerminal) {
@@ -356,7 +356,6 @@ export function TerminalView({ task }: TerminalViewProps) {
       }
     };
 
-    handleFullscreenChange();
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     return () => {
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
@@ -651,7 +650,7 @@ export function TerminalView({ task }: TerminalViewProps) {
       sentAt: Date.now(),
     });
     sendAttach(connectionState === 'connecting' ? 'reconnect' : 'initial');
-  }, [connectionState, isTerminalReady, shouldAutoAttach, task.id, websocketStatus]);
+  }, [connectionState, isTerminalReady, sendAttach, shouldAutoAttach, task.id, websocketStatus]);
 
   useEffect(() => {
     if (transportState === 'direct' || transportState === 'fallback_relay' || transportState === 'relay') {
@@ -823,6 +822,13 @@ export function TerminalView({ task }: TerminalViewProps) {
         });
       }
     })();
+
+    return () => {
+      if (directNegotiationTimerRef.current) {
+        clearTimeout(directNegotiationTimerRef.current);
+        directNegotiationTimerRef.current = null;
+      }
+    };
   }, [
     connectionState,
     directCandidate,
@@ -866,7 +872,7 @@ export function TerminalView({ task }: TerminalViewProps) {
             disabled={isDeletingTask}
             aria-label="Delete current task"
             title="Delete current task"
-            className="group relative inline-flex h-3 w-3 items-center justify-center rounded-full bg-[#f87171] text-[#7f1d1d] transition-transform hover:scale-110 focus-visible:scale-110 disabled:cursor-not-allowed disabled:opacity-60"
+            className="group relative inline-flex size-3 items-center justify-center rounded-full bg-[#f87171] text-[#7f1d1d] transition-transform hover:scale-110 focus-visible:scale-110 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <span className="pointer-events-none opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
               <CloseIcon />
@@ -878,7 +884,7 @@ export function TerminalView({ task }: TerminalViewProps) {
             disabled={!canRefreshTerminal}
             aria-label="Refresh terminal"
             title="Refresh terminal"
-            className="group relative inline-flex h-3 w-3 items-center justify-center rounded-full bg-[#fbbf24] text-[#78350f] transition-transform hover:scale-110 focus-visible:scale-110 disabled:cursor-not-allowed disabled:opacity-60"
+            className="group relative inline-flex size-3 items-center justify-center rounded-full bg-[#fbbf24] text-[#78350f] transition-transform hover:scale-110 focus-visible:scale-110 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <span className="pointer-events-none opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
               <RefreshIcon />
@@ -891,7 +897,7 @@ export function TerminalView({ task }: TerminalViewProps) {
             }}
             aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
             title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
-            className="group relative inline-flex h-3 w-3 items-center justify-center rounded-full bg-[#34d399] text-[#14532d] transition-transform hover:scale-110 focus-visible:scale-110"
+            className="group relative inline-flex size-3 items-center justify-center rounded-full bg-[#34d399] text-[#14532d] transition-transform hover:scale-110 focus-visible:scale-110"
           >
             <span className="pointer-events-none opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
               <FullscreenIcon />
@@ -947,8 +953,17 @@ export function TerminalView({ task }: TerminalViewProps) {
         </div>
         <div
           ref={containerRef}
-          className="h-[calc(100%-2.5rem)] w-full cursor-text px-2 py-2"
+          role="button"
+          tabIndex={0}
+          aria-label="Focus terminal"
+          className="h-[calc(100%-2.5rem)] w-full cursor-text p-2"
           onClick={() => terminalRef.current?.focus()}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              terminalRef.current?.focus();
+            }
+          }}
         />
       </div>
     </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { isValidElement, useEffect, useMemo, useRef, useState } from "react";
+import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HTMLAttributes, ReactNode } from "react";
 import { useTheme } from "next-themes";
 
@@ -18,13 +18,14 @@ export function DocsCodeBlock({ children, className, ...props }: HTMLAttributes<
   const codeText = useMemo(() => extractText(children).replace(/\n$/, ""), [children]);
   const isDark = resolvedTheme === "dark";
 
-  useEffect(() => {
-    return () => {
-      if (timeoutRef.current !== null) {
-        window.clearTimeout(timeoutRef.current);
-      }
-    };
+  const clearCopyTimeout = useCallback(() => {
+    if (timeoutRef.current !== null) {
+      window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
   }, []);
+
+  useEffect(() => clearCopyTimeout, [clearCopyTimeout]);
 
   const handleCopy = async () => {
     if (!codeText) return;
@@ -48,7 +49,7 @@ export function DocsCodeBlock({ children, className, ...props }: HTMLAttributes<
       }
       if (didCopy) {
         setCopied(true);
-        if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+        clearCopyTimeout();
         timeoutRef.current = window.setTimeout(() => setCopied(false), 1500);
       }
     } catch {

@@ -89,6 +89,7 @@ class OutboxProcessor {
         take: this.config.batchSize
       });
 
+      // Process messages sequentially to preserve ordering and stagger retries.
       for (const message of messages) {
         const result = await this.processMessage(message);
         stats.processed++;

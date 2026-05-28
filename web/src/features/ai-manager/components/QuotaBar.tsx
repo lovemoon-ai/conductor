@@ -71,7 +71,7 @@ export function QuotaBar({ label, window }: QuotaBarProps) {
       <div className="flex flex-col gap-1">
         <div className="flex items-baseline justify-between">
           <span className="text-sm font-medium text-ink">{label}</span>
-          <span className="text-xs text-muted">—</span>
+          <span className="text-xs text-muted">n/a</span>
         </div>
         <div className="h-2 rounded-full bg-paper" />
       </div>

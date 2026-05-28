@@ -15,8 +15,10 @@ export async function GET(request: NextRequest) {
   }
   const externalQuotaBackends = params.getAll("externalQuotaBackend")
     .flatMap((value) => value.split(","))
-    .map((value) => value.trim())
-    .filter(Boolean);
+    .flatMap((value) => {
+      const trimmed = value.trim();
+      return trimmed ? [trimmed] : [];
+    });
   if (externalQuotaBackends.length > 0) {
     args.externalQuotaBackends = externalQuotaBackends;
   }

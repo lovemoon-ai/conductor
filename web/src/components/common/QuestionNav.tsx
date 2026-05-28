@@ -99,7 +99,7 @@ export function QuestionNav({
             aria-label={`Jump to question ${i + 1}`}
             title={`Question ${i + 1}`}
             onClick={() => onJump(i)}
-            className="flex h-6 w-6 items-center justify-center"
+            className="flex size-6 items-center justify-center"
           >
             <span
               className={`block rounded-full transition-all ${

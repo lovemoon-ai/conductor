@@ -43,7 +43,11 @@ let projectsState: MockProject[] = [
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
-    replace: replaceMock,
+    replace: (url: string, opts?: unknown) => {
+      const qIdx = url.indexOf('?');
+      searchParamsState = qIdx >= 0 ? new URLSearchParams(url.slice(qIdx + 1)) : new URLSearchParams();
+      replaceMock(url, opts);
+    },
   }),
   useSearchParams: () => ({
     get: (key: string) => searchParamsState.get(key),

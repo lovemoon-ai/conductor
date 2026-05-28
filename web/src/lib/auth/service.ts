@@ -220,9 +220,10 @@ export async function bootstrapSelfHostUserByPhone(rawPhone: string): Promise<Se
         },
       });
 
-      await startNewUserPlusAccess(user.id, tx);
-      const project = await ensureDefaultProject(user.id, tx);
-
+      const [, project] = await Promise.all([
+        startNewUserPlusAccess(user.id, tx),
+        ensureDefaultProject(user.id, tx),
+      ]);
       const hydratedUser = await tx.user.findUnique({
         where: { id: user.id },
       });
@@ -280,14 +281,15 @@ export async function authenticateToken(token: string): Promise<AuthUser | null>
     include: { user: true },
   });
 
-  for (const candidate of candidates) {
-    if (verifySecret(token, candidate.tokenHash, candidate.tokenSalt)) {
-      await db.userToken.update({
-        where: { id: candidate.id },
-        data: { lastUsedAt: new Date() },
-      });
-      return { id: candidate.user.id, email: candidate.user.email, phone: candidate.user.phone };
-    }
+  const candidate = candidates.find((entry: (typeof candidates)[number]) =>
+    verifySecret(token, entry.tokenHash, entry.tokenSalt),
+  );
+  if (candidate) {
+    await db.userToken.update({
+      where: { id: candidate.id },
+      data: { lastUsedAt: new Date() },
+    });
+    return { id: candidate.user.id, email: candidate.user.email, phone: candidate.user.phone };
   }
   return null;
 }

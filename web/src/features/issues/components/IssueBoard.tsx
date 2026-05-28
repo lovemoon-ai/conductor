@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   closestCenter,
   DndContext,
@@ -68,7 +68,9 @@ export function IssueBoard({
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const effectiveDragDisabled = isLoading || dragDisabled;
   const effectiveStatusMenuDisabled = isLoading || statusMenuDisabled;
-  const [columns, setColumns] = useState<IssueBoardColumns>(() => buildIssueColumns(issues));
+  const baseColumns = useMemo(() => buildIssueColumns(issues), [issues]);
+  const issuesKey = useMemo(() => JSON.stringify(issues), [issues]);
+  const [boardDraft, setBoardDraft] = useState<{ sourceKey: string; columns: IssueBoardColumns } | null>(null);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
   const [detailsIssueId, setDetailsIssueId] = useState<string | null>(null);
 
@@ -86,12 +88,15 @@ export function IssueBoard({
   );
   const detailsOwnerOptions = detailsIssue ? ownerOptionsByProjectId?.get(detailsIssue.projectId) : undefined;
 
-  useEffect(() => {
-    if (activeIssueId !== null) {
-      return;
+  const columns = useMemo(() => {
+    if (!boardDraft) {
+      return baseColumns;
     }
-    setColumns(buildIssueColumns(issues));
-  }, [issues]);
+    if (activeIssueId === null && boardDraft.sourceKey !== issuesKey) {
+      return baseColumns;
+    }
+    return boardDraft.columns;
+  }, [activeIssueId, baseColumns, boardDraft, issuesKey]);
 
   const activeIssue = useMemo(() => {
     if (!activeIssueId) {
@@ -114,22 +119,27 @@ export function IssueBoard({
 
     const activeId = String(event.active.id);
     const overId = String(event.over.id);
-    setColumns((current) => moveIssueLocally(current, activeId, overId));
-  }, []);
+    const currentColumns = boardDraft?.sourceKey === issuesKey ? boardDraft.columns : baseColumns;
+    setBoardDraft({
+      sourceKey: issuesKey,
+      columns: moveIssueLocally(currentColumns, activeId, overId),
+    });
+  }, [baseColumns, boardDraft, issuesKey]);
 
   const handleDragCancel = useCallback((_event: DragCancelEvent) => {
     setActiveIssueId(null);
-    setColumns(buildIssueColumns(issues));
-  }, [issues]);
+    setBoardDraft(null);
+  }, []);
 
   const handleDragEnd = useCallback(async (event: DragEndEvent) => {
     const activeId = String(event.active.id);
     const previousIssue = issues.find((issue) => issue.id === activeId) ?? null;
+    const currentColumns = boardDraft?.sourceKey === issuesKey ? boardDraft.columns : baseColumns;
     const nextColumns = event.over
-      ? moveIssueLocally(columns, activeId, String(event.over.id))
-      : buildIssueColumns(issues);
+      ? moveIssueLocally(currentColumns, activeId, String(event.over.id))
+      : baseColumns;
 
-    setColumns(nextColumns);
+    setBoardDraft(event.over ? { sourceKey: issuesKey, columns: nextColumns } : null);
     setActiveIssueId(null);
 
     if (!event.over || !previousIssue) {
@@ -157,12 +167,12 @@ export function IssueBoard({
     try {
       const accepted = await onMoveIssue(activeId, nextStatus, nextPosition, nextPlacement);
       if (accepted === false) {
-        setColumns(buildIssueColumns(issues));
+        setBoardDraft(null);
       }
     } catch {
-      setColumns(buildIssueColumns(issues));
+      setBoardDraft(null);
     }
-  }, [columns, issues, onMoveIssue]);
+  }, [baseColumns, boardDraft, issues, issuesKey, onMoveIssue]);
 
   if (isLoading && issues.length === 0) {
     return (

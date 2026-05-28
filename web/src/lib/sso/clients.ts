@@ -34,9 +34,10 @@ function asString(value: unknown): string | undefined {
 
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value
-    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-    .filter((entry) => entry.length > 0);
+  return value.flatMap((entry) => {
+    const normalized = typeof entry === "string" ? entry.trim() : "";
+    return normalized.length > 0 ? [normalized] : [];
+  });
 }
 
 function normalize(raw: RawClientEntry): SsoClientConfig | null {
