@@ -112,7 +112,8 @@ type Action =
   | { type: 'SET_CONNECTION'; state: 'connected' | 'reconnecting' | 'offline' }
   | { type: 'SET_ERROR'; error: ChatError | null }
   | { type: 'TASK_FAILED'; error: ChatError }
-  | { type: 'TASK_FINISHED' };
+  | { type: 'TASK_FINISHED' }
+  | { type: 'RESET_TASK' };
 
 function reducer(state: ChatState, action: Action): ChatState {
   switch (action.type) {
@@ -216,6 +217,12 @@ function reducer(state: ChatState, action: Action): ChatState {
     case 'TASK_FINISHED':
       // Keep messages; clear transient runtime state.
       return { ...state, runtime: null };
+    case 'RESET_TASK':
+      // Drop the previous task's transcript/runtime when (re)subscribing to a
+      // task, so the new task never renders the old one's messages during the
+      // hydrate window. Preserve the live socket connection state — the WS is
+      // shared across tasks and shouldn't flicker.
+      return { ...INITIAL_STATE, connectionState: state.connectionState, loadingHistory: true };
     default:
       return state;
   }
@@ -392,7 +399,9 @@ export function ChatProvider(props: ChatProviderProps) {
       }, delayMs);
     };
 
-    dispatch({ type: 'LOADING_HISTORY', loading: true });
+    // Clear any previous task's state (messages/runtime/pagination/error) as we
+    // (re)subscribe. Sets loadingHistory=true; the fetch below repopulates.
+    dispatch({ type: 'RESET_TASK' });
     activeAdapter
       .fetchHistory(taskId, { signal: abort.signal })
       .then((page) => {
