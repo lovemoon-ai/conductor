@@ -432,6 +432,12 @@ export function MessageList({
     }
 
     if (shouldRestoreScrollRef.current) {
+      // During an in-place taskId switch the previous task's messages may still
+      // be rendering for one render before the store resets. Don't consume the
+      // restore (or mutate scrollTop) against another task's content — wait for
+      // this task's history to hydrate.
+      const belongsToTask = messages.length === 0 || messages[0].taskId === taskId;
+      if (!belongsToTask) return;
       if (loadingHistory && messages.length === 0) return;
       const stored = pendingRestoreScrollStateRef.current;
       if (stored?.stickToBottom) {

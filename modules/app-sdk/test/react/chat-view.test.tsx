@@ -1501,4 +1501,77 @@ describe('<ChatView /> review fixes (F1–F5)', () => {
 
     await unmount();
   });
+
+  it('clears the previous task transcript when taskId changes (RESET_TASK)', async () => {
+    const byTask: Record<string, Message[]> = {
+      t_a: [
+        {
+          id: 'a_msg',
+          taskId: 't_a',
+          role: 'assistant',
+          content: 'from task A',
+          metadata: null,
+          attachments: [],
+          createdAt: '2026-05-17T00:00:00Z',
+        },
+      ],
+      t_b: [
+        {
+          id: 'b_msg',
+          taskId: 't_b',
+          role: 'assistant',
+          content: 'from task B',
+          metadata: null,
+          attachments: [],
+          createdAt: '2026-05-17T00:00:00Z',
+        },
+      ],
+    };
+    const adapter: ChatAdapter = {
+      async fetchHistory(taskId) {
+        const msgs = byTask[taskId] ?? [];
+        return { messages: msgs, hasMoreBefore: false, oldestMessageId: msgs[0]?.id ?? null };
+      },
+      subscribe() {
+        return { unsubscribe() {} };
+      },
+      async sendMessage() {
+        throw new Error('not used');
+      },
+      async interrupt() {},
+    };
+
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<ChatView taskId="t_a" adapter={adapter} />);
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    const bubblesA = Array.from(container.querySelectorAll('.conductor-bubble')).map(
+      (b) => b.textContent,
+    );
+    expect(bubblesA).toContain('from task A');
+
+    // Switch task in place — the old transcript must be dropped, not bleed into B.
+    await act(async () => {
+      root.render(<ChatView taskId="t_b" adapter={adapter} />);
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    const bubblesB = Array.from(container.querySelectorAll('.conductor-bubble')).map(
+      (b) => b.textContent,
+    );
+    expect(bubblesB).toContain('from task B');
+    expect(bubblesB).not.toContain('from task A');
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
 });

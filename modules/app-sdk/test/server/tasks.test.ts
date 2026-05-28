@@ -269,3 +269,41 @@ describe('TasksApi.interrupt', () => {
     await client.close();
   });
 });
+
+describe('TasksApi.restart', () => {
+  it('POSTs restart_mode when provided', async () => {
+    const { fetch, calls } = makeRecordingFetch(
+      () => new Response('{}', { status: 200 }),
+    );
+    const client = await connect({ baseUrl: 'http://x', bearerToken: 'tok', fetch });
+    await client.tasks.restart('t_1', { restartMode: 'refresh_session' });
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].url).toMatch(/\/api\/tasks\/t_1\/restart$/);
+    expect((calls[0].body as { restart_mode?: string }).restart_mode).toBe('refresh_session');
+    await client.close();
+  });
+
+  it('omits restart_mode when not provided (empty body)', async () => {
+    const { fetch, calls } = makeRecordingFetch(
+      () => new Response('{}', { status: 200 }),
+    );
+    const client = await connect({ baseUrl: 'http://x', bearerToken: 'tok', fetch });
+    await client.tasks.restart('t_1');
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].url).toMatch(/\/api\/tasks\/t_1\/restart$/);
+    expect((calls[0].body as Record<string, unknown>).restart_mode).toBeUndefined();
+    await client.close();
+  });
+
+  it('validates required taskId', async () => {
+    const fetch = vi.fn();
+    const client = await connect({
+      baseUrl: 'http://x',
+      bearerToken: 'tok',
+      fetch: fetch as never,
+    });
+    await expect(client.tasks.restart('')).rejects.toMatchObject({ code: 'invalid_input' });
+    expect(fetch).not.toHaveBeenCalled();
+    await client.close();
+  });
+});
