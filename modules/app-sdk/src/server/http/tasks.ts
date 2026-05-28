@@ -188,6 +188,31 @@ export class TasksRestApi {
       signal: opts.signal,
     });
   }
+
+  /**
+   * Restart the task's AI session. `restartMode` mirrors Conductor's REST
+   * contract (e.g. `'refresh_session'`); when omitted the backend chooses the
+   * default. The effect is observed via the event stream (runtime_status / new
+   * messages), so this resolves to void.
+   */
+  async restart(
+    taskId: string,
+    opts?: { restartMode?: string; signal?: AbortSignal },
+  ): Promise<void> {
+    if (!taskId) {
+      throw new ConductorAppError({
+        code: 'invalid_input',
+        message: 'tasks.restart requires a taskId',
+      });
+    }
+    const restartMode = opts?.restartMode?.trim();
+    await this.fetcher.request({
+      method: 'POST',
+      path: `/api/tasks/${encodeURIComponent(taskId)}/restart`,
+      body: restartMode ? { restart_mode: restartMode } : {},
+      signal: opts?.signal,
+    });
+  }
 }
 
 type HistoryResponse = {

@@ -9,10 +9,10 @@
  *
  * @vitest-environment jsdom
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { createRoot } from 'react-dom/client';
 import { act } from 'react';
-import { ChatView } from '../../src/react/index.js';
+import { ChatView, createRestAdapter } from '../../src/react/index.js';
 import { ChatProvider, useChat } from '../../src/react/store/chat-store.js';
 import type { ChatAdapter } from '../../src/types/adapter.js';
 import type { ChatEvent } from '../../src/types/events.js';
@@ -127,6 +127,17 @@ async function mount(ui: React.ReactNode) {
     },
   };
 }
+
+// Scroll position + composer drafts now persist in sessionStorage keyed by
+// taskId; clear between tests so per-task state from one test can't leak into
+// the next (several reuse short taskIds).
+beforeEach(() => {
+  try {
+    window.sessionStorage.clear();
+  } catch {
+    /* ignore */
+  }
+});
 
 describe('<ChatView /> integration', () => {
   it('hydrates initial history from adapter.fetchHistory', async () => {
@@ -837,5 +848,657 @@ describe('<ChatProvider /> context value freshness', () => {
       root.unmount();
     });
     container.remove();
+  });
+});
+
+describe('<ChatView /> navigation affordances', () => {
+  function historyWithTwoQuestions(): Message[] {
+    return [
+      {
+        id: 'q1',
+        taskId: 't_nav',
+        role: 'user',
+        content: 'first question',
+        metadata: null,
+        attachments: [],
+        createdAt: '2026-05-17T00:00:00Z',
+      },
+      {
+        id: 'a1',
+        taskId: 't_nav',
+        role: 'assistant',
+        content: 'first answer',
+        metadata: null,
+        attachments: [],
+        createdAt: '2026-05-17T00:00:01Z',
+      },
+      {
+        id: 'q2',
+        taskId: 't_nav',
+        role: 'user',
+        content: 'second question',
+        metadata: null,
+        attachments: [],
+        createdAt: '2026-05-17T00:00:02Z',
+      },
+    ];
+  }
+
+  /** Force jsdom (which reports 0 for all layout metrics) into a scrollable
+   * state so the scroll affordances have something to react to. */
+  function stubScrollMetrics(el: HTMLElement, scrollHeight: number, clientHeight: number) {
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: scrollHeight });
+    Object.defineProperty(el, 'clientHeight', { configurable: true, value: clientHeight });
+  }
+
+  it('double-click on a user bubble opens the action menu with copy + resend', async () => {
+    const ctl = makeMockAdapter([
+      {
+        id: 'q1',
+        taskId: 't_menu',
+        role: 'user',
+        content: 'hello world',
+        metadata: null,
+        attachments: [],
+        createdAt: '2026-05-17T00:00:00Z',
+      },
+    ]);
+    const { container, unmount } = await mount(
+      <ChatView taskId="t_menu" adapter={ctl.adapter} />,
+    );
+
+    // No menu before interaction.
+    expect(container.querySelector('[data-testid="conductor-bubble-menu"]')).toBeNull();
+
+    const bubble = container.querySelector(
+      '[data-role="user"] .conductor-bubble',
+    ) as HTMLElement;
+    expect(bubble).not.toBeNull();
+
+    await act(async () => {
+      bubble.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    });
+
+    const menu = container.querySelector('[data-testid="conductor-bubble-menu"]');
+    expect(menu).not.toBeNull();
+    expect(container.querySelector('[data-testid="conductor-bubble-menu-copy"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="conductor-bubble-menu-resend"]')).not.toBeNull();
+
+    await unmount();
+  });
+
+  it('action menu omits resend for assistant messages', async () => {
+    const ctl = makeMockAdapter([
+      {
+        id: 'a1',
+        taskId: 't_menu',
+        role: 'assistant',
+        content: 'I am the assistant',
+        metadata: null,
+        attachments: [],
+        createdAt: '2026-05-17T00:00:00Z',
+      },
+    ]);
+    const { container, unmount } = await mount(
+      <ChatView taskId="t_menu" adapter={ctl.adapter} />,
+    );
+
+    const bubble = container.querySelector(
+      '[data-role="assistant"] .conductor-bubble',
+    ) as HTMLElement;
+    await act(async () => {
+      bubble.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="conductor-bubble-menu-copy"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="conductor-bubble-menu-resend"]')).toBeNull();
+
+    await unmount();
+  });
+
+  it('copy action writes the message content to the clipboard', async () => {
+    const writes: string[] = [];
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true });
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        async writeText(text: string) {
+          writes.push(text);
+        },
+      },
+    });
+
+    const ctl = makeMockAdapter([
+      {
+        id: 'q1',
+        taskId: 't_copy',
+        role: 'user',
+        content: 'copy me please',
+        metadata: null,
+        attachments: [],
+        createdAt: '2026-05-17T00:00:00Z',
+      },
+    ]);
+    const { container, unmount } = await mount(
+      <ChatView taskId="t_copy" adapter={ctl.adapter} />,
+    );
+
+    const bubble = container.querySelector(
+      '[data-role="user"] .conductor-bubble',
+    ) as HTMLElement;
+    await act(async () => {
+      bubble.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    });
+
+    const copyBtn = container.querySelector(
+      '[data-testid="conductor-bubble-menu-copy"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      copyBtn.click();
+      await flushPromises();
+    });
+
+    expect(writes).toEqual(['copy me please']);
+    // Feedback label flips to "Copied" before the sheet auto-dismisses.
+    expect(copyBtn.textContent).toBe('Copied');
+
+    await unmount();
+  });
+
+  it('resend action sends the message content again via the adapter', async () => {
+    const ctl = makeMockAdapter([
+      {
+        id: 'q1',
+        taskId: 't_resend',
+        role: 'user',
+        content: 'do it again',
+        metadata: null,
+        attachments: [],
+        createdAt: '2026-05-17T00:00:00Z',
+      },
+    ]);
+    const { container, unmount } = await mount(
+      <ChatView taskId="t_resend" adapter={ctl.adapter} />,
+    );
+
+    const bubble = container.querySelector(
+      '[data-role="user"] .conductor-bubble',
+    ) as HTMLElement;
+    await act(async () => {
+      bubble.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    });
+
+    const resendBtn = container.querySelector(
+      '[data-testid="conductor-bubble-menu-resend"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      resendBtn.click();
+      await flushPromises();
+    });
+
+    expect(ctl.sentMessages).toHaveLength(1);
+    expect(ctl.sentMessages[0].input.content).toBe('do it again');
+    // Menu closes after the action.
+    expect(container.querySelector('[data-testid="conductor-bubble-menu"]')).toBeNull();
+
+    await unmount();
+  });
+
+  it('shows the scroll-to-bottom button when scrolled away from the bottom, hides it on click', async () => {
+    const ctl = makeMockAdapter(historyWithTwoQuestions());
+    const { container, unmount } = await mount(
+      <ChatView taskId="t_nav" adapter={ctl.adapter} />,
+    );
+
+    const list = container.querySelector('.conductor-message-list') as HTMLElement;
+    stubScrollMetrics(list, 1000, 200);
+    list.scrollTop = 100; // far from the bottom (max scrollTop = 800)
+
+    await act(async () => {
+      list.dispatchEvent(new Event('scroll', { bubbles: true }));
+    });
+
+    const button = container.querySelector(
+      '[data-testid="conductor-scroll-to-bottom"]',
+    ) as HTMLButtonElement | null;
+    expect(button).not.toBeNull();
+
+    await act(async () => {
+      button!.click();
+    });
+
+    // After jumping to the bottom the button hides itself.
+    expect(container.querySelector('[data-testid="conductor-scroll-to-bottom"]')).toBeNull();
+    expect(list.scrollTop).toBe(800);
+
+    await unmount();
+  });
+
+  it('reveals the question-anchor rail with one dot per user message when scrolling up', async () => {
+    const ctl = makeMockAdapter(historyWithTwoQuestions());
+    const { container, unmount } = await mount(
+      <ChatView taskId="t_nav" adapter={ctl.adapter} />,
+    );
+
+    const list = container.querySelector('.conductor-message-list') as HTMLElement;
+    stubScrollMetrics(list, 1000, 200);
+
+    // Establish a downward baseline first…
+    list.scrollTop = 500;
+    await act(async () => {
+      list.dispatchEvent(new Event('scroll', { bubbles: true }));
+    });
+    // …then scroll up to reveal the rail.
+    list.scrollTop = 100;
+    await act(async () => {
+      list.dispatchEvent(new Event('scroll', { bubbles: true }));
+    });
+
+    const nav = container.querySelector('.conductor-question-nav');
+    expect(nav).not.toBeNull();
+    expect(nav!.classList.contains('conductor-question-nav--visible')).toBe(true);
+    // Two user-side messages → two anchor dots.
+    expect(nav!.querySelectorAll('.conductor-question-nav__dot')).toHaveLength(2);
+
+    await unmount();
+  });
+});
+
+describe('<ChatView /> conductor parity features', () => {
+  it('renders an image attachment from the message', async () => {
+    const ctl = makeMockAdapter([
+      {
+        id: 'a1',
+        taskId: 't_att',
+        role: 'assistant',
+        content: 'see image',
+        metadata: null,
+        attachments: [
+          {
+            id: 'att1',
+            filename: 'pic.png',
+            mimeType: 'image/png',
+            sizeBytes: 2048,
+            url: 'https://example.test/pic.png',
+          },
+        ],
+        createdAt: '2026-05-17T00:00:00Z',
+      },
+    ]);
+    const { container, unmount } = await mount(
+      <ChatView taskId="t_att" adapter={ctl.adapter} />,
+    );
+
+    const img = container.querySelector('.conductor-attachment__image') as HTMLImageElement | null;
+    expect(img).not.toBeNull();
+    expect(img!.getAttribute('src')).toBe('https://example.test/pic.png');
+    // The bubble text stays clean (attachment is a sibling, not inside it).
+    const bubble = container.querySelector('.conductor-bubble');
+    expect(bubble!.textContent).toBe('see image');
+
+    await unmount();
+  });
+
+  it('renders the "via {app}" origin chip only when showAppOriginChip is set', async () => {
+    const history: Message[] = [
+      {
+        id: 'm_app',
+        taskId: 't_origin',
+        role: 'assistant',
+        content: 'app authored',
+        metadata: { audit: { actor: 'app', appDisplayName: 'Acme Bot' } },
+        attachments: [],
+        createdAt: '2026-05-17T00:00:00Z',
+      },
+    ];
+
+    // Off by default.
+    const ctlOff = makeMockAdapter(history);
+    const off = await mount(<ChatView taskId="t_origin" adapter={ctlOff.adapter} />);
+    expect(off.container.querySelector('.conductor-bubble__origin')).toBeNull();
+    await off.unmount();
+
+    // On when requested.
+    const ctlOn = makeMockAdapter(history);
+    const on = await mount(
+      <ChatView taskId="t_origin" adapter={ctlOn.adapter} showAppOriginChip />,
+    );
+    const chip = on.container.querySelector('.conductor-bubble__origin');
+    expect(chip).not.toBeNull();
+    expect(chip!.textContent).toBe('via Acme Bot');
+    await on.unmount();
+  });
+
+  it('persists the composer draft per task across remounts', async () => {
+    const ctl = makeMockAdapter();
+    const first = await mount(<ChatView taskId="t_draft" adapter={ctl.adapter} />);
+    const textarea = first.container.querySelector('textarea') as HTMLTextAreaElement;
+
+    await act(async () => {
+      setReactTextareaValue(textarea, 'unsent thoughts');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await first.unmount();
+
+    // Remount the same task — the draft should be restored.
+    const ctl2 = makeMockAdapter();
+    const second = await mount(<ChatView taskId="t_draft" adapter={ctl2.adapter} />);
+    const restored = second.container.querySelector('textarea') as HTMLTextAreaElement;
+    expect(restored.value).toBe('unsent thoughts');
+    await second.unmount();
+  });
+
+  it('ArrowUp recalls the most recent sent prompt into the composer', async () => {
+    const ctl = makeMockAdapter([
+      {
+        id: 'q1',
+        taskId: 't_hist',
+        role: 'user',
+        content: 'an earlier question',
+        metadata: null,
+        attachments: [],
+        createdAt: '2026-05-17T00:00:00Z',
+      },
+    ]);
+    const { container, unmount } = await mount(
+      <ChatView taskId="t_hist" adapter={ctl.adapter} />,
+    );
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    });
+
+    expect(textarea.value).toBe('an earlier question');
+    await unmount();
+  });
+
+  it('shows a restart button in the empty state when the adapter supports restart', async () => {
+    const restarts: Array<{ taskId: string; opts?: { restartMode?: string } }> = [];
+    const adapter: ChatAdapter = {
+      async fetchHistory() {
+        return { messages: [], hasMoreBefore: false, oldestMessageId: null };
+      },
+      subscribe() {
+        return { unsubscribe() {} };
+      },
+      async sendMessage(taskId, input) {
+        return {
+          id: 's:1',
+          taskId,
+          role: input.role ?? 'user',
+          content: input.content,
+          metadata: null,
+          attachments: [],
+          createdAt: new Date().toISOString(),
+        };
+      },
+      async interrupt() {},
+      async restart(taskId, opts) {
+        restarts.push({ taskId, opts });
+      },
+    };
+
+    const { container, unmount } = await mount(<ChatView taskId="t_restart" adapter={adapter} />);
+
+    const restartBtn = container.querySelector(
+      '[data-testid="conductor-empty-restart"]',
+    ) as HTMLButtonElement | null;
+    expect(restartBtn).not.toBeNull();
+
+    await act(async () => {
+      restartBtn!.click();
+      await flushPromises();
+    });
+
+    expect(restarts).toHaveLength(1);
+    expect(restarts[0]).toEqual({ taskId: 't_restart', opts: { restartMode: 'refresh_session' } });
+
+    await unmount();
+  });
+
+  it('hides restart affordances when the adapter does not implement restart', async () => {
+    const ctl = makeMockAdapter();
+    const { container, unmount } = await mount(
+      <ChatView taskId="t_norestart" adapter={ctl.adapter} />,
+    );
+    expect(container.querySelector('[data-testid="conductor-empty-restart"]')).toBeNull();
+    await unmount();
+  });
+
+  it('auto-loads older history when scrolled to the top', async () => {
+    const calls: Array<{ beforeId?: string }> = [];
+    const adapter: ChatAdapter = {
+      async fetchHistory(_taskId, opts) {
+        calls.push({ beforeId: opts?.beforeId });
+        if (!opts?.beforeId) {
+          return {
+            messages: [
+              {
+                id: 'm1',
+                taskId: 't_top',
+                role: 'user',
+                content: 'newest',
+                metadata: null,
+                attachments: [],
+                createdAt: '2026-05-17T00:00:05Z',
+              },
+            ],
+            hasMoreBefore: true,
+            oldestMessageId: 'm1',
+          };
+        }
+        return {
+          messages: [
+            {
+              id: 'm0',
+              taskId: 't_top',
+              role: 'assistant',
+              content: 'older',
+              metadata: null,
+              attachments: [],
+              createdAt: '2026-05-17T00:00:00Z',
+            },
+          ],
+          hasMoreBefore: false,
+          oldestMessageId: 'm0',
+        };
+      },
+      subscribe() {
+        return { unsubscribe() {} };
+      },
+      async sendMessage() {
+        throw new Error('not used');
+      },
+      async interrupt() {},
+    };
+
+    const { container, unmount } = await mount(<ChatView taskId="t_top" adapter={adapter} />);
+
+    const list = container.querySelector('.conductor-message-list') as HTMLElement;
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, value: 200 });
+    list.scrollTop = 0; // at the very top
+
+    await act(async () => {
+      list.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await flushPromises();
+    });
+
+    // First call = initial hydrate (no beforeId); a later call paginated with
+    // before_id = the oldest message id.
+    expect(calls.some((c) => c.beforeId === 'm1')).toBe(true);
+
+    await unmount();
+  });
+
+  it('offers an interrupt action in the bubble menu while a reply is in progress', async () => {
+    const ctl = makeMockAdapter([
+      {
+        id: 'q1',
+        taskId: 't_int',
+        role: 'user',
+        content: 'go',
+        metadata: null,
+        attachments: [],
+        createdAt: '2026-05-17T00:00:00Z',
+      },
+    ]);
+    const { container, unmount } = await mount(<ChatView taskId="t_int" adapter={ctl.adapter} />);
+
+    await act(async () => {
+      ctl.pushEvent({
+        type: 'runtime_status',
+        status: { taskId: 't_int', state: 'thinking', replyInProgress: true, replyTo: 'r_9' },
+      });
+    });
+
+    const bubble = container.querySelector('[data-role="user"] .conductor-bubble') as HTMLElement;
+    await act(async () => {
+      bubble.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    });
+
+    const interruptItem = container.querySelector(
+      '[data-testid="conductor-bubble-menu-interrupt"]',
+    ) as HTMLButtonElement | null;
+    expect(interruptItem).not.toBeNull();
+
+    await act(async () => {
+      interruptItem!.click();
+      await flushPromises();
+    });
+
+    expect(ctl.interrupts).toHaveLength(1);
+    expect(ctl.interrupts[0]).toEqual({ taskId: 't_int', targetReplyTo: 'r_9' });
+
+    await unmount();
+  });
+});
+
+describe('<ChatView /> review fixes (F1–F5)', () => {
+  it('F1: createRestAdapter omits restart() by default, exposes it when enabled', () => {
+    expect(typeof createRestAdapter({ baseUrl: '/api' }).restart).toBe('undefined');
+    expect(typeof createRestAdapter({ baseUrl: '/api', enableRestart: true }).restart).toBe(
+      'function',
+    );
+  });
+
+  it('F2: Shift+Enter does not send; plain Enter does', async () => {
+    const ctl = makeMockAdapter();
+    const { container, unmount } = await mount(<ChatView taskId="t_se" adapter={ctl.adapter} />);
+    const ta = container.querySelector('textarea') as HTMLTextAreaElement;
+
+    await act(async () => {
+      setReactTextareaValue(ta, 'line one');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }));
+    });
+    expect(ctl.sentMessages).toHaveLength(0); // Shift+Enter must not send
+
+    await act(async () => {
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await flushPromises();
+    });
+    expect(ctl.sentMessages).toHaveLength(1);
+    expect(ctl.sentMessages[0].input.content).toBe('line one');
+
+    await unmount();
+  });
+
+  it('F3: a user message from another client does not yank a scrolled-up reader', async () => {
+    const ctl = makeMockAdapter([
+      {
+        id: 'q1',
+        taskId: 't_f3',
+        role: 'user',
+        content: 'first',
+        metadata: null,
+        attachments: [],
+        createdAt: '2026-05-17T00:00:00Z',
+      },
+      {
+        id: 'a1',
+        taskId: 't_f3',
+        role: 'assistant',
+        content: 'reply',
+        metadata: null,
+        attachments: [],
+        createdAt: '2026-05-17T00:00:01Z',
+      },
+    ]);
+    const { container, unmount } = await mount(<ChatView taskId="t_f3" adapter={ctl.adapter} />);
+
+    const list = container.querySelector('.conductor-message-list') as HTMLElement;
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, value: 200 });
+    list.scrollTop = 100; // scrolled up, not stuck to bottom (max = 800)
+    await act(async () => {
+      list.dispatchEvent(new Event('scroll', { bubbles: true }));
+    });
+
+    // Remote user message — a real id, NOT an optimistic `pending:` id.
+    await act(async () => {
+      ctl.pushEvent({
+        type: 'message_appended',
+        message: {
+          id: 'remote_user',
+          taskId: 't_f3',
+          role: 'user',
+          content: 'from another tab',
+          metadata: null,
+          attachments: [],
+          createdAt: '2026-05-17T00:00:02Z',
+        },
+      });
+    });
+
+    // Reader stays put — not snapped to the bottom (800).
+    expect(list.scrollTop).toBe(100);
+
+    await unmount();
+  });
+
+  it('F4: readOnly hides the composer interrupt button and mutating menu actions', async () => {
+    const ctl = makeMockAdapter([
+      {
+        id: 'q1',
+        taskId: 't_ro',
+        role: 'user',
+        content: 'hi',
+        metadata: null,
+        attachments: [],
+        createdAt: '2026-05-17T00:00:00Z',
+      },
+    ]);
+    // Adapter supports restart so we can confirm it's hidden under readOnly too.
+    (ctl.adapter as { restart?: unknown }).restart = async () => {};
+
+    const { container, unmount } = await mount(
+      <ChatView taskId="t_ro" adapter={ctl.adapter} readOnly />,
+    );
+
+    await act(async () => {
+      ctl.pushEvent({
+        type: 'runtime_status',
+        status: { taskId: 't_ro', state: 'thinking', replyInProgress: true, replyTo: 'r1' },
+      });
+    });
+
+    // Composer interrupt is hidden in read-only mode.
+    expect(container.querySelector('.conductor-button--interrupt')).toBeNull();
+
+    // The action menu still opens (and copy works), but mutating actions are gone.
+    const bubble = container.querySelector('[data-role="user"] .conductor-bubble') as HTMLElement;
+    await act(async () => {
+      bubble.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="conductor-bubble-menu-copy"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="conductor-bubble-menu-resend"]')).toBeNull();
+    expect(container.querySelector('[data-testid="conductor-bubble-menu-interrupt"]')).toBeNull();
+    expect(container.querySelector('[data-testid="conductor-bubble-menu-restart"]')).toBeNull();
+
+    await unmount();
   });
 });

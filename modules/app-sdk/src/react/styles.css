@@ -99,13 +99,23 @@
 
 /* ----- Message list ------------------------------------------------------- */
 
+/* Positioning context for the scroll-to-bottom button, the question-anchor
+ * rail, and the action-menu overlay — all of which are absolutely positioned
+ * relative to the scroll area (not the page). This wrapper is the `1fr` grid
+ * row; the inner list scrolls inside it. */
+.conductor-message-list-viewport {
+  position: relative;
+  min-height: 0; /* lets it shrink inside the grid row */
+  overflow: hidden; /* contain the absolutely-positioned affordances */
+}
+
 .conductor-message-list {
+  height: 100%;
   overflow-y: auto;
   padding: var(--conductor-spacing);
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 0; /* lets it shrink inside the grid row */
 }
 
 .conductor-load-earlier {
@@ -141,8 +151,27 @@
   justify-content: flex-start;
 }
 
-.conductor-bubble {
+/* Wrapper that stacks the bubble + its timestamp + attachments. This is the
+ * flex child that gets aligned left/right; `.conductor-bubble` inside it holds
+ * only the message text. */
+.conductor-bubble-group {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   max-width: 75%;
+  min-width: 0;
+}
+
+.conductor-message--user .conductor-bubble-group {
+  align-items: flex-end;
+}
+
+.conductor-message--assistant .conductor-bubble-group {
+  align-items: flex-start;
+}
+
+.conductor-bubble {
   padding: 10px 14px;
   border-radius: var(--conductor-radius);
   white-space: pre-wrap;
@@ -162,6 +191,153 @@
 
 .conductor-message--pending .conductor-bubble {
   opacity: 0.6;
+}
+
+/* Hover/tap-revealed timestamp, absolutely positioned so it never reserves
+ * vertical space in the list. */
+.conductor-bubble__time {
+  position: absolute;
+  top: -13px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--conductor-text-muted);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  pointer-events: none;
+}
+
+.conductor-message--user .conductor-bubble__time {
+  right: 4px;
+}
+
+.conductor-message--assistant .conductor-bubble__time {
+  left: 4px;
+}
+
+.conductor-bubble-group:hover .conductor-bubble__time,
+.conductor-bubble-group--timestamp-visible .conductor-bubble__time {
+  opacity: 1;
+}
+
+/* "via {app}" origin chip rendered inline at the start of the bubble. */
+.conductor-bubble__origin {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--conductor-border);
+  color: var(--conductor-text-muted);
+  vertical-align: middle;
+}
+
+/* ----- Attachments -------------------------------------------------------- */
+
+.conductor-bubble__attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.conductor-attachment {
+  overflow: hidden;
+  border: 1px solid var(--conductor-border);
+  border-radius: var(--conductor-radius);
+  background: var(--conductor-bubble-assistant);
+}
+
+.conductor-attachment__media-link {
+  display: block;
+}
+
+.conductor-attachment__image {
+  display: block;
+  width: 100%;
+  max-height: 28rem;
+  object-fit: cover;
+}
+
+.conductor-attachment__video {
+  display: block;
+  width: 100%;
+  max-height: 28rem;
+  background: #000;
+}
+
+.conductor-attachment__audio {
+  display: block;
+  width: 100%;
+  padding: 8px;
+}
+
+.conductor-attachment__file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--conductor-text);
+  text-decoration: none;
+}
+
+.conductor-attachment__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--conductor-text-muted);
+}
+
+.conductor-attachment__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conductor-attachment__size {
+  flex-shrink: 0;
+  color: var(--conductor-text-muted);
+}
+
+/* ----- Empty state -------------------------------------------------------- */
+
+.conductor-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 6px;
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--conductor-text-muted);
+}
+
+.conductor-empty__icon {
+  width: 48px;
+  height: 48px;
+  opacity: 0.35;
+  margin-bottom: 4px;
+}
+
+.conductor-empty__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--conductor-text);
+}
+
+.conductor-empty__body {
+  max-width: 30rem;
+  font-size: 13px;
+}
+
+.conductor-empty__restart {
+  margin-top: 12px;
 }
 
 /* ----- Message input ------------------------------------------------------ */
@@ -244,21 +420,191 @@
   filter: brightness(0.92);
 }
 
+/* ----- Scroll-to-bottom button -------------------------------------------- */
+
+.conductor-scroll-to-bottom {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--conductor-border);
+  background: var(--conductor-bubble-assistant);
+  color: var(--conductor-text);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.conductor-scroll-to-bottom:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.conductor-scroll-to-bottom svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ----- Question anchor navigation ----------------------------------------- */
+
+.conductor-question-nav {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-height: 80%;
+  overflow-y: auto;
+  padding: 4px 0;
+  transition: opacity 200ms ease;
+  scrollbar-width: none; /* Firefox: hide the rail's own scrollbar */
+}
+
+.conductor-question-nav::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.conductor-question-nav--visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.conductor-question-nav--hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.conductor-question-nav__group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.conductor-question-nav__sep {
+  width: 1px;
+  height: 12px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.conductor-question-nav__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.conductor-question-nav__dot {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.35);
+  transition: all 150ms ease;
+}
+
+.conductor-question-nav__btn:hover .conductor-question-nav__dot {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.conductor-question-nav__dot--active {
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+}
+
+/* ----- Bubble action menu (double-click / double-tap) --------------------- */
+
+.conductor-bubble-menu-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+}
+
+.conductor-bubble-menu-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.conductor-bubble-menu-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 12px;
+  border-top: 1px solid var(--conductor-border);
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+  background: var(--conductor-bubble-assistant);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.conductor-bubble-menu-handle {
+  width: 48px;
+  height: 5px;
+  margin: 0 auto 12px;
+  border-radius: 999px;
+  background: var(--conductor-border);
+}
+
+.conductor-bubble-menu-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.conductor-bubble-menu-item {
+  flex: 0 0 auto;
+  padding: 8px 16px;
+  border-radius: var(--conductor-radius);
+  border: 1px solid var(--conductor-border);
+  background: var(--conductor-paper);
+  color: var(--conductor-text);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.conductor-bubble-menu-item:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.conductor-bubble-menu-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* ----- Mobile layout ------------------------------------------------------ */
 
 @media (max-width: 600px) {
   .conductor-chat-view {
     font-size: 15px;
   }
-  .conductor-bubble {
+  .conductor-bubble-group {
     max-width: 85%;
   }
 }
 
-.conductor-chat-view[data-layout='mobile'] .conductor-bubble {
+.conductor-chat-view[data-layout='mobile'] .conductor-bubble-group {
   max-width: 85%;
 }
 
-.conductor-chat-view[data-layout='desktop'] .conductor-bubble {
+.conductor-chat-view[data-layout='desktop'] .conductor-bubble-group {
   max-width: 60%;
 }
