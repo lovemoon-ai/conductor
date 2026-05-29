@@ -9,6 +9,7 @@ import { useProjectsStore } from '@/features/projects';
 import { useAgentsStore } from '@/features/agents';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { MobileNav } from '@/components/layout/MobileNav';
+import { ProjectDocumentTitle } from '@/components/layout/ProjectDocumentTitle';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'conductor-sidebar-collapsed';
@@ -97,6 +98,7 @@ export default function WebAppLayout({
 
   return (
     <div className="h-screen flex flex-col bg-paper">
+      <ProjectDocumentTitle />
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
         {/* Desktop Sidebar */}
         <div className="hidden md:block">
