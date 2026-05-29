@@ -28,6 +28,7 @@ import {
   listAdvertisedBackends,
   resolveConfiguredRuntimeBackend,
   isBuiltInRuntimeBackend,
+  isCommandOptionalBuiltInRuntimeBackend,
   isRuntimeSupportedBackend,
   normalizeRuntimeBackendAlias,
   normalizeRuntimeBackendName,
@@ -5049,7 +5050,8 @@ export function startDaemon(config = {}, deps = {}) {
       const isAllowedExternalBackend =
         !isBuiltInRuntimeBackend(effectiveBackend) &&
         await isRuntimeSupportedBackend(effectiveBackend, { configFilePath: config.CONFIG_FILE });
-      if (!isAdvertisedBackend || (!hasConfiguredEntry && !isAllowedExternalBackend)) {
+      const isCommandOptionalBuiltIn = isCommandOptionalBuiltInRuntimeBackend(effectiveBackend);
+      if (!isAdvertisedBackend || (!hasConfiguredEntry && !isAllowedExternalBackend && !isCommandOptionalBuiltIn)) {
         logError(`Unsupported backend: ${selectedBackend}. Supported: ${SUPPORTED_BACKENDS.join(", ")}`);
         sendAgentCommandAck({
           requestId,
@@ -5520,7 +5522,8 @@ export function startDaemon(config = {}, deps = {}) {
     const isAllowedExternalBackend =
       !isBuiltInRuntimeBackend(effectiveBackend) &&
       await isRuntimeSupportedBackend(effectiveBackend, { configFilePath: config.CONFIG_FILE });
-    if (!isAdvertisedBackend || (!hasConfiguredEntry && !isAllowedExternalBackend)) {
+    const isCommandOptionalBuiltIn = isCommandOptionalBuiltInRuntimeBackend(effectiveBackend);
+    if (!isAdvertisedBackend || (!hasConfiguredEntry && !isAllowedExternalBackend && !isCommandOptionalBuiltIn)) {
       reportRestartFailure({
         taskId: normalizedTargetTaskId,
         projectId: normalizedProjectId,
