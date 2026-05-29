@@ -107,7 +107,9 @@ async function handleRequest(message) {
     result,
   });
   if (method === "close") {
-    process.exit(0);
+    // session.close() already ran via the dispatch above; route through the
+    // guarded shutdown so a racing signal can't double-handle the exit.
+    void gracefulShutdown(0);
   }
 }
 
@@ -129,40 +131,71 @@ async function dispatchMessage(message) {
   }
 }
 
+// Upper bound on how long we wait for a graceful session close before
+// giving up and exiting. A browser-backed session (chat-web) can hang in
+// context.close(); without this cap the worker could fail to exit, which
+// only makes orphaned browsers more likely. If close times out, the browser
+// is reclaimed on the next launch via chat-web's profile-lock logic.
+const CLOSE_TIMEOUT_MS = 10_000;
+
 async function closeSession() {
   if (!session || typeof session.close !== "function") {
     return;
   }
   try {
-    await session.close();
+    await Promise.race([
+      Promise.resolve().then(() => session.close()),
+      new Promise((resolve) => {
+        const timer = setTimeout(resolve, CLOSE_TIMEOUT_MS);
+        if (typeof timer.unref === "function") {
+          timer.unref();
+        }
+      }),
+    ]);
   } catch {
     // best effort
   }
 }
 
-process.on("uncaughtException", async (error) => {
+// Graceful shutdown on termination signals. Without these handlers a worker
+// killed via SIGTERM (e.g. when the parent fire is stopped) would exit
+// without closing its session, leaking the Chromium browser it spawned.
+let shuttingDown = false;
+async function gracefulShutdown(exitCode) {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  await closeSession();
+  process.exit(exitCode);
+}
+process.on("SIGTERM", () => {
+  void gracefulShutdown(143);
+});
+process.on("SIGINT", () => {
+  void gracefulShutdown(130);
+});
+
+process.on("uncaughtException", (error) => {
   send({
     type: "event",
     name: "worker_error",
     payload: serializeError(error),
   });
-  await closeSession();
-  process.exit(1);
+  void gracefulShutdown(1);
 });
 
-process.on("unhandledRejection", async (reason) => {
+process.on("unhandledRejection", (reason) => {
   send({
     type: "event",
     name: "worker_error",
     payload: serializeError(reason),
   });
-  await closeSession();
-  process.exit(1);
+  void gracefulShutdown(1);
 });
 
-process.stdin.on("end", async () => {
-  await closeSession();
-  process.exit(0);
+process.stdin.on("end", () => {
+  void gracefulShutdown(0);
 });
 
 const input = readline.createInterface({ input: process.stdin });
