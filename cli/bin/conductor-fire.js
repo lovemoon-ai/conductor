@@ -246,6 +246,18 @@ const DEFAULT_POLL_INTERVAL_MS = parseInt(
 const DEFAULT_ERROR_LOOP_WINDOW_MS = 2 * 60 * 1000;
 const DEFAULT_ERROR_LOOP_BACKOFF_MS = 3 * 60 * 1000;
 const DEFAULT_ERROR_LOOP_THRESHOLD = 3;
+// Runtime backend tokens (first word of the resolved command line) that mean
+// "this task drives a chat-web Chromium browser". Mirrors ai-sdk's chat-web
+// aliases; user-facing aliases like `web-chatgpt` resolve to one of these.
+const CHAT_WEB_RUNTIME_BACKEND_TOKENS = new Set(["chat-web", "chatweb", "chat_web", "web-chat"]);
+// Max active lifetime for a chat-web task before it is auto-stopped (default
+// 24h). Bounded to [1min, 7d]; override via CONDUCTOR_CHATWEB_MAX_ACTIVE_MS.
+const CHAT_WEB_MAX_ACTIVE_MS = getBoundedEnvInt(
+  "CONDUCTOR_CHATWEB_MAX_ACTIVE_MS",
+  24 * 60 * 60 * 1000,
+  60_000,
+  7 * 24 * 60 * 60 * 1000,
+);
 const SESSION_BOOTSTRAP_LOCK_TIMEOUT_MS = 15_000;
 const SESSION_BOOTSTRAP_LOCK_RETRY_MS = 50;
 const FIRE_WATCHDOG_INTERVAL_MS = getBoundedEnvInt(
@@ -866,6 +878,18 @@ async function main() {
       env: process.env,
     });
 
+    // chat-web tasks drive a real Chromium browser that holds a per-profile
+    // singleton lock for as long as the task lives. A task that never ends
+    // pins that browser indefinitely (and blocks other chats for the same
+    // provider), so we cap its active lifetime and auto-stop it when exceeded.
+    // The conversation itself is preserved (it lives in the provider account
+    // and the persisted profile; closing the browser does not delete it).
+    const runtimeBackendToken = String(sessionCommandLine || "")
+      .trim()
+      .split(/\s+/)[0]
+      ?.toLowerCase() || "";
+    const isChatWebTask = CHAT_WEB_RUNTIME_BACKEND_TOKENS.has(runtimeBackendToken);
+
     log(`Using backend: ${cliArgs.backend}`);
 
     try {
@@ -880,6 +904,7 @@ async function main() {
 
     const signals = new AbortController();
     let shutdownSignal = null;
+    let autoStopReason = null;
     let backendShutdownRequested = false;
     const requestBackendShutdown = (source) => {
       if (backendShutdownRequested) {
@@ -910,6 +935,27 @@ async function main() {
     };
     process.on("SIGINT", onSigint);
     process.on("SIGTERM", onSigterm);
+
+    // Cap the active lifetime of chat-web tasks (default 24h). On expiry we
+    // stop the task gracefully — abort the runner and close the backend
+    // session so the Chromium browser is released — and mark it KILLED with a
+    // max_active_duration reason. Chat history is retained on the provider side.
+    let maxActiveTimer = null;
+    if (isChatWebTask) {
+      maxActiveTimer = setTimeout(() => {
+        log(
+          `chat-web task exceeded max active duration (${CHAT_WEB_MAX_ACTIVE_MS}ms); ` +
+            `auto-stopping task (chat history is preserved).`,
+        );
+        autoStopReason = "max_active_duration";
+        fireShuttingDown = true;
+        signals.abort();
+        requestBackendShutdown("max_active_duration");
+      }, CHAT_WEB_MAX_ACTIVE_MS);
+      if (typeof maxActiveTimer.unref === "function") {
+        maxActiveTimer.unref();
+      }
+    }
 
     if (shouldFireReportTaskStatus({ launchedByDaemon, phase: "running" })) {
       try {
@@ -1030,7 +1076,12 @@ async function main() {
           // SDK durable outbox would retry forever, preventing the process from
           // exiting.
           const taskDeletedByUser = remoteStopReason === "deleted_by_user";
-          const finalStatus = shutdownSignal
+          const finalStatus = autoStopReason
+            ? {
+                status: "KILLED",
+                summary: `${autoStopReason}: chat-web task exceeded its max active duration`,
+              }
+            : shutdownSignal
             ? {
                 status: "KILLED",
                 summary: `terminated by ${shutdownSignal}`,
@@ -1079,6 +1130,9 @@ async function main() {
     } finally {
       process.off("SIGINT", onSigint);
       process.off("SIGTERM", onSigterm);
+      if (maxActiveTimer) {
+        clearTimeout(maxActiveTimer);
+      }
       if (shutdownSignal === "SIGINT") {
         process.exitCode = 130;
       } else if (shutdownSignal === "SIGTERM") {

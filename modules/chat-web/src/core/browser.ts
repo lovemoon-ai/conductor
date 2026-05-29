@@ -9,6 +9,7 @@ import {
   markAutoInstallAttempted,
 } from "./install-chromium.js";
 import { defaultLogger, type Logger } from "./logger.js";
+import { reclaimProfileLock, writeProfileOwner } from "./profile-lock.js";
 import { createProfileManager, type BrowserProfileManager } from "./profile-manager.js";
 
 export interface LaunchOptions {
@@ -104,8 +105,15 @@ export async function launchProviderBrowser(
     ...resolveBrowserBinary(options),
   };
 
+  // Enforce "one live chat per profile" and self-heal stale/orphaned locks
+  // before launching. Throws ProfileLockedError if a genuine live chat for
+  // this provider is still running (see profile-lock.ts).
+  await reclaimProfileLock({ userDataDir, provider, logger });
+
   try {
-    return await launch(userDataDir, launchArgs);
+    const launched = await launch(userDataDir, launchArgs);
+    writeProfileOwner(userDataDir, provider);
+    return launched;
   } catch (err) {
     // First-failure recovery path: if Chromium isn't installed, try to
     // install it once and retry the launch.
@@ -137,7 +145,9 @@ export async function launchProviderBrowser(
     }
 
     try {
-      return await launch(userDataDir, launchArgs);
+      const launched = await launch(userDataDir, launchArgs);
+      writeProfileOwner(userDataDir, provider);
+      return launched;
     } catch (retryErr) {
       throw new BrowserLaunchError(
         provider,

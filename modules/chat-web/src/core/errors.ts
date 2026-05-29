@@ -19,6 +19,7 @@ export type ChatWebErrorCode =
   | "SELECTOR_VERIFICATION"
   | "UNKNOWN_PROVIDER"
   | "PROFILE_ERROR"
+  | "PROFILE_LOCKED"
   | "BROWSER_LAUNCH_FAILED";
 
 export class ChatWebError extends Error {
@@ -199,6 +200,24 @@ export class ProfileError extends ChatWebError {
   constructor(provider: string, message: string, cause?: unknown) {
     super("PROFILE_ERROR", message, { provider, cause });
     this.name = "ProfileError";
+  }
+}
+
+export class ProfileLockedError extends ChatWebError {
+  constructor(provider: string, browserPid: number, ownerPid: number) {
+    super(
+      "PROFILE_LOCKED",
+      `Provider "${provider}" already has a live chat session ` +
+        `(Chromium pid ${browserPid}, owned by pid ${ownerPid}). ` +
+        `chat-web allows only one live chat per profile at a time.`,
+      {
+        provider,
+        hint:
+          `Wait for the active "${provider}" chat to finish, or stop its owner ` +
+          `process (kill ${ownerPid}) before starting another.`,
+      },
+    );
+    this.name = "ProfileLockedError";
   }
 }
 

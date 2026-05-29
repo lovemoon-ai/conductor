@@ -2,6 +2,7 @@ import type { BrowserContext, Page } from "playwright";
 
 import { launchProviderBrowser, type LaunchOptions } from "./core/browser.js";
 import { NotLoggedInError } from "./core/errors.js";
+import { clearProfileOwner } from "./core/profile-lock.js";
 import { defaultLogger, type Logger } from "./core/logger.js";
 import {
   getProvider,
@@ -86,6 +87,7 @@ export class ChatSession {
     } catch (err) {
       // Don't leak the browser if open() throws.
       await context.close().catch(() => undefined);
+      clearProfileOwner(userDataDir);
       throw err;
     }
 
@@ -268,6 +270,9 @@ export class ChatSession {
     if (this.closed) return;
     this.closed = true;
     await this.context.close().catch(() => undefined);
+    // Drop the owner sidecar so a later launch doesn't mistake a cleanly
+    // closed profile for a live chat (see core/profile-lock.ts).
+    clearProfileOwner(this.userDataDir);
   }
 
   /** Enables `await using session = …` (TC39 explicit resource management). */
