@@ -306,9 +306,10 @@ export const bindActiveTasksFromResume = async (
   if (!Array.isArray(activeTasks) || activeTasks.length === 0) {
     return 0;
   }
-  const ids = activeTasks
-    .map((value) => (typeof value === "string" ? value.trim() : ""))
-    .filter(Boolean);
+  const ids = activeTasks.flatMap((value) => {
+    const id = typeof value === "string" ? value.trim() : "";
+    return id ? [id] : [];
+  });
   if (ids.length === 0) {
     return 0;
   }
@@ -431,9 +432,10 @@ export const processAgentAliveTasks = async (args: {
   const candidates = Array.isArray(args.payload.alive_task_ids)
     ? Array.from(
         new Set(
-          args.payload.alive_task_ids
-            .map((value) => (typeof value === "string" ? value.trim() : ""))
-            .filter(Boolean),
+          args.payload.alive_task_ids.flatMap((value) => {
+            const id = typeof value === "string" ? value.trim() : "";
+            return id ? [id] : [];
+          }),
         ),
       )
     : [];
@@ -480,8 +482,7 @@ export const processAgentAliveTasks = async (args: {
     return { revokedTaskIds: [], consideredCount: candidates.length, reason };
   }
 
-  const revokedIds: string[] = [];
-  for (const task of revocableTasks) {
+  const revokedIds = (await Promise.all(revocableTasks.map(async (task) => {
     try {
       // Optimistic single-row update guarded by the same predicate so a
       // concurrent user-initiated restart (which flips status to `running`)
@@ -501,35 +502,37 @@ export const processAgentAliveTasks = async (args: {
           // message will re-stamp executionHost correctly.
         },
       });
-      if (result.count > 0) {
-        revokedIds.push(task.id);
-        const isPureDaemonTask =
-          normalizeOptionalString(task.agentHost) === args.agentHost;
-        if (isPureDaemonTask) {
-          // Pure daemon ai_task — the daemon ws is the message-delivery
-          // channel, so rebind to it. Manual-fire tasks (agentHost = daemon,
-          // executionHost = fire) deliberately skip this rebind: their
-          // sdk_message envelopes must keep flowing into the fire ws.
-          realtimeHub.bindTaskToAgent(task.id, args.agentHost);
-        }
-        realtimeHub.broadcast(args.userId, task.projectId, {
-          type: "task_status_update",
-          payload: {
-            task_id: task.id,
-            project_id: task.projectId,
-            status: "running",
-            summary: `Revoked stale killed flag after ${reason}`,
-          },
-        });
+      if (result.count === 0) {
+        return null;
       }
+      const isPureDaemonTask =
+        normalizeOptionalString(task.agentHost) === args.agentHost;
+      if (isPureDaemonTask) {
+        // Pure daemon ai_task — the daemon ws is the message-delivery
+        // channel, so rebind to it. Manual-fire tasks (agentHost = daemon,
+        // executionHost = fire) deliberately skip this rebind: their
+        // sdk_message envelopes must keep flowing into the fire ws.
+        realtimeHub.bindTaskToAgent(task.id, args.agentHost);
+      }
+      realtimeHub.broadcast(args.userId, task.projectId, {
+        type: "task_status_update",
+        payload: {
+          task_id: task.id,
+          project_id: task.projectId,
+          status: "running",
+          summary: `Revoked stale killed flag after ${reason}`,
+        },
+      });
+      return task.id;
     } catch (error) {
       console.warn(
         `[agent-gateway] failed to revoke killed flag for ${task.id}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
+      return null;
     }
-  }
+  }))).filter((taskId): taskId is string => taskId !== null);
 
   return { revokedTaskIds: revokedIds, consideredCount: candidates.length, reason };
 };
@@ -775,7 +778,10 @@ const extractSupportedBackends = (req: IncomingMessage): string[] => {
   const header = req.headers["x-conductor-backends"];
   const value = Array.isArray(header) ? header[0] : (header as string | undefined);
   if (!value) return [];
-  return value.split(",").map((s) => s.trim()).filter(Boolean);
+  return value.split(",").flatMap((entry) => {
+    const trimmed = entry.trim();
+    return trimmed ? [trimmed] : [];
+  });
 };
 
 const extractRuntimeBackendMap = (req: IncomingMessage): Record<string, string> => {
@@ -808,7 +814,10 @@ const extractCapabilities = (req: IncomingMessage): string[] => {
   const header = req.headers["x-conductor-capabilities"];
   const value = Array.isArray(header) ? header[0] : (header as string | undefined);
   if (!value) return [];
-  return value.split(",").map((s) => s.trim()).filter(Boolean);
+  return value.split(",").flatMap((entry) => {
+    const trimmed = entry.trim();
+    return trimmed ? [trimmed] : [];
+  });
 };
 
 const extractVersion = (req: IncomingMessage): string | undefined => {

@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { useEffect, useRef, useState } from 'react';
 import type { Message } from '@/shared/types';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -119,6 +120,10 @@ export function MessageBubble({
     setIsToolbarOpen(false);
   };
 
+  const closeToolbar = () => {
+    setIsToolbarOpen(false);
+  };
+
   useEffect(() => {
     if (!isToolbarOpen) {
       return;
@@ -184,7 +189,7 @@ export function MessageBubble({
           }}
           className={`${actionButtonClassName} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent`}
         >
-          <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <path d="M4 12a8 8 0 1 0 2.34-5.66" />
             <path d="M4 4v6h6" />
             <path d="M12 8v5l3 2" />
@@ -203,11 +208,11 @@ export function MessageBubble({
         className={actionButtonClassName}
       >
         {copyState === 'copied' ? (
-          <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="20 6 9 17 4 12" />
           </svg>
         ) : (
-          <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" />
             <rect x="2" y="2" width="13" height="13" rx="2" />
           </svg>
@@ -227,7 +232,7 @@ export function MessageBubble({
           }}
           className={`${actionButtonClassName} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent`}
         >
-          <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 3v4" />
             <path d="M17.66 6.34A8 8 0 1 1 12 4" />
           </svg>
@@ -247,7 +252,7 @@ export function MessageBubble({
           }}
           className={`${actionButtonClassName} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent`}
         >
-          <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <path d="M8 3h8l5 5v8l-5 5H8l-5-5V8l5-5z" />
             <path d="M9 9l6 6" />
             <path d="M15 9l-6 6" />
@@ -266,6 +271,7 @@ export function MessageBubble({
         >
           {message.createdAt ? (
             <span
+              suppressHydrationWarning
               className={`pointer-events-none absolute left-4 -top-1 z-20 flex h-2 items-center text-[10px] leading-none text-muted transition-opacity ${
                 isTimestampVisible ? 'opacity-100' : 'opacity-0 group-hover/message:opacity-100'
               }`}
@@ -338,10 +344,14 @@ export function MessageBubble({
                   >
                     {attachment.kind === 'image' ? (
                       <a href={attachment.downloadUrl} target="_blank" rel="noreferrer" className="block">
-                        <img
+                        <Image
                           src={attachment.downloadUrl}
                           alt={attachment.name}
-                          className="max-h-[28rem] w-full object-cover"
+                          width={1600}
+                          height={900}
+                          unoptimized
+                          loader={({ src }) => src}
+                          className="h-auto max-h-[28rem] w-full object-cover"
                         />
                       </a>
                     ) : null}
@@ -349,13 +359,23 @@ export function MessageBubble({
                       <video
                         controls
                         preload="metadata"
-                        className="max-h-[28rem] w-full bg-black"
+                        aria-label={`Video attachment ${attachment.name}`}
+                        className="max-h-[28rem] w-full bg-gray-950"
                         src={attachment.downloadUrl}
-                      />
+                      >
+                        <track kind="captions" />
+                      </video>
                     ) : null}
                     {attachment.kind === 'audio' ? (
                       <div className="p-3">
-                        <audio controls className="w-full" src={attachment.downloadUrl} />
+                        <audio
+                          controls
+                          aria-label={`Audio attachment ${attachment.name}`}
+                          className="w-full"
+                          src={attachment.downloadUrl}
+                        >
+                          <track kind="captions" />
+                        </audio>
                       </div>
                     ) : null}
                     {attachment.kind === 'file' ? (
@@ -385,8 +405,13 @@ export function MessageBubble({
       </div>
 
       {isToolbarOpen ? (
-        <div className="fixed inset-0 z-50" onClick={() => setIsToolbarOpen(false)}>
-          <div className="absolute inset-0 bg-black/20" />
+        <div className="fixed inset-0 z-50">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/20"
+            aria-label="Close message actions"
+            onClick={closeToolbar}
+          />
           <div
             ref={toolbarRef}
             className="absolute inset-x-0 bottom-0 rounded-t-3xl border border-border bg-[var(--surface-panel)] p-4 shadow-2xl"

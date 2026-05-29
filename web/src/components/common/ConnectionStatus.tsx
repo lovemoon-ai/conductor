@@ -6,115 +6,12 @@ import { useWebSocketStore } from '@/features/realtime';
 import { useRuntimeStore } from '@/features/realtime';
 import { useTasksStore } from '@/features/tasks';
 import { useAgentsStore } from '@/features/agents';
-
-function normalizeTaskId(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) {
-    return value[0] || null;
-  }
-  if (typeof value === 'string' && value.trim()) {
-    return value.trim();
-  }
-  return null;
-}
-
-function formatPercent(value?: number): string {
-  if (!Number.isFinite(value)) {
-    return 'n/a';
-  }
-  const rounded = Math.round((Number(value) + Number.EPSILON) * 10) / 10;
-  return `${rounded}%`;
-}
-
-/**
- * Extract goal-mode info from a task's persisted metadata + launchConfig.
- *
- * Backend contract (see `web/src/lib/tasks/create-ai-task.ts`):
- *   - `metadata.aiMode === "goal"` is the persisted "this task was created
- *     in /goal mode" flag — used as a fallback when the live runtime has not
- *     yet reported `aiMode` (e.g. before the first turn dispatch). The live
- *     runtime field is the source of truth for the CURRENT turn's mode.
- *   - `metadata.goal = { source, issueId?, status? }` carries provenance.
- *   - `launchConfig.goal.objective` carries the bare objective text for UI
- *     display, with `metadata.initialContent` as a secondary fallback. Note
- *     these may differ from the actual prefill delivered to fire — which
- *     now includes a `/goal\n` prefix so fire's per-message detector picks
- *     it up.
- */
-function extractGoalInfo(
-  metadata?: Record<string, unknown> | null,
-  launchConfig?: Record<string, unknown> | null,
-): {
-  active: boolean;
-  source?: string;
-  status?: string;
-  objective?: string;
-  issueId?: string;
-} {
-  if (!metadata || typeof metadata !== 'object') {
-    return { active: false };
-  }
-  const aiMode = typeof metadata.aiMode === 'string' ? metadata.aiMode : '';
-  const goalBlock =
-    metadata.goal && typeof metadata.goal === 'object' && !Array.isArray(metadata.goal)
-      ? (metadata.goal as Record<string, unknown>)
-      : null;
-  const objectiveFromLaunch =
-    launchConfig &&
-    typeof launchConfig === 'object' &&
-    launchConfig.goal &&
-    typeof launchConfig.goal === 'object' &&
-    !Array.isArray(launchConfig.goal)
-      ? ((launchConfig.goal as Record<string, unknown>).objective as string | undefined)
-      : undefined;
-  const objectiveFromMetadata =
-    typeof metadata.initialContent === 'string' ? (metadata.initialContent as string) : undefined;
-
-  // We treat the task as goal-mode if EITHER aiMode says so OR the goal block
-  // carries an objective (defensive — matches `isGoalModeLaunchConfig` on the
-  // daemon side which accepts either signal).
-  const inferred =
-    aiMode === 'goal' ||
-    (goalBlock && typeof goalBlock.objective === 'string' && (goalBlock.objective as string).trim().length > 0);
-
-  if (!inferred) {
-    return { active: false };
-  }
-
-  return {
-    active: true,
-    source: typeof goalBlock?.source === 'string' ? (goalBlock?.source as string) : undefined,
-    status: typeof goalBlock?.status === 'string' ? (goalBlock?.status as string) : undefined,
-    issueId: typeof goalBlock?.issueId === 'string' ? (goalBlock?.issueId as string) : undefined,
-    objective: (objectiveFromLaunch || objectiveFromMetadata || '').trim() || undefined,
-  };
-}
-
-/**
- * Decide which `aiMode` to render in the Runtime Details panel.
- *
- * Precedence (highest first):
- *   1. The live runtime field reported by fire on each dispatch
- *      (`runtimeAiMode`). The user can flip modes mid-chat by typing
- *      `/goal ...` at any time, so this is the only source that reflects the
- *      CURRENT turn's mode.
- *   2. The task's persisted `metadata.aiMode` (surfaced via `goalInfo.active`).
- *      Used as a fallback for the brief window before the first turn has
- *      dispatched, or for tasks where the runtime hasn't reported yet (e.g.
- *      the page just loaded and we have not received any runtime event).
- *
- * Returns the internal mode name ("goal" or "turn"); the UI layer is
- * responsible for translating that to the user-facing label ("goal" /
- * "normal").
- */
-export function resolveEffectiveAiMode(
-  runtimeAiMode: 'goal' | 'turn' | undefined,
-  metadataGoalActive: boolean,
-): 'goal' | 'turn' {
-  if (runtimeAiMode === 'goal' || runtimeAiMode === 'turn') {
-    return runtimeAiMode;
-  }
-  return metadataGoalActive ? 'goal' : 'turn';
-}
+import {
+  extractGoalInfo,
+  formatPercent,
+  normalizeTaskId,
+  resolveEffectiveAiMode,
+} from './ConnectionStatus.utils';
 
 export function ConnectionStatus({
   detailsEnabled = false,
@@ -163,22 +60,30 @@ export function ConnectionStatus({
     () => agents.filter((agent) => !agent.host.startsWith('conductor-fire-')),
     [agents],
   );
+  const visibleAgentByHost = useMemo(
+    () => new Map(visibleAgents.map((agent) => [agent.host, agent] as const)),
+    [visibleAgents],
+  );
+  const visibleAgentById = useMemo(
+    () => new Map(visibleAgents.map((agent) => [agent.id, agent] as const)),
+    [visibleAgents],
+  );
   const daemon = useMemo(() => {
     const candidates = [daemonFromTask, runtime?.daemon]
       .map((value) => value?.trim())
       .filter((value): value is string => Boolean(value));
     for (const candidate of candidates) {
-      const hostMatch = visibleAgents.find((agent) => agent.host === candidate);
+      const hostMatch = visibleAgentByHost.get(candidate);
       if (hostMatch) {
         return hostMatch.host;
       }
-      const idMatch = visibleAgents.find((agent) => agent.id === candidate);
+      const idMatch = visibleAgentById.get(candidate);
       if (idMatch) {
         return idMatch.host;
       }
     }
     return candidates[0] || 'n/a';
-  }, [daemonFromTask, runtime?.daemon, visibleAgents]);
+  }, [daemonFromTask, runtime?.daemon, visibleAgentByHost, visibleAgentById]);
   const pid = runtime?.pid ?? null;
   const taskIdValue = taskId || 'n/a';
   const sessionId = runtime?.sessionId || runtime?.threadId || currentTask?.sessionId || 'n/a';
@@ -232,7 +137,7 @@ export function ConnectionStatus({
         aria-label="Open connection details"
         aria-expanded={detailsEnabled ? open : undefined}
       >
-        <span className="relative flex h-2.5 w-2.5">
+        <span className="relative flex size-2.5">
           {config.pulse && (
             <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${config.color} opacity-75`} />
           )}

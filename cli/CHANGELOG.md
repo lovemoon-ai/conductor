@@ -1,5 +1,32 @@
 # @love-moon/conductor-cli
 
+## 0.5.0
+
+### Patch Changes
+
+- @love-moon/conductor-sdk@0.5.0
+- @love-moon/ai-sdk@0.5.0
+
+## 0.4.2
+
+### Patch Changes
+
+- e8936fb: Upgrade the GitHub Copilot SDK permission protocol so Copilot-backed tasks auto-approve tool calls with current Copilot CLI releases instead of failing with `unexpected user permission response`.
+- Updated dependencies [e8936fb]
+  - @love-moon/ai-sdk@0.4.2
+  - @love-moon/conductor-sdk@0.4.2
+
+## 0.4.1
+
+### Patch Changes
+
+- aada753: Add explicit ChatGPT and Gemini web backend aliases, expose project icon
+  configuration in generated CLI settings, and default browser-backed session
+  checks to headed mode for reliable authenticated detection.
+- Updated dependencies [aada753]
+  - @love-moon/ai-sdk@0.4.1
+  - @love-moon/conductor-sdk@0.4.1
+
 ## 0.4.0
 
 ### Minor Changes

@@ -131,8 +131,10 @@ export async function PATCH(
   if (userResult instanceof Response) return userResult;
   const user = userResult;
 
-  const { projectId } = await params;
-  const body = await request.json();
+  const [{ projectId }, body] = await Promise.all([
+    params,
+    request.json(),
+  ]);
   const normalizedBody =
     body && typeof body === "object" && !Array.isArray(body)
       ? (body as Record<string, unknown>)

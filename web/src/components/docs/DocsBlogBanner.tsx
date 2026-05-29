@@ -67,9 +67,11 @@ function resolveLabel(metaRecord: Record<string, unknown> | undefined, item: Ext
 function buildNavLinks(pageMap: PageMapItem[]) {
   const metaRecord = pageMap.find(isMetaRecord)?.data;
 
-  return pageMap
-    .filter(isPageLike)
-    .map((item) => ({ href: item.route, label: resolveLabel(metaRecord, item) }));
+  return pageMap.flatMap((item) => (
+    isPageLike(item)
+      ? [{ href: item.route, label: resolveLabel(metaRecord, item) }]
+      : []
+  ));
 }
 
 export function DocsBlogBanner({ lang, pageMap, isIndex, currentPath }: DocsBlogBannerProps) {
@@ -116,7 +118,7 @@ export function DocsBlogBanner({ lang, pageMap, isIndex, currentPath }: DocsBlog
                   <summary className="flex list-none items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--panel)]/92 px-4 py-2 text-sm font-medium text-[var(--ink)] shadow-sm transition-colors hover:bg-[var(--paper)] [&::-webkit-details-marker]:hidden">
                     <span>{copy.menu}</span>
                     <svg
-                      className="h-4 w-4 transition-transform group-open:rotate-180"
+                      className="size-4 transition-transform group-open:rotate-180"
                       viewBox="0 0 20 20"
                       fill="none"
                       stroke="currentColor"
@@ -145,7 +147,7 @@ export function DocsBlogBanner({ lang, pageMap, isIndex, currentPath }: DocsBlog
                     </div>
 
                     <div className="mt-3 flex items-center justify-between gap-2 rounded-[18px] border border-[var(--border)] bg-[var(--paper)]/70 px-3 py-2">
-                      <DocsLanguageSwitch className="h-9 min-w-0 flex-1 border-0 bg-transparent px-0 py-0 text-sm text-[var(--ink)] shadow-none" />
+                      <DocsLanguageSwitch className="h-9 min-w-0 flex-1 border-0 bg-transparent p-0 text-sm text-[var(--ink)] shadow-none" />
                       <ThemeToggle />
                     </div>
                   </div>

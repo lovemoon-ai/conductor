@@ -54,6 +54,8 @@ interface ShareDialogState {
   aiShareUrl: string;
 }
 
+type StatusAction = 'idle' | 'confirm-kill' | 'killing' | 'confirm-restart' | 'restarting';
+
 const LEFT_ACTION_WIDTH = 52;
 const RIGHT_ACTION_BUTTON_WIDTH = 72;
 const SWIPE_OPEN_THRESHOLD = 0.45;
@@ -166,13 +168,13 @@ const parseTaskWorktreeBranch = (
 };
 
 const TrashIcon = () => (
-  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
   </svg>
 );
 
 const NewTaskIcon = () => (
-  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <circle cx="7" cy="6" r="2.5" strokeWidth={2} />
     <circle cx="7" cy="18" r="2.5" strokeWidth={2} />
     <circle cx="17" cy="8" r="2.5" strokeWidth={2} />
@@ -182,7 +184,7 @@ const NewTaskIcon = () => (
 );
 
 const ShareIcon = () => (
-  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path
       strokeLinecap="round"
       strokeLinejoin="round"
@@ -193,7 +195,7 @@ const ShareIcon = () => (
 );
 
 const SelectIcon = ({ selected }: { selected: boolean }) => (
-  <svg className="h-3.5 w-3.5" fill={selected ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="size-3.5" fill={selected ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
   </svg>
 );
@@ -220,14 +222,11 @@ export function TaskItem({
   onFilterByDaemonHost,
   onFilterByBackend,
 }: TaskItemProps) {
-  const router = useRouter();
+  const { push } = useRouter();
   const [isEditing, setIsEditing] = useState(false);
   const [isRestartDialogOpen, setIsRestartDialogOpen] = useState(false);
-  const [isKillConfirming, setIsKillConfirming] = useState(false);
-  const [isKillingTask, setIsKillingTask] = useState(false);
-  const [isRestartConfirming, setIsRestartConfirming] = useState(false);
-  const [isRestartingTask, setIsRestartingTask] = useState(false);
-  const [editTitle, setEditTitle] = useState(task.title);
+  const [statusAction, setStatusAction] = useState<StatusAction>('idle');
+  const [editTitle, setEditTitle] = useState('');
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
   const [shareDialog, setShareDialog] = useState<ShareDialogState | null>(null);
@@ -245,7 +244,6 @@ export function TaskItem({
   const didSwipeRef = useRef(false);
   const dismissedStatusConfirmationRef = useRef(false);
   const dismissedStatusConfirmationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const prevIsSelectedRef = useRef(isSelected);
   const statusBadgeRef = useRef<HTMLDivElement | null>(null);
 
   const { updateTask, restartTask, deleteTask, markTaskRead } = useTasksStore();
@@ -282,6 +280,10 @@ export function TaskItem({
   const canQuickRestart =
     taskType === 'ai_task' &&
     (task.status === 'completed' || task.status === 'killed' || task.status === 'unknown');
+  const isKillConfirming = isTaskRunning && statusAction === 'confirm-kill';
+  const isKillingTask = isTaskRunning && statusAction === 'killing';
+  const isRestartConfirming = canQuickRestart && statusAction === 'confirm-restart';
+  const isRestartingTask = canQuickRestart && statusAction === 'restarting';
   const useDesktopListPaneSurface = desktopListPaneMode && !selectionMode;
   const isHighlighted = isSelected || (!selectionMode && isActive);
   const highlightedCardClassName = useDesktopListPaneSurface
@@ -305,27 +307,6 @@ export function TaskItem({
   }, [setSwipeOffsetValue]);
 
   useEffect(() => {
-    if (prevIsSelectedRef.current && !isSelected) {
-      closeSwipeActions();
-    }
-    prevIsSelectedRef.current = isSelected;
-  }, [closeSwipeActions, isSelected]);
-
-  useEffect(() => {
-    if (task.status === 'running') {
-      setIsRestartConfirming(false);
-      setIsRestartingTask(false);
-    } else {
-      setIsKillConfirming(false);
-      setIsKillingTask(false);
-    }
-    if (!canQuickRestart) {
-      setIsRestartConfirming(false);
-      setIsRestartingTask(false);
-    }
-  }, [canQuickRestart, task.status]);
-
-  useEffect(() => {
     if ((!isKillConfirming && !isRestartConfirming) || typeof document === 'undefined') {
       return;
     }
@@ -343,8 +324,7 @@ export function TaskItem({
         dismissedStatusConfirmationRef.current = false;
         dismissedStatusConfirmationTimeoutRef.current = null;
       }, 0);
-      setIsKillConfirming(false);
-      setIsRestartConfirming(false);
+      setStatusAction('idle');
     };
 
     document.addEventListener('pointerdown', handlePointerDown, true);
@@ -411,7 +391,7 @@ export function TaskItem({
       didSwipeRef.current = true;
     }
     setSwipeOffsetValue(nextOffset);
-  }, [setSwipeOffsetValue]);
+  }, [rightActionWidth, setSwipeOffsetValue]);
 
   const finalizeSwipe = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current || pointerIdRef.current !== event.pointerId) {
@@ -434,7 +414,7 @@ export function TaskItem({
     if (typeof target.hasPointerCapture === 'function' && target.hasPointerCapture(event.pointerId)) {
       target.releasePointerCapture(event.pointerId);
     }
-  }, [setSwipeOffsetValue]);
+  }, [rightActionWidth, setSwipeOffsetValue]);
 
   const consumeTap = useCallback(() => {
     if (dismissedStatusConfirmationRef.current) {
@@ -485,8 +465,8 @@ export function TaskItem({
   const openTaskPage = useCallback(() => {
     clearPendingOpenTask();
     markTaskRead(task.id);
-    router.push(`/app/tasks/${task.id}`);
-  }, [clearPendingOpenTask, markTaskRead, router, task.id]);
+    push(`/app/tasks/${task.id}`);
+  }, [clearPendingOpenTask, markTaskRead, push, task.id]);
 
   const openTaskDetail = useCallback(() => {
     if (longPressFiredRef.current) {
@@ -679,28 +659,25 @@ export function TaskItem({
     }
 
     if (!isKillConfirming) {
-      setIsRestartConfirming(false);
-      setIsKillConfirming(true);
+      setStatusAction('confirm-kill');
       return;
     }
 
     try {
-      setIsKillingTask(true);
+      setStatusAction('killing');
       const updatedTask = await updateTask(task.id, { status: 'killed' });
       if (updatedTask.status === 'killed') {
         clearRuntime(task.id);
       }
-      setIsKillConfirming(false);
+      setStatusAction('idle');
       closeSwipeActions();
     } catch (error) {
-      setIsKillConfirming(false);
+      setStatusAction('idle');
       pushToast({
         title: 'Failed to kill task',
         description: error instanceof Error ? error.message : 'Please try again in a moment.',
         variant: 'error',
       });
-    } finally {
-      setIsKillingTask(false);
     }
   };
 
@@ -710,30 +687,27 @@ export function TaskItem({
     }
 
     if (!isRestartConfirming) {
-      setIsKillConfirming(false);
-      setIsRestartConfirming(true);
+      setStatusAction('confirm-restart');
       return;
     }
 
     try {
-      setIsRestartingTask(true);
+      setStatusAction('restarting');
       const result = await restartTask(task.id, {
         strategy: 'inplace',
       });
       if (result.mode === 'inplace_restart') {
         clearRuntime(task.id);
       }
-      setIsRestartConfirming(false);
+      setStatusAction('idle');
       closeSwipeActions();
     } catch (error) {
-      setIsRestartConfirming(false);
+      setStatusAction('idle');
       pushToast({
         title: 'Failed to restart task',
         description: error instanceof Error ? error.message : 'Please try again in a moment.',
         variant: 'error',
       });
-    } finally {
-      setIsRestartingTask(false);
     }
   };
 
@@ -1030,21 +1004,24 @@ export function TaskItem({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              {isUnread ? <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--accent)] animate-pulse" /> : null}
+              {isUnread ? <span className="size-2 shrink-0 rounded-full bg-[var(--accent)] animate-pulse" /> : null}
               {isEditing ? (
                 <input
                   type="text"
+                  aria-label="Edit task title"
                   value={editTitle}
                   onChange={(e) => setEditTitle(e.target.value)}
                   onBlur={() => void handleRename()}
                   onKeyDown={(e) => {
                     e.stopPropagation();
                     if (e.key === 'Enter') void handleRename();
-                    if (e.key === 'Escape') setIsEditing(false);
+                    if (e.key === 'Escape') {
+                      setEditTitle(task.title);
+                      setIsEditing(false);
+                    }
                   }}
                   onClick={(e) => e.stopPropagation()}
                   className="min-w-0 flex-1 truncate border-0 bg-transparent text-base font-medium text-ink outline-none ring-1 ring-[var(--accent)] rounded px-1 -mx-1"
-                  autoFocus
                 />
               ) : (
                 <h3

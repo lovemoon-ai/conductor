@@ -101,26 +101,25 @@ function extractFeishuPostText(parsedContent: any): string {
   const rows = Array.isArray(parsedContent?.content) ? parsedContent.content : null;
   if (!rows) return '';
 
-  const lines = rows
-    .map((row: any) => {
-      if (!Array.isArray(row)) return '';
-      return row
-        .map((item: any) => {
-          if (!item || typeof item !== 'object') return '';
-          if (item.tag === 'text') {
-            return typeof item.text === 'string' ? item.text : '';
-          }
-          if (item.tag === 'a') {
-            return typeof item.text === 'string' ? item.text : '';
-          }
-          if (item.tag === 'at') {
-            return '';
-          }
+  const lines = rows.flatMap((row: any) => {
+    if (!Array.isArray(row)) return [];
+    const line = row
+      .map((item: any) => {
+        if (!item || typeof item !== 'object') return '';
+        if (item.tag === 'text') {
+          return typeof item.text === 'string' ? item.text : '';
+        }
+        if (item.tag === 'a') {
+          return typeof item.text === 'string' ? item.text : '';
+        }
+        if (item.tag === 'at') {
           return '';
-        })
-        .join('');
-    })
-    .filter((line: string) => Boolean(line.trim()));
+        }
+        return '';
+      })
+      .join('');
+    return line.trim() ? [line] : [];
+  });
 
   return lines.join('\n');
 }
@@ -132,9 +131,10 @@ function stripFeishuMentionTokens(text: string, message: any): string {
 
   let stripped = text;
   const mentionKeys = Array.isArray(message?.mentions)
-    ? message.mentions
-        .map((mention: any) => (typeof mention?.key === 'string' ? mention.key.trim() : ''))
-        .filter(Boolean)
+    ? message.mentions.flatMap((mention: any) => {
+        const key = typeof mention?.key === 'string' ? mention.key.trim() : '';
+        return key ? [key] : [];
+      })
     : [];
 
   for (const key of mentionKeys) {

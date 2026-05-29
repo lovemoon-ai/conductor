@@ -78,6 +78,9 @@ export interface ChatViewProps {
 
   /** Disable send/interact (e.g. when task is read-only). */
   readOnly?: boolean;
+
+  /** Focus the composer on mount / when the task changes. Default `false`. */
+  autoFocus?: boolean;
 }
 
 export interface ChatViewLabels {
@@ -90,6 +93,22 @@ export interface ChatViewLabels {
   interrupt: string;
   restart: string;
   loadEarlier: string;
+  /** Action-menu label: copy the message text. */
+  copy: string;
+  /** Action-menu label shown briefly after a successful copy. */
+  copied: string;
+  /** Action-menu label: re-send a user message's text. */
+  resend: string;
+  /** Accessible label for the floating "jump to latest" button. */
+  scrollToBottom: string;
+  /** Accessible label prefix for the question-anchor navigation dots. */
+  jumpToQuestion: string;
+  /** Empty-state heading shown when the task has no messages yet. */
+  emptyTitle: string;
+  /** Empty-state body copy shown below the heading. */
+  emptyBody: string;
+  /** Empty-state / action-menu button to restart the AI session. */
+  restartPending: string;
 }
 
 export interface ChatViewTheme {
@@ -111,6 +130,14 @@ const DEFAULT_LABELS: ChatViewLabels = {
   interrupt: 'Stop',
   restart: 'Restart',
   loadEarlier: 'Load earlier messages',
+  copy: 'Copy',
+  copied: 'Copied',
+  resend: 'Resend',
+  scrollToBottom: 'Scroll to latest message',
+  jumpToQuestion: 'Jump to question',
+  emptyTitle: 'No messages yet',
+  emptyBody: 'Send a message to get started — the conversation will appear here.',
+  restartPending: 'Restarting…',
 };
 
 export function ChatView(props: ChatViewProps) {
@@ -130,8 +157,10 @@ export function ChatView(props: ChatViewProps) {
         <MessageList
           labels={labels}
           renderMessageContent={props.renderMessageContent}
+          showAppOriginChip={props.showAppOriginChip}
+          readOnly={props.readOnly}
         />
-        <MessageInput labels={labels} disabled={props.readOnly} />
+        <MessageInput labels={labels} disabled={props.readOnly} autoFocus={props.autoFocus} />
       </ChatProvider>
     </div>
   );

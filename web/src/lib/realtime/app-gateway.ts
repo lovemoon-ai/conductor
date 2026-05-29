@@ -552,8 +552,9 @@ export const setupAppGateway = (): WebSocketServer => {
 
           if (data.type === "terminal_detach") {
             const result = realtimeHub.detachTerminal(connectionId, taskId);
+            const releasedWriterTaskIds = new Set(result.releasedWriterTaskIds);
             clearPtyTransportSessionIds(taskId, connectionId);
-            if (result.releasedWriterTaskIds.includes(taskId)) {
+            if (releasedWriterTaskIds.has(taskId)) {
               revokePtyDirectTransport(taskId, connectionId, "writer_detached");
             }
             emitPtyTransportSessions(taskId);
@@ -589,9 +590,10 @@ export const setupAppGateway = (): WebSocketServer => {
 
     socket.on("close", () => {
       const unregisterResult = realtimeHub.unregister(connectionId);
+      const releasedWriterTaskIds = new Set(unregisterResult.releasedWriterTaskIds);
       for (const taskId of unregisterResult.detachedTaskIds) {
         clearPtyTransportSessionIds(taskId, connectionId);
-        if (unregisterResult.releasedWriterTaskIds.includes(taskId)) {
+        if (releasedWriterTaskIds.has(taskId)) {
           revokePtyDirectTransport(taskId, connectionId, "writer_disconnected");
         }
         emitPtyTransportSessions(taskId);

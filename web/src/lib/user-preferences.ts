@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 
-export const TASK_LIST_PREFERENCES_KEY = "task-list";
+const TASK_LIST_PREFERENCES_KEY = "task-list";
 
 export type TaskListPreferences = {
   tasksRunningOnly: boolean;
@@ -40,7 +40,7 @@ const errorDetails = (error: unknown): string => {
   ].join(" ").toLowerCase();
 };
 
-export const isMissingUserPreferencesTableError = (error: unknown): boolean => {
+const isMissingUserPreferencesTableError = (error: unknown): boolean => {
   const details = errorDetails(error);
   if (!details.includes("user_preferences")) {
     return false;

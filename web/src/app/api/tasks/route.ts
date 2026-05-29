@@ -238,8 +238,10 @@ export async function GET(request: NextRequest) {
   const explicitProjectIds = rawProjectIds
     ? rawProjectIds
         .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean)
+        .flatMap((value) => {
+          const trimmed = value.trim();
+          return trimmed ? [trimmed] : [];
+        })
     : [];
 
   if (projectId && explicitProjectIds.length > 0) {

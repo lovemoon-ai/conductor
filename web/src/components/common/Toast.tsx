@@ -39,7 +39,7 @@ export function Toast({ toast, onDismiss }: ToastProps) {
           onClick={() => onDismiss(toast.id)}
           className="rounded-lg p-1 text-muted transition-colors hover:bg-border/30 hover:text-ink"
         >
-          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
           </svg>
         </button>

@@ -42,13 +42,21 @@ const DEFAULT_CLIs = {
     execArgs: "",
     description: "GitHub Copilot (built in via SDK)"
   },
-  "chat-web": {
+  // chat-web is the runtime backend (an in-process Chromium driver, not a CLI
+  // binary). It has multiple sub-providers selected via --model. Each user-
+  // facing alias below resolves to the chat-web runtime; advertising the bare
+  // `chat-web` backend would be ambiguous, so we emit two explicit aliases.
+  "web-chatgpt": {
     command: "chat-web",
-    // Add `--model gemini` to use Google AI Studio's Gemini instead of
-    // the default ChatGPT. The CLI parses --model from this entry and
-    // forwards it to ai-sdk; it doesn't actually exec the command line.
-    execArgs: "",
-    description: "Chat web automation (ChatGPT / Gemini via @love-moon/chat-web)"
+    execArgs: "--model chatgpt",
+    description: "Chat web (ChatGPT) via @love-moon/chat-web",
+    runtimeBackend: "chat-web"
+  },
+  "web-gemini": {
+    command: "chat-web",
+    execArgs: "--model gemini",
+    description: "Chat web (Google AI Studio / Gemini) via @love-moon/chat-web",
+    runtimeBackend: "chat-web"
   },
 };
 
@@ -101,12 +109,11 @@ function buildConfigEntryLines(cli, info, { commented = false } = {}) {
   if (cli === "opencode") {
     lines.push(`${commentPrefix}opencode runs via ai-sdk server mode with permission=allow`);
   }
-  if (cli === "chat-web") {
-    // chat-web defaults to its `chatgpt` sub-provider. The CLI extracts
-    // `--model` from this line and forwards it to ai-sdk; the command
-    // itself is never spawned (chat-web is an in-process SDK).
-    lines.push(`${commentPrefix}chat-web drives a real Chromium browser via @love-moon/chat-web`);
-    lines.push(`${commentPrefix}defaults to ChatGPT; use \`chat-web --model gemini\` for AI Studio (Gemini)`);
+  if (cli === "web-chatgpt") {
+    // web-chatgpt / web-gemini both resolve to the chat-web runtime backend
+    // (an in-process Chromium driver via @love-moon/chat-web). The command
+    // line is not executed; CLI parses --model from it.
+    lines.push(`${commentPrefix}web-chatgpt / web-gemini drive a real Chromium browser via @love-moon/chat-web`);
   }
 
   lines.push(`${entryPrefix}${cli}: ${fullCommand}`);
@@ -235,7 +242,10 @@ async function main() {
     console.log(colorize("✓ Detected the following coding CLIs:", "green"));
     detectedCLIs.forEach((cli) => {
       const info = DEFAULT_CLIs[cli];
-      console.log(`  • ${colorize(info.command, "cyan")} - ${info.description}`);
+      // Display the alias name (key) so backends like web-chatgpt and
+      // web-gemini that share the chat-web runtime are not collapsed to a
+      // single duplicate "chat-web" line.
+      console.log(`  • ${colorize(cli, "cyan")} - ${info.description}`);
     });
     console.log("");
   }
@@ -309,14 +319,15 @@ function detectInstalledCLIs() {
   const detected = [];
 
   for (const [key, info] of Object.entries(DEFAULT_CLIs)) {
-    if (!RUNTIME_SUPPORTED_BACKENDS.includes(key)) {
+    const runtimeBackend = info.runtimeBackend || key;
+    if (!RUNTIME_SUPPORTED_BACKENDS.includes(runtimeBackend)) {
       continue;
     }
-    if (key === "copilot" && isBuiltInCopilotAvailable()) {
+    if (runtimeBackend === "copilot" && isBuiltInCopilotAvailable()) {
       detected.push(key);
       continue;
     }
-    if (key === "chat-web" && isBuiltInChatWebAvailable()) {
+    if (runtimeBackend === "chat-web" && isBuiltInChatWebAvailable()) {
       detected.push(key);
       continue;
     }

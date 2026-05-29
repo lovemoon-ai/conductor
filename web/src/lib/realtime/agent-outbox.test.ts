@@ -88,4 +88,18 @@ describe("agent-outbox delivery", () => {
       }),
     );
   });
+
+  it("prioritizes fresh pending commands before sent retry cleanup", async () => {
+    await deliverAgentOutboxForHost({
+      userId: "user-1",
+      agentHost: "m1",
+      sendToAgentHost: () => true,
+    });
+
+    expect(db.agentOutbox.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [{ status: "asc" }, { createdAt: "asc" }, { requestId: "asc" }],
+      }),
+    );
+  });
 });

@@ -45,7 +45,7 @@ export async function authorizeCustomCommands(
   return { userId: userResult.id, agentHost: host };
 }
 
-export function customCommandsOutcomeToResponse(outcome: RequestCustomCommandsOutcome): Response {
+function customCommandsOutcomeToResponse(outcome: RequestCustomCommandsOutcome): Response {
   if (outcome.ok) return NextResponse.json(outcome.result);
   switch (outcome.reason) {
     case "agent_offline":

@@ -57,7 +57,7 @@ const formatUserLabel = (user: UserIdentity): string => {
   return `User ${user.id.slice(0, 8)}`;
 };
 
-export const collaborationMemberSelect = {
+const collaborationMemberSelect = {
   id: true,
   userId: true,
   projectId: true,
@@ -93,7 +93,7 @@ export type CollaborationSummaryRecord = Prisma.ProjectCollaborationGetPayload<{
 
 export type CollaborationMemberSummaryRecord = CollaborationSummaryRecord['members'][number];
 
-export const serializeCollaborationMember = (member: CollaborationMemberSummaryRecord) => {
+const serializeCollaborationMember = (member: CollaborationMemberSummaryRecord) => {
   const joinedAt = member.joinedAt.toISOString();
   const label = formatUserLabel(member.user);
   // Do NOT expose raw email / phone over the wire. The collaboration MVP
@@ -267,7 +267,7 @@ export const getUserProjectForCollaboration = async (
   },
 });
 
-export const getAssignableIssueOwnerIds = async (project: {
+const getAssignableIssueOwnerIds = async (project: {
   userId: string;
   collaborationId: string | null;
 }): Promise<Set<string>> => {

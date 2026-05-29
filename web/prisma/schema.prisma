@@ -377,6 +377,24 @@ model Verification {
   @@map("verifications")
 }
 
+model SsoAuthorizationCode {
+  id          String    @id @default(uuid())
+  clientId    String    @map("client_id")
+  userId      String    @map("user_id")
+  redirectUri String    @map("redirect_uri")
+  codeHash    String    @map("code_hash")
+  codeSalt    String    @map("code_salt")
+  codePrefix  String    @map("code_prefix")
+  expiresAt   DateTime  @map("expires_at")
+  consumedAt  DateTime? @map("consumed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([clientId, codePrefix])
+  @@index([userId, createdAt])
+  @@map("sso_authorization_codes")
+}
+
 model DeviceAuthSession {
   id                String    @id @default(uuid())
   deviceCodeHash    String    @map("device_code_hash")

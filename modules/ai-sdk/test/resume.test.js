@@ -260,6 +260,7 @@ describe("ai-sdk resume API", () => {
     const resolved = await resolveResumeContext("copilot", sessionId, {
       copilotSdkModule: harness.sdkModule,
       commandLine: "copilot --allow-all-paths --allow-all-tools --trace",
+      githubToken: "resume-token",
       env: { PATH: "" },
     });
     assert.equal(resolved.provider, "copilot");
@@ -270,6 +271,8 @@ describe("ai-sdk resume API", () => {
     assert.equal(harness.state.stopCalls, 1);
     assert.equal(harness.state.clientOptions[0]?.cliPath, undefined);
     assert.deepEqual(harness.state.clientOptions[0]?.cliArgs, ["--trace"]);
+    assert.equal(harness.state.clientOptions[0]?.gitHubToken, "resume-token");
+    assert.equal(harness.state.clientOptions[0]?.githubToken, undefined);
   });
 
   it("times out Copilot resume SDK lookup and force-stops on cleanup failure", async () => {

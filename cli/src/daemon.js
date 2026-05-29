@@ -1248,6 +1248,12 @@ export function startDaemon(config = {}, deps = {}) {
   }
 
   const PROJECT_SETTINGS_TEMPLATE = [
+    "# icon: \"🚀\"",
+    "# Optional icon shown on the project card in the web project list.",
+    "# Accepts an emoji, an http(s):// URL, or a path to a local image",
+    "# (svg/png/jpg/gif/webp/ico/avif) relative to this .conductor/ directory.",
+    "# Remove this line to use the default folder icon.",
+    "",
     "worktree:",
     "  sync_branch: false",
     "  symlink: []",

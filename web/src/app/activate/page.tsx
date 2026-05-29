@@ -19,7 +19,7 @@ interface DeviceSessionPayload {
 }
 
 function ActivatePageContent() {
-  const router = useRouter();
+  const { replace } = useRouter();
   const searchParams = useSearchParams();
   const initFromStorage = useAuthStore((state) => state.initFromStorage);
   const session = useAuthStore((state) => state.session);
@@ -85,8 +85,8 @@ function ActivatePageContent() {
     if (deviceSession.status !== "pending") {
       return;
     }
-    router.replace(loginHref);
-  }, [deviceSession, isAuthReady, isLoadingSession, loginHref, router, session, sessionError]);
+    replace(loginHref);
+  }, [deviceSession, isAuthReady, isLoadingSession, loginHref, replace, session, sessionError]);
 
   const approve = async () => {
     if (!session?.jwtToken || !userCode) {

@@ -61,8 +61,15 @@ export async function info(options: InfoOptions = {}): Promise<ProviderInfo[]> {
 
     if (options.live) {
       try {
+        // Default to headed mode: chat-web's own browser layer documents
+        // headed as the safe default (RFC §19.3, see core/browser.ts), and
+        // ChatGPT in particular renders an unauthenticated landing page to
+        // chrome-headless-shell even when the profile cookies are valid.
+        // A headless `info --live` therefore reports `loggedIn: false` for
+        // perfectly-good sessions — confusing users who just ran `login`.
+        // Callers that really want a headless probe must opt in explicitly.
         const session = await ChatSession.open(name, {
-          headless: options.headless ?? true,
+          headless: options.headless ?? false,
           logger,
         });
         try {

@@ -154,8 +154,10 @@ export async function POST(
   if (userResult instanceof Response) return userResult;
   const user = userResult;
 
-  const { taskId } = await params;
-  const body = await request.json();
+  const [{ taskId }, body] = await Promise.all([
+    params,
+    request.json(),
+  ]);
 
   if (!body?.content) {
     return NextResponse.json({ error: "content required" }, { status: 400 });

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ThemeToggle } from '@/components/theme/ThemeToggle';
 import { SectionCard } from '@/components/common/SectionCard';
@@ -20,13 +20,20 @@ interface SubscriptionStatus {
 }
 
 export default function SubscriptionPage() {
-  const router = useRouter();
+  const { push } = useRouter();
   const [status, setStatus] = useState<SubscriptionStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [payingProvider, setPayingProvider] = useState<'ALIPAY' | 'STRIPE' | null>(null);
 
   const { lang, t } = useTranslation();
   const { pushToast } = useToast();
+  const storedTokenRef = useRef<string | null | undefined>(undefined);
+  const getStoredToken = () => {
+    if (storedTokenRef.current === undefined) {
+      storedTokenRef.current = localStorage.getItem('conductor.jwt');
+    }
+    return storedTokenRef.current;
+  };
   const isPlusLikeTier = status?.tier === 'PLUS' || status?.tier === 'PLUS_DEV';
   const tierLabel =
     status?.tier === 'FREE'
@@ -43,9 +50,9 @@ export default function SubscriptionPage() {
 
   const fetchSubscriptionStatus = async () => {
     try {
-      const token = localStorage.getItem('conductor.jwt');
+      const token = getStoredToken();
       if (!token) {
-        router.push('/login');
+        push('/login');
         return;
       }
 
@@ -59,7 +66,7 @@ export default function SubscriptionPage() {
         const data = await response.json();
         setStatus(data);
       } else if (response.status === 401) {
-        router.push('/login');
+        push('/login');
       }
     } catch (error) {
       console.error('Failed to fetch subscription status:', error);
@@ -78,9 +85,9 @@ export default function SubscriptionPage() {
     }
     setPayingProvider(provider);
     try {
-      const token = localStorage.getItem('conductor.jwt');
+      const token = getStoredToken();
       if (!token) {
-        router.push('/login');
+        push('/login');
         return;
       }
 
@@ -217,7 +224,7 @@ export default function SubscriptionPage() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <button
+              <button type="button"
                 onClick={() => handleSubscribe('ALIPAY')}
                 disabled={payingProvider !== null}
                 className="w-full bg-[var(--accent)] hover:opacity-90 disabled:opacity-60 text-white font-medium py-3 px-4 rounded-lg transition"
@@ -228,7 +235,7 @@ export default function SubscriptionPage() {
                   ? t.subscription.alipayRenew
                   : t.subscription.alipaySubscribe}
               </button>
-              <button
+              <button type="button"
                 onClick={() => handleSubscribe('STRIPE')}
                 disabled={payingProvider !== null}
                 className="w-full border border-[var(--border)] hover:bg-[var(--panel)] disabled:opacity-60 text-[var(--ink)] font-medium py-3 px-4 rounded-lg transition"

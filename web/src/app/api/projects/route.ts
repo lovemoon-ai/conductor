@@ -8,6 +8,7 @@ import {
   ProjectBindingValidationError,
   validateProjectBindingWithDaemon,
 } from "@/lib/projects/daemon-binding";
+import { readProjectSettingsYaml } from "@/lib/projects/project-settings-yaml";
 import { realtimeHub } from "@/lib/realtime/hub";
 import {
   buildTaskWorktreeCleanupOutboxData,
@@ -256,9 +257,24 @@ export const GET = requireActiveSubscription(async (_request: NextRequest, user)
     counts[normalizedStatus] = (counts[normalizedStatus] ?? 0) + group._count._all;
   }
 
+  // Read `.conductor/settings.yaml` for each project so the list can surface
+  // an `icon` override on the project card. Reads are short-circuited by the
+  // helper's in-process cache, but we still parallelize so a dozen projects
+  // don't serialize their fs hits one after another.
+  const sortedProjects = projects.toSorted(compareProjectsForDisplay);
+  const iconsByProject = new Map<string, string | null>(
+    await Promise.all(
+      sortedProjects.map(async (project: (typeof sortedProjects)[number]) => {
+        const settings = await readProjectSettingsYaml(project.workspacePath);
+        return [project.id, settings.icon] as const;
+      }),
+    ),
+  );
+
   return NextResponse.json(
-    [...projects].sort(compareProjectsForDisplay).map((p) => ({
+    sortedProjects.map((p: (typeof sortedProjects)[number]) => ({
       ...serializeProject(p, defaultProjectIds.has(p.id)),
+      icon: iconsByProject.get(p.id) ?? null,
       taskStatusCounts: taskCountsByProject.get(p.id) ?? {},
       task_status_counts: taskCountsByProject.get(p.id) ?? {},
     }))
@@ -854,14 +870,16 @@ export const DELETE = requireActiveSubscription(async (request: NextRequest, use
     return NextResponse.json({ error: "projectId is required" }, { status: 400 });
   }
 
-  const existing = await db.project.findFirst({
-    where: { id: projectId, userId: user.id },
-    select: { id: true, name: true, daemonHost: true },
-  });
-  const defaultProject = await db.defaultProject.findUnique({
-    where: { userId: user.id },
-    select: { projectId: true },
-  });
+  const [existing, defaultProject] = await Promise.all([
+    db.project.findFirst({
+      where: { id: projectId, userId: user.id },
+      select: { id: true, name: true, daemonHost: true },
+    }),
+    db.defaultProject.findUnique({
+      where: { userId: user.id },
+      select: { projectId: true },
+    }),
+  ]);
 
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (defaultProject?.projectId === existing.id) {

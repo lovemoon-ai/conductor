@@ -64,7 +64,7 @@ const SettingsIcon = ({ active, compact = false }: NavIconProps) => (
 );
 
 const CollapseIcon = () => (
-  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <rect x="4.5" y="5" width="15" height="14" rx="3" strokeWidth="1.9" />
     <path strokeLinecap="round" strokeWidth="1.9" d="M10 7.5v9" />
   </svg>
@@ -151,7 +151,7 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
             aria-hidden="true"
             width={32}
             height={32}
-            className="h-8 w-8"
+            className="size-8"
             priority
           />
         </Link>
@@ -176,7 +176,7 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
             aria-expanded={true}
             title="Collapse sidebar"
             onClick={onToggleCollapsed}
-            className="absolute right-2 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 cursor-ew-resize items-center justify-center rounded-2xl bg-transparent text-[var(--ink)] transition-colors hover:bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/35"
+            className="absolute right-2 top-1/2 inline-flex size-10 -translate-y-1/2 cursor-ew-resize items-center justify-center rounded-2xl bg-transparent text-[var(--ink)] transition-colors hover:bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/35"
           >
             <CollapseIcon />
           </button>
@@ -246,7 +246,7 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
                     ) : null}
                   </>
                 ) : item.badge ? (
-                  <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-[var(--error)]" />
+                  <span className="absolute right-2 top-2 size-2 rounded-full bg-[var(--error)]" />
                 ) : null}
                 {isTooltipVisible ? (
                   <SidebarTooltip id={tooltipId} label={item.label} badge={item.badge} />

@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -102,29 +103,28 @@ async function isExpiredFile(filePath: string, now = Date.now()): Promise<boolea
 export async function pruneExpiredTaskAttachments(options: { now?: number } = {}): Promise<number> {
   const now = typeof options.now === "number" ? options.now : Date.now();
   const root = resolveStorageRoot();
-  const taskDirs = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
-  let deletedCount = 0;
-
-  for (const taskDir of taskDirs) {
+  const taskDirs = await fs.readdir(root, { withFileTypes: true }).catch((): Dirent[] => []);
+  const deletedCounts = await Promise.all(taskDirs.map(async (taskDir) => {
     if (!taskDir.isDirectory()) {
-      continue;
+      return 0;
     }
     const taskPath = path.join(root, taskDir.name);
-    const entries = await fs.readdir(taskPath, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries) {
+    const entries = await fs.readdir(taskPath, { withFileTypes: true }).catch((): Dirent[] => []);
+    const entryResults = await Promise.all(entries.map(async (entry) => {
       if (!entry.isFile()) {
-        continue;
+        return 0;
       }
       const filePath = path.join(taskPath, entry.name);
       if (!(await isExpiredFile(filePath, now))) {
-        continue;
+        return 0;
       }
       await removeFileAndEmptyParents(filePath, root).catch(() => undefined);
-      deletedCount += 1;
-    }
-  }
+      return 1;
+    }));
+    return entryResults.reduce<number>((sum, count) => sum + count, 0);
+  }));
 
-  return deletedCount;
+  return deletedCounts.reduce<number>((sum, count) => sum + count, 0);
 }
 
 export async function deleteTaskAttachmentDirectory(taskId: string): Promise<void> {

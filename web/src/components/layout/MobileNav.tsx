@@ -116,12 +116,12 @@ export function MobileNav() {
             <div className="relative">
               <item.Icon active={isActive} />
               {showTasksBadge && unreadCount > 0 && (
-                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-error rounded-full border-2 border-panel" />
+                <span className="absolute -top-1 -right-1 size-2.5 bg-error rounded-full border-2 border-panel" />
               )}
             </div>
             <span className={`text-xs ${isActive ? 'font-medium' : ''}`}>{item.label}</span>
             {isActive && (
-              <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full webapp-gradient-bg" />
+              <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 size-1 rounded-full webapp-gradient-bg" />
             )}
           </Link>
         );

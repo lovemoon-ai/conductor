@@ -156,8 +156,11 @@ const sortIssues = (issues: Issue[]): Issue[] => {
 };
 
 const projectScopeKey = (projectIds: string[]): string =>
-  [...new Set(projectIds.map((id) => id.trim()).filter(Boolean))]
-    .sort()
+  [...new Set(projectIds.flatMap((id) => {
+    const trimmed = id.trim();
+    return trimmed ? [trimmed] : [];
+  }))]
+    .toSorted()
     .join(',');
 
 const normalizeIssueMutationResponse = (raw: unknown): {
@@ -234,7 +237,15 @@ export const useIssuesStore = create<IssuesState>()((set, get) => ({
     try {
       const api = getApiClient();
       const suffix = normalizedProjectId ? `?project_id=${encodeURIComponent(normalizedProjectId)}` : '';
-      const issues = sortIssues(normalizeIssueList(await api.get(`/issues${suffix}`)));
+      const issuesPromise = api.get(`/issues${suffix}`);
+      if (
+        get().currentProjectId !== normalizedProjectId ||
+        get().currentProjectIds.length !== 0
+      ) {
+        issuesPromise.catch(() => {});
+        return;
+      }
+      const issues = sortIssues(normalizeIssueList(await issuesPromise));
       if (
         get().currentProjectId !== normalizedProjectId ||
         get().currentProjectIds.length !== 0
@@ -257,7 +268,10 @@ export const useIssuesStore = create<IssuesState>()((set, get) => ({
   },
 
   fetchIssuesForProjects: async (projectIds) => {
-    const normalized = [...new Set(projectIds.map((id) => id.trim()).filter(Boolean))];
+    const normalized = [...new Set(projectIds.flatMap((id) => {
+      const trimmed = id.trim();
+      return trimmed ? [trimmed] : [];
+    }))];
     const requestScope = projectScopeKey(normalized);
     // Empty list ⇒ defer to fetchIssues with no project filter so callers can
     // unwind the merged scope without a second API call shape.

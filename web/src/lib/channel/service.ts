@@ -10,7 +10,9 @@ import {
   withKilledReasonFallback,
 } from '@/lib/tasks/killed-reason';
 import { getFeishuProviderConfigForUser } from './provider-config';
-import type { NormalizedInboundEvent, NormalizedOutboundMessage } from './types';
+import type { NormalizedInboundEvent } from './types';
+
+export { enqueueChannelMessage } from './channel-message-queue';
 
 const BIND_CODE_TYPE = 'CHANNEL_BIND';
 const BIND_CODE_EXPIRES_IN_SECONDS = 600;
@@ -109,26 +111,6 @@ export async function issueBindCode(userId: string): Promise<{ code: string; exp
   return { code, expiresIn: BIND_CODE_EXPIRES_IN_SECONDS };
 }
 
-export async function enqueueChannelMessage(input: NormalizedOutboundMessage): Promise<void> {
-  await (db as any).channelOutbox.create({
-    data: {
-      provider: input.provider,
-      userId: input.userId,
-      conversationId: input.conversationId,
-      taskId: input.taskId ?? null,
-      targetChatId: input.targetChatId,
-      targetReplyMessageId: input.targetReplyMessageId ?? null,
-      targetThreadId: input.targetThreadId ?? null,
-      targetTopicId: input.targetTopicId ?? null,
-      eventType: input.kind,
-      dedupeKey: input.dedupeKey,
-      payloadJson: JSON.stringify({ text: input.text, metadata: input.metadata ?? null }),
-      status: 'pending',
-      attemptCount: 0,
-    },
-  });
-}
-
 async function consumeBindCode(code: string): Promise<{ userId: string } | null> {
   const record = await db.verification.findFirst({
     where: {
@@ -156,8 +138,9 @@ async function handleBind(event: NormalizedInboundEvent, code: string): Promise<
   if (!consumed) {
     return { outputs: [{ text: 'Bind code invalid or expired.' }] };
   }
-  const projectId = await getDefaultProjectId(consumed.userId);
-  await (db as any).externalAccount.upsert({
+  const [projectId] = await Promise.all([
+    getDefaultProjectId(consumed.userId),
+    (db as any).externalAccount.upsert({
     where: {
       provider_externalUserId: {
         provider: event.provider,
@@ -174,7 +157,8 @@ async function handleBind(event: NormalizedInboundEvent, code: string): Promise<
       externalUserId: event.externalUserId,
       tenantKey: event.externalTenantId ?? null,
     },
-  });
+    }),
+  ]);
   await upsertConversation({
     provider: event.provider,
     externalChatId: event.externalChatId,

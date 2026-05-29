@@ -4,6 +4,7 @@ import { ensureDefaultProject, signJwt, hashSecret } from "@/lib/auth/service";
 import { startNewUserPlusAccess } from "@/lib/subscription/service";
 import { randomBytes } from "crypto";
 
+// react-doctor-disable-next-line nextjs-no-side-effect-in-get-handler
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const code = searchParams.get("code");
@@ -16,6 +17,7 @@ export async function GET(request: NextRequest) {
     const redirectUri = `${process.env.NEXT_PUBLIC_URL || "http://localhost:6152"}/api/auth/google/callback`;
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
+      cache: "no-store",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         code,
@@ -32,6 +34,7 @@ export async function GET(request: NextRequest) {
     }
 
     const userRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+      cache: "no-store",
       headers: { Authorization: `Bearer ${tokenData.access_token}` },
     });
     const userData = await userRes.json();

@@ -17,7 +17,12 @@ export function RuntimeStatusBar({ labels }: RuntimeStatusBarProps) {
   const { state } = useChat();
   const runtime = state.runtime;
   const isThinking = runtime?.replyInProgress === true || runtime?.state === 'thinking';
-  const text = pickStatusText(runtime?.state, runtime?.statusLine, labels);
+  const text = pickStatusText(
+    runtime?.state,
+    runtime?.statusLine,
+    runtime?.statusDoneLine,
+    labels,
+  );
 
   const showConnection =
     state.connectionState !== 'connected' && state.connectionState !== 'offline';
@@ -51,9 +56,14 @@ export function RuntimeStatusBar({ labels }: RuntimeStatusBarProps) {
 function pickStatusText(
   state: string | undefined,
   statusLine: string | null | undefined,
+  statusDoneLine: string | null | undefined,
   labels: ChatViewLabels,
 ): string {
-  if (statusLine) return statusLine;
+  // Prefer the live status line; once the reply finishes the daemon clears it
+  // and leaves a final "done" line, so fall back to that before the generic
+  // state labels.
+  if (statusLine && statusLine.trim()) return statusLine;
+  if (statusDoneLine && statusDoneLine.trim()) return statusDoneLine;
   switch (state) {
     case 'thinking':
       return labels.statusThinking;

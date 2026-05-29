@@ -1,16 +1,17 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useChatStore } from '../store';
 import { useRuntimeStore } from '@/features/realtime';
 import { useTasksStore } from '@/features/tasks';
 import { useWebSocketStore } from '@/features/realtime';
 import { MessageBubble } from './MessageBubble';
-import { MessageInput } from './MessageInput';
+import { MessageInput, type MessageInputHandle } from './MessageInput';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { QuestionNav } from '@/components/common/QuestionNav';
 import { getApiClient } from '@/shared/api/client';
+import type { Message } from '@/shared/types';
 
 interface ChatViewProps {
   taskId: string;
@@ -145,19 +146,104 @@ const isInterruptConfirmationMessage = (
   return getMessageReplyTarget(message) === replyTo;
 };
 
-export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
+type ComposerFeedback = {
+  code?: 'task_not_ready' | 'restarting';
+  variant: 'info' | 'warning' | 'error';
+  message: string;
+};
+
+interface ChatViewUiState {
+  composerFeedback: ComposerFeedback | null;
+  interruptPending: boolean;
+  latestSentReplyTo: string | null;
+  awaitingRuntimeReply: boolean;
+  restartPending: boolean;
+}
+
+type ChatViewUiAction =
+  | { type: 'clearTaskNotReadyFeedback' }
+  | { type: 'interruptRequested' }
+  | { type: 'recordSentMessage'; replyTo: string }
+  | { type: 'runtimeReplyStarted' }
+  | { type: 'runtimeReplyStopped' }
+  | { type: 'setComposerFeedback'; feedback: ComposerFeedback | null }
+  | { type: 'setRestartPending'; value: boolean }
+  | { type: 'settleInterrupt' };
+
+const EMPTY_MESSAGES: Message[] = [];
+
+const INITIAL_CHAT_VIEW_UI_STATE: ChatViewUiState = {
+  composerFeedback: null,
+  interruptPending: false,
+  latestSentReplyTo: null,
+  awaitingRuntimeReply: false,
+  restartPending: false,
+};
+
+const chatViewUiReducer = (state: ChatViewUiState, action: ChatViewUiAction): ChatViewUiState => {
+  switch (action.type) {
+    case 'clearTaskNotReadyFeedback':
+      return state.composerFeedback?.code === 'task_not_ready'
+        ? { ...state, composerFeedback: null }
+        : state;
+    case 'interruptRequested':
+      return state.interruptPending ? state : { ...state, interruptPending: true };
+    case 'recordSentMessage':
+      return {
+        ...state,
+        latestSentReplyTo: action.replyTo,
+        awaitingRuntimeReply: true,
+      };
+    case 'runtimeReplyStarted':
+      return state.awaitingRuntimeReply
+        ? { ...state, awaitingRuntimeReply: false }
+        : state;
+    case 'runtimeReplyStopped':
+      if (!state.interruptPending && !state.latestSentReplyTo && !state.awaitingRuntimeReply) {
+        return state;
+      }
+      return {
+        ...state,
+        interruptPending: false,
+        latestSentReplyTo: null,
+        awaitingRuntimeReply: false,
+      };
+    case 'setComposerFeedback':
+      return state.composerFeedback == action.feedback
+        ? state
+        : { ...state, composerFeedback: action.feedback };
+    case 'setRestartPending':
+      return state.restartPending === action.value
+        ? state
+        : { ...state, restartPending: action.value };
+    case 'settleInterrupt':
+      return state.interruptPending
+        ? { ...state, interruptPending: false }
+        : state;
+    default:
+      return state;
+  }
+};
+
+export function ChatView(props: ChatViewProps) {
+  return <TaskScopedChatView key={props.taskId} {...props} />;
+}
+
+function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const interruptTimeoutRef = useRef<number | null>(null);
   const interruptPendingRef = useRef(false);
-  const resendRequestIdRef = useRef(0);
+  const previousRuntimeReplyInProgressRef = useRef(false);
   const previousMessageCountRef = useRef(0);
-  const pendingRestoreScrollStateRef = useRef<StoredScrollState | null>(null);
+  const pendingRestoreScrollStateRef = useRef<StoredScrollState | null>(readStoredScrollState(taskId));
   const pendingPrependAnchorRef = useRef<{ previousScrollHeight: number; previousScrollTop: number } | null>(null);
   const autoLoadUntilFilledRef = useRef(false);
   const shouldRestoreScrollRef = useRef(true);
   const shouldStickToBottomRef = useRef(true);
   const forceScrollToBottomRef = useRef(false);
   const previousWebSocketStatusRef = useRef<'connected' | 'connecting' | 'disconnected' | null>(null);
+  const pendingInterruptReplyToRef = useRef<string | null>(null);
+  const messageInputRef = useRef<MessageInputHandle>(null);
   const { messagesByTask, historyStateByTask, loadingTasks, fetchMessages, sendMessage } = useChatStore();
   const runtime = useRuntimeStore((state) => state.byTask[taskId]);
   const clearRuntime = useRuntimeStore((state) => state.clearTask);
@@ -166,19 +252,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   const websocketStatus = useWebSocketStore((state) => state.status);
   const task = tasks.find((t) => t.id === taskId);
   const isTaskRunning = task?.status === 'running';
-  const [composerFeedback, setComposerFeedback] = useState<{
-    code?: 'task_not_ready' | 'restarting';
-    variant: 'info' | 'warning' | 'error';
-    message: string;
-  } | null>(null);
-  const [interruptPending, setInterruptPending] = useState(false);
-  const [interruptTargetReplyTo, setInterruptTargetReplyTo] = useState<string | null>(null);
-  const [pendingInterruptReplyTo, setPendingInterruptReplyTo] = useState<string | null>(null);
-  const [restartPending, setRestartPending] = useState(false);
-  const [resendRequest, setResendRequest] = useState<{
-    id: number;
-    content: string;
-  } | null>(null);
+  const [uiState, dispatchUiState] = useReducer(chatViewUiReducer, INITIAL_CHAT_VIEW_UI_STATE);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [showQuestionNav, setShowQuestionNav] = useState(false);
   const [activeQuestion, setActiveQuestion] = useState(0);
@@ -189,7 +263,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   // throttle the (O(N) getBoundingClientRect) scan to at most once per frame.
   const activeQuestionRafRef = useRef<number | null>(null);
 
-  const messages = messagesByTask[taskId] || [];
+  const messages = messagesByTask[taskId] ?? EMPTY_MESSAGES;
   const userQuestionIndexByMessageIndex = useMemo(() => {
     const map = new Map<number, number>();
     let q = 0;
@@ -210,7 +284,42 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   const runtimeReplyInProgress = Boolean(runtime?.replyInProgress);
   const runtimeReplyTo =
     runtimeReplyInProgress && typeof runtime?.replyTo === 'string' ? runtime.replyTo.trim() : '';
-  const activeInterruptReplyTo = runtimeReplyTo || interruptTargetReplyTo || '';
+  const interruptedReplyTargets = useMemo(() => {
+    const targets = new Set<string>();
+    messages.forEach((message) => {
+      const target = getMessageReplyTarget(message);
+      if (target && isInterruptConfirmationMessage(message, target)) {
+        targets.add(target);
+      }
+    });
+    return targets;
+  }, [messages]);
+  const fallbackInterruptReplyTo = useMemo(() => {
+    if (!uiState.latestSentReplyTo) {
+      return '';
+    }
+    return uiState.awaitingRuntimeReply || runtimeReplyInProgress
+      ? uiState.latestSentReplyTo
+      : '';
+  }, [runtimeReplyInProgress, uiState.awaitingRuntimeReply, uiState.latestSentReplyTo]);
+  const activeInterruptCandidate = runtimeReplyTo || fallbackInterruptReplyTo;
+  const activeInterruptReplyTo = activeInterruptCandidate && !interruptedReplyTargets.has(activeInterruptCandidate)
+    ? activeInterruptCandidate
+    : '';
+  const pendingInterruptReplyTo = pendingInterruptReplyToRef.current;
+  const hasPendingInterruptConfirmation = useMemo(() => (
+    Boolean(
+      uiState.interruptPending
+      && pendingInterruptReplyTo
+      && messages.some((message) => isInterruptConfirmationMessage(message, pendingInterruptReplyTo))
+    )
+  ), [messages, pendingInterruptReplyTo, uiState.interruptPending]);
+  const restartPending = uiState.restartPending;
+  const interruptPending = uiState.interruptPending;
+  const composerFeedback = uiState.composerFeedback;
+  const visibleComposerFeedback = useMemo(() => (
+    composerFeedback?.code === 'task_not_ready' && isTaskRunning ? null : composerFeedback
+  ), [composerFeedback, isTaskRunning]);
   const restartEnabled = Boolean(
     task &&
     (task.taskType ?? 'ai_task') === 'ai_task' &&
@@ -224,7 +333,6 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     (task.taskType ?? 'ai_task') === 'ai_task' &&
     task.status === 'running',
   );
-
   const clearInterruptTimeout = useCallback(() => {
     if (interruptTimeoutRef.current === null) {
       return;
@@ -233,7 +341,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     interruptTimeoutRef.current = null;
   }, []);
 
-  const persistScrollPosition = (scrollTop?: number) => {
+  const persistScrollPosition = useCallback((scrollTop?: number) => {
     const container = scrollContainerRef.current;
     if (!container) {
       return;
@@ -251,9 +359,9 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
       scrollTop: nextScrollTop,
       stickToBottom,
     });
-  };
+  }, [taskId]);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     const container = scrollContainerRef.current;
     if (!container) {
       return;
@@ -272,7 +380,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
       scrollTop: nextScrollTop,
       stickToBottom: true,
     });
-  };
+  }, [taskId]);
 
   const handleJumpToQuestion = useCallback((questionIndex: number) => {
     const el = questionRefs.current.get(questionIndex);
@@ -299,7 +407,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     }, 120);
   }, []);
 
-  const loadOlderMessages = async (options?: { continueUntilFilled?: boolean }) => {
+  const loadOlderMessages = useCallback(async (options?: { continueUntilFilled?: boolean }) => {
     if (!oldestMessageId || isLoading) {
       return;
     }
@@ -314,9 +422,9 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
       };
     }
     await fetchMessages(taskId, { beforeId: oldestMessageId });
-  };
+  }, [fetchMessages, isLoading, oldestMessageId, taskId]);
 
-  const maybeContinueAutoLoadUntilFilled = () => {
+  const maybeContinueAutoLoadUntilFilled = useCallback(() => {
     const container = scrollContainerRef.current;
     if (!autoLoadUntilFilledRef.current || !container || isLoading) {
       return;
@@ -333,11 +441,11 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     }
 
     void loadOlderMessages({ continueUntilFilled: true });
-  };
+  }, [hasMoreBefore, isLoading, loadOlderMessages, oldestMessageId]);
 
   useEffect(() => {
     fetchMessages(taskId);
-  }, [taskId, fetchMessages]);
+  }, [fetchMessages, taskId]);
 
   useEffect(() => (
     () => {
@@ -362,24 +470,6 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     }
   }, [fetchMessages, taskId, websocketStatus]);
 
-  useLayoutEffect(() => {
-    pendingRestoreScrollStateRef.current = readStoredScrollState(taskId);
-    autoLoadUntilFilledRef.current = false;
-    shouldRestoreScrollRef.current = true;
-    forceScrollToBottomRef.current = false;
-    previousMessageCountRef.current = messages.length;
-    questionRefs.current = new Map();
-    isJumpingQuestionRef.current = false;
-    lastScrollTopRef.current = 0;
-    if (activeQuestionRafRef.current !== null) {
-      window.cancelAnimationFrame(activeQuestionRafRef.current);
-      activeQuestionRafRef.current = null;
-    }
-    setShowScrollToBottom(false);
-    setShowQuestionNav(false);
-    setActiveQuestion(0);
-  }, [taskId]);
-
   // Cancel any in-flight active-dot recomputation when the component
   // unmounts so we don't call setState on a stale instance.
   useEffect(() => () => {
@@ -393,7 +483,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     () => {
       persistScrollPosition();
     }
-  ), [taskId]);
+  ), [persistScrollPosition]);
 
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
@@ -457,120 +547,131 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     forceScrollToBottomRef.current = false;
     previousMessageCountRef.current = messages.length;
     maybeContinueAutoLoadUntilFilled();
-  }, [isLoading, messages.length, taskId]);
-
-  useEffect(() => {
-    clearInterruptTimeout();
-    setComposerFeedback(null);
-    setInterruptPending(false);
-    setInterruptTargetReplyTo(null);
-    setPendingInterruptReplyTo(null);
-    setRestartPending(false);
-  }, [clearInterruptTimeout, taskId]);
+  }, [
+    isLoading,
+    maybeContinueAutoLoadUntilFilled,
+    messages.length,
+    persistScrollPosition,
+    scrollToBottom,
+  ]);
 
   useEffect(() => {
     if (isTaskRunning && composerFeedback?.code === 'task_not_ready') {
-      setComposerFeedback(null);
+      dispatchUiState({ type: 'clearTaskNotReadyFeedback' });
     }
   }, [composerFeedback?.code, isTaskRunning]);
 
   useEffect(() => {
-    if (!composerFeedback) {
+    if (!visibleComposerFeedback) {
       return;
     }
     // Skip progress-style notices (e.g. "Restarting the current AI session…")
     // that must persist until the underlying operation completes. Those notices
     // are cleared explicitly in their own finally/catch paths.
-    if (composerFeedback.code === 'restarting') {
+    if (visibleComposerFeedback.code === 'restarting') {
       return;
     }
     const timeoutId = window.setTimeout(() => {
-      setComposerFeedback(null);
+      dispatchUiState({ type: 'setComposerFeedback', feedback: null });
     }, COMPOSER_FEEDBACK_AUTO_DISMISS_MS);
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [composerFeedback]);
+  }, [visibleComposerFeedback]);
 
   useEffect(() => {
-    if (runtimeReplyTo) {
-      setInterruptTargetReplyTo(runtimeReplyTo);
+    const wasRuntimeReplyInProgress = previousRuntimeReplyInProgressRef.current;
+    previousRuntimeReplyInProgressRef.current = runtimeReplyInProgress;
+
+    if (runtimeReplyInProgress) {
+      if (!wasRuntimeReplyInProgress) {
+        dispatchUiState({ type: 'runtimeReplyStarted' });
+      }
       return;
     }
-    if (!runtimeReplyInProgress) {
-      setInterruptTargetReplyTo(null);
-    }
-  }, [runtimeReplyInProgress, runtimeReplyTo]);
 
-  useEffect(() => {
-    if (!runtimeReplyInProgress) {
-      clearInterruptTimeout();
-      setInterruptPending(false);
-      setPendingInterruptReplyTo(null);
+    if (!wasRuntimeReplyInProgress) {
+      return;
     }
+
+    clearInterruptTimeout();
+    pendingInterruptReplyToRef.current = null;
+    dispatchUiState({ type: 'runtimeReplyStopped' });
   }, [clearInterruptTimeout, runtimeReplyInProgress]);
 
   useEffect(() => {
-    if (!interruptPending || !pendingInterruptReplyTo) {
+    if (!hasPendingInterruptConfirmation) {
       return;
     }
-    if (!messages.some((message) => isInterruptConfirmationMessage(message, pendingInterruptReplyTo))) {
-      return;
-    }
+
     clearInterruptTimeout();
-    setInterruptPending(false);
-    setPendingInterruptReplyTo(null);
-    setInterruptTargetReplyTo((current) => (current === pendingInterruptReplyTo ? null : current));
-  }, [clearInterruptTimeout, interruptPending, messages, pendingInterruptReplyTo]);
+    pendingInterruptReplyToRef.current = null;
+    dispatchUiState({ type: 'settleInterrupt' });
+  }, [clearInterruptTimeout, hasPendingInterruptConfirmation]);
 
   const handleSend = async (content: string) => {
     if (interruptPending) {
-      setComposerFeedback({
-        variant: 'warning',
-        message: 'Wait for the current interrupt to finish before sending another message.',
+      dispatchUiState({
+        type: 'setComposerFeedback',
+        feedback: {
+          variant: 'warning',
+          message: 'Wait for the current interrupt to finish before sending another message.',
+        },
       });
       return;
     }
     if (restartPending) {
-      setComposerFeedback({
-        variant: 'warning',
-        message: 'Wait for the task restart to finish before sending another message.',
+      dispatchUiState({
+        type: 'setComposerFeedback',
+        feedback: {
+          variant: 'warning',
+          message: 'Wait for the task restart to finish before sending another message.',
+        },
       });
       return;
     }
     if (!isTaskRunning) {
-      setComposerFeedback({
-        code: 'task_not_ready',
-        variant: 'warning',
-        message:
-          task?.status === 'completed'
-            ? 'This task is already completed. Start a new run before sending more messages.'
-            : task?.status === 'killed'
-              ? 'This task has stopped. Restart it before sending more messages.'
-              : 'The session is still starting. You can keep drafting, and send once the task is ready.',
+      dispatchUiState({
+        type: 'setComposerFeedback',
+        feedback: {
+          code: 'task_not_ready',
+          variant: 'warning',
+          message:
+            task?.status === 'completed'
+              ? 'This task is already completed. Start a new run before sending more messages.'
+              : task?.status === 'killed'
+                ? 'This task has stopped. Restart it before sending more messages.'
+                : 'The session is still starting. You can keep drafting, and send once the task is ready.',
+        },
       });
       return;
     }
 
     try {
-      setComposerFeedback(null);
+      dispatchUiState({ type: 'setComposerFeedback', feedback: null });
       clearRuntime(taskId);
       forceScrollToBottomRef.current = true;
       const message = await sendMessage(taskId, { content, role: 'user' });
-      setInterruptTargetReplyTo(message.id);
+      dispatchUiState({ type: 'recordSentMessage', replyTo: message.id });
     } catch {
-      setComposerFeedback({
-        variant: 'error',
-        message: 'Failed to send the message. Please try again in a moment.',
+      dispatchUiState({
+        type: 'setComposerFeedback',
+        feedback: {
+          variant: 'error',
+          message: 'Failed to send the message. Please try again in a moment.',
+        },
       });
     }
   };
 
   const handleRestart = useCallback(async () => {
     if (interruptPending) {
-      setComposerFeedback({
-        variant: 'warning',
-        message: 'Wait for the current interrupt to finish before restarting the AI session.',
+      dispatchUiState({
+        type: 'setComposerFeedback',
+        feedback: {
+          variant: 'warning',
+          message: 'Wait for the current interrupt to finish before restarting the AI session.',
+        },
       });
       return;
     }
@@ -579,85 +680,97 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
     }
 
     try {
-      setComposerFeedback({
-        code: 'restarting',
-        variant: 'info',
-        message: 'Restarting the current AI session…',
+      dispatchUiState({
+        type: 'setComposerFeedback',
+        feedback: {
+          code: 'restarting',
+          variant: 'info',
+          message: 'Restarting the current AI session…',
+        },
       });
-      setRestartPending(true);
+      dispatchUiState({ type: 'setRestartPending', value: true });
 
       await restartTask(taskId, {
         restartMode: 'refresh_session',
       });
       clearRuntime(taskId);
-      setComposerFeedback(null);
+      dispatchUiState({ type: 'setComposerFeedback', feedback: null });
     } catch (error) {
-      setComposerFeedback({
-        variant: 'error',
-        message: error instanceof Error ? error.message : 'Failed to restart the AI task. Please try again.',
+      dispatchUiState({
+        type: 'setComposerFeedback',
+        feedback: {
+          variant: 'error',
+          message: error instanceof Error ? error.message : 'Failed to restart the AI task. Please try again.',
+        },
       });
     } finally {
-      setRestartPending(false);
+      dispatchUiState({ type: 'setRestartPending', value: false });
     }
   }, [clearRuntime, interruptPending, restartEnabled, restartTask, taskId]);
 
   const handleInterrupt = useCallback(async () => {
     if (restartPending) {
-      setComposerFeedback({
-        variant: 'warning',
-        message: 'Wait for the task restart to finish before interrupting another reply.',
+      dispatchUiState({
+        type: 'setComposerFeedback',
+        feedback: {
+          variant: 'warning',
+          message: 'Wait for the task restart to finish before interrupting another reply.',
+        },
       });
       return;
     }
-    const targetReplyTo = runtimeReplyTo || interruptTargetReplyTo || '';
-    if (!targetReplyTo) {
-      setComposerFeedback({
-        variant: 'warning',
-        message: 'The current reply is not ready to interrupt yet. Try again in a moment.',
+    if (!activeInterruptReplyTo) {
+      dispatchUiState({
+        type: 'setComposerFeedback',
+        feedback: {
+          variant: 'warning',
+          message: 'The current reply is not ready to interrupt yet. Try again in a moment.',
+        },
       });
       return;
     }
 
     try {
-      setComposerFeedback(null);
-      setInterruptPending(true);
-      setPendingInterruptReplyTo(targetReplyTo);
-      setInterruptTargetReplyTo(targetReplyTo);
+      dispatchUiState({ type: 'setComposerFeedback', feedback: null });
+      dispatchUiState({ type: 'interruptRequested' });
+      pendingInterruptReplyToRef.current = activeInterruptReplyTo;
       clearInterruptTimeout();
       const api = getApiClient();
       await api.post(`/tasks/${taskId}/interrupt`, {
-        target_reply_to: targetReplyTo,
+        target_reply_to: activeInterruptReplyTo,
       });
       interruptTimeoutRef.current = window.setTimeout(() => {
         interruptTimeoutRef.current = null;
         if (!interruptPendingRef.current) {
           return;
         }
-        setInterruptPending(false);
-        setPendingInterruptReplyTo(null);
-        setComposerFeedback({
-          variant: 'warning',
-          message: 'Interrupt request was not confirmed. You can try again.',
+        pendingInterruptReplyToRef.current = null;
+        dispatchUiState({ type: 'settleInterrupt' });
+        dispatchUiState({
+          type: 'setComposerFeedback',
+          feedback: {
+            variant: 'warning',
+            message: 'Interrupt request was not confirmed. You can try again.',
+          },
         });
       }, INTERRUPT_CONFIRMATION_TIMEOUT_MS);
     } catch {
       clearInterruptTimeout();
-      setInterruptPending(false);
-      setPendingInterruptReplyTo(null);
-      setComposerFeedback({
-        variant: 'error',
-        message: 'Failed to interrupt the current reply. Please try again in a moment.',
+      pendingInterruptReplyToRef.current = null;
+      dispatchUiState({ type: 'settleInterrupt' });
+      dispatchUiState({
+        type: 'setComposerFeedback',
+        feedback: {
+          variant: 'error',
+          message: 'Failed to interrupt the current reply. Please try again in a moment.',
+        },
       });
     }
-  }, [clearInterruptTimeout, interruptTargetReplyTo, restartPending, runtimeReplyTo, taskId]);
+  }, [activeInterruptReplyTo, clearInterruptTimeout, restartPending, taskId]);
 
-  const handleResend = (content: string) => {
-    resendRequestIdRef.current += 1;
-    setResendRequest({
-      id: resendRequestIdRef.current,
-      content,
-    });
-  };
+  const handleResend = useCallback((content: string) => {
+    messageInputRef.current?.resend(content);
+  }, []);
 
   const handleScroll = () => {
     persistScrollPosition();
@@ -748,7 +861,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
           ) : messages.length === 0 ? (
             <div className="flex h-full items-center justify-center">
               <div className="w-full max-w-3xl rounded-3xl border border-dashed border-border bg-panel/70 px-8 py-10 text-center shadow-sm">
-                <svg className="mx-auto mb-4 h-14 w-14 opacity-35" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="mx-auto mb-4 size-14 opacity-35" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                 </svg>
                 <p className="text-lg font-semibold text-ink">No messages yet</p>
@@ -837,7 +950,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
             onClick={scrollToBottom}
             aria-label="Scroll to latest message"
             data-testid="scroll-to-bottom"
-            className="absolute bottom-4 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-panel/80 text-ink shadow-md backdrop-blur-sm transition-colors hover:bg-border/50"
+            className="absolute bottom-4 right-4 z-10 flex size-9 items-center justify-center rounded-full border border-border bg-panel/80 text-ink shadow-md backdrop-blur-sm transition-colors hover:bg-border/50"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -847,7 +960,7 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
               strokeWidth={2}
               strokeLinecap="round"
               strokeLinejoin="round"
-              className="h-4 w-4"
+              className="size-4"
               aria-hidden
             >
               <path d="M12 5v14" />
@@ -865,14 +978,15 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
               </span>
             </div>
           ) : null}
-          {composerFeedback ? (
-            <InlineNotice variant={composerFeedback.variant}>
-              {composerFeedback.message}
+          {visibleComposerFeedback ? (
+            <InlineNotice variant={visibleComposerFeedback.variant}>
+              {visibleComposerFeedback.message}
             </InlineNotice>
           ) : null}
         </div>
       </div>
       <MessageInput
+        ref={messageInputRef}
         taskId={taskId}
         onSend={handleSend}
         onInterrupt={() => {
@@ -882,7 +996,6 @@ export function ChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
         interruptEnabled={interruptEnabled}
         interruptPending={interruptPending}
         autoFocus={autoFocusComposer}
-        resendRequest={resendRequest}
       />
     </div>
   );

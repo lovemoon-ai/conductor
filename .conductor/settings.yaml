@@ -6,6 +6,8 @@ worktree:
     - web/.env
     - Makefile
 
+icon: ../web/public/icon.svg
+
 agents:
   - review: claw/sop/04_review-code.md
   - publish: claw/sop/06_release.md

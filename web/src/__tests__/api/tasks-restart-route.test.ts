@@ -16,6 +16,7 @@ vi.mock("@/lib/realtime/hub", () => ({
 
 vi.mock("@/lib/realtime/agent-outbox", () => ({
   deliverAgentOutboxForHost: vi.fn().mockResolvedValue({ attempted: 1, delivered: 1 }),
+  deliverAgentOutboxRow: vi.fn().mockResolvedValue({ delivered: true }),
   isMissingAgentOutboxTableError: vi.fn().mockReturnValue(false),
 }));
 
@@ -54,7 +55,7 @@ vi.mock("@/lib/db", () => ({
 
 const { db } = await import("@/lib/db");
 const { realtimeHub } = await import("@/lib/realtime/hub");
-const { deliverAgentOutboxForHost } = await import("@/lib/realtime/agent-outbox");
+const { deliverAgentOutboxForHost, deliverAgentOutboxRow } = await import("@/lib/realtime/agent-outbox");
 
 const prismaError = (code: string, message: string) =>
   Object.assign(new Error(message), { code });
@@ -122,6 +123,12 @@ describe("/api/tasks/[taskId]/restart", () => {
       backendType: data.backendType,
       sessionId: null,
       sessionFilePath: null,
+      createdAt: new Date("2026-03-24T10:10:00.000Z"),
+      updatedAt: new Date("2026-03-24T10:10:00.000Z"),
+    }) as any);
+    vi.mocked(db.agentOutbox.create).mockImplementation(async ({ data }: any) => ({
+      id: "outbox-1",
+      ...data,
       createdAt: new Date("2026-03-24T10:10:00.000Z"),
       updatedAt: new Date("2026-03-24T10:10:00.000Z"),
     }) as any);
@@ -1616,6 +1623,18 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson).toContain(
       '"target_backend_type":"codex"',
     );
+    expect(deliverAgentOutboxRow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: data.task.id,
+        eventType: "restart_task",
+        payloadJson: expect.stringContaining('"mode":"fork_to_new_task"'),
+      }),
+      expect.objectContaining({
+        userId: "user-1",
+        agentHost: "daemon-1",
+      }),
+    );
+    expect(deliverAgentOutboxForHost).not.toHaveBeenCalled();
   });
 
   it("preserves issue linkage for successor restart tasks", async () => {

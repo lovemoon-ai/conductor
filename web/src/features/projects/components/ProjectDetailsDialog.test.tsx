@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
+import { ProjectDetailsDialog } from './ProjectDetailsDialog';
 import {
   MAX_MEMO_CONTENT_CHARS,
   MAX_MEMOS_PER_PROJECT,
-  ProjectDetailsDialog,
   readProjectMemos,
-} from './ProjectDetailsDialog';
+} from './ProjectDetailsDialog.utils';
 
 const updateProjectMock = vi.fn();
 const pushToastMock = vi.fn();

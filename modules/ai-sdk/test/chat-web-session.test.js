@@ -132,7 +132,7 @@ describe("ChatWebSession", () => {
     assert.equal(s.chatWebProvider, "chatgpt");
   });
 
-  it("boots a ChatSession and registers builtin providers exactly once", async () => {
+  it("boots a headed ChatSession and registers builtin providers exactly once", async () => {
     const { mod, state } = createStubChatWebModule();
     const s = new ChatWebSession("chat-web", { chatWebModule: mod });
     await s.boot();
@@ -140,6 +140,14 @@ describe("ChatWebSession", () => {
     assert.equal(state.registerCalls, 1);
     assert.equal(state.openCalls.length, 1);
     assert.equal(state.openCalls[0].provider, "chatgpt");
+    assert.equal(state.openCalls[0].options.headless, false);
+    await s.close();
+  });
+
+  it("uses headless mode when explicitly requested", async () => {
+    const { mod, state } = createStubChatWebModule();
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod, headless: true });
+    await s.boot();
     assert.equal(state.openCalls[0].options.headless, true);
     await s.close();
   });

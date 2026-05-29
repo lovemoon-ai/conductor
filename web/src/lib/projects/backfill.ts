@@ -140,10 +140,9 @@ async function runBackfill(params: {
     `[project-backfill] start: userId=${userId}, daemonHost=${daemonHost}, candidates=${stale.length}`,
   );
 
-  for (const row of stale) {
+  const processRow = async (row: (typeof stale)[number]) => {
     if (!row.workspacePath) {
-      result.skipped += 1;
-      continue;
+      return { updated: 0, skipped: 1, errors: 0 };
     }
     try {
       const snapshot = await validateProjectBindingWithDaemon({
@@ -158,8 +157,7 @@ async function runBackfill(params: {
       // rather than logging an error — that's a perfectly valid state, just
       // not one this backfill can fix.
       if (!snapshot.gitRemoteUrl) {
-        result.skipped += 1;
-        continue;
+        return { updated: 0, skipped: 1, errors: 0 };
       }
 
       await db.project.update({
@@ -181,34 +179,46 @@ async function runBackfill(params: {
             : {}),
         },
       });
-      result.updated += 1;
       console.log(
         `[project-backfill] updated project=${row.id} gitRemoteUrl=${snapshot.gitRemoteUrl}`,
       );
+      return { updated: 1, skipped: 0, errors: 0 };
     } catch (error) {
       if (error instanceof ProjectBindingValidationError) {
         // Expected, non-fatal: workspace moved, daemon temporarily lost it,
         // or daemon disconnected mid-run. Leave the row alone so the next
         // reconnect can try again.
-        result.skipped += 1;
         console.warn(
           `[project-backfill] skip project=${row.id} (${
             error.code ?? "validation_error"
           }): ${error.message}`,
         );
-      } else {
-        result.errors += 1;
-        console.error(
-          `[project-backfill] unexpected error for project=${row.id}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
+        return { updated: 0, skipped: 1, errors: 0 };
       }
+      console.error(
+        `[project-backfill] unexpected error for project=${row.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return { updated: 0, skipped: 0, errors: 1 };
     }
+  };
 
-    if (perProjectDelayMs > 0) {
-      await sleep(perProjectDelayMs);
-    }
+  const rowResults = perProjectDelayMs > 0
+    ? await (async () => {
+        const sequentialResults: Array<{ updated: number; skipped: number; errors: number }> = [];
+        for (const row of stale) {
+          sequentialResults.push(await processRow(row));
+          await sleep(perProjectDelayMs);
+        }
+        return sequentialResults;
+      })()
+    : await Promise.all(stale.map((row) => processRow(row)));
+
+  for (const rowResult of rowResults) {
+    result.updated += rowResult.updated;
+    result.skipped += rowResult.skipped;
+    result.errors += rowResult.errors;
   }
 
   console.log(

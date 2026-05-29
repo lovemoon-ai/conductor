@@ -16,23 +16,32 @@ export async function POST(request: NextRequest) {
   }
 
   const events = await normalizeFeishuRequest(body);
-  const outputs: Array<{ text: string }> = [];
-
-  for (const event of events) {
-    const result = await handleNormalizedInboundEvent(event);
-    outputs.push(...result.outputs);
-
-    for (const output of result.outputs) {
-      if (!output?.text?.trim()) continue;
-      await sendFeishuReply({
-        config,
-        chatId: event.externalChatId,
-        replyMessageId: event.externalMessageId,
-        text: output.text,
-        uuid: `${event.externalMessageId}:${outputs.length}`,
-      });
-    }
+  const processedEvents = await Promise.all(events.map(async (event) => ({
+    event,
+    result: await handleNormalizedInboundEvent(event),
+  })));
+  const outputs = processedEvents.flatMap(({ result }) => result.outputs);
+  const outputCounts: number[] = [];
+  let totalOutputs = 0;
+  for (const { result } of processedEvents) {
+    totalOutputs += result.outputs.length;
+    outputCounts.push(totalOutputs);
   }
+
+  await Promise.all(
+    processedEvents.flatMap(({ event, result }, index) =>
+      result.outputs.flatMap((output) => {
+        if (!output?.text?.trim()) return [];
+        return [sendFeishuReply({
+          config,
+          chatId: event.externalChatId,
+          replyMessageId: event.externalMessageId,
+          text: output.text,
+          uuid: `${event.externalMessageId}:${outputCounts[index]}`,
+        })];
+      }),
+    ),
+  );
 
   return NextResponse.json({ processed: events.length, outputs });
 }

@@ -1,5 +1,21 @@
 # @love-moon/ai-sdk
 
+## 0.5.0
+
+## 0.4.2
+
+### Patch Changes
+
+- e8936fb: Upgrade the GitHub Copilot SDK permission protocol so Copilot-backed tasks auto-approve tool calls with current Copilot CLI releases instead of failing with `unexpected user permission response`.
+
+## 0.4.1
+
+### Patch Changes
+
+- aada753: Add explicit ChatGPT and Gemini web backend aliases, expose project icon
+  configuration in generated CLI settings, and default browser-backed session
+  checks to headed mode for reliable authenticated detection.
+
 ## 0.4.0
 
 ### Minor Changes

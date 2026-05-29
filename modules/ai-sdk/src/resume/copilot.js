@@ -144,13 +144,13 @@ async function buildCopilotClientOptions(options = {}) {
   }
 
   const explicitGithubToken =
-    typeof clientOptions.githubToken === "string" && clientOptions.githubToken.trim()
-      ? clientOptions.githubToken.trim()
+    typeof clientOptions.gitHubToken === "string" && clientOptions.gitHubToken.trim()
+      ? clientOptions.gitHubToken.trim()
       : typeof options.githubToken === "string" && options.githubToken.trim()
         ? options.githubToken.trim()
         : "";
-  if (clientOptions.githubToken === undefined && explicitGithubToken) {
-    clientOptions.githubToken = explicitGithubToken;
+  if (clientOptions.gitHubToken === undefined && explicitGithubToken) {
+    clientOptions.gitHubToken = explicitGithubToken;
   }
   if (clientOptions.useLoggedInUser === undefined && typeof options.useLoggedInUser === "boolean") {
     clientOptions.useLoggedInUser = options.useLoggedInUser;

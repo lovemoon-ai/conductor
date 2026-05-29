@@ -103,7 +103,7 @@ function isPlaywrightMissingError(error) {
  *
  * Lifecycle:
  *   - `boot()` lazily imports `@love-moon/chat-web`, registers its built-in
- *     providers, and opens a long-lived `ChatSession` (headless by default).
+ *     providers, and opens a long-lived `ChatSession` (headed by default).
  *   - `runTurn(prompt)` calls `session.send(prompt)` and emits a single
  *     `assistant_message` with the model's reply.
  *   - `close()` tears the Chromium context down.
@@ -120,7 +120,16 @@ export class ChatWebSession extends EventEmitter {
     this.options = options;
     this.logger = normalizeLogger(options.logger);
     this.chatWebProvider = resolveChatWebProvider(options);
-    this.headless = options.headless !== false;
+    // Match chat-web SDK's own default (headed). Per chat-web/core/browser.ts
+    // resolveHeadless(), headed mode is the documented safe default for
+    // anti-bot heuristics — ChatGPT/AI Studio routinely serve unauthenticated
+    // or challenge pages to chrome-headless-shell even when profile cookies
+    // are valid, which masquerades as "not logged in" downstream. The old
+    // `options.headless !== false` defaulted to true and effectively neutered
+    // chat-web's anti-bot stance whenever the caller (daemon, serve-ai)
+    // didn't explicitly pass a value. Users who actually want headless must
+    // now opt in with an explicit `headless: true`.
+    this.headless = options.headless === true;
     // Optional: use a specific Chromium-family binary (system Chrome /
     // Edge / explicit path) instead of Playwright's bundled
     // `chrome-headless-shell`. Useful when the user's network treats

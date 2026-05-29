@@ -8,6 +8,7 @@ import {
 import {
   acknowledgeAgentCommand,
   deliverAgentOutboxForHost,
+  isMissingAgentOutboxTableError,
 } from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { isConductorFireHost } from "@/lib/subscription/plan-limits";
@@ -205,6 +206,58 @@ async function getOwnedTask(userId: string, taskId: string, agentHost: string) {
   await ensureAgentOwnsTaskRecord(userId, task, agentHost);
   return task;
 }
+
+type AgentCommandAckRow = {
+  taskId: string | null;
+  agentHost: string | null;
+  eventType: string | null;
+};
+
+const isTaskNotFoundError = (error: unknown, taskId: string): boolean =>
+  error instanceof Error && error.message === `Task ${taskId} not found`;
+
+async function findAgentCommandAckRow(input: {
+  userId: string;
+  requestId: string;
+}): Promise<AgentCommandAckRow | null> {
+  try {
+    return await db.agentOutbox.findFirst({
+      where: {
+        userId: input.userId,
+        requestId: input.requestId,
+      },
+      select: {
+        taskId: true,
+        agentHost: true,
+        eventType: true,
+      },
+    });
+  } catch (error) {
+    if (isMissingAgentOutboxTableError(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+const matchesCommandAckRow = (
+  row: AgentCommandAckRow | null,
+  input: {
+    agentHost: string;
+    taskId: string;
+    eventType: string | null;
+  },
+): boolean => {
+  if (!row) return false;
+  const rowTaskId = normalizeOptionalString(row.taskId);
+  const rowAgentHost = normalizeOptionalString(row.agentHost);
+  const rowEventType = normalizeOptionalString(row.eventType);
+
+  if (rowTaskId && rowTaskId !== input.taskId) return false;
+  if (rowAgentHost && rowAgentHost !== input.agentHost) return false;
+  if (rowEventType && input.eventType && rowEventType !== input.eventType) return false;
+  return Boolean(rowTaskId);
+};
 
 export async function commitSdkMessage(input: {
   userId: string;
@@ -467,16 +520,38 @@ export async function commitAgentCommandAck(input: {
     throw new Error("request_id is required");
   }
   const taskId = normalizeOptionalString(input.taskId);
+  const eventType = normalizeOptionalString(input.eventType);
+  const ackRow = taskId
+    ? await findAgentCommandAckRow({
+        userId: input.userId,
+        requestId,
+      })
+    : null;
+  let taskExists = true;
   if (taskId) {
-    await ensureAgentOwnsTask(input.userId, taskId, input.agentHost, {
-      allowFireHostClaim: normalizeOptionalString(input.eventType) !== "interrupt_turn",
-    });
+    try {
+      await ensureAgentOwnsTask(input.userId, taskId, input.agentHost, {
+        allowFireHostClaim: eventType !== "interrupt_turn",
+      });
+    } catch (error) {
+      if (
+        !isTaskNotFoundError(error, taskId) ||
+        !matchesCommandAckRow(ackRow, {
+          agentHost: input.agentHost,
+          taskId,
+          eventType,
+        })
+      ) {
+        throw error;
+      }
+      taskExists = false;
+    }
   }
   const accepted = input.accepted !== false;
-  if (taskId) {
+  if (taskId && taskExists) {
     realtimeHub.acknowledgeAgentCommand(taskId, requestId, accepted, {
       agentHost: input.agentHost,
-      eventType: normalizeOptionalString(input.eventType) || null,
+      eventType: eventType || null,
     });
   }
   await drainAgentOutboxForHost(input.userId, input.agentHost);
@@ -484,7 +559,7 @@ export async function commitAgentCommandAck(input: {
     userId: input.userId,
     requestId,
     accepted,
-    eventType: normalizeOptionalString(input.eventType) || undefined,
+    eventType: eventType || undefined,
   });
   return {
     requestId,

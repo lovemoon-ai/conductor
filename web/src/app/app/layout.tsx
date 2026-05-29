@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuthStore } from '@/features/auth';
 import { useWebSocket } from '@/features/realtime';
@@ -12,16 +12,21 @@ import { MobileNav } from '@/components/layout/MobileNav';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'conductor-sidebar-collapsed';
+const subscribeToHydration = () => () => {};
+const getSidebarCollapsedSnapshot = () =>
+  typeof window !== 'undefined' && window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1';
 
 export default function WebAppLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const router = useRouter();
+  const { replace } = useRouter();
   const pathname = usePathname();
   const [isInitializing, setIsInitializing] = useState(true);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const storedSidebarCollapsed = useSyncExternalStore(subscribeToHydration, getSidebarCollapsedSnapshot, () => false);
+  const [sidebarCollapsedOverride, setSidebarCollapsedOverride] = useState<boolean | null>(null);
+  const isSidebarCollapsed = sidebarCollapsedOverride ?? storedSidebarCollapsed;
   const session = useAuthStore((state) => state.session);
   const initFromStorage = useAuthStore((state) => state.initFromStorage);
   const fetchProjects = useProjectsStore((state) => state.fetchProjects);
@@ -44,21 +49,14 @@ export default function WebAppLayout({
     initFromStorage().finally(() => setIsInitializing(false));
   }, [initFromStorage]);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
+  const toggleSidebarCollapsed = useCallback(() => {
+    const next = !isSidebarCollapsed;
+    setSidebarCollapsedOverride(next);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, next ? '1' : '0');
     }
-
-    setIsSidebarCollapsed(window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1');
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
-    window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, isSidebarCollapsed ? '1' : '0');
   }, [isSidebarCollapsed]);
+
 
   useEffect(() => {
     // Wait for initialization to complete
@@ -67,14 +65,14 @@ export default function WebAppLayout({
     // Check auth after initialization
     if (!session) {
       stopAgentsPolling();
-      router.replace('/login');
+      replace('/login');
       return;
     }
 
     // Fetch initial data
     fetchProjects();
     fetchAgents();
-  }, [isInitializing, session, router, fetchProjects, fetchAgents, stopAgentsPolling]);
+  }, [fetchAgents, fetchProjects, isInitializing, replace, session, stopAgentsPolling]);
 
   useEffect(() => {
     if (isInitializing || !session) {
@@ -104,7 +102,7 @@ export default function WebAppLayout({
         <div className="hidden md:block">
           <Sidebar
             collapsed={isSidebarCollapsed}
-            onToggleCollapsed={() => setIsSidebarCollapsed((prev) => !prev)}
+            onToggleCollapsed={toggleSidebarCollapsed}
           />
         </div>
 

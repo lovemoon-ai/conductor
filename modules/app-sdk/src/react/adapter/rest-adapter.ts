@@ -12,6 +12,9 @@
  *   POST /tasks/:taskId/interrupt
  *        body: { target_reply_to }
  *        → 200
+ *   POST /tasks/:taskId/restart           (optional)
+ *        body: { restart_mode? }
+ *        → 200
  *   GET  /tasks/:taskId/events
  *        → text/event-stream emitting `data: <ChatEvent JSON>\n\n`
  *
@@ -47,6 +50,16 @@ export interface RestAdapterOptions {
   eventSource?: typeof globalThis.EventSource;
   /** Per-request timeout in ms. Default 30_000. */
   timeoutMs?: number;
+  /**
+   * Enable the optional `restart()` adapter method. Default `false`.
+   *
+   * When enabled, `<ChatView>` shows restart affordances (empty-state button +
+   * bubble action). You MUST then implement `POST {baseUrl}/tasks/:id/restart`
+   * on your BFF (forward to Conductor's `POST /api/tasks/:id/restart`, or call
+   * `client.tasks.restart()`), or the control will 404. Left `false`, the
+   * widget hides all restart UI.
+   */
+  enableRestart?: boolean;
 }
 
 export function createRestAdapter(options: RestAdapterOptions): ChatAdapter {
@@ -141,7 +154,7 @@ export function createRestAdapter(options: RestAdapterOptions): ChatAdapter {
     return JSON.parse(text) as T;
   }
 
-  return {
+  const adapter: ChatAdapter = {
     async fetchHistory(taskId, opts) {
       if (!taskId) {
         throw new ConductorAppError({
@@ -267,6 +280,28 @@ export function createRestAdapter(options: RestAdapterOptions): ChatAdapter {
       );
     },
   };
+
+  // Restart is opt-in: only expose it when the host has wired the BFF route.
+  // Exposing it unconditionally would make `<ChatView>` show restart UI that
+  // 404s against a BFF that only implements the four core routes.
+  if (options.enableRestart) {
+    adapter.restart = async (taskId, opts) => {
+      if (!taskId) {
+        throw new ConductorAppError({
+          code: 'invalid_input',
+          message: 'restart requires a taskId',
+        });
+      }
+      const restartMode = opts?.restartMode?.trim();
+      await jsonFetch<void>(
+        'POST',
+        `/tasks/${encodeURIComponent(taskId)}/restart`,
+        { body: restartMode ? { restart_mode: restartMode } : {} },
+      );
+    };
+  }
+
+  return adapter;
 }
 
 function buildUrl(

@@ -4,6 +4,7 @@ import { ensureDefaultProject, signJwt, hashSecret } from "@/lib/auth/service";
 import { startNewUserPlusAccess } from "@/lib/subscription/service";
 import { randomBytes } from "crypto";
 
+// react-doctor-disable-next-line nextjs-no-side-effect-in-get-handler
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const code = searchParams.get("code");
@@ -15,6 +16,7 @@ export async function GET(request: NextRequest) {
   try {
     const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
       method: "POST",
+      cache: "no-store",
       headers: { Accept: "application/json", "Content-Type": "application/json" },
       body: JSON.stringify({
         client_id: process.env.GITHUB_CLIENT_ID,
@@ -29,11 +31,13 @@ export async function GET(request: NextRequest) {
     }
 
     const userRes = await fetch("https://api.github.com/user", {
+      cache: "no-store",
       headers: { Authorization: `Bearer ${tokenData.access_token}` },
     });
     const userData = await userRes.json();
 
     const emailRes = await fetch("https://api.github.com/user/emails", {
+      cache: "no-store",
       headers: { Authorization: `Bearer ${tokenData.access_token}` },
     });
     const emails = await emailRes.json();

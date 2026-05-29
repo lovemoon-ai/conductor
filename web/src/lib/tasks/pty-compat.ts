@@ -70,19 +70,19 @@ const includesAny = (value: string, needles: string[]): boolean => {
   return needles.some((needle) => normalized.includes(needle.toLowerCase()));
 };
 
-export const isMissingPtySessionTableError = (error: unknown): boolean =>
+const isMissingPtySessionTableError = (error: unknown): boolean =>
   hasErrorCode(error, "P2021") && includesAny(errorMessage(error), ["pty_sessions", "ptysession"]);
 
-export const isMissingTaskTypeColumnError = (error: unknown): boolean =>
+const isMissingTaskTypeColumnError = (error: unknown): boolean =>
   hasErrorCode(error, "P2022") && includesAny(errorMessage(error), ["task_type", "taskType"]);
 
-export const isMissingLaunchConfigColumnError = (error: unknown): boolean =>
+const isMissingLaunchConfigColumnError = (error: unknown): boolean =>
   hasErrorCode(error, "P2022") && includesAny(errorMessage(error), ["launch_config", "launchConfig"]);
 
-export const isMissingIssueIdColumnError = (error: unknown): boolean =>
+const isMissingIssueIdColumnError = (error: unknown): boolean =>
   hasErrorCode(error, "P2022") && includesAny(errorMessage(error), ["issue_id", "issueId"]);
 
-export const isMissingKilledStateColumnError = (error: unknown): boolean =>
+const isMissingKilledStateColumnError = (error: unknown): boolean =>
   hasErrorCode(error, "P2022") &&
   includesAny(errorMessage(error), ["killed_reason", "killedReason", "killed_at", "killedAt"]);
 
@@ -113,7 +113,7 @@ export const isMissingAnyNewSchemaError = (error: unknown): boolean =>
 
 const warnedContexts = new Set<string>();
 
-export const warnMissingPtySchema = (context: string, error: unknown): void => {
+const warnMissingPtySchema = (context: string, error: unknown): void => {
   if (warnedContexts.has(context)) return;
   warnedContexts.add(context);
   const errorDetail = error instanceof Error ? error.message : String(error);

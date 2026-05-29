@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   KeyboardEvent as ReactKeyboardEvent,
@@ -46,32 +47,32 @@ type SortableActivatorName = 'onPointerDown' | 'onMouseDown' | 'onTouchStart' | 
 type SortableActivatorListeners = Partial<Record<SortableActivatorName, (event: SyntheticEvent) => void>>;
 
 const TrashIcon = () => (
-  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
   </svg>
 );
 
 const HideIcon = () => (
-  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c1.461 0 2.855-.296 4.122-.831M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l12.544 12.544M9.88 9.88a3 3 0 104.24 4.24" />
   </svg>
 );
 
 const ShowIcon = () => (
-  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.43 0 .637C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.964-7.178z" />
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
   </svg>
 );
 
 const InviteIcon = () => (
-  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 14v4m2-2h-4M15 8a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0" />
   </svg>
 );
 
 const LeaveIcon = () => (
-  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6A2.25 2.25 0 005.25 5.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h11.25" />
   </svg>
 );
@@ -79,7 +80,7 @@ const LeaveIcon = () => (
 // Heroicons "link" — used when the card represents an unmerged project that
 // has a same-name peer on another daemon, so clicking the button fuses them.
 const MergeIcon = () => (
-  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
   </svg>
 );
@@ -87,7 +88,7 @@ const MergeIcon = () => (
 // Heroicons "link-slash" — used when the card is a merged cross-daemon group
 // and clicking the button breaks it back into individual daemon cards.
 const SplitIcon = () => (
-  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.181 8.68a4.503 4.503 0 011.903 6.405m-9.768-2.782L3.56 14.06a4.5 4.5 0 006.364 6.364l1.757-1.757m4.682-4.682l4.5-4.5a4.5 4.5 0 00-6.364-6.364l-1.757 1.757M3 3l18 18" />
   </svg>
 );
@@ -149,7 +150,7 @@ export function ProjectItem({
   const isMergedGroup = groupMembers.length > 1;
   const [isEditing, setIsEditing] = useState(false);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
-  const [editName, setEditName] = useState(project.name);
+  const [editName, setEditName] = useState('');
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressStartXRef = useRef(0);
   const longPressStartYRef = useRef(0);
@@ -174,6 +175,14 @@ export function ProjectItem({
 
   const projectRecord = project as Project & Record<string, unknown>;
   const isDefault = Boolean(projectRecord.isDefault);
+  // `icon` is sourced from `.conductor/settings.yaml`. The server resolves
+  // filesystem paths to `data:` URIs server-side, so by the time we get here
+  // an "image" icon always starts with `http(s)://`, `data:`, or `/`. Anything
+  // else (emoji, short text) is rendered as inline text. Empty/whitespace is
+  // treated as unset so we fall through to the default folder SVG.
+  const customIconRaw = typeof projectRecord.icon === 'string' ? projectRecord.icon.trim() : '';
+  const customIcon = customIconRaw || null;
+  const isImageIcon = customIcon ? /^(https?:\/\/|data:|\/)/i.test(customIcon) : false;
   const daemonHost = typeof projectRecord.daemonHost === 'string' ? projectRecord.daemonHost : null;
   const workspacePath = typeof projectRecord.workspacePath === 'string' ? projectRecord.workspacePath : null;
   const repoRoot = typeof projectRecord.repoRoot === 'string' ? projectRecord.repoRoot : null;
@@ -256,12 +265,6 @@ export function ProjectItem({
       longPressTimerRef.current = null;
     }
   }, []);
-
-  useEffect(() => {
-    if (!isEditing) {
-      setEditName(project.name);
-    }
-  }, [isEditing, project.name]);
 
   useEffect(() => clearLongPress, [clearLongPress]);
 
@@ -588,26 +591,26 @@ export function ProjectItem({
     swipe.onPointerDown(e);
   }, [swipe]);
 
-  const handleDragHandlePointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+  const handleDragHandlePointerDown = useCallback((e: ReactPointerEvent<HTMLElement>) => {
     e.stopPropagation();
     forwardSortableActivator('onPointerDown', e);
   }, [forwardSortableActivator]);
 
-  const handleDragHandleMouseDown = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
+  const handleDragHandleMouseDown = useCallback((e: ReactMouseEvent<HTMLElement>) => {
     e.stopPropagation();
     forwardSortableActivator('onMouseDown', e);
   }, [forwardSortableActivator]);
 
-  const handleDragHandleTouchStart = useCallback((e: ReactTouchEvent<HTMLDivElement>) => {
+  const handleDragHandleTouchStart = useCallback((e: ReactTouchEvent<HTMLElement>) => {
     e.stopPropagation();
     forwardSortableActivator('onTouchStart', e);
   }, [forwardSortableActivator]);
 
-  const handleDragHandleClick = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
+  const handleDragHandleClick = useCallback((e: ReactMouseEvent<HTMLElement>) => {
     e.stopPropagation();
   }, []);
 
-  const handleDragHandleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLDivElement>) => {
+  const handleDragHandleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLElement>) => {
     e.stopPropagation();
     forwardSortableActivator('onKeyDown', e);
   }, [forwardSortableActivator]);
@@ -773,14 +776,25 @@ export function ProjectItem({
         }}
       >
         <div className="flex items-start gap-3">
-          <div
+          <button
+            type="button"
             {...attributes}
-            role="button"
-            tabIndex={0}
             aria-label="Drag project"
             aria-describedby={projectTitleId}
             title="Hold and drag to reorder"
-            className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 cursor-grab active:cursor-grabbing ${isDefault ? 'webapp-gradient-bg' : isHidden ? 'bg-muted/10' : 'bg-accent/10'}`}
+            className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 cursor-grab active:cursor-grabbing overflow-hidden ${
+              // Default project keeps its branded gradient regardless of the
+              // custom icon so the home card stays recognizable.
+              isDefault
+                ? 'webapp-gradient-bg'
+                : customIcon
+                  ? isHidden
+                    ? 'bg-muted/10'
+                    : 'bg-transparent'
+                  : isHidden
+                    ? 'bg-muted/10'
+                    : 'bg-accent/10'
+            }`}
             style={dragHandleStyle}
             onPointerDown={handleDragHandlePointerDown}
             onMouseDown={handleDragHandleMouseDown}
@@ -788,21 +802,47 @@ export function ProjectItem({
             onClick={handleDragHandleClick}
             onKeyDown={handleDragHandleKeyDown}
           >
-            <svg className={`w-5 h-5 ${isDefault ? 'text-white' : isHidden ? 'text-muted opacity-20' : 'text-accent'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap={isHidden ? 'butt' : 'round'}
-                strokeLinejoin="round"
-                strokeWidth={2}
-                strokeDasharray={isHidden ? '0.5 1.5' : undefined}
-                d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-              />
-            </svg>
-          </div>
+            {customIcon && !isDefault ? (
+              isImageIcon ? (
+                <Image
+                  src={customIcon}
+                  alt=""
+                  width={40}
+                  height={40}
+                  unoptimized
+                  loader={({ src }) => src}
+                  draggable={false}
+                  // Hidden projects render the icon as a grey "template" — full
+                  // grayscale + low opacity matches the muted treatment the
+                  // default folder icon already uses for the hidden state.
+                  className={`h-full w-full object-cover ${isHidden ? 'grayscale opacity-30' : ''}`}
+                />
+              ) : (
+                <span
+                  aria-hidden="true"
+                  className={`text-xl leading-none select-none ${isHidden ? 'grayscale opacity-30' : ''}`}
+                >
+                  {customIcon}
+                </span>
+              )
+            ) : (
+              <svg className={`w-5 h-5 ${isDefault ? 'text-white' : isHidden ? 'text-muted opacity-20' : 'text-accent'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap={isHidden ? 'butt' : 'round'}
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  strokeDasharray={isHidden ? '0.5 1.5' : undefined}
+                  d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                />
+              </svg>
+            )}
+          </button>
           <div className="flex-1">
             <div className="flex items-center gap-2">
               {isEditing ? (
                 <input
                   type="text"
+                  aria-label="Edit project name"
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
                   onBlur={() => void handleRename()}
@@ -819,7 +859,6 @@ export function ProjectItem({
                   }}
                   onClick={(e) => e.stopPropagation()}
                   className="min-w-0 flex-1 truncate border-0 bg-transparent px-1 -mx-1 text-base font-medium text-ink outline-none ring-1 ring-[var(--accent)] rounded"
-                  autoFocus
                 />
               ) : (
                 <h3
@@ -881,7 +920,7 @@ export function ProjectItem({
                     title={`${groupMembers.length} daemons share this project`}
                     className="flex items-center gap-1 rounded bg-[var(--accent)]/15 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]"
                   >
-                    merged · {groupMembers.length} daemons
+                    {groupMembers.length} daemons
                   </span>
                 ) : null}
                 {!isMergedGroup && isUnavailable ? (

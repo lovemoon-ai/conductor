@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { MessageBubble } from '@/features/chat';
@@ -156,7 +157,7 @@ export default function SharedTaskPage() {
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-[var(--bg)]">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--accent)] border-t-transparent" />
+        <div className="size-6 animate-spin rounded-full border-2 border-[var(--accent)] border-t-transparent" />
       </div>
     );
   }
@@ -218,7 +219,7 @@ export default function SharedTaskPage() {
 
       <footer className="border-t border-border px-4 py-3 text-center">
         <p className="text-xs text-muted">
-          Powered by <a href="/" className="font-medium text-ink hover:text-[var(--accent)] transition-colors">Conductor</a>
+          Powered by <Link href="/" className="font-medium text-ink transition-colors hover:text-[var(--accent)]">Conductor</Link>
         </p>
       </footer>
     </div>
