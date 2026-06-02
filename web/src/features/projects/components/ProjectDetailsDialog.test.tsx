@@ -317,7 +317,93 @@ describe('ProjectDetailsDialog', () => {
     expect(readProjectMemos(storeState.projects[0] as any)).toHaveLength(1);
   });
 
-  it('shows the merged-group hint when more than one daemon shares this project', () => {
+  it('does not render secondary daemon memos in a merged project details dialog', () => {
+    const project = {
+      ...baseProject,
+      daemonHost: 'daemon-a',
+      metadata: {
+        memos: [
+          { id: 'shared', content: 'project-level memo', createdAt: '2026-05-10T12:30:00.000Z' },
+        ],
+      },
+    } as any;
+    const mergedMembers = [
+      project,
+      {
+        ...baseProject,
+        id: 'project-memo-b',
+        daemonHost: 'daemon-b',
+        metadata: {
+          memos: [
+            { id: 'daemon-b-only', content: 'daemon-specific memo', createdAt: '2026-05-11T12:30:00.000Z' },
+          ],
+        },
+      },
+    ] as any;
+    resetStoreProjects(mergedMembers);
+
+    render(
+      <ProjectDetailsDialog
+        open
+        project={project}
+        mergedMembers={mergedMembers}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('project-level memo')).toBeInTheDocument();
+    expect(screen.queryByText('daemon-specific memo')).toBeNull();
+  });
+
+  it('mirrors added memos to every member of a merged project group', async () => {
+    const project = {
+      ...baseProject,
+      daemonHost: 'daemon-a',
+      metadata: {
+        memos: [
+          { id: 'm1', content: 'existing shared memo', createdAt: '2026-05-01T08:00:00.000Z' },
+        ],
+      },
+    } as any;
+    const projectB = {
+      ...baseProject,
+      id: 'project-memo-b',
+      daemonHost: 'daemon-b',
+      metadata: { color: 'blue' },
+    } as any;
+    const mergedMembers = [project, projectB];
+    resetStoreProjects(mergedMembers);
+    updateProjectMock.mockResolvedValue(project);
+
+    render(
+      <ProjectDetailsDialog
+        open
+        project={project}
+        mergedMembers={mergedMembers}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('New memo'), { target: { value: 'new shared memo' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add memo' }));
+
+    await waitFor(() => expect(updateProjectMock).toHaveBeenCalledTimes(2));
+    expect(updateProjectMock.mock.calls.map(([projectId]) => projectId)).toEqual([
+      'project-memo',
+      'project-memo-b',
+    ]);
+    for (const [, payload] of updateProjectMock.mock.calls) {
+      expect(payload.metadata.memos).toHaveLength(2);
+      expect(payload.metadata.memos[0].content).toBe('new shared memo');
+      expect(payload.metadata.memos[1].id).toBe('m1');
+    }
+    const secondaryPayload = updateProjectMock.mock.calls[1][1];
+    expect(secondaryPayload.metadata.color).toBe('blue');
+    expect(readProjectMemos(storeState.projects[0] as any)[0].content).toBe('new shared memo');
+    expect(readProjectMemos(storeState.projects[1] as any)[0].content).toBe('new shared memo');
+  });
+
+  it('does not show daemon-scoped memo copy for merged groups', () => {
     const project = { ...baseProject, daemonHost: 'daemon-a' } as any;
     const mergedMembers = [
       project,
@@ -332,16 +418,9 @@ describe('ProjectDetailsDialog', () => {
         onClose={vi.fn()}
       />,
     );
-    const hint = screen.getByText(/merged across 2 daemons/);
-    expect(hint).toBeInTheDocument();
-    // Daemon host appears both in the Overview row and the merged hint; assert
-    // the hint specifically by scoping the lookup to the hint element.
-    expect(hint.textContent).toMatch(/daemon-a/);
-  });
 
-  it('hides the merged-group hint for a single-member group', () => {
-    render(<ProjectDetailsDialog open project={baseProject as any} onClose={vi.fn()} />);
     expect(screen.queryByText(/merged across/)).toBeNull();
+    expect(screen.queryByText(/stored on/)).toBeNull();
   });
 
   it('disables the submit button when the draft exceeds the per-memo length cap', () => {

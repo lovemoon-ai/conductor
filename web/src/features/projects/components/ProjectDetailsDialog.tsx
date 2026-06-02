@@ -20,9 +20,9 @@ interface ProjectDetailsDialogProps {
   open: boolean;
   project: Project;
   /**
-   * All members of the merged project group this dialog represents. When > 1,
-   * a hint is shown so the user understands memos are stored per-daemon (and
-   * only the primary member's memos are visible here).
+   * All members of the merged project group this dialog represents. Memo
+   * mutations are mirrored to every member so the timeline behaves as
+   * project-level data instead of daemon-level data.
    */
   mergedMembers?: Project[];
   onClose: () => void;
@@ -42,28 +42,39 @@ const DetailRow = ({ label, value }: DetailRowProps) => (
   </div>
 );
 
+const collectMemoTargets = (project: Project, mergedMembers?: Project[]): Project[] => {
+  const targets: Project[] = [];
+  const seen = new Set<string>();
+  const pushUnique = (candidate: Project) => {
+    if (seen.has(candidate.id)) return;
+    seen.add(candidate.id);
+    targets.push(candidate);
+  };
+
+  pushUnique(project);
+  for (const member of mergedMembers ?? []) {
+    pushUnique(member);
+  }
+  return targets;
+};
+
 /**
- * Apply an optimistic mutation to a single project's memo list in the shared
- * store so the UI reflects the change immediately.
+ * Apply an optimistic mutation to project memo rows in the shared store so the
+ * UI reflects the change immediately.
  *
- * Returns the **single previous project snapshot** so a failure can restore
- * just that row instead of overwriting the entire `projects` array. The wider
- * "snapshot the whole list" pattern used by `hideProject` etc. is racy: if a
- * websocket-driven `fetchProjects` lands between the optimistic update and
- * the rollback, restoring the cached array would also wipe the fresh data.
- * Returning `null` means the project disappeared from the store mid-flight
- * (e.g. it was deleted by another tab), in which case there is nothing to
- * roll back to.
+ * Returns the previous snapshots for only the affected rows so a failure can
+ * restore them without overwriting unrelated websocket-driven project changes.
  */
 const applyOptimisticMemos = (
-  projectId: string,
+  projectIds: string[],
   mutate: (memos: ProjectMemo[]) => ProjectMemo[],
-): Project | null => {
-  let previousEntry: Project | null = null;
+): Project[] => {
+  const targetIds = new Set(projectIds);
+  const previousEntries: Project[] = [];
   useProjectsStore.setState((state) => ({
     projects: state.projects.map((candidate) => {
-      if (candidate.id !== projectId) return candidate;
-      previousEntry = candidate;
+      if (!targetIds.has(candidate.id)) return candidate;
+      previousEntries.push(candidate);
       const currentMemos = readProjectMemos(candidate);
       const nextMemos = mutate(currentMemos);
       return {
@@ -72,18 +83,20 @@ const applyOptimisticMemos = (
       };
     }),
   }));
-  return previousEntry;
+  return previousEntries;
 };
 
 /**
- * Roll back a single project's optimistic update. We do *not* overwrite the
- * whole `projects` array because other entries may have legitimately changed
+ * Roll back optimistic memo updates. We do *not* overwrite the whole
+ * `projects` array because other entries may have legitimately changed
  * (agent push, refresh, sort) while the PATCH was in flight.
  */
-const restoreProjectSnapshot = (snapshot: Project): void => {
+const restoreProjectSnapshots = (snapshots: Project[]): void => {
+  if (snapshots.length === 0) return;
+  const snapshotsById = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]));
   useProjectsStore.setState((state) => ({
     projects: state.projects.map((candidate) =>
-      candidate.id === snapshot.id ? snapshot : candidate,
+      snapshotsById.get(candidate.id) ?? candidate,
     ),
   }));
 };
@@ -111,18 +124,31 @@ export function ProjectDetailsDialog({
     };
   }, []);
 
-  const groupSize = mergedMembers && mergedMembers.length > 0 ? mergedMembers.length : 1;
-  const isMergedGroup = groupSize > 1;
+  const memoTargetProjects = useMemo(
+    () => collectMemoTargets(project, mergedMembers),
+    [mergedMembers, project],
+  );
+  const memoTargetProjectIds = useMemo(
+    () => memoTargetProjects.map((target) => target.id),
+    [memoTargetProjects],
+  );
+  const memoProject = useMemo(
+    () =>
+      memoTargetProjects.find((target) => readProjectMemos(target).length > 0)
+      ?? memoTargetProjects[0]
+      ?? project,
+    [memoTargetProjects, project],
+  );
 
   const memos = useMemo(() => {
-    const list = readProjectMemos(project);
+    const list = readProjectMemos(memoProject);
     // Newest first — timeline reads chronologically downward.
     return list.toSorted((a, b) => {
       const aTime = new Date(a.createdAt).getTime();
       const bTime = new Date(b.createdAt).getTime();
       return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime);
     });
-  }, [project]);
+  }, [memoProject]);
 
   const githubLink = githubProjectLink(project.gitRemoteUrl);
 
@@ -137,16 +163,31 @@ export function ProjectDetailsDialog({
     && !isMutating;
 
   /**
-   * Resolve the freshest snapshot for this project from the store. The
+   * Resolve the freshest snapshots for memo target projects from the store. The
    * `project` prop comes from a closure that may lag if the store updated
    * between renders (e.g. a websocket push); reading the latest snapshot
    * narrows the "last-write-wins" window for memo mutations.
    */
-  const readLatestProject = (): Project => {
+  const readLatestProject = (target: Project): Project => {
     const stored = useProjectsStore
       .getState()
-      .projects.find((candidate) => candidate.id === project.id);
-    return stored ?? project;
+      .projects.find((candidate) => candidate.id === target.id);
+    return stored ?? target;
+  };
+
+  const readLatestMemoProject = (): Project => readLatestProject(memoProject);
+
+  const updateMemoTargets = async (nextMemos: ProjectMemo[]) => {
+    const latestTargets = memoTargetProjects.map((target) => readLatestProject(target));
+    const results = await Promise.allSettled(
+      latestTargets.map((target) =>
+        updateProject(target.id, { metadata: buildMetadataWithMemos(target, nextMemos) }),
+      ),
+    );
+    const rejected = results.find((result) => result.status === 'rejected');
+    if (rejected?.status === 'rejected') {
+      throw rejected.reason;
+    }
   };
 
   const handleAddMemo = async () => {
@@ -159,27 +200,20 @@ export function ProjectDetailsDialog({
       createdAt: new Date().toISOString(),
     };
 
-    const latestProject = readLatestProject();
+    const latestProject = readLatestMemoProject();
     const nextMemos = [newMemo, ...readProjectMemos(latestProject)];
-    const nextMetadata = buildMetadataWithMemos(latestProject, nextMemos);
 
-    // Optimistic update so the new memo appears immediately. We capture the
-    // pre-mutation snapshot for this *one* project so a failure restores
-    // only this row — unrelated `projects[]` updates that may have landed in
-    // the meantime are preserved.
-    const previousSnapshot = applyOptimisticMemos(project.id, () => nextMemos);
+    const previousSnapshots = applyOptimisticMemos(memoTargetProjectIds, () => nextMemos);
     setIsMutating(true);
     try {
-      await updateProject(project.id, { metadata: nextMetadata });
+      await updateMemoTargets(nextMemos);
       // Clear the composition only on success so a failed save leaves the
       // user's text in place — no "disappears then reappears" flicker.
       if (isMountedRef.current) {
         setDraft('');
       }
     } catch (error) {
-      if (previousSnapshot) {
-        restoreProjectSnapshot(previousSnapshot);
-      }
+      restoreProjectSnapshots(previousSnapshots);
       pushToast({
         title: 'Failed to save memo',
         description: error instanceof Error ? error.message : 'Please try again.',
@@ -202,20 +236,15 @@ export function ProjectDetailsDialog({
     });
     if (!accepted) return;
 
-    const latestProject = readLatestProject();
+    const latestProject = readLatestMemoProject();
     const nextMemos = readProjectMemos(latestProject).filter((memo) => memo.id !== memoId);
-    const nextMetadata = buildMetadataWithMemos(latestProject, nextMemos);
 
-    const previousSnapshot = applyOptimisticMemos(project.id, (current) =>
-      current.filter((memo) => memo.id !== memoId),
-    );
+    const previousSnapshots = applyOptimisticMemos(memoTargetProjectIds, () => nextMemos);
     setIsMutating(true);
     try {
-      await updateProject(project.id, { metadata: nextMetadata });
+      await updateMemoTargets(nextMemos);
     } catch (error) {
-      if (previousSnapshot) {
-        restoreProjectSnapshot(previousSnapshot);
-      }
+      restoreProjectSnapshots(previousSnapshots);
       pushToast({
         title: 'Failed to delete memo',
         description: error instanceof Error ? error.message : 'Please try again.',
@@ -270,17 +299,6 @@ export function ProjectDetailsDialog({
               {memoCount} / {MAX_MEMOS_PER_PROJECT}
             </span>
           </div>
-
-          {isMergedGroup ? (
-            // Merged-group memos are written to the primary daemon's project
-            // row only — surface that so the user doesn't expect a unified
-            // timeline across daemons.
-            <p className="mt-2 rounded-lg border border-dashed border-border bg-paper/30 px-3 py-2 text-xs text-muted">
-              This project is merged across {groupSize} daemons. Memos shown here are
-              stored on <code className="font-mono">{project.daemonHost ?? 'this row'}</code>{' '}
-              only.
-            </p>
-          ) : null}
 
           <div className="mt-2 space-y-2">
             <textarea
