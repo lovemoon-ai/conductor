@@ -52,6 +52,12 @@ interface ShareDialogState {
   title: string;
   shareUrl: string;
   aiShareUrl: string;
+  expiresAt: string | null;
+}
+
+interface ShareResponse {
+  token: string;
+  expiresAt?: string | null;
 }
 
 type StatusAction = 'idle' | 'confirm-kill' | 'killing' | 'confirm-restart' | 'restarting';
@@ -98,6 +104,14 @@ const schedulePendingTaskOpenState = (
 };
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const isShareDialogStateValid = (share: ShareDialogState): boolean => {
+  if (!share.expiresAt) {
+    return true;
+  }
+  const expiresAt = Date.parse(share.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt > Date.now();
+};
+
 const copyToClipboard = async (value: string): Promise<boolean> => {
   if (navigator.clipboard && window.isSecureContext) {
     await navigator.clipboard.writeText(value);
@@ -230,6 +244,7 @@ export function TaskItem({
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
   const [shareDialog, setShareDialog] = useState<ShareDialogState | null>(null);
+  const [lastShareDialog, setLastShareDialog] = useState<ShareDialogState | null>(null);
 
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressStartXRef = useRef(0);
@@ -607,6 +622,15 @@ export function TaskItem({
   };
 
   const handleShare = async () => {
+    if (lastShareDialog && isShareDialogStateValid(lastShareDialog)) {
+      setShareDialog(lastShareDialog);
+      closeSwipeActions();
+      return;
+    }
+    if (lastShareDialog) {
+      setLastShareDialog(null);
+    }
+
     const accepted = await confirm({
       title: 'Share this conversation?',
       description: 'Anyone with the link can view all messages in this task without logging in. The link expires in 7 days.',
@@ -619,7 +643,7 @@ export function TaskItem({
 
     try {
       const api = getApiClient();
-      const { token } = await api.post<{ token: string }>(`/tasks/${task.id}/share`);
+      const { token, expiresAt = null } = await api.post<ShareResponse>(`/tasks/${task.id}/share`);
       const url = `${window.location.origin}/share/${token}`;
       const aiUrl = `${url}/plain`;
       try {
@@ -631,11 +655,14 @@ export function TaskItem({
       } catch {
         pushToast({ title: 'Link created', description: url, variant: 'success' });
       }
-      setShareDialog({
+      const nextShareDialog = {
         title: task.title,
         shareUrl: url,
         aiShareUrl: aiUrl,
-      });
+        expiresAt,
+      };
+      setLastShareDialog(nextShareDialog);
+      setShareDialog(nextShareDialog);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create share link';
       pushToast({ title: 'Share failed', description: message, variant: 'error' });
@@ -651,6 +678,7 @@ export function TaskItem({
       description: copied ? value : undefined,
       variant: copied ? 'success' : 'error',
     });
+    setShareDialog(null);
   }, [pushToast]);
 
   const handleRunningStatusClick = async () => {

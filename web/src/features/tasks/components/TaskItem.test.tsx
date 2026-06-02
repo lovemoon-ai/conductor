@@ -708,6 +708,23 @@ describe('TaskItem', () => {
         variant: 'success',
       });
     });
+    await waitFor(() => {
+      expect(screen.queryByRole('link', { name: 'http://localhost:3000/share/shared-token-1/plain' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
+    });
+
+    apiPostMock.mockClear();
+    confirmMock.mockClear();
+
+    fireEvent.pointerDown(card!, { pointerId: 2, clientX: 240, pointerType: 'touch' });
+    fireEvent.pointerMove(card!, { pointerId: 2, clientX: 80, pointerType: 'touch' });
+    fireEvent.pointerUp(card!, { pointerId: 2, clientX: 80, pointerType: 'touch' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Share task' }));
+
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(apiPostMock).not.toHaveBeenCalled();
+    expect(screen.getByRole('link', { name: 'http://localhost:3000/share/shared-token-1' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'http://localhost:3000/share/shared-token-1/plain' })).toBeInTheDocument();
   });
 
   it('only shows delete in the swipe action menu for pty tasks', async () => {
