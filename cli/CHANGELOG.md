@@ -1,5 +1,16 @@
 # @love-moon/conductor-cli
 
+## 0.6.0
+
+### Minor Changes
+
+- bcc80b5: Initialize Git submodules automatically when preparing task worktrees.
+
+### Patch Changes
+
+- @love-moon/conductor-sdk@0.6.0
+- @love-moon/ai-sdk@0.6.0
+
 ## 0.5.1
 
 ### Patch Changes
