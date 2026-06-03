@@ -1256,6 +1256,8 @@ export function startDaemon(config = {}, deps = {}) {
     "",
     "worktree:",
     "  sync_branch: false",
+    "  sync_submodules: true",
+    "  # When .gitmodules exists, initialize/update submodules in task worktrees.",
     "  symlink: []",
     "  # Example: symlink paths from the parent workspace into each worktree",
     "  # symlink:",
@@ -1378,6 +1380,7 @@ export function startDaemon(config = {}, deps = {}) {
         return {
           symlinkPaths: normalizeConfiguredPathList(worktreeSettings.symlink, projectWorkspacePath),
           syncBranch: worktreeSettings.sync_branch === true || worktreeSettings.syncBranch === true,
+          syncSubmodules: worktreeSettings.sync_submodules !== false && worktreeSettings.syncSubmodules !== false,
           settingsPath,
         };
       } catch (error) {
@@ -1388,6 +1391,7 @@ export function startDaemon(config = {}, deps = {}) {
     return {
       symlinkPaths: [],
       syncBranch: false,
+      syncSubmodules: true,
       settingsPath: null,
     };
   }
@@ -1454,6 +1458,28 @@ export function startDaemon(config = {}, deps = {}) {
 
       const relativeTarget = path.relative(path.dirname(linkPath), sourcePath) || ".";
       symlinkSyncFn(relativeTarget, linkPath);
+    }
+  }
+
+  async function ensureTaskWorktreeSubmodules({ taskId, projectWorkspacePath, worktreeRoot }) {
+    const { syncSubmodules } = readProjectWorktreeSettings(projectWorkspacePath);
+    if (!syncSubmodules || !existsSyncFn(path.join(worktreeRoot, ".gitmodules"))) {
+      return;
+    }
+
+    try {
+      await runSpawnProcess(
+        "git",
+        ["-C", worktreeRoot, "submodule", "sync", "--recursive"],
+        { cwd: worktreeRoot, timeoutMs: WORKTREE_SUBMODULE_SYNC_TIMEOUT_MS },
+      );
+      await runSpawnProcess(
+        "git",
+        ["-C", worktreeRoot, "submodule", "update", "--init", "--recursive"],
+        { cwd: worktreeRoot, timeoutMs: WORKTREE_SUBMODULE_SYNC_TIMEOUT_MS },
+      );
+    } catch (error) {
+      throw new Error(`Failed to sync git submodules for ${taskId}: ${error?.message || error}`);
     }
   }
 
@@ -1645,6 +1671,11 @@ export function startDaemon(config = {}, deps = {}) {
       }
     }
 
+    await ensureTaskWorktreeSubmodules({
+      taskId,
+      projectWorkspacePath: worktreeConfig.projectWorkspacePath,
+      worktreeRoot,
+    });
     mkdirSyncFn(finalCwd, { recursive: true });
     await ensureTaskWorktreeSymlinks({
       projectRepoRoot: worktreeConfig.projectRepoRoot,
@@ -1679,6 +1710,10 @@ export function startDaemon(config = {}, deps = {}) {
   const WORKTREE_SYNC_TIMEOUT_MS = parsePositiveInt(
     process.env.CONDUCTOR_WORKTREE_SYNC_TIMEOUT_MS,
     5_000,
+  );
+  const WORKTREE_SUBMODULE_SYNC_TIMEOUT_MS = parsePositiveInt(
+    process.env.CONDUCTOR_WORKTREE_SUBMODULE_SYNC_TIMEOUT_MS,
+    120_000,
   );
   const SHUTDOWN_STATUS_REPORT_TIMEOUT_MS = parsePositiveInt(
     process.env.CONDUCTOR_SHUTDOWN_STATUS_REPORT_TIMEOUT_MS,

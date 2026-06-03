@@ -2044,6 +2044,225 @@ describe("Daemon", () => {
     }, 500);
   });
 
+  it("syncs git submodules automatically when a task worktree has .gitmodules", (t, done) => {
+    const taskPayload = {
+      task_id: "task-worktree-submodules",
+      project_id: "proj-git",
+      backend_type: "codex",
+      launch_config: {
+        worktree: true,
+        worktreeId: "task-worktree-submodules",
+        worktreeBranch: "task-worktree-submodules",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/tmp/repo",
+        projectWorkspacePath: "/tmp/repo",
+        projectRelativePath: ".",
+      },
+    };
+
+    const worktreeRoot = "/tmp/repo/.conductor/worktrees/task-worktree-submodules";
+    const gitCalls = [];
+    let runnerSpawned = false;
+    let daemonInstance = null;
+
+    wss.once("connection", (ws) => {
+      ws.send(
+        JSON.stringify({
+          type: "create_task",
+          payload: taskPayload,
+        }),
+      );
+    });
+
+    daemonInstance = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree-submodules",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree-submodules",
+      },
+      {
+        spawn: (cmd, args, opts) => {
+          if (cmd === "git") {
+            gitCalls.push({ args, opts });
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => child.emit("close", 0));
+            return child;
+          }
+
+          assert.strictEqual(cmd, process.execPath);
+          assert.strictEqual(opts.cwd, worktreeRoot);
+          runnerSpawned = true;
+          return {
+            pid: 24688,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => filePath === path.join(worktreeRoot, ".gitmodules"),
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+      },
+    );
+
+    setTimeout(() => {
+      try {
+        assert.deepStrictEqual(
+          gitCalls.map((entry) => entry.args),
+          [
+            [
+              "-C",
+              "/tmp/repo",
+              "worktree",
+              "add",
+              "-b",
+              "task-worktree-submodules",
+              worktreeRoot,
+              "main",
+            ],
+            ["-C", worktreeRoot, "submodule", "sync", "--recursive"],
+            ["-C", worktreeRoot, "submodule", "update", "--init", "--recursive"],
+          ],
+        );
+        assert.strictEqual(runnerSpawned, true);
+        if (daemonInstance && typeof daemonInstance.close === "function") {
+          daemonInstance.close();
+        }
+        done();
+      } catch (error) {
+        if (daemonInstance && typeof daemonInstance.close === "function") {
+          daemonInstance.close();
+        }
+        done(error);
+      }
+    }, 500);
+  });
+
+  it("skips git submodule sync when worktree.sync_submodules is false", (t, done) => {
+    const taskPayload = {
+      task_id: "task-worktree-submodules-disabled",
+      project_id: "proj-git",
+      backend_type: "codex",
+      launch_config: {
+        worktree: true,
+        worktreeId: "task-worktree-submodules-disabled",
+        worktreeBranch: "task-worktree-submodules-disabled",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/tmp/repo",
+        projectWorkspacePath: "/tmp/repo",
+        projectRelativePath: ".",
+      },
+    };
+
+    const worktreeRoot = "/tmp/repo/.conductor/worktrees/task-worktree-submodules-disabled";
+    const gitCalls = [];
+    let runnerSpawned = false;
+    let daemonInstance = null;
+
+    wss.once("connection", (ws) => {
+      ws.send(
+        JSON.stringify({
+          type: "create_task",
+          payload: taskPayload,
+        }),
+      );
+    });
+
+    daemonInstance = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree-submodules-disabled",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree-submodules-disabled",
+      },
+      {
+        spawn: (cmd, args, opts) => {
+          if (cmd === "git") {
+            gitCalls.push({ args, opts });
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => child.emit("close", 0));
+            return child;
+          }
+
+          assert.strictEqual(cmd, process.execPath);
+          assert.strictEqual(opts.cwd, worktreeRoot);
+          runnerSpawned = true;
+          return {
+            pid: 24689,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) =>
+          filePath === "/tmp/repo/.conductor/settings.yaml" ||
+          filePath === path.join(worktreeRoot, ".gitmodules"),
+        readFileSync: (filePath) => {
+          assert.strictEqual(filePath, "/tmp/repo/.conductor/settings.yaml");
+          return [
+            "worktree:",
+            "  sync_submodules: false",
+            "",
+          ].join("\n");
+        },
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+      },
+    );
+
+    setTimeout(() => {
+      try {
+        assert.deepStrictEqual(
+          gitCalls.map((entry) => entry.args),
+          [
+            [
+              "-C",
+              "/tmp/repo",
+              "worktree",
+              "add",
+              "-b",
+              "task-worktree-submodules-disabled",
+              worktreeRoot,
+              "main",
+            ],
+          ],
+        );
+        assert.strictEqual(runnerSpawned, true);
+        if (daemonInstance && typeof daemonInstance.close === "function") {
+          daemonInstance.close();
+        }
+        done();
+      } catch (error) {
+        if (daemonInstance && typeof daemonInstance.close === "function") {
+          daemonInstance.close();
+        }
+        done(error);
+      }
+    }, 500);
+  });
+
   it("bounds optional sync_branch before preparing an isolated worktree", (t, done) => {
     const previousTimeout = process.env.CONDUCTOR_WORKTREE_SYNC_TIMEOUT_MS;
     process.env.CONDUCTOR_WORKTREE_SYNC_TIMEOUT_MS = "5";
