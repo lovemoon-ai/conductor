@@ -1,35 +1,39 @@
-# Project memo should not bind to daemon rows
+# Project details must separate daemon tabs from merged memo timeline
 
 ## Symptom
 
 In a merged project with more than one project daemon, opening the project
-settings details panel could expose memo state as daemon-row data. The panel
-also told users that memos were stored on a specific daemon project row.
+settings details panel could expose project details and memo state through the
+same daemon row boundary. Users needed details to be inspectable per daemon, but
+memo entries to remain visible together in one memo timeline with source context.
 
 ## Root Cause
 
 Project memos were implemented in `project.metadata.memos`, while merged
 projects are represented as multiple `Project` rows, one per daemon. The
-details dialog still treated memo mutations as a single-row update and surfaced
-daemon-specific copy, which contradicted the product model that memo is
-project-level information.
+details dialog reused one selected project row for both the details panel and
+the memo panel. Memo timeline entries did not carry their source project ID or
+daemon label, so the UI could not show a combined timeline while still writing
+adds and deletes back to the correct source row.
 
 ## Fix
 
-The details dialog now treats merged project memos as one shared timeline:
+The details dialog now separates those concerns:
 
-- It does not concatenate every daemon member's memo list into the panel.
-- It removes daemon-scoped helper copy.
-- It mirrors memo additions and deletions across every member in the merged
-  group so future reads are not tied to whichever daemon row happens to render
-  first.
+- Project details render as daemon tabs for merged groups.
+- Memo entries from every merged member render together in one reverse
+  chronological timeline.
+- Each memo entry carries its source project ID and shows the daemon label next
+  to the date.
+- Adding a memo writes to the active daemon tab only.
+- Deleting a memo writes to that memo entry's source daemon project only.
 
-Regression tests cover secondary daemon memo leakage and merged-group memo
-fan-out.
+Regression tests cover merged memo aggregation, daemon tab switching, active-tab
+memo creation, and source-only deletion.
 
 ## Prevention
 
 When adding fields to project details, explicitly decide whether the field is
-project-level or daemon-binding-level. For merged projects, project-level fields
-must not use daemon row identity as the UX boundary; if the database still stores
-them on `Project`, the UI needs a group-aware read/write policy.
+per-daemon detail data or group-level timeline data. For merged projects,
+timeline entries should carry source identity separately from display grouping,
+so the UI can aggregate entries without losing the row that owns each mutation.
