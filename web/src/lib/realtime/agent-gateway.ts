@@ -587,6 +587,9 @@ const normalizeOptionalString = (value: unknown): string | null => {
   return normalized || null;
 };
 
+const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(value, key);
+
 const normalizePositiveInt = (value: unknown): number | null => {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   if (Number.isFinite(parsed) && parsed > 0) {
@@ -688,6 +691,7 @@ const normalizeProjectPathValidationResult = (
     last_commit_at: normalizeIsoDate(payload.last_commit_at, '') || null,
     git_remote_url: normalizeOptionalString(payload.git_remote_url),
     file_count: normalizeNonNegativeInt(payload.file_count),
+    icon: hasOwn(payload, "icon") ? normalizeOptionalString(payload.icon) : undefined,
     error: normalizeOptionalString(payload.error),
     error_code: normalizeOptionalString(payload.error_code),
     validated_at: normalizeIsoDate(payload.validated_at, new Date().toISOString()),

@@ -10,14 +10,46 @@ import { RefreshIcon } from '@/features/tasks';
 export default function ProjectsPage() {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const fetchProjects = useProjectsStore((state) => state.fetchProjects);
+  const refreshProject = useProjectsStore((state) => state.refreshProject);
   const isLoading = useProjectsStore((state) => state.isLoading);
   const setSelectedProjectId = useProjectsStore((state) => state.setSelectedProjectId);
   const showHiddenProjects = useProjectsStore((state) => state.showHiddenProjects);
   const toggleShowHiddenProjects = useProjectsStore((state) => state.toggleShowHiddenProjects);
+  const [isRefreshingProjects, setIsRefreshingProjects] = useState(false);
 
   useEffect(() => {
     fetchProjects();
   }, [fetchProjects]);
+
+  const handleRefreshProjects = async () => {
+    if (isLoading || isRefreshingProjects) {
+      return;
+    }
+    setIsRefreshingProjects(true);
+    try {
+      await fetchProjects();
+      const latestProjects = useProjectsStore.getState().projects;
+      const refreshableProjectIds = Array.from(
+        new Set(
+          latestProjects
+            .filter((project) =>
+              Boolean(project.daemonHost?.trim()) && Boolean(project.workspacePath?.trim()),
+            )
+            .map((project) => project.id),
+        ),
+      );
+      if (refreshableProjectIds.length > 0) {
+        await Promise.allSettled(
+          refreshableProjectIds.map((projectId) => refreshProject(projectId)),
+        );
+        await fetchProjects();
+      }
+    } finally {
+      setIsRefreshingProjects(false);
+    }
+  };
+
+  const isRefreshBusy = isLoading || isRefreshingProjects;
 
   return (
     <>
@@ -32,13 +64,13 @@ export default function ProjectsPage() {
         actions={
           <div className="flex items-center gap-2">
             <button type="button"
-              onClick={() => fetchProjects()}
-              disabled={isLoading}
-              aria-label={isLoading ? 'Refreshing projects' : 'Refresh projects'}
-              title={isLoading ? 'Refreshing projects' : 'Refresh projects'}
+              onClick={() => void handleRefreshProjects()}
+              disabled={isRefreshBusy}
+              aria-label={isRefreshBusy ? 'Refreshing projects' : 'Refresh projects'}
+              title={isRefreshBusy ? 'Refreshing projects' : 'Refresh projects'}
               className="flex items-center justify-center rounded-lg bg-paper/80 p-2 text-sm text-muted transition-colors hover:text-ink disabled:opacity-50"
             >
-              <RefreshIcon spinning={isLoading} />
+              <RefreshIcon spinning={isRefreshBusy} />
             </button>
             <button type="button"
               onClick={() => setShowCreateDialog(true)}
