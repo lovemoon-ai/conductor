@@ -1,33 +1,47 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import ProjectsPage from './page';
 
 const fetchProjectsMock = vi.fn();
+const refreshProjectMock = vi.fn();
 const setSelectedProjectIdMock = vi.fn();
 const toggleShowHiddenProjectsMock = vi.fn();
 
-let isLoading = false;
-let showHiddenProjects = false;
-
-vi.mock('@/features/projects', () => ({
-  useProjectsStore: (selector: (state: {
-    fetchProjects: typeof fetchProjectsMock;
-    isLoading: boolean;
-    setSelectedProjectId: typeof setSelectedProjectIdMock;
-    showHiddenProjects: boolean;
-    toggleShowHiddenProjects: typeof toggleShowHiddenProjectsMock;
-  }) => unknown) =>
-    selector({
-      fetchProjects: fetchProjectsMock,
-      isLoading,
-      setSelectedProjectId: setSelectedProjectIdMock,
-      showHiddenProjects,
-      toggleShowHiddenProjects: toggleShowHiddenProjectsMock,
-    }),
-  ProjectList: () => <div>project-list</div>,
-  CreateProjectDialog: ({ open }: { open: boolean }) => (open ? <div>create-project-dialog</div> : null),
+const projectPageState = vi.hoisted(() => ({
+  isLoading: false,
+  showHiddenProjects: false,
+  projects: [] as Array<Record<string, unknown>>,
 }));
+
+vi.mock('@/features/projects', () => {
+  const getProjectsStoreSnapshot = () => ({
+    fetchProjects: fetchProjectsMock,
+    refreshProject: refreshProjectMock,
+    projects: projectPageState.projects,
+    isLoading: projectPageState.isLoading,
+    setSelectedProjectId: setSelectedProjectIdMock,
+    showHiddenProjects: projectPageState.showHiddenProjects,
+    toggleShowHiddenProjects: toggleShowHiddenProjectsMock,
+  });
+  const useProjectsStore = Object.assign(
+    (selector: (state: {
+      fetchProjects: typeof fetchProjectsMock;
+      refreshProject: typeof refreshProjectMock;
+      projects: typeof projectPageState.projects;
+      isLoading: boolean;
+      setSelectedProjectId: typeof setSelectedProjectIdMock;
+      showHiddenProjects: boolean;
+      toggleShowHiddenProjects: typeof toggleShowHiddenProjectsMock;
+    }) => unknown) => selector(getProjectsStoreSnapshot()),
+    { getState: getProjectsStoreSnapshot },
+  );
+  return {
+    useProjectsStore,
+    ProjectList: () => <div>project-list</div>,
+    CreateProjectDialog: ({ open }: { open: boolean }) => (open ? <div>create-project-dialog</div> : null),
+  };
+});
 
 vi.mock('@/features/tasks', () => ({
   RefreshIcon: ({ spinning = false }: { spinning?: boolean }) => (
@@ -60,9 +74,13 @@ vi.mock('@/components/layout/Header', () => ({
 
 describe('ProjectsPage', () => {
   beforeEach(() => {
-    isLoading = false;
-    showHiddenProjects = false;
+    projectPageState.isLoading = false;
+    projectPageState.showHiddenProjects = false;
+    projectPageState.projects = [];
     fetchProjectsMock.mockReset();
+    fetchProjectsMock.mockResolvedValue(undefined);
+    refreshProjectMock.mockReset();
+    refreshProjectMock.mockResolvedValue({});
     setSelectedProjectIdMock.mockReset();
     toggleShowHiddenProjectsMock.mockReset();
   });
@@ -81,5 +99,29 @@ describe('ProjectsPage', () => {
     fireEvent.doubleClick(screen.getByRole('heading', { name: 'Projects' }));
 
     expect(toggleShowHiddenProjectsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes daemon-bound projects from the latest top bar fetch result', async () => {
+    const fetchedProjects = [
+      { id: 'project-bound', daemonHost: 'daemon-a', workspacePath: '/repo/a' },
+      { id: 'project-default', daemonHost: null, workspacePath: null },
+      { id: 'project-unbound', daemonHost: 'daemon-b', workspacePath: null },
+    ];
+    projectPageState.projects = [];
+    fetchProjectsMock.mockImplementation(async () => {
+      projectPageState.projects = fetchedProjects;
+    });
+
+    render(<ProjectsPage />);
+    fetchProjectsMock.mockClear();
+    projectPageState.projects = [];
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh projects' }));
+
+    await waitFor(() => {
+      expect(refreshProjectMock).toHaveBeenCalledWith('project-bound');
+    });
+    expect(refreshProjectMock).toHaveBeenCalledTimes(1);
+    expect(fetchProjectsMock).toHaveBeenCalledTimes(2);
   });
 });

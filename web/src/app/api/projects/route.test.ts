@@ -390,6 +390,7 @@ describe("/api/projects", () => {
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
       vi.mocked(db.project.findFirst).mockResolvedValueOnce(null).mockResolvedValueOnce(null);
       vi.mocked(db.project.create).mockResolvedValue(mockProject);
+      vi.mocked(readProjectSettingsYaml).mockResolvedValueOnce({ icon: "🚀" });
 
       const token = createTestToken("user-1");
       const request = createMockRequest({
@@ -412,6 +413,7 @@ describe("/api/projects", () => {
       expect(response.status).toBe(200);
       expect(data.id).toBe("proj-2");
       expect(data.name).toBe("New Project");
+      expect(data.icon).toBe("🚀");
       expect(db.project.create).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({
           sortOrder: 0,
@@ -481,7 +483,7 @@ describe("/api/projects", () => {
         lastCommitAt: "2026-05-12T14:30:00.000Z",
         gitRemoteUrl: null,
         fileCount: 42,
-        metadata: null,
+        metadata: JSON.stringify({ settingsIcon: "🚀" }),
         createdAt: new Date("2024-01-02"),
         updatedAt: new Date("2024-01-02"),
       };
@@ -496,6 +498,7 @@ describe("/api/projects", () => {
         lastCommitAt: "2026-05-12T14:30:00.000Z",
         gitRemoteUrl: null,
         fileCount: 42,
+        icon: "🚀",
       });
       vi.mocked(db.project.create).mockResolvedValue(mockProject);
 
@@ -514,6 +517,7 @@ describe("/api/projects", () => {
 
       expect(response.status).toBe(200);
       expect(data.id).toBe("proj-validated");
+      expect(data.icon).toBe("🚀");
       expect(validateProjectBindingWithDaemon).toHaveBeenCalledWith({
         userId: "user-1",
         daemonHost: "daemon-1",
@@ -529,9 +533,70 @@ describe("/api/projects", () => {
           lastCommit: "abc123",
           lastCommitAt: "2026-05-12T14:30:00.000Z",
           fileCount: 42,
-          metadata: undefined,
+          metadata: JSON.stringify({ settingsIcon: "🚀" }),
         }),
       }));
+    });
+
+    it("preserves cached icon metadata when promoting an existing binding with an old daemon", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const existingProject = {
+        id: "proj-existing",
+        name: "Existing Project",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/Users/duo/ws/conductor-real",
+        repoRoot: "/Users/duo/ws/conductor-real",
+        worktreeBranch: "main",
+        lastCommit: "old",
+        lastCommitAt: null,
+        gitRemoteUrl: null,
+        fileCount: 40,
+        metadata: JSON.stringify({ color: "blue", settingsIcon: "old-icon" }),
+        createdAt: new Date("2024-01-02"),
+        updatedAt: new Date("2024-01-02"),
+      };
+      const updatedProject = {
+        ...existingProject,
+        name: "Existing Project",
+        lastCommit: "abc123",
+        lastCommitAt: "2026-05-12T14:30:00.000Z",
+        fileCount: 42,
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(validateProjectBindingWithDaemon).mockResolvedValue({
+        daemonHost: "daemon-1",
+        workspacePath: "/Users/duo/ws/conductor-real",
+        repoRoot: "/Users/duo/ws/conductor-real",
+        worktreeBranch: "main",
+        lastCommit: "abc123",
+        lastCommitAt: "2026-05-12T14:30:00.000Z",
+        gitRemoteUrl: null,
+        fileCount: 42,
+      });
+      vi.mocked(db.project.findFirst).mockResolvedValueOnce(existingProject);
+      vi.mocked(db.project.update).mockResolvedValue(updatedProject);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          daemonHost: "daemon-1",
+          workspacePath: "/Users/duo/ws/conductor",
+        },
+      });
+      const response = await POST(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(db.project.update).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: JSON.stringify({ color: "blue", settingsIcon: "old-icon" }),
+        }),
+      }));
+      expect(data.icon).toBe("old-icon");
     });
 
     it("should return validation errors from the daemon binding check", async () => {
@@ -1127,6 +1192,7 @@ describe("/api/projects", () => {
         createdAt: new Date("2026-04-01"),
         updatedAt: hiddenAt,
       } as any);
+      vi.mocked(readProjectSettingsYaml).mockResolvedValueOnce({ icon: "🚀" });
 
       const token = createTestToken("user-1");
       const request = createMockRequest({
@@ -1142,6 +1208,7 @@ describe("/api/projects", () => {
       expect(data.hidden).toBe(true);
       expect(data.hiddenAt).toBe(hiddenAt.toISOString());
       expect(data.hidden_at).toBe(hiddenAt.toISOString());
+      expect(data.icon).toBe("🚀");
       expect(db.project.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { id: "proj-1", userId: "user-1" },
@@ -1373,6 +1440,7 @@ describe("/api/projects", () => {
         createdAt: new Date("2026-04-01"),
         updatedAt: new Date("2026-05-01"),
       } as any);
+      vi.mocked(readProjectSettingsYaml).mockResolvedValueOnce({ icon: "🚀" });
 
       const token = createTestToken("user-1");
       const request = createMockRequest({
@@ -1387,6 +1455,7 @@ describe("/api/projects", () => {
       expect(response.status).toBe(200);
       expect(data.mergeOptOut).toBe(true);
       expect(data.merge_opt_out).toBe(true);
+      expect(data.icon).toBe("🚀");
       // Update payload must include the new column.
       expect(db.project.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1441,6 +1510,7 @@ describe("/api/projects", () => {
         worktreeBranch: "main",
         lastCommit: "old-commit",
         fileCount: 10,
+        metadata: JSON.stringify({ color: "blue", settingsIcon: "old" }),
         hiddenAt: null,
       } as any);
       vi.mocked(validateProjectBindingWithDaemon).mockResolvedValueOnce({
@@ -1452,6 +1522,7 @@ describe("/api/projects", () => {
         lastCommitAt: "2026-05-12T14:30:00.000Z",
         gitRemoteUrl: "github.com/foo/bar",
         fileCount: 12,
+        icon: "🚀",
       });
       vi.mocked(db.project.updateMany).mockResolvedValue({ count: 1 } as any);
       vi.mocked(db.project.findUnique).mockResolvedValue({
@@ -1468,7 +1539,7 @@ describe("/api/projects", () => {
         fileCount: 12,
         hiddenAt: null,
         mergeOptOut: false,
-        metadata: null,
+        metadata: JSON.stringify({ color: "blue", settingsIcon: "🚀" }),
         createdAt: new Date("2026-04-01"),
         updatedAt: new Date("2026-05-01"),
       } as any);
@@ -1500,12 +1571,146 @@ describe("/api/projects", () => {
             lastCommitAt: "2026-05-12T14:30:00.000Z",
             gitRemoteUrl: "github.com/foo/bar",
             fileCount: 12,
+            metadata: JSON.stringify({ color: "blue", settingsIcon: "🚀" }),
           }),
         }),
       );
       expect(data.lastCommit).toBe("fresh-commit");
       expect(data.lastCommitAt).toBe("2026-05-12T14:30:00.000Z");
       expect(data.gitRemoteUrl).toBe("github.com/foo/bar");
+      expect(data.icon).toBe("🚀");
+    });
+
+    it("leaves cached icon metadata untouched when refreshing with an old daemon", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValueOnce({
+        id: "proj-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "old-commit",
+        fileCount: 10,
+        metadata: JSON.stringify({ color: "blue", settingsIcon: "old-icon" }),
+        hiddenAt: null,
+      } as any);
+      vi.mocked(validateProjectBindingWithDaemon).mockResolvedValueOnce({
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "fresh-commit",
+        lastCommitAt: "2026-05-12T14:30:00.000Z",
+        gitRemoteUrl: "github.com/foo/bar",
+        fileCount: 12,
+      });
+      vi.mocked(db.project.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.project.findUnique).mockResolvedValue({
+        id: "proj-1",
+        name: "Demo",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "fresh-commit",
+        lastCommitAt: new Date("2026-05-12T14:30:00.000Z"),
+        gitRemoteUrl: "github.com/foo/bar",
+        fileCount: 12,
+        hiddenAt: null,
+        mergeOptOut: false,
+        metadata: JSON.stringify({ color: "blue", settingsIcon: "old-icon" }),
+        createdAt: new Date("2026-04-01"),
+        updatedAt: new Date("2026-05-01"),
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-1",
+        body: { refresh: true },
+      });
+      const response = await PATCH(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(db.project.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            metadata: undefined,
+          }),
+        }),
+      );
+      expect(data.icon).toBe("old-icon");
+    });
+
+    it("drops oversized daemon icons instead of caching oversized metadata", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const oversizedIcon = `data:image/png;base64,${"a".repeat(193 * 1024)}`;
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValueOnce({
+        id: "proj-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "old-commit",
+        fileCount: 10,
+        metadata: JSON.stringify({ color: "blue", settingsIcon: "old-icon" }),
+        hiddenAt: null,
+      } as any);
+      vi.mocked(validateProjectBindingWithDaemon).mockResolvedValueOnce({
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "fresh-commit",
+        lastCommitAt: "2026-05-12T14:30:00.000Z",
+        gitRemoteUrl: "github.com/foo/bar",
+        fileCount: 12,
+        icon: oversizedIcon,
+      });
+      vi.mocked(db.project.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.project.findUnique).mockResolvedValue({
+        id: "proj-1",
+        name: "Demo",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/app",
+        repoRoot: "/repo",
+        worktreeBranch: "main",
+        lastCommit: "fresh-commit",
+        lastCommitAt: new Date("2026-05-12T14:30:00.000Z"),
+        gitRemoteUrl: "github.com/foo/bar",
+        fileCount: 12,
+        hiddenAt: null,
+        mergeOptOut: false,
+        metadata: JSON.stringify({ color: "blue" }),
+        createdAt: new Date("2026-04-01"),
+        updatedAt: new Date("2026-05-01"),
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "PATCH",
+        token,
+        url: "http://localhost:6152/api/projects?projectId=proj-1",
+        body: { refresh: true },
+      });
+      const response = await PATCH(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(db.project.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            metadata: JSON.stringify({ color: "blue" }),
+          }),
+        }),
+      );
+      expect(data.icon).toBeNull();
     });
 
     it("refuses refresh:true when the project has no confirmed binding", async () => {

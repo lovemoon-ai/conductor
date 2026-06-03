@@ -40,11 +40,12 @@ const MAX_SETTINGS_FILE_BYTES = 64 * 1024;
 
 /**
  * Hard cap on the icon image file size. The icon is base64-inlined into the
- * projects JSON response, so a multi-MB png would balloon the payload. 512 KiB
- * is enough room for a comfortable PNG/SVG but small enough that a careless
- * user can't accidentally DOS the list endpoint.
+ * projects JSON response and may be cached in project metadata, so a multi-MB
+ * png would balloon both the DB row and list payload. 128 KiB is enough room
+ * for a small PNG/SVG while leaving headroom under the metadata cap after
+ * base64 expansion.
  */
-const MAX_ICON_IMAGE_BYTES = 512 * 1024;
+const MAX_ICON_IMAGE_BYTES = 128 * 1024;
 
 /**
  * Allowed icon image extensions, mapped to their MIME types. Anything not on

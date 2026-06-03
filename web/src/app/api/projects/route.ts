@@ -36,6 +36,7 @@ import {
   isMissingProjectSortOrderColumnError,
   isMissingProjectHiddenAtColumnError,
   isMissingProjectMergeColumnsError,
+  MAX_PROJECT_METADATA_BYTES,
   PROJECT_SERIALIZATION_BASE_SELECT,
   PROJECT_SERIALIZATION_WITH_SORT_NO_HIDDEN_SELECT,
   compareProjectsForDisplay,
@@ -117,31 +118,108 @@ const findProjectBindingMatch = async (params: {
   return null;
 };
 
+const serializeProjectWithSettings = async (
+  project: Parameters<typeof serializeProject>[0],
+  isDefault = false,
+) => {
+  const serializedProject = serializeProject(project, isDefault);
+  const cachedIcon = readCachedProjectSettingsIcon(project.metadata);
+  if (cachedIcon) {
+    return {
+      ...serializedProject,
+      icon: cachedIcon,
+    };
+  }
+
+  const settings = await readProjectSettingsYaml(project.workspacePath);
+  return {
+    ...serializedProject,
+    icon: settings.icon,
+  };
+};
+
+const PROJECT_SETTINGS_ICON_METADATA_KEYS = new Set(["settingsIcon", "settings_icon"]);
+const MAX_CACHED_PROJECT_SETTINGS_ICON_BYTES = 192 * 1024;
+
+const isProjectSettingsIconMetadataKey = (key: string): boolean =>
+  PROJECT_SETTINGS_ICON_METADATA_KEYS.has(key);
+
+const normalizeProjectSettingsIconForCache = (value: unknown): string | null => {
+  const icon = normalizeOptionalString(value);
+  if (!icon) return null;
+  return Buffer.byteLength(icon, "utf8") <= MAX_CACHED_PROJECT_SETTINGS_ICON_BYTES
+    ? icon
+    : null;
+};
+
+const readCachedProjectSettingsIcon = (metadata: string | null | undefined): string | null => {
+  const parsed = parseProjectMetadata(metadata ?? null);
+  if (!parsed) return null;
+  for (const key of PROJECT_SETTINGS_ICON_METADATA_KEYS) {
+    const icon = normalizeProjectSettingsIconForCache(parsed[key]);
+    if (icon) return icon;
+  }
+  return null;
+};
+
+const isSerializedProjectMetadataTooLarge = (metadata: string): boolean =>
+  Buffer.byteLength(metadata, "utf8") > MAX_PROJECT_METADATA_BYTES;
+
 const serializeProjectMetadata = (
   metadata: Record<string, unknown> | null | undefined,
   bindingCandidate: { daemonHost: string; workspacePath: string } | null,
+  settingsIcon?: string | null,
 ): string | null | undefined => {
+  const shouldWriteSettingsIcon = settingsIcon !== undefined;
+  const normalizedSettingsIcon = shouldWriteSettingsIcon
+    ? normalizeProjectSettingsIconForCache(settingsIcon)
+    : null;
   const normalizedMetadata =
     metadata && typeof metadata === "object"
       ? Object.fromEntries(
           Object.entries(metadata).filter(
-            ([key]) => key !== "bindingCandidate" && key !== "binding_candidate",
+            ([key, value]) =>
+              key !== "bindingCandidate" &&
+              key !== "binding_candidate" &&
+              (!isProjectSettingsIconMetadataKey(key) ||
+                (!shouldWriteSettingsIcon && normalizeProjectSettingsIconForCache(value) !== null)),
           ),
         )
       : metadata;
-  if (metadata === undefined) {
-    return bindingCandidate ? JSON.stringify({ bindingCandidate }) : undefined;
+
+  if (metadata === undefined && !bindingCandidate && !shouldWriteSettingsIcon) {
+    return undefined;
   }
-  if (metadata === null) {
-    return bindingCandidate ? JSON.stringify({ bindingCandidate }) : null;
+  if (metadata === null && !bindingCandidate && !shouldWriteSettingsIcon) {
+    return null;
   }
-  if (!bindingCandidate) {
-    return JSON.stringify(normalizedMetadata);
+
+  const nextMetadata: Record<string, unknown> =
+    normalizedMetadata && typeof normalizedMetadata === "object"
+      ? { ...normalizedMetadata }
+      : {};
+  if (bindingCandidate) {
+    nextMetadata.bindingCandidate = bindingCandidate;
   }
-  return JSON.stringify({
-    ...normalizedMetadata,
-    bindingCandidate,
-  });
+  if (normalizedSettingsIcon) {
+    nextMetadata.settingsIcon = normalizedSettingsIcon;
+  }
+
+  let serialized = JSON.stringify(nextMetadata);
+  if (isSerializedProjectMetadataTooLarge(serialized)) {
+    for (const key of PROJECT_SETTINGS_ICON_METADATA_KEYS) {
+      delete nextMetadata[key];
+    }
+    serialized = JSON.stringify(nextMetadata);
+  }
+
+  if (metadata === undefined && Object.keys(nextMetadata).length === 0) {
+    return undefined;
+  }
+  if (metadata === null && Object.keys(nextMetadata).length === 0) {
+    return null;
+  }
+  return serialized;
 };
 
 const findProjectNameConflict = async (params: {
@@ -257,28 +335,19 @@ export const GET = requireActiveSubscription(async (_request: NextRequest, user)
     counts[normalizedStatus] = (counts[normalizedStatus] ?? 0) + group._count._all;
   }
 
-  // Read `.conductor/settings.yaml` for each project so the list can surface
-  // an `icon` override on the project card. Reads are short-circuited by the
-  // helper's in-process cache, but we still parallelize so a dozen projects
-  // don't serialize their fs hits one after another.
+  // Surface project icon overrides from daemon-cached metadata first, falling
+  // back to local `.conductor/settings.yaml` reads for development setups where
+  // the web server can see the same workspace path.
   const sortedProjects = projects.toSorted(compareProjectsForDisplay);
-  const iconsByProject = new Map<string, string | null>(
-    await Promise.all(
-      sortedProjects.map(async (project: (typeof sortedProjects)[number]) => {
-        const settings = await readProjectSettingsYaml(project.workspacePath);
-        return [project.id, settings.icon] as const;
-      }),
-    ),
-  );
-
-  return NextResponse.json(
-    sortedProjects.map((p: (typeof sortedProjects)[number]) => ({
-      ...serializeProject(p, defaultProjectIds.has(p.id)),
-      icon: iconsByProject.get(p.id) ?? null,
+  const serializedProjects = await Promise.all(
+    sortedProjects.map(async (p: (typeof sortedProjects)[number]) => ({
+      ...(await serializeProjectWithSettings(p, defaultProjectIds.has(p.id))),
       taskStatusCounts: taskCountsByProject.get(p.id) ?? {},
       task_status_counts: taskCountsByProject.get(p.id) ?? {},
-    }))
+    })),
   );
+
+  return NextResponse.json(serializedProjects);
 });
 
 export const POST = requireActiveSubscription(async (request: NextRequest, user) => {
@@ -324,6 +393,7 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
   let effectiveBinding = binding;
   let effectiveBindingConfirmed = bindingConfirmed;
   let effectiveBindingCandidate = bindingCandidate;
+  let effectiveSettingsIcon: string | null | undefined;
 
   if (!isDefaultProject && !bindingConfirmed) {
     if (shouldValidateWithDaemon) {
@@ -355,6 +425,7 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
           gitRemoteUrl: validatedBinding.gitRemoteUrl,
           fileCount: validatedBinding.fileCount,
         };
+        effectiveSettingsIcon = validatedBinding.icon;
         effectiveBindingConfirmed = true;
         effectiveBindingCandidate = null;
       } catch (error) {
@@ -378,6 +449,7 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
   const serializedMetadata = serializeProjectMetadata(
     metadataInput.value,
     !effectiveBindingConfirmed ? effectiveBindingCandidate : null,
+    effectiveBindingConfirmed ? effectiveSettingsIcon : undefined,
   );
 
   if (isDefaultProject) {
@@ -424,8 +496,12 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
     }
     if (existingByBinding) {
       const promotedMetadata =
-        !metadataInput.hasField && existingByBinding.metadata
-          ? serializeProjectMetadata(parseProjectMetadata(existingByBinding.metadata), null)
+        !metadataInput.hasField && (existingByBinding.metadata || effectiveSettingsIcon !== undefined)
+          ? serializeProjectMetadata(
+              parseProjectMetadata(existingByBinding.metadata),
+              null,
+              effectiveSettingsIcon,
+            )
           : undefined;
       const updated = await db.project.update({
         where: { id: existingByBinding.id },
@@ -443,7 +519,7 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
         },
         select: PROJECT_SERIALIZATION_SELECT,
       });
-      return NextResponse.json(serializeProject(updated, false));
+      return NextResponse.json(await serializeProjectWithSettings(updated, false));
     }
   }
 
@@ -517,7 +593,7 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
     }
   }
 
-  return NextResponse.json(serializeProject(project, isDefaultProject));
+  return NextResponse.json(await serializeProjectWithSettings(project, isDefaultProject));
 });
 
 export const PATCH = requireActiveSubscription(async (request: NextRequest, user) => {
@@ -578,7 +654,7 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
 
   // Use the pre-serialized string from the validator so the bytes we store
   // match the bytes we size-checked.
-  const metadata: string | null | undefined = metadataInput.hasField
+  let metadata: string | null | undefined = metadataInput.hasField
     ? metadataInput.serialized
     : undefined;
 
@@ -625,6 +701,7 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     lastCommit: true,
     lastCommitAt: true,
     fileCount: true,
+    metadata: true,
   } as const;
   let existingProject: ({
     id: string;
@@ -635,6 +712,7 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     lastCommit: string | null;
     lastCommitAt: Date | null;
     fileCount: number | null;
+    metadata: string | null;
     hiddenAt?: Date | null;
   }) | null;
   try {
@@ -689,6 +767,7 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
     lastCommitAt: string | null;
     gitRemoteUrl: string | null;
     fileCount: number | null;
+    icon?: string | null;
   } | null = null;
   if (refreshRequested) {
     if (!existingProject.daemonHost || !existingProject.workspacePath) {
@@ -710,7 +789,15 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
         lastCommitAt: validated.lastCommitAt,
         gitRemoteUrl: validated.gitRemoteUrl,
         fileCount: validated.fileCount,
+        icon: validated.icon,
       };
+      if (validated.icon !== undefined) {
+        metadata = serializeProjectMetadata(
+          metadataInput.hasField ? metadataInput.value : parseProjectMetadata(existingProject.metadata),
+          null,
+          validated.icon,
+        );
+      }
     } catch (error) {
       if (error instanceof ProjectBindingValidationError) {
         return NextResponse.json({ error: error.message }, { status: error.status });
@@ -861,7 +948,7 @@ export const PATCH = requireActiveSubscription(async (request: NextRequest, user
   }
   const isDefault = defaultProject?.projectId === projectId;
 
-  return NextResponse.json(serializeProject(project, isDefault));
+  return NextResponse.json(await serializeProjectWithSettings(project, isDefault));
 });
 
 export const DELETE = requireActiveSubscription(async (request: NextRequest, user) => {

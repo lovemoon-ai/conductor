@@ -1264,6 +1264,72 @@ export function startDaemon(config = {}, deps = {}) {
     "",
   ].join("\n");
 
+  const MAX_PROJECT_ICON_IMAGE_BYTES = 128 * 1024;
+  const PROJECT_ICON_MIME_BY_EXTENSION = {
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+    ".avif": "image/avif",
+  };
+
+  function getProjectSettingsCandidates(projectWorkspacePath) {
+    return [
+      path.join(projectWorkspacePath, ".conductor", "settings.yaml"),
+      path.join(projectWorkspacePath, ".conductor", "settings.yml"),
+      path.join(projectWorkspacePath, ".conductor", "setttings.yaml"),
+      path.join(projectWorkspacePath, ".conductor", "setttings.yml"),
+    ];
+  }
+
+  function extractProjectIconFromSettings(parsed) {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const direct = normalizeOptionalString(parsed.icon);
+    if (direct) return direct;
+    const projectSettings = parsed.project;
+    if (
+      projectSettings &&
+      typeof projectSettings === "object" &&
+      !Array.isArray(projectSettings)
+    ) {
+      return normalizeOptionalString(projectSettings.icon);
+    }
+    return null;
+  }
+
+  function projectIconLooksLikeFilesystemPath(iconValue) {
+    if (/^(https?:\/\/|data:)/i.test(iconValue)) return false;
+    if (iconValue.startsWith("/") || iconValue.startsWith("./") || iconValue.startsWith("../")) {
+      return true;
+    }
+    if (!iconValue.includes("/")) return false;
+    const ext = path.extname(iconValue).toLowerCase();
+    return Object.prototype.hasOwnProperty.call(PROJECT_ICON_MIME_BY_EXTENSION, ext);
+  }
+
+  function readProjectIconAsDataUri(settingsDir, iconValue) {
+    const resolvedPath = path.isAbsolute(iconValue)
+      ? iconValue
+      : path.resolve(settingsDir, iconValue);
+    const ext = path.extname(resolvedPath).toLowerCase();
+    const mime = PROJECT_ICON_MIME_BY_EXTENSION[ext];
+    if (!mime) return null;
+    try {
+      const stat = statSyncFn(resolvedPath);
+      if (!stat.isFile() || stat.size === 0 || stat.size > MAX_PROJECT_ICON_IMAGE_BYTES) {
+        return null;
+      }
+      return `data:${mime};base64,${readFileSyncFn(resolvedPath).toString("base64")}`;
+    } catch {
+      return null;
+    }
+  }
+
   function ensureProjectSettingsTemplate(projectWorkspacePath) {
     const settingsPath = path.join(projectWorkspacePath, ".conductor", "settings.yaml");
     if (existsSyncFn(settingsPath)) {
@@ -1277,15 +1343,28 @@ export function startDaemon(config = {}, deps = {}) {
     }
   }
 
-  function readProjectWorktreeSettings(projectWorkspacePath) {
-    const settingsCandidates = [
-      path.join(projectWorkspacePath, ".conductor", "settings.yaml"),
-      path.join(projectWorkspacePath, ".conductor", "settings.yml"),
-      path.join(projectWorkspacePath, ".conductor", "setttings.yaml"),
-      path.join(projectWorkspacePath, ".conductor", "setttings.yml"),
-    ];
+  function readProjectIconSetting(projectWorkspacePath) {
+    for (const settingsPath of getProjectSettingsCandidates(projectWorkspacePath)) {
+      if (!existsSyncFn(settingsPath)) {
+        continue;
+      }
+      let rawIcon = null;
+      try {
+        rawIcon = extractProjectIconFromSettings(yaml.load(readFileSyncFn(settingsPath, "utf8")));
+      } catch {
+        return null;
+      }
+      if (!rawIcon) return null;
+      if (!projectIconLooksLikeFilesystemPath(rawIcon)) {
+        return rawIcon;
+      }
+      return readProjectIconAsDataUri(path.dirname(settingsPath), rawIcon);
+    }
+    return null;
+  }
 
-    for (const settingsPath of settingsCandidates) {
+  function readProjectWorktreeSettings(projectWorkspacePath) {
+    for (const settingsPath of getProjectSettingsCandidates(projectWorkspacePath)) {
       if (!existsSyncFn(settingsPath)) {
         continue;
       }
@@ -4338,6 +4417,7 @@ export function startDaemon(config = {}, deps = {}) {
       lastCommit: null,
       lastCommitAt: null,
       fileCount: null,
+      icon: null,
       error: null,
       errorCode: null,
       validatedAt,
@@ -4391,6 +4471,7 @@ export function startDaemon(config = {}, deps = {}) {
             typeof snapshot?.fileCount === "number" && Number.isInteger(snapshot.fileCount)
               ? snapshot.fileCount
               : null,
+          icon: readProjectIconSetting(effectiveWorkspace),
         };
       }
     } catch (error) {
@@ -4414,6 +4495,7 @@ export function startDaemon(config = {}, deps = {}) {
           last_commit_at: result.lastCommitAt,
           git_remote_url: result.gitRemoteUrl,
           file_count: result.fileCount,
+          icon: result.icon,
           error: result.error,
           error_code: result.errorCode,
           validated_at: result.validatedAt,
