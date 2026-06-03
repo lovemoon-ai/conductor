@@ -155,8 +155,8 @@ model CollaborationMember {
 model Issue {
   id            String   @id @default(uuid())
   projectId     String   @map("project_id")
-  ownerUserId   String   @map("owner_user_id")
-  creatorUserId String   @map("creator_user_id")
+  ownerUserId   String?  @map("owner_user_id")
+  creatorUserId String?  @map("creator_user_id")
   title         String
   description   String?
   status        String   @default("backlog")
@@ -169,8 +169,8 @@ model Issue {
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  owner   User    @relation("IssueOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
-  creator User    @relation("IssueCreator", fields: [creatorUserId], references: [id], onDelete: Cascade)
+  owner   User?   @relation("IssueOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  creator User?   @relation("IssueCreator", fields: [creatorUserId], references: [id], onDelete: Cascade)
   tasks   Task[]
 
   @@index([projectId])
