@@ -14,6 +14,34 @@ if [ ! -f $env ]; then
     exit 1
 fi
 
+# Reject builds where both web/.env and web/.env.production.local exist.
+#
+# Background: production uses ONE env file, .env.production.local.
+# server.ts loads that one explicitly; Next.js's loadEnvConfig also
+# loads .env underneath whether we want it to or not. When both files
+# are present and drift apart (which happens silently because both are
+# gitignored — nothing flags it), the older .env can reverse-shadow
+# .env.production.local through Next's env precedence. A 2026-06-06
+# incident wasted an afternoon on this when a stale .env masked a new
+# SSO client added to .env.production.local. One source of truth, full
+# stop.
+if [[ -f web/.env && -f web/.env.production.local ]]; then
+    cat >&2 <<'GUARD'
+❌ Both web/.env and web/.env.production.local exist on this machine.
+
+   Production uses only .env.production.local. Having .env alongside it
+   is a known foot-gun: when the two drift, Next.js's loadEnvConfig can
+   silently shadow your new values with stale ones from .env. Pick one:
+
+     mv web/.env web/.env.deleted-$(date +%s)   # if you want a backup
+     # OR
+     rm web/.env
+
+   Then re-run this script.
+GUARD
+    exit 1
+fi
+
 echo "🚀 Starting Conductor Web on Volcengine..."
 
 # 0. Pre-deploy guard: warn (do not block) if there are pending changesets.
