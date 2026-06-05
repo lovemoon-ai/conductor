@@ -10,6 +10,8 @@ import {
   resolvePtyAgentHost,
   type ConnectedAgent,
 } from "@/lib/tasks/pty-runtime";
+import { resolveTaskWorktreeCwdFromLaunchConfig } from "@/lib/tasks/worktree";
+import { isConductorFireHost } from "@/lib/subscription/plan-limits";
 import {
   normalizeOptionalString,
   normalizeTaskStatus,
@@ -356,6 +358,12 @@ export const createAttachedTerminalRecord = async (args: {
  * own agentHost so the terminal lands in the same environment. If that host
  * is not currently online with the pty_task capability we fall back to
  * picking a PTY-capable agent — same algorithm as standalone PTY tasks.
+ *
+ * Conductor-fire hosts are skipped because the fire SDK does not advertise
+ * the `pty_task` capability — fire is a short-lived per-task process that
+ * tunnels SDK commands, not a long-running daemon. For an AI task bound to
+ * a fire host we fall back to the project's owning daemon (which has the
+ * same workspace path on disk in the typical local-daemon-plus-fire setup).
  */
 export const resolveAttachedTerminalAgentHost = (args: {
   userId: string;
@@ -366,7 +374,15 @@ export const resolveAttachedTerminalAgentHost = (args: {
   | { agentHost: string }
   | { error: string; status: number } => {
   const connectedAgents = realtimeHub.getAgentsForUser(args.userId) as ConnectedAgent[];
-  const preferred = args.aiTaskAgentHost ?? args.projectDaemonHost ?? null;
+  const candidateAiHost =
+    args.aiTaskAgentHost && !isConductorFireHost(args.aiTaskAgentHost)
+      ? args.aiTaskAgentHost
+      : null;
+  const candidateDaemonHost =
+    args.projectDaemonHost && !isConductorFireHost(args.projectDaemonHost)
+      ? args.projectDaemonHost
+      : null;
+  const preferred = candidateAiHost ?? candidateDaemonHost ?? null;
   const result = resolvePtyAgentHost({
     connectedAgents,
     requestedAgentHost: preferred,
@@ -415,12 +431,27 @@ export const ATTACHED_TERMINAL_SCHEMA_UNAVAILABLE_MESSAGE =
 
 export { isMissingAttachedTerminalSchemaError };
 
+/**
+ * Build the PTY launch_config that should be inherited from the AI task it
+ * is attaching to. The terminal must open in the *same* on-disk directory
+ * the AI task is running in:
+ *
+ * 1. If the AI task uses a worktree, mirror the daemon's path math
+ *    (`projectWorkspacePath/.conductor/worktrees/<branch>[/projectRelativePath]`).
+ *    Without this the terminal would land in the project root and the user
+ *    would see different files than the AI task is editing.
+ * 2. Otherwise honour an explicit `launch_config.cwd` (set by the AI task
+ *    create endpoint for ordinary, non-worktree projects).
+ * 3. Fall back to the bound project's workspacePath.
+ */
 export const inheritPtyLaunchConfigFromAiTask = (
   aiTaskLaunchConfig: unknown,
   projectWorkspacePath: string | null,
 ): JsonObject | null => {
   const aiConfig = parseJsonObject(aiTaskLaunchConfig);
+  const worktreeCwd = resolveTaskWorktreeCwdFromLaunchConfig(aiTaskLaunchConfig);
   const cwd =
+    worktreeCwd ??
     normalizeOptionalString(aiConfig?.cwd) ??
     normalizeOptionalString(projectWorkspacePath);
   if (!cwd) return null;

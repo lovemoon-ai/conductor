@@ -249,6 +249,66 @@ describe("/api/tasks/[taskId]/terminal", () => {
       });
       expect(response.status).toBe(404);
     });
+
+    it("routes the PTY to the project daemon when the AI task is bound to a conductor-fire host", async () => {
+      // Fire-bound AI task: agentHost is the short-lived fire process, the
+      // long-running daemon lives at `project.daemonHost`. The PTY must land
+      // on the daemon — fire does not advertise `pty_task`.
+      vi.mocked(db.task.findFirst).mockResolvedValue({
+        ...aiTaskFixture,
+        agentHost: "conductor-fire-unknown-host-53658",
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        url: "http://localhost/api/tasks/ai-1/terminal",
+        token,
+        body: {},
+      });
+      const response = await POST(request, {
+        params: Promise.resolve({ taskId: "ai-1" }),
+      });
+      expect(response.status).toBe(201);
+      // PTY task row gets the daemon host, not the fire host.
+      const createArgs = vi.mocked(db.task.create).mock.calls[0]?.[0] as any;
+      expect(createArgs?.data?.agentHost).toBe("host.local");
+    });
+
+    it("inherits the worktree cwd from a worktree AI task so the terminal opens in the same on-disk directory", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue({
+        ...aiTaskFixture,
+        launchConfig: JSON.stringify({
+          worktree: true,
+          worktreeId: "ai-1",
+          worktreeBranch: "feature/login",
+          worktreeBaseRef: "main",
+          projectRepoRoot: "/repo",
+          projectWorkspacePath: "/repo",
+          projectRelativePath: ".",
+        }),
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        url: "http://localhost/api/tasks/ai-1/terminal",
+        token,
+        body: {},
+      });
+      const response = await POST(request, {
+        params: Promise.resolve({ taskId: "ai-1" }),
+      });
+      expect(response.status).toBe(201);
+      // PtySession seed carries the resolved worktree cwd (`/`-separated
+      // because the sample paths are POSIX). The path math mirrors
+      // `cli/src/daemon.js buildTaskWorktreeRoot` — sanitize "/" to "_".
+      const ptySessionArgs = vi.mocked(db.ptySession.create).mock.calls[0]?.[0] as any;
+      expect(ptySessionArgs?.data?.cwd).toBe("/repo/.conductor/worktrees/feature_login");
+      const taskArgs = vi.mocked(db.task.create).mock.calls[0]?.[0] as any;
+      const taskLaunchConfig = JSON.parse(taskArgs?.data?.launchConfig ?? "{}");
+      expect(taskLaunchConfig.cwd).toBe("/repo/.conductor/worktrees/feature_login");
+    });
   });
 
   describe("GET", () => {

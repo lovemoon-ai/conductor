@@ -118,6 +118,38 @@ export const getTaskWorktreeRootKey = (launchConfig: unknown): string | null => 
   return `${sanitizeWorktreeFolderName(parsed.worktreeBranch)}\u0000${parsed.projectWorkspacePath}`;
 };
 
+/**
+ * Resolve the actual on-disk working directory for an AI task whose
+ * launch_config describes a worktree. Mirrors the daemon-side path math in
+ * `cli/src/daemon.js` (`buildTaskWorktreeRoot` + `resolveTaskWorktreeCwd`) so
+ * that an attached PTY can land in the *same* directory the AI task is
+ * running in.
+ *
+ * Returns null when the launch_config does not describe a worktree (the
+ * caller falls back to `launch_config.cwd` / projectWorkspacePath in that
+ * case).
+ */
+export const resolveTaskWorktreeCwdFromLaunchConfig = (
+  launchConfig: unknown,
+): string | null => {
+  const parsed = parseTaskWorktreeLaunchConfig(launchConfig);
+  if (!parsed) {
+    return null;
+  }
+  const pathApi = selectPathApi(parsed.projectWorkspacePath, parsed.projectRelativePath);
+  const folder = sanitizeWorktreeFolderName(parsed.worktreeBranch);
+  const worktreeRoot = pathApi.join(
+    parsed.projectWorkspacePath,
+    ".conductor",
+    "worktrees",
+    folder,
+  );
+  if (!parsed.projectRelativePath || parsed.projectRelativePath === ".") {
+    return worktreeRoot;
+  }
+  return pathApi.join(worktreeRoot, parsed.projectRelativePath);
+};
+
 export const resolveTaskWorktreeCleanupHost = (args: {
   boundHost?: unknown;
   agentHost?: unknown;
