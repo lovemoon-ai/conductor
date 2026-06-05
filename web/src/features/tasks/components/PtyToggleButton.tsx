@@ -45,7 +45,7 @@ export function PtyToggleButton({
   const toggle = usePtyToggleStore((s) => s.toggle);
   const clearActive = usePtyToggleStore((s) => s.clear);
 
-  const fetchTasks = useTasksStore((s) => s.fetchTasks);
+  const fetchTask = useTasksStore((s) => s.fetchTask);
   const { pushToast } = useToast();
 
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -123,7 +123,12 @@ export function PtyToggleButton({
       await api.delete(`/tasks/${aiTaskId}/terminal`);
       clearActive(aiTaskId);
       setConfirmDelete(false);
-      await fetchTasks(undefined, { recoverStale: false }).catch(() => {});
+      // Refetch *this AI task only* so the now-cleared `attachedTerminal`
+      // lands in the store and the chip disappears without a manual reload.
+      // A bare `fetchTasks(undefined)` would be discarded by the store's
+      // race guard whenever a project filter is active (the normal case
+      // when viewing tasks under a specific project).
+      await fetchTask(aiTaskId).catch(() => {});
     } catch (error) {
       pushToast({
         title: 'Failed to delete terminal',
@@ -133,7 +138,7 @@ export function PtyToggleButton({
     } finally {
       setIsDeleting(false);
     }
-  }, [aiTaskId, clearActive, fetchTasks, isDeleting, pushToast]);
+  }, [aiTaskId, clearActive, fetchTask, isDeleting, pushToast]);
 
   const handleClick = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {

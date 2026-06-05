@@ -271,7 +271,7 @@ export function TaskItem({
   const dismissedStatusConfirmationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusBadgeRef = useRef<HTMLDivElement | null>(null);
 
-  const { updateTask, restartTask, deleteTask, markTaskRead, fetchTasks } = useTasksStore();
+  const { updateTask, restartTask, deleteTask, markTaskRead, fetchTask } = useTasksStore();
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
 
@@ -720,7 +720,14 @@ export function TaskItem({
       await api.post(`/tasks/${task.id}/terminal`, {});
       // Default to showing the new terminal — the user just asked for it.
       setPtyActive(task.id, true);
-      await fetchTasks(undefined, { recoverStale: false }).catch(() => {});
+      // Refetch *this AI task only* so its `attachedTerminal` field lands in
+      // the store and the PTY chip appears without a manual refresh. We used
+      // to call `fetchTasks(undefined)` here, but the tasks page sets
+      // `currentProjectFilter` from the URL `projectId`; the store's race
+      // guard in `fetchTasks` discards a no-filter response whenever a
+      // project filter is active, so the new `attachedTerminal` never made
+      // it into the UI until the user reloaded.
+      await fetchTask(task.id).catch(() => {});
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to attach terminal';
       pushToast({
