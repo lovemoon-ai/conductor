@@ -28,6 +28,25 @@ let projectsState: {
 };
 
 vi.mock('../store', () => ({
+  orderTasksWithPinnedFirst: <T extends { metadata?: Record<string, unknown> | null }>(tasks: T[]): T[] =>
+    tasks
+      .map((task, index) => {
+        const value = task.metadata?.pinnedAt;
+        const pinnedAt = typeof value === 'string' && Number.isFinite(Date.parse(value))
+          ? Date.parse(value)
+          : null;
+        return { task, index, pinnedAt };
+      })
+      .sort((left, right) => {
+        if (left.pinnedAt !== null && right.pinnedAt !== null) {
+          const pinnedDelta = right.pinnedAt - left.pinnedAt;
+          return pinnedDelta !== 0 ? pinnedDelta : left.index - right.index;
+        }
+        if (left.pinnedAt !== null) return -1;
+        if (right.pinnedAt !== null) return 1;
+        return left.index - right.index;
+      })
+      .map(({ task }) => task),
   useTasksStore: (selector?: (state: typeof tasksState) => unknown) =>
     typeof selector === 'function' ? selector(tasksState) : tasksState,
 }));
@@ -136,6 +155,45 @@ describe('TaskList', () => {
     expect(screen.getByText('Task One:idle')).toBeInTheDocument();
     expect(screen.getByText('Task Three:idle')).toBeInTheDocument();
     expect(screen.queryByText('Task Two:idle')).toBeNull();
+  });
+
+  it('keeps pinned tasks above updated-at order and sorts pins by pin time', () => {
+    tasksState = {
+      ...tasksState,
+      tasks: [
+        {
+          id: 'task-unpinned-new',
+          title: 'Unpinned New',
+          projectId: 'project-1',
+          status: 'running',
+          metadata: null,
+        },
+        {
+          id: 'task-pinned-old',
+          title: 'Pinned Old',
+          projectId: 'project-1',
+          status: 'running',
+          metadata: { pinnedAt: '2024-01-01T00:00:00.000Z' },
+        },
+        {
+          id: 'task-pinned-new',
+          title: 'Pinned New',
+          projectId: 'project-1',
+          status: 'running',
+          metadata: { pinnedAt: '2024-01-02T00:00:00.000Z' },
+        },
+      ],
+    };
+
+    render(<TaskList viewMode="list" projectFilter="project-1" />);
+
+    const renderedIds = Array.from(document.querySelectorAll('[data-testid^="task-item-"]'))
+      .map((node) => node.getAttribute('data-testid'));
+    expect(renderedIds).toEqual([
+      'task-item-task-pinned-new',
+      'task-item-task-pinned-old',
+      'task-item-task-unpinned-new',
+    ]);
   });
 
   describe('project name / daemon host chip visibility', () => {

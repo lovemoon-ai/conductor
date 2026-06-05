@@ -283,6 +283,49 @@ describe('tasks store', () => {
     });
   });
 
+  it('orders fetched pinned tasks before unpinned tasks by pin time', async () => {
+    mockGet.mockResolvedValueOnce([
+      {
+        id: 'task-unpinned-new',
+        project_id: 'proj-1',
+        title: 'Unpinned New',
+        task_type: 'ai_task',
+        status: 'running',
+        metadata: null,
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:03:00.000Z',
+      },
+      {
+        id: 'task-pinned-old',
+        project_id: 'proj-1',
+        title: 'Pinned Old',
+        task_type: 'ai_task',
+        status: 'running',
+        metadata: { pinnedAt: '2024-01-01T00:00:00.000Z' },
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:01:00.000Z',
+      },
+      {
+        id: 'task-pinned-new',
+        project_id: 'proj-1',
+        title: 'Pinned New',
+        task_type: 'ai_task',
+        status: 'running',
+        metadata: { pinnedAt: '2024-01-02T00:00:00.000Z' },
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:02:00.000Z',
+      },
+    ]);
+
+    await useTasksStore.getState().fetchTasks();
+
+    expect(useTasksStore.getState().tasks.map((task) => task.id)).toEqual([
+      'task-pinned-new',
+      'task-pinned-old',
+      'task-unpinned-new',
+    ]);
+  });
+
   it('fetches task detail and upserts persisted pty_session data', async () => {
     useTasksStore.setState({
       tasks: [
