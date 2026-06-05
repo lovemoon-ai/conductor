@@ -140,8 +140,12 @@ else
 fi
 
 echo "Using nohup..."
-pkill -f "tsx server.ts" || true
-pkill -f "web/server.ts" || true
+# IMPORTANT: scope the pkill to conductor's own install path so we do
+# NOT kill sibling apps on the same box (e.g. operator, which runs its
+# own `tsx server.ts` out of /opt/conductor/operator/web/app). Without
+# this anchor the regex matches both processes and a conductor deploy
+# would take operator offline until its systemd unit restarted.
+pkill -f "/opt/conductor/conductor/.*server\.ts" || true
 sleep 1
 nohup npm --prefix web run start > $LOG 2>&1 &
 echo "Started with PID: $!"
