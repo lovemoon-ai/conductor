@@ -8,6 +8,10 @@ vi.mock('@/lib/db', () => ({
     message: { create: vi.fn(), findMany: vi.fn() },
     $transaction: vi.fn(),
     user: { findUnique: vi.fn() },
+    attachedTerminal: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
   },
 }));
 
