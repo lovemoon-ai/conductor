@@ -275,6 +275,84 @@ describe("/api/tasks/[taskId]/terminal", () => {
       expect(createArgs?.data?.agentHost).toBe("host.local");
     });
 
+    it("rejects with 409 when the AI task is fire-bound and no real daemon exists for the project", async () => {
+      // Fire-only setup: the AI task ran under conductor-fire AND the
+      // project itself was registered by fire (no real daemon ever bound).
+      // Falling back to "any PTY-capable agent" in the user's pool would
+      // silently land the terminal on a different machine. We must refuse
+      // instead, with a message that tells the user to start a daemon.
+      vi.mocked(db.task.findFirst).mockResolvedValue({
+        ...aiTaskFixture,
+        agentHost: "conductor-fire-unknown-host-53658",
+        project: {
+          daemonHost: "conductor-fire-unknown-host-53658",
+          workspacePath: "/repo",
+        },
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        url: "http://localhost/api/tasks/ai-1/terminal",
+        token,
+        body: {},
+      });
+      const response = await POST(request, {
+        params: Promise.resolve({ taskId: "ai-1" }),
+      });
+      expect(response.status).toBe(409);
+      const data = await extractJson(response);
+      expect(String(data.error)).toMatch(/conductor daemon/i);
+      // The PTY task must not have been created.
+      expect(vi.mocked(db.task.create)).not.toHaveBeenCalled();
+    });
+
+    it("forwards env and shell from the AI task's launchConfig into the PTY launch_config", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue({
+        ...aiTaskFixture,
+        launchConfig: JSON.stringify({
+          cwd: "/repo",
+          env: { FOO: "bar", PATH: "/custom/bin:/usr/bin" },
+          shell: "/bin/zsh",
+          // AI-only fields below must NOT cross over to the PTY.
+          backendType: "claude",
+          initialContent: "hi",
+          command: "claude",
+          args: ["chat"],
+          entrypoint_type: "ai-cli",
+          tool_preset: "claude-default",
+        }),
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        url: "http://localhost/api/tasks/ai-1/terminal",
+        token,
+        body: {},
+      });
+      const response = await POST(request, {
+        params: Promise.resolve({ taskId: "ai-1" }),
+      });
+      expect(response.status).toBe(201);
+
+      const taskArgs = vi.mocked(db.task.create).mock.calls[0]?.[0] as any;
+      const taskLaunchConfig = JSON.parse(taskArgs?.data?.launchConfig ?? "{}");
+      expect(taskLaunchConfig.cwd).toBe("/repo");
+      expect(taskLaunchConfig.env).toEqual({
+        FOO: "bar",
+        PATH: "/custom/bin:/usr/bin",
+      });
+      expect(taskLaunchConfig.shell).toBe("/bin/zsh");
+      // AI-only fields must NOT leak into the PTY launch_config.
+      expect(taskLaunchConfig.backendType).toBeUndefined();
+      expect(taskLaunchConfig.initialContent).toBeUndefined();
+      expect(taskLaunchConfig.command).toBeUndefined();
+      expect(taskLaunchConfig.args).toBeUndefined();
+      expect(taskLaunchConfig.entrypoint_type).toBeUndefined();
+      expect(taskLaunchConfig.tool_preset).toBeUndefined();
+    });
+
     it("inherits the worktree cwd from a worktree AI task so the terminal opens in the same on-disk directory", async () => {
       vi.mocked(db.task.findFirst).mockResolvedValue({
         ...aiTaskFixture,

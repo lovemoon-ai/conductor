@@ -364,6 +364,13 @@ export const createAttachedTerminalRecord = async (args: {
  * tunnels SDK commands, not a long-running daemon. For an AI task bound to
  * a fire host we fall back to the project's owning daemon (which has the
  * same workspace path on disk in the typical local-daemon-plus-fire setup).
+ *
+ * Cross-host safety: when the only candidates we have are fire hosts (and
+ * thus get filtered out), we explicitly REFUSE to fall back to "any
+ * PTY-capable agent". A PTY-capable daemon on a *different machine* would
+ * spawn the terminal in an unrelated workspace path, silently surprising
+ * the user. In that case we surface a 409 telling them to start a daemon
+ * on the host where the AI task is actually running.
  */
 export const resolveAttachedTerminalAgentHost = (args: {
   userId: string;
@@ -374,15 +381,29 @@ export const resolveAttachedTerminalAgentHost = (args: {
   | { agentHost: string }
   | { error: string; status: number } => {
   const connectedAgents = realtimeHub.getAgentsForUser(args.userId) as ConnectedAgent[];
+  const aiHostWasFire = isConductorFireHost(args.aiTaskAgentHost);
+  const daemonHostWasFire = isConductorFireHost(args.projectDaemonHost);
   const candidateAiHost =
-    args.aiTaskAgentHost && !isConductorFireHost(args.aiTaskAgentHost)
-      ? args.aiTaskAgentHost
-      : null;
+    args.aiTaskAgentHost && !aiHostWasFire ? args.aiTaskAgentHost : null;
   const candidateDaemonHost =
-    args.projectDaemonHost && !isConductorFireHost(args.projectDaemonHost)
-      ? args.projectDaemonHost
-      : null;
+    args.projectDaemonHost && !daemonHostWasFire ? args.projectDaemonHost : null;
   const preferred = candidateAiHost ?? candidateDaemonHost ?? null;
+
+  // If we filtered every candidate out *because* it was a fire host, that
+  // means the project is fire-only (no real daemon ever bound to it).
+  // `resolvePtyAgentHost` with `requestedAgentHost: null` would pick any
+  // online PTY agent in the user's pool — almost certainly on a different
+  // machine, so the terminal would land in a directory that has nothing
+  // to do with the AI task. Reject loudly instead.
+  if (!preferred && (aiHostWasFire || daemonHostWasFire)) {
+    return {
+      error:
+        "No conductor daemon is running on the host where this task lives. " +
+        "Start `conductor daemon` on that host, then try again.",
+      status: 409,
+    };
+  }
+
   const result = resolvePtyAgentHost({
     connectedAgents,
     requestedAgentHost: preferred,
@@ -432,6 +453,30 @@ export const ATTACHED_TERMINAL_SCHEMA_UNAVAILABLE_MESSAGE =
 export { isMissingAttachedTerminalSchemaError };
 
 /**
+ * PTY-relevant launch_config keys that we forward from an AI task onto its
+ * attached terminal. Keep this list deliberately narrow:
+ *
+ * - `env` / `shell` shape the PTY child process. If the AI task pinned a
+ *   custom shell or extra env, the terminal should match so commands
+ *   behave the same in both panels.
+ *
+ * Explicitly NOT inherited (any of these on the AI task is AI-runner
+ * configuration, not terminal configuration):
+ *
+ * - `command` / `args` — the PTY must default to an interactive shell,
+ *   never re-run the AI backend.
+ * - `entrypoint_type` / `entrypointType` / `tool_preset` / `toolPreset` —
+ *   pick a backend for the AI task, irrelevant to a shell.
+ * - `cols` / `rows` — the terminal client supplies a real size on attach;
+ *   inheriting an AI-side stale value would just be overwritten anyway.
+ * - `backendType`, `initialContent`, `resumeSessionId`, `sessionFilePath`,
+ *   worktree fields — AI-only state. Worktree is reflected via the
+ *   resolved cwd below; the daemon does not understand worktree config
+ *   for PTY tasks.
+ */
+const PTY_INHERITABLE_LAUNCH_CONFIG_KEYS = ["env", "shell"] as const;
+
+/**
  * Build the PTY launch_config that should be inherited from the AI task it
  * is attaching to. The terminal must open in the *same* on-disk directory
  * the AI task is running in:
@@ -443,6 +488,10 @@ export { isMissingAttachedTerminalSchemaError };
  * 2. Otherwise honour an explicit `launch_config.cwd` (set by the AI task
  *    create endpoint for ordinary, non-worktree projects).
  * 3. Fall back to the bound project's workspacePath.
+ *
+ * In addition we forward a small whitelist of PTY-shaping fields
+ * (`PTY_INHERITABLE_LAUNCH_CONFIG_KEYS`). See the constant above for the
+ * exact rationale per field.
  */
 export const inheritPtyLaunchConfigFromAiTask = (
   aiTaskLaunchConfig: unknown,
@@ -455,5 +504,14 @@ export const inheritPtyLaunchConfigFromAiTask = (
     normalizeOptionalString(aiConfig?.cwd) ??
     normalizeOptionalString(projectWorkspacePath);
   if (!cwd) return null;
-  return { cwd };
+
+  const inherited: JsonObject = { cwd };
+  if (aiConfig) {
+    for (const key of PTY_INHERITABLE_LAUNCH_CONFIG_KEYS) {
+      const value = aiConfig[key];
+      if (value === undefined || value === null) continue;
+      inherited[key] = value as JsonObject[string];
+    }
+  }
+  return inherited;
 };

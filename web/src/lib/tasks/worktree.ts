@@ -125,6 +125,17 @@ export const getTaskWorktreeRootKey = (launchConfig: unknown): string | null => 
  * that an attached PTY can land in the *same* directory the AI task is
  * running in.
  *
+ * Cross-platform contract: the daemon's `buildTaskWorktreeRoot` uses Node's
+ * runtime-default `path` module (POSIX on macOS/Linux, win32 on Windows).
+ * The daemon itself is the source of truth for which separator is correct.
+ * We approximate it with `selectPathApi`, which inspects the string shape of
+ * the inputs (`isWindowsStylePath`) — that is faithful for any path the
+ * daemon previously stored in its native style, which is the only way these
+ * launch_config fields are populated today. If a future feature ever stores
+ * a POSIX-shaped string from a Windows daemon (or vice versa), this helper
+ * and the daemon will diverge — keep them in sync, or have the daemon round
+ * trip its `process.platform` choice through launch_config.
+ *
  * Returns null when the launch_config does not describe a worktree (the
  * caller falls back to `launch_config.cwd` / projectWorkspacePath in that
  * case).
