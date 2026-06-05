@@ -46,7 +46,7 @@ export function PtyToggleButton({
   const clearActive = usePtyToggleStore((s) => s.clear);
 
   const fetchTasks = useTasksStore((s) => s.fetchTasks);
-  const showToast = useToast();
+  const { pushToast } = useToast();
 
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -125,7 +125,7 @@ export function PtyToggleButton({
       setConfirmDelete(false);
       await fetchTasks(undefined, { recoverStale: false }).catch(() => {});
     } catch (error) {
-      showToast({
+      pushToast({
         title: 'Failed to delete terminal',
         description: error instanceof Error ? error.message : 'Unknown error',
         variant: 'error',
@@ -133,7 +133,7 @@ export function PtyToggleButton({
     } finally {
       setIsDeleting(false);
     }
-  }, [aiTaskId, clearActive, fetchTasks, isDeleting, showToast]);
+  }, [aiTaskId, clearActive, fetchTasks, isDeleting, pushToast]);
 
   const handleClick = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {
