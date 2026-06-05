@@ -54,6 +54,10 @@ vi.mock("@/lib/db", () => ({
     user: {
       findUnique: vi.fn(),
     },
+    attachedTerminal: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findUnique: vi.fn().mockResolvedValue(null),
+    },
   },
 }));
 
@@ -88,6 +92,8 @@ describe("/api/tasks", () => {
           : callback,
     );
     vi.mocked(db.task.findMany).mockResolvedValue([]);
+    vi.mocked(db.attachedTerminal.findMany).mockResolvedValue([]);
+    vi.mocked(db.attachedTerminal.findUnique).mockResolvedValue(null);
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([]);
     vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
     vi.mocked(realtimeHub.getAgentDisconnectAt).mockReturnValue(null);

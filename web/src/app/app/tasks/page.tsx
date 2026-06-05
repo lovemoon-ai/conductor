@@ -103,9 +103,30 @@ function TasksPageContent() {
     return projectId ? [projectId] : [];
   }, [isMergedGroup, currentGroupMemberIds, projectId]);
   const projectScopeKey = useMemo(() => projectScope.slice().sort().join(','), [projectScope]);
+  // Defense-in-depth: even though the server-side list endpoint already
+  // hides PTY tasks that are bound to an AI task via AttachedTerminal, any
+  // single-task fetch path (e.g. deep-linking to a PTY id, or a stale WS
+  // payload) could re-introduce the row to the client store. Compute the set
+  // of "claimed" PTY task ids from the AI tasks that own them and filter
+  // those out before any downstream count/filter sees them.
+  const attachedPtyTaskIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const t of tasks) {
+      const claimed = t.attachedTerminal?.ptyTaskId;
+      if (claimed) ids.add(claimed);
+    }
+    return ids;
+  }, [tasks]);
+  const tasksWithoutAttachedPty = useMemo(
+    () =>
+      attachedPtyTaskIds.size === 0
+        ? tasks
+        : tasks.filter((t) => !attachedPtyTaskIds.has(t.id)),
+    [tasks, attachedPtyTaskIds],
+  );
   const projectVisibleTasks = useMemo(
-    () => filterTasksByProject(tasks, projectScope.length > 0 ? projectScope : null, hiddenProjectIds),
-    [tasks, projectScope, hiddenProjectIds],
+    () => filterTasksByProject(tasksWithoutAttachedPty, projectScope.length > 0 ? projectScope : null, hiddenProjectIds),
+    [tasksWithoutAttachedPty, projectScope, hiddenProjectIds],
   );
   const runningFilteredTasks = useMemo(
     () => showRunningOnly

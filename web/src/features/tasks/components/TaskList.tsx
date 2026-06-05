@@ -86,9 +86,30 @@ export function TaskList({
   const animationFrameRef = useRef<number | null>(null);
   const effectiveProjectFilter: string | string[] | null =
     projectFilter !== undefined ? projectFilter : currentProjectFilter;
+  // Hide PTY tasks that are bound to an AI task via AttachedTerminal. The
+  // server-side list endpoint already excludes them, but a single-task fetch
+  // (e.g. opening the PTY view in TaskDetailPane triggers an /api/tasks/[id]
+  // call that may land in the store via fetchTask) can re-introduce the
+  // row. This defensive filter ensures both the rendered list AND the
+  // header count derived in tasks/page.tsx agree.
+  const attachedPtyTaskIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const t of tasks) {
+      const claimed = t.attachedTerminal?.ptyTaskId;
+      if (claimed) ids.add(claimed);
+    }
+    return ids;
+  }, [tasks]);
+  const tasksWithoutAttachedPty = useMemo(
+    () =>
+      attachedPtyTaskIds.size === 0
+        ? tasks
+        : tasks.filter((t) => !attachedPtyTaskIds.has(t.id)),
+    [tasks, attachedPtyTaskIds],
+  );
   const projectVisibleTasks = useMemo(
-    () => filterTasksByProject(tasks, effectiveProjectFilter, hiddenProjectIds),
-    [tasks, effectiveProjectFilter, hiddenProjectIds],
+    () => filterTasksByProject(tasksWithoutAttachedPty, effectiveProjectFilter, hiddenProjectIds),
+    [tasksWithoutAttachedPty, effectiveProjectFilter, hiddenProjectIds],
   );
   // Normalize the filter to an id list so derived rendering helpers can treat
   // single- and merged-group cases uniformly.

@@ -224,11 +224,37 @@ model Task {
   channelConversations ChannelConversation[]
   channelOutboxEntries ChannelOutbox[]
   sharedTasks SharedTask[]
+  /// One-to-one back-reference: this AI task may have one attached terminal
+  /// (the relationship row, not the PTY task itself).
+  attachedAsAiTask  AttachedTerminal? @relation("AttachedTerminalAiTask")
+  /// One-to-one back-reference: this PTY task may be attached to one AI task.
+  attachedAsPtyTask AttachedTerminal? @relation("AttachedTerminalPtyTask")
 
   @@index([projectId])
   @@index([issueId])
   @@index([executionHost])
   @@map("tasks")
+}
+
+/// Relationship row binding an AI task to a PTY task that serves as its
+/// in-place terminal. The PTY itself remains a regular Task(task_type=pty_task)
+/// so the daemon protocol, websocket routing, and TerminalView all stay
+/// untouched. This table is the single source of truth for the attachment;
+/// the main task list query is the only place that needs to filter PTY tasks
+/// appearing as ptyTaskId out of the top-level list.
+model AttachedTerminal {
+  id        String   @id @default(uuid())
+  aiTaskId  String   @unique @map("ai_task_id")
+  ptyTaskId String   @unique @map("pty_task_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  aiTask  Task @relation("AttachedTerminalAiTask",  fields: [aiTaskId],  references: [id], onDelete: Cascade)
+  ptyTask Task @relation("AttachedTerminalPtyTask", fields: [ptyTaskId], references: [id], onDelete: Cascade)
+
+  @@index([aiTaskId])
+  @@index([ptyTaskId])
+  @@map("attached_terminals")
 }
 
 model PtySession {

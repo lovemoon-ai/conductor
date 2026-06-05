@@ -81,6 +81,10 @@ vi.mock("@/lib/db", () => ({
     user: {
       findUnique: vi.fn(),
     },
+    attachedTerminal: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
   },
 }));
 
@@ -98,6 +102,8 @@ const prismaError = (code: string, message: string) =>
 describe("/api/tasks/[taskId]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.attachedTerminal.findUnique).mockResolvedValue(null);
+    vi.mocked(db.attachedTerminal.findMany).mockResolvedValue([]);
     vi.spyOn(authService, "authenticateToken").mockResolvedValue({
       id: "user-1",
       email: "test@example.com",

@@ -24,6 +24,12 @@ type SerializablePtySession = {
   updatedAt: Date;
 };
 
+type SerializableAttachedTerminalSummary = {
+  id: string;
+  ptyTaskId: string;
+  ptyTaskStatus: string | null;
+};
+
 type SerializableTask = {
   id: string;
   projectId: string;
@@ -43,6 +49,7 @@ type SerializableTask = {
   createdAt: Date;
   updatedAt: Date;
   ptySession?: SerializablePtySession | null;
+  attachedTerminal?: SerializableAttachedTerminalSummary | null;
 };
 
 const serializePtySession = (ptySession: SerializablePtySession | null) =>
@@ -87,4 +94,13 @@ export const serializeTaskResponse = (task: SerializableTask) => ({
   created_at: task.createdAt.toISOString(),
   updated_at: task.updatedAt.toISOString(),
   pty_session: serializePtySession(task.ptySession ?? null),
+  attached_terminal: task.attachedTerminal
+    ? {
+        id: task.attachedTerminal.id,
+        pty_task_id: task.attachedTerminal.ptyTaskId,
+        pty_task_status: task.attachedTerminal.ptyTaskStatus
+          ? normalizeTaskStatus(task.attachedTerminal.ptyTaskStatus)
+          : null,
+      }
+    : null,
 });

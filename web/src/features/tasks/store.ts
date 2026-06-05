@@ -8,6 +8,7 @@ import type {
   CleanupTaskWorktreeResponse,
 } from '@/shared/types';
 import { getApiClient } from '@/shared/api/client';
+import { usePtyToggleStore } from './pty-toggle-store';
 
 let fetchTasksRequestSequence = 0;
 
@@ -114,6 +115,30 @@ const normalizeProjectIdList = (projectIds: string[]): string[] =>
 const projectScopeKey = (projectIds: string[]): string =>
   normalizeProjectIdList(projectIds).slice().sort().join(',');
 
+const normalizeAttachedTerminal = (raw: any): Task['attachedTerminal'] => {
+  const value = raw ?? null;
+  if (!value || typeof value !== 'object') return null;
+  const id = typeof value.id === 'string' ? value.id : null;
+  const ptyTaskId =
+    typeof value.ptyTaskId === 'string'
+      ? value.ptyTaskId
+      : typeof value.pty_task_id === 'string'
+        ? value.pty_task_id
+        : null;
+  if (!id || !ptyTaskId) return null;
+  const rawStatus =
+    typeof value.ptyTaskStatus === 'string'
+      ? value.ptyTaskStatus
+      : typeof value.pty_task_status === 'string'
+        ? value.pty_task_status
+        : null;
+  return {
+    id,
+    ptyTaskId,
+    ptyTaskStatus: rawStatus ? normalizeTaskStatus(rawStatus) : null,
+  };
+};
+
 export const normalizeTask = (task: any): Task => ({
   id: task.id,
   projectId: task.projectId ?? task.project_id ?? null,
@@ -131,6 +156,7 @@ export const normalizeTask = (task: any): Task => ({
   lastUserMessage: task.lastUserMessage ?? task.last_user_message ?? null,
   lastAssistantMessage: task.lastAssistantMessage ?? task.last_assistant_message ?? null,
   ptySession: normalizePtySession(task.ptySession ?? task.pty_session),
+  attachedTerminal: normalizeAttachedTerminal(task.attachedTerminal ?? task.attached_terminal),
   createdAt: task.createdAt ?? task.created_at ?? new Date().toISOString(),
   updatedAt: task.updatedAt ?? task.updated_at ?? null,
 });
@@ -170,10 +196,33 @@ const upsertTask = (tasks: Task[], task: Task, options?: { moveToFront?: boolean
 
 export const useTasksStore = create<TasksState>()((set, get) => {
   const syncTask = (task: Task, options?: { moveToFront?: boolean }) => {
-    set((state) => ({
-      tasks: upsertTask(state.tasks, task, options),
-      error: null,
-    }));
+    set((state) => {
+      // Root-cause guard: never let an attached PTY task enter the top-level
+      // task list. Two complementary signals catch this in any race order:
+      //   (a) The PTY task's own metadata carries `attachedToAiTaskId` set
+      //       by createAttachedTerminalRecord; this works even when the AI
+      //       task hasn't loaded yet (e.g., WebSocket `task_status_update`
+      //       arrives before the initial list fetch completes).
+      //   (b) Some AI task already in the store claims this PTY via its
+      //       attachedTerminal field; covers legacy PTY tasks that predate
+      //       the metadata stamp.
+      // The attached PTY task is hydrated inside its AI task's detail pane
+      // via a local `api.get` call instead of going through this store.
+      if (task.taskType === 'pty_task') {
+        const ownMetadataClaims =
+          typeof (task.metadata as { attachedToAiTaskId?: unknown })?.attachedToAiTaskId === 'string';
+        const claimedByExistingAi = state.tasks.some(
+          (existing) => existing.attachedTerminal?.ptyTaskId === task.id,
+        );
+        if (ownMetadataClaims || claimedByExistingAi) {
+          return { error: null } as Partial<TasksState>;
+        }
+      }
+      return {
+        tasks: upsertTask(state.tasks, task, options),
+        error: null,
+      };
+    });
   };
 
   const fetchTaskStrict = async (taskId: string) => {
@@ -417,10 +466,12 @@ export const useTasksStore = create<TasksState>()((set, get) => {
       try {
         const api = getApiClient();
         await api.delete(`/tasks/${taskId}`);
-        set((state) => ({
-          tasks: state.tasks.filter((t) => t.id !== taskId),
-          unreadTaskIds: new Set([...state.unreadTaskIds].filter((id) => id !== taskId)),
-        }));
+        // Route through `removeTask` so the attached-terminal cleanup
+        // (clearing the owning AI task's `attachedTerminal` field + the
+        // PTY toggle visibility flag) fires for both code paths. Without
+        // this, deleting the PTY task from TerminalView's toolbar leaves
+        // the AI card showing a stale PTY chip until the next list fetch.
+        get().removeTask(taskId);
       } catch (error) {
         set({
           error: error instanceof Error ? error.message : 'Failed to delete task',
@@ -475,10 +526,37 @@ export const useTasksStore = create<TasksState>()((set, get) => {
       if (!taskId) {
         return;
       }
-      set((state) => ({
-        tasks: state.tasks.filter((task) => task.id !== taskId),
-        unreadTaskIds: new Set([...state.unreadTaskIds].filter((id) => id !== taskId)),
-      }));
+      // Compute the owning AI task id BEFORE the set() call so the cross-
+      // store toggle clear can happen OUTSIDE the reducer body (keeps the
+      // zustand reducer pure — no localStorage side effects from inside
+      // set callbacks that React strict-mode could double-invoke).
+      const owningAiTaskId =
+        get().tasks.find((t) => t.attachedTerminal?.ptyTaskId === taskId)?.id ?? null;
+      set((state) => {
+        let nextTasks = state.tasks.filter((task) => task.id !== taskId);
+        if (owningAiTaskId) {
+          // Clear the owning AI task's `attachedTerminal` so its PTY toggle
+          // chip disappears immediately — without this, deleting the PTY
+          // from TerminalView's toolbar leaves a stale "PTY visible" chip
+          // on the AI task card until the next list refresh.
+          nextTasks = nextTasks.map((t) =>
+            t.id === owningAiTaskId ? { ...t, attachedTerminal: null } : t,
+          );
+        }
+        return {
+          tasks: nextTasks,
+          unreadTaskIds: new Set([...state.unreadTaskIds].filter((id) => id !== taskId)),
+        };
+      });
+      // Side effects (localStorage writes via the toggle store) are kept
+      // OUTSIDE the reducer.
+      if (owningAiTaskId) {
+        usePtyToggleStore.getState().clear(owningAiTaskId);
+      }
+      // Drop any per-task UI state keyed on this id so a future task with
+      // the same id (unlikely but possible after a self-host reset) doesn't
+      // inherit a stale "PTY visible" toggle.
+      usePtyToggleStore.getState().clear(taskId);
     },
 
     clearError: () => set({ error: null }),

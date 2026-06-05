@@ -11,7 +11,9 @@ import type { Task } from '@/shared/types';
 import type { TaskType } from '@/lib/tasks/task-config';
 import { TaskStatusBadge } from './TaskStatusBadge';
 import { RestartTaskControls } from './RestartTaskControls';
+import { PtyToggleButton } from './PtyToggleButton';
 import { useTasksStore } from '../store';
+import { usePtyToggleStore } from '../pty-toggle-store';
 import { getStableTaskBackend } from '../utils/task-filter';
 import { useRuntimeStore } from '@/features/realtime';
 import { getApiClient } from '@/shared/api/client';
@@ -214,6 +216,14 @@ const SelectIcon = ({ selected }: { selected: boolean }) => (
   </svg>
 );
 
+const TerminalIcon = () => (
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <rect x="3" y="5" width="18" height="14" rx="2" strokeWidth={2} />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 10l3 2-3 2" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15h4" />
+  </svg>
+);
+
 export function TaskItem({
   task,
   isUnread,
@@ -261,7 +271,7 @@ export function TaskItem({
   const dismissedStatusConfirmationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusBadgeRef = useRef<HTMLDivElement | null>(null);
 
-  const { updateTask, restartTask, deleteTask, markTaskRead } = useTasksStore();
+  const { updateTask, restartTask, deleteTask, markTaskRead, fetchTasks } = useTasksStore();
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
 
@@ -279,13 +289,26 @@ export function TaskItem({
       : DEFAULT_KILLING_TIMEOUT_MS;
   const taskType = task.taskType ?? 'ai_task';
   const worktreeBranch = parseTaskWorktreeBranch(task);
+  // The PTY task is filtered out of the top-level task list, so its live
+  // status arrives via the AI task's denormalised `attachedTerminal.ptyTaskStatus`
+  // field instead of the standalone Task row in `useTasksStore`. WebSocket
+  // status broadcasts refresh the AI task → fresh status flows through.
+  const attachedPtyTaskStatus = task.attachedTerminal?.ptyTaskStatus ?? null;
   const showRestartAction = taskType === 'ai_task';
   const showShareAction = taskType === 'ai_task';
+  // Only offer the "attach a terminal" swipe action on AI tasks that don't
+  // already have one — 1:1 is enforced by the DB, but the UI surfaces the
+  // same constraint by hiding the button. Once the PtyToggleButton is
+  // visible next to the status badge, it becomes the entry point for
+  // toggling / deleting that terminal.
+  const showAttachedTerminalAction =
+    taskType === 'ai_task' && !task.attachedTerminal;
   const useMobileRenameBehavior = !desktopListPaneMode;
   const rightActionWidth = RIGHT_ACTION_BUTTON_WIDTH * (
     1 +
     (showRestartAction ? 1 : 0) +
-    (showShareAction ? 1 : 0)
+    (showShareAction ? 1 : 0) +
+    (showAttachedTerminalAction ? 1 : 0)
   );
   const stableBackend = getStableTaskBackend(task);
   const backend = stableBackend ?? runtime?.backend ?? null;
@@ -681,6 +704,35 @@ export function TaskItem({
     setShareDialog(null);
   }, [pushToast]);
 
+  const setPtyActive = usePtyToggleStore((s) => s.setActive);
+  // Guards against double-tap on the swipe Terminal action firing two POSTs.
+  // The DB unique constraint would reject the second one with a confusing
+  // 409, surfacing a "this task already has an attached terminal" toast for
+  // what looked like a single click.
+  const attachInFlightRef = useRef(false);
+
+  const handleAttachTerminal = async () => {
+    if (attachInFlightRef.current) return;
+    attachInFlightRef.current = true;
+    closeSwipeActions();
+    try {
+      const api = getApiClient();
+      await api.post(`/tasks/${task.id}/terminal`, {});
+      // Default to showing the new terminal — the user just asked for it.
+      setPtyActive(task.id, true);
+      await fetchTasks(undefined, { recoverStale: false }).catch(() => {});
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to attach terminal';
+      pushToast({
+        title: 'Failed to attach terminal',
+        description: message,
+        variant: 'error',
+      });
+    } finally {
+      attachInFlightRef.current = false;
+    }
+  };
+
   const handleRunningStatusClick = async () => {
     if (!isTaskRunning || isKillingTask || isRestartingTask) {
       return;
@@ -952,6 +1004,22 @@ export function TaskItem({
       </div>
 
       <div className="absolute inset-y-0 right-0 z-0 flex" aria-hidden={!isRightActionsOpen}>
+        {showAttachedTerminalAction ? (
+          <button
+            type="button"
+            tabIndex={isRightActionsOpen ? 0 : -1}
+            aria-label="Attach terminal"
+            title="Attach terminal"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              void handleAttachTerminal();
+            }}
+            className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
+          >
+            <TerminalIcon />
+          </button>
+        ) : null}
         {showRestartAction ? (
           <button
             type="button"
@@ -1072,7 +1140,13 @@ export function TaskItem({
               </p>
             ) : null}
           </div>
-          <div ref={statusBadgeRef}>
+          <div ref={statusBadgeRef} className="flex items-center gap-1.5">
+            {task.attachedTerminal ? (
+              <PtyToggleButton
+                aiTaskId={task.id}
+                attachedPtyTaskStatus={attachedPtyTaskStatus}
+              />
+            ) : null}
             <TaskStatusBadge
               status={task.status}
               statusStartedAt={killingStartedAt}

@@ -335,7 +335,24 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
           ...(updatedAt ? { updatedAt } : {}),
         });
       } else {
-        void tasksStore.fetchTask(taskId);
+        // The status update is for a task not currently in our list. Two
+        // sub-cases:
+        //   (a) Standard path — an AI/PTY task we haven't loaded yet. Fetch
+        //       it so it lands in the list.
+        //   (b) Attached PTY task — its row is intentionally not in the
+        //       top-level list (syncTask drops it). But its owning AI task
+        //       holds a denormalised `attachedTerminal.ptyTaskStatus` field
+        //       that needs to re-load so the PTY toggle dot reflects the
+        //       new status. In that case, fetch the AI TASK instead, which
+        //       will pick up the fresh status via the server's denorm.
+        const owningAiTask = tasksStore.tasks.find(
+          (existing) => existing.attachedTerminal?.ptyTaskId === taskId,
+        );
+        if (owningAiTask) {
+          void tasksStore.fetchTask(owningAiTask.id);
+        } else {
+          void tasksStore.fetchTask(taskId);
+        }
       }
       if (status === 'completed' || status === 'killed' || status === 'unknown') {
         useRuntimeStore.getState().clearTask(taskId);
