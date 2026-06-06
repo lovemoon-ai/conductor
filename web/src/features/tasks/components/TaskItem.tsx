@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type {
   CSSProperties,
   MouseEvent as ReactMouseEvent,
@@ -69,32 +70,60 @@ const RIGHT_ACTION_BUTTON_WIDTH = 72;
 const SWIPE_OPEN_THRESHOLD = 0.45;
 const SWIPE_START_THRESHOLD = 8;
 
-// Shared class strings for the right-swipe action buttons. The icon stays
-// centred inside the cell — the label is *not* a sibling in the flex flow;
-// it's an absolutely-positioned tooltip pill that fades in on hover, so the
-// icon never shifts when the user moves the mouse.
+// Class strings for the right-swipe action buttons. The icon is the only
+// child of the button — no inline label — so the icon stays perfectly
+// centred regardless of hover state. The label lives in a SwipeActionPopup
+// portal rendered into document.body (see below); see TaskItem's render
+// for the per-button onMouseEnter/onFocus/onMouseLeave/onBlur wiring.
 const SWIPE_ACTION_BUTTON_BASE =
-  'group relative flex items-center justify-center transition-colors';
+  'relative flex items-center justify-center transition-colors';
 const swipeActionButtonClassName = (
   tone: 'default' | 'pinned' | 'danger',
 ): string => {
   switch (tone) {
     case 'danger':
-      return `${SWIPE_ACTION_BUTTON_BASE} bg-[var(--error)]/10 text-[var(--error)] hover:bg-[var(--error)]/20`;
+      // Icon stays red (text-[var(--error)] → SVG strokes inherit
+      // currentColor) but the cell carries no default tinted background.
+      // A soft red wash appears only on hover.
+      return `${SWIPE_ACTION_BUTTON_BASE} text-[var(--error)] hover:bg-[var(--error)]/10`;
     case 'pinned':
       return `${SWIPE_ACTION_BUTTON_BASE} text-[var(--accent)] hover:bg-[var(--accent)]/15`;
     default:
       return `${SWIPE_ACTION_BUTTON_BASE} text-muted hover:bg-[var(--accent)]/10 hover:text-ink`;
   }
 };
-// Floating-pill tooltip. Pinned just below the icon (inside the cell, so the
-// wrapper's `overflow-hidden` does not clip it) and lifted with `z-10` so it
-// always sits above the sibling cell. `aria-hidden` keeps it out of the a11y
-// tree and out of @testing-library's default text queries — important
-// because labels like "Share"/"Delete" collide with dialog titles and toasts
-// otherwise.
-const swipeActionLabelClassName = (): string =>
-  'pointer-events-none invisible absolute left-1/2 -translate-x-1/2 bottom-1 z-10 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] leading-none bg-[var(--ink)]/90 text-[var(--paper)] shadow transition-[visibility] group-hover:visible group-focus-visible:visible';
+
+interface SwipeActionPopupState {
+  label: string;
+  anchorRect: { top: number; left: number; width: number };
+}
+
+// Floating-pill tooltip rendered into document.body via React Portal so it
+// escapes the task card wrapper's `overflow-hidden rounded-2xl` clipping
+// box and floats freely above the page. Positioned just above the anchor
+// button using viewport coordinates (`position: fixed`).
+const SwipeActionPopup = ({ state }: { state: SwipeActionPopupState }) => {
+  if (typeof document === 'undefined') return null;
+  const { label, anchorRect } = state;
+  return createPortal(
+    <div
+      role="tooltip"
+      aria-hidden="true"
+      style={{
+        position: 'fixed',
+        top: anchorRect.top - 8,
+        left: anchorRect.left + anchorRect.width / 2,
+        transform: 'translate(-50%, -100%)',
+        zIndex: 9999,
+      }}
+      className="pointer-events-none whitespace-nowrap rounded bg-[var(--ink)]/95 px-2 py-1 text-[11px] leading-none text-[var(--paper)] shadow-lg"
+    >
+      {label}
+    </div>,
+    document.body,
+  );
+};
+
 const DEFAULT_KILLING_TIMEOUT_MS = 60_000;
 const ROUTE_OPEN_DELAY_MS = 500;
 
@@ -308,6 +337,31 @@ export function TaskItem({
   const [isSwiping, setIsSwiping] = useState(false);
   const [shareDialog, setShareDialog] = useState<ShareDialogState | null>(null);
   const [lastShareDialog, setLastShareDialog] = useState<ShareDialogState | null>(null);
+  const [swipeActionPopup, setSwipeActionPopup] = useState<SwipeActionPopupState | null>(null);
+  const showSwipeActionPopup = useCallback(
+    (label: string) =>
+      (event: React.MouseEvent<HTMLButtonElement> | React.FocusEvent<HTMLButtonElement>) => {
+        const target = event.currentTarget;
+        if (!target) return;
+        const rect = target.getBoundingClientRect();
+        setSwipeActionPopup({
+          label,
+          anchorRect: { top: rect.top, left: rect.left, width: rect.width },
+        });
+      },
+    [],
+  );
+  const hideSwipeActionPopup = useCallback(() => {
+    setSwipeActionPopup(null);
+  }, []);
+  // The popup is bound to a specific button instance via getBoundingClientRect.
+  // When the card un-mounts or the swipe panel hides, force the popup state
+  // closed so it doesn't linger above an element that's no longer visible.
+  useEffect(() => {
+    if (swipeOffset === 0 && swipeActionPopup) {
+      setSwipeActionPopup(null);
+    }
+  }, [swipeOffset, swipeActionPopup]);
 
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressStartXRef = useRef(0);
@@ -1116,10 +1170,13 @@ export function TaskItem({
               e.stopPropagation();
               void handleAttachTerminal();
             }}
+            onMouseEnter={showSwipeActionPopup('Attach')}
+            onMouseLeave={hideSwipeActionPopup}
+            onFocus={showSwipeActionPopup('Attach')}
+            onBlur={hideSwipeActionPopup}
             className={swipeActionButtonClassName('default')}
           >
             <TerminalIcon />
-            <span aria-hidden="true" className={swipeActionLabelClassName()}>Attach</span>
           </button>
         ) : null}
         <button
@@ -1132,10 +1189,13 @@ export function TaskItem({
             e.stopPropagation();
             void handleTogglePin();
           }}
+          onMouseEnter={showSwipeActionPopup(isPinned ? 'Unpin' : 'Pin')}
+          onMouseLeave={hideSwipeActionPopup}
+          onFocus={showSwipeActionPopup(isPinned ? 'Unpin' : 'Pin')}
+          onBlur={hideSwipeActionPopup}
           className={swipeActionButtonClassName(isPinned ? 'pinned' : 'default')}
         >
           <PinIcon filled={isPinned} />
-          <span aria-hidden="true" className={swipeActionLabelClassName()}>{isPinned ? 'Unpin' : 'Pin'}</span>
         </button>
         {showRestartAction ? (
           <button
@@ -1149,10 +1209,13 @@ export function TaskItem({
               setIsRestartDialogOpen(true);
               closeSwipeActions();
             }}
+            onMouseEnter={showSwipeActionPopup('New')}
+            onMouseLeave={hideSwipeActionPopup}
+            onFocus={showSwipeActionPopup('New')}
+            onBlur={hideSwipeActionPopup}
             className={swipeActionButtonClassName('default')}
           >
             <NewTaskIcon />
-            <span aria-hidden="true" className={swipeActionLabelClassName()}>New</span>
           </button>
         ) : null}
         {showShareAction ? (
@@ -1166,10 +1229,13 @@ export function TaskItem({
               e.stopPropagation();
               void handleShare();
             }}
+            onMouseEnter={showSwipeActionPopup('Share')}
+            onMouseLeave={hideSwipeActionPopup}
+            onFocus={showSwipeActionPopup('Share')}
+            onBlur={hideSwipeActionPopup}
             className={swipeActionButtonClassName('default')}
           >
             <ShareIcon />
-            <span aria-hidden="true" className={swipeActionLabelClassName()}>Share</span>
           </button>
         ) : null}
         <button
@@ -1182,10 +1248,13 @@ export function TaskItem({
             e.stopPropagation();
             void handleDelete();
           }}
+          onMouseEnter={showSwipeActionPopup('Delete')}
+          onMouseLeave={hideSwipeActionPopup}
+          onFocus={showSwipeActionPopup('Delete')}
+          onBlur={hideSwipeActionPopup}
           className={swipeActionButtonClassName('danger')}
         >
           <TrashIcon />
-          <span aria-hidden="true" className={swipeActionLabelClassName()}>Delete</span>
         </button>
         {rightActionHasEmptyCell ? (
           // Pure decoration — the empty cell at the bottom of the last
@@ -1296,6 +1365,7 @@ export function TaskItem({
           </div>
         </div>
       </div>
+      {swipeActionPopup ? <SwipeActionPopup state={swipeActionPopup} /> : null}
       {showRestartAction ? (
         <RestartTaskControls
           task={task}
