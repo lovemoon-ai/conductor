@@ -783,7 +783,10 @@ describe('TaskItem', () => {
         variant: 'success',
       });
     });
-    expect(screen.getByText('Share')).toBeInTheDocument();
+    // The share dialog has a "Share" title; the swipe button also now
+    // carries a (visually hidden) "Share" label, so use getAllByText to
+    // assert at least one occurrence rather than failing on multiplicity.
+    expect(screen.getAllByText('Share').length).toBeGreaterThan(0);
     expect(screen.getByRole('link', { name: 'http://localhost:3000/share/shared-token-1' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'http://localhost:3000/share/shared-token-1/plain' })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Copy' })).toHaveLength(2);

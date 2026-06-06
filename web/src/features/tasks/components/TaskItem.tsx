@@ -68,6 +68,35 @@ const LEFT_ACTION_WIDTH = 52;
 const RIGHT_ACTION_BUTTON_WIDTH = 72;
 const SWIPE_OPEN_THRESHOLD = 0.45;
 const SWIPE_START_THRESHOLD = 8;
+
+// Shared class strings for the right-swipe action buttons. Centralised so
+// the icon-only "rest" state and the hover-reveal label stay in sync across
+// the five buttons.
+const SWIPE_ACTION_BUTTON_BASE =
+  'group relative flex flex-col items-center justify-center gap-1 transition-colors';
+const swipeActionButtonClassName = (
+  tone: 'default' | 'pinned' | 'danger',
+): string => {
+  switch (tone) {
+    case 'danger':
+      return `${SWIPE_ACTION_BUTTON_BASE} bg-[var(--error)]/10 text-[var(--error)] hover:bg-[var(--error)]/20`;
+    case 'pinned':
+      return `${SWIPE_ACTION_BUTTON_BASE} text-[var(--accent)] hover:bg-[var(--accent)]/15`;
+    default:
+      return `${SWIPE_ACTION_BUTTON_BASE} text-muted hover:bg-[var(--accent)]/10 hover:text-ink`;
+  }
+};
+const swipeActionLabelClassName = (
+  tone: 'default' | 'danger' = 'default',
+): string => {
+  // The label is always in the layout flow (so the icon position doesn't
+  // jump when it appears), but `visibility:hidden` keeps it out of the
+  // accessibility tree AND out of @testing-library's default text queries
+  // — important because labels like "Share" / "Delete" collide with
+  // dialog titles and toasts otherwise.
+  const colour = tone === 'danger' ? 'text-[var(--error)]' : 'text-inherit';
+  return `pointer-events-none invisible text-[10px] leading-none transition-[visibility] group-hover:visible group-focus-visible:visible ${colour}`;
+};
 const DEFAULT_KILLING_TIMEOUT_MS = 60_000;
 const ROUTE_OPEN_DELAY_MS = 500;
 
@@ -345,6 +374,10 @@ export function TaskItem({
     (showAttachedTerminalAction ? 1 : 0);
   const rightActionColumns = Math.max(1, Math.ceil(rightActionButtonCount / 2));
   const rightActionWidth = RIGHT_ACTION_BUTTON_WIDTH * rightActionColumns;
+  // When the button count is odd, the bottom-right cell would otherwise be
+  // a void. We render a small decorative slot there so the row stays
+  // visually balanced (and gives the user a tiny moment of delight).
+  const rightActionHasEmptyCell = rightActionButtonCount % 2 === 1;
   const stableBackend = getStableTaskBackend(task);
   const backend = stableBackend ?? runtime?.backend ?? null;
   const runtimeText = runtime?.statusLine || runtime?.statusDoneLine || runtime?.replyPreview || runtime?.state || null;
@@ -1066,13 +1099,11 @@ export function TaskItem({
       {/*
         2-row, column-flow grid. With `grid-auto-flow: column` the items fill
         column-by-column (item 1 → row 1 col 1, item 2 → row 2 col 1, item 3
-        → row 1 col 2, …). So odd children are always row 1 and even children
-        always row 2. The Tailwind variant `[&>*:nth-child(even)]:border-t`
-        paints the inter-row divider regardless of which conditional buttons
-        are present.
+        → row 1 col 2, …). No static dividers — each cell reveals its label
+        on hover and a soft tint stands in for the visual separation.
       */}
       <div
-        className="absolute inset-y-0 right-0 z-0 grid grid-flow-col grid-rows-2 [&>*:nth-child(even)]:border-t"
+        className="absolute inset-y-0 right-0 z-0 grid grid-flow-col grid-rows-2 bg-[var(--paper)]"
         style={{ gridTemplateColumns: `repeat(${rightActionColumns}, ${RIGHT_ACTION_BUTTON_WIDTH}px)` }}
         aria-hidden={!isRightActionsOpen}
       >
@@ -1087,9 +1118,10 @@ export function TaskItem({
               e.stopPropagation();
               void handleAttachTerminal();
             }}
-            className="flex items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
+            className={swipeActionButtonClassName('default')}
           >
             <TerminalIcon />
+            <span aria-hidden="true" className={swipeActionLabelClassName()}>Attach</span>
           </button>
         ) : null}
         <button
@@ -1102,11 +1134,10 @@ export function TaskItem({
             e.stopPropagation();
             void handleTogglePin();
           }}
-          className={`flex items-center justify-center border-l border-border bg-[var(--paper)] transition-colors hover:text-ink ${
-            isPinned ? 'text-[var(--accent)]' : 'text-muted'
-          }`}
+          className={swipeActionButtonClassName(isPinned ? 'pinned' : 'default')}
         >
           <PinIcon filled={isPinned} />
+          <span aria-hidden="true" className={swipeActionLabelClassName()}>{isPinned ? 'Unpin' : 'Pin'}</span>
         </button>
         {showRestartAction ? (
           <button
@@ -1120,9 +1151,10 @@ export function TaskItem({
               setIsRestartDialogOpen(true);
               closeSwipeActions();
             }}
-            className="flex items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
+            className={swipeActionButtonClassName('default')}
           >
             <NewTaskIcon />
+            <span aria-hidden="true" className={swipeActionLabelClassName()}>New</span>
           </button>
         ) : null}
         {showShareAction ? (
@@ -1136,9 +1168,10 @@ export function TaskItem({
               e.stopPropagation();
               void handleShare();
             }}
-            className="flex items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
+            className={swipeActionButtonClassName('default')}
           >
             <ShareIcon />
+            <span aria-hidden="true" className={swipeActionLabelClassName()}>Share</span>
           </button>
         ) : null}
         <button
@@ -1151,10 +1184,22 @@ export function TaskItem({
             e.stopPropagation();
             void handleDelete();
           }}
-          className="flex items-center justify-center border-l border-border bg-[var(--error)]/10 text-[var(--error)] transition-colors hover:bg-[var(--error)]/20"
+          className={swipeActionButtonClassName('danger')}
         >
           <TrashIcon />
+          <span aria-hidden="true" className={swipeActionLabelClassName('danger')}>Delete</span>
         </button>
+        {rightActionHasEmptyCell ? (
+          // Pure decoration — the empty cell at the bottom of the last
+          // column when the visible button count is odd (5 or 3 buttons).
+          // Non-interactive, no aria-label, hidden from the tab order.
+          <div
+            aria-hidden="true"
+            className="flex items-center justify-center text-lg select-none"
+          >
+            <span role="img" aria-label="smile">😊</span>
+          </div>
+        ) : null}
       </div>
 
       <div
