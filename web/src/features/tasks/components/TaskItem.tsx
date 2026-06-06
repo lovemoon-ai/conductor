@@ -332,12 +332,19 @@ export function TaskItem({
   const useMobileRenameBehavior = !desktopListPaneMode;
   const pinnedAt = normalizePinnedAt(taskMetadata?.pinnedAt);
   const isPinned = pinnedAt !== null;
-  const rightActionWidth = RIGHT_ACTION_BUTTON_WIDTH * (
+  // Right-swipe actions are laid out as a 2-row grid that fills column-by-
+  // column (CSS `grid-auto-flow: column`). Each grid cell is half the card
+  // height so the icons stay the same visual size as before but the total
+  // swipe-reveal width is halved when 4-5 buttons are visible — previously a
+  // single 5-button row took 5 × 72 = 360px, now it takes ceil(5/2) × 72 =
+  // 216px.
+  const rightActionButtonCount =
     2 +
     (showRestartAction ? 1 : 0) +
     (showShareAction ? 1 : 0) +
-    (showAttachedTerminalAction ? 1 : 0)
-  );
+    (showAttachedTerminalAction ? 1 : 0);
+  const rightActionColumns = Math.max(1, Math.ceil(rightActionButtonCount / 2));
+  const rightActionWidth = RIGHT_ACTION_BUTTON_WIDTH * rightActionColumns;
   const stableBackend = getStableTaskBackend(task);
   const backend = stableBackend ?? runtime?.backend ?? null;
   const runtimeText = runtime?.statusLine || runtime?.statusDoneLine || runtime?.replyPreview || runtime?.state || null;
@@ -1056,7 +1063,19 @@ export function TaskItem({
         </button>
       </div>
 
-      <div className="absolute inset-y-0 right-0 z-0 flex" aria-hidden={!isRightActionsOpen}>
+      {/*
+        2-row, column-flow grid. With `grid-auto-flow: column` the items fill
+        column-by-column (item 1 → row 1 col 1, item 2 → row 2 col 1, item 3
+        → row 1 col 2, …). So odd children are always row 1 and even children
+        always row 2. The Tailwind variant `[&>*:nth-child(even)]:border-t`
+        paints the inter-row divider regardless of which conditional buttons
+        are present.
+      */}
+      <div
+        className="absolute inset-y-0 right-0 z-0 grid grid-flow-col grid-rows-2 [&>*:nth-child(even)]:border-t"
+        style={{ gridTemplateColumns: `repeat(${rightActionColumns}, ${RIGHT_ACTION_BUTTON_WIDTH}px)` }}
+        aria-hidden={!isRightActionsOpen}
+      >
         {showAttachedTerminalAction ? (
           <button
             type="button"
@@ -1068,7 +1087,7 @@ export function TaskItem({
               e.stopPropagation();
               void handleAttachTerminal();
             }}
-            className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
+            className="flex items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
           >
             <TerminalIcon />
           </button>
@@ -1083,7 +1102,7 @@ export function TaskItem({
             e.stopPropagation();
             void handleTogglePin();
           }}
-          className={`flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] transition-colors hover:text-ink ${
+          className={`flex items-center justify-center border-l border-border bg-[var(--paper)] transition-colors hover:text-ink ${
             isPinned ? 'text-[var(--accent)]' : 'text-muted'
           }`}
         >
@@ -1101,7 +1120,7 @@ export function TaskItem({
               setIsRestartDialogOpen(true);
               closeSwipeActions();
             }}
-            className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
+            className="flex items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
           >
             <NewTaskIcon />
           </button>
@@ -1117,7 +1136,7 @@ export function TaskItem({
               e.stopPropagation();
               void handleShare();
             }}
-            className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
+            className="flex items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
           >
             <ShareIcon />
           </button>
@@ -1132,7 +1151,7 @@ export function TaskItem({
             e.stopPropagation();
             void handleDelete();
           }}
-          className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--error)]/10 text-[var(--error)] transition-colors hover:bg-[var(--error)]/20"
+          className="flex items-center justify-center border-l border-border bg-[var(--error)]/10 text-[var(--error)] transition-colors hover:bg-[var(--error)]/20"
         >
           <TrashIcon />
         </button>
