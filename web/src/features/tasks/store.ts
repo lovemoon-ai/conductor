@@ -161,6 +161,37 @@ export const normalizeTask = (task: any): Task => ({
   updatedAt: task.updatedAt ?? task.updated_at ?? null,
 });
 
+export const getTaskPinnedAtTime = (task: { metadata?: Record<string, unknown> | null }): number | null => {
+  const value = task.metadata?.pinnedAt;
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+};
+
+export const orderTasksWithPinnedFirst = <T extends { metadata?: Record<string, unknown> | null }>(tasks: T[]): T[] =>
+  tasks
+    .map((task, index) => ({
+      task,
+      index,
+      pinnedAt: getTaskPinnedAtTime(task),
+    }))
+    .sort((left, right) => {
+      if (left.pinnedAt !== null && right.pinnedAt !== null) {
+        const pinnedDelta = right.pinnedAt - left.pinnedAt;
+        return pinnedDelta !== 0 ? pinnedDelta : left.index - right.index;
+      }
+      if (left.pinnedAt !== null) {
+        return -1;
+      }
+      if (right.pinnedAt !== null) {
+        return 1;
+      }
+      return left.index - right.index;
+    })
+    .map(({ task }) => task);
+
 const mergeMutationTask = (existing: Task | undefined, incoming: Task): Task => {
   if (!existing || incoming.status !== 'init' || existing.status === 'init') {
     return incoming;
@@ -182,16 +213,16 @@ const mergeMutationTask = (existing: Task | undefined, incoming: Task): Task => 
 const upsertTask = (tasks: Task[], task: Task, options?: { moveToFront?: boolean }): Task[] => {
   const index = tasks.findIndex((existing) => existing.id === task.id);
   if (index === -1) {
-    return [task, ...tasks];
+    return orderTasksWithPinnedFirst([task, ...tasks]);
   }
 
   if (options?.moveToFront) {
-    return [task, ...tasks.slice(0, index), ...tasks.slice(index + 1)];
+    return orderTasksWithPinnedFirst([task, ...tasks.slice(0, index), ...tasks.slice(index + 1)]);
   }
 
   const next = [...tasks];
   next[index] = task;
-  return next;
+  return orderTasksWithPinnedFirst(next);
 };
 
 export const useTasksStore = create<TasksState>()((set, get) => {
@@ -272,7 +303,7 @@ export const useTasksStore = create<TasksState>()((set, get) => {
         ) {
           return;
         }
-        set({ tasks: tasks.map(normalizeTask), isLoading: false });
+        set({ tasks: orderTasksWithPinnedFirst(tasks.map(normalizeTask)), isLoading: false });
       } catch (error) {
         if (
           get().currentProjectFilter !== requestedProjectId
@@ -330,7 +361,7 @@ export const useTasksStore = create<TasksState>()((set, get) => {
         ) {
           return;
         }
-        set({ tasks: tasks.map(normalizeTask), isLoading: false });
+        set({ tasks: orderTasksWithPinnedFirst(tasks.map(normalizeTask)), isLoading: false });
       } catch (error) {
         if (
           projectScopeKey(get().currentProjectIds) !== requestedKey

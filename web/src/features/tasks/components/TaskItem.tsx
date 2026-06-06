@@ -143,6 +143,16 @@ const normalizeOptionalString = (value: unknown): string | null => {
 };
 const normalizePositiveNumber = (value: unknown): number | null =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+const normalizePinnedAt = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+  return Number.isFinite(Date.parse(normalized)) ? normalized : null;
+};
 const normalizeBoolean = (value: unknown): boolean => {
   if (typeof value === 'boolean') {
     return value;
@@ -206,6 +216,22 @@ const ShareIcon = () => (
       strokeLinejoin="round"
       strokeWidth={2}
       d="M12 16V5m0 0l-4 4m4-4l4 4M5 13v3a3 3 0 003 3h8a3 3 0 003-3v-3"
+    />
+  </svg>
+);
+
+const PinIcon = ({ filled = false, className = 'size-4' }: { filled?: boolean; className?: string }) => (
+  <svg
+    className={className}
+    fill={filled ? 'currentColor' : 'none'}
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={2}
+      d="M14 4l6 6-4 1-3.5 3.5L14 19l-1 1-4.5-4.5L5 19l-1-1 3.5-3.5L3 10l1-1 4.5 1.5L13 6l1-2z"
     />
   </svg>
 );
@@ -304,8 +330,10 @@ export function TaskItem({
   const showAttachedTerminalAction =
     taskType === 'ai_task' && !task.attachedTerminal;
   const useMobileRenameBehavior = !desktopListPaneMode;
+  const pinnedAt = normalizePinnedAt(taskMetadata?.pinnedAt);
+  const isPinned = pinnedAt !== null;
   const rightActionWidth = RIGHT_ACTION_BUTTON_WIDTH * (
-    1 +
+    2 +
     (showRestartAction ? 1 : 0) +
     (showShareAction ? 1 : 0) +
     (showAttachedTerminalAction ? 1 : 0)
@@ -694,6 +722,24 @@ export function TaskItem({
     }
   };
 
+  const handleTogglePin = async () => {
+    try {
+      await updateTask(task.id, {
+        metadata: {
+          pinnedAt: isPinned ? null : new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      pushToast({
+        title: isPinned ? 'Failed to unpin task' : 'Failed to pin task',
+        description: error instanceof Error ? error.message : 'Please try again in a moment.',
+        variant: 'error',
+      });
+    } finally {
+      closeSwipeActions();
+    }
+  };
+
   const handleCopyShareDialogLink = useCallback(async (value: string) => {
     const copied = await copyToClipboard(value).catch(() => false);
     pushToast({
@@ -1027,6 +1073,22 @@ export function TaskItem({
             <TerminalIcon />
           </button>
         ) : null}
+        <button
+          type="button"
+          tabIndex={isRightActionsOpen ? 0 : -1}
+          aria-label={isPinned ? 'Unpin task' : 'Pin task'}
+          title={isPinned ? 'Unpin' : 'Pin'}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            void handleTogglePin();
+          }}
+          className={`flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] transition-colors hover:text-ink ${
+            isPinned ? 'text-[var(--accent)]' : 'text-muted'
+          }`}
+        >
+          <PinIcon filled={isPinned} />
+        </button>
         {showRestartAction ? (
           <button
             type="button"
@@ -1108,6 +1170,15 @@ export function TaskItem({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               {isUnread ? <span className="size-2 shrink-0 rounded-full bg-[var(--accent)] animate-pulse" /> : null}
+              {isPinned ? (
+                <span
+                  title="Pinned"
+                  aria-label="Pinned task"
+                  className="shrink-0 text-[var(--accent)]"
+                >
+                  <PinIcon filled className="size-3.5" />
+                </span>
+              ) : null}
               {isEditing ? (
                 <input
                   type="text"

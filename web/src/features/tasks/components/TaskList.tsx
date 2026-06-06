@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { TaskType } from '@/lib/tasks/task-config';
-import { useTasksStore } from '../store';
+import { orderTasksWithPinnedFirst, useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
 import { filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } from '../utils/task-filter';
 import { TaskItem } from './TaskItem';
@@ -162,11 +162,15 @@ export function TaskList({
       : typeFilteredTasks,
     [typeFilteredTasks, daemonHostFilter, projectDaemonHostMap],
   );
-  const visibleTasks = useMemo(
+  const backendFilteredTasks = useMemo(
     () => backendFilter
       ? daemonFilteredTasks.filter((task) => getStableTaskBackend(task) === backendFilter)
       : daemonFilteredTasks,
     [daemonFilteredTasks, backendFilter],
+  );
+  const visibleTasks = useMemo(
+    () => orderTasksWithPinnedFirst(backendFilteredTasks),
+    [backendFilteredTasks],
   );
 
   // Two independent visibility rules — historically they were a single

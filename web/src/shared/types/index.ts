@@ -344,6 +344,7 @@ export interface UpdateTaskInput {
   taskType?: TaskType;
   status?: TaskStatus;
   launchConfig?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
   backendType?: string | null;
   sessionId?: string | null;
   sessionFilePath?: string | null;

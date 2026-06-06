@@ -1165,6 +1165,70 @@ describe("/api/tasks/[taskId]", () => {
     });
   });
 
+  it("persists pinnedAt in task metadata via PATCH", async () => {
+    const token = createTestToken("user-1");
+    const pinnedAt = "2024-01-02T00:00:00.000Z";
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-pin-1",
+      projectId: "proj-1",
+      title: "Pinned task",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: "session-pin-1",
+      sessionFilePath: "/tmp/session-pin-1.jsonl",
+      launchConfig: null,
+      ptySession: null,
+      issueId: null,
+      metadata: JSON.stringify({ initialContent: "hello" }),
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:00:00.000Z"),
+    } as any);
+    vi.mocked(db.task.update).mockResolvedValue({
+      id: "task-pin-1",
+      projectId: "proj-1",
+      title: "Pinned task",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: "session-pin-1",
+      sessionFilePath: "/tmp/session-pin-1.jsonl",
+      launchConfig: null,
+      ptySession: null,
+      issueId: null,
+      metadata: JSON.stringify({ initialContent: "hello", pinnedAt }),
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+    } as any);
+
+    const request = createMockRequest({
+      method: "PATCH",
+      token,
+      body: {
+        metadata: {
+          pinnedAt,
+        },
+      },
+    });
+    const response = await PATCH(request, { params: Promise.resolve({ taskId: "task-pin-1" }) });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "task-pin-1" },
+        data: expect.objectContaining({
+          metadata: JSON.stringify({ initialContent: "hello", pinnedAt }),
+        }),
+      }),
+    );
+    expect(data.metadata).toEqual({ initialContent: "hello", pinnedAt });
+  });
+
   it("sets a running task to killing and queues stop_task when PATCH requests killed", async () => {
     const token = createTestToken("user-1");
     const existingTask = {
