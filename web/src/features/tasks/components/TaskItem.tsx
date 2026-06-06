@@ -338,6 +338,11 @@ export function TaskItem({
   const [shareDialog, setShareDialog] = useState<ShareDialogState | null>(null);
   const [lastShareDialog, setLastShareDialog] = useState<ShareDialogState | null>(null);
   const [swipeActionPopup, setSwipeActionPopup] = useState<SwipeActionPopupState | null>(null);
+  // Two-click in-place unpin confirmation. First click on the trailing pin
+  // icon arms the confirmation; a second click within the timeout actually
+  // unpins. Any other interaction (or the timeout) silently disarms it.
+  const [pendingUnpinConfirm, setPendingUnpinConfirm] = useState(false);
+  const pendingUnpinTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showSwipeActionPopup = useCallback(
     (label: string) =>
       (event: React.MouseEvent<HTMLButtonElement> | React.FocusEvent<HTMLButtonElement>) => {
@@ -362,6 +367,17 @@ export function TaskItem({
       setSwipeActionPopup(null);
     }
   }, [swipeOffset, swipeActionPopup]);
+
+  // Cancel any armed unpin-confirm if the task gets unpinned out-of-band
+  // (e.g. another tab) and clear the timer when the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (pendingUnpinTimerRef.current) {
+        clearTimeout(pendingUnpinTimerRef.current);
+        pendingUnpinTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressStartXRef = useRef(0);
@@ -419,8 +435,14 @@ export function TaskItem({
   // swipe-reveal width is halved when 4-5 buttons are visible — previously a
   // single 5-button row took 5 × 72 = 360px, now it takes ceil(5/2) × 72 =
   // 216px.
+  // Pinned tasks unpin via the trailing pin icon on the title (two-click
+  // in-place confirm), so the swipe-action panel hides its Pin button to
+  // avoid two redundant entry points; unpinned tasks still get the swipe
+  // Pin button as the primary "make this important" action.
+  const showSwipePinAction = !isPinned;
   const rightActionButtonCount =
-    2 +
+    1 + // delete (always)
+    (showSwipePinAction ? 1 : 0) +
     (showRestartAction ? 1 : 0) +
     (showShareAction ? 1 : 0) +
     (showAttachedTerminalAction ? 1 : 0);
@@ -832,6 +854,32 @@ export function TaskItem({
     }
   };
 
+  const clearPendingUnpinTimer = () => {
+    if (pendingUnpinTimerRef.current) {
+      clearTimeout(pendingUnpinTimerRef.current);
+      pendingUnpinTimerRef.current = null;
+    }
+  };
+
+  // Trailing pin icon click flow:
+  //   1st click → arm in-place confirmation (icon flips to accent color).
+  //   2nd click within 2.5 s → actually unpin.
+  //   timeout / outside interaction → silently disarm.
+  const handleTrailingPinClick = () => {
+    if (pendingUnpinConfirm) {
+      clearPendingUnpinTimer();
+      setPendingUnpinConfirm(false);
+      void handleTogglePin();
+      return;
+    }
+    setPendingUnpinConfirm(true);
+    clearPendingUnpinTimer();
+    pendingUnpinTimerRef.current = setTimeout(() => {
+      setPendingUnpinConfirm(false);
+      pendingUnpinTimerRef.current = null;
+    }, 2500);
+  };
+
   const handleCopyShareDialogLink = useCallback(async (value: string) => {
     const copied = await copyToClipboard(value).catch(() => false);
     pushToast({
@@ -1179,24 +1227,26 @@ export function TaskItem({
             <TerminalIcon />
           </button>
         ) : null}
-        <button
-          type="button"
-          tabIndex={isRightActionsOpen ? 0 : -1}
-          aria-label={isPinned ? 'Unpin task' : 'Pin task'}
-          title={isPinned ? 'Unpin' : 'Pin'}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            void handleTogglePin();
-          }}
-          onMouseEnter={showSwipeActionPopup(isPinned ? 'Unpin' : 'Pin')}
-          onMouseLeave={hideSwipeActionPopup}
-          onFocus={showSwipeActionPopup(isPinned ? 'Unpin' : 'Pin')}
-          onBlur={hideSwipeActionPopup}
-          className={swipeActionButtonClassName(isPinned ? 'pinned' : 'default')}
-        >
-          <PinIcon filled={isPinned} />
-        </button>
+        {showSwipePinAction ? (
+          <button
+            type="button"
+            tabIndex={isRightActionsOpen ? 0 : -1}
+            aria-label="Pin task"
+            title="Pin"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              void handleTogglePin();
+            }}
+            onMouseEnter={showSwipeActionPopup('Pin')}
+            onMouseLeave={hideSwipeActionPopup}
+            onFocus={showSwipeActionPopup('Pin')}
+            onBlur={hideSwipeActionPopup}
+            className={swipeActionButtonClassName('default')}
+          >
+            <PinIcon filled={false} />
+          </button>
+        ) : null}
         {showRestartAction ? (
           <button
             type="button"
@@ -1301,15 +1351,6 @@ export function TaskItem({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               {isUnread ? <span className="size-2 shrink-0 rounded-full bg-[var(--accent)] animate-pulse" /> : null}
-              {isPinned ? (
-                <span
-                  title="Pinned"
-                  aria-label="Pinned task"
-                  className="shrink-0 text-[var(--accent)]"
-                >
-                  <PinIcon filled className="size-3.5" />
-                </span>
-              ) : null}
               {isEditing ? (
                 <input
                   type="text"
@@ -1339,6 +1380,24 @@ export function TaskItem({
                   {task.title}
                 </h3>
               )}
+              {isPinned ? (
+                <button
+                  type="button"
+                  aria-label={pendingUnpinConfirm ? 'Confirm unpin' : 'Unpin task'}
+                  title={pendingUnpinConfirm ? 'Click again to unpin' : 'Pinned — click to unpin'}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleTrailingPinClick();
+                  }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  className={`shrink-0 transition-colors ${
+                    pendingUnpinConfirm ? 'text-[var(--accent)]' : 'text-muted'
+                  }`}
+                >
+                  <PinIcon className="size-3.5" />
+                </button>
+              ) : null}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted">
               {metadataChips}
