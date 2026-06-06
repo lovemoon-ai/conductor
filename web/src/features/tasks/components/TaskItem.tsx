@@ -69,11 +69,12 @@ const RIGHT_ACTION_BUTTON_WIDTH = 72;
 const SWIPE_OPEN_THRESHOLD = 0.45;
 const SWIPE_START_THRESHOLD = 8;
 
-// Shared class strings for the right-swipe action buttons. Centralised so
-// the icon-only "rest" state and the hover-reveal label stay in sync across
-// the five buttons.
+// Shared class strings for the right-swipe action buttons. The icon stays
+// centred inside the cell — the label is *not* a sibling in the flex flow;
+// it's an absolutely-positioned tooltip pill that fades in on hover, so the
+// icon never shifts when the user moves the mouse.
 const SWIPE_ACTION_BUTTON_BASE =
-  'group relative flex flex-col items-center justify-center gap-1 transition-colors';
+  'group relative flex items-center justify-center transition-colors';
 const swipeActionButtonClassName = (
   tone: 'default' | 'pinned' | 'danger',
 ): string => {
@@ -86,17 +87,14 @@ const swipeActionButtonClassName = (
       return `${SWIPE_ACTION_BUTTON_BASE} text-muted hover:bg-[var(--accent)]/10 hover:text-ink`;
   }
 };
-const swipeActionLabelClassName = (
-  tone: 'default' | 'danger' = 'default',
-): string => {
-  // The label is always in the layout flow (so the icon position doesn't
-  // jump when it appears), but `visibility:hidden` keeps it out of the
-  // accessibility tree AND out of @testing-library's default text queries
-  // — important because labels like "Share" / "Delete" collide with
-  // dialog titles and toasts otherwise.
-  const colour = tone === 'danger' ? 'text-[var(--error)]' : 'text-inherit';
-  return `pointer-events-none invisible text-[10px] leading-none transition-[visibility] group-hover:visible group-focus-visible:visible ${colour}`;
-};
+// Floating-pill tooltip. Pinned just below the icon (inside the cell, so the
+// wrapper's `overflow-hidden` does not clip it) and lifted with `z-10` so it
+// always sits above the sibling cell. `aria-hidden` keeps it out of the a11y
+// tree and out of @testing-library's default text queries — important
+// because labels like "Share"/"Delete" collide with dialog titles and toasts
+// otherwise.
+const swipeActionLabelClassName = (): string =>
+  'pointer-events-none invisible absolute left-1/2 -translate-x-1/2 bottom-1 z-10 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] leading-none bg-[var(--ink)]/90 text-[var(--paper)] shadow transition-[visibility] group-hover:visible group-focus-visible:visible';
 const DEFAULT_KILLING_TIMEOUT_MS = 60_000;
 const ROUTE_OPEN_DELAY_MS = 500;
 
@@ -1187,7 +1185,7 @@ export function TaskItem({
           className={swipeActionButtonClassName('danger')}
         >
           <TrashIcon />
-          <span aria-hidden="true" className={swipeActionLabelClassName('danger')}>Delete</span>
+          <span aria-hidden="true" className={swipeActionLabelClassName()}>Delete</span>
         </button>
         {rightActionHasEmptyCell ? (
           // Pure decoration — the empty cell at the bottom of the last
