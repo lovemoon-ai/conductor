@@ -13,6 +13,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { setupAppGateway, APP_WS_PATH } from "./src/lib/realtime/app-gateway";
 import { setupAgentGateway, AGENT_WS_PATH } from "./src/lib/realtime/agent-gateway";
 import { startTaskAttachmentJanitor } from "./src/lib/tasks/task-file-storage";
+import { startScheduledMessageDispatcher } from "./src/lib/tasks/scheduled-messages";
 import { realtimeHub } from "./src/lib/realtime/hub";
 import { db } from "./src/lib/db";
 import { backfillIssueAiSessionIfNeeded } from "./src/lib/issues/backfill-ai-session";
@@ -67,6 +68,7 @@ app.prepare().then(async () => {
     });
     return tasks;
   });
+  startScheduledMessageDispatcher();
 
   // Idempotent boot-time backfill of issue.ai_backend_type / ai_session_id
   // from any task that already carries those values. Required because

@@ -43,6 +43,7 @@ model User {
   createdIssues Issue[] @relation("IssueCreator")
   invitedBy User? @relation("UserInvites", fields: [invitedByUserId], references: [id])
   invitedUsers User[] @relation("UserInvites")
+  scheduledMessages ScheduledMessage[]
 
   @@unique([provider, providerId])
   @@index([email])
@@ -212,6 +213,8 @@ model Task {
   channelConversations ChannelConversation[]
   channelOutboxEntries ChannelOutbox[]
   sharedTasks SharedTask[]
+  scheduledMessages ScheduledMessage[]
+  runtimeState TaskRuntimeState?
 
   @@index([projectId])
   @@index([issueId])
@@ -272,6 +275,63 @@ model TaskStatusEvent {
 
   @@index([taskId, createdAt])
   @@map("task_status_events")
+}
+
+model TaskRuntimeState {
+  taskId          String   @id @map("task_id") @db.Uuid
+  projectId       String?  @map("project_id") @db.Uuid
+  state           String?
+  phase           String?
+  source          String?
+  replyInProgress Boolean  @default(false) @map("reply_in_progress")
+  statusLine      String?  @map("status_line")
+  statusDoneLine  String?  @map("status_done_line")
+  replyPreview    String?  @map("reply_preview")
+  replyTo         String?  @map("reply_to")
+  backend         String?
+  sessionId       String?  @map("session_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("task_runtime_states")
+}
+
+model ScheduledMessage {
+  id                     String    @id @default(uuid()) @db.Uuid
+  userId                 String    @map("user_id") @db.Uuid
+  taskId                 String    @map("task_id") @db.Uuid
+  sourceMessageId        String?   @map("source_message_id") @db.Uuid
+  content                String
+  kind                   String
+  condition              String    @default("none")
+  intervalMs             Int?      @map("interval_ms")
+  timezone               String?
+  status                 String    @default("active")
+  nextRunAt              DateTime  @map("next_run_at")
+  runCount               Int       @default(0) @map("run_count")
+  skipCount              Int       @default(0) @map("skip_count")
+  failureCount           Int       @default(0) @map("failure_count")
+  maxRuns                Int?      @map("max_runs")
+  maxSkips               Int?      @map("max_skips")
+  stopAt                 DateTime? @map("stop_at")
+  stopWhenTaskNotRunning Boolean   @default(true) @map("stop_when_task_not_running")
+  lastRunAt              DateTime? @map("last_run_at")
+  lastError              String?   @map("last_error")
+  metadata               String?
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, nextRunAt])
+  @@index([taskId, status])
+  @@index([status, nextRunAt])
+  @@index([sourceMessageId])
+  @@map("scheduled_messages")
 }
 
 model AgentOutbox {

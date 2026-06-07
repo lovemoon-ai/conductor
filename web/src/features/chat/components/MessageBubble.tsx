@@ -8,6 +8,7 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 interface MessageBubbleProps {
   message: Message;
   onResend?: (content: string) => void;
+  onSchedule?: (message: Message) => void;
   onRestart?: () => void;
   restartEnabled?: boolean;
   restartPending?: boolean;
@@ -32,6 +33,7 @@ const formatBytes = (value: number) => {
 export function MessageBubble({
   message,
   onResend,
+  onSchedule,
   onRestart,
   restartEnabled = false,
   restartPending = false,
@@ -101,6 +103,14 @@ export function MessageBubble({
       return;
     }
     onResend?.(message.content);
+    setIsToolbarOpen(false);
+  };
+
+  const scheduleMessage = () => {
+    if (!message.content.trim()) {
+      return;
+    }
+    onSchedule?.(message);
     setIsToolbarOpen(false);
   };
 
@@ -193,6 +203,27 @@ export function MessageBubble({
             <path d="M4 12a8 8 0 1 0 2.34-5.66" />
             <path d="M4 4v6h6" />
             <path d="M12 8v5l3 2" />
+          </svg>
+        </button>
+      ) : null}
+      {onSchedule ? (
+        <button
+          type="button"
+          data-testid="message-bubble-schedule-button"
+          aria-label="Schedule message"
+          title="Schedule message"
+          disabled={!message.content.trim()}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            scheduleMessage();
+          }}
+          className={`${actionButtonClassName} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent`}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7v5l3 2" />
+            <path d="M17.5 3.5l3 3" />
           </svg>
         </button>
       ) : null}

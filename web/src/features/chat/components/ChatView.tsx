@@ -7,6 +7,7 @@ import { useTasksStore } from '@/features/tasks';
 import { useWebSocketStore } from '@/features/realtime';
 import { MessageBubble } from './MessageBubble';
 import { MessageInput, type MessageInputHandle } from './MessageInput';
+import { ScheduledMessageDialog } from './ScheduledMessageDialog';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { QuestionNav } from '@/components/common/QuestionNav';
@@ -256,6 +257,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [showQuestionNav, setShowQuestionNav] = useState(false);
   const [activeQuestion, setActiveQuestion] = useState(0);
+  const [scheduledMessage, setScheduledMessage] = useState<Message | null>(null);
   const questionRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const isJumpingQuestionRef = useRef(false);
   const lastScrollTopRef = useRef(0);
@@ -664,6 +666,10 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     }
   };
 
+  const handleScheduleMessage = useCallback((message: Message) => {
+    setScheduledMessage(message);
+  }, []);
+
   const handleRestart = useCallback(async () => {
     if (interruptPending) {
       dispatchUiState({
@@ -900,6 +906,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
                   <MessageBubble
                     message={message}
                     onResend={handleResend}
+                    onSchedule={handleScheduleMessage}
                     onRestart={() => {
                       void handleRestart();
                     }}
@@ -996,6 +1003,12 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
         interruptEnabled={interruptEnabled}
         interruptPending={interruptPending}
         autoFocus={autoFocusComposer}
+      />
+      <ScheduledMessageDialog
+        open={scheduledMessage !== null}
+        taskId={taskId}
+        message={scheduledMessage}
+        onClose={() => setScheduledMessage(null)}
       />
     </div>
   );

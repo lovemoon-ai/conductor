@@ -33,6 +33,7 @@ import {
   buildKilledPatch,
   withKilledReasonFallback,
 } from "@/lib/tasks/killed-reason";
+import { persistTaskRuntimeState } from "@/lib/tasks/scheduled-messages";
 
 export const AGENT_WS_PATH = "/ws/agent";
 
@@ -1731,6 +1732,20 @@ export const setupAgentGateway = (): WebSocketServer => {
             } else {
               void drainAgentOutboxForHost(user.id, agentHost);
             }
+            await persistTaskRuntimeState({
+              taskId: task.id,
+              projectId: task.projectId,
+              state: event.payload.state,
+              phase: event.payload.phase,
+              source: event.payload.source,
+              replyInProgress: event.payload.reply_in_progress,
+              statusLine: event.payload.status_line,
+              statusDoneLine: event.payload.status_done_line,
+              replyPreview: event.payload.reply_preview,
+              replyTo: event.payload.reply_to,
+              backend: event.payload.backend,
+              sessionId: event.payload.session_id,
+            });
             realtimeHub.broadcast(user.id, task.projectId, {
               type: "task_runtime_status",
               payload: {
