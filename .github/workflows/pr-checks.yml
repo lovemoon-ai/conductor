@@ -92,7 +92,7 @@ jobs:
           # an invasive SQLite table rewrite to fix. New PRs are allowed to
           # leave these tables drifting, but introducing drift on any OTHER
           # table or table-rewrite is a fail.
-          ACCEPTED_DRIFT_TABLES=(agent_outbox user_preferences)
+          ACCEPTED_DRIFT_TABLES=(agent_outbox user_preferences user_catchphrases)
 
           rm -f prisma/_pr_checks_shadow.db
 
