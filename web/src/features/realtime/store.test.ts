@@ -6,6 +6,7 @@ import { useRuntimeStore } from './runtime-store';
 import { useTasksStore } from '@/features/tasks';
 import { clearAllTerminalOutputSnapshots, getTerminalOutputSnapshot, useTerminalStore } from '@/features/terminal';
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
+import { useCatchphrasesStore } from '@/features/catchphrases/store';
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
@@ -238,6 +239,54 @@ describe('websocket runtime status handling', () => {
 
     expect(useUserPreferencesStore.getState().taskListRunningOnly).toBe(true);
     expect(useUserPreferencesStore.getState().taskListPreferencesHydrated).toBe(true);
+  });
+
+  it('applies the full catchphrase snapshot from user_catchphrase_update events (RFC 0032)', () => {
+    // Seed pre-existing local state — the realtime push must overwrite, not merge.
+    useCatchphrasesStore.setState({
+      catchphrases: [
+        {
+          id: 'stale-1',
+          text: 'stale',
+          sortOrder: 0,
+          lastUsedAt: null,
+          createdAt: '2026-06-06T00:00:00Z',
+          updatedAt: '2026-06-06T00:00:00Z',
+        },
+      ],
+      hydrated: true,
+      loading: false,
+      error: null,
+    });
+
+    handleWSMessage({
+      type: 'user_catchphrase_update',
+      payload: {
+        catchphrases: [
+          {
+            id: 'fresh-1',
+            text: 'fresh A',
+            sortOrder: 0,
+            lastUsedAt: null,
+            createdAt: '2026-06-07T00:00:00Z',
+            updatedAt: '2026-06-07T00:00:00Z',
+          },
+          {
+            id: 'fresh-2',
+            text: 'fresh B',
+            sortOrder: 1,
+            lastUsedAt: null,
+            createdAt: '2026-06-07T00:00:00Z',
+            updatedAt: '2026-06-07T00:00:00Z',
+          },
+        ],
+        updated_at: '2026-06-07T00:00:00Z',
+      },
+    });
+
+    const state = useCatchphrasesStore.getState();
+    expect(state.catchphrases.map((row) => row.id)).toEqual(['fresh-1', 'fresh-2']);
+    expect(state.hydrated).toBe(true);
   });
 
   it('preserves stable runtime details across partial task_runtime_status updates', () => {

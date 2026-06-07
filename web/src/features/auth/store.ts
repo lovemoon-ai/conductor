@@ -5,6 +5,7 @@ import { createApiClientWithToken, getApiClient, type ApiClient, resetApiClient 
 import { clearStoredJwtToken, getStoredJwtToken, storeJwtToken } from '@/lib/auth/token-storage';
 import { useProjectsStore } from '@/features/projects/store';
 import { useSettingsNavStore } from '@/features/settings/nav-store';
+import { useCatchphrasesStore } from '@/features/catchphrases/store';
 
 export const AUTH_SESSION_STORAGE_KEY = 'conductor-auth';
 export const AUTH_USER_TOKEN_STORAGE_KEY = 'conductor.userToken';
@@ -218,6 +219,10 @@ export const useAuthStore = create<AuthState>()(
         // Don't leak the previous user's remembered Settings sub-page (e.g. a
         // daemon URL from account A) into account B's next session.
         useSettingsNavStore.getState().reset();
+        // Same protection for the catchphrase library (RFC 0032) — without
+        // this, user A's phrases stay visible in B's popover until the next
+        // realtime push.
+        useCatchphrasesStore.getState().reset();
         clearStoredJwtToken();
         if (typeof window !== 'undefined') {
           localStorage.removeItem(AUTH_USER_TOKEN_STORAGE_KEY);

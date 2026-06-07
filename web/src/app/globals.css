@@ -118,6 +118,37 @@ body {
   background: var(--surface-panel);
 }
 
+.catchphrase-popover-surface {
+  background: var(--surface-panel) !important;
+  border-color: var(--border-default) !important;
+  color: var(--text-primary) !important;
+}
+
+.catchphrase-popover-header {
+  background: var(--surface-subtle) !important;
+  border-color: var(--border-default) !important;
+  color: var(--text-secondary) !important;
+}
+
+.catchphrase-popover-muted {
+  color: var(--text-secondary) !important;
+}
+
+.catchphrase-popover-link {
+  color: var(--accent) !important;
+}
+
+.catchphrase-popover-row {
+  background: transparent;
+  border-color: var(--border-default) !important;
+  color: var(--text-primary) !important;
+}
+
+.catchphrase-popover-row:hover,
+.catchphrase-popover-row-active {
+  background: color-mix(in srgb, var(--accent) 10%, transparent) !important;
+}
+
 .webapp-btn-primary {
   background: linear-gradient(135deg, var(--gradient-start) 0%, var(--gradient-end) 100%);
   color: white;
