@@ -8,6 +8,7 @@ import { useTasksStore } from '@/features/tasks';
 import { useRuntimeStore } from '@/features/realtime/runtime-store';
 import { useTerminalStore } from '@/features/terminal';
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
+import { normalizeCatchphrases, useCatchphrasesStore } from '@/features/catchphrases/store';
 
 interface WebSocketState {
   status: WSConnectionStatus;
@@ -368,6 +369,14 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
       if (preferences) {
         useUserPreferencesStore.getState().applyTaskListPreferences(preferences);
       }
+      break;
+    }
+
+    case 'user_catchphrase_update': {
+      // Server sends the whole snapshot on every write, so we don't have to
+      // diff. Pass it straight through normalize → store.
+      const catchphrases = normalizeCatchphrases(payload.catchphrases);
+      useCatchphrasesStore.getState().applyCatchphrases(catchphrases);
       break;
     }
 

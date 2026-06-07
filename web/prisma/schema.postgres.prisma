@@ -33,6 +33,7 @@ model User {
   defaultProject DefaultProject? @relation("UserDefaultProject")
   tokens   UserToken[]
   preferences UserPreference[]
+  catchphrases UserCatchphrase[]
   orders   Order[]
   externalAccounts ExternalAccount[]
   channelConversations ChannelConversation[]
@@ -84,6 +85,24 @@ model UserPreference {
   @@unique([userId, key])
   @@index([userId])
   @@map("user_preferences")
+}
+
+/// Per-user catchphrase library (RFC 0032). Each row is a short phrase the
+/// user frequently sends to AI; the entire set is global to the user and
+/// surfaced via the empty-input double-click popover in the chat composer.
+model UserCatchphrase {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  text       String
+  sortOrder  Int       @default(0) @map("sort_order")
+  lastUsedAt DateTime? @map("last_used_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, sortOrder])
+  @@map("user_catchphrases")
 }
 
 model Project {
