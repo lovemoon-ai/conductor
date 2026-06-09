@@ -683,12 +683,13 @@ export function startDaemon(config = {}, deps = {}) {
     process.env.CONDUCTOR_WS_URL ||
     null;
   const derivedHttpFromWs = explicitWsUrl ? deriveBackendHttpFromWebsocket(explicitWsUrl) : null;
-  const BACKEND_HTTP =
+  const BACKEND_HTTP = (
     config.BACKEND_HTTP ||
     process.env.CONDUCTOR_BACKEND_URL ||
     derivedHttpFromWs ||
     fileConfig?.backendUrl ||
-    "http://localhost:6152";
+    "http://localhost:6152"
+  ).replace(/\/+$/, "");
   const BACKEND_URL =
     explicitWsUrl ||
     deriveWebsocketUrlFromHttp(BACKEND_HTTP);
@@ -1631,7 +1632,7 @@ export function startDaemon(config = {}, deps = {}) {
   );
   const DAEMON_WATCHDOG_MAX_SELF_HEALS = parsePositiveInt(
     process.env.CONDUCTOR_DAEMON_WATCHDOG_MAX_SELF_HEALS,
-    3,
+    6,
   );
   const TERMINAL_RING_BUFFER_MAX_BYTES = parsePositiveInt(
     config.TERMINAL_RING_BUFFER_MAX_BYTES || process.env.CONDUCTOR_TERMINAL_RING_BUFFER_MAX_BYTES,
