@@ -54,7 +54,7 @@ describe('ScheduledMessageDialog', () => {
     );
 
     fireEvent.change(screen.getByLabelText('After'), { target: { value: '15' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Schedule' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Schedule' }));
 
     await waitFor(() => {
       expect(apiPostMock).toHaveBeenCalledWith('/tasks/task-1/scheduled-messages', {
@@ -88,7 +88,7 @@ describe('ScheduledMessageDialog', () => {
     fireEvent.change(screen.getByLabelText('Every'), { target: { value: '2' } });
     fireEvent.click(screen.getAllByRole('checkbox')[0]);
     fireEvent.change(screen.getByDisplayValue('3'), { target: { value: '4' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Schedule' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Schedule' }));
 
     await waitFor(() => {
       expect(apiPostMock).toHaveBeenCalledWith('/tasks/task-1/scheduled-messages', expect.objectContaining({
@@ -104,5 +104,42 @@ describe('ScheduledMessageDialog', () => {
         }),
       }));
     });
+  });
+
+  it('keeps the confirmation action in a fixed footer for long schedule forms', () => {
+    render(
+      <ScheduledMessageDialog
+        open
+        taskId="task-1"
+        message={message}
+        onClose={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'If Idle' }));
+
+    const confirmButton = screen.getByRole('button', { name: 'Confirm Schedule' });
+    expect(confirmButton.parentElement).toHaveClass('shrink-0', 'border-t');
+  });
+
+  it('uses accent contrast for the active mode and confirmation buttons', () => {
+    render(
+      <ScheduledMessageDialog
+        open
+        taskId="task-1"
+        message={message}
+        onClose={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Repeat' }));
+
+    const repeatButton = screen.getByRole('button', { name: 'Repeat' });
+    const confirmButton = screen.getByRole('button', { name: 'Confirm Schedule' });
+
+    expect(repeatButton).toHaveClass('webapp-gradient-bg', 'text-white');
+    expect(repeatButton).not.toHaveClass('bg-ink');
+    expect(confirmButton).toHaveClass('webapp-gradient-bg', 'text-white');
+    expect(confirmButton).not.toHaveClass('bg-ink');
   });
 });

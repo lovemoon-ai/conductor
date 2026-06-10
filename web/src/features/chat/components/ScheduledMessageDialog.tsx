@@ -42,7 +42,7 @@ const toIsoFromLocalDateTime = (value: string): string | null => {
 const modeButtonClassName = (active: boolean) =>
   `min-h-10 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
     active
-      ? 'border-ink bg-ink text-white'
+      ? 'webapp-gradient-bg border-transparent text-white shadow-sm hover:opacity-95'
       : 'border-border bg-paper text-ink hover:bg-border/35'
   }`;
 
@@ -199,165 +199,167 @@ export function ScheduledMessageDialog({
       description="Send this message later or on a recurring schedule."
       maxWidthClassName="max-w-lg"
     >
-      <form className="space-y-5" onSubmit={handleSubmit}>
-        <div className="rounded-xl border border-border bg-paper p-3">
-          <p className="max-h-28 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed text-ink">
-            {preview || 'Empty message'}
-          </p>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <button type="button" className={modeButtonClassName(mode === 'delay')} onClick={() => setMode('delay')}>
-            Delay
-          </button>
-          <button type="button" className={modeButtonClassName(mode === 'at')} onClick={() => setMode('at')}>
-            Date Time
-          </button>
-          <button type="button" className={modeButtonClassName(mode === 'interval')} onClick={() => setMode('interval')}>
-            Repeat
-          </button>
-          <button type="button" className={modeButtonClassName(mode === 'idle_interval')} onClick={() => setMode('idle_interval')}>
-            If Idle
-          </button>
-        </div>
-
-        {mode === 'delay' ? (
-          <div className="grid grid-cols-[1fr_auto] gap-3">
-            <label className="space-y-2">
-              <span className={labelClassName}>After</span>
-              <input
-                className={inputClassName}
-                type="number"
-                min="1"
-                step="1"
-                value={delayAmount}
-                onChange={(event) => setDelayAmount(event.target.value)}
-              />
-            </label>
-            <label className="space-y-2">
-              <span className={labelClassName}>Unit</span>
-              <select className={inputClassName} value={delayUnit} onChange={(event) => setDelayUnit(event.target.value as TimeUnit)}>
-                <option value="minute">Minutes</option>
-                <option value="hour">Hours</option>
-              </select>
-            </label>
+      <form className="flex max-h-[calc(100dvh-11rem)] min-h-0 flex-col sm:max-h-[calc(100dvh-10rem)]" onSubmit={handleSubmit}>
+        <div className="-mx-1 min-h-0 space-y-5 overflow-y-auto px-1 pb-4">
+          <div className="rounded-xl border border-border bg-paper p-3">
+            <p className="max-h-28 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed text-ink">
+              {preview || 'Empty message'}
+            </p>
           </div>
-        ) : null}
 
-        {mode === 'at' ? (
-          <label className="block space-y-2">
-            <span className={labelClassName}>Send At</span>
-            <input
-              className={inputClassName}
-              type="datetime-local"
-              value={sendAt}
-              onChange={(event) => setSendAt(event.target.value)}
-            />
-          </label>
-        ) : null}
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <button type="button" className={modeButtonClassName(mode === 'delay')} onClick={() => setMode('delay')}>
+              Delay
+            </button>
+            <button type="button" className={modeButtonClassName(mode === 'at')} onClick={() => setMode('at')}>
+              Date Time
+            </button>
+            <button type="button" className={modeButtonClassName(mode === 'interval')} onClick={() => setMode('interval')}>
+              Repeat
+            </button>
+            <button type="button" className={modeButtonClassName(mode === 'idle_interval')} onClick={() => setMode('idle_interval')}>
+              If Idle
+            </button>
+          </div>
 
-        {mode === 'interval' || mode === 'idle_interval' ? (
-          <div className="space-y-4">
+          {mode === 'delay' ? (
             <div className="grid grid-cols-[1fr_auto] gap-3">
               <label className="space-y-2">
-                <span className={labelClassName}>Every</span>
+                <span className={labelClassName}>After</span>
                 <input
                   className={inputClassName}
                   type="number"
                   min="1"
                   step="1"
-                  value={intervalEvery}
-                  onChange={(event) => setIntervalEvery(event.target.value)}
+                  value={delayAmount}
+                  onChange={(event) => setDelayAmount(event.target.value)}
                 />
               </label>
               <label className="space-y-2">
                 <span className={labelClassName}>Unit</span>
-                <select className={inputClassName} value={intervalUnit} onChange={(event) => setIntervalUnit(event.target.value as TimeUnit)}>
+                <select className={inputClassName} value={delayUnit} onChange={(event) => setDelayUnit(event.target.value as TimeUnit)}>
                   <option value="minute">Minutes</option>
                   <option value="hour">Hours</option>
                 </select>
               </label>
             </div>
+          ) : null}
 
-            {mode === 'idle_interval' ? (
-              <div className="rounded-xl border border-border bg-paper p-3 text-sm text-muted">
-                Sends only when the latest runtime status says the AI reply is idle.
+          {mode === 'at' ? (
+            <label className="block space-y-2">
+              <span className={labelClassName}>Send At</span>
+              <input
+                className={inputClassName}
+                type="datetime-local"
+                value={sendAt}
+                onChange={(event) => setSendAt(event.target.value)}
+              />
+            </label>
+          ) : null}
+
+          {mode === 'interval' || mode === 'idle_interval' ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-[1fr_auto] gap-3">
+                <label className="space-y-2">
+                  <span className={labelClassName}>Every</span>
+                  <input
+                    className={inputClassName}
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={intervalEvery}
+                    onChange={(event) => setIntervalEvery(event.target.value)}
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className={labelClassName}>Unit</span>
+                  <select className={inputClassName} value={intervalUnit} onChange={(event) => setIntervalUnit(event.target.value as TimeUnit)}>
+                    <option value="minute">Minutes</option>
+                    <option value="hour">Hours</option>
+                  </select>
+                </label>
               </div>
-            ) : null}
 
-            <div className="space-y-3 rounded-xl border border-border p-3">
-              <label className="flex items-center gap-3 text-sm text-ink">
-                <input
-                  type="checkbox"
-                  checked={maxRunsEnabled}
-                  onChange={(event) => setMaxRunsEnabled(event.target.checked)}
-                />
-                <span>Stop after</span>
-                <input
-                  className="h-9 w-20 rounded-lg border border-border bg-paper px-2 text-sm"
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={maxRuns}
-                  disabled={!maxRunsEnabled}
-                  onChange={(event) => setMaxRuns(event.target.value)}
-                />
-                <span>sends</span>
-              </label>
-              <label className="flex items-center gap-3 text-sm text-ink">
-                <input
-                  type="checkbox"
-                  checked={maxSkipsEnabled}
-                  onChange={(event) => setMaxSkipsEnabled(event.target.checked)}
-                />
-                <span>Stop after</span>
-                <input
-                  className="h-9 w-20 rounded-lg border border-border bg-paper px-2 text-sm"
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={maxSkips}
-                  disabled={!maxSkipsEnabled}
-                  onChange={(event) => setMaxSkips(event.target.value)}
-                />
-                <span>skips</span>
-              </label>
-              <label className="grid gap-2 text-sm text-ink">
-                <span className="flex items-center gap-3">
+              {mode === 'idle_interval' ? (
+                <div className="rounded-xl border border-border bg-paper p-3 text-sm text-muted">
+                  Sends only when the latest runtime status says the AI reply is idle.
+                </div>
+              ) : null}
+
+              <div className="space-y-3 rounded-xl border border-border p-3">
+                <label className="flex items-center gap-3 text-sm text-ink">
                   <input
                     type="checkbox"
-                    checked={stopAtEnabled}
-                    onChange={(event) => setStopAtEnabled(event.target.checked)}
+                    checked={maxRunsEnabled}
+                    onChange={(event) => setMaxRunsEnabled(event.target.checked)}
                   />
-                  <span>Stop at</span>
-                </span>
-                <input
-                  className={inputClassName}
-                  type="datetime-local"
-                  value={stopAt}
-                  disabled={!stopAtEnabled}
-                  onChange={(event) => setStopAt(event.target.value)}
-                />
-              </label>
-              <label className="flex items-center gap-3 text-sm text-ink">
-                <input
-                  type="checkbox"
-                  checked={stopWhenTaskNotRunning}
-                  onChange={(event) => setStopWhenTaskNotRunning(event.target.checked)}
-                />
-                <span>Stop when task is not running</span>
-              </label>
+                  <span>Stop after</span>
+                  <input
+                    className="h-9 w-20 rounded-lg border border-border bg-paper px-2 text-sm"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={maxRuns}
+                    disabled={!maxRunsEnabled}
+                    onChange={(event) => setMaxRuns(event.target.value)}
+                  />
+                  <span>sends</span>
+                </label>
+                <label className="flex items-center gap-3 text-sm text-ink">
+                  <input
+                    type="checkbox"
+                    checked={maxSkipsEnabled}
+                    onChange={(event) => setMaxSkipsEnabled(event.target.checked)}
+                  />
+                  <span>Stop after</span>
+                  <input
+                    className="h-9 w-20 rounded-lg border border-border bg-paper px-2 text-sm"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={maxSkips}
+                    disabled={!maxSkipsEnabled}
+                    onChange={(event) => setMaxSkips(event.target.value)}
+                  />
+                  <span>skips</span>
+                </label>
+                <label className="grid gap-2 text-sm text-ink">
+                  <span className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={stopAtEnabled}
+                      onChange={(event) => setStopAtEnabled(event.target.checked)}
+                    />
+                    <span>Stop at</span>
+                  </span>
+                  <input
+                    className={inputClassName}
+                    type="datetime-local"
+                    value={stopAt}
+                    disabled={!stopAtEnabled}
+                    onChange={(event) => setStopAt(event.target.value)}
+                  />
+                </label>
+                <label className="flex items-center gap-3 text-sm text-ink">
+                  <input
+                    type="checkbox"
+                    checked={stopWhenTaskNotRunning}
+                    onChange={(event) => setStopWhenTaskNotRunning(event.target.checked)}
+                  />
+                  <span>Stop when task is not running</span>
+                </label>
+              </div>
             </div>
-          </div>
-        ) : null}
+          ) : null}
 
-        {error ? (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {error}
-          </div>
-        ) : null}
+          {error ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </div>
+          ) : null}
+        </div>
 
-        <div className="flex justify-end gap-3">
+        <div className="-mx-5 -mb-5 flex shrink-0 justify-end gap-3 border-t border-border bg-panel px-5 py-4">
           <button
             type="button"
             onClick={onClose}
@@ -368,9 +370,9 @@ export function ScheduledMessageDialog({
           <button
             type="submit"
             disabled={submitting || !message?.content.trim()}
-            className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-ink/90 disabled:cursor-not-allowed disabled:opacity-60"
+            className="webapp-gradient-bg rounded-lg px-4 py-2 text-sm font-medium text-white shadow-sm transition-opacity hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {submitting ? 'Scheduling...' : 'Schedule'}
+            {submitting ? 'Scheduling...' : 'Confirm Schedule'}
           </button>
         </div>
       </form>
