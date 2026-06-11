@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { CLAUDE_AGENT_SDK_VARIANT as CLAUDE_PROVIDER_VARIANT } from "../built-in-backends.js";
 import {
   emitLog,
+  extractLongFlagFromCommandLine,
   getBoundedEnvInt,
   isGoalStatus,
   loadEnvConfig,
@@ -165,6 +166,17 @@ export class ClaudeAgentSdkSession extends EventEmitter {
   constructor(backend, options = {}) {
     super();
     this.backend = normalizeClaudeBackend(backend);
+    // Lift `--effort` out of the configured allow_cli_list command string
+    // when the caller didn't pass it as a structured option. This keeps
+    // claude-specific flags out of the generic fire/serve-ai layer while
+    // still honoring user config like `claude --model fable --effort low`.
+    // An explicit `options.effort` always wins.
+    if (options.effort === undefined && typeof options.commandLine === "string") {
+      const effortFromCommandLine = extractLongFlagFromCommandLine(options.commandLine, "effort");
+      if (effortFromCommandLine) {
+        options = { ...options, effort: effortFromCommandLine };
+      }
+    }
     this.options = options;
     this.logger = normalizeLogger(options.logger);
     this.cwd =

@@ -807,3 +807,47 @@ describe("resume command args", () => {
     assert.deepEqual(args, []);
   });
 });
+
+describe("resolveAiSessionOptions", () => {
+  it("extracts --model from allow_cli_list command", () => {
+    const options = resolveAiSessionOptions(
+      "claude-fable-low",
+      { "claude-fable-low": "claude --model fable --effort low" },
+      {},
+      "claude",
+    );
+    assert.equal(options.model, "fable");
+  });
+
+  it("supports --model=value syntax", () => {
+    const options = resolveAiSessionOptions(
+      "claude-fable-low",
+      { "claude-fable-low": "claude --model=fable" },
+      {},
+      "claude",
+    );
+    assert.equal(options.model, "fable");
+  });
+
+  it("does not lift backend-specific flags like --effort into the fire layer", () => {
+    // `--effort` is claude-specific; the session class parses it from
+    // `commandLine` itself so the fire layer stays provider-agnostic.
+    const options = resolveAiSessionOptions(
+      "claude-fable-low",
+      { "claude-fable-low": "claude --model fable --effort low" },
+      {},
+      "claude",
+    );
+    assert.equal(options.effort, undefined);
+  });
+
+  it("returns an empty object when --model is absent", () => {
+    const options = resolveAiSessionOptions(
+      "claude",
+      { claude: "claude --dangerously-skip-permissions" },
+      {},
+      "claude",
+    );
+    assert.deepEqual(options, {});
+  });
+});

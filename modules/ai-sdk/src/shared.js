@@ -267,6 +267,41 @@ export function parseCommandParts(commandLine) {
   };
 }
 
+// Read a long-flag value (`--flag value` or `--flag=value`) out of an
+// allow_cli_list command string. Returns "" if absent or empty. Provider
+// session classes use this to lift backend-specific flags (e.g. claude's
+// `--effort`, codex's `-c`) out of the configured command without having to
+// bubble them up through the fire/serve-ai layers.
+export function extractLongFlagFromCommandLine(commandLine, flag) {
+  const normalized = typeof flag === "string" ? flag.trim() : "";
+  if (!normalized) {
+    return "";
+  }
+  let parts;
+  try {
+    const { command, args } = parseCommandParts(commandLine);
+    parts = command ? [command, ...args] : [];
+  } catch {
+    return "";
+  }
+  const longFlag = `--${normalized}`;
+  const longFlagEq = `${longFlag}=`;
+  for (let index = 0; index < parts.length; index += 1) {
+    const token = String(parts[index] || "").trim();
+    if (!token) {
+      continue;
+    }
+    if (token === longFlag) {
+      const next = String(parts[index + 1] || "").trim();
+      return next || "";
+    }
+    if (token.startsWith(longFlagEq)) {
+      return token.slice(longFlagEq.length).trim();
+    }
+  }
+  return "";
+}
+
 export function resolveConductorConfigPath(configFilePath) {
   const home = os.homedir();
   return configFilePath || process.env.CONDUCTOR_CONFIG || path.join(home, ".conductor", "config.yaml");
