@@ -18,6 +18,24 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.6.1] - 2026-06-11
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.6.1`
+- `@love-moon/conductor-sdk` `0.6.1`
+- `@love-moon/ai-sdk` `0.6.1`
+- `@love-moon/app-sdk` `0.6.1`
+- `@love-moon/chat-web` `0.6.1`
+
+### Changes
+
+### Patch Changes
+
+- Updated dependencies [650fc55]
+  - @love-moon/ai-sdk@0.6.1
+  - @love-moon/conductor-sdk@0.6.1
+
 ## [0.6.0] - 2026-06-03
 
 ### Released packages
