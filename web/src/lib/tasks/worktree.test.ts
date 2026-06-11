@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { resolveTaskWorktreeCwdFromLaunchConfig } from "./worktree";
+import {
+  inheritTaskWorktreeLaunchConfig,
+  resolveTaskWorktreeCwdFromLaunchConfig,
+} from "./worktree";
 
 describe("resolveTaskWorktreeCwdFromLaunchConfig", () => {
   it("returns null for non-worktree launch configs", () => {
@@ -56,6 +59,72 @@ describe("resolveTaskWorktreeCwdFromLaunchConfig", () => {
         projectRelativePath: ".",
       }),
     ).toBe("C:\\repo\\.conductor\\worktrees\\feature_login");
+  });
+
+  it("inheritTaskWorktreeLaunchConfig returns null for non-worktree configs", () => {
+    expect(inheritTaskWorktreeLaunchConfig(null)).toBeNull();
+    expect(inheritTaskWorktreeLaunchConfig({})).toBeNull();
+    expect(inheritTaskWorktreeLaunchConfig({ cwd: "/repo" })).toBeNull();
+    // Missing required fields (no worktreeId / projectRepoRoot / etc.) must
+    // refuse to "inherit a worktree" — silently returning a partial config
+    // would route the successor to the project root and lose workspace
+    // continuity.
+    expect(
+      inheritTaskWorktreeLaunchConfig({
+        worktree: true,
+        worktreeBranch: "abc",
+      }),
+    ).toBeNull();
+  });
+
+  it("inheritTaskWorktreeLaunchConfig preserves the source's worktree identity", () => {
+    // The "new task from this" workspace contract: the successor must land in
+    // the SAME on-disk folder as the source. Folder identity is keyed off the
+    // sanitised worktreeBranch, so the inherited launch_config MUST keep the
+    // same worktreeBranch (and resolve to the same cwd). If this changes the
+    // user's "continue this work" intent silently breaks.
+    const source = {
+      worktree: true,
+      worktreeId: "task-original",
+      worktreeBranch: "feature/login",
+      worktreeBaseRef: "main",
+      projectRepoRoot: "/repo",
+      projectWorkspacePath: "/repo",
+      projectRelativePath: ".",
+    };
+    const inherited = inheritTaskWorktreeLaunchConfig(source);
+    expect(inherited).toMatchObject({
+      worktree: true,
+      worktreeBranch: "feature/login",
+      worktreeBaseRef: "main",
+      projectRepoRoot: "/repo",
+      projectWorkspacePath: "/repo",
+      projectRelativePath: ".",
+    });
+    expect(resolveTaskWorktreeCwdFromLaunchConfig(inherited)).toBe(
+      resolveTaskWorktreeCwdFromLaunchConfig(source),
+    );
+  });
+
+  it("inheritTaskWorktreeLaunchConfig accepts snake_case fields written by the daemon", () => {
+    // Both web and daemon parsers tolerate snake_case aliases (see
+    // parseTaskWorktreeLaunchConfig). The inheritance helper sits on top of
+    // that parser, so a launch_config written by an older daemon (snake_case)
+    // must still produce a valid inherited config.
+    const inherited = inheritTaskWorktreeLaunchConfig({
+      worktree: true,
+      worktree_id: "task-original",
+      worktree_branch: "fix/buttons",
+      worktree_base_ref: "main",
+      project_repo_root: "/repo",
+      project_workspace_path: "/repo/apps/web",
+      project_relative_path: "apps/web",
+    });
+    expect(inherited).toMatchObject({
+      worktreeBranch: "fix/buttons",
+      projectWorkspacePath: "/repo/apps/web",
+      projectRelativePath: "apps/web",
+    });
   });
 
   it("sanitises path separators in the worktree branch name (matches daemon's buildTaskWorktreeRoot)", () => {
