@@ -957,9 +957,7 @@ export async function PATCH(
   }
 
   const responseAttachedTerminal =
-    (task.taskType ?? nextTaskType ?? "ai_task") === "ai_task"
-      ? await loadAttachedTerminalSummary(task.id)
-      : null;
+    nextTaskType === "ai_task" ? await loadAttachedTerminalSummary(task.id) : null;
 
   return NextResponse.json(
     serializeTaskResponse({
