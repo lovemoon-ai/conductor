@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { SETTINGS_ROOT_PATH, useSettingsNavStore } from '@/features/settings';
 import { CatchphraseSettingsCard } from '@/features/catchphrases';
+import { GlassesSettingsCard } from '@/features/glasses/GlassesSettingsCard';
 
 const BUILD_TIME_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'Asia/Shanghai',
@@ -165,6 +166,9 @@ export default function SettingsPage() {
             </div>
           )}
         </section>
+
+        {/* Rokid glasses connection — only renders inside the Android shell */}
+        <GlassesSettingsCard />
 
         {/* Catchphrases (RFC 0032) */}
         <CatchphraseSettingsCard />

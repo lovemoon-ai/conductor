@@ -8,28 +8,37 @@ shown **on the glasses screen** while the phone acts as controller.
 This is intentionally a *phone* app that talks to the glasses over the
 **Rokid CXR-M SDK** (`com.rokid.cxr:client-m`), not a glasses-native app.
 
+## Architecture: WebView shell + glasses bridge
+
+The whole UI (login, projects, tasks, chat, realtime) is the **existing
+Conductor web frontend**, loaded in a `WebView` — there is only one frontend
+codebase to maintain. Native Kotlin is limited to what a browser cannot do:
+the Bluetooth glasses + phone speech recognizer, exposed to the page as a
+JavaScript bridge.
+
+```
+MainActivity.kt            WebView host; loads the Conductor site, registers the bridge
+bridge/GlassesBridge.kt    window.RokidGlassesNative — @JavascriptInterface glasses/STT commands,
+                           and __rokidOn* event callbacks back into the page
+glasses/GlassesManager.kt  CxrApi wrapper: connect, AI_CHAT scene, push text
+speech/SpeechInput.kt      Android SpeechRecognizer push-to-talk
+```
+
+The web side opts in via `web/src/features/glasses/native-bridge.ts` +
+`useGlassesSession.ts` (wired into `ChatView`). When `window.RokidGlassesNative`
+is absent (a normal browser) the adapter is a no-op, so the same web build runs
+everywhere. The data flow (auth/projects/tasks/messages/`/ws/app`) is the web
+app's; the native REST/WebSocket clients were removed.
+
 ## What it does
 
-- **Login** via Conductor phone-OTP (`/api/auth/request-code` → `/api/auth/login`/`register`), token stored locally.
-- **Projects / Tasks**: lists your projects (`/api/projects`) and a project's tasks (`/api/tasks`), and can create new AI tasks.
-- **Conversation**: loads task history (`/api/tasks/{id}/messages`), opens a realtime WebSocket (`/ws/app?token=`), sends your messages (`POST .../messages`, `role:user`) to advance the task, and renders the agent's replies (which arrive with role `sdk`).
-- **Glasses**: connects to bonded Rokid Glasses over Bluetooth via `CxrApi`, opens the on-glasses **AI_CHAT** scene, echoes your input with `sendAsrContent`, signals thinking with `notifyAiStart`, and pushes each AI reply to the lens with `sendTtsContent`.
-- **Voice**: push-to-talk mic (phone `SpeechRecognizer`; the glasses are set as the communication audio device so the glasses mic is used). The glasses' AI button (`AiEventListener.onAiKeyDown/Up`) also triggers capture.
+- **UI / data**: served entirely by the Conductor web app inside the WebView.
+- **Glasses**: connects to bonded Rokid Glasses over Bluetooth via `CxrApi`, opens the on-glasses **AI_CHAT** scene, echoes input with `sendAsrContent`, signals thinking with `notifyAiStart`, and pushes each AI reply to the lens with `sendTtsContent` — driven by the web adapter through the bridge.
+- **Voice**: push-to-talk mic (phone `SpeechRecognizer`; the glasses are set as the communication audio device so the glasses mic is used). The glasses' AI button (`AiEventListener.onAiKeyDown/Up`) triggers capture; the recognized text is sent through the web chat store.
 
-## Architecture
-
-```
-ui/RokidConductorApp.kt   Compose screens: Login → Projects → Tasks → Chat
-AppViewModel.kt           StateFlow state; orchestrates net + glasses + speech
-net/ConductorClient.kt    OkHttp REST client (auth, projects, tasks, messages)
-net/ConductorSocket.kt    OkHttp WebSocket to /ws/app, auto-reconnect
-glasses/GlassesManager.kt  CxrApi wrapper: connect, AI_CHAT scene, push text
-speech/SpeechInput.kt     Android SpeechRecognizer push-to-talk
-```
-
-The server base URL is configurable on the login screen (default
-`https://conductor-ai.top`; use `http://localhost:6152` for a local server,
-with `adb reverse tcp:6152 tcp:6152`).
+The loaded site defaults to `https://conductor-ai.top`. For a local server,
+override it: `adb shell am start -n com.rokid.conductor/.MainActivity --es
+start_url http://10.0.2.2:6152` (emulator) or your LAN URL on a device.
 
 ## Build & install
 

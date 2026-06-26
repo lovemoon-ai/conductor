@@ -14,6 +14,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 
 export const SETTINGS_ROOT_PATH = '/app/settings';
 export const AI_MANAGER_PATH_PREFIX = '/app/ai-manager';
+export const GLASSES_PATH = '/app/glasses';
 
 export function isSettingsAreaPath(pathname: string): boolean {
   return (
@@ -21,7 +22,9 @@ export function isSettingsAreaPath(pathname: string): boolean {
     pathname.startsWith(`${SETTINGS_ROOT_PATH}/`) ||
     pathname === AI_MANAGER_PATH_PREFIX ||
     pathname.startsWith(`${AI_MANAGER_PATH_PREFIX}/`) ||
-    pathname.startsWith(`${AI_MANAGER_PATH_PREFIX}?`)
+    pathname.startsWith(`${AI_MANAGER_PATH_PREFIX}?`) ||
+    pathname === GLASSES_PATH ||
+    pathname.startsWith(`${GLASSES_PATH}/`)
   );
 }
 

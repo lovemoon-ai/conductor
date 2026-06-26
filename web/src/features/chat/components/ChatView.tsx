@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useChatStore } from '../store';
+import { useGlassesSession } from '@/features/glasses/useGlassesSession';
 import { useRuntimeStore } from '@/features/realtime';
 import { useTasksStore } from '@/features/tasks';
 import { useWebSocketStore } from '@/features/realtime';
@@ -266,6 +267,8 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const activeQuestionRafRef = useRef<number | null>(null);
 
   const messages = messagesByTask[taskId] ?? EMPTY_MESSAGES;
+  // Mirror this chat to Rokid glasses when running inside the Android shell; no-op otherwise.
+  useGlassesSession({ taskId, messages, sendMessage });
   const userQuestionIndexByMessageIndex = useMemo(() => {
     const map = new Map<number, number>();
     let q = 0;
