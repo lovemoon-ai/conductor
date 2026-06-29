@@ -63,7 +63,7 @@ const DEFAULT_CLIs = {
 const backendUrl =
   process.env.CONDUCTOR_BACKEND_URL ||
   process.env.BACKEND_URL ||
-  "https://conductor-ai.top";
+  "https://conductor.conductor-ai.top";
 const defaultDaemonName = os.hostname() || "my-daemon";
 const cliVersion = packageJson.version || "unknown";
 const OPENCODE_INSTALL_URL = "https://opencode.ai/install";

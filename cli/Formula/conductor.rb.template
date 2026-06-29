@@ -1,6 +1,6 @@
 class Conductor < Formula
   desc "Run the Conductor CLI and daemon with bundled Node.js runtime"
-  homepage "https://conductor-ai.top/"
+  homepage "https://conductor.conductor-ai.top/"
   version "__VERSION__"
 
   on_macos do
