@@ -1,5 +1,17 @@
 # @love-moon/conductor-cli
 
+## 0.7.0
+
+### Minor Changes
+
+- 689fc50: Add scheduled message management APIs and conductor task schedule list/create/delete commands.
+
+### Patch Changes
+
+- Updated dependencies [689fc50]
+  - @love-moon/conductor-sdk@0.7.0
+  - @love-moon/ai-sdk@0.7.0
+
 ## 0.6.1
 
 ### Patch Changes
