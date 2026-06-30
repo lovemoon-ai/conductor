@@ -9,6 +9,7 @@ import {
 } from './ProjectDetailsDialog.utils';
 
 const updateProjectMock = vi.fn();
+const fetchProjectsMock = vi.fn();
 const pushToastMock = vi.fn();
 const confirmMock = vi.fn();
 
@@ -43,8 +44,13 @@ vi.mock('@/components/common/FeedbackProvider', () => ({
 }));
 
 vi.mock('../store', () => {
-  const hook = (selector?: (state: { updateProject: typeof updateProjectMock }) => unknown) =>
-    selector ? selector({ updateProject: updateProjectMock }) : { updateProject: updateProjectMock };
+  const hook = (selector?: (state: {
+    updateProject: typeof updateProjectMock;
+    fetchProjects: typeof fetchProjectsMock;
+  }) => unknown) =>
+    selector
+      ? selector({ updateProject: updateProjectMock, fetchProjects: fetchProjectsMock })
+      : { updateProject: updateProjectMock, fetchProjects: fetchProjectsMock };
   // Mirror zustand's static accessors so the dialog can read/write the
   // shared `projects` list for optimistic updates.
   (hook as any).getState = () => storeState;
@@ -67,6 +73,8 @@ const baseProject = {
 describe('ProjectDetailsDialog', () => {
   beforeEach(() => {
     updateProjectMock.mockReset();
+    fetchProjectsMock.mockReset();
+    fetchProjectsMock.mockResolvedValue(undefined);
     pushToastMock.mockReset();
     confirmMock.mockReset();
     resetStoreProjects([]);
@@ -120,6 +128,19 @@ describe('ProjectDetailsDialog', () => {
       'href',
       'https://github.com/foo/bar',
     );
+  });
+
+  it('shows active scheduled message count in overview', () => {
+    const project = {
+      ...baseProject,
+      activeScheduledMessageCount: 3,
+    } as any;
+
+    render(<ProjectDetailsDialog open project={project} onClose={vi.fn()} />);
+
+    expect(screen.getByText('Scheduled')).toBeInTheDocument();
+    expect(screen.getByText('3 active')).toBeInTheDocument();
+    expect(fetchProjectsMock).toHaveBeenCalledTimes(1);
   });
 
   it('adds a new memo by prepending and patching metadata', async () => {

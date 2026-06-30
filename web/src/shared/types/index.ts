@@ -59,6 +59,7 @@ export interface Project {
   mergeOptOut?: boolean;
   isDefault?: boolean;
   taskStatusCounts?: Record<string, number>;
+  activeScheduledMessageCount?: number;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -211,6 +212,7 @@ export interface Task {
   lastAssistantMessage?: string | null;
   ptySession?: PtySession | null;
   attachedTerminal?: AttachedTerminalSummary | null;
+  activeScheduledMessageCount?: number;
   createdAt: string;
   updatedAt?: string | null;
 }

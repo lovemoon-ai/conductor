@@ -4,6 +4,8 @@ import { GET, POST, PATCH, DELETE } from "@/app/api/projects/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
 import * as authService from "@/lib/auth/service";
 
+const countActiveScheduledMessagesForProjectsMock = vi.hoisted(() => vi.fn());
+
 vi.mock("@/lib/subscription/service", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/subscription/service")>();
   return {
@@ -77,6 +79,10 @@ vi.mock("@/lib/tasks/task-stop", () => ({
   stopTaskBeforeRelaunch: vi.fn(),
 }));
 
+vi.mock("@/lib/tasks/scheduled-messages", () => ({
+  countActiveScheduledMessagesForProjects: countActiveScheduledMessagesForProjectsMock,
+}));
+
 vi.mock("@/lib/projects/project-settings-yaml", () => ({
   readProjectSettingsYaml: vi.fn(),
 }));
@@ -112,6 +118,7 @@ describe("/api/projects", () => {
     vi.mocked(db.defaultProject.findMany).mockResolvedValue([]);
     vi.mocked(db.project.findMany).mockResolvedValue([]);
     vi.mocked(db.task.groupBy).mockResolvedValue([]);
+    countActiveScheduledMessagesForProjectsMock.mockResolvedValue(new Map());
     vi.mocked(db.defaultProject.findUnique).mockResolvedValue(null);
     vi.mocked(db.project.findFirst).mockResolvedValue(null);
     vi.mocked(db.project.findUnique).mockResolvedValue(null);
@@ -178,6 +185,7 @@ describe("/api/projects", () => {
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
       vi.mocked(db.project.findMany).mockResolvedValue(mockProjects);
+      countActiveScheduledMessagesForProjectsMock.mockResolvedValue(new Map([["proj-1", 4]]));
 
       const token = createTestToken("user-1");
       const request = createMockRequest({ token });
@@ -189,6 +197,9 @@ describe("/api/projects", () => {
       expect(data[0].id).toBe("proj-1");
       expect(data[0].name).toBe("Project 1");
       expect(data[0].metadata).toEqual({ key: "value" });
+      expect(data[0].activeScheduledMessageCount).toBe(4);
+      expect(data[0].active_scheduled_message_count).toBe(4);
+      expect(countActiveScheduledMessagesForProjectsMock).toHaveBeenCalledWith({ userId: "user-1" });
     });
 
     it("surfaces the icon read from .conductor/settings.yaml on each project", async () => {

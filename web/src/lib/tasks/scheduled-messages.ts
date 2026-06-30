@@ -380,6 +380,102 @@ export async function cancelScheduledMessageForTask(input: {
   return result.count > 0;
 }
 
+const getScheduledMessageModel = () =>
+  (db as typeof db & {
+    scheduledMessage?: typeof db.scheduledMessage;
+  }).scheduledMessage ?? null;
+
+export async function countActiveScheduledMessagesForTasks(input: {
+  userId: string;
+  taskIds: string[];
+}): Promise<Map<string, number>> {
+  const taskIds = [...new Set(input.taskIds.map((id) => id.trim()).filter(Boolean))];
+  const counts = new Map<string, number>(taskIds.map((id) => [id, 0]));
+  if (taskIds.length === 0) {
+    return counts;
+  }
+
+  const scheduledMessage = getScheduledMessageModel();
+  if (!scheduledMessage?.findMany) {
+    return counts;
+  }
+
+  try {
+    const rows = await scheduledMessage.findMany({
+      where: {
+        userId: input.userId,
+        taskId: { in: taskIds },
+        status: "active",
+      },
+      select: {
+        taskId: true,
+      },
+    });
+    for (const row of rows) {
+      counts.set(row.taskId, (counts.get(row.taskId) ?? 0) + 1);
+    }
+  } catch (error) {
+    if (!isMissingScheduledMessagesSchemaError(error)) {
+      throw error;
+    }
+    warnMissingScheduledMessagesSchema("countActiveScheduledMessagesForTasks", error);
+  }
+
+  return counts;
+}
+
+export async function countActiveScheduledMessagesForProjects(input: {
+  userId: string;
+  projectIds?: string[] | null;
+}): Promise<Map<string, number>> {
+  const projectIds = input.projectIds
+    ? [...new Set(input.projectIds.map((id) => id.trim()).filter(Boolean))]
+    : null;
+  const counts = new Map<string, number>((projectIds ?? []).map((id) => [id, 0]));
+
+  const scheduledMessage = getScheduledMessageModel();
+  if (!scheduledMessage?.findMany) {
+    return counts;
+  }
+
+  try {
+    const rows = await scheduledMessage.findMany({
+      where: {
+        userId: input.userId,
+        status: "active",
+        ...(projectIds
+          ? {
+              task: {
+                projectId: { in: projectIds },
+              },
+            }
+          : {}),
+      },
+      select: {
+        task: {
+          select: {
+            projectId: true,
+          },
+        },
+      },
+    });
+    for (const row of rows) {
+      const projectId = row.task?.projectId;
+      if (!projectId) {
+        continue;
+      }
+      counts.set(projectId, (counts.get(projectId) ?? 0) + 1);
+    }
+  } catch (error) {
+    if (!isMissingScheduledMessagesSchemaError(error)) {
+      throw error;
+    }
+    warnMissingScheduledMessagesSchema("countActiveScheduledMessagesForProjects", error);
+  }
+
+  return counts;
+}
+
 function nextIntervalRunAt(scheduled: Pick<ClaimedScheduledMessage, "intervalMs">, now: Date): Date | null {
   if (!scheduled.intervalMs || scheduled.intervalMs <= 0) {
     return null;

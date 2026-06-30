@@ -4,6 +4,8 @@ import { DELETE, GET, PATCH } from "@/app/api/tasks/[taskId]/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
 import * as authService from "@/lib/auth/service";
 
+const countActiveScheduledMessagesForTasksMock = vi.hoisted(() => vi.fn());
+
 vi.mock("@/lib/subscription/service", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/subscription/service")>();
   return {
@@ -45,6 +47,10 @@ vi.mock("@/lib/realtime/agent-outbox", () => ({
 
 vi.mock("@/lib/tasks/task-file-storage", () => ({
   deleteTaskAttachmentDirectory: vi.fn(),
+}));
+
+vi.mock("@/lib/tasks/scheduled-messages", () => ({
+  countActiveScheduledMessagesForTasks: countActiveScheduledMessagesForTasksMock,
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -153,6 +159,7 @@ describe("/api/tasks/[taskId]", () => {
     vi.mocked(db.message.findMany).mockResolvedValue([]);
     vi.mocked(db.message.count).mockResolvedValue(0);
     vi.mocked(db.task.findMany).mockResolvedValue([] as any);
+    countActiveScheduledMessagesForTasksMock.mockResolvedValue(new Map());
     vi.mocked(db.taskStatusEvent.findFirst).mockResolvedValue(null);
     vi.mocked(db.ptySession.upsert).mockResolvedValue({
       id: "pty-1",
@@ -265,6 +272,7 @@ describe("/api/tasks/[taskId]", () => {
         updatedAt: new Date("2024-01-01T00:01:00.000Z"),
       },
     } as any);
+    countActiveScheduledMessagesForTasksMock.mockResolvedValue(new Map([["task-pty-1", 3]]));
 
     const request = createMockRequest({ method: "GET", token });
     const response = await GET(request, { params: Promise.resolve({ taskId: "task-pty-1" }) });
@@ -272,6 +280,12 @@ describe("/api/tasks/[taskId]", () => {
 
     expect(response.status).toBe(200);
     expect(data.task_type).toBe("pty_task");
+    expect(data.active_scheduled_message_count).toBe(3);
+    expect(data.activeScheduledMessageCount).toBe(3);
+    expect(countActiveScheduledMessagesForTasksMock).toHaveBeenCalledWith({
+      userId: "user-1",
+      taskIds: ["task-pty-1"],
+    });
     expect(data.launch_config).toEqual({
       entrypointType: "tool_preset",
       toolPreset: "codex",

@@ -70,6 +70,7 @@ export function ScheduledMessageDialog({
   const [stopAtEnabled, setStopAtEnabled] = useState(false);
   const [stopAt, setStopAt] = useState('');
   const [stopWhenTaskNotRunning, setStopWhenTaskNotRunning] = useState(true);
+  const [messageContent, setMessageContent] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -89,14 +90,12 @@ export function ScheduledMessageDialog({
     setStopAtEnabled(false);
     setStopAt(toLocalDateTimeInputValue(new Date(Date.now() + 24 * 60 * 60_000)));
     setStopWhenTaskNotRunning(true);
+    setMessageContent(message?.content ?? '');
     setSubmitting(false);
     setError(null);
-  }, [open, message?.id]);
+  }, [open, message?.content, message?.id]);
 
-  const preview = useMemo(() => {
-    const content = message?.content.trim() ?? '';
-    return content.length > 180 ? `${content.slice(0, 180)}...` : content;
-  }, [message?.content]);
+  const trimmedMessageContent = useMemo(() => messageContent.trim(), [messageContent]);
 
   const buildSchedulePayload = () => {
     if (mode === 'delay') {
@@ -157,7 +156,7 @@ export function ScheduledMessageDialog({
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!message?.content.trim()) {
+    if (!trimmedMessageContent) {
       setError('Message content is empty.');
       return;
     }
@@ -173,8 +172,8 @@ export function ScheduledMessageDialog({
     try {
       const api = getApiClient();
       await api.post(`/tasks/${taskId}/scheduled-messages`, {
-        content: message.content,
-        sourceMessageId: message.id,
+        content: trimmedMessageContent,
+        sourceMessageId: message?.id ?? null,
         schedule,
       });
       pushToast({
@@ -201,11 +200,16 @@ export function ScheduledMessageDialog({
     >
       <form className="flex max-h-[calc(100dvh-11rem)] min-h-0 flex-col sm:max-h-[calc(100dvh-10rem)]" onSubmit={handleSubmit}>
         <div className="-mx-1 min-h-0 space-y-5 overflow-y-auto px-1 pb-4">
-          <div className="rounded-xl border border-border bg-paper p-3">
-            <p className="max-h-28 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed text-ink">
-              {preview || 'Empty message'}
-            </p>
-          </div>
+          <label className="block space-y-2">
+            <span className={labelClassName}>Message Content</span>
+            <textarea
+              aria-label="Message content"
+              value={messageContent}
+              onChange={(event) => setMessageContent(event.target.value)}
+              rows={5}
+              className="webapp-scrollbar max-h-44 min-h-28 w-full resize-y rounded-xl border border-border bg-paper px-3 py-2 text-sm leading-relaxed text-ink outline-none transition-colors focus:border-ink"
+            />
+          </label>
 
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <button type="button" className={modeButtonClassName(mode === 'delay')} onClick={() => setMode('delay')}>
@@ -369,7 +373,7 @@ export function ScheduledMessageDialog({
           </button>
           <button
             type="submit"
-            disabled={submitting || !message?.content.trim()}
+            disabled={submitting || !trimmedMessageContent}
             className="webapp-gradient-bg rounded-lg px-4 py-2 text-sm font-medium text-white shadow-sm transition-opacity hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {submitting ? 'Scheduling...' : 'Confirm Schedule'}

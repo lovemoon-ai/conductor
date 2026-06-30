@@ -5,13 +5,9 @@ import { useParams } from 'next/navigation';
 import { useWebSocketStore } from '@/features/realtime';
 import { useRuntimeStore } from '@/features/realtime';
 import { useTasksStore } from '@/features/tasks';
-import { useAgentsStore } from '@/features/agents';
-import {
-  extractGoalInfo,
-  formatPercent,
-  normalizeTaskId,
-  resolveEffectiveAiMode,
-} from './ConnectionStatus.utils';
+import { formatPercent, normalizeTaskId } from './ConnectionStatus.utils';
+
+const formatActiveScheduleCount = (count: number) => `${Math.max(0, count)} active`;
 
 export function ConnectionStatus({
   detailsEnabled = false,
@@ -25,14 +21,12 @@ export function ConnectionStatus({
   const routeTaskId = useMemo(() => normalizeTaskId(params?.taskId), [params]);
   const taskId = taskIdOverride ?? routeTaskId;
   const runtime = useRuntimeStore((state) => (taskId ? state.byTask[taskId] : undefined));
-  const agents = useAgentsStore((state) => state.agents);
   const currentTask = useTasksStore((state) => {
     if (!taskId) {
       return undefined;
     }
     return state.tasks.find((item) => item.id === taskId);
   });
-  const daemonFromTask = currentTask?.executionHost || currentTask?.agentHost || undefined;
   const isPtyTask = currentTask?.taskType === 'pty_task';
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -56,50 +50,12 @@ export function ConnectionStatus({
   };
 
   const config = statusConfig[status];
-  const visibleAgents = useMemo(
-    () => agents.filter((agent) => !agent.host.startsWith('conductor-fire-')),
-    [agents],
-  );
-  const visibleAgentByHost = useMemo(
-    () => new Map(visibleAgents.map((agent) => [agent.host, agent] as const)),
-    [visibleAgents],
-  );
-  const visibleAgentById = useMemo(
-    () => new Map(visibleAgents.map((agent) => [agent.id, agent] as const)),
-    [visibleAgents],
-  );
-  const daemon = useMemo(() => {
-    const candidates = [daemonFromTask, runtime?.daemon]
-      .map((value) => value?.trim())
-      .filter((value): value is string => Boolean(value));
-    for (const candidate of candidates) {
-      const hostMatch = visibleAgentByHost.get(candidate);
-      if (hostMatch) {
-        return hostMatch.host;
-      }
-      const idMatch = visibleAgentById.get(candidate);
-      if (idMatch) {
-        return idMatch.host;
-      }
-    }
-    return candidates[0] || 'n/a';
-  }, [daemonFromTask, runtime?.daemon, visibleAgentByHost, visibleAgentById]);
   const pid = runtime?.pid ?? null;
   const taskIdValue = taskId || 'n/a';
   const sessionId = runtime?.sessionId || runtime?.threadId || currentTask?.sessionId || 'n/a';
   const tokenUsagePercent = formatPercent(runtime?.tokenUsagePercent);
   const contextUsagePercent = formatPercent(runtime?.contextUsagePercent);
-  const backend = runtime?.backend || currentTask?.backendType || 'n/a';
-  const goalInfo = useMemo(
-    () => extractGoalInfo(currentTask?.metadata, currentTask?.launchConfig),
-    [currentTask?.metadata, currentTask?.launchConfig],
-  );
-  // Prefer the live runtime mode (set by fire on each dispatch). Fall back to
-  // the task's persisted metadata.aiMode for the brief window before the
-  // first turn has been dispatched (or for tasks where runtime hasn't
-  // reported yet).
-  const effectiveAiMode = resolveEffectiveAiMode(runtime?.aiMode, goalInfo.active);
-  const aiModeLabel = effectiveAiMode === 'goal' ? 'goal' : 'normal';
+  const scheduledLabel = formatActiveScheduleCount(currentTask?.activeScheduledMessageCount ?? 0);
 
   useEffect(() => {
     if (!open) {
@@ -158,24 +114,12 @@ export function ConnectionStatus({
         >
           <div className={`mb-2 text-xs font-semibold ${isPtyTask ? 'text-white' : 'text-ink'}`}>Runtime Details</div>
           <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-y-1 gap-x-2 text-xs">
-            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Connection</span>
-            <span className={isPtyTask ? 'text-white' : 'text-ink'}>{config.label}</span>
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Task ID</span>
             <span className={`break-all ${isPtyTask ? 'text-white' : 'text-ink'}`}>{taskIdValue}</span>
-            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Daemon</span>
-            <span className={`truncate ${isPtyTask ? 'text-white' : 'text-ink'}`} title={daemon}>{daemon}</span>
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>PID</span>
             <span className={isPtyTask ? 'text-white' : 'text-ink'}>{pid ?? 'n/a'}</span>
-            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Backend</span>
-            <span className={`truncate ${isPtyTask ? 'text-white' : 'text-ink'}`}>{backend}</span>
-            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>AI Mode</span>
-            <span
-              data-testid="ai-mode-value"
-              title={effectiveAiMode === 'goal' && goalInfo.objective ? goalInfo.objective : undefined}
-              className={isPtyTask ? 'text-white' : 'text-ink'}
-            >
-              {aiModeLabel}
-            </span>
+            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Scheduled</span>
+            <span className={isPtyTask ? 'text-white' : 'text-ink'}>{scheduledLabel}</span>
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Session ID</span>
             <span className={`break-all ${isPtyTask ? 'text-white' : 'text-ink'}`}>{sessionId}</span>
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Token Usage</span>

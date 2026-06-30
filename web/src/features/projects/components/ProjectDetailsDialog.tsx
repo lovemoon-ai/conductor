@@ -74,6 +74,9 @@ const getDaemonLabel = (project: Project): string => {
   return project.name || project.id;
 };
 
+const getActiveScheduledMessageCount = (project: Project): number =>
+  Math.max(0, project.activeScheduledMessageCount ?? 0);
+
 /**
  * Apply an optimistic mutation to project memo rows in the shared store so the
  * UI reflects the change immediately.
@@ -124,6 +127,7 @@ export function ProjectDetailsDialog({
   onClose,
 }: ProjectDetailsDialogProps) {
   const updateProject = useProjectsStore((state) => state.updateProject);
+  const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const { pushToast } = useToast();
   const { confirm } = useConfirm();
   const [draft, setDraft] = useState('');
@@ -159,6 +163,11 @@ export function ProjectDetailsDialog({
   }, [project.id]);
 
   useEffect(() => {
+    if (!open) return;
+    void fetchProjects();
+  }, [fetchProjects, open]);
+
+  useEffect(() => {
     if (detailProjects.some((member) => member.id === activeProjectId)) return;
     setActiveProjectId(detailProjects[0]?.id ?? project.id);
   }, [activeProjectId, detailProjects, project.id]);
@@ -184,6 +193,11 @@ export function ProjectDetailsDialog({
   const draftLength = draft.length;
   const memoCount = memoEntries.length;
   const activeProjectMemoCount = readProjectMemos(activeProject).length;
+  const activeProjectScheduledMessageCount = getActiveScheduledMessageCount(activeProject);
+  const totalScheduledMessageCount = detailProjects.reduce(
+    (sum, member) => sum + getActiveScheduledMessageCount(member),
+    0,
+  );
   const activeDaemonLabel = getDaemonLabel(activeProject);
   const isOverLengthLimit = draftLength > MAX_MEMO_CONTENT_CHARS;
   const isOverCountLimit = activeProjectMemoCount >= MAX_MEMOS_PER_PROJECT;
@@ -325,6 +339,14 @@ export function ProjectDetailsDialog({
             <DetailRow label="Workspace" value={activeProject.workspacePath ?? null} />
             <DetailRow label="Branch" value={activeProject.worktreeBranch ?? null} />
             <DetailRow label="Last commit" value={formatTimestamp(activeProject.lastCommitAt)} />
+            <DetailRow
+              label="Scheduled"
+              value={
+                isMergedGroup
+                  ? `${activeProjectScheduledMessageCount} active on ${activeDaemonLabel}, ${totalScheduledMessageCount} total`
+                  : `${activeProjectScheduledMessageCount} active`
+              }
+            />
             {githubLink ? (
               <DetailRow
                 label="GitHub"

@@ -74,6 +74,29 @@ describe('ScheduledMessageDialog', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('submits edited message content from the schedule dialog', async () => {
+    render(
+      <ScheduledMessageDialog
+        open
+        taskId="task-1"
+        message={message}
+        onClose={() => {}}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Message content'), {
+      target: { value: 'edited scheduled content' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Schedule' }));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith('/tasks/task-1/scheduled-messages', expect.objectContaining({
+        content: 'edited scheduled content',
+        sourceMessageId: 'msg-1',
+      }));
+    });
+  });
+
   it('creates an idle-gated interval schedule with stop conditions', async () => {
     render(
       <ScheduledMessageDialog

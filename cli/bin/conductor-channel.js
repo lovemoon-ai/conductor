@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import yargs from "yargs/yargs";
 import { hideBin } from "yargs/helpers";
 import { loadConfig } from "@love-moon/conductor-sdk";
+import { envForExplicitConfigFile } from "../src/config-env.js";
 
 const isMainModule = (() => {
   const currentFile = fileURLToPath(import.meta.url);
@@ -56,7 +57,9 @@ export async function connectFeishuChannel(options = {}) {
 
   const resolvedConfigPath = path.resolve(options.configFile || resolveDefaultConfigPath(env));
   const rawYaml = readTextFile(resolvedConfigPath);
-  const config = loadConfig(resolvedConfigPath, { env });
+  const config = loadConfig(resolvedConfigPath, {
+    env: envForExplicitConfigFile(options.configFile, env),
+  });
   const feishu = ensureFeishuChannelConfig(config);
 
   const url = new URL("/api/channel/feishu/config", config.backendUrl);

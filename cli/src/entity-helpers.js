@@ -20,6 +20,8 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { envForExplicitConfigFile } from "./config-env.js";
+
 // RFC §4 exit codes
 export const EXIT = {
   OK: 0,
@@ -69,8 +71,9 @@ export async function loadConductorConfig(options = {}) {
   const sdk = await loadSdk(options);
 
   const configPath = resolveConfigPath(configFile, env);
+  const configEnv = envForExplicitConfigFile(configFile, env);
   if (fs.existsSync(configPath)) {
-    return sdk.loadConfig(configPath, { env });
+    return sdk.loadConfig(configPath, { env: configEnv });
   }
 
   const agentToken = typeof env.CONDUCTOR_AGENT_TOKEN === "string" ? env.CONDUCTOR_AGENT_TOKEN.trim() : "";
@@ -83,7 +86,7 @@ export async function loadConductorConfig(options = {}) {
   }
 
   // Let the SDK raise a typed not-found error.
-  return sdk.loadConfig(configPath, { env });
+  return sdk.loadConfig(configPath, { env: configEnv });
 }
 
 /**

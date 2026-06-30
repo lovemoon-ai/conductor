@@ -17,6 +17,7 @@ import {
 } from "@/lib/tasks/worktree";
 import { stopTaskBeforeRelaunch } from "@/lib/tasks/task-stop";
 import { normalizeTaskStatus } from "@/lib/tasks/task-config";
+import { countActiveScheduledMessagesForProjects } from "@/lib/tasks/scheduled-messages";
 import {
   hasOwn,
   isBindingConfirmed,
@@ -310,7 +311,7 @@ const getNextProjectSortOrder = async (userId: string): Promise<number | null> =
 };
 
 export const GET = requireActiveSubscription(async (_request: NextRequest, user) => {
-  const [projects, defaultProjects, taskStatusGroups] = await Promise.all([
+  const [projects, defaultProjects, taskStatusGroups, activeScheduledMessageCounts] = await Promise.all([
     listProjectsForDisplay(user.id),
     db.defaultProject.findMany({
       where: { userId: user.id },
@@ -321,6 +322,7 @@ export const GET = requireActiveSubscription(async (_request: NextRequest, user)
       where: { project: { userId: user.id } },
       _count: { _all: true },
     }),
+    countActiveScheduledMessagesForProjects({ userId: user.id }),
   ]);
   const defaultProjectIds = new Set(defaultProjects.map((entry) => entry.projectId));
 
@@ -344,6 +346,8 @@ export const GET = requireActiveSubscription(async (_request: NextRequest, user)
       ...(await serializeProjectWithSettings(p, defaultProjectIds.has(p.id))),
       taskStatusCounts: taskCountsByProject.get(p.id) ?? {},
       task_status_counts: taskCountsByProject.get(p.id) ?? {},
+      activeScheduledMessageCount: activeScheduledMessageCounts.get(p.id) ?? 0,
+      active_scheduled_message_count: activeScheduledMessageCounts.get(p.id) ?? 0,
     })),
   );
 

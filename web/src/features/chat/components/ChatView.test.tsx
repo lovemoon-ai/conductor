@@ -6,7 +6,10 @@ const useChatStoreMock = vi.fn();
 const useRuntimeStoreMock = vi.fn();
 const useTasksStoreMock = vi.fn();
 const useWebSocketStoreMock = vi.fn();
+const useProjectsStoreMock = vi.fn();
 const apiPostMock = vi.fn().mockResolvedValue({ delivered: true });
+const fetchTaskMock = vi.fn().mockResolvedValue(null);
+const fetchProjectsMock = vi.fn().mockResolvedValue(undefined);
 const restartTaskMock = vi.fn().mockResolvedValue({
   mode: 'inplace_restart',
   sourceTaskId: 'task-1',
@@ -41,8 +44,15 @@ vi.mock('@/features/realtime', () => ({
 vi.mock('@/features/tasks', () => ({
   useTasksStore: (selector: (state: {
     tasks: Array<Record<string, unknown>>;
+    fetchTask: typeof fetchTaskMock;
     restartTask: typeof restartTaskMock;
   }) => unknown) => useTasksStoreMock(selector),
+}));
+
+vi.mock('@/features/projects', () => ({
+  useProjectsStore: (selector: (state: {
+    fetchProjects: typeof fetchProjectsMock;
+  }) => unknown) => useProjectsStoreMock(selector),
 }));
 
 vi.mock('./MessageBubble', () => ({
@@ -208,6 +218,7 @@ describe('ChatView', () => {
       status: string;
       taskType?: string;
     }>;
+    fetchTask: typeof fetchTaskMock;
     restartTask: typeof restartTaskMock;
   };
   let runtimeState: {
@@ -226,6 +237,10 @@ describe('ChatView', () => {
     clearRuntimeMock.mockClear();
     apiPostMock.mockClear();
     apiPostMock.mockResolvedValue({ delivered: true });
+    fetchTaskMock.mockClear();
+    fetchTaskMock.mockResolvedValue(null);
+    fetchProjectsMock.mockClear();
+    fetchProjectsMock.mockResolvedValue(undefined);
     restartTaskMock.mockClear();
     restartTaskMock.mockResolvedValue({
       mode: 'inplace_restart',
@@ -254,6 +269,7 @@ describe('ChatView', () => {
           taskType: 'ai_task',
         },
       ],
+      fetchTask: fetchTaskMock,
       restartTask: restartTaskMock,
     };
     runtimeState = {
@@ -267,6 +283,7 @@ describe('ChatView', () => {
     useChatStoreMock.mockImplementation(() => chatState);
     useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
     useTasksStoreMock.mockImplementation((selector) => selector(tasksState));
+    useProjectsStoreMock.mockImplementation((selector) => selector({ fetchProjects: fetchProjectsMock }));
     useWebSocketStoreMock.mockImplementation((selector) => selector(websocketState));
   });
 
@@ -378,6 +395,7 @@ describe('ChatView', () => {
           taskType: 'ai_task',
         },
       ],
+      fetchTask: fetchTaskMock,
       restartTask: restartTaskMock,
     };
     useTasksStoreMock.mockImplementation((selector) => selector(tasksState));
@@ -455,6 +473,7 @@ describe('ChatView', () => {
           taskType: 'ai_task',
         },
       ],
+      fetchTask: fetchTaskMock,
       restartTask: restartTaskMock,
     };
     useChatStoreMock.mockImplementation(() => chatState);
@@ -1195,6 +1214,7 @@ describe('ChatView', () => {
           taskType: 'ai_task',
         },
       ],
+      fetchTask: fetchTaskMock,
       restartTask: restartTaskMock,
     };
     useTasksStoreMock.mockImplementation((selector) => selector(tasksState));

@@ -10,12 +10,16 @@
 
 import { BackendApiError, ProjectSummary, TaskSummary } from "@love-moon/conductor-sdk";
 
+const SCHEDULED_MESSAGE_NOT_DELETABLE_ERROR =
+  "Scheduled message is already completed, canceled, or does not exist";
+
 export class FakeBackendApi {
   constructor(initial = {}) {
     this.projects = (initial.projects ?? []).map((project) => ({ ...project }));
     this.issues = (initial.issues ?? []).map((issue) => ({ ...issue }));
     this.tasks = (initial.tasks ?? []).map((task) => ({ ...task }));
     this.messages = (initial.messages ?? []).map((message) => ({ ...message }));
+    this.scheduledMessages = (initial.scheduledMessages ?? []).map((schedule) => ({ ...schedule }));
     this.calls = [];
     this.matchProjectByPathResult = initial.matchProjectByPathResult ?? {
       project: null,
@@ -242,6 +246,55 @@ export class FakeBackendApi {
     };
     this.messages.push(message);
     return { ...message };
+  }
+
+  async listScheduledMessages(taskId) {
+    this.calls.push({ method: "listScheduledMessages", taskId });
+    return this.scheduledMessages
+      .filter((schedule) => (schedule.taskId ?? schedule.task_id) === taskId)
+      .map((schedule) => ({ ...schedule }));
+  }
+
+  async createScheduledMessage(taskId, body) {
+    this.calls.push({ method: "createScheduledMessage", taskId, body });
+    const schedule = {
+      id: `sched-${this.scheduledMessages.length + 1}`,
+      task_id: taskId,
+      source_message_id: body.sourceMessageId ?? null,
+      content: body.content,
+      kind: body.schedule?.mode === "interval" ? "interval" : "once_delay",
+      condition: body.schedule?.condition ?? "none",
+      interval_ms: null,
+      timezone: body.schedule?.timezone ?? null,
+      status: "active",
+      next_run_at: "2026-01-01T01:00:00.000Z",
+      run_count: 0,
+      skip_count: 0,
+      failure_count: 0,
+      max_runs: null,
+      max_skips: null,
+      stop_at: null,
+      stop_when_task_not_running: true,
+      last_run_at: null,
+      last_error: null,
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:00.000Z",
+    };
+    this.scheduledMessages.push(schedule);
+    return { ...schedule };
+  }
+
+  async deleteScheduledMessage(taskId, scheduleId) {
+    this.calls.push({ method: "deleteScheduledMessage", taskId, scheduleId });
+    const index = this.scheduledMessages.findIndex((schedule) =>
+      (schedule.id === scheduleId) && ((schedule.taskId ?? schedule.task_id) === taskId),
+    );
+    if (index === -1 || this.scheduledMessages[index].status !== "active") {
+      throw new BackendApiError(SCHEDULED_MESSAGE_NOT_DELETABLE_ERROR, 404, {
+        error: SCHEDULED_MESSAGE_NOT_DELETABLE_ERROR,
+      });
+    }
+    this.scheduledMessages.splice(index, 1);
   }
 }
 

@@ -269,6 +269,8 @@ export const normalizeProject = (raw: unknown): Project | null => {
           : false,
     metadata,
     taskStatusCounts: normalizeTaskStatusCounts(record.taskStatusCounts ?? record.task_status_counts),
+    activeScheduledMessageCount:
+      pickInt(record.activeScheduledMessageCount) ?? pickInt(record.active_scheduled_message_count) ?? 0,
     createdAt:
       pickString(record.createdAt) ?? pickString(record.created_at) ?? undefined,
     updatedAt:

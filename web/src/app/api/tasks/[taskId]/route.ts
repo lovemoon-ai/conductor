@@ -58,6 +58,7 @@ import {
   findAttachedTerminalForAiTask,
   loadAttachedTerminalSummary,
 } from "@/lib/tasks/attached-terminal";
+import { countActiveScheduledMessagesForTasks } from "@/lib/tasks/scheduled-messages";
 
 const DELETE_SNAPSHOT_TRIGGER = "task_delete";
 const KILLING_TIMEOUT_MS = 60_000;
@@ -378,11 +379,16 @@ export async function GET(
     (task.taskType ?? "ai_task") === "ai_task"
       ? await loadAttachedTerminalSummary(task.id)
       : null;
+  const activeScheduledMessageCounts = await countActiveScheduledMessagesForTasks({
+    userId: user.id,
+    taskIds: [task.id],
+  });
 
   return NextResponse.json(
     serializeTaskResponse({
       ...task,
       attachedTerminal,
+      activeScheduledMessageCount: activeScheduledMessageCounts.get(task.id) ?? 0,
     }),
   );
 }

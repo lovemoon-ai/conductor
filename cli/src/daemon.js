@@ -16,6 +16,7 @@ import {
   ProjectContext,
 } from "@love-moon/conductor-sdk";
 import { DaemonLogCollector } from "./log-collector.js";
+import { envForExplicitConfigFile } from "./config-env.js";
 import { createAiManagerHandlers, handleAiManagerRequest } from "./ai-manager-handlers.js";
 import {
   CUSTOM_COMMANDS_CAPABILITY,
@@ -598,6 +599,7 @@ function normalizeTerminalEnv(value) {
 }
 
 const PTY_TASK_SCOPED_ENV_KEYS = [
+  "CONDUCTOR_CLI_COMMAND",
   "CONDUCTOR_PROJECT_ID",
   "CONDUCTOR_TASK_ID",
   "CONDUCTOR_PTY_SESSION_ID",
@@ -667,8 +669,9 @@ export function startDaemon(config = {}, deps = {}) {
   };
 
   let fileConfig;
+  const configFileEnv = envForExplicitConfigFile(config.CONFIG_FILE, process.env);
   try {
-    fileConfig = loadConfig(config.CONFIG_FILE);
+    fileConfig = loadConfig(config.CONFIG_FILE, { env: configFileEnv });
     log(`Loaded config from ${config.CONFIG_FILE || "~/.conductor/config.yaml"}`);
   } catch (err) {
     if (!(err instanceof ConfigFileNotFound)) {
@@ -677,15 +680,15 @@ export function startDaemon(config = {}, deps = {}) {
   }
 
   const userConfig = getUserConfig(config.CONFIG_FILE);
+  const allowEnvConfigOverrides = !config.CONFIG_FILE;
   const explicitWsUrl =
     config.BACKEND_URL ||
-    process.env.CONDUCTOR_BACKEND_WS_URL ||
-    process.env.CONDUCTOR_WS_URL ||
+    (allowEnvConfigOverrides ? process.env.CONDUCTOR_BACKEND_WS_URL || process.env.CONDUCTOR_WS_URL : null) ||
     null;
   const derivedHttpFromWs = explicitWsUrl ? deriveBackendHttpFromWebsocket(explicitWsUrl) : null;
   const BACKEND_HTTP =
     config.BACKEND_HTTP ||
-    process.env.CONDUCTOR_BACKEND_URL ||
+    (allowEnvConfigOverrides ? process.env.CONDUCTOR_BACKEND_URL : null) ||
     derivedHttpFromWs ||
     fileConfig?.backendUrl ||
     "http://localhost:6152";
@@ -693,7 +696,10 @@ export function startDaemon(config = {}, deps = {}) {
     explicitWsUrl ||
     deriveWebsocketUrlFromHttp(BACKEND_HTTP);
   const AGENT_TOKEN =
-    config.AGENT_TOKEN || process.env.CONDUCTOR_AGENT_TOKEN || fileConfig?.agentToken || "default-agent-token";
+    config.AGENT_TOKEN ||
+    (allowEnvConfigOverrides ? process.env.CONDUCTOR_AGENT_TOKEN : null) ||
+    fileConfig?.agentToken ||
+    "default-agent-token";
   const configuredDaemonName =
     (typeof userConfig.daemon_name === "string" && userConfig.daemon_name.trim()) ||
     (typeof fileConfig?.daemonName === "string" && fileConfig.daemonName.trim()) ||
@@ -5264,7 +5270,7 @@ export function startDaemon(config = {}, deps = {}) {
       });
 
       const env = {
-        ...process.env,
+        ...stripPtyTaskScopedEnv(process.env),
         PWD: taskDir,
         CONDUCTOR_PROJECT_ID: projectId,
         CONDUCTOR_TASK_ID: taskId,
@@ -5907,7 +5913,7 @@ export function startDaemon(config = {}, deps = {}) {
     }
 
     const env = {
-      ...process.env,
+      ...stripPtyTaskScopedEnv(process.env),
       PWD: taskDir,
       CONDUCTOR_PROJECT_ID: normalizedProjectId,
       CONDUCTOR_TASK_ID: normalizedTargetTaskId,

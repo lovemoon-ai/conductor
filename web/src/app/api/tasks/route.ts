@@ -44,6 +44,7 @@ import {
   findAttachedPtyTaskIdsByProjects,
   findAttachedTerminalsByAiTaskIds,
 } from "@/lib/tasks/attached-terminal";
+import { countActiveScheduledMessagesForTasks } from "@/lib/tasks/scheduled-messages";
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
@@ -303,6 +304,10 @@ export async function GET(request: NextRequest) {
     .filter((task) => (task.taskType ?? "ai_task") === "ai_task")
     .map((task) => task.id);
   const attachedTerminals = await findAttachedTerminalsByAiTaskIds(aiTaskIds);
+  const activeScheduledMessageCounts = await countActiveScheduledMessagesForTasks({
+    userId: user.id,
+    taskIds,
+  });
 
   const response = tasks
     .slice()
@@ -320,6 +325,7 @@ export async function GET(request: NextRequest) {
         lastUserMessage: messagePreviews[task.id]?.lastUserMessage ?? null,
         lastAssistantMessage: messagePreviews[task.id]?.lastAssistantMessage ?? null,
         attachedTerminal: attached,
+        activeScheduledMessageCount: activeScheduledMessageCounts.get(task.id) ?? 0,
       });
     });
 

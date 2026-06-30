@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useChatStore } from '../store';
 import { useRuntimeStore } from '@/features/realtime';
+import { useProjectsStore } from '@/features/projects';
 import { useTasksStore } from '@/features/tasks';
 import { useWebSocketStore } from '@/features/realtime';
 import { MessageBubble } from './MessageBubble';
@@ -249,7 +250,9 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const runtime = useRuntimeStore((state) => state.byTask[taskId]);
   const clearRuntime = useRuntimeStore((state) => state.clearTask);
   const tasks = useTasksStore((state) => state.tasks);
+  const fetchTask = useTasksStore((state) => state.fetchTask);
   const restartTask = useTasksStore((state) => state.restartTask);
+  const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const websocketStatus = useWebSocketStore((state) => state.status);
   const task = tasks.find((t) => t.id === taskId);
   const isTaskRunning = task?.status === 'running';
@@ -670,6 +673,11 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     setScheduledMessage(message);
   }, []);
 
+  const refreshScheduledMessageSummary = useCallback(() => {
+    void fetchTask(taskId);
+    void fetchProjects();
+  }, [fetchProjects, fetchTask, taskId]);
+
   const handleRestart = useCallback(async () => {
     if (interruptPending) {
       dispatchUiState({
@@ -1009,6 +1017,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
         taskId={taskId}
         message={scheduledMessage}
         onClose={() => setScheduledMessage(null)}
+        onCreated={refreshScheduledMessageSummary}
       />
     </div>
   );

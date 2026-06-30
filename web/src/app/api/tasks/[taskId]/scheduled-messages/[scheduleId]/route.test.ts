@@ -53,5 +53,8 @@ describe("/api/tasks/[taskId]/scheduled-messages/[scheduleId]", () => {
     );
 
     expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: "Scheduled message is already completed, canceled, or does not exist",
+    });
   });
 });

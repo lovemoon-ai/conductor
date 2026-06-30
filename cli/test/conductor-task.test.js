@@ -159,6 +159,244 @@ describe("conductor task messages", () => {
   });
 });
 
+describe("conductor task schedule", () => {
+  it("creates a delayed scheduled message", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      tasks: [{ id: "task-1", projectId: "proj-1", title: "T", status: "running" }],
+    });
+    const code = await main(
+      ["schedule", "create", "task-1", "run later", "--delay", "15m", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+
+    assert.equal(code, 0);
+    const data = JSON.parse(stdout.collect().trim());
+    assert.equal(data.id, "sched-1");
+    const call = backend.calls.find((c) => c.method === "createScheduledMessage");
+    assert.equal(call.taskId, "task-1");
+    assert.deepEqual(call.body, {
+      content: "run later",
+      sourceMessageId: null,
+      schedule: {
+        mode: "delay",
+        amount: 15,
+        unit: "minute",
+      },
+    });
+  });
+
+  it("creates an idle interval schedule with stop conditions from stdin", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      tasks: [{ id: "task-1", projectId: "proj-1", title: "T", status: "running" }],
+    });
+    const code = await main(
+      [
+        "schedule", "create", "task-1",
+        "--stdin",
+        "--every", "2h",
+        "--if-idle",
+        "--max-runs", "4",
+        "--max-skips", "8",
+        "--keep-when-task-stopped",
+        "--json",
+      ],
+      { stdout, stderr, ...makeCliDeps(backend, { stdin: "ping again" }) },
+    );
+
+    assert.equal(code, 0);
+    const call = backend.calls.find((c) => c.method === "createScheduledMessage");
+    assert.equal(call.body.content, "ping again");
+    assert.deepEqual(call.body.schedule, {
+      mode: "interval",
+      every: 2,
+      unit: "hour",
+      condition: "ai_idle",
+      stop: {
+        stopWhenTaskNotRunning: false,
+        maxRuns: 4,
+        maxSkips: 8,
+      },
+    });
+  });
+
+  it("lists scheduled messages for a task", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      scheduledMessages: [
+        {
+          id: "sched-1",
+          task_id: "task-1",
+          content: "later",
+          kind: "once_delay",
+          condition: "none",
+          status: "active",
+          next_run_at: "2026-01-01T01:00:00.000Z",
+          run_count: 0,
+          skip_count: 0,
+          failure_count: 0,
+          stop_when_task_not_running: true,
+        },
+      ],
+    });
+    const code = await main(
+      ["schedule", "list", "task-1", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+
+    assert.equal(code, 0);
+    const data = JSON.parse(stdout.collect().trim());
+    assert.equal(data.length, 1);
+    assert.equal(data[0].id, "sched-1");
+    const call = backend.calls.find((c) => c.method === "listScheduledMessages");
+    assert.equal(call.taskId, "task-1");
+  });
+
+  it("deletes a scheduled message", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      scheduledMessages: [
+        {
+          id: "sched-1",
+          task_id: "task-1",
+          content: "later",
+          kind: "once_delay",
+          condition: "none",
+          status: "active",
+          next_run_at: "2026-01-01T01:00:00.000Z",
+          run_count: 0,
+          skip_count: 0,
+          failure_count: 0,
+          stop_when_task_not_running: true,
+        },
+      ],
+    });
+    const code = await main(
+      ["schedule", "delete", "task-1", "sched-1", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+
+    assert.equal(code, 0);
+    const data = JSON.parse(stdout.collect().trim());
+    assert.deepEqual(data, { deleted: true, taskId: "task-1", scheduleId: "sched-1" });
+    const call = backend.calls.find((c) => c.method === "deleteScheduledMessage");
+    assert.equal(call.taskId, "task-1");
+    assert.equal(call.scheduleId, "sched-1");
+  });
+
+  it("rejects deleting a completed scheduled message", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      scheduledMessages: [
+        {
+          id: "sched-1",
+          task_id: "task-1",
+          content: "later",
+          kind: "once_delay",
+          condition: "none",
+          status: "completed",
+          next_run_at: "2026-01-01T01:00:00.000Z",
+          run_count: 1,
+          skip_count: 0,
+          failure_count: 0,
+          stop_when_task_not_running: true,
+        },
+      ],
+    });
+
+    const code = await main(
+      ["schedule", "delete", "task-1", "sched-1"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+
+    assert.equal(code, 4);
+    assert.match(stderr.collect(), /already completed, canceled, or does not exist/i);
+    assert.equal(backend.scheduledMessages.length, 1);
+  });
+
+  it("rejects schedule create without exactly one mode", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({ projects: [seedProject] });
+    const code = await main(
+      ["schedule", "create", "task-1", "run later", "--delay", "15m", "--every", "1h"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+
+    assert.equal(code, 2);
+    assert.match(stderr.collect(), /exactly one schedule mode/i);
+    assert.equal(backend.calls.find((c) => c.method === "createScheduledMessage"), undefined);
+  });
+
+  it("dry-runs schedule delete without calling the backend", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({ projects: [seedProject] });
+    const code = await main(
+      ["schedule", "delete", "task-1", "sched-1", "--dry-run", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+
+    assert.equal(code, 0);
+    const data = JSON.parse(stdout.collect().trim());
+    assert.equal(data.request.method, "DELETE");
+    assert.match(data.request.url, /\/api\/tasks\/task-1\/scheduled-messages\/sched-1$/);
+    assert.equal(backend.calls.find((c) => c.method === "deleteScheduledMessage"), undefined);
+  });
+
+  it("lets an explicit config file override CONDUCTOR_BACKEND_URL for schedule dry-run", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-task-config-"));
+    const configPath = path.join(tempDir, "config.yaml");
+    fs.writeFileSync(
+      configPath,
+      [
+        "agent_token: config-token",
+        "backend_url: http://localhost:6152",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({ projects: [seedProject] });
+    const code = await main(
+      [
+        "schedule", "create", "task-1", "run later",
+        "--delay", "15m",
+        "--dry-run",
+        "--json",
+        "--config-file", configPath,
+      ],
+      {
+        stdout,
+        stderr,
+        ...makeCliDeps(backend, {
+          env: {
+            CONDUCTOR_AGENT_TOKEN: "env-token",
+            CONDUCTOR_BACKEND_URL: "https://conductor-ai.top",
+          },
+        }),
+      },
+    );
+
+    assert.equal(code, 0);
+    const data = JSON.parse(stdout.collect().trim());
+    assert.equal(data.request.url, "http://localhost:6152/api/tasks/task-1/scheduled-messages");
+  });
+});
+
 describe("conductor task list", () => {
   it("returns JSON list filtered by issue id", async () => {
     const stdout = makeStream();

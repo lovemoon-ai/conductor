@@ -20,6 +20,7 @@
     "provenance": true
   },
   "scripts": {
+    "pretest": "pnpm --dir ../modules/ai-sdk build && pnpm --dir ../modules/conductor-sdk build",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {

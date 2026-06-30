@@ -3573,7 +3573,9 @@ describe("Daemon", () => {
 
   it("advertises and launches external backends on daemon hosts", async (t) => {
     const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    const previousCliCommand = process.env.CONDUCTOR_CLI_COMMAND;
     process.env.AISDK_PROVIDER_PATH = FIXTURE_EXTERNAL_PROVIDER;
+    process.env.CONDUCTOR_CLI_COMMAND = "codex";
     resetRuntimeBackendCacheForTests();
 
     let handler;
@@ -3637,6 +3639,11 @@ describe("Daemon", () => {
         delete process.env.AISDK_PROVIDER_PATH;
       } else {
         process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      if (previousCliCommand === undefined) {
+        delete process.env.CONDUCTOR_CLI_COMMAND;
+      } else {
+        process.env.CONDUCTOR_CLI_COMMAND = previousCliCommand;
       }
       resetRuntimeBackendCacheForTests();
       if (daemonInstance && typeof daemonInstance.close === "function") {

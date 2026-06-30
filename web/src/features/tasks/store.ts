@@ -157,6 +157,12 @@ export const normalizeTask = (task: any): Task => ({
   lastAssistantMessage: task.lastAssistantMessage ?? task.last_assistant_message ?? null,
   ptySession: normalizePtySession(task.ptySession ?? task.pty_session),
   attachedTerminal: normalizeAttachedTerminal(task.attachedTerminal ?? task.attached_terminal),
+  activeScheduledMessageCount:
+    typeof task.activeScheduledMessageCount === 'number'
+      ? Math.max(0, task.activeScheduledMessageCount)
+      : typeof task.active_scheduled_message_count === 'number'
+        ? Math.max(0, task.active_scheduled_message_count)
+        : 0,
   createdAt: task.createdAt ?? task.created_at ?? new Date().toISOString(),
   updatedAt: task.updatedAt ?? task.updated_at ?? null,
 });

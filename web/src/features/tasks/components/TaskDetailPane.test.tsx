@@ -116,6 +116,29 @@ describe('TaskDetailPane', () => {
     expect(screen.getByTestId('chat-view')).toHaveTextContent('chat:task-2:true');
   });
 
+  it('does not show a top scheduled message count for AI tasks', () => {
+    fetchTaskMock.mockReturnValue(new Promise(() => {}));
+    useTasksStoreMock.mockReturnValue({
+      tasks: [
+        {
+          id: 'task-scheduled',
+          title: 'Scheduled task',
+          taskType: 'ai_task',
+          status: 'running',
+          activeScheduledMessageCount: 2,
+          createdAt: '2026-03-23T00:00:00.000Z',
+        },
+      ],
+      fetchTask: fetchTaskMock,
+      markTaskRead: markTaskReadMock,
+    });
+
+    render(<TaskDetailPane taskId="task-scheduled" />);
+
+    expect(screen.queryByText(/Scheduled messages:/)).toBeNull();
+    expect(screen.queryByTestId('task-scheduled-message-count')).toBeNull();
+  });
+
   it('shows a loading spinner when the task is not yet in the store', () => {
     fetchTaskMock.mockReturnValue(new Promise(() => {}));
 
