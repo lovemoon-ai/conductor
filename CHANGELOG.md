@@ -18,6 +18,28 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.7.0] - 2026-06-30
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.7.0`
+- `@love-moon/conductor-sdk` `0.7.0`
+- `@love-moon/ai-sdk` `0.7.0`
+- `@love-moon/app-sdk` `0.7.0`
+- `@love-moon/chat-web` `0.7.0`
+
+### Changes
+
+### Minor Changes
+
+- 689fc50: Add scheduled message management APIs and conductor task schedule list/create/delete commands.
+
+### Patch Changes
+
+- Updated dependencies [689fc50]
+  - @love-moon/conductor-sdk@0.7.0
+  - @love-moon/ai-sdk@0.7.0
+
 ## [0.6.1] - 2026-06-11
 
 ### Released packages

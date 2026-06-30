@@ -1,5 +1,11 @@
 # @love-moon/conductor-sdk
 
+## 0.7.0
+
+### Minor Changes
+
+- 689fc50: Add scheduled message management APIs and conductor task schedule list/create/delete commands.
+
 ## 0.6.1
 
 ## 0.6.0

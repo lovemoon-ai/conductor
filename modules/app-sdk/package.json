@@ -1,6 +1,6 @@
 {
   "name": "@love-moon/app-sdk",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Conductor App SDK: third-party backend SDK + React chat widget for embedding Conductor AI tools",
   "repository": {
     "type": "git",

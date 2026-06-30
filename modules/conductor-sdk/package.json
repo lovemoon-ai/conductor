@@ -1,6 +1,6 @@
 {
   "name": "@love-moon/conductor-sdk",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lovemoon-ai/conductor.git"
