@@ -17,7 +17,6 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://maven.rokid.com/repository/maven-public/") }
     }
 }
 

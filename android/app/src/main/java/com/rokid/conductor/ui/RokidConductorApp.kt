@@ -1,410 +1,439 @@
 package com.rokid.conductor.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Send
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.rokid.conductor.AppViewModel
 import com.rokid.conductor.Screen
+import com.rokid.conductor.UiState
 import com.rokid.conductor.net.ChatMessage
+import com.rokid.conductor.net.Project
+import com.rokid.conductor.net.TaskItem
+
+private val HudGreen = Color(0xFF8CFF8C)
+private val HudDim = Color(0xFF8A9A8A)
+private val HudWhite = Color.White
+private val HudPanel = Color(0xFF071007)
 
 @Composable
 fun RokidConductorApp(vm: AppViewModel) {
     val state by vm.state.collectAsState()
-    val snackbar = remember { SnackbarHostState() }
-
-    LaunchedEffect(state.error, state.info) {
-        val msg = state.error ?: state.info
-        if (!msg.isNullOrBlank()) {
-            snackbar.showSnackbar(msg)
-            vm.clearMessages()
-        }
-    }
-
-    Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
-            when (state.screen) {
-                Screen.LOGIN -> LoginScreen(vm, state)
-                Screen.PROJECTS -> ProjectsScreen(vm, state)
-                Screen.TASKS -> TasksScreen(vm, state)
-                Screen.CHAT -> ChatScreen(vm, state)
-            }
-            if (state.loading) {
-                Box(
-                    Modifier.fillMaxSize().background(Color(0x22000000)),
-                    contentAlignment = Alignment.Center
-                ) { CircularProgressIndicator() }
-            }
-        }
-    }
-}
-
-@Composable
-private fun LoginScreen(vm: AppViewModel, state: com.rokid.conductor.UiState) {
-    var code by remember { mutableStateOf("") }
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black),
+        contentAlignment = Alignment.Center
     ) {
-        Spacer(Modifier.height(32.dp))
-        Text("Rokid Conductor", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text("登录后选择项目与任务，在眼镜上与 AI 对话", style = MaterialTheme.typography.bodyMedium)
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            value = state.baseUrl, onValueChange = vm::setBaseUrl,
-            label = { Text("服务器地址") }, singleLine = true, modifier = Modifier.fillMaxWidth()
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = state.countryCode, onValueChange = vm::setCountryCode,
-                label = { Text("区号") }, singleLine = true, modifier = Modifier.width(96.dp)
-            )
-            OutlinedTextField(
-                value = state.phone, onValueChange = vm::setPhone,
-                label = { Text("手机号") }, singleLine = true, modifier = Modifier.weight(1f)
-            )
-        }
-        Button(onClick = vm::requestCode, enabled = !state.loading, modifier = Modifier.fillMaxWidth()) {
-            Text(if (state.codeSent) "重新发送验证码" else "发送验证码")
-        }
-        if (state.codeSent) {
-            OutlinedTextField(
-                value = code, onValueChange = { code = it },
-                label = { Text("验证码") }, singleLine = true, modifier = Modifier.fillMaxWidth()
-            )
-            Button(
-                onClick = { vm.verifyCode(code) }, enabled = !state.loading,
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("登录 / 注册") }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ProjectsScreen(vm: AppViewModel, state: com.rokid.conductor.UiState) {
-    Column(Modifier.fillMaxSize()) {
-        TopAppBar(
-            title = { Text("项目") },
-            actions = {
-                GlassesChip(vm, state)
-                TextButton(onClick = vm::logout) { Text("退出") }
-            }
-        )
-        if (state.projects.isEmpty() && !state.loading) {
-            EmptyHint("暂无项目，下拉刷新或在 Conductor 网页端创建") { vm.loadProjects() }
-        }
-        LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-            items(state.projects, key = { it.id }) { p ->
-                ListCard(title = p.name, subtitle = if (p.isDefault) "默认项目" else p.id) {
-                    vm.selectProject(p)
+        HudViewport {
+            Header(state)
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                when (state.screen) {
+                    Screen.LOGIN -> LoginScreen(state)
+                    Screen.PROJECTS -> ProjectsScreen(state)
+                    Screen.TASKS -> TasksScreen(state)
+                    Screen.CHAT -> ChatScreen(state)
+                }
+                if (state.loading) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(Color(0xAA000000)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = HudGreen)
+                    }
                 }
             }
+            Footer(state)
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TasksScreen(vm: AppViewModel, state: com.rokid.conductor.UiState) {
-    var showCreate by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize()) {
-        TopAppBar(
-            title = { Text(state.selectedProject?.name ?: "任务", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            navigationIcon = {
-                IconButton(onClick = vm::goBack) { Icon(Icons.Default.ArrowBack, "返回") }
-            },
-            actions = {
-                GlassesChip(vm, state)
-                TextButton(onClick = { showCreate = true }) { Text("新建") }
-            }
-        )
-        if (state.tasks.isEmpty() && !state.loading) {
-            EmptyHint("暂无任务，点击右上角新建") { vm.loadTasks() }
+private fun HudViewport(content: @Composable ColumnScope.() -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val wide = maxWidth.value / maxHeight.value > 0.75f
+        val viewportModifier = if (wide) {
+            Modifier
+                .fillMaxHeight()
+                .aspectRatio(0.75f)
+        } else {
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(0.75f)
         }
-        LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-            items(state.tasks, key = { it.id }) { t ->
-                ListCard(title = t.title, subtitle = "状态: ${t.status}") { vm.selectTask(t) }
-            }
-        }
-    }
-    if (showCreate) {
-        CreateTaskDialog(
-            onDismiss = { showCreate = false },
-            onCreate = { title, initial -> showCreate = false; vm.createTask(title, initial) }
-        )
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ChatScreen(vm: AppViewModel, state: com.rokid.conductor.UiState) {
-    var input by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize()) {
-        TopAppBar(
-            title = {
-                Column {
-                    Text(
-                        state.selectedTask?.title ?: "对话",
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Text(
-                        if (state.realtimeConnected) "实时已连接" else "实时连接中…",
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                }
-            },
-            navigationIcon = {
-                IconButton(onClick = vm::goBack) { Icon(Icons.Default.ArrowBack, "返回") }
-            },
-            actions = { GlassesChip(vm, state) }
-        )
-
-        val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-        LaunchedEffect(state.messages.size) {
-            if (state.messages.isNotEmpty()) listState.animateScrollToItem(state.messages.size - 1)
-        }
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        Column(
+            modifier = viewportModifier
+                .align(Alignment.Center)
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(state.messages, key = { it.id.ifBlank { it.hashCode().toString() } }) { m ->
-                MessageBubble(m)
+            content()
+        }
+    }
+}
+
+@Composable
+private fun Header(state: UiState) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(44.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                "Conductor",
+                color = HudWhite,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+            Text(
+                screenLabel(state),
+                color = HudDim,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (state.screen != Screen.LOGIN) {
+            StatusDot(if (state.realtimeConnected) HudGreen else HudDim)
+        }
+    }
+}
+
+@Composable
+private fun LoginScreen(state: UiState) {
+    Column(
+        Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            state.deviceUserCode ?: "---- ----",
+            color = HudGreen,
+            style = MaterialTheme.typography.displaySmall,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            state.verificationUri ?: state.baseUrl.trimEnd('/') + "/activate",
+            color = HudWhite,
+            style = MaterialTheme.typography.titleSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            state.verificationUriComplete ?: "",
+            color = HudDim,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.height(18.dp))
+        Text(
+            state.deviceLoginStatus,
+            color = HudDim,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun ProjectsScreen(state: UiState) {
+    FocusedList(
+        emptyText = "没有项目",
+        countText = countText(state.focusedProjectIndex, state.projects.size),
+        items = state.projects,
+        focusedIndex = state.focusedProjectIndex,
+        title = { it.name },
+        subtitle = { projectSubtitle(it) },
+    )
+}
+
+@Composable
+private fun TasksScreen(state: UiState) {
+    FocusedList(
+        emptyText = "没有任务",
+        countText = countText(state.focusedTaskIndex, state.tasks.size),
+        items = state.tasks,
+        focusedIndex = state.focusedTaskIndex,
+        title = { it.title },
+        subtitle = { "状态 ${it.status}" },
+    )
+}
+
+@Composable
+private fun <T> FocusedList(
+    emptyText: String,
+    countText: String,
+    items: List<T>,
+    focusedIndex: Int,
+    title: (T) -> String,
+    subtitle: (T) -> String,
+) {
+    if (items.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(emptyText, color = HudDim, style = MaterialTheme.typography.titleMedium)
+        }
+        return
+    }
+
+    val start = (focusedIndex - 2).coerceAtLeast(0)
+    val end = (start + 5).coerceAtMost(items.size)
+    val adjustedStart = (end - 5).coerceAtLeast(0)
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(countText, color = HudDim, style = MaterialTheme.typography.labelMedium)
+        items.subList(adjustedStart, end).forEachIndexed { offset, item ->
+            val index = adjustedStart + offset
+            FocusRow(
+                focused = index == focusedIndex,
+                title = title(item),
+                subtitle = subtitle(item),
+            )
+        }
+    }
+}
+
+@Composable
+private fun FocusRow(focused: Boolean, title: String, subtitle: String) {
+    Surface(
+        color = if (focused) HudPanel else Color.Black,
+        border = BorderStroke(if (focused) 1.dp else 0.dp, if (focused) HudGreen else Color.Transparent),
+        shape = RoundedCornerShape(4.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(62.dp)
+    ) {
+        Column(
+            Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                title,
+                color = if (focused) HudGreen else HudWhite,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = if (focused) FontWeight.Bold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                subtitle,
+                color = HudDim,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChatScreen(state: UiState) {
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            state.selectedTask?.title ?: "对话",
+            color = HudGreen,
+            style = MaterialTheme.typography.titleSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Column(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            visibleMessages(state).forEach { message ->
+                MessageRow(message)
             }
             if (state.awaitingReply) {
-                item { Text("AI 正在思考…", Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall) }
+                Text("AI 正在回复", color = HudDim, style = MaterialTheme.typography.bodySmall)
             }
         }
-
-        if (state.sttListening) {
-            Text(
-                "聆听中: ${state.sttPartial}",
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-
-        Row(
-            Modifier.fillMaxWidth().padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedTextField(
-                value = input, onValueChange = { input = it },
-                modifier = Modifier.weight(1f), placeholder = { Text("输入消息…") }, maxLines = 4
-            )
-            // Push-to-talk mic button (phone mic; routed through glasses when connected).
-            Box(
-                Modifier.size(48.dp).background(
-                    if (state.sttListening) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.secondaryContainer,
-                    CircleShape
-                ).pointerInput(Unit) {
-                    detectTapGestures(onPress = {
-                        vm.startVoice()
-                        tryAwaitRelease()
-                        vm.stopVoice()
-                    })
-                },
-                contentAlignment = Alignment.Center
-            ) { Icon(Icons.Default.Mic, "按住说话") }
-            IconButton(
-                onClick = { vm.sendText(input); input = "" },
-                enabled = input.isNotBlank()
-            ) { Icon(Icons.Default.Send, "发送") }
-        }
+        QuickReplyPanel(state)
     }
 }
 
 @Composable
-private fun MessageBubble(m: ChatMessage) {
-    val isUser = m.role == "user"
-    val bg = if (isUser) MaterialTheme.colorScheme.primaryContainer
-    else MaterialTheme.colorScheme.surfaceVariant
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
-        Surface(color = bg, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth(0.85f)) {
-            Column(Modifier.padding(10.dp)) {
-                Text(
-                    roleLabel(m.role),
-                    style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold
-                )
-                Text(m.content.ifBlank { "(空)" }, style = MaterialTheme.typography.bodyMedium)
-            }
-        }
+private fun MessageRow(message: ChatMessage) {
+    val isUser = message.role == "user"
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .border(1.dp, if (isUser) HudDim else HudGreen, RoundedCornerShape(4.dp))
+            .padding(8.dp)
+    ) {
+        Text(
+            roleLabel(message.role),
+            color = if (isUser) HudDim else HudGreen,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+        Text(
+            message.content.ifBlank { "(空)" },
+            color = HudWhite,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 5,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
+
+@Composable
+private fun QuickReplyPanel(state: UiState) {
+    val activeVoice = state.sttListening || state.ttsSpeaking
+    val border = if (activeVoice) HudGreen else HudDim
+    val selected = state.quickReplies.getOrNull(state.focusedQuickReplyIndex) ?: ""
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .border(1.dp, border, RoundedCornerShape(4.dp))
+            .padding(10.dp)
+    ) {
+        Text(
+            voiceActionTitle(state, selected),
+            color = if (activeVoice) HudGreen else HudWhite,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            state.sttPartial.ifBlank {
+                when {
+                    state.sttListening -> state.voiceStatus ?: "再次轻触结束语音"
+                    state.ttsSpeaking -> state.voiceStatus ?: "正在朗读"
+                    else -> "${state.focusedQuickReplyIndex + 1}/${state.quickReplies.size}  $selected"
+                }
+            },
+            color = HudDim,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun Footer(state: UiState) {
+    val message = state.error ?: state.info ?: state.voiceStatus ?: footerHint(state)
+    Text(
+        message,
+        color = if (state.error != null) Color(0xFFFF9A9A) else HudDim,
+        style = MaterialTheme.typography.labelSmall,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(36.dp)
+    )
+}
+
+@Composable
+private fun StatusDot(color: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(8.dp)
+                .background(color, CircleShape)
+        )
+        Spacer(Modifier.width(6.dp))
+        Text("WS", color = HudDim, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+private fun visibleMessages(state: UiState): List<ChatMessage> {
+    if (state.messages.isEmpty()) return emptyList()
+    val end = (state.messages.size - state.messageScrollOffset).coerceIn(0, state.messages.size)
+    val start = (end - 4).coerceAtLeast(0)
+    return state.messages.subList(start, end)
+}
+
+private fun screenLabel(state: UiState): String = when (state.screen) {
+    Screen.LOGIN -> "设备登录"
+    Screen.PROJECTS -> state.userLabel ?: "项目"
+    Screen.TASKS -> state.selectedProject?.name ?: "任务"
+    Screen.CHAT -> if (state.realtimeConnected) "实时已连接" else "实时连接中"
+}
+
+private fun footerHint(state: UiState): String = when (state.screen) {
+    Screen.LOGIN -> "轻触重新生成，双击退出"
+    Screen.PROJECTS -> "滑动选择项目，轻触进入"
+    Screen.TASKS -> "滑动选择任务，轻触进入"
+    Screen.CHAT -> voiceHint(state)
+}
+
+private fun voiceActionTitle(state: UiState, selected: String): String = when {
+    state.sttListening -> "正在听"
+    state.ttsSpeaking -> "正在朗读"
+    selected == "语音输入" -> if (state.sttAvailable) "轻触说话" else "语音输入不可用"
+    selected == "朗读最新" -> if (state.ttsAvailable) "轻触朗读" else "朗读不可用"
+    selected == "停止朗读" -> "轻触停止"
+    else -> "轻触发送"
+}
+
+private fun voiceHint(state: UiState): String {
+    if (state.sttListening) return "再次轻触结束语音"
+    if (state.ttsSpeaking) return "双击停止朗读"
+    val voice = when {
+        !state.sttAvailable && !state.ttsAvailable -> "语音服务不可用"
+        !state.sttAvailable -> "语音输入不可用"
+        !state.ttsAvailable && state.ttsReady -> "朗读不可用"
+        else -> null
+    }
+    return voice ?: "滑动选择回复，轻触发送"
+}
+
+private fun countText(index: Int, size: Int): String =
+    if (size <= 0) "0 / 0" else "${index + 1} / $size"
+
+private fun projectSubtitle(project: Project): String =
+    if (project.isDefault) "默认项目" else project.id
 
 private fun roleLabel(role: String) = when (role) {
     "user" -> "我"
     "assistant", "sdk" -> "AI"
     "system" -> "系统"
     else -> role
-}
-
-@Composable
-private fun ListCard(title: String, subtitle: String, onClick: () -> Unit) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable(onClick = onClick)
-    ) {
-        Column(Modifier.padding(16.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-    }
-}
-
-@Composable
-private fun EmptyHint(text: String, onRetry: () -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text(text, style = MaterialTheme.typography.bodyMedium)
-        OutlinedButton(onClick = onRetry) { Text("刷新") }
-    }
-}
-
-@Composable
-private fun GlassesChip(vm: AppViewModel, state: com.rokid.conductor.UiState) {
-    var show by remember { mutableStateOf(false) }
-    val dot = if (state.glassesConnected) Color(0xFF2E7D32) else Color(0xFFC62828)
-    Row(
-        Modifier.clickable { vm.refreshGlassDevices(); show = true }.padding(horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(Modifier.size(10.dp).background(dot, CircleShape))
-        Spacer(Modifier.width(6.dp))
-        Text("眼镜", style = MaterialTheme.typography.labelMedium)
-    }
-    if (show) {
-        GlassesDialog(vm, state, onDismiss = { show = false })
-    }
-}
-
-@Composable
-private fun GlassesDialog(vm: AppViewModel, state: com.rokid.conductor.UiState, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("连接眼镜") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(state.glassesStatus, style = MaterialTheme.typography.bodyMedium)
-                if (state.glassesDevices.isEmpty()) {
-                    Text("未发现已配对设备。请先在系统蓝牙设置中配对 Rokid 眼镜。",
-                        style = MaterialTheme.typography.bodySmall)
-                }
-                state.glassesDevices.forEach { d ->
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth().clickable {
-                            vm.connectGlasses(d.mac); onDismiss()
-                        }
-                    ) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text(d.name, fontWeight = FontWeight.SemiBold)
-                            Text(d.mac, style = MaterialTheme.typography.labelSmall)
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { vm.refreshGlassDevices() }) { Text("刷新设备") }
-        },
-        dismissButton = {
-            Row {
-                if (state.glassesConnected) {
-                    TextButton(onClick = { vm.disconnectGlasses(); onDismiss() }) { Text("断开") }
-                }
-                TextButton(onClick = onDismiss) { Text("关闭") }
-            }
-        }
-    )
-}
-
-@Composable
-private fun CreateTaskDialog(onDismiss: () -> Unit, onCreate: (String, String?) -> Unit) {
-    var title by remember { mutableStateOf("") }
-    var initial by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("新建任务") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = title, onValueChange = { title = it },
-                    label = { Text("任务标题") }, singleLine = true, modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = initial, onValueChange = { initial = it },
-                    label = { Text("首条消息（可选）") }, modifier = Modifier.fillMaxWidth()
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { onCreate(title, initial.ifBlank { null }) },
-                enabled = title.isNotBlank()
-            ) { Text("创建") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
-    )
 }

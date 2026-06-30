@@ -3,12 +3,20 @@ package com.rokid.conductor.net
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+
+private fun JSONObject.optCleanString(name: String): String? {
+    if (!has(name) || isNull(name)) return null
+    return optString(name)
+        .trim()
+        .takeUnless { it.isBlank() || it.equals("null", ignoreCase = true) }
+}
 
 /** A Conductor project. */
 data class Project(
@@ -34,7 +42,22 @@ data class ChatMessage(
     val createdAt: String,
 )
 
-data class AuthResult(val token: String, val userLabel: String)
+data class DeviceAuthStartResult(
+    val deviceCode: String,
+    val userCode: String,
+    val verificationUri: String,
+    val verificationUriComplete: String,
+    val expiresIn: Int,
+    val interval: Int,
+)
+
+data class DeviceAuthPollResult(
+    val status: String,
+    val agentToken: String?,
+    val backendUrl: String?,
+    val websocketUrl: String?,
+    val message: String?,
+)
 
 class ConductorException(message: String) : Exception(message)
 
@@ -47,9 +70,10 @@ class ConductorClient(
     @Volatile var token: String? = null,
 ) {
     private val json = "application/json; charset=utf-8".toMediaType()
+    private val wav = "audio/wav".toMediaType()
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
     private fun url(path: String): String = baseUrl.trimEnd('/') + path
@@ -82,41 +106,42 @@ class ConductorClient(
 
     // ---- Auth ----
 
-    suspend fun requestCode(phone: String, countryCode: String) = withContext(Dispatchers.IO) {
-        val body = JSONObject().put("phone", phone).put("countryCode", countryCode)
-        execJson("/api/auth/request-code", "POST", body)
-        Unit
+    suspend fun startDeviceAuthorization(): DeviceAuthStartResult = withContext(Dispatchers.IO) {
+        val normalizedBaseUrl = baseUrl.trimEnd('/')
+        val body = JSONObject()
+            .put("cli_version", "rokid-android-1.0")
+            .put("hostname", "rokid-glasses")
+            .put("platform", "rokid-glasses")
+            .put("backend_url", normalizedBaseUrl)
+        val obj = JSONObject(execJson("/api/auth/device/start", "POST", body))
+        DeviceAuthStartResult(
+            deviceCode = obj.getString("device_code"),
+            userCode = obj.getString("user_code"),
+            verificationUri = "$normalizedBaseUrl/activate",
+            verificationUriComplete = "$normalizedBaseUrl/activate?user_code=" + obj.getString("user_code"),
+            expiresIn = obj.optInt("expires_in", 600),
+            interval = obj.optInt("interval", 3).coerceAtLeast(1),
+        )
     }
 
-    /** Verify OTP. Tries login first, then register (auto-creates the account + default project). */
-    suspend fun loginOrRegister(phone: String, countryCode: String, code: String): AuthResult =
+    suspend fun pollDeviceAuthorization(deviceCode: String): DeviceAuthPollResult =
         withContext(Dispatchers.IO) {
-            val identifier = countryCode + phone
-            val loginBody = JSONObject().put("identifier", identifier).put("code", code)
-            val text = try {
-                execJson("/api/auth/login", "POST", loginBody)
-            } catch (e: ConductorException) {
-                // Account not found -> register with the same code.
-                val regBody = JSONObject()
-                    .put("phone", phone).put("countryCode", countryCode).put("code", code)
-                execJson("/api/auth/register", "POST", regBody)
-            }
-            val obj = JSONObject(text)
-            val tok = obj.optString("token")
-            if (tok.isNullOrBlank()) throw ConductorException("No token in auth response")
-            token = tok
-            val user = obj.optJSONObject("user")
-            val label = user?.optString("phone")?.takeIf { it.isNotBlank() }
-                ?: user?.optString("email")?.takeIf { it.isNotBlank() }
-                ?: identifier
-            AuthResult(tok, label)
+            val body = JSONObject().put("device_code", deviceCode)
+            val obj = JSONObject(execJson("/api/auth/device/poll", "POST", body))
+            DeviceAuthPollResult(
+                status = obj.optString("status", "pending"),
+                agentToken = obj.optCleanString("agent_token"),
+                backendUrl = obj.optCleanString("backend_url"),
+                websocketUrl = obj.optCleanString("websocket_url"),
+                message = obj.optCleanString("message") ?: obj.optCleanString("error"),
+            )
         }
 
     suspend fun me(): String = withContext(Dispatchers.IO) {
         val obj = JSONObject(execGet("/api/auth/me"))
         val user = obj.optJSONObject("user")
-        user?.optString("phone")?.takeIf { it.isNotBlank() }
-            ?: user?.optString("email")?.takeIf { it.isNotBlank() }
+        user?.optCleanString("phone")
+            ?: user?.optCleanString("email")
             ?: "user"
     }
 
@@ -173,6 +198,20 @@ class ConductorClient(
                 .put("role", "user")
                 .put("clientRequestId", clientRequestId)
             parseMessage(JSONObject(execJson("/api/tasks/$taskId/messages", "POST", body)))
+        }
+
+    suspend fun transcribeSpeech(wavBytes: ByteArray, languageTag: String?): String =
+        withContext(Dispatchers.IO) {
+            val bodyBuilder = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("file", "speech.wav", wavBytes.toRequestBody(wav))
+            if (!languageTag.isNullOrBlank()) {
+                bodyBuilder.addFormDataPart("language", languageTag)
+            }
+            val req = newRequest("/api/speech/transcribe")
+                .post(bodyBuilder.build())
+                .build()
+            JSONObject(exec(req)).optString("text").trim()
         }
 
     companion object {

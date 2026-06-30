@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <receiver
+            android:name=".debug.SpeechDebugReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.rokid.conductor.DEBUG_SPEAK" />
+                <action android:name="com.rokid.conductor.DEBUG_RECOGNIZE" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
