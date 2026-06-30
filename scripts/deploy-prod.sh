@@ -296,7 +296,7 @@ fi
 echo ""
 echo "📋 Current Crontab:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-if crontab -l 2>/dev/null | grep -A2 "Conductor Outbox" | sed -E 's/^(CRON_SECRET=).*/\1[redacted]/; s/(Bearer )[[:alnum:]._:\/-]+/\1[redacted]/'; then
+if crontab -l 2>/dev/null | grep -E "Conductor Outbox|outbox-processor" | sed -E 's/^(CRON_SECRET=).*/\1[redacted]/; s/(Bearer )[^"[:space:]]+/\1[redacted]/'; then
   :
 else
   echo "  (No Conductor cron jobs found)"
