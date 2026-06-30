@@ -81,6 +81,26 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
+read_env_value() {
+  local key="$1"
+
+  node - "$env" "$key" <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const envPath = process.argv[2];
+const key = process.argv[3];
+const dotenv = require(path.join(process.cwd(), "web/node_modules/dotenv"));
+
+const parsed = dotenv.parse(fs.readFileSync(envPath));
+const value = parsed[key];
+
+if (value !== undefined) {
+  process.stdout.write(value);
+}
+NODE
+}
+
 # 2. Make sure dependencies are installed
 if [[ ! -d web/node_modules ]]; then
   echo "📦 Installing dependencies..."
@@ -145,9 +165,9 @@ fi
 # 6. Start the web service
 echo "🌐 Starting web service..."
 
-# Load environment variables
-if [ -f web/.env.production.local ]; then
-  export $(grep -v '^#' web/.env.production.local | xargs)
+if [ -z "${PORT:-}" ]; then
+  PORT=$(read_env_value PORT || true)
+  export PORT
 fi
 
 if [ -n "${PORT:-}" ]; then
@@ -255,7 +275,8 @@ CRON_JOB="* * * * * cd $REMOTE_DIR && curl -s -H \"Authorization: Bearer \${CRON
 if ! crontab -l 2>/dev/null | grep -q "outbox-processor"; then
   # Make sure CRON_SECRET is available
   if [ -z "${CRON_SECRET:-}" ] && [ -f web/.env.production.local ]; then
-    export CRON_SECRET=$(grep -E "^CRON_SECRET=" web/.env.production.local | cut -d'=' -f2 | tr -d '"' || echo "")
+    CRON_SECRET=$(read_env_value CRON_SECRET || true)
+    export CRON_SECRET
   fi
 
   if [ -n "${CRON_SECRET:-}" ]; then
@@ -275,6 +296,10 @@ fi
 echo ""
 echo "📋 Current Crontab:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-crontab -l 2>/dev/null | grep -A2 "Conductor Outbox" || echo "  (No Conductor cron jobs found)"
+if crontab -l 2>/dev/null | grep -A2 "Conductor Outbox" | sed -E 's/^(CRON_SECRET=).*/\1[redacted]/; s/(Bearer )[[:alnum:]._:\/-]+/\1[redacted]/'; then
+  :
+else
+  echo "  (No Conductor cron jobs found)"
+fi
 echo ""
 echo "✅ All done!"
