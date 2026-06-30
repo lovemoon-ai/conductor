@@ -1,81 +1,130 @@
 # Rokid Conductor
 
-An Android **phone** app that turns Rokid Glasses into a heads-up display for
-[Conductor](https://conductor-ai.top) AI coding tasks. You log in, pick a
-project, pick a task, and carry on the task's AI conversation — the dialogue is
-shown **on the glasses screen** while the phone acts as controller.
+A glasses-native Android app for Rokid Glasses. Install the APK directly on the
+glasses, sign in to Conductor with the device authorization flow, choose a
+project, choose a task, and continue the task's AI conversation from the HUD.
 
-This is intentionally a *phone* app that talks to the glasses over the
-**Rokid CXR-M SDK** (`com.rokid.cxr:client-m`), not a glasses-native app.
+This app follows the GlassKit-style direct-on-device model: black HUD
+background, high-contrast foreground text, portrait 3:4 layout, and touchpad
+navigation. It does not use the phone-side CXR-M Bluetooth companion SDK.
 
-## What it does
+## What It Does
 
-- **Login** via Conductor phone-OTP (`/api/auth/request-code` → `/api/auth/login`/`register`), token stored locally.
-- **Projects / Tasks**: lists your projects (`/api/projects`) and a project's tasks (`/api/tasks`), and can create new AI tasks.
-- **Conversation**: loads task history (`/api/tasks/{id}/messages`), opens a realtime WebSocket (`/ws/app?token=`), sends your messages (`POST .../messages`, `role:user`) to advance the task, and renders the agent's replies (which arrive with role `sdk`).
-- **Glasses**: connects to bonded Rokid Glasses over Bluetooth via `CxrApi`, opens the on-glasses **AI_CHAT** scene, echoes your input with `sendAsrContent`, signals thinking with `notifyAiStart`, and pushes each AI reply to the lens with `sendTtsContent`.
-- **Voice**: push-to-talk mic (phone `SpeechRecognizer`; the glasses are set as the communication audio device so the glasses mic is used). The glasses' AI button (`AiEventListener.onAiKeyDown/Up`) also triggers capture.
+- **Device login**: starts `/api/auth/device/start`, shows the short user code
+  and `/activate` URL, polls `/api/auth/device/poll`, and stores the returned
+  API token locally.
+- **Projects / Tasks**: lists projects (`/api/projects`) and project tasks
+  (`/api/tasks?project_id=...`).
+- **Conversation**: loads task history (`/api/tasks/{id}/messages`), opens the
+  realtime app WebSocket (`/ws/app?token=...`), sends voice-recognized user
+  messages (`POST /api/tasks/{id}/messages`), and renders AI replies from
+  `task_sdk_message` / `task_user_message` events.
+- **Speech input / output**: uses Android `SpeechRecognizer` with an app-local
+  `RecognitionService` for hands-free message entry. If Rokid firmware does not
+  dispatch to that service, the app falls back to direct `AudioRecord` capture
+  and backend STT through `/api/speech/transcribe`. Voice output uses Android
+  `TextToSpeech`, with a Rokid TTS Binder fallback when no standard Android TTS
+  engine is exposed. AI replies are auto-read when they arrive; the quick-reply
+  strip can also read or stop the latest AI reply.
+- **Rokid touchpad**: tap selects or toggles voice capture, double-tap goes
+  back/exits, swipe forward moves next/newer, swipe backward moves
+  previous/older.
+- **Quick replies**: in chat, swipe cycles `hi` / `继续` / `总结进展` /
+  `下一步` / `语音输入` / `朗读最新` / `停止朗读`; tap sends the selected reply,
+  starts voice input, reads the latest AI reply, or stops speech output.
 
 ## Architecture
 
+```text
+MainActivity.kt             Full-screen glasses Activity; maps touchpad keys.
+AppViewModel.kt             Device auth, project/task focus, chat, voice turns.
+ui/RokidConductorApp.kt     3:4 HUD Compose UI for login/lists/chat.
+net/ConductorClient.kt      OkHttp REST client.
+net/ConductorSocket.kt      OkHttp WebSocket client.
+speech/SpeechInput.kt       SpeechRecognizer plus direct-recorder fallback.
+speech/ConductorRecognitionService.kt
+                           App-local RecognitionService for voice chat.
+speech/ConductorSpeechTranscriber.kt
+                           AudioRecord to backend STT helper.
+speech/SpeechOutput.kt      Android TextToSpeech plus Rokid TTS fallback.
 ```
-ui/RokidConductorApp.kt   Compose screens: Login → Projects → Tasks → Chat
-AppViewModel.kt           StateFlow state; orchestrates net + glasses + speech
-net/ConductorClient.kt    OkHttp REST client (auth, projects, tasks, messages)
-net/ConductorSocket.kt    OkHttp WebSocket to /ws/app, auto-reconnect
-glasses/GlassesManager.kt  CxrApi wrapper: connect, AI_CHAT scene, push text
-speech/SpeechInput.kt     Android SpeechRecognizer push-to-talk
-```
 
-The server base URL is configurable on the login screen (default
-`https://conductor-ai.top`; use `http://localhost:6152` for a local server,
-with `adb reverse tcp:6152 tcp:6152`).
+## Build And Install
 
-## Build & install
-
-Prereqs: Android SDK (compileSdk 35, build-tools 35), JDK 17. The Rokid SDK is
-pulled from `https://maven.rokid.com/repository/maven-public/` (configured in
-`settings.gradle.kts`).
+Prereqs: Android SDK (compileSdk 35, build-tools 35), JDK 17, and `adb`.
 
 ```bash
+cd android
 ./gradlew :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n com.rokid.conductor/.MainActivity
 ```
 
-`minSdk 28`, ABIs `arm64-v8a` / `armeabi-v7a` (matching the SDK's native libs).
+The production backend is `https://conductor.conductor-ai.top`; the login HUD
+shows `https://conductor.conductor-ai.top/activate` with a short device code.
 
-## Pairing the glasses
+## Speech Smoke Test
 
-Pair the Rokid Glasses in the phone's system Bluetooth settings first, then in
-the app tap the **眼镜** chip (top bar) → pick the device → connect. The chip
-turns green when connected; opening a task then activates the AI_CHAT scene.
+The debug build exposes ADB-only speech smoke tests. Start the app first so the
+Rokid firmware allows the debug receiver to run.
 
-## Verified
+Voice output:
 
-- Builds, installs, and launches on an Android 16 device.
-- Live against production `conductor-ai.top`: login/session, project list, task
-  list, task history, realtime WebSocket, task creation, and sending a user
-  message (task advances; app awaits the reply).
-- Full reply round-trip verified against a local Conductor server + `debug`
-  daemon: a user message drove the `claude` backend to a real assistant reply,
-  delivered over the same REST/WS protocol the app consumes.
+```bash
+adb shell am start -W -n com.rokid.conductor/.MainActivity
+adb shell "am broadcast -n com.rokid.conductor/.debug.SpeechDebugReceiver -a com.rokid.conductor.DEBUG_SPEAK --es text 'Conductor_speech_output_test'"
+adb logcat -d -t 3000 | rg -i 'ConductorSpeechDebug|TtsService -> binder playTtsMsg|TtsService -> onPlayStatus'
+```
 
-### External prerequisites for the live AI loop
+Voice input:
 
-- An **online Conductor daemon** (`conductor daemon`) bound to your account
-  must be running for tasks to actually produce AI replies — the app sends the
-  message and listens; the agent runs on your machine.
-- **Physical Rokid Glasses paired** over Bluetooth are required to see the
-  conversation rendered on the lens (the app drives the verified CXR-M AI_CHAT
-  display API).
+```bash
+adb shell am start -W -n com.rokid.conductor/.MainActivity
+adb shell "am broadcast -n com.rokid.conductor/.debug.SpeechDebugReceiver -a com.rokid.conductor.DEBUG_RECOGNIZE --el duration_ms 2500"
+adb logcat -d -t 8000 | rg -i 'ConductorSpeechDebug|ConductorSpeechInput|ConductorRecognitionService'
+```
 
-## CXR-M SDK notes (ground truth from `client-m` 1.2.2)
+On RG-glasses firmware tested here, Android does not expose a standard TTS
+service, and platform `SpeechRecognizer` does not call back into the app-local
+recognition service. The app therefore times out the platform recognizer after
+1.5 seconds and starts direct recorder-backed STT instead:
 
-- Connect: `CxrApi.getInstance().initBluetooth(ctx, BluetoothDevice, BluetoothStatusCallback)`.
-- Scene: `controlScene(ValueUtil.CxrSceneType.AI_CHAT, true, null)`.
-- Show user text: `sendAsrContent(text)`; thinking: `notifyAiStart()`;
-  AI reply: `sendTtsContent(text)` + `notifyTtsAudioFinished()`.
-- Glasses mic: `setAudioStreamListener(AudioStreamListener)` (PCM) and/or
-  `setCommunicationDevice()` to route the glasses mic to the phone recognizer.
-- Push-to-talk button events: `setAiEventListener(AiEventListener)`.
+```bash
+adb shell cmd package query-services -a android.speech.RecognitionService
+adb shell cmd package query-services -a android.intent.action.TTS_SERVICE
+```
+
+TTS still works through the Rokid Binder fallback. STT requires the user to be
+logged in and the backend to have `GLM_API_KEY` configured. The model can be
+overridden with `GLM_ASR_MODEL`; otherwise the server uses `glm-asr-2512`. If
+the HUD reports that the speech backend is not published, deploy the web app
+version that includes `/api/speech/transcribe`.
+
+## Controls
+
+| Intent | Rokid Glasses touchpad | Android key |
+| --- | --- | --- |
+| Select / send selected chat reply | Tap | `KEYCODE_ENTER` |
+| Back / exit root screen | Double tap | `KEYCODE_BACK` |
+| Next / newer message | Swipe forward | `KEYCODE_DPAD_DOWN` |
+| Previous / older message | Swipe backward | `KEYCODE_DPAD_UP` |
+
+Phone/emulator touch fallback is also available for quick checks: tap,
+double-tap, swipe right, and swipe left map to the same actions. Directional
+navigation is debounced so a single Rokid swipe that emits both touch and DPAD
+events only moves one item.
+
+## Runtime Notes
+
+- The glasses need network access to the Conductor backend.
+- Task replies still require an online Conductor daemon bound to the signed-in
+  account; the glasses app sends the user turn and listens for app-gateway
+  events.
+- Voice input first tries Android `SpeechRecognizer` with the app-local
+  `ConductorRecognitionService`. On firmware that does not dispatch the service
+  callback, `SpeechInput` falls back to direct `AudioRecord` capture and uploads
+  WAV audio to `/api/speech/transcribe`.
+- Voice output first uses Android `TextToSpeech`. On Rokid firmware without a
+  standard `android.intent.action.TTS_SERVICE`, it binds the system
+  `com.rokid.os.sprite.tts.TtsService` Binder fallback. If both engines are
+  unavailable, the HUD marks readout unavailable and text chat remains usable.
