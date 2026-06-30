@@ -3,74 +3,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
 import { realtimeHub } from "@/lib/realtime/hub";
-import { isConductorFireHost } from "@/lib/subscription/plan-limits";
-import { normalizeTaskStatus, parseJsonObject, normalizeOptionalString } from "@/lib/tasks/task-config";
-
-type InterruptRouteTask = {
-  id: string;
-  projectId: string;
-  taskType: string | null;
-  status: string | null;
-  agentHost: string | null;
-  executionHost: string | null;
-  metadata: unknown;
-  project: {
-    daemonHost: string | null;
-  } | null;
-};
+import { resolveFireTaskRouting } from "@/lib/tasks/fire-routing";
+import { normalizeTaskStatus, normalizeOptionalString } from "@/lib/tasks/task-config";
 
 const INTERRUPT_ACK_TIMEOUT_MS = 2500;
-
-const extractMetadataDaemonHost = (value: unknown): string | null =>
-  normalizeOptionalString(parseJsonObject(value)?.daemonName);
-
-const uniqueHosts = (hosts: Array<string | null>): string[] =>
-  hosts.filter((value, index, array): value is string => Boolean(value) && array.indexOf(value) === index);
-
-const resolveInterruptTaskRouting = (task: InterruptRouteTask, boundHost: string | null) => {
-  const configuredAgentHost = normalizeOptionalString(task.agentHost);
-  const executionHost = normalizeOptionalString(task.executionHost);
-  const metadataDaemonHost = extractMetadataDaemonHost(task.metadata);
-  const projectDaemonHost = normalizeOptionalString(task.project?.daemonHost);
-  const normalizedBoundHost = normalizeOptionalString(boundHost);
-  const isManualFireTask = Boolean(configuredAgentHost && isConductorFireHost(configuredAgentHost));
-
-  const persistedFireOwnerCandidates = uniqueHosts([
-    executionHost && isConductorFireHost(executionHost) ? executionHost : null,
-    configuredAgentHost && isConductorFireHost(configuredAgentHost) ? configuredAgentHost : null,
-  ]);
-  const boundFireOwnerCandidate =
-    normalizedBoundHost &&
-    isConductorFireHost(normalizedBoundHost) &&
-    (persistedFireOwnerCandidates.length === 0 || persistedFireOwnerCandidates.includes(normalizedBoundHost))
-      ? normalizedBoundHost
-      : null;
-  const fireOwnerCandidates = isManualFireTask
-    ? uniqueHosts([boundFireOwnerCandidate, ...persistedFireOwnerCandidates])
-    : uniqueHosts([executionHost && isConductorFireHost(executionHost) ? executionHost : null]);
-
-  const daemonAssociationCandidates = uniqueHosts(
-    isManualFireTask
-      ? [
-          metadataDaemonHost && !isConductorFireHost(metadataDaemonHost) ? metadataDaemonHost : null,
-          executionHost && !isConductorFireHost(executionHost) ? executionHost : null,
-          projectDaemonHost && !isConductorFireHost(projectDaemonHost) ? projectDaemonHost : null,
-        ]
-      : [
-          configuredAgentHost && !isConductorFireHost(configuredAgentHost) ? configuredAgentHost : null,
-          metadataDaemonHost && !isConductorFireHost(metadataDaemonHost) ? metadataDaemonHost : null,
-          executionHost && !isConductorFireHost(executionHost) ? executionHost : null,
-          projectDaemonHost && !isConductorFireHost(projectDaemonHost) ? projectDaemonHost : null,
-        ],
-  );
-
-  return {
-    taskModel: isManualFireTask ? "manual_fire" : "app",
-    fireOwnerHost: fireOwnerCandidates[0] ?? null,
-    fireOwnerCandidates,
-    daemonAssociationHost: daemonAssociationCandidates[0] ?? null,
-  };
-};
 
 export async function POST(
   request: NextRequest,
@@ -128,7 +64,7 @@ export async function POST(
   }
 
   const boundAgentHost = normalizeOptionalString(realtimeHub.getTaskAgentHost(taskId));
-  const routing = resolveInterruptTaskRouting(task, boundAgentHost);
+  const routing = resolveFireTaskRouting(task, boundAgentHost);
   if (!routing.fireOwnerHost) {
     return NextResponse.json(
       {

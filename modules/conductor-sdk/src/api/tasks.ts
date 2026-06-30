@@ -183,6 +183,15 @@ export interface SendTaskMessageOptions {
   clientRequestId?: string;
 }
 
+export interface InsertTaskMessageOptions {
+  metadata?: Record<string, unknown>;
+  /**
+   * The reply target of the in-flight turn to interrupt. When omitted, the
+   * server resolves the most recent user message as the target.
+   */
+  targetReplyTo?: string;
+}
+
 export interface ListTaskMessagesOptions {
   limit?: number;
   before?: string;
@@ -263,6 +272,36 @@ export class TasksApi {
     }
     const payload = await this.client.postTaskMessage(trimmed, body);
     return normalizeMessage(payload as Record<string, any>);
+  }
+
+  /**
+   * Insert a mid-turn message into a running task. The message is delivered and
+   * the in-flight turn is interrupted so the inserted message runs next, instead
+   * of being queued until the current turn finishes (which is what
+   * {@link sendTaskMessage} does).
+   */
+  async insertTaskMessage(
+    taskId: string,
+    content: string,
+    options: InsertTaskMessageOptions = {},
+  ): Promise<Message> {
+    const trimmed = String(taskId ?? '').trim();
+    if (!trimmed) {
+      throw new Error('taskId is required');
+    }
+    if (typeof content !== 'string' || content.length === 0) {
+      throw new Error('content is required');
+    }
+    const metadata = buildAuditMetadata(options.metadata, this.options);
+    const body: Record<string, unknown> = {
+      content,
+      metadata,
+    };
+    if (options.targetReplyTo) {
+      body.target_reply_to = options.targetReplyTo;
+    }
+    const payload = await this.client.postTaskInsert(trimmed, body);
+    return normalizeMessage((payload as Record<string, any>).message ?? payload);
   }
 
   async listTaskMessages(

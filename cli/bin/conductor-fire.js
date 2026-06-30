@@ -2543,26 +2543,35 @@ export class BridgeRunner {
   async handleInterruptedTurn(replyTo, interruptInfo) {
     const normalizedReplyTo = this.normalizeReplyTarget(replyTo);
     this.clearInterruptRetryForReplyTarget(normalizedReplyTo);
-    this.copilotLog(`turn interrupted replyTo=${normalizedReplyTo || "latest"}`);
-    await this.reportRuntimeStatus(
-      {
-        phase: "interrupted",
-        reply_in_progress: false,
-        status_done_line: "Conversation interrupted",
-      },
-      normalizedReplyTo,
+    // An insert is implemented as "interrupt the running turn so the just
+    // inserted message runs next". In that case we deliberately suppress the
+    // "Conversation interrupted" confirmation so the insertion feels seamless:
+    // the inserted user message + its fresh reply are all the user should see.
+    const isInsertInterrupt = interruptInfo?.reason === "user_insert";
+    this.copilotLog(
+      `turn interrupted replyTo=${normalizedReplyTo || "latest"}${isInsertInterrupt ? " (insert)" : ""}`,
     );
-    try {
-      await this.conductor.sendMessage(this.taskId, "Conversation interrupted", {
-        backend: this.backendName,
-        reply_to: normalizedReplyTo || undefined,
-        interrupted: true,
-        interruption_request_id: interruptInfo?.requestId || undefined,
-        reason: interruptInfo?.reason || undefined,
-        cli_args: this.cliArgs,
-      });
-    } catch (error) {
-      log(`Failed to send interrupt confirmation for ${this.taskId}: ${error?.message || error}`);
+    if (!isInsertInterrupt) {
+      await this.reportRuntimeStatus(
+        {
+          phase: "interrupted",
+          reply_in_progress: false,
+          status_done_line: "Conversation interrupted",
+        },
+        normalizedReplyTo,
+      );
+      try {
+        await this.conductor.sendMessage(this.taskId, "Conversation interrupted", {
+          backend: this.backendName,
+          reply_to: normalizedReplyTo || undefined,
+          interrupted: true,
+          interruption_request_id: interruptInfo?.requestId || undefined,
+          reason: interruptInfo?.reason || undefined,
+          cli_args: this.cliArgs,
+        });
+      } catch (error) {
+        log(`Failed to send interrupt confirmation for ${this.taskId}: ${error?.message || error}`);
+      }
     }
     if (normalizedReplyTo) {
       this.processedMessageIds.add(normalizedReplyTo);

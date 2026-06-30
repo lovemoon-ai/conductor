@@ -67,7 +67,8 @@ describe('MessageBubble', () => {
     fireEvent.doubleClick(bubble);
 
     expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
-    expect(screen.queryByText('Copy')).not.toBeInTheDocument();
+    // Each toolbar button now carries a short single-word caption beneath it.
+    expect(screen.getByText('Copy')).toBeInTheDocument();
   });
 
   it('calls onResend with the current message from the double-click toolbar', () => {

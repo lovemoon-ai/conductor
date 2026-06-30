@@ -134,6 +134,62 @@ describe("conductor task send", () => {
   });
 });
 
+describe("conductor task insert", () => {
+  it("inserts a mid-turn message via the SDK insert endpoint", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      tasks: [{ id: "task-1", projectId: "proj-1", title: "T", status: "running" }],
+    });
+    const code = await main(
+      ["insert", "task-1", "urgent note", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 0);
+    const sent = backend.calls.find((c) => c.method === "postTaskInsert");
+    assert.ok(sent, "expected postTaskInsert to be called");
+    assert.equal(sent.taskId, "task-1");
+    assert.equal(sent.body.content, "urgent note");
+    assert.equal(sent.body.metadata.audit.actor, "cli");
+    // Must not fall back to the queue-after-turn message endpoint.
+    assert.equal(backend.calls.find((c) => c.method === "postTaskMessage"), undefined);
+  });
+
+  it("forwards --target-reply-to", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      tasks: [{ id: "task-1", projectId: "proj-1", title: "T", status: "running" }],
+    });
+    const code = await main(
+      ["insert", "task-1", "note", "--target-reply-to", "msg-7", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 0);
+    const sent = backend.calls.find((c) => c.method === "postTaskInsert");
+    assert.equal(sent.body.target_reply_to, "msg-7");
+  });
+
+  it("dry-run targets the /insert endpoint and does not call postTaskInsert", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({ projects: [seedProject] });
+    const code = await main(
+      ["insert", "task-1", "hello", "--dry-run", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 0);
+    const data = JSON.parse(stdout.collect().trim());
+    assert.equal(data.dryRun, true);
+    assert.equal(data.request.method, "POST");
+    assert.match(data.request.url, /\/api\/tasks\/task-1\/insert$/);
+    assert.equal(data.request.body.content, "hello");
+    assert.equal(backend.calls.find((c) => c.method === "postTaskInsert"), undefined);
+  });
+});
+
 describe("conductor task messages", () => {
   it("pulls a slice and returns JSON", async () => {
     const stdout = makeStream();
