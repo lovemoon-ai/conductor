@@ -586,6 +586,18 @@ export class BackendApiClient {
     return this.parseJson(response);
   }
 
+  /**
+   * POST /tasks/[taskId]/insert — insert a mid-turn message. Unlike
+   * {@link postTaskMessage}, which queues a message for after the current turn,
+   * this interrupts the running turn so the inserted message is processed next.
+   */
+  async postTaskInsert(taskId: string, params: Record<string, unknown>): Promise<Record<string, any>> {
+    const response = await this.request('POST', `/tasks/${taskId}/insert`, {
+      body: JSON.stringify(params),
+    });
+    return this.parseJson(response);
+  }
+
   private async request(
     method: string,
     pathname: string,

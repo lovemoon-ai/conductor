@@ -19,6 +19,7 @@ export type ApiClient = Pick<
   | 'getTask'
   | 'listTaskMessages'
   | 'postTaskMessage'
+  | 'postTaskInsert'
 >;
 
 export interface SdkClientOptions {

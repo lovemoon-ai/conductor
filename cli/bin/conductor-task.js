@@ -7,6 +7,7 @@
  *   list [--project ...] [--issue <id>] [--status ...]
  *   show <id>
  *   send <id> [<message>] [--stdin] [--from-file FILE] [--metadata-json '{...}']
+ *   insert <id> [<message>] [--stdin] [--from-file FILE] [--target-reply-to <msg-id>]
  *   messages <id> [--limit N] [--before <msg-id>]
  *
  * Global flags supported on every write subcommand:
@@ -182,6 +183,48 @@ async function handleSend(argv, deps) {
   return EXIT.OK;
 }
 
+async function handleInsert(argv, deps) {
+  const apis = await buildApis(deps);
+  const content = readMessageInput({
+    positional: argv.message,
+    fromFile: argv.fromFile,
+    useStdin: Boolean(argv.stdin),
+    stdin: deps.stdin,
+  });
+  const extraMetadata = parseMetadataJson(argv.metadataJson);
+  const metadata = buildAuditMetadata(deps.env, extraMetadata || {});
+  const body = {
+    content,
+    metadata,
+  };
+  if (argv.targetReplyTo) {
+    body.target_reply_to = String(argv.targetReplyTo);
+  }
+  if (argv.dryRun) {
+    emitDryRun(
+      deps.stdout,
+      argv.json,
+      makeDryRunPayload(
+        "POST",
+        `${buildBaseUrl(apis.config)}/api/tasks/${encodeURIComponent(argv.id)}/insert`,
+        body,
+      ),
+    );
+    return EXIT.OK;
+  }
+  const result = await apis.tasks.insertTaskMessage(argv.id, content, {
+    metadata: body.metadata,
+    targetReplyTo: argv.targetReplyTo ? String(argv.targetReplyTo) : undefined,
+  });
+  if (argv.json) {
+    printJson(deps.stdout, result ?? { inserted: true });
+    return EXIT.OK;
+  }
+  const id = result?.id ? `${result.id} ` : "";
+  printPretty(deps.stdout, `Inserted message ${id}into task ${argv.id}`);
+  return EXIT.OK;
+}
+
 async function handleMessages(argv, deps) {
   const apis = await buildApis(deps);
   const list = await apis.tasks.listTaskMessages(argv.id, {
@@ -247,6 +290,20 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
           .option("metadata-json", { type: "string", describe: "Extra JSON metadata to merge into the message" }),
         async (argv) => {
           exitCode = await handleSend(argv, { ...handlerDeps, configFile: argv.configFile });
+        },
+      )
+      .command(
+        "insert <id> [message]",
+        "Insert a mid-turn message into a running task (interrupts the current turn so it runs next)",
+        (cmd) => cmd
+          .positional("id", { type: "string", demandOption: true })
+          .positional("message", { type: "string" })
+          .option("stdin", { type: "boolean", default: false })
+          .option("from-file", { type: "string" })
+          .option("target-reply-to", { type: "string", describe: "Reply target of the in-flight turn to interrupt (defaults to the latest user message)" })
+          .option("metadata-json", { type: "string", describe: "Extra JSON metadata to merge into the message" }),
+        async (argv) => {
+          exitCode = await handleInsert(argv, { ...handlerDeps, configFile: argv.configFile });
         },
       )
       .command(

@@ -252,6 +252,77 @@ describe('MessageInput', () => {
     expect(onSendMock).not.toHaveBeenCalled();
   });
 
+  it('double-clicking the send button inserts into the current turn when insert is enabled', () => {
+    const onSendMock = vi.fn();
+    const onInsertMock = vi.fn();
+    render(
+      <MessageInput
+        taskId="task-insert-dbl"
+        onSend={onSendMock}
+        onInsert={onInsertMock}
+        insertEnabled
+      />,
+    );
+    const textarea = screen.getByTestId('message-input-textarea');
+    fireEvent.change(textarea, { target: { value: 'urgent note' } });
+
+    const button = screen.getByTestId('message-input-send-button');
+    // Two clicks within the double-click window => insert, not send.
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(onInsertMock).toHaveBeenCalledWith('urgent note');
+    expect(onSendMock).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue('');
+  });
+
+  it('single-clicking the send button still sends (after the double-click window) when insert is enabled', () => {
+    vi.useFakeTimers();
+    try {
+      const onSendMock = vi.fn();
+      const onInsertMock = vi.fn();
+      render(
+        <MessageInput
+          taskId="task-insert-single"
+          onSend={onSendMock}
+          onInsert={onInsertMock}
+          insertEnabled
+        />,
+      );
+      const textarea = screen.getByTestId('message-input-textarea');
+      fireEvent.change(textarea, { target: { value: 'queued note' } });
+
+      fireEvent.click(screen.getByTestId('message-input-send-button'));
+      // Deferred until the double-click window elapses.
+      expect(onSendMock).not.toHaveBeenCalled();
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+      expect(onSendMock).toHaveBeenCalledWith('queued note');
+      expect(onInsertMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends immediately on a single click when insert is not available', () => {
+    const onSendMock = vi.fn();
+    const onInsertMock = vi.fn();
+    render(
+      <MessageInput
+        taskId="task-insert-off"
+        onSend={onSendMock}
+        onInsert={onInsertMock}
+      />,
+    );
+    const textarea = screen.getByTestId('message-input-textarea');
+    fireEvent.change(textarea, { target: { value: 'plain send' } });
+    fireEvent.click(screen.getByTestId('message-input-send-button'));
+
+    expect(onSendMock).toHaveBeenCalledWith('plain send');
+    expect(onInsertMock).not.toHaveBeenCalled();
+  });
+
   it('keeps ArrowUp anchored to the current prompt when a new user message appears mid-browse', async () => {
     // Simulates another signed-in web client pushing a user message (via
     // websocket) while the user is already paging through history. The

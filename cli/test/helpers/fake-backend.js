@@ -243,6 +243,27 @@ export class FakeBackendApi {
     this.messages.push(message);
     return { ...message };
   }
+
+  async postTaskInsert(taskId, body) {
+    this.calls.push({ method: "postTaskInsert", taskId, body });
+    const message = {
+      id: `msg-${this.messages.length + 1}`,
+      task_id: taskId,
+      role: "user",
+      content: body.content,
+      metadata: body.metadata ?? null,
+      created_at: new Date().toISOString(),
+    };
+    this.messages.push(message);
+    return {
+      delivered: true,
+      interrupted: true,
+      task_id: taskId,
+      message_id: message.id,
+      target_reply_to: body.target_reply_to ?? null,
+      message: { ...message },
+    };
+  }
 }
 
 /**

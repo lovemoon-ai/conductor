@@ -13,6 +13,7 @@ interface ChatState {
   // Actions
   fetchMessages: (taskId: string, options?: { beforeId?: string; force?: boolean }) => Promise<void>;
   sendMessage: (taskId: string, input: SendMessageInput) => Promise<Message>;
+  insertMessage: (taskId: string, input: { content: string; targetReplyTo?: string }) => Promise<Message>;
   addMessage: (taskId: string, message: Message) => void;
   updateMessage: (taskId: string, message: Message) => void;
   clearMessages: (taskId: string) => void;
@@ -229,6 +230,64 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           [taskId]: state.messagesByTask[taskId]?.filter((m) => m.id !== tempId) || [],
         },
         error: error instanceof Error ? error.message : 'Failed to send message',
+      }));
+      throw error;
+    }
+  },
+
+  insertMessage: async (taskId, input) => {
+    // Optimistic insert mirrors sendMessage, but hits the /insert endpoint which
+    // interrupts the running turn so the inserted message is processed next.
+    const tempId = `temp-${Date.now()}`;
+    // Idempotency key so a stray double-submit (insert is double-click driven)
+    // or a transport retry can't create two distinct user messages server-side.
+    const clientMessageId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${tempId}-${Math.random().toString(36).slice(2)}`;
+    const tempMessage: Message = {
+      id: tempId,
+      taskId,
+      role: 'user',
+      content: input.content,
+      createdAt: new Date().toISOString(),
+    };
+
+    set((state) => ({
+      messagesByTask: {
+        ...state.messagesByTask,
+        [taskId]: [...(state.messagesByTask[taskId] || []), tempMessage],
+      },
+    }));
+
+    try {
+      const api = getApiClient();
+      const body: Record<string, unknown> = { content: input.content, client_message_id: clientMessageId };
+      if (input.targetReplyTo) {
+        body.target_reply_to = input.targetReplyTo;
+      }
+      const response = await api.post<{ message?: Message } & Message>(`/tasks/${taskId}/insert`, body);
+      const message = normalizeMessage(response?.message ?? response);
+
+      set((state) => ({
+        messagesByTask: {
+          ...state.messagesByTask,
+          [taskId]: (() => {
+            const existing = state.messagesByTask[taskId] || [];
+            const withoutTemp = existing.filter((m) => m.id !== tempId);
+            return mergeById(withoutTemp, message);
+          })(),
+        },
+      }));
+
+      return message;
+    } catch (error) {
+      set((state) => ({
+        messagesByTask: {
+          ...state.messagesByTask,
+          [taskId]: state.messagesByTask[taskId]?.filter((m) => m.id !== tempId) || [],
+        },
+        error: error instanceof Error ? error.message : 'Failed to insert message',
       }));
       throw error;
     }
