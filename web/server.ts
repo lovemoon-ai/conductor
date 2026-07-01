@@ -9,9 +9,9 @@ import { parse } from "url";
 import fs from "fs";
 import path from "path";
 import next from "next";
-import { WebSocketServer, WebSocket } from "ws";
 import { setupAppGateway, APP_WS_PATH } from "./src/lib/realtime/app-gateway";
 import { setupAgentGateway, AGENT_WS_PATH } from "./src/lib/realtime/agent-gateway";
+import { setupSpeechGateway, SPEECH_WS_PATH } from "./src/lib/speech/gateway";
 import { startTaskAttachmentJanitor } from "./src/lib/tasks/task-file-storage";
 import { startScheduledMessageDispatcher } from "./src/lib/tasks/scheduled-messages";
 import { realtimeHub } from "./src/lib/realtime/hub";
@@ -111,6 +111,7 @@ app.prepare().then(async () => {
 
   const appWss = setupAppGateway();
   const agentWss = setupAgentGateway();
+  const speechWss = setupSpeechGateway();
 
   server.on("upgrade", (req, socket, head) => {
     const { pathname } = parse(req.url || "", true);
@@ -122,6 +123,10 @@ app.prepare().then(async () => {
     } else if (pathname === AGENT_WS_PATH) {
       agentWss.handleUpgrade(req, socket, head, (ws) => {
         agentWss.emit("connection", ws, req);
+      });
+    } else if (pathname === SPEECH_WS_PATH) {
+      speechWss.handleUpgrade(req, socket, head, (ws) => {
+        speechWss.emit("connection", ws, req);
       });
     } else if (dev) {
       // Allow Next.js dev HMR websocket upgrades.

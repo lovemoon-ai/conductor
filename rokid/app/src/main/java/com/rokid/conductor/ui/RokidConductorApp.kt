@@ -3,12 +3,13 @@ package com.rokid.conductor.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -16,35 +17,49 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.rokid.conductor.AppViewModel
+import com.rokid.conductor.ChatScrollKind
 import com.rokid.conductor.Screen
 import com.rokid.conductor.UiState
 import com.rokid.conductor.net.ChatMessage
 import com.rokid.conductor.net.Project
 import com.rokid.conductor.net.TaskItem
+import kotlin.math.abs
+import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
 private val HudGreen = Color(0xFF8CFF8C)
 private val HudDim = Color(0xFF8A9A8A)
 private val HudWhite = Color.White
 private val HudPanel = Color(0xFF071007)
+private const val ReadoutFollowIntervalMs = 1_200L
+private const val ReadoutFollowMinDeltaPx = 12f
+private const val ReadoutFollowMaxStepViewportRatio = 0.45f
 
 @Composable
 fun RokidConductorApp(vm: AppViewModel) {
@@ -56,7 +71,6 @@ fun RokidConductorApp(vm: AppViewModel) {
         contentAlignment = Alignment.Center
     ) {
         HudViewport {
-            Header(state)
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -66,7 +80,7 @@ fun RokidConductorApp(vm: AppViewModel) {
                     Screen.LOGIN -> LoginScreen(state)
                     Screen.PROJECTS -> ProjectsScreen(state)
                     Screen.TASKS -> TasksScreen(state)
-                    Screen.CHAT -> ChatScreen(state)
+                    Screen.CHAT -> ChatScreen(state, vm)
                 }
                 if (state.loading) {
                     Box(
@@ -79,7 +93,6 @@ fun RokidConductorApp(vm: AppViewModel) {
                     }
                 }
             }
-            Footer(state)
         }
     }
 }
@@ -100,40 +113,10 @@ private fun HudViewport(content: @Composable ColumnScope.() -> Unit) {
         Column(
             modifier = viewportModifier
                 .align(Alignment.Center)
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             content()
-        }
-    }
-}
-
-@Composable
-private fun Header(state: UiState) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .height(44.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                "Conductor",
-                color = HudWhite,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1
-            )
-            Text(
-                screenLabel(state),
-                color = HudDim,
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        if (state.screen != Screen.LOGIN) {
-            StatusDot(if (state.realtimeConnected) HudGreen else HudDim)
         }
     }
 }
@@ -183,8 +166,7 @@ private fun LoginScreen(state: UiState) {
 @Composable
 private fun ProjectsScreen(state: UiState) {
     FocusedList(
-        emptyText = "没有项目",
-        countText = countText(state.focusedProjectIndex, state.projects.size),
+        emptyText = state.error ?: "没有项目",
         items = state.projects,
         focusedIndex = state.focusedProjectIndex,
         title = { it.name },
@@ -195,19 +177,17 @@ private fun ProjectsScreen(state: UiState) {
 @Composable
 private fun TasksScreen(state: UiState) {
     FocusedList(
-        emptyText = "没有任务",
-        countText = countText(state.focusedTaskIndex, state.tasks.size),
+        emptyText = state.error ?: "没有任务",
         items = state.tasks,
         focusedIndex = state.focusedTaskIndex,
         title = { it.title },
-        subtitle = { "状态 ${it.status}" },
+        subtitle = { taskSubtitle(it) },
     )
 }
 
 @Composable
 private fun <T> FocusedList(
     emptyText: String,
-    countText: String,
     items: List<T>,
     focusedIndex: Int,
     title: (T) -> String,
@@ -220,11 +200,11 @@ private fun <T> FocusedList(
         return
     }
 
-    val start = (focusedIndex - 2).coerceAtLeast(0)
-    val end = (start + 5).coerceAtMost(items.size)
-    val adjustedStart = (end - 5).coerceAtLeast(0)
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(countText, color = HudDim, style = MaterialTheme.typography.labelMedium)
+    val visibleRows = 7
+    val start = (focusedIndex - visibleRows / 2).coerceAtLeast(0)
+    val end = (start + visibleRows).coerceAtMost(items.size)
+    val adjustedStart = (end - visibleRows).coerceAtLeast(0)
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         items.subList(adjustedStart, end).forEachIndexed { offset, item ->
             val index = adjustedStart + offset
             FocusRow(
@@ -244,10 +224,10 @@ private fun FocusRow(focused: Boolean, title: String, subtitle: String) {
         shape = RoundedCornerShape(4.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .height(62.dp)
+            .height(54.dp)
     ) {
         Column(
-            Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.Center
         ) {
             Text(
@@ -270,29 +250,130 @@ private fun FocusRow(focused: Boolean, title: String, subtitle: String) {
 }
 
 @Composable
-private fun ChatScreen(state: UiState) {
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            state.selectedTask?.title ?: "对话",
-            color = HudGreen,
-            style = MaterialTheme.typography.titleSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Column(
-            Modifier
-                .weight(1f)
+private fun ChatScreen(state: UiState, vm: AppViewModel) {
+    val listState = rememberLazyListState()
+    val scrollStepPx = with(LocalDensity.current) { 120.dp.toPx() }
+    val selectedTaskId = state.selectedTask?.id
+    val voiceStatusText = chatVoiceStatusText(state)
+    val voiceStatusIndex = state.messages.size + if (state.awaitingReply) 1 else 0
+    val handledScrollRequestId = remember(selectedTaskId) { mutableLongStateOf(0L) }
+
+    LaunchedEffect(selectedTaskId, listState) {
+        snapshotFlow {
+            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+        }.collect { (index, offset) ->
+            vm.rememberChatScrollPosition(index, offset)
+        }
+    }
+
+    LaunchedEffect(state.chatScrollRequest.id, selectedTaskId) {
+        val request = state.chatScrollRequest
+        if (
+            request.id == 0L ||
+            request.id == handledScrollRequestId.longValue ||
+            state.messages.isEmpty()
+        ) {
+            return@LaunchedEffect
+        }
+        handledScrollRequestId.longValue = request.id
+        when (request.kind) {
+            ChatScrollKind.POSITION -> {
+                val index = request.position.index.coerceIn(0, state.messages.lastIndex)
+                val offset = request.position.offset.coerceAtLeast(0)
+                if (request.animated) {
+                    listState.animateScrollToItem(index, offset)
+                } else {
+                    listState.scrollToItem(index, offset)
+                }
+            }
+            ChatScrollKind.DELTA -> {
+                listState.animateScrollBy(request.delta * scrollStepPx)
+            }
+            ChatScrollKind.DRAG -> {
+                listState.scrollBy(request.pixelDelta)
+            }
+            ChatScrollKind.CENTER -> {
+                val index = request.messageId
+                    ?.let { id -> state.messages.indexOfFirst { it.id == id } }
+                    ?.takeIf { it >= 0 }
+                    ?: request.position.index
+                listState.animateScrollToItem(index.coerceIn(0, state.messages.lastIndex))
+                centerVisibleItem(
+                    listState,
+                    index.coerceIn(0, state.messages.lastIndex),
+                    request.itemAnchorFraction,
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(
+        voiceStatusText,
+        state.sttCandidate,
+        state.sttPartial,
+        state.sttListening,
+        state.messages.size,
+        state.awaitingReply,
+    ) {
+        if (
+            voiceStatusText.isNotBlank() &&
+            (state.sttCandidate.isNotBlank() || state.sttPartial.isNotBlank() || state.sttListening)
+        ) {
+            listState.animateScrollToItem(voiceStatusIndex)
+        }
+    }
+
+    LaunchedEffect(
+        state.ttsReadoutRevision,
+        state.ttsReadoutMessageId,
+        state.ttsReadoutStartedAtMs,
+        state.ttsReadoutEstimatedDurationMs,
+        state.ttsSpeaking,
+        state.messages.size,
+    ) {
+        val messageId = state.ttsReadoutMessageId ?: return@LaunchedEffect
+        val startedAt = state.ttsReadoutStartedAtMs
+        val duration = state.ttsReadoutEstimatedDurationMs
+        if (!state.ttsSpeaking || startedAt <= 0L || duration <= 0L || state.messages.isEmpty()) {
+            return@LaunchedEffect
+        }
+        val index = state.messages.indexOfFirst { it.id == messageId }.takeIf { it >= 0 }
+            ?: return@LaunchedEffect
+        while (true) {
+            val elapsed = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L)
+            val fraction = (elapsed.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+            followReadoutProgress(listState, index, fraction)
+            delay(ReadoutFollowIntervalMs)
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
                 .fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            visibleMessages(state).forEach { message ->
+            itemsIndexed(
+                items = state.messages,
+                key = { index, message ->
+                    message.id.takeIf { it.isNotBlank() } ?: "${message.role}-${message.createdAt}-$index"
+                },
+            ) { _, message ->
                 MessageRow(message)
             }
             if (state.awaitingReply) {
-                Text("AI 正在回复", color = HudDim, style = MaterialTheme.typography.bodySmall)
+                item {
+                    Text("AI 正在回复", color = HudDim, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if (voiceStatusText.isNotBlank()) {
+                item(key = "voice-status") {
+                    ChatVoiceStatusBar(text = voiceStatusText, isError = state.error != null)
+                }
             }
         }
-        QuickReplyPanel(state)
     }
 }
 
@@ -316,120 +397,89 @@ private fun MessageRow(message: ChatMessage) {
             message.content.ifBlank { "(空)" },
             color = HudWhite,
             style = MaterialTheme.typography.bodySmall,
-            maxLines = 5,
-            overflow = TextOverflow.Ellipsis
         )
     }
 }
 
 @Composable
-private fun QuickReplyPanel(state: UiState) {
-    val activeVoice = state.sttListening || state.ttsSpeaking
-    val border = if (activeVoice) HudGreen else HudDim
-    val selected = state.quickReplies.getOrNull(state.focusedQuickReplyIndex) ?: ""
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .border(1.dp, border, RoundedCornerShape(4.dp))
-            .padding(10.dp)
-    ) {
-        Text(
-            voiceActionTitle(state, selected),
-            color = if (activeVoice) HudGreen else HudWhite,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold
-        )
-        Text(
-            state.sttPartial.ifBlank {
-                when {
-                    state.sttListening -> state.voiceStatus ?: "再次轻触结束语音"
-                    state.ttsSpeaking -> state.voiceStatus ?: "正在朗读"
-                    else -> "${state.focusedQuickReplyIndex + 1}/${state.quickReplies.size}  $selected"
-                }
-            },
-            color = HudDim,
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-}
-
-@Composable
-private fun Footer(state: UiState) {
-    val message = state.error ?: state.info ?: state.voiceStatus ?: footerHint(state)
+private fun ChatVoiceStatusBar(text: String, isError: Boolean) {
     Text(
-        message,
-        color = if (state.error != null) Color(0xFFFF9A9A) else HudDim,
-        style = MaterialTheme.typography.labelSmall,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
+        text,
+        color = if (isError) Color(0xFFFF9A9A) else HudDim,
+        style = MaterialTheme.typography.bodySmall,
         modifier = Modifier
             .fillMaxWidth()
-            .height(36.dp)
+            .border(1.dp, if (isError) Color(0xFFFF9A9A) else HudDim, RoundedCornerShape(4.dp))
+            .padding(horizontal = 8.dp, vertical = 6.dp)
     )
 }
 
-@Composable
-private fun StatusDot(color: Color) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            Modifier
-                .size(8.dp)
-                .background(color, CircleShape)
-        )
-        Spacer(Modifier.width(6.dp))
-        Text("WS", color = HudDim, style = MaterialTheme.typography.labelSmall)
+private suspend fun centerVisibleItem(
+    listState: LazyListState,
+    index: Int,
+    itemAnchorFraction: Float,
+) {
+    withFrameNanos { }
+    val layoutInfo = listState.layoutInfo
+    val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index } ?: return
+    val viewportCenter = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2
+    val itemAnchor = itemInfo.offset + (itemInfo.size * itemAnchorFraction.coerceIn(0f, 1f)).roundToInt()
+    listState.animateScrollBy((itemAnchor - viewportCenter).toFloat())
+}
+
+private suspend fun followReadoutProgress(
+    listState: LazyListState,
+    index: Int,
+    progressFraction: Float,
+) {
+    withFrameNanos { }
+    var layoutInfo = listState.layoutInfo
+    var itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
+    if (itemInfo == null) {
+        listState.scrollToItem(index)
+        withFrameNanos { }
+        layoutInfo = listState.layoutInfo
+        itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index } ?: return
     }
-}
 
-private fun visibleMessages(state: UiState): List<ChatMessage> {
-    if (state.messages.isEmpty()) return emptyList()
-    val end = (state.messages.size - state.messageScrollOffset).coerceIn(0, state.messages.size)
-    val start = (end - 4).coerceAtLeast(0)
-    return state.messages.subList(start, end)
-}
+    val viewportHeight = (layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset).coerceAtLeast(1)
+    val viewportCenter = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2
+    val itemAnchor = itemInfo.offset + (itemInfo.size * progressFraction.coerceIn(0f, 1f)).roundToInt()
+    val delta = (itemAnchor - viewportCenter).toFloat()
+    if (abs(delta) < ReadoutFollowMinDeltaPx) return
 
-private fun screenLabel(state: UiState): String = when (state.screen) {
-    Screen.LOGIN -> "设备登录"
-    Screen.PROJECTS -> state.userLabel ?: "项目"
-    Screen.TASKS -> state.selectedProject?.name ?: "任务"
-    Screen.CHAT -> if (state.realtimeConnected) "实时已连接" else "实时连接中"
+    val maxStep = viewportHeight * ReadoutFollowMaxStepViewportRatio
+    listState.animateScrollBy(delta.coerceIn(-maxStep, maxStep))
 }
-
-private fun footerHint(state: UiState): String = when (state.screen) {
-    Screen.LOGIN -> "轻触重新生成，双击退出"
-    Screen.PROJECTS -> "滑动选择项目，轻触进入"
-    Screen.TASKS -> "滑动选择任务，轻触进入"
-    Screen.CHAT -> voiceHint(state)
-}
-
-private fun voiceActionTitle(state: UiState, selected: String): String = when {
-    state.sttListening -> "正在听"
-    state.ttsSpeaking -> "正在朗读"
-    selected == "语音输入" -> if (state.sttAvailable) "轻触说话" else "语音输入不可用"
-    selected == "朗读最新" -> if (state.ttsAvailable) "轻触朗读" else "朗读不可用"
-    selected == "停止朗读" -> "轻触停止"
-    else -> "轻触发送"
-}
-
-private fun voiceHint(state: UiState): String {
-    if (state.sttListening) return "再次轻触结束语音"
-    if (state.ttsSpeaking) return "双击停止朗读"
-    val voice = when {
-        !state.sttAvailable && !state.ttsAvailable -> "语音服务不可用"
-        !state.sttAvailable -> "语音输入不可用"
-        !state.ttsAvailable && state.ttsReady -> "朗读不可用"
-        else -> null
-    }
-    return voice ?: "滑动选择回复，轻触发送"
-}
-
-private fun countText(index: Int, size: Int): String =
-    if (size <= 0) "0 / 0" else "${index + 1} / $size"
 
 private fun projectSubtitle(project: Project): String =
-    if (project.isDefault) "默认项目" else project.id
+    buildList {
+        if (project.isDefault) add("默认")
+        if (project.memberIds.size > 1) add("合并")
+        val daemon = project.daemonHosts.joinToString(" / ").ifBlank {
+            project.daemonHost ?: "未绑定 daemon"
+        }
+        add("daemon $daemon")
+    }.joinToString(" · ")
+
+private fun taskSubtitle(task: TaskItem): String =
+    buildList {
+        if (task.pinnedAt != null) add("置顶")
+        add("状态 ${task.status}")
+    }.joinToString(" · ")
+
+private fun chatVoiceStatusText(state: UiState): String = when {
+    state.error != null -> state.error
+    state.sttCandidate.isNotBlank() -> "识别结果: ${state.sttCandidate}"
+    state.sttPartial.isNotBlank() -> "识别中: ${state.sttPartial}"
+    state.sttListening -> state.voiceStatus ?: "正在听"
+    state.ttsSpeaking -> state.voiceStatus ?: "正在朗读"
+    state.info != null -> state.info
+    state.voiceStatus != null -> state.voiceStatus
+    !state.sttAvailable -> "语音输入不可用"
+    state.ttsReady && !state.ttsAvailable -> "朗读不可用"
+    else -> ""
+}
 
 private fun roleLabel(role: String) = when (role) {
     "user" -> "我"

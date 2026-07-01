@@ -52,6 +52,9 @@ private object SpeechDebugHarness {
                         shutdown()
                     }
                 },
+                onChunkStarted = { index, count ->
+                    Log.i(Tag, "chunk=${index + 1}/$count")
+                },
                 onError = { message ->
                     Log.e(Tag, "error=$message")
                     shutdown()

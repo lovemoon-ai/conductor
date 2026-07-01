@@ -65,6 +65,7 @@ describe("/api/speech/transcribe", () => {
     const upstreamFormData = fetchSpy.mock.calls[0][1].body as FormData;
     expect(upstreamFormData.get("model")).toBe("glm-asr-2512");
     expect(upstreamFormData.get("stream")).toBe("false");
+    expect(upstreamFormData.get("language")).toBe("zh-CN");
     expect(upstreamFormData.get("file")).toBeInstanceOf(File);
   });
 

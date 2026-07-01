@@ -63,4 +63,5 @@ dependencies {
     implementation(libs.androidx.material.icons.extended)
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)
+    testImplementation(libs.junit)
 }
