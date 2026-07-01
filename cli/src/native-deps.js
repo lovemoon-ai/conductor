@@ -45,6 +45,29 @@ function defaultRunCommand(command, args, options = {}) {
   });
 }
 
+export function resolvePackageManagerCommand(packageManager, {
+  platform = process.platform,
+} = {}) {
+  const normalized = String(packageManager || "").trim();
+  if (!normalized) {
+    return normalized;
+  }
+  if (platform !== "win32") {
+    return normalized;
+  }
+  if (normalized.endsWith(".cmd") || normalized.endsWith(".exe")) {
+    return normalized;
+  }
+  if (normalized === "npm" || normalized === "pnpm" || normalized === "yarn") {
+    return `${normalized}.cmd`;
+  }
+  return normalized;
+}
+
+function pathForPlatform(platform = process.platform) {
+  return platform === "win32" ? path.win32 : path.posix;
+}
+
 function quoteForSingleQuotedShell(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
@@ -111,8 +134,13 @@ export function parsePnpmIgnoredBuildsOutput(value) {
 export async function detectPnpmIgnoredBuilds({
   runCommand = defaultRunCommand,
   cwd = process.cwd(),
+  platform = process.platform,
 } = {}) {
-  const result = await runCommand("pnpm", ["ignored-builds"], { cwd });
+  const result = await runCommand(
+    resolvePackageManagerCommand("pnpm", { platform }),
+    ["ignored-builds"],
+    { cwd },
+  );
   if (!result.success) {
     return [];
   }
@@ -129,9 +157,11 @@ export async function ensurePnpmOnlyBuiltDependencies({
   runCommand = defaultRunCommand,
   dependencies = ["node-pty"],
   global = true,
+  platform = process.platform,
 } = {}) {
+  const pnpmCommand = resolvePackageManagerCommand("pnpm", { platform });
   const scopeArgs = global ? ["--global"] : ["--location=project"];
-  const currentResult = await runCommand("pnpm", [
+  const currentResult = await runCommand(pnpmCommand, [
     "config",
     "get",
     ...scopeArgs,
@@ -143,7 +173,7 @@ export async function ensurePnpmOnlyBuiltDependencies({
   if (merged.length === current.length && merged.every((entry, index) => entry === current[index])) {
     return merged;
   }
-  const setResult = await runCommand("pnpm", [
+  const setResult = await runCommand(pnpmCommand, [
     "config",
     "set",
     ...scopeArgs,
@@ -164,6 +194,7 @@ export async function resolveGlobalPackageDirectory({
   packageManager,
   packageName,
   runCommand = defaultRunCommand,
+  platform = process.platform,
 } = {}) {
   if (!packageManager || !packageName) {
     throw new Error("packageManager and packageName are required");
@@ -174,10 +205,10 @@ export async function resolveGlobalPackageDirectory({
   let normalizeRoot = (value) => value;
 
   if (packageManager === "pnpm" || packageManager === "npm") {
-    command = packageManager;
+    command = resolvePackageManagerCommand(packageManager, { platform });
     args = ["root", "-g"];
   } else if (packageManager === "yarn") {
-    command = "yarn";
+    command = resolvePackageManagerCommand("yarn", { platform });
     args = ["global", "dir"];
     normalizeRoot = (value) => path.join(value, "node_modules");
   } else {
@@ -202,7 +233,7 @@ export async function resolveGlobalPackageDirectory({
     throw new Error(`Global package root for ${packageManager} is empty`);
   }
 
-  return path.join(normalizeRoot(rawRoot), packageName);
+  return pathForPlatform(platform).join(normalizeRoot(rawRoot), packageName);
 }
 
 export function ensureNodePtySpawnHelperExecutableForPackageDirectory({
@@ -217,10 +248,11 @@ export function ensureNodePtySpawnHelperExecutableForPackageDirectory({
     return null;
   }
 
+  const targetPath = pathForPlatform(platform);
   const helperCandidates = [
-    path.join(packageDirectory, "node_modules", "node-pty", "build", "Release", "spawn-helper"),
-    path.join(packageDirectory, "node_modules", "node-pty", "build", "Debug", "spawn-helper"),
-    path.join(packageDirectory, "node_modules", "node-pty", "prebuilds", `${platform}-${arch}`, "spawn-helper"),
+    targetPath.join(packageDirectory, "node_modules", "node-pty", "build", "Release", "spawn-helper"),
+    targetPath.join(packageDirectory, "node_modules", "node-pty", "build", "Debug", "spawn-helper"),
+    targetPath.join(packageDirectory, "node_modules", "node-pty", "prebuilds", `${platform}-${arch}`, "spawn-helper"),
   ];
   const helperPath = helperCandidates.find((candidate) => existsSync(candidate));
   if (!helperPath) {
@@ -344,25 +376,28 @@ export async function repairAndVerifyGlobalNodePty({
   nodeExecutable = process.execPath,
   dependencies = ["node-pty"],
   packageSpec = null,
+  platform = process.platform,
 } = {}) {
   if (!packageManager || !packageName) {
     throw new Error("packageManager and packageName are required");
   }
 
   if (packageManager === "pnpm") {
-    await ensurePnpmOnlyBuiltDependencies({ runCommand, dependencies, global: true });
+    await ensurePnpmOnlyBuiltDependencies({ runCommand, dependencies, global: true, platform });
   }
 
   const packageDirectory = await resolveGlobalPackageDirectory({
     packageManager,
     packageName,
     runCommand,
+    platform,
   });
 
   if (packageManager === "pnpm") {
     const ignoredBuilds = await detectPnpmIgnoredBuilds({
       runCommand,
       cwd: packageDirectory,
+      platform,
     });
     const blockedDependencies = normalizeBuiltDependencyList(dependencies).filter((dependency) =>
       ignoredBuilds.includes(dependency),
@@ -376,9 +411,11 @@ export async function repairAndVerifyGlobalNodePty({
         ).join(" ")} ${packageName}@latest`,
       );
     }
-    const rebuildResult = await runCommand("pnpm", ["rebuild", ...dependencies], {
-      cwd: packageDirectory,
-    });
+    const rebuildResult = await runCommand(
+      resolvePackageManagerCommand("pnpm", { platform }),
+      ["rebuild", ...dependencies],
+      { cwd: packageDirectory },
+    );
     if (!rebuildResult.success) {
       throw new Error(
         `pnpm rebuild failed: ${String(rebuildResult.stderr || rebuildResult.stdout || "unknown error").trim()}`,
@@ -391,7 +428,10 @@ export async function repairAndVerifyGlobalNodePty({
     } else {
       rebuildArgs.push(packageName);
     }
-    const rebuildResult = await runCommand("npm", rebuildArgs);
+    const rebuildResult = await runCommand(
+      resolvePackageManagerCommand("npm", { platform }),
+      rebuildArgs,
+    );
     if (!rebuildResult.success) {
       throw new Error(
         `npm rebuild failed: ${String(rebuildResult.stderr || rebuildResult.stdout || "unknown error").trim()}`,

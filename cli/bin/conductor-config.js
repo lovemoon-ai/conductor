@@ -9,9 +9,8 @@ import { execFileSync, execSync } from "node:child_process";
 import yargs from "yargs/yargs";
 import { hideBin } from "yargs/helpers";
 import { RUNTIME_SUPPORTED_BACKENDS } from "../src/runtime-backends.js";
+import { defaultConfigPath, resolveHomeDir } from "../src/platform-paths.js";
 
-const CONFIG_DIR = path.join(os.homedir(), ".conductor");
-const CONFIG_FILE = path.join(CONFIG_DIR, "config.yaml");
 const packageJson = JSON.parse(
   fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
 );
@@ -144,6 +143,8 @@ function exitWithCode(code) {
 }
 
 async function main() {
+  const CONFIG_FILE = defaultConfigPath(process.env);
+  const CONFIG_DIR = path.dirname(CONFIG_FILE);
   const argv = yargs(hideBin(process.argv))
     .option("token", {
       type: "string",
@@ -370,7 +371,7 @@ function isCommandAvailable(command) {
 }
 
 function checkAlternativeInstallations(command) {
-  const homeDir = os.homedir();
+  const homeDir = resolveHomeDir(process.env);
   const platform = os.platform();
   const commonPaths = [];
 

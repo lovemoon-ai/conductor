@@ -36,6 +36,7 @@ import {
   reportError,
   resolveProject,
 } from "../src/entity-helpers.js";
+import { resolveUserPath } from "../src/platform-paths.js";
 
 const isMainModule = (() => {
   const currentFile = fileURLToPath(import.meta.url);
@@ -186,7 +187,7 @@ async function handleCreate(argv, deps) {
 
   const cwd = deps.cwd;
   const workspacePath = argv.workspacePath
-    ? path.resolve(argv.workspacePath)
+    ? resolveUserPath(argv.workspacePath, { baseDir: cwd || process.cwd(), env: deps.env || process.env })
     : cwd;
   const defaultName = argv.name && String(argv.name).trim()
     ? String(argv.name).trim()

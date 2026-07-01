@@ -1,0 +1,210 @@
+# Conductor CLI Windows installer.
+# Usage:
+#   powershell -ExecutionPolicy Bypass -File .\install.ps
+
+[CmdletBinding()]
+param(
+  [string] $PackageName = "@love-moon/conductor-cli",
+  [string] $PackageVersion = "latest",
+  [string] $NodeVersion = "23.11.0",
+  [string] $ConductorHome = (Join-Path $env:USERPROFILE ".conductor"),
+  [switch] $ForceNodeDownload,
+  [switch] $NoPathUpdate
+)
+
+$ErrorActionPreference = "Stop"
+
+function Log-Info {
+  param([string] $Message)
+  Write-Host "[INFO] $Message" -ForegroundColor Green
+}
+
+function Log-Warn {
+  param([string] $Message)
+  Write-Host "[WARN] $Message" -ForegroundColor Yellow
+}
+
+function Log-Error {
+  param([string] $Message)
+  Write-Host "[ERROR] $Message" -ForegroundColor Red
+}
+
+function Get-CommandSource {
+  param([string] $Name)
+
+  $commands = @(Get-Command $Name -All -ErrorAction SilentlyContinue)
+  if ($commands.Count -eq 0) {
+    return $null
+  }
+
+  $preferred = $commands | Where-Object {
+    $_.Source -and ($_.Source.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase) -or
+      $_.Source.EndsWith(".cmd", [System.StringComparison]::OrdinalIgnoreCase) -or
+      $_.Source.EndsWith(".bat", [System.StringComparison]::OrdinalIgnoreCase))
+  } | Select-Object -First 1
+  if ($preferred -and $preferred.Source) {
+    return $preferred.Source
+  }
+
+  return $commands[0].Source
+}
+
+function Add-UserPathEntry {
+  param([string] $PathEntry)
+
+  if (-not (Test-Path -LiteralPath $PathEntry -PathType Container)) {
+    return
+  }
+
+  $resolvedEntry = (Resolve-Path -LiteralPath $PathEntry).Path.TrimEnd("\")
+  $current = [Environment]::GetEnvironmentVariable("Path", "User")
+  $entries = @()
+  if ($current) {
+    $entries = $current -split ";" | Where-Object { $_ -and $_.Trim() }
+  }
+
+  $exists = $entries | Where-Object {
+    $_.TrimEnd("\").Equals($resolvedEntry, [System.StringComparison]::OrdinalIgnoreCase)
+  }
+  if ($exists) {
+    Log-Info "User PATH already contains $resolvedEntry"
+    return
+  }
+
+  $next = if ($current) { "$current;$resolvedEntry" } else { $resolvedEntry }
+  [Environment]::SetEnvironmentVariable("Path", $next, "User")
+  if (-not (($env:Path -split ";") | Where-Object {
+    $_.TrimEnd("\").Equals($resolvedEntry, [System.StringComparison]::OrdinalIgnoreCase)
+  })) {
+    $env:Path = "$resolvedEntry;$env:Path"
+  }
+  Log-Info "Added to user PATH: $resolvedEntry"
+}
+
+function Get-NodeArch {
+  $arch = $env:PROCESSOR_ARCHITECTURE
+  if ($env:PROCESSOR_ARCHITEW6432) {
+    $arch = $env:PROCESSOR_ARCHITEW6432
+  }
+
+  switch -Regex ($arch) {
+    "ARM64" { return "arm64" }
+    "AMD64|x86_64" { return "x64" }
+    default { throw "Unsupported Windows architecture: $arch" }
+  }
+}
+
+function Install-ManagedNode {
+  param(
+    [string] $Version,
+    [string] $InstallRoot
+  )
+
+  $arch = Get-NodeArch
+  $nodeDirName = "node-v$Version-win-$arch"
+  $nodeDir = Join-Path $InstallRoot $nodeDirName
+  $nodeExe = Join-Path $nodeDir "node.exe"
+  $npmCmd = Join-Path $nodeDir "npm.cmd"
+
+  if ((Test-Path -LiteralPath $nodeExe -PathType Leaf) -and
+      (Test-Path -LiteralPath $npmCmd -PathType Leaf) -and
+      -not $ForceNodeDownload) {
+    return @{ Node = $nodeExe; Npm = $npmCmd; BinDir = $nodeDir }
+  }
+
+  New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
+
+  $zipName = "$nodeDirName.zip"
+  $zipUrl = "https://nodejs.org/dist/v$Version/$zipName"
+  $zipPath = Join-Path $InstallRoot $zipName
+  $extractDir = Join-Path $InstallRoot "extract-$nodeDirName"
+
+  Log-Info "Downloading Node.js v$Version ($arch)"
+  Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+
+  Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+
+  Log-Info "Extracting Node.js"
+  Expand-Archive -LiteralPath $zipPath -DestinationPath $extractDir -Force
+  Remove-Item -LiteralPath $nodeDir -Recurse -Force -ErrorAction SilentlyContinue
+  Move-Item -LiteralPath (Join-Path $extractDir $nodeDirName) -Destination $nodeDir
+  Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+
+  if (-not (Test-Path -LiteralPath $nodeExe -PathType Leaf)) {
+    throw "Downloaded Node.js is missing node.exe: $nodeExe"
+  }
+  if (-not (Test-Path -LiteralPath $npmCmd -PathType Leaf)) {
+    throw "Downloaded Node.js is missing npm.cmd: $npmCmd"
+  }
+
+  return @{ Node = $nodeExe; Npm = $npmCmd; BinDir = $nodeDir }
+}
+
+if ($env:OS -ne "Windows_NT") {
+  throw "This installer is intended for Windows."
+}
+if (-not $env:USERPROFILE) {
+  throw "USERPROFILE is not set."
+}
+
+$node = Get-CommandSource "node"
+$npm = Get-CommandSource "npm"
+$nodeBinDir = $null
+
+if ($ForceNodeDownload -or -not $node -or -not $npm) {
+  Log-Warn "Node.js/npm not found on PATH; installing a managed Node.js runtime."
+  $managed = Install-ManagedNode -Version $NodeVersion -InstallRoot (Join-Path $ConductorHome "node")
+  $node = $managed.Node
+  $npm = $managed.Npm
+  $nodeBinDir = $managed.BinDir
+} else {
+  $nodeBinDir = Split-Path -Parent $node
+}
+
+$npmGlobalPrefix = Join-Path $ConductorHome "npm-global"
+$npmGlobalBin = $npmGlobalPrefix
+New-Item -ItemType Directory -Path $npmGlobalPrefix -Force | Out-Null
+
+Log-Info "Using node: $node"
+Log-Info "Using npm: $npm"
+Log-Info "Using npm global prefix: $npmGlobalPrefix"
+
+& $npm config set prefix $npmGlobalPrefix
+if ($LASTEXITCODE -ne 0) {
+  throw "Failed to configure npm prefix."
+}
+
+$packageSpec = "$PackageName@$PackageVersion"
+Log-Info "Installing $packageSpec"
+& $npm install -g $packageSpec
+if ($LASTEXITCODE -ne 0) {
+  throw "Failed to install $packageSpec."
+}
+
+if (-not $NoPathUpdate) {
+  Add-UserPathEntry $nodeBinDir
+  Add-UserPathEntry $npmGlobalBin
+  Log-Info "Open a new terminal for PATH changes to take effect everywhere."
+}
+
+$conductorCmd = Join-Path $npmGlobalBin "conductor.cmd"
+if (-not (Test-Path -LiteralPath $conductorCmd -PathType Leaf)) {
+  $conductorCmd = Get-CommandSource "conductor"
+}
+if (-not $conductorCmd) {
+  throw "Conductor installed, but conductor.cmd was not found."
+}
+
+Log-Info "Verifying Conductor CLI"
+& $conductorCmd --version
+if ($LASTEXITCODE -ne 0) {
+  throw "Conductor CLI verification failed."
+}
+
+Log-Info "Resolved paths:"
+Log-Info "  node: $node"
+Log-Info "  npm: $npm"
+Log-Info "  conductor: $conductorCmd"
+Log-Info "Done."

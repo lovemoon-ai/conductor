@@ -1,11 +1,11 @@
 import fs from "node:fs";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 import yaml from "js-yaml";
+import { defaultConfigPath, dirnameForPath, resolveUserPath } from "./platform-paths.js";
 
 const VALID_ACTIONS = new Set(["list", "run", "status"]);
 const MAX_TAIL_CHARS = 12_000;
@@ -25,7 +25,7 @@ export const CUSTOM_COMMANDS_CAPABILITY = "custom_commands";
  * @param {typeof spawn} [opts.spawnFn]
  */
 export function createCustomCommandHandlers(opts = {}) {
-  const configPath = opts.configPath || path.join(os.homedir(), ".conductor", "config.yaml");
+  const configPath = opts.configPath || defaultConfigPath(process.env);
   const spawnFn = opts.spawnFn || spawn;
   const runs = new Map();
   const runningByKey = new Map();
@@ -80,8 +80,9 @@ export function createCustomCommandHandlers(opts = {}) {
     rememberRun(runs, runState);
     runningByKey.set(key, runId);
 
-    const child = spawnFn(command.scriptPath, [], {
-      cwd: path.dirname(command.scriptPath),
+    const launch = resolveScriptLaunch(command.scriptPath);
+    const child = spawnFn(launch.command, launch.args, {
+      cwd: dirnameForPath(command.scriptPath),
       env: buildScriptEnv(configPath, key),
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -202,7 +203,7 @@ export async function loadCustomCommands(configPath) {
  * @param {string} configPath
  * @returns {CustomCommand[]}
  */
-export function parseCustomCommandsConfig(config, configPath = path.join(os.homedir(), ".conductor", "config.yaml")) {
+export function parseCustomCommandsConfig(config, configPath = defaultConfigPath(process.env)) {
   const root = config && typeof config === "object" ? config : {};
   const rawCommands = root.custom_commands;
   if (rawCommands === undefined || rawCommands === null) {
@@ -246,14 +247,10 @@ export function normalizeCommandKey(value) {
 }
 
 function resolveScriptPath(value, configPath) {
-  const raw = value.trim();
-  const expanded = raw === "~" || raw.startsWith("~/")
-    ? path.join(os.homedir(), raw.slice(2))
-    : raw;
-  if (path.isAbsolute(expanded)) {
-    return path.normalize(expanded);
-  }
-  return path.resolve(path.dirname(configPath), expanded);
+  return resolveUserPath(value, {
+    baseDir: dirnameForPath(configPath),
+    env: process.env,
+  });
 }
 
 async function validateScript(scriptPath) {
@@ -269,11 +266,43 @@ async function validateScript(scriptPath) {
   if (!stat.isFile()) {
     throw new Error(`custom command script is not a file: ${scriptPath}`);
   }
+  if (process.platform === "win32") {
+    const launch = resolveScriptLaunch(scriptPath);
+    if (launch.supported) {
+      return;
+    }
+    throw new Error(`custom command script is not executable: ${scriptPath}`);
+  }
   try {
     await fsp.access(scriptPath, fs.constants.X_OK);
   } catch {
     throw new Error(`custom command script is not executable: ${scriptPath}`);
   }
+}
+
+function resolveScriptLaunch(scriptPath) {
+  if (process.platform !== "win32") {
+    return { command: scriptPath, args: [], supported: true };
+  }
+  const ext = path.extname(scriptPath).toLowerCase();
+  if (ext === ".cmd" || ext === ".bat") {
+    return {
+      command: process.env.COMSPEC || "cmd.exe",
+      args: ["/d", "/c", scriptPath],
+      supported: true,
+    };
+  }
+  if (ext === ".ps1") {
+    return {
+      command: process.env.CONDUCTOR_POWERSHELL || "powershell.exe",
+      args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+      supported: true,
+    };
+  }
+  if (ext === ".exe") {
+    return { command: scriptPath, args: [], supported: true };
+  }
+  return { command: scriptPath, args: [], supported: false };
 }
 
 function rememberRun(runs, runState) {

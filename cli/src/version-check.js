@@ -175,6 +175,7 @@ export function isNewerVersion(latest, current) {
  * Returns `"pnpm"`, `"yarn"`, or `"npm"` (default fallback).
  */
 export function detectPackageManager(options = {}) {
+  const platform = options.platform || process.platform;
   const hintSources = [options.launcherPath, options.packageRoot];
   for (const hint of hintSources) {
     const detected = detectPackageManagerFromHint(hint);
@@ -184,7 +185,8 @@ export function detectPackageManager(options = {}) {
   }
 
   try {
-    const conductorPath = execSync("which conductor || where conductor", {
+    const lookupCommand = platform === "win32" ? "where conductor" : "command -v conductor || which conductor";
+    const conductorPath = execSync(lookupCommand, {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "ignore"],
     }).trim();

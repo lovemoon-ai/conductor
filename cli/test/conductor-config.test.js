@@ -16,8 +16,11 @@ const CONFIG_CLI_PATH = path.resolve(__dirname, "..", "bin", "conductor-config.j
 function createFakeCliBinDir() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-bin-"));
   for (const name of ["codex", "claude", "kimi", "opencode", "copilot"]) {
-    const filePath = path.join(tempDir, name);
-    fs.writeFileSync(filePath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const filePath = process.platform === "win32"
+      ? path.join(tempDir, `${name}.cmd`)
+      : path.join(tempDir, name);
+    const content = process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n";
+    fs.writeFileSync(filePath, content, { mode: 0o755 });
   }
   return tempDir;
 }
@@ -94,7 +97,8 @@ describe("conductor-config", () => {
     const env = {
       ...process.env,
       HOME: tempHome,
-      PATH: `${fakeBinDir}:${process.env.PATH || ""}`,
+      USERPROFILE: tempHome,
+      PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH || ""}`,
     };
 
     execFileSync(process.execPath, [CONFIG_CLI_PATH, "--manual"], {
@@ -138,6 +142,7 @@ describe("conductor-config", () => {
     const env = {
       ...process.env,
       HOME: tempHome,
+      USERPROFILE: tempHome,
       PATH: "",
     };
 
@@ -209,7 +214,8 @@ describe("conductor-config", () => {
       const env = {
         ...process.env,
         HOME: tempHome,
-        PATH: `${fakeBinDir}:${process.env.PATH || ""}`,
+        USERPROFILE: tempHome,
+        PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH || ""}`,
         CONDUCTOR_BACKEND_URL: `http://127.0.0.1:${port}`,
       };
 
@@ -235,6 +241,7 @@ describe("conductor-config", () => {
     const env = {
       ...process.env,
       HOME: tempHome,
+      USERPROFILE: tempHome,
       PATH: "",
       CONDUCTOR_BACKEND_URL: "http://127.0.0.1:1",
     };

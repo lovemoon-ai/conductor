@@ -27,6 +27,27 @@ async function makeTempDir() {
   return fs.mkdtemp(path.join(os.tmpdir(), "conductor-custom-commands-"));
 }
 
+function scriptPathFor(dir, name = "refresh-cache") {
+  return path.join(dir, process.platform === "win32" ? `${name}.cmd` : `${name}.sh`);
+}
+
+function scriptContent({ stdout = "refreshed", stderr = "" } = {}) {
+  if (process.platform === "win32") {
+    return [
+      "@echo off",
+      stdout ? `echo ${stdout}` : "",
+      stderr ? `echo ${stderr} 1>&2` : "",
+      "",
+    ].join("\r\n");
+  }
+  return [
+    "#!/bin/sh",
+    stdout ? `echo ${stdout}` : "",
+    stderr ? `echo ${stderr} >&2` : "",
+    "",
+  ].join("\n");
+}
+
 async function waitForRun(handlers, runId) {
   for (let i = 0; i < 100; i += 1) {
     const response = await handlers.dispatch({ action: "status", args: { runId } });
@@ -99,13 +120,9 @@ test("handleCustomCommandsRequest returns list response without exposing script 
 
 test("run starts a configured script and status returns stdout/stderr tails", async () => {
   const dir = await makeTempDir();
-  const scriptPath = path.join(dir, "refresh-cache.sh");
+  const scriptPath = scriptPathFor(dir);
   const configPath = path.join(dir, "config.yaml");
-  await fs.writeFile(
-    scriptPath,
-    "#!/bin/sh\necho refreshed\necho warning >&2\n",
-    "utf8",
-  );
+  await fs.writeFile(scriptPath, scriptContent({ stderr: "warning" }), "utf8");
   await fs.chmod(scriptPath, 0o755);
   await fs.writeFile(configPath, `custom_commands:\n  refresh-cache: ${scriptPath}\n`, "utf8");
 
@@ -130,9 +147,9 @@ test("run starts a configured script and status returns stdout/stderr tails", as
 
 test("run rejects missing or non-executable scripts with a remote error", async () => {
   const dir = await makeTempDir();
-  const scriptPath = path.join(dir, "not-executable.sh");
+  const scriptPath = path.join(dir, process.platform === "win32" ? "not-executable.txt" : "not-executable.sh");
   const configPath = path.join(dir, "config.yaml");
-  await fs.writeFile(scriptPath, "#!/bin/sh\necho nope\n", "utf8");
+  await fs.writeFile(scriptPath, scriptContent({ stdout: "nope" }), "utf8");
   await fs.writeFile(configPath, `custom_commands:\n  broken: ${scriptPath}\n`, "utf8");
 
   const handlers = createCustomCommandHandlers({ configPath });
@@ -143,9 +160,9 @@ test("run rejects missing or non-executable scripts with a remote error", async 
 
 test("run strips inherited CONDUCTOR_* internals from custom command env", async () => {
   const dir = await makeTempDir();
-  const scriptPath = path.join(dir, "refresh-cache.sh");
+  const scriptPath = scriptPathFor(dir);
   const configPath = path.join(dir, "config.yaml");
-  await fs.writeFile(scriptPath, "#!/bin/sh\necho ok\n", "utf8");
+  await fs.writeFile(scriptPath, scriptContent({ stdout: "ok" }), "utf8");
   await fs.chmod(scriptPath, 0o755);
   await fs.writeFile(configPath, `custom_commands:\n  refresh-cache: ${scriptPath}\n`, "utf8");
 

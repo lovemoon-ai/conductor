@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 
 import { runConductorCli } from "../bin/conductor.js";
 
@@ -32,12 +33,13 @@ describe("conductor entry", () => {
       assert.deepStrictEqual(result, { shouldExit: false, exitCode: 0 });
       assert.strictEqual(checkCalled, true);
       assert.strictEqual(importedPaths.length, 1);
-      assert.match(importedPaths[0], /bin\/conductor-fire\.js$/);
+      assert.match(importedPaths[0], /^file:/);
+      assert.match(fileURLToPath(importedPaths[0]).replace(/\\/g, "/"), /bin\/conductor-fire\.js$/);
       assert.strictEqual(env.CONDUCTOR_CLI_NAME, "conductor fire");
       assert.strictEqual(env.CONDUCTOR_LAUNCHER_SCRIPT, "/mock/bin/conductor.js");
       assert.strictEqual(env.CONDUCTOR_SUBCOMMAND, "fire");
       assert.strictEqual(env.CONDUCTOR_SUBCOMMAND_ARGS_JSON, JSON.stringify(["--help"]));
-      assert.deepStrictEqual(process.argv, ["node", importedPaths[0], "--help"]);
+      assert.deepStrictEqual(process.argv, ["node", fileURLToPath(importedPaths[0]), "--help"]);
       assert.deepStrictEqual(notices, []);
     } finally {
       process.argv = originalArgv;
@@ -66,11 +68,12 @@ describe("conductor entry", () => {
 
       assert.deepStrictEqual(result, { shouldExit: false, exitCode: 0 });
       assert.strictEqual(importedPaths.length, 1);
-      assert.match(importedPaths[0], /bin\/conductor-serve-ai\.js$/);
+      assert.match(importedPaths[0], /^file:/);
+      assert.match(fileURLToPath(importedPaths[0]).replace(/\\/g, "/"), /bin\/conductor-serve-ai\.js$/);
       assert.strictEqual(env.CONDUCTOR_CLI_NAME, "conductor serve-ai");
       assert.strictEqual(env.CONDUCTOR_SUBCOMMAND, "serve-ai");
       assert.strictEqual(env.CONDUCTOR_SUBCOMMAND_ARGS_JSON, JSON.stringify(["--help"]));
-      assert.deepStrictEqual(process.argv, ["node", importedPaths[0], "--help"]);
+      assert.deepStrictEqual(process.argv, ["node", fileURLToPath(importedPaths[0]), "--help"]);
     } finally {
       process.argv = originalArgv;
     }
