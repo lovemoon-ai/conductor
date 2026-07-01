@@ -29,6 +29,32 @@ enum class Screen { LOGIN, PROJECTS, TASKS, CHAT }
 
 enum class HudAction { SELECT, BACK, NEXT, PREVIOUS }
 
+enum class VoiceCommand { CONTINUE_TASK, SUMMARIZE_PROGRESS, NEXT_STEP, SPEAK_LATEST, STOP_SPEAKING }
+
+internal object VoiceCommandMatcher {
+    fun match(text: String): VoiceCommand? {
+        val normalized = normalize(text)
+        if (normalized.isBlank()) return null
+        return when {
+            normalized in setOf("继续", "继续一下", "继续任务", "继续这个任务", "接着", "接着说") ->
+                VoiceCommand.CONTINUE_TASK
+            normalized in setOf("总结", "总结一下", "总结进展", "汇总进展", "汇报进展") ->
+                VoiceCommand.SUMMARIZE_PROGRESS
+            normalized in setOf("下一步", "下步", "下一步做什么", "继续下一步") ->
+                VoiceCommand.NEXT_STEP
+            normalized in setOf("朗读最新", "读最新", "读一下最新", "读一下最新回复", "念最新", "念一下最新") ->
+                VoiceCommand.SPEAK_LATEST
+            normalized in setOf("停止朗读", "停止播放", "别读了", "不用读了", "停", "停止") ->
+                VoiceCommand.STOP_SPEAKING
+            else -> null
+        }
+    }
+
+    private fun normalize(text: String): String =
+        text.lowercase()
+            .replace(Regex("[\\s\\p{Punct}，。！？、；：“”‘’（）【】《》]+"), "")
+}
+
 private const val ProductionBaseUrl = "https://conductor.conductor-ai.top"
 
 private fun normalizeBaseUrl(value: String?): String {
@@ -69,12 +95,16 @@ data class UiState(
     val realtimeConnected: Boolean = false,
     val sttListening: Boolean = false,
     val sttPartial: String = "",
+    val sttCandidate: String = "",
+    val sttCandidateCommand: VoiceCommand? = null,
     val sttAvailable: Boolean = true,
     val ttsReady: Boolean = false,
     val ttsAvailable: Boolean = false,
     val ttsSpeaking: Boolean = false,
     val voiceStatus: String? = null,
     val quickReplies: List<String> = listOf("语音输入", "hi", "继续", "总结进展", "下一步", "朗读最新", "停止朗读"),
+    val voiceCandidateActions: List<String> = listOf("发送语音", "重说", "取消"),
+    val voiceCommandActions: List<String> = listOf("执行命令", "重说", "取消"),
     val focusedQuickReplyIndex: Int = 0,
 )
 
@@ -402,6 +432,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 awaitingReply = true,
                 error = null,
                 sttPartial = "",
+                sttCandidate = "",
+                sttCandidateCommand = null,
                 voiceStatus = null,
                 messageScrollOffset = 0,
             )
@@ -479,14 +511,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             context = getApplication(),
             onPartial = { p -> _state.update { it.copy(sttPartial = p, voiceStatus = "正在听") } },
             onFinal = { text ->
+                val candidate = text.trim()
+                val command = VoiceCommandMatcher.match(candidate)
                 _state.update {
                     it.copy(
                         sttListening = false,
                         sttPartial = "",
-                        voiceStatus = "已识别语音",
+                        sttCandidate = candidate,
+                        sttCandidateCommand = command,
+                        focusedQuickReplyIndex = 0,
+                        voiceStatus = if (command == null) "请确认语音内容" else "请确认语音命令",
                     )
                 }
-                sendText(text)
             },
             onError = { msg ->
                 _state.update { it.copy(sttListening = false, sttPartial = "") }
@@ -520,6 +556,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 sttAvailable = true,
                 sttListening = true,
                 sttPartial = "",
+                sttCandidate = "",
+                sttCandidateCommand = null,
                 error = null,
                 info = null,
                 voiceStatus = "正在启动语音识别",
@@ -595,6 +633,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             stopVoice()
             return
         }
+        if (s.sttCandidate.isNotBlank()) {
+            when (voiceActionsFor(s).getOrNull(s.focusedQuickReplyIndex)) {
+                "发送语音", "执行命令" -> confirmVoiceCandidate()
+                "重说" -> {
+                    clearVoiceCandidate()
+                    startVoice()
+                }
+                "取消" -> clearVoiceCandidate()
+            }
+            return
+        }
         val action = s.quickReplies.getOrNull(s.focusedQuickReplyIndex) ?: return
         when (action) {
             "语音输入" -> startVoice()
@@ -604,10 +653,47 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun confirmVoiceCandidate() {
+        val state = _state.value
+        val text = state.sttCandidate.trim()
+        val command = state.sttCandidateCommand
+        if (text.isBlank()) return
+        _state.update {
+            it.copy(
+                sttCandidate = "",
+                sttCandidateCommand = null,
+                sttPartial = "",
+                focusedQuickReplyIndex = 0,
+                voiceStatus = null,
+            )
+        }
+        if (command != null) {
+            executeVoiceCommand(command)
+        } else {
+            sendText(text)
+        }
+    }
+
+    private fun clearVoiceCandidate() {
+        _state.update {
+            it.copy(
+                sttCandidate = "",
+                sttCandidateCommand = null,
+                sttPartial = "",
+                focusedQuickReplyIndex = 0,
+                voiceStatus = null,
+            )
+        }
+    }
+
     fun handleBack(): Boolean {
         val current = _state.value.screen
         return when (current) {
             Screen.CHAT -> {
+                if (_state.value.sttCandidate.isNotBlank()) {
+                    clearVoiceCandidate()
+                    return true
+                }
                 if (_state.value.ttsSpeaking) {
                     stopSpeaking()
                     return true
@@ -620,6 +706,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         messages = emptyList(),
                         awaitingReply = false,
                         ttsSpeaking = false,
+                        sttCandidate = "",
+                        sttCandidateCommand = null,
                         voiceStatus = null,
                     )
                 }
@@ -647,7 +735,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     focusedQuickReplyIndex = wrapIndex(
                         s.focusedQuickReplyIndex,
                         delta,
-                        s.quickReplies.size,
+                        if (s.sttCandidate.isNotBlank()) voiceActionsFor(s).size else s.quickReplies.size,
                     )
                 )
             }
@@ -692,6 +780,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun loginBaseUrlOptions(current: String): List<String> {
         val normalized = normalizeBaseUrl(current)
         return listOf(normalized).distinct()
+    }
+
+    private fun voiceActionsFor(state: UiState): List<String> =
+        if (state.sttCandidateCommand == null) state.voiceCandidateActions else state.voiceCommandActions
+
+    private fun executeVoiceCommand(command: VoiceCommand) {
+        when (command) {
+            VoiceCommand.CONTINUE_TASK -> sendText("继续")
+            VoiceCommand.SUMMARIZE_PROGRESS -> sendText("总结进展")
+            VoiceCommand.NEXT_STEP -> sendText("下一步")
+            VoiceCommand.SPEAK_LATEST -> speakLatestReply()
+            VoiceCommand.STOP_SPEAKING -> {
+                stopSpeaking()
+                _state.update { it.copy(info = "已停止朗读", voiceStatus = "已停止朗读") }
+            }
+        }
     }
 
     private fun onMainThread(block: () -> Unit) {

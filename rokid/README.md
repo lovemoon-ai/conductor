@@ -19,13 +19,20 @@ navigation. It does not use the phone-side CXR-M Bluetooth companion SDK.
   realtime app WebSocket (`/ws/app?token=...`), sends voice-recognized user
   messages (`POST /api/tasks/{id}/messages`), and renders AI replies from
   `task_sdk_message` / `task_user_message` events.
-- **Speech input / output**: uses Android `SpeechRecognizer` with an app-local
-  `RecognitionService` for hands-free message entry. If Rokid firmware does not
-  dispatch to that service, the app falls back to direct `AudioRecord` capture
-  and backend STT through `/api/speech/transcribe`. Voice output uses Android
-  `TextToSpeech`, with a Rokid TTS Binder fallback when no standard Android TTS
-  engine is exposed. AI replies are auto-read when they arrive; the quick-reply
-  strip can also read or stop the latest AI reply.
+- **Speech input / output**: prefers direct `AudioRecord` capture on Rokid
+  hardware, and remembers platform `SpeechRecognizer` startup failures so later
+  turns skip the slow fallback probe. Direct capture prefers the generic mic
+  source on Rokid firmware because the tested `VOICE_RECOGNITION` source can
+  return silent PCM; processed sources remain fallback options. It uses
+  best-effort audio effects, local VAD, and backend STT through
+  `/ws/speech` streaming PCM upload with `/api/speech/transcribe` REST fallback.
+  The server still performs final GLM batch ASR after receiving the utterance,
+  so this is not provider-level partial transcription. Recognized text is shown for confirmation before it
+  is sent, and common phrases such as `继续`, `总结进展`, `下一步`, `朗读最新`,
+  and `停止朗读` are routed through local command confirmation. Voice output uses
+  Android `TextToSpeech`, with a Rokid TTS Binder fallback when no standard
+  Android TTS engine is exposed. AI replies are auto-read when they arrive; the
+  quick-reply strip can also read or stop the latest AI reply.
 - **Rokid touchpad**: tap selects or toggles voice capture, double-tap goes
   back/exits, swipe forward moves next/newer, swipe backward moves
   previous/older.
@@ -39,7 +46,7 @@ navigation. It does not use the phone-side CXR-M Bluetooth companion SDK.
 MainActivity.kt             Full-screen glasses Activity; maps touchpad keys.
 AppViewModel.kt             Device auth, project/task focus, chat, voice turns.
 ui/RokidConductorApp.kt     3:4 HUD Compose UI for login/lists/chat.
-net/ConductorClient.kt      OkHttp REST client.
+net/ConductorClient.kt      OkHttp REST client plus speech WebSocket stream.
 net/ConductorSocket.kt      OkHttp WebSocket client.
 speech/SpeechInput.kt       SpeechRecognizer plus direct-recorder fallback.
 speech/ConductorRecognitionService.kt
@@ -98,7 +105,7 @@ TTS still works through the Rokid Binder fallback. STT requires the user to be
 logged in and the backend to have `GLM_API_KEY` configured. The model can be
 overridden with `GLM_ASR_MODEL`; otherwise the server uses `glm-asr-2512`. If
 the HUD reports that the speech backend is not published, deploy the web app
-version that includes `/api/speech/transcribe`.
+version that includes `/ws/speech` and `/api/speech/transcribe`.
 
 ## Controls
 
@@ -120,10 +127,22 @@ events only moves one item.
 - Task replies still require an online Conductor daemon bound to the signed-in
   account; the glasses app sends the user turn and listens for app-gateway
   events.
-- Voice input first tries Android `SpeechRecognizer` with the app-local
-  `ConductorRecognitionService`. On firmware that does not dispatch the service
-  callback, `SpeechInput` falls back to direct `AudioRecord` capture and uploads
-  WAV audio to `/api/speech/transcribe`.
+- Voice input prefers direct `AudioRecord` capture on Rokid hardware. On other
+  Android devices it can still try `SpeechRecognizer`, but remembers startup
+  fallback and then records with `MIC` first, because `VOICE_RECOGNITION` can be
+  silent on the tested RG glasses firmware. Speech-only PCM uploads to
+  `/ws/speech`; if the stream cannot be opened or completed, the same captured
+  PCM is wrapped as WAV and sent to `/api/speech/transcribe`. The backend
+  forwards the device language tag to the ASR provider when present.
+  Final recognition results enter a confirmation state; tap sends the candidate,
+  swipe can choose re-record or cancel, and double-tap cancels. Local command
+  matches use `执行命令` instead of `发送语音`.
+- Speech diagnostics are emitted through logcat (`ConductorSpeechInput` /
+  `ConductorSpeechTranscriber`) and web server logs. They include direct/fallback
+  startup latency, recorder source, noise suppression availability, captured
+  bytes, speech duration, stream availability, language, transcript character
+  count, and upstream ASR latency, without logging the transcript or audio
+  payload.
 - Voice output first uses Android `TextToSpeech`. On Rokid firmware without a
   standard `android.intent.action.TTS_SERVICE`, it binds the system
   `com.rokid.os.sprite.tts.TtsService` Binder fallback. If both engines are

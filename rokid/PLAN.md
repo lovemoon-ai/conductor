@@ -25,12 +25,21 @@ chat using the glasses microphone and touchpad gestures.
 - Chat has a touchpad-only quick-reply strip (`hi`, `继续`, `总结进展`,
   `下一步`, `语音输入`, `朗读最新`, `停止朗读`) so AI dialogue does not depend
   entirely on STT.
-- Speech input uses Android `SpeechRecognizer` with an app-local
-  `ConductorRecognitionService`. On tested RG-glasses firmware, the platform
-  recognizer does not call that service, so `SpeechInput` falls back after 1.5s
-  to direct `AudioRecord` capture and backend STT via `/api/speech/transcribe`.
-  The HUD still gets ready/end/error/final callbacks, and tap again explicitly
-  stops capture for finalization.
+- Speech input prefers direct `AudioRecord` capture on Rokid hardware and
+  remembers platform `SpeechRecognizer` startup failures so later turns skip the
+  1.5s fallback probe. Direct capture uses `MIC` first on Rokid firmware because
+  the tested `VOICE_RECOGNITION` source returns silent PCM, then falls back to
+  processed sources if needed. Capture uses best-effort noise suppression / AGC /
+  echo cancellation, local VAD with short pre-roll, and backend STT via
+  `/ws/speech` PCM streaming upload with
+  `/api/speech/transcribe` REST fallback. The server still performs final GLM
+  batch ASR after the utterance is received, so provider-level partial
+  transcription remains future work. Final text is shown in the HUD
+  for send / re-record / cancel confirmation instead of being sent immediately.
+  Common commands (`继续`, `总结进展`, `下一步`, `朗读最新`, `停止朗读`) are matched
+  locally and confirmed as commands, not blindly sent as arbitrary dictated text.
+  Android logcat and web logs record speech startup, capture, VAD, and upstream
+  ASR timing fields for diagnosis without logging transcript contents.
 - Speech output uses Android `TextToSpeech`, falls back to Rokid's system
   `com.rokid.os.sprite.tts.TtsService` Binder service when standard TTS is
   unavailable, auto-reads substantive AI replies, supports manual read-latest
@@ -43,6 +52,7 @@ chat using the glasses microphone and touchpad gestures.
   - `GET /api/tasks?project_id=...`
   - `GET/POST /api/tasks/{id}/messages`
   - `POST /api/speech/transcribe`
+  - `WS /ws/speech`
 - `ConductorSocket` consumes `/ws/app?token=...` events:
   `task_user_message`, `task_sdk_message`, and `task_status_update`.
 
@@ -65,9 +75,12 @@ chat using the glasses microphone and touchpad gestures.
   configured. On the tested RG-glasses unit, the app-local
   `ConductorRecognitionService` is registered, but platform `SpeechRecognizer`
   does not invoke it; the direct `AudioRecord` fallback starts and reports the
-  expected pre-login error when no token is present. The production backend also
-  needs the web version that includes `/api/speech/transcribe`; otherwise the
-  HUD reports that the speech backend is not published.
+  expected pre-login error when no token is present. The tested
+  `VOICE_RECOGNITION` audio source produced `maxRms=0`, so the recorder now
+  prefers `MIC`. The production backend also needs the web version that includes
+  `/ws/speech` and
+  `/api/speech/transcribe`; otherwise the HUD reports that the speech backend is
+  not published.
 - TTS has been verified on RG-glasses through the Rokid system fallback:
   `SpeechOutput` binds `com.rokid.os.sprite.tts.TtsService`, `playTtsMsg`
   is accepted, and `onPlayStatus:true/false` produces app speaking callbacks.

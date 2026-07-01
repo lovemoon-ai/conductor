@@ -1,14 +1,22 @@
 package com.rokid.conductor.net
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString.Companion.toByteString
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 private fun JSONObject.optCleanString(name: String): String? {
@@ -75,8 +83,20 @@ class ConductorClient(
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
+    private val websocketHttp = http.newBuilder()
+        .pingInterval(20, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
 
     private fun url(path: String): String = baseUrl.trimEnd('/') + path
+
+    private fun websocketUrl(path: String, authToken: String): String {
+        val trimmed = baseUrl.trimEnd('/')
+        val scheme = if (trimmed.startsWith("https", ignoreCase = true)) "wss" else "ws"
+        val host = trimmed.substringAfter("://", trimmed)
+        val encodedToken = URLEncoder.encode(authToken, Charsets.UTF_8.name())
+        return "$scheme://$host$path?token=$encodedToken"
+    }
 
     private fun newRequest(path: String): Request.Builder {
         val b = Request.Builder().url(url(path))
@@ -214,6 +234,81 @@ class ConductorClient(
             JSONObject(exec(req)).optString("text").trim()
         }
 
+    suspend fun openSpeechStream(languageTag: String?, sampleRate: Int): SpeechStream =
+        withContext(Dispatchers.IO) {
+            val authToken = token?.trim().takeUnless { it.isNullOrBlank() }
+                ?: throw ConductorException("Token required")
+            val ready = CompletableDeferred<Unit>()
+            val result = CompletableDeferred<String>()
+
+            fun fail(message: String) {
+                val error = ConductorException(message)
+                if (!ready.isCompleted) ready.completeExceptionally(error)
+                if (!result.isCompleted) result.completeExceptionally(error)
+            }
+
+            val req = Request.Builder()
+                .url(websocketUrl("/ws/speech", authToken))
+                .build()
+            val webSocket = websocketHttp.newWebSocket(req, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    val payload = JSONObject().put("sample_rate", sampleRate)
+                    if (!languageTag.isNullOrBlank()) {
+                        payload.put("language", languageTag)
+                    }
+                    val start = JSONObject()
+                        .put("type", "start")
+                        .put("payload", payload)
+                    if (!webSocket.send(start.toString())) {
+                        fail("speech stream start failed")
+                    }
+                }
+
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    val obj = runCatching { JSONObject(text) }.getOrNull() ?: return
+                    val payload = obj.optJSONObject("payload")
+                    when (obj.optString("type")) {
+                        "ready" -> {
+                            if (!ready.isCompleted) ready.complete(Unit)
+                        }
+                        "result" -> {
+                            if (!result.isCompleted) {
+                                result.complete(payload?.optString("text").orEmpty().trim())
+                            }
+                        }
+                        "error" -> {
+                            fail(payload?.optString("message").orEmpty().ifBlank { "speech stream failed" })
+                        }
+                    }
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    fail(t.message ?: "speech stream failed")
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    if (!result.isCompleted) {
+                        result.completeExceptionally(
+                            ConductorException(reason.ifBlank { "speech stream closed $code" }),
+                        )
+                    }
+                }
+            })
+            val stream = SpeechStream(webSocket, result)
+            try {
+                withTimeout(5_000) {
+                    ready.await()
+                }
+            } catch (t: TimeoutCancellationException) {
+                stream.cancel()
+                throw ConductorException(t.message ?: "speech stream ready timeout")
+            } catch (t: ConductorException) {
+                stream.cancel()
+                throw t
+            }
+            stream
+        }
+
     companion object {
         fun parseMessage(o: JSONObject): ChatMessage = ChatMessage(
             id = o.optString("id"),
@@ -221,5 +316,38 @@ class ConductorClient(
             content = o.optString("content"),
             createdAt = if (o.has("createdAt")) o.optString("createdAt") else o.optString("created_at"),
         )
+    }
+}
+
+class SpeechStream internal constructor(
+    private val webSocket: WebSocket,
+    private val result: CompletableDeferred<String>,
+) {
+    @Volatile private var closed = false
+
+    fun sendPcm(bytes: ByteArray): Boolean {
+        if (closed || bytes.isEmpty()) return !closed
+        return webSocket.send(bytes.toByteString())
+    }
+
+    suspend fun finish(): String {
+        if (closed) throw ConductorException("speech stream closed")
+        closed = true
+        val finish = JSONObject().put("type", "finish").toString()
+        if (!webSocket.send(finish)) {
+            throw ConductorException("speech stream finish failed")
+        }
+        return try {
+            withTimeout(35_000) {
+                result.await()
+            }
+        } finally {
+            webSocket.close(1000, "done")
+        }
+    }
+
+    fun cancel() {
+        closed = true
+        webSocket.close(1000, "cancel")
     }
 }

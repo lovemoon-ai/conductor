@@ -28,6 +28,7 @@ class MainActivity : ComponentActivity() {
 
     private val swipeThresholdPx by lazy { 64f * resources.displayMetrics.density }
     private var lastDirectionalActionAtMs = 0L
+    private var lastSelectActionAtMs = 0L
 
     private val gestureDetector by lazy {
         GestureDetector(
@@ -35,10 +36,8 @@ class MainActivity : ComponentActivity() {
             object : GestureDetector.SimpleOnGestureListener() {
                 override fun onDown(e: MotionEvent): Boolean = true
 
-                override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                    viewModel.handleAction(HudAction.SELECT)
-                    return true
-                }
+                override fun onSingleTapConfirmed(e: MotionEvent): Boolean =
+                    dispatchHudAction(HudAction.SELECT)
 
                 override fun onDoubleTap(e: MotionEvent): Boolean {
                     if (!viewModel.handleBack()) finish()
@@ -126,7 +125,7 @@ class MainActivity : ComponentActivity() {
             KeyEvent.KEYCODE_NUMPAD_ENTER,
             KeyEvent.KEYCODE_DPAD_CENTER,
             KeyEvent.KEYCODE_SPACE,
-            KeyEvent.KEYCODE_BUTTON_A -> viewModel.handleAction(HudAction.SELECT)
+            KeyEvent.KEYCODE_BUTTON_A -> dispatchHudAction(HudAction.SELECT)
             KeyEvent.KEYCODE_DPAD_DOWN,
             KeyEvent.KEYCODE_DPAD_RIGHT -> dispatchHudAction(HudAction.NEXT)
             KeyEvent.KEYCODE_DPAD_UP,
@@ -142,6 +141,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun dispatchHudAction(action: HudAction): Boolean {
+        if (action == HudAction.SELECT) {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastSelectActionAtMs < SelectActionDebounceMs) {
+                return true
+            }
+            lastSelectActionAtMs = now
+        }
         if (action == HudAction.NEXT || action == HudAction.PREVIOUS) {
             val now = SystemClock.elapsedRealtime()
             if (now - lastDirectionalActionAtMs < DirectionalActionDebounceMs) {
@@ -169,5 +175,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val DirectionalActionDebounceMs = 360L
+        private const val SelectActionDebounceMs = 450L
     }
 }

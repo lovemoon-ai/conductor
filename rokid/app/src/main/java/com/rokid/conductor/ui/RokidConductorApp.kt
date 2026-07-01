@@ -325,8 +325,14 @@ private fun MessageRow(message: ChatMessage) {
 @Composable
 private fun QuickReplyPanel(state: UiState) {
     val activeVoice = state.sttListening || state.ttsSpeaking
-    val border = if (activeVoice) HudGreen else HudDim
-    val selected = state.quickReplies.getOrNull(state.focusedQuickReplyIndex) ?: ""
+    val candidateMode = state.sttCandidate.isNotBlank()
+    val border = if (activeVoice || candidateMode) HudGreen else HudDim
+    val actions = when {
+        state.sttCandidateCommand != null -> state.voiceCommandActions
+        candidateMode -> state.voiceCandidateActions
+        else -> state.quickReplies
+    }
+    val selected = actions.getOrNull(state.focusedQuickReplyIndex) ?: ""
     Column(
         Modifier
             .fillMaxWidth()
@@ -335,16 +341,20 @@ private fun QuickReplyPanel(state: UiState) {
     ) {
         Text(
             voiceActionTitle(state, selected),
-            color = if (activeVoice) HudGreen else HudWhite,
+            color = if (activeVoice || candidateMode) HudGreen else HudWhite,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold
         )
         Text(
-            state.sttPartial.ifBlank {
-                when {
-                    state.sttListening -> state.voiceStatus ?: "再次轻触结束语音"
-                    state.ttsSpeaking -> state.voiceStatus ?: "正在朗读"
-                    else -> "${state.focusedQuickReplyIndex + 1}/${state.quickReplies.size}  $selected"
+            when {
+                candidateMode -> state.sttCandidate
+                state.sttPartial.isNotBlank() -> state.sttPartial
+                else -> {
+                    when {
+                        state.sttListening -> state.voiceStatus ?: "再次轻触结束语音"
+                        state.ttsSpeaking -> state.voiceStatus ?: "正在朗读"
+                        else -> "${state.focusedQuickReplyIndex + 1}/${actions.size}  $selected"
+                    }
                 }
             },
             color = HudDim,
@@ -405,6 +415,8 @@ private fun footerHint(state: UiState): String = when (state.screen) {
 }
 
 private fun voiceActionTitle(state: UiState, selected: String): String = when {
+    state.sttCandidateCommand != null -> "识别命令 · $selected"
+    state.sttCandidate.isNotBlank() -> "识别结果 · $selected"
     state.sttListening -> "正在听"
     state.ttsSpeaking -> "正在朗读"
     selected == "语音输入" -> if (state.sttAvailable) "轻触说话" else "语音输入不可用"
@@ -414,6 +426,7 @@ private fun voiceActionTitle(state: UiState, selected: String): String = when {
 }
 
 private fun voiceHint(state: UiState): String {
+    if (state.sttCandidate.isNotBlank()) return "滑动选择语音操作，轻触确认"
     if (state.sttListening) return "再次轻触结束语音"
     if (state.ttsSpeaking) return "双击停止朗读"
     val voice = when {

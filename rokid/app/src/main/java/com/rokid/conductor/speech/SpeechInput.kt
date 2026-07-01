@@ -2,9 +2,11 @@ package com.rokid.conductor.speech
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -32,6 +34,7 @@ class SpeechInput(
     private val onEnd: () -> Unit = {},
 ) {
     private val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences(PrefsName, Context.MODE_PRIVATE)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val directScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var recognizer: SpeechRecognizer? = null
@@ -39,6 +42,7 @@ class SpeechInput(
     private var fallbackRunnable: Runnable? = null
     private var activeSession = 0
     private var recognizerReady = false
+    private var sessionStartedAtMs = 0L
 
     var available: Boolean = isAvailable(appContext)
         private set
@@ -60,12 +64,15 @@ class SpeechInput(
         available = true
         activeSession += 1
         val session = activeSession
+        sessionStartedAtMs = SystemClock.elapsedRealtime()
         recognizerReady = false
         listening = true
         destroyRecognizer()
         cancelDirectTranscriber()
 
-        if (hasExternalRecognitionService(appContext)) {
+        if (shouldUseDirectRecognition()) {
+            startDirectRecognition(session, "direct speech recognition preferred")
+        } else if (hasExternalRecognitionService(appContext)) {
             startPlatformRecognizer(session)
         } else {
             startDirectRecognition(session, "no external platform recognizer")
@@ -127,7 +134,13 @@ class SpeechInput(
 
     private fun startDirectRecognition(session: Int, reason: String) {
         if (session != activeSession || !listening || directTranscriber != null) return
-        Log.i(Tag, "starting direct speech recognition: $reason")
+        Log.i(
+            Tag,
+            "starting direct speech recognition: $reason elapsedMs=${SystemClock.elapsedRealtime() - sessionStartedAtMs}",
+        )
+        if (reason.startsWith("platform")) {
+            rememberDirectRecognition()
+        }
         cancelFallback()
         destroyRecognizer()
         val transcriber = ConductorSpeechTranscriber(
@@ -178,6 +191,7 @@ class SpeechInput(
         object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
                 if (!isPlatformActive(session)) return
+                forgetDirectRecognition()
                 recognizerReady = true
                 cancelFallback()
                 onReady()
@@ -303,7 +317,22 @@ class SpeechInput(
     private fun isPlatformActive(session: Int): Boolean =
         isActive(session) && directTranscriber == null
 
+    private fun shouldUseDirectRecognition(): Boolean =
+        prefs.getBoolean(PrefForceDirectRecognition, false) || isKnownRokidDevice()
+
+    private fun rememberDirectRecognition() {
+        prefs.edit().putBoolean(PrefForceDirectRecognition, true).apply()
+    }
+
+    private fun forgetDirectRecognition() {
+        if (prefs.getBoolean(PrefForceDirectRecognition, false)) {
+            prefs.edit().remove(PrefForceDirectRecognition).apply()
+        }
+    }
+
     companion object {
+        private const val PrefsName = "rokid_conductor"
+        private const val PrefForceDirectRecognition = "speech_force_direct_recognition"
         private const val Tag = "ConductorSpeechInput"
         private const val PlatformReadyTimeoutMs = 1_500L
         private const val RecognitionServiceAction = "android.speech.RecognitionService"
@@ -333,6 +362,17 @@ class SpeechInput(
             val current = Locale.getDefault()
             return if (current.language.isNullOrBlank()) Locale.SIMPLIFIED_CHINESE else current
         }
+
+        private fun isKnownRokidDevice(): Boolean =
+            listOf(
+                Build.MANUFACTURER,
+                Build.BRAND,
+                Build.MODEL,
+                Build.DEVICE,
+                Build.PRODUCT,
+            ).any { value ->
+                value?.contains("rokid", ignoreCase = true) == true
+            }
 
         private fun Int.shouldFallbackToDirect(): Boolean = when (this) {
             SpeechRecognizer.ERROR_CLIENT,
