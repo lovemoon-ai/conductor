@@ -86,6 +86,22 @@ describe('canMergeProjectsByFields', () => {
     ).toBe(true);
   });
 
+  it('treats the github-duinodu SSH host alias as github.com for remote comparison', () => {
+    expect(
+      canMergeProjectsByFields(
+        { ...base(), gitRemoteUrl: 'github-duinodu/lovemoon-ai/robotcloud' },
+        { ...base(), daemonHost: 'daemon-b', gitRemoteUrl: 'github.com/lovemoon-ai/robotcloud' },
+      ),
+    ).toBe(true);
+
+    expect(
+      canMergeProjectsByFields(
+        { ...base(), gitRemoteUrl: 'github-duinodu/duinodu/robotcloud' },
+        { ...base(), daemonHost: 'daemon-b', gitRemoteUrl: 'github.com/lovemoon-ai/robotcloud' },
+      ),
+    ).toBe(false);
+  });
+
   it('allows merging when either gitRemoteUrl is missing (relaxed rule for non-git workspaces / pre-backfill)', () => {
     expect(
       canMergeProjectsByFields(

@@ -22,6 +22,23 @@ export type ProjectGroupingFields = {
   mergeOptOut?: boolean | null | undefined;
 };
 
+const GIT_REMOTE_HOST_ALIASES: Record<string, string> = {
+  // Local SSH config alias for GitHub; keep the owner/repo path unchanged.
+  'github-duinodu': 'github.com',
+};
+
+const normalizeComparableGitRemoteUrl = (
+  value: string | null | undefined,
+): string => {
+  const normalized = (value ?? '').trim().toLowerCase();
+  if (!normalized) return '';
+  const slashIndex = normalized.indexOf('/');
+  if (slashIndex < 0) return normalized;
+  const host = normalized.slice(0, slashIndex);
+  const path = normalized.slice(slashIndex);
+  return `${GIT_REMOTE_HOST_ALIASES[host] ?? host}${path}`;
+};
+
 export const canMergeProjectsByFields = (
   a: ProjectGroupingFields,
   b: ProjectGroupingFields,
@@ -32,8 +49,8 @@ export const canMergeProjectsByFields = (
   const bHost = (b.daemonHost ?? '').trim();
   if (!aHost || !bHost) return false;
   if (aHost === bHost) return false;
-  const aUrl = (a.gitRemoteUrl ?? '').trim().toLowerCase();
-  const bUrl = (b.gitRemoteUrl ?? '').trim().toLowerCase();
+  const aUrl = normalizeComparableGitRemoteUrl(a.gitRemoteUrl);
+  const bUrl = normalizeComparableGitRemoteUrl(b.gitRemoteUrl);
   if (aUrl && bUrl && aUrl !== bUrl) return false;
   return true;
 };

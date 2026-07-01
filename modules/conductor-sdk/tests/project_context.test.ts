@@ -114,6 +114,12 @@ describe('normalizeGitRemoteUrl', () => {
     expect(normalizeGitRemoteUrl('ssh://git@github.com/owner/repo')).toBe('github.com/owner/repo');
   });
 
+  test('canonicalizes the github-duinodu SSH host alias to github.com', () => {
+    expect(normalizeGitRemoteUrl('github-duinodu:lovemoon-ai/robotcloud.git')).toBe(
+      'github.com/lovemoon-ai/robotcloud',
+    );
+  });
+
   test('strips https/http and trailing .git plus slashes', () => {
     expect(normalizeGitRemoteUrl('https://github.com/owner/repo.git')).toBe('github.com/owner/repo');
     expect(normalizeGitRemoteUrl('http://github.com/owner/repo/')).toBe('github.com/owner/repo');
