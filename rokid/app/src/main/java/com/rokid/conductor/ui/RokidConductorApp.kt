@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -16,9 +15,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -37,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import com.rokid.conductor.AppViewModel
 import com.rokid.conductor.Screen
 import com.rokid.conductor.UiState
+import com.rokid.conductor.VisibleChatMessageCount
 import com.rokid.conductor.net.ChatMessage
 import com.rokid.conductor.net.Project
 import com.rokid.conductor.net.TaskItem
@@ -56,7 +53,6 @@ fun RokidConductorApp(vm: AppViewModel) {
         contentAlignment = Alignment.Center
     ) {
         HudViewport {
-            Header(state)
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -79,7 +75,6 @@ fun RokidConductorApp(vm: AppViewModel) {
                     }
                 }
             }
-            Footer(state)
         }
     }
 }
@@ -100,40 +95,10 @@ private fun HudViewport(content: @Composable ColumnScope.() -> Unit) {
         Column(
             modifier = viewportModifier
                 .align(Alignment.Center)
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             content()
-        }
-    }
-}
-
-@Composable
-private fun Header(state: UiState) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .height(44.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                "Conductor",
-                color = HudWhite,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1
-            )
-            Text(
-                screenLabel(state),
-                color = HudDim,
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        if (state.screen != Screen.LOGIN) {
-            StatusDot(if (state.realtimeConnected) HudGreen else HudDim)
         }
     }
 }
@@ -183,8 +148,7 @@ private fun LoginScreen(state: UiState) {
 @Composable
 private fun ProjectsScreen(state: UiState) {
     FocusedList(
-        emptyText = "没有项目",
-        countText = countText(state.focusedProjectIndex, state.projects.size),
+        emptyText = state.error ?: "没有项目",
         items = state.projects,
         focusedIndex = state.focusedProjectIndex,
         title = { it.name },
@@ -195,19 +159,17 @@ private fun ProjectsScreen(state: UiState) {
 @Composable
 private fun TasksScreen(state: UiState) {
     FocusedList(
-        emptyText = "没有任务",
-        countText = countText(state.focusedTaskIndex, state.tasks.size),
+        emptyText = state.error ?: "没有任务",
         items = state.tasks,
         focusedIndex = state.focusedTaskIndex,
         title = { it.title },
-        subtitle = { "状态 ${it.status}" },
+        subtitle = { taskSubtitle(it) },
     )
 }
 
 @Composable
 private fun <T> FocusedList(
     emptyText: String,
-    countText: String,
     items: List<T>,
     focusedIndex: Int,
     title: (T) -> String,
@@ -220,11 +182,11 @@ private fun <T> FocusedList(
         return
     }
 
-    val start = (focusedIndex - 2).coerceAtLeast(0)
-    val end = (start + 5).coerceAtMost(items.size)
-    val adjustedStart = (end - 5).coerceAtLeast(0)
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(countText, color = HudDim, style = MaterialTheme.typography.labelMedium)
+    val visibleRows = 7
+    val start = (focusedIndex - visibleRows / 2).coerceAtLeast(0)
+    val end = (start + visibleRows).coerceAtMost(items.size)
+    val adjustedStart = (end - visibleRows).coerceAtLeast(0)
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         items.subList(adjustedStart, end).forEachIndexed { offset, item ->
             val index = adjustedStart + offset
             FocusRow(
@@ -244,10 +206,10 @@ private fun FocusRow(focused: Boolean, title: String, subtitle: String) {
         shape = RoundedCornerShape(4.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .height(62.dp)
+            .height(54.dp)
     ) {
         Column(
-            Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.Center
         ) {
             Text(
@@ -271,14 +233,7 @@ private fun FocusRow(focused: Boolean, title: String, subtitle: String) {
 
 @Composable
 private fun ChatScreen(state: UiState) {
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            state.selectedTask?.title ?: "对话",
-            color = HudGreen,
-            style = MaterialTheme.typography.titleSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Column(
             Modifier
                 .weight(1f)
@@ -292,7 +247,7 @@ private fun ChatScreen(state: UiState) {
                 Text("AI 正在回复", color = HudDim, style = MaterialTheme.typography.bodySmall)
             }
         }
-        QuickReplyPanel(state)
+        ChatVoiceStatusBar(state)
     }
 }
 
@@ -323,126 +278,58 @@ private fun MessageRow(message: ChatMessage) {
 }
 
 @Composable
-private fun QuickReplyPanel(state: UiState) {
-    val activeVoice = state.sttListening || state.ttsSpeaking
-    val candidateMode = state.sttCandidate.isNotBlank()
-    val border = if (activeVoice || candidateMode) HudGreen else HudDim
-    val actions = when {
-        state.sttCandidateCommand != null -> state.voiceCommandActions
-        candidateMode -> state.voiceCandidateActions
-        else -> state.quickReplies
-    }
-    val selected = actions.getOrNull(state.focusedQuickReplyIndex) ?: ""
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .border(1.dp, border, RoundedCornerShape(4.dp))
-            .padding(10.dp)
-    ) {
-        Text(
-            voiceActionTitle(state, selected),
-            color = if (activeVoice || candidateMode) HudGreen else HudWhite,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold
-        )
-        Text(
-            when {
-                candidateMode -> state.sttCandidate
-                state.sttPartial.isNotBlank() -> state.sttPartial
-                else -> {
-                    when {
-                        state.sttListening -> state.voiceStatus ?: "再次轻触结束语音"
-                        state.ttsSpeaking -> state.voiceStatus ?: "正在朗读"
-                        else -> "${state.focusedQuickReplyIndex + 1}/${actions.size}  $selected"
-                    }
-                }
-            },
-            color = HudDim,
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-}
-
-@Composable
-private fun Footer(state: UiState) {
-    val message = state.error ?: state.info ?: state.voiceStatus ?: footerHint(state)
+private fun ChatVoiceStatusBar(state: UiState) {
+    val text = chatVoiceStatusText(state)
+    if (text.isBlank()) return
+    val isError = state.error != null
     Text(
-        message,
-        color = if (state.error != null) Color(0xFFFF9A9A) else HudDim,
-        style = MaterialTheme.typography.labelSmall,
+        text,
+        color = if (isError) Color(0xFFFF9A9A) else HudDim,
+        style = MaterialTheme.typography.bodySmall,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier
             .fillMaxWidth()
-            .height(36.dp)
+            .border(1.dp, if (isError) Color(0xFFFF9A9A) else HudDim, RoundedCornerShape(4.dp))
+            .padding(horizontal = 8.dp, vertical = 6.dp)
     )
-}
-
-@Composable
-private fun StatusDot(color: Color) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            Modifier
-                .size(8.dp)
-                .background(color, CircleShape)
-        )
-        Spacer(Modifier.width(6.dp))
-        Text("WS", color = HudDim, style = MaterialTheme.typography.labelSmall)
-    }
 }
 
 private fun visibleMessages(state: UiState): List<ChatMessage> {
     if (state.messages.isEmpty()) return emptyList()
-    val end = (state.messages.size - state.messageScrollOffset).coerceIn(0, state.messages.size)
-    val start = (end - 4).coerceAtLeast(0)
+    val start = state.chatTopMessageIndex.coerceIn(0, state.messages.lastIndex)
+    val end = (start + VisibleChatMessageCount).coerceAtMost(state.messages.size)
     return state.messages.subList(start, end)
 }
 
-private fun screenLabel(state: UiState): String = when (state.screen) {
-    Screen.LOGIN -> "设备登录"
-    Screen.PROJECTS -> state.userLabel ?: "项目"
-    Screen.TASKS -> state.selectedProject?.name ?: "任务"
-    Screen.CHAT -> if (state.realtimeConnected) "实时已连接" else "实时连接中"
-}
-
-private fun footerHint(state: UiState): String = when (state.screen) {
-    Screen.LOGIN -> "轻触重新生成，双击退出"
-    Screen.PROJECTS -> "滑动选择项目，轻触进入"
-    Screen.TASKS -> "滑动选择任务，轻触进入"
-    Screen.CHAT -> voiceHint(state)
-}
-
-private fun voiceActionTitle(state: UiState, selected: String): String = when {
-    state.sttCandidateCommand != null -> "识别命令 · $selected"
-    state.sttCandidate.isNotBlank() -> "识别结果 · $selected"
-    state.sttListening -> "正在听"
-    state.ttsSpeaking -> "正在朗读"
-    selected == "语音输入" -> if (state.sttAvailable) "轻触说话" else "语音输入不可用"
-    selected == "朗读最新" -> if (state.ttsAvailable) "轻触朗读" else "朗读不可用"
-    selected == "停止朗读" -> "轻触停止"
-    else -> "轻触发送"
-}
-
-private fun voiceHint(state: UiState): String {
-    if (state.sttCandidate.isNotBlank()) return "滑动选择语音操作，轻触确认"
-    if (state.sttListening) return "再次轻触结束语音"
-    if (state.ttsSpeaking) return "双击停止朗读"
-    val voice = when {
-        !state.sttAvailable && !state.ttsAvailable -> "语音服务不可用"
-        !state.sttAvailable -> "语音输入不可用"
-        !state.ttsAvailable && state.ttsReady -> "朗读不可用"
-        else -> null
-    }
-    return voice ?: "滑动选择回复，轻触发送"
-}
-
-private fun countText(index: Int, size: Int): String =
-    if (size <= 0) "0 / 0" else "${index + 1} / $size"
-
 private fun projectSubtitle(project: Project): String =
-    if (project.isDefault) "默认项目" else project.id
+    buildList {
+        if (project.isDefault) add("默认")
+        if (project.memberIds.size > 1) add("合并")
+        val daemon = project.daemonHosts.joinToString(" / ").ifBlank {
+            project.daemonHost ?: "未绑定 daemon"
+        }
+        add("daemon $daemon")
+    }.joinToString(" · ")
+
+private fun taskSubtitle(task: TaskItem): String =
+    buildList {
+        if (task.pinnedAt != null) add("置顶")
+        add("状态 ${task.status}")
+    }.joinToString(" · ")
+
+private fun chatVoiceStatusText(state: UiState): String = when {
+    state.error != null -> state.error
+    state.sttCandidate.isNotBlank() -> "识别结果: ${state.sttCandidate}"
+    state.sttPartial.isNotBlank() -> "识别中: ${state.sttPartial}"
+    state.sttListening -> state.voiceStatus ?: "正在听"
+    state.ttsSpeaking -> state.voiceStatus ?: "正在朗读"
+    state.info != null -> state.info
+    state.voiceStatus != null -> state.voiceStatus
+    !state.sttAvailable -> "语音输入不可用"
+    state.ttsReady && !state.ttsAvailable -> "朗读不可用"
+    else -> ""
+}
 
 private fun roleLabel(role: String) = when (role) {
     "user" -> "我"

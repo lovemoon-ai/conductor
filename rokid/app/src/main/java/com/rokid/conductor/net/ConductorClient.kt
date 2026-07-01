@@ -26,11 +26,54 @@ private fun JSONObject.optCleanString(name: String): String? {
         .takeUnless { it.isBlank() || it.equals("null", ignoreCase = true) }
 }
 
+private fun JSONObject.optCleanString(vararg names: String): String? {
+    for (name in names) {
+        optCleanString(name)?.let { return it }
+    }
+    return null
+}
+
+private fun JSONObject.optBooleanOrNull(name: String): Boolean? {
+    if (!has(name) || isNull(name)) return null
+    return when (val value = opt(name)) {
+        is Boolean -> value
+        is Number -> value.toInt() != 0
+        is String -> when (value.trim().lowercase()) {
+            "true", "1", "yes" -> true
+            "false", "0", "no" -> false
+            else -> null
+        }
+        else -> null
+    }
+}
+
+private fun JSONObject.optBooleanOrNull(vararg names: String): Boolean? {
+    for (name in names) {
+        optBooleanOrNull(name)?.let { return it }
+    }
+    return null
+}
+
+private fun JSONObject.optObject(name: String): JSONObject? {
+    if (!has(name) || isNull(name)) return null
+    return when (val value = opt(name)) {
+        is JSONObject -> value
+        is String -> runCatching { JSONObject(value) }.getOrNull()
+        else -> null
+    }
+}
+
 /** A Conductor project. */
 data class Project(
     val id: String,
     val name: String,
     val isDefault: Boolean,
+    val daemonHost: String? = null,
+    val gitRemoteUrl: String? = null,
+    val hidden: Boolean = false,
+    val mergeOptOut: Boolean = false,
+    val memberIds: List<String> = listOf(id),
+    val daemonHosts: List<String> = daemonHost?.let { listOf(it) } ?: emptyList(),
 )
 
 /** A Conductor task. */
@@ -40,6 +83,8 @@ data class TaskItem(
     val title: String,
     val status: String,
     val taskType: String,
+    val pinnedAt: String? = null,
+    val hidden: Boolean = false,
 )
 
 /** A single conversation message. */
@@ -68,6 +113,89 @@ data class DeviceAuthPollResult(
 )
 
 class ConductorException(message: String) : Exception(message)
+
+internal fun canMergeProjectsForRokid(a: Project, b: Project): Boolean {
+    if (a.id == b.id) return true
+    if (a.name != b.name) return false
+    if (a.mergeOptOut || b.mergeOptOut) return false
+    val aHost = a.daemonHost?.trim().orEmpty()
+    val bHost = b.daemonHost?.trim().orEmpty()
+    if (aHost.isBlank() || bHost.isBlank()) return false
+    if (aHost == bHost) return false
+    val aRemote = a.gitRemoteUrl?.trim()?.lowercase().orEmpty()
+    val bRemote = b.gitRemoteUrl?.trim()?.lowercase().orEmpty()
+    if (aRemote.isNotBlank() && bRemote.isNotBlank() && aRemote != bRemote) return false
+    return true
+}
+
+internal fun groupProjectsForRokid(projects: List<Project>): List<Project> {
+    val groups = mutableListOf<Project>()
+    val groupedIds = mutableSetOf<String>()
+    for (i in projects.indices) {
+        val project = projects[i]
+        if (!groupedIds.add(project.id)) continue
+
+        val members = mutableListOf(project)
+        for (j in i + 1 until projects.size) {
+            val candidate = projects[j]
+            if (candidate.id in groupedIds) continue
+            if (canMergeProjectsForRokid(project, candidate)) {
+                members += candidate
+                groupedIds += candidate.id
+            }
+        }
+
+        groups += if (members.size == 1) {
+            project.copy(
+                memberIds = listOf(project.id),
+                daemonHosts = project.daemonHost?.let { listOf(it) } ?: emptyList(),
+            )
+        } else {
+            val sortedIds = members.map { it.id }.sorted()
+            val daemonHosts = members.mapNotNull { it.daemonHost?.trim()?.takeIf(String::isNotBlank) }
+                .distinct()
+            project.copy(
+                id = "merged:${project.name}:${sortedIds.joinToString("|")}",
+                isDefault = members.any { it.isDefault },
+                daemonHost = daemonHosts.firstOrNull(),
+                memberIds = members.map { it.id },
+                daemonHosts = daemonHosts,
+            )
+        }
+    }
+    return groups
+}
+
+internal fun orderTasksForRokid(tasks: List<TaskItem>): List<TaskItem> =
+    tasks
+        .filterNot { it.hidden }
+        .mapIndexed { index, task ->
+            val pinnedTime = task.pinnedAt?.let { DateParser.parseIsoMillis(it) }
+            IndexedTask(task, index, pinnedTime)
+        }
+        .sortedWith { left, right ->
+            when {
+                left.pinnedAt != null && right.pinnedAt != null -> {
+                    val delta = right.pinnedAt.compareTo(left.pinnedAt)
+                    if (delta != 0) delta else left.index.compareTo(right.index)
+                }
+                left.pinnedAt != null -> -1
+                right.pinnedAt != null -> 1
+                else -> left.index.compareTo(right.index)
+            }
+        }
+        .map { it.task }
+
+private data class IndexedTask(
+    val task: TaskItem,
+    val index: Int,
+    val pinnedAt: Long?,
+)
+
+private object DateParser {
+    fun parseIsoMillis(value: String): Long? =
+        runCatching { java.time.Instant.parse(value).toEpochMilli() }.getOrNull()
+}
 
 /**
  * Thin client over the Conductor backend REST API.
@@ -169,21 +297,38 @@ class ConductorClient(
 
     suspend fun listProjects(): List<Project> = withContext(Dispatchers.IO) {
         val arr = JSONArray(execGet("/api/projects"))
-        (0 until arr.length()).map { i ->
+        val projects = (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
+            val hidden = o.optBooleanOrNull("hidden", "is_hidden")
+                ?: (o.optCleanString("hiddenAt", "hidden_at") != null)
             Project(
                 id = o.getString("id"),
                 name = o.optString("name").ifBlank { "(untitled)" },
-                isDefault = o.optBoolean("is_default", false),
+                isDefault = o.optBooleanOrNull("isDefault", "is_default") ?: false,
+                daemonHost = o.optCleanString("daemonHost", "daemon_host"),
+                gitRemoteUrl = o.optCleanString("gitRemoteUrl", "git_remote_url"),
+                hidden = hidden,
+                mergeOptOut = o.optBooleanOrNull("mergeOptOut", "merge_opt_out") ?: false,
             )
-        }.sortedByDescending { it.isDefault }
+        }
+        groupProjectsForRokid(projects.filterNot { it.hidden })
+            .sortedByDescending { it.isDefault }
     }
 
     // ---- Tasks ----
 
-    suspend fun listTasks(projectId: String): List<TaskItem> = withContext(Dispatchers.IO) {
-        val arr = JSONArray(execGet("/api/tasks?project_id=$projectId"))
-        (0 until arr.length()).map { i -> parseTask(arr.getJSONObject(i)) }
+    suspend fun listTasks(projectId: String): List<TaskItem> = listTasks(listOf(projectId))
+
+    suspend fun listTasks(projectIds: List<String>): List<TaskItem> = withContext(Dispatchers.IO) {
+        val ids = projectIds.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (ids.isEmpty()) return@withContext emptyList()
+        val query = if (ids.size == 1) {
+            "project_id=${URLEncoder.encode(ids.first(), Charsets.UTF_8.name())}"
+        } else {
+            "project_ids=${URLEncoder.encode(ids.joinToString(","), Charsets.UTF_8.name())}"
+        }
+        val arr = JSONArray(execGet("/api/tasks?$query&recover_stale=1"))
+        orderTasksForRokid((0 until arr.length()).map { i -> parseTask(arr.getJSONObject(i)) })
     }
 
     suspend fun createTask(projectId: String, title: String, initialContent: String?): TaskItem =
@@ -198,10 +343,14 @@ class ConductorClient(
 
     private fun parseTask(o: JSONObject): TaskItem = TaskItem(
         id = o.getString("id"),
-        projectId = o.optString("project_id"),
+        projectId = o.optCleanString("projectId", "project_id").orEmpty(),
         title = o.optString("title").ifBlank { "(untitled task)" },
         status = o.optString("status", "unknown"),
         taskType = o.optString("task_type", "ai_task"),
+        pinnedAt = o.optObject("metadata")?.optCleanString("pinnedAt", "pinned_at"),
+        hidden = (o.optBooleanOrNull("hidden", "is_hidden") ?: false) ||
+            o.optString("status", "").equals("hide", ignoreCase = true) ||
+            o.optString("status", "").equals("hidden", ignoreCase = true),
     )
 
     // ---- Messages ----
