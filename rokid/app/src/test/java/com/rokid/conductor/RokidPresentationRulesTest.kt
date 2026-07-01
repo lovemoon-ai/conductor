@@ -89,7 +89,7 @@ class RokidPresentationRulesTest {
             message("4", "assistant"),
         )
 
-        assertEquals(2, defaultChatTopMessageIndex(messages))
+        assertEquals(ChatScrollPosition(2), defaultChatScrollPosition(messages))
     }
 
     @Test
@@ -98,7 +98,7 @@ class RokidPresentationRulesTest {
             message(index.toString(), if (index % 2 == 0) "assistant" else "user")
         }
 
-        assertEquals(2, centeredChatTopMessageIndex(messages, "5"))
+        assertEquals(ChatScrollPosition(2), centeredChatScrollPosition(messages, "5"))
     }
 
     private fun message(id: String, role: String): ChatMessage =

@@ -14,6 +14,7 @@ import com.rokid.conductor.net.RealtimeEvent
 import com.rokid.conductor.net.TaskItem
 import com.rokid.conductor.speech.SpeechInput
 import com.rokid.conductor.speech.SpeechOutput
+import java.util.ArrayDeque
 import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
@@ -30,6 +31,8 @@ enum class Screen { LOGIN, PROJECTS, TASKS, CHAT }
 enum class HudAction { SELECT, BACK, NEXT, PREVIOUS }
 
 enum class VoiceCommand { CONTINUE_TASK, SUMMARIZE_PROGRESS, NEXT_STEP, SPEAK_LATEST, STOP_SPEAKING }
+
+enum class ChatScrollKind { POSITION, DELTA, DRAG, CENTER }
 
 internal object VoiceCommandMatcher {
     fun match(text: String): VoiceCommand? {
@@ -57,6 +60,27 @@ internal object VoiceCommandMatcher {
 
 private const val ProductionBaseUrl = "https://conductor.conductor-ai.top"
 internal const val VisibleChatMessageCount = 4
+
+data class ChatScrollPosition(
+    val index: Int,
+    val offset: Int = 0,
+)
+
+data class ChatScrollRequest(
+    val id: Long = 0,
+    val kind: ChatScrollKind = ChatScrollKind.POSITION,
+    val position: ChatScrollPosition = ChatScrollPosition(0),
+    val delta: Int = 0,
+    val pixelDelta: Float = 0f,
+    val messageId: String? = null,
+    val itemAnchorFraction: Float = 0.5f,
+    val animated: Boolean = false,
+)
+
+private data class PendingSpeech(
+    val text: String,
+    val messageId: String?,
+)
 
 private fun normalizeBaseUrl(value: String?): String {
     val normalized = value
@@ -91,7 +115,7 @@ data class UiState(
     val focusedTaskIndex: Int = 0,
     val selectedTask: TaskItem? = null,
     val messages: List<ChatMessage> = emptyList(),
-    val chatTopMessageIndex: Int = 0,
+    val chatScrollRequest: ChatScrollRequest = ChatScrollRequest(),
     val awaitingReply: Boolean = false,
     val realtimeConnected: Boolean = false,
     val sttListening: Boolean = false,
@@ -102,30 +126,51 @@ data class UiState(
     val ttsReady: Boolean = false,
     val ttsAvailable: Boolean = false,
     val ttsSpeaking: Boolean = false,
+    val ttsReadoutMessageId: String? = null,
+    val ttsReadoutStartedAtMs: Long = 0L,
+    val ttsReadoutEstimatedDurationMs: Long = 0L,
+    val ttsReadoutRevision: Long = 0L,
+    val displayBlanked: Boolean = false,
     val voiceStatus: String? = null,
 )
 
-internal fun clampChatTopMessageIndex(index: Int, messageCount: Int): Int {
+internal fun clampChatMessageIndex(index: Int, messageCount: Int): Int {
     if (messageCount <= 0) return 0
     return min(max(0, index), messageCount - 1)
 }
 
-internal fun defaultChatTopMessageIndex(messages: List<ChatMessage>): Int {
-    if (messages.isEmpty()) return 0
+internal fun defaultChatScrollPosition(messages: List<ChatMessage>): ChatScrollPosition {
+    if (messages.isEmpty()) return ChatScrollPosition(0)
     val latestUserIndex = messages.indexOfLast { it.role == "user" }
     val target = if (latestUserIndex >= 0) {
         latestUserIndex
     } else {
         (messages.size - VisibleChatMessageCount).coerceAtLeast(0)
     }
-    return clampChatTopMessageIndex(target, messages.size)
+    return ChatScrollPosition(clampChatMessageIndex(target, messages.size))
 }
 
-internal fun centeredChatTopMessageIndex(messages: List<ChatMessage>, messageId: String): Int {
-    if (messages.isEmpty()) return 0
-    val targetIndex = messages.indexOfFirst { it.id == messageId }.takeIf { it >= 0 } ?: return 0
-    return clampChatTopMessageIndex(targetIndex - VisibleChatMessageCount / 2, messages.size)
+internal fun centeredChatScrollPosition(messages: List<ChatMessage>, messageId: String): ChatScrollPosition {
+    if (messages.isEmpty()) return ChatScrollPosition(0)
+    val targetIndex = messages.indexOfFirst { it.id == messageId }.takeIf { it >= 0 }
+        ?: return ChatScrollPosition(0)
+    return ChatScrollPosition(clampChatMessageIndex(targetIndex - VisibleChatMessageCount / 2, messages.size))
 }
+
+internal fun estimateTtsReadoutDurationMs(text: String): Long {
+    val trimmed = text.replace(Regex("\\s+"), "")
+    if (trimmed.isBlank()) return 0L
+    val cjkCount = trimmed.count { it.isCjkSpeechChar() }
+    val otherCount = (trimmed.length - cjkCount).coerceAtLeast(0)
+    val estimated = cjkCount * 260L + otherCount * 90L
+    return estimated.coerceIn(4_000L, 180_000L)
+}
+
+private fun Char.isCjkSpeechChar(): Boolean =
+    code in 0x4E00..0x9FFF ||
+        code in 0x3400..0x4DBF ||
+        code in 0x3040..0x30FF ||
+        code in 0xAC00..0xD7AF
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -138,6 +183,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private val client = ConductorClient(_state.value.baseUrl, prefs.getString("token", null))
+    private val pendingSpeech = ArrayDeque<PendingSpeech>()
+    private var activeSpeech: PendingSpeech? = null
     private val speaker = SpeechOutput(
         context = app.applicationContext,
         onAvailability = { available, status ->
@@ -148,24 +195,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     voiceStatus = if (available) null else status,
                 )
             }
+            if (available) playNextPendingSpeech()
         },
-        onSpeakingChanged = { speaking ->
+        onSpeakingChanged = { speaking -> handleSpeechOutputStateChanged(speaking) },
+        onChunkStarted = { _, _ -> },
+        onError = { msg ->
+            activeSpeech = null
             _state.update {
                 it.copy(
-                    ttsSpeaking = speaking,
-                    voiceStatus = if (speaking) "正在朗读" else null,
+                    ttsSpeaking = false,
+                    ttsReadoutMessageId = null,
+                    ttsReadoutStartedAtMs = 0L,
+                    ttsReadoutEstimatedDurationMs = 0L,
+                    error = msg,
+                    voiceStatus = null,
                 )
             }
-        },
-        onError = { msg ->
-            _state.update { it.copy(ttsSpeaking = false, error = msg, voiceStatus = null) }
+            playNextPendingSpeech()
         },
     )
     private var socket: ConductorSocket? = null
     private var speech: SpeechInput? = null
     private var deviceLoginJob: Job? = null
-    private val chatScrollPositionsByTaskId = mutableMapOf<String, Int>()
+    private val chatScrollPositionsByTaskId = mutableMapOf<String, ChatScrollPosition>()
     private val manuallyScrolledTaskIds = mutableSetOf<String>()
+    private var nextChatScrollRequestId = 0L
+    private var autoSubmitCurrentVoiceInput = false
 
     init {
         _state.update { it.copy(sttAvailable = SpeechInput.isAvailable(app.applicationContext)) }
@@ -426,7 +481,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 selectedTask = t,
                 screen = Screen.CHAT,
                 messages = emptyList(),
-                chatTopMessageIndex = 0,
+                chatScrollRequest = ChatScrollRequest(),
                 awaitingReply = false,
                 error = null,
             )
@@ -435,11 +490,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(loading = true, error = null) }
             runCatching { client.listMessages(t.id) }
                 .onSuccess { ms ->
+                    val request = positionChatScrollRequest(chatScrollPositionForTask(t.id, ms))
                     _state.update {
                         it.copy(
                             loading = false,
                             messages = ms,
-                            chatTopMessageIndex = chatTopIndexForTask(t.id, ms),
+                            chatScrollRequest = request,
                         )
                     }
                 }
@@ -453,9 +509,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val task = _state.value.selectedTask ?: return
         val text = content.trim()
         if (text.isEmpty()) return
-        stopSpeaking()
         manuallyScrolledTaskIds.remove(task.id)
         chatScrollPositionsByTaskId.remove(task.id)
+        val request = positionChatScrollRequest(defaultChatScrollPosition(_state.value.messages), animated = true)
         _state.update {
             it.copy(
                 awaitingReply = true,
@@ -464,7 +520,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 sttCandidate = "",
                 sttCandidateCommand = null,
                 voiceStatus = null,
-                chatTopMessageIndex = defaultChatTopMessageIndex(it.messages),
+                chatScrollRequest = request,
             )
         }
         viewModelScope.launch {
@@ -488,21 +544,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun addMessage(msg: ChatMessage) {
-        _state.update { st ->
-            if (msg.id.isNotBlank() && st.messages.any { it.id == msg.id }) {
-                st
+        val st = _state.value
+        if (msg.id.isNotBlank() && st.messages.any { it.id == msg.id }) return
+        val messages = st.messages + msg
+        val taskId = st.selectedTask?.id
+        val request = if (taskId != null && taskId !in manuallyScrolledTaskIds && !hasActiveSpeech()) {
+            positionChatScrollRequest(defaultChatScrollPosition(messages), animated = true)
+        } else {
+            null
+        }
+        _state.update { current ->
+            if (msg.id.isNotBlank() && current.messages.any { it.id == msg.id }) {
+                current
             } else {
-                val messages = st.messages + msg
-                val taskId = st.selectedTask?.id
-                val topIndex = if (taskId != null && taskId in manuallyScrolledTaskIds) {
-                    clampChatTopMessageIndex(
-                        chatScrollPositionsByTaskId[taskId] ?: st.chatTopMessageIndex,
-                        messages.size,
-                    ).also { chatScrollPositionsByTaskId[taskId] = it }
-                } else {
-                    defaultChatTopMessageIndex(messages)
-                }
-                st.copy(messages = messages, chatTopMessageIndex = topIndex)
+                current.copy(messages = current.messages + msg, chatScrollRequest = request ?: current.chatScrollRequest)
             }
         }
     }
@@ -544,25 +599,60 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---- Speech ----
 
     fun startVoice() {
+        startVoice(autoSubmitFinal = false)
+    }
+
+    fun handleBlankedChatSelect() {
+        val s = _state.value
+        if (s.screen != Screen.CHAT) return
+        if (hasActiveOrQueuedSpeech()) return
+        if (s.sttListening) {
+            stopVoice()
+            return
+        }
+        if (s.sttCandidate.isNotBlank()) {
+            confirmVoiceCandidate()
+            return
+        }
+        startVoice(autoSubmitFinal = true)
+    }
+
+    private fun startVoice(autoSubmitFinal: Boolean) {
         if (_state.value.sttListening) return
-        stopSpeaking()
+        if (hasActiveOrQueuedSpeech()) return
         val si = speech ?: SpeechInput(
             context = getApplication(),
             onPartial = { p -> _state.update { it.copy(sttPartial = p, voiceStatus = "正在听") } },
             onFinal = { text ->
                 val candidate = text.trim()
                 val command = VoiceCommandMatcher.match(candidate)
-                _state.update {
-                    it.copy(
-                        sttListening = false,
-                        sttPartial = "",
-                        sttCandidate = candidate,
-                        sttCandidateCommand = command,
-                        voiceStatus = if (command == null) "请确认语音内容" else "请确认语音命令",
-                    )
+                val shouldAutoSubmit = autoSubmitCurrentVoiceInput || _state.value.displayBlanked
+                autoSubmitCurrentVoiceInput = false
+                if (shouldAutoSubmit && candidate.isNotBlank()) {
+                    _state.update {
+                        it.copy(
+                            sttListening = false,
+                            sttPartial = "",
+                            sttCandidate = "",
+                            sttCandidateCommand = null,
+                            voiceStatus = null,
+                        )
+                    }
+                    submitVoiceCandidate(candidate, command)
+                } else {
+                    _state.update {
+                        it.copy(
+                            sttListening = false,
+                            sttPartial = "",
+                            sttCandidate = candidate,
+                            sttCandidateCommand = command,
+                            voiceStatus = if (command == null) "请确认语音内容" else "请确认语音命令",
+                        )
+                    }
                 }
             },
             onError = { msg ->
+                autoSubmitCurrentVoiceInput = false
                 _state.update { it.copy(sttListening = false, sttPartial = "") }
                 if (msg.isNotBlank()) {
                     _state.update {
@@ -579,6 +669,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             onEnd = { _state.update { it.copy(voiceStatus = "正在识别") } },
         ).also { speech = it }
         if (!si.available) {
+            autoSubmitCurrentVoiceInput = false
             _state.update {
                 it.copy(
                     sttAvailable = false,
@@ -589,6 +680,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             return
         }
+        autoSubmitCurrentVoiceInput = autoSubmitFinal
         _state.update {
             it.copy(
                 sttAvailable = true,
@@ -611,6 +703,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         speech?.stop()
     }
 
+    fun setDisplayBlanked(blanked: Boolean) {
+        _state.update { it.copy(displayBlanked = blanked) }
+    }
+
     private fun speakLatestReply() {
         val latest = _state.value.messages.lastOrNull { isAiReply(it.role, it.content) }
         if (latest == null) {
@@ -622,18 +718,103 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun speakText(text: String, messageId: String? = null) {
         if (text.isBlank()) return
+        val item = PendingSpeech(text = text, messageId = messageId)
+        if (hasActiveOrQueuedSpeech()) {
+            pendingSpeech.addLast(item)
+            return
+        }
+        startSpeech(item)
+    }
+
+    private fun startSpeech(item: PendingSpeech) {
         if (!speaker.ready) {
+            pendingSpeech.addFirst(item)
             _state.update { it.copy(info = "语音朗读初始化中", voiceStatus = "语音朗读初始化中") }
             return
         }
-        centerMessageForReadout(messageId)
-        speaker.speak(text)
+        activeSpeech = item
+        centerMessageForReadout(item.messageId, anchorFraction = 0f)
+        _state.update { state ->
+            state.copy(
+                ttsReadoutMessageId = item.messageId,
+                ttsReadoutStartedAtMs = 0L,
+                ttsReadoutEstimatedDurationMs = estimateTtsReadoutDurationMs(item.text),
+                ttsReadoutRevision = state.ttsReadoutRevision + 1,
+                info = null,
+                voiceStatus = "正在准备朗读",
+            )
+        }
+        if (!speaker.speak(item.text)) {
+            if (activeSpeech === item) {
+                activeSpeech = null
+                playNextPendingSpeech()
+            }
+        }
+    }
+
+    private fun playNextPendingSpeech() {
+        if (hasActiveSpeech()) return
+        val next = pendingSpeech.pollFirst() ?: return
+        startSpeech(next)
+    }
+
+    private fun hasActiveSpeech(): Boolean =
+        activeSpeech != null || speaker.speaking || _state.value.ttsSpeaking
+
+    private fun hasActiveOrQueuedSpeech(): Boolean =
+        hasActiveSpeech() || pendingSpeech.isNotEmpty()
+
+    private fun handleSpeechOutputStateChanged(speaking: Boolean) {
+        if (speaking) {
+            _state.update {
+                it.copy(
+                    ttsSpeaking = true,
+                    ttsReadoutStartedAtMs = if (it.ttsReadoutStartedAtMs > 0L) {
+                        it.ttsReadoutStartedAtMs
+                    } else {
+                        System.currentTimeMillis()
+                    },
+                    voiceStatus = "正在朗读",
+                )
+            }
+            return
+        }
+
+        activeSpeech = null
+        _state.update { state ->
+            val nextStatus = if (state.voiceStatus == "正在朗读" || state.voiceStatus == "正在准备朗读") {
+                null
+            } else {
+                state.voiceStatus
+            }
+            state.copy(
+                ttsSpeaking = false,
+                ttsReadoutMessageId = null,
+                ttsReadoutStartedAtMs = 0L,
+                ttsReadoutEstimatedDurationMs = 0L,
+                voiceStatus = nextStatus,
+            )
+        }
+        playNextPendingSpeech()
     }
 
     private fun stopSpeaking() {
+        pendingSpeech.clear()
+        activeSpeech = null
         speaker.stop()
-        if (_state.value.ttsSpeaking) {
-            _state.update { it.copy(ttsSpeaking = false, voiceStatus = null) }
+        _state.update { state ->
+            val status = if (state.voiceStatus == "正在朗读" || state.voiceStatus == "正在准备朗读") {
+                null
+            } else {
+                state.voiceStatus
+            }
+            state.copy(
+                ttsSpeaking = false,
+                ttsReadoutMessageId = null,
+                ttsReadoutStartedAtMs = 0L,
+                ttsReadoutEstimatedDurationMs = 0L,
+                voiceStatus = status,
+            )
         }
     }
 
@@ -657,6 +838,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun isChatScreen(): Boolean = _state.value.screen == Screen.CHAT
+
+    fun handleTouchpadScroll(deltaPx: Float): Boolean {
+        val state = _state.value
+        val taskId = state.selectedTask?.id ?: return false
+        if (state.screen != Screen.CHAT || state.messages.isEmpty() || deltaPx == 0f) {
+            return false
+        }
+        manuallyScrolledTaskIds += taskId
+        _state.update { it.copy(chatScrollRequest = dragChatScrollRequest(deltaPx)) }
+        return true
+    }
+
     private fun handleSelect() {
         when (_state.value.screen) {
             Screen.LOGIN -> startDeviceLogin()
@@ -668,6 +862,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun selectChatAction() {
         val s = _state.value
+        if (hasActiveOrQueuedSpeech()) {
+            return
+        }
         if (s.sttListening) {
             stopVoice()
             return
@@ -684,6 +881,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val text = state.sttCandidate.trim()
         val command = state.sttCandidateCommand
         if (text.isBlank()) return
+        submitVoiceCandidate(text, command)
+    }
+
+    private fun submitVoiceCandidate(text: String, command: VoiceCommand?) {
         _state.update {
             it.copy(
                 sttCandidate = "",
@@ -718,7 +919,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     clearVoiceCandidate()
                     return true
                 }
-                if (_state.value.ttsSpeaking) {
+                if (hasActiveOrQueuedSpeech()) {
                     stopSpeaking()
                     return true
                 }
@@ -755,9 +956,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 Screen.TASKS -> s.copy(
                     focusedTaskIndex = wrapIndex(s.focusedTaskIndex, delta, s.tasks.size)
                 )
-                Screen.CHAT -> s.copy(
-                    chatTopMessageIndex = scrollChatBy(s, delta)
-                )
+                Screen.CHAT -> requestChatScrollBy(s, delta)
             }
         }
         if (_state.value.screen == Screen.LOGIN) {
@@ -815,33 +1014,76 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun chatTopIndexForTask(taskId: String, messages: List<ChatMessage>): Int {
+    fun rememberChatScrollPosition(index: Int, offset: Int) {
+        val taskId = _state.value.selectedTask?.id ?: return
+        chatScrollPositionsByTaskId[taskId] = ChatScrollPosition(
+            index = index.coerceAtLeast(0),
+            offset = offset.coerceAtLeast(0),
+        )
+    }
+
+    private fun chatScrollPositionForTask(taskId: String, messages: List<ChatMessage>): ChatScrollPosition {
         val saved = chatScrollPositionsByTaskId[taskId]
         return if (taskId in manuallyScrolledTaskIds && saved != null) {
-            clampChatTopMessageIndex(saved, messages.size)
+            saved.copy(index = clampChatMessageIndex(saved.index, messages.size), offset = saved.offset.coerceAtLeast(0))
         } else {
-            defaultChatTopMessageIndex(messages)
+            defaultChatScrollPosition(messages)
         }
     }
 
-    private fun scrollChatBy(state: UiState, delta: Int): Int {
-        val taskId = state.selectedTask?.id ?: return state.chatTopMessageIndex
-        if (state.messages.isEmpty()) return 0
-        val next = clampChatTopMessageIndex(state.chatTopMessageIndex + delta, state.messages.size)
+    private fun requestChatScrollBy(state: UiState, delta: Int): UiState {
+        val taskId = state.selectedTask?.id ?: return state
+        if (state.messages.isEmpty()) return state
         manuallyScrolledTaskIds += taskId
-        chatScrollPositionsByTaskId[taskId] = next
-        return next
+        return state.copy(chatScrollRequest = deltaChatScrollRequest(delta))
     }
 
-    private fun centerMessageForReadout(messageId: String?) {
+    private fun centerMessageForReadout(messageId: String?, anchorFraction: Float = 0.5f) {
         if (messageId.isNullOrBlank()) return
         _state.update { state ->
             val taskId = state.selectedTask?.id ?: return@update state
-            val topIndex = centeredChatTopMessageIndex(state.messages, messageId)
-            chatScrollPositionsByTaskId[taskId] = topIndex
-            state.copy(chatTopMessageIndex = topIndex)
+            val position = centeredChatScrollPosition(state.messages, messageId)
+            chatScrollPositionsByTaskId[taskId] = position
+            state.copy(chatScrollRequest = centerChatScrollRequest(position, messageId, anchorFraction))
         }
     }
+
+    private fun positionChatScrollRequest(position: ChatScrollPosition, animated: Boolean = false): ChatScrollRequest =
+        ChatScrollRequest(
+            id = ++nextChatScrollRequestId,
+            kind = ChatScrollKind.POSITION,
+            position = position,
+            animated = animated,
+        )
+
+    private fun deltaChatScrollRequest(delta: Int): ChatScrollRequest =
+        ChatScrollRequest(
+            id = ++nextChatScrollRequestId,
+            kind = ChatScrollKind.DELTA,
+            delta = delta,
+            animated = true,
+        )
+
+    private fun dragChatScrollRequest(deltaPx: Float): ChatScrollRequest =
+        ChatScrollRequest(
+            id = ++nextChatScrollRequestId,
+            kind = ChatScrollKind.DRAG,
+            pixelDelta = deltaPx,
+        )
+
+    private fun centerChatScrollRequest(
+        position: ChatScrollPosition,
+        messageId: String,
+        anchorFraction: Float,
+    ): ChatScrollRequest =
+        ChatScrollRequest(
+            id = ++nextChatScrollRequestId,
+            kind = ChatScrollKind.CENTER,
+            position = position,
+            messageId = messageId,
+            itemAnchorFraction = anchorFraction.coerceIn(0f, 1f),
+            animated = true,
+        )
 
     private fun onMainThread(block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block()

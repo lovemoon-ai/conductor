@@ -100,6 +100,8 @@ internal class ConductorSpeechTranscriber(
         var speechStarted = false
         var speechStartedAt = 0L
         var lastSpeechAt = 0L
+        var currentSpeechRunStartedAt = 0L
+        var manualStopRequired = false
         var maxRms = 0.0
         var ambientRms = InitialAmbientRms
         var speechStream: SpeechStream? = null
@@ -198,8 +200,19 @@ internal class ConductorSpeechTranscriber(
             callbacks.onReady()
             while (!canceled.get()) {
                 val now = SystemClock.elapsedRealtime()
-                if (now - startedAt >= MaxRecordingMs) break
-                if (stopRequested.get() && now - startedAt >= MinRecordingMs) break
+                if (
+                    shouldStopCapture(
+                        now = now,
+                        captureStartedAt = startedAt,
+                        speechStarted = speechStarted,
+                        speechStartedAt = speechStartedAt,
+                        lastSpeechAt = lastSpeechAt,
+                        manualStopRequired = manualStopRequired,
+                        stopRequested = stopRequested.get(),
+                    )
+                ) {
+                    break
+                }
 
                 val read = recorder.read(readBuffer, 0, readBuffer.size)
                 if (read <= 0) continue
@@ -211,6 +224,24 @@ internal class ConductorSpeechTranscriber(
 
                 val startThreshold = speechStartThreshold(ambientRms)
                 val endThreshold = speechEndThreshold(ambientRms)
+
+                fun rememberSpeechActivity() {
+                    if (
+                        currentSpeechRunStartedAt == 0L ||
+                        now - lastSpeechAt > SpeechRunResetSilenceMs
+                    ) {
+                        currentSpeechRunStartedAt = now
+                    }
+                    lastSpeechAt = now
+                    if (
+                        !manualStopRequired &&
+                        shouldRequireManualStop(now, currentSpeechRunStartedAt)
+                    ) {
+                        manualStopRequired = true
+                        Log.i(Tag, "long speech detected; waiting for manual stop or long silence")
+                    }
+                }
+
                 if (rms >= startThreshold) {
                     if (!speechStarted) {
                         speechStarted = true
@@ -219,21 +250,14 @@ internal class ConductorSpeechTranscriber(
                         callbacks.onBeginning()
                     }
                     appendAndStream(chunk)
-                    lastSpeechAt = now
+                    rememberSpeechActivity()
                 } else if (!speechStarted) {
                     rememberPreRoll(chunk)
                     ambientRms = smoothAmbientRms(ambientRms, rms)
                 } else {
                     appendAndStream(chunk)
                     if (rms >= endThreshold) {
-                        lastSpeechAt = now
-                    } else if (
-                        !stopRequested.get() &&
-                        now - lastSpeechAt >= AutoSilenceMs &&
-                        now - startedAt >= MinRecordingMs &&
-                        now - speechStartedAt >= MinSpeechMs
-                    ) {
-                        break
+                        rememberSpeechActivity()
                     }
                 }
             }
@@ -354,10 +378,13 @@ internal class ConductorSpeechTranscriber(
 
     companion object {
         private const val SampleRate = 16_000
-        private const val MaxRecordingMs = 8_000L
         private const val MinRecordingMs = 700L
         private const val MinSpeechMs = 280L
-        private const val AutoSilenceMs = 800L
+        private const val ShortUtteranceAutoSilenceMs = 3_000L
+        private const val LongSpeechManualOnlyMs = 10_000L
+        private const val LongNoSpeechTimeoutMs = 15_000L
+        private const val InitialNoSpeechTimeoutMs = 15_000L
+        private const val SpeechRunResetSilenceMs = 700L
         private const val PreRollMs = 320
         private const val StreamFinishAttachWaitMs = 250L
         private const val InitialAmbientRms = 45.0
@@ -371,6 +398,34 @@ internal class ConductorSpeechTranscriber(
         private const val MaxPreRollSamples = SampleRate * PreRollMs / 1000
         private const val MinPcmBytes = SampleRate * 2 / 3
         private const val Tag = "ConductorSpeechTranscriber"
+
+        internal fun shouldRequireManualStop(now: Long, currentSpeechRunStartedAt: Long): Boolean =
+            currentSpeechRunStartedAt > 0L &&
+                now - currentSpeechRunStartedAt >= LongSpeechManualOnlyMs
+
+        internal fun shouldStopCapture(
+            now: Long,
+            captureStartedAt: Long,
+            speechStarted: Boolean,
+            speechStartedAt: Long,
+            lastSpeechAt: Long,
+            manualStopRequired: Boolean,
+            stopRequested: Boolean,
+        ): Boolean {
+            if (stopRequested && now - captureStartedAt >= MinRecordingMs) {
+                return true
+            }
+            if (!speechStarted) {
+                return now - captureStartedAt >= InitialNoSpeechTimeoutMs
+            }
+            val silenceMs = now - lastSpeechAt
+            if (manualStopRequired) {
+                return silenceMs >= LongNoSpeechTimeoutMs
+            }
+            return silenceMs >= ShortUtteranceAutoSilenceMs &&
+                now - captureStartedAt >= MinRecordingMs &&
+                now - speechStartedAt >= MinSpeechMs
+        }
 
         private data class RecorderHandle(
             val recorder: AudioRecord,

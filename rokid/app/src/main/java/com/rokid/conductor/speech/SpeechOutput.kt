@@ -13,8 +13,66 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import com.rokid.os.sprite.tts.ITtsListener
 import com.rokid.os.sprite.tts.ITtsServer
+import java.util.ArrayDeque
 import java.util.Locale
 import java.util.UUID
+
+internal const val SpeechOutputMaxChunkChars = 220
+
+internal fun cleanTextForSpeech(value: String): String {
+    return value
+        .replace(Regex("```[\\s\\S]*?```"), " 代码省略 ")
+        .replace(Regex("`([^`]+)`"), "$1")
+        .replace(Regex("\\[([^\\]]+)]\\([^)]*\\)"), "$1")
+        .replace(Regex("[#>*_~\\-]+"), " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+}
+
+internal fun splitTextForSpeech(
+    value: String,
+    maxChunkChars: Int = SpeechOutputMaxChunkChars,
+): List<String> {
+    require(maxChunkChars > 0) { "maxChunkChars must be positive" }
+    var remaining = cleanTextForSpeech(value)
+    if (remaining.isBlank()) return emptyList()
+
+    val chunks = mutableListOf<String>()
+    while (remaining.length > maxChunkChars) {
+        val splitAt = findSpeechSplitIndex(remaining, maxChunkChars)
+        remaining.substring(0, splitAt).trim().takeIf { it.isNotBlank() }?.let(chunks::add)
+        remaining = remaining.substring(splitAt).trim()
+    }
+    remaining.takeIf { it.isNotBlank() }?.let(chunks::add)
+    return chunks
+}
+
+private fun findSpeechSplitIndex(text: String, maxChunkChars: Int): Int {
+    val end = maxChunkChars.coerceAtMost(text.length)
+    val minSplit = (end * 0.45f).toInt().coerceAtLeast(1)
+    val preferredBreaks = "。！？；，、.!?;,:："
+    for (index in end - 1 downTo minSplit) {
+        if (preferredBreaks.contains(text[index])) return index + 1
+    }
+    for (index in end - 1 downTo minSplit) {
+        if (text[index].isWhitespace()) return index + 1
+    }
+    return end
+}
+
+internal enum class SpeechEngine { ANDROID, ROKID }
+
+internal fun speechEnginePriority(
+    hasRokidServer: Boolean,
+    skipEngine: SpeechEngine? = null,
+): List<SpeechEngine> {
+    val engines = if (hasRokidServer) {
+        listOf(SpeechEngine.ROKID, SpeechEngine.ANDROID)
+    } else {
+        listOf(SpeechEngine.ANDROID, SpeechEngine.ROKID)
+    }
+    return engines.filter { it != skipEngine }
+}
 
 /**
  * Text-to-speech for reading AI replies on glasses.
@@ -25,6 +83,7 @@ class SpeechOutput(
     context: Context,
     private val onAvailability: (available: Boolean, status: String) -> Unit,
     private val onSpeakingChanged: (Boolean) -> Unit,
+    private val onChunkStarted: (chunkIndex: Int, chunkCount: Int) -> Unit,
     private val onError: (String) -> Unit,
 ) {
     private val appContext = context.applicationContext
@@ -36,14 +95,14 @@ class SpeechOutput(
     }
     private val rokidTtsListener = object : ITtsListener.Stub() {
         override fun onTtsStart(uuid: String?) {
-            if (uuid == currentRokidUtteranceId) setSpeaking(true)
+            if (markStarted(uuid, SpeechEngine.ROKID)) {
+                notifyChunkStarted()
+                setSpeaking(true)
+            }
         }
 
         override fun onTtsStop(uuid: String?) {
-            if (uuid == currentRokidUtteranceId) {
-                currentRokidUtteranceId = null
-                setSpeaking(false)
-            }
+            completeChunk(uuid, SpeechEngine.ROKID)
         }
     }
     private val rokidConnection = object : ServiceConnection {
@@ -56,22 +115,35 @@ class SpeechOutput(
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            val interruptedId = currentRokidUtteranceId
             rokidServer = null
             rokidBinding = false
             if (!androidTtsAvailable) {
                 available = false
                 post { onAvailability(false, "语音朗读服务已断开") }
             }
-            setSpeaking(false)
+            if (interruptedId != null) {
+                failChunk(interruptedId, SpeechEngine.ROKID, "Rokid 语音朗读服务已断开")
+            }
         }
     }
+
+    private val playbackLock = Any()
+    private val pendingChunks = ArrayDeque<String>()
 
     @Volatile private var androidTtsReady: Boolean = false
     @Volatile private var androidTtsAvailable: Boolean = false
     @Volatile private var rokidBinding: Boolean = false
     @Volatile private var rokidBound: Boolean = false
     @Volatile private var rokidServer: ITtsServer? = null
+    @Volatile private var currentAndroidUtteranceId: String? = null
     @Volatile private var currentRokidUtteranceId: String? = null
+    @Volatile private var currentChunkText: String? = null
+    @Volatile private var currentEngine: SpeechEngine? = null
+    @Volatile private var currentUtteranceStarted: Boolean = false
+    @Volatile private var currentChunkIndex: Int = 0
+    @Volatile private var nextChunkIndex: Int = 0
+    @Volatile private var currentSpeechChunkCount: Int = 0
 
     @Volatile var ready: Boolean = false
         private set
@@ -99,22 +171,23 @@ class SpeechOutput(
         engine.setOnUtteranceProgressListener(
             object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
-                    setSpeaking(true)
+                    if (markStarted(utteranceId, SpeechEngine.ANDROID)) {
+                        notifyChunkStarted()
+                        setSpeaking(true)
+                    }
                 }
 
                 override fun onDone(utteranceId: String?) {
-                    setSpeaking(false)
+                    completeChunk(utteranceId, SpeechEngine.ANDROID)
                 }
 
                 @Deprecated("Deprecated by Android framework")
                 override fun onError(utteranceId: String?) {
-                    setSpeaking(false)
-                    post { onError("语音朗读失败") }
+                    failChunk(utteranceId, SpeechEngine.ANDROID, "语音朗读失败")
                 }
 
                 override fun onError(utteranceId: String?, errorCode: Int) {
-                    setSpeaking(false)
-                    post { onError("语音朗读失败 ($errorCode)") }
+                    failChunk(utteranceId, SpeechEngine.ANDROID, "语音朗读失败 ($errorCode)")
                 }
             }
         )
@@ -134,13 +207,11 @@ class SpeechOutput(
     }
 
     fun speak(text: String): Boolean {
-        val spoken = cleanForSpeech(text)
-        if (spoken.isBlank()) {
+        val chunks = splitTextForSpeech(text)
+        if (chunks.isEmpty()) {
             post { onError("没有可朗读内容") }
             return false
         }
-
-        rokidServer?.let { return speakWithRokid(it, spoken) }
 
         if (!ready) {
             bindRokidTts()
@@ -148,41 +219,96 @@ class SpeechOutput(
             return false
         }
 
-        if (!androidTtsReady || !configureLanguage(spoken)) {
+        synchronized(playbackLock) {
+            if (!hasActiveChunkLocked() && pendingChunks.isEmpty()) {
+                currentSpeechChunkCount = chunks.size
+                nextChunkIndex = 0
+                currentChunkIndex = 0
+            } else {
+                currentSpeechChunkCount += chunks.size
+            }
+            pendingChunks.addAll(chunks)
+            if (hasActiveChunkLocked()) return true
+        }
+        return startNextChunk()
+    }
+
+    private fun startNextChunk(): Boolean {
+        val chunk = synchronized(playbackLock) {
+            if (hasActiveChunkLocked()) return true
+            val next = pendingChunks.pollFirst() ?: run {
+                resetChunkProgressLocked()
+                return false
+            }
+            currentChunkIndex = nextChunkIndex
+            nextChunkIndex += 1
+            next
+        }
+        if (startChunk(chunk)) return true
+        synchronized(playbackLock) {
+            clearCurrentChunkLocked()
+            pendingChunks.clear()
+            resetChunkProgressLocked()
+        }
+        setSpeaking(false)
+        post { onError("无法开始语音朗读") }
+        return false
+    }
+
+    private fun startChunk(text: String, skipEngine: SpeechEngine? = null): Boolean {
+        val server = rokidServer
+        for (engine in speechEnginePriority(hasRokidServer = server != null, skipEngine = skipEngine)) {
+            when (engine) {
+                SpeechEngine.ROKID -> if (server != null && speakWithRokid(server, text)) return true
+                SpeechEngine.ANDROID -> if (speakWithAndroid(text)) return true
+            }
+        }
+        if (server == null) bindRokidTts()
+        return false
+    }
+
+    private fun speakWithAndroid(text: String): Boolean {
+        if (!androidTtsReady || !configureLanguage(text)) {
             androidTtsAvailable = false
-            bindRokidTts()
-            post { onError("正在连接 Rokid 语音朗读") }
             return false
         }
-
         val params = Bundle().apply {
             putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
         }
-        val engine = tts
-        if (engine == null) {
-            bindRokidTts()
-            post { onError("正在连接 Rokid 语音朗读") }
-            return false
+        val engine = tts ?: return false
+        val utteranceId = UUID.randomUUID().toString()
+        synchronized(playbackLock) {
+            currentAndroidUtteranceId = utteranceId
+            currentRokidUtteranceId = null
+            currentChunkText = text
+            currentEngine = SpeechEngine.ANDROID
+            currentUtteranceStarted = false
         }
-        val result = engine.speak(spoken, TextToSpeech.QUEUE_FLUSH, params, UUID.randomUUID().toString())
+        val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
         if (result != TextToSpeech.SUCCESS) {
-            setSpeaking(false)
-            post { onError("无法开始语音朗读") }
+            synchronized(playbackLock) {
+                if (currentAndroidUtteranceId == utteranceId) clearCurrentChunkLocked()
+            }
             return false
         }
+        scheduleStartWatchdog(utteranceId, SpeechEngine.ANDROID)
         return true
     }
 
     fun stop() {
         val rokidId = currentRokidUtteranceId
         val server = rokidServer
+        synchronized(playbackLock) {
+            pendingChunks.clear()
+            clearCurrentChunkLocked()
+            resetChunkProgressLocked()
+        }
         if (server != null && rokidId != null) {
             try {
                 server.stopTtsPlay(rokidId)
             } catch (_: RemoteException) {
             } catch (_: Throwable) {
             }
-            currentRokidUtteranceId = null
         }
         try {
             tts?.stop()
@@ -252,25 +378,127 @@ class SpeechOutput(
     private fun speakWithRokid(server: ITtsServer, text: String): Boolean {
         val utteranceId = UUID.randomUUID().toString()
         return try {
-            currentRokidUtteranceId = utteranceId
+            synchronized(playbackLock) {
+                currentAndroidUtteranceId = null
+                currentRokidUtteranceId = utteranceId
+                currentChunkText = text
+                currentEngine = SpeechEngine.ROKID
+                currentUtteranceStarted = false
+            }
             server.playTtsMsg(text, utteranceId, rokidTtsListener)
+            scheduleStartWatchdog(utteranceId, SpeechEngine.ROKID)
             true
         } catch (_: RemoteException) {
-            currentRokidUtteranceId = null
+            synchronized(playbackLock) {
+                if (currentRokidUtteranceId == utteranceId) clearCurrentChunkLocked()
+            }
             rokidServer = null
-            setSpeaking(false)
             bindRokidTts()
-            post { onError("Rokid 语音朗读服务断开") }
             false
-        } catch (e: Throwable) {
-            currentRokidUtteranceId = null
-            setSpeaking(false)
-            post { onError("Rokid 语音朗读失败: ${e.message}") }
+        } catch (_: Throwable) {
+            synchronized(playbackLock) {
+                if (currentRokidUtteranceId == utteranceId) clearCurrentChunkLocked()
+            }
             false
         }
     }
 
+    private fun markStarted(utteranceId: String?, engine: SpeechEngine): Boolean {
+        return synchronized(playbackLock) {
+            if (!isCurrentChunkLocked(utteranceId, engine)) return@synchronized false
+            currentUtteranceStarted = true
+            true
+        }
+    }
+
+    private fun notifyChunkStarted() {
+        val progress = synchronized(playbackLock) {
+            currentChunkIndex to currentSpeechChunkCount.coerceAtLeast(1)
+        }
+        post { onChunkStarted(progress.first, progress.second) }
+    }
+
+    private fun completeChunk(utteranceId: String?, engine: SpeechEngine) {
+        var shouldStartNext = false
+        val matched = synchronized(playbackLock) {
+            if (!isCurrentChunkLocked(utteranceId, engine)) return@synchronized false
+            clearCurrentChunkLocked()
+            shouldStartNext = pendingChunks.isNotEmpty()
+            if (!shouldStartNext) resetChunkProgressLocked()
+            true
+        }
+        if (!matched) return
+        if (shouldStartNext) {
+            if (!startNextChunk()) setSpeaking(false)
+        } else {
+            setSpeaking(false)
+        }
+    }
+
+    private fun failChunk(utteranceId: String?, engine: SpeechEngine, message: String) {
+        val retryText = synchronized(playbackLock) {
+            if (!isCurrentChunkLocked(utteranceId, engine)) return@synchronized null
+            currentChunkText.also { clearCurrentChunkLocked() }
+        }
+        if (retryText != null && startChunk(retryText, skipEngine = engine)) return
+        synchronized(playbackLock) {
+            pendingChunks.clear()
+            resetChunkProgressLocked()
+        }
+        setSpeaking(false)
+        post { onError(message) }
+    }
+
+    private fun scheduleStartWatchdog(utteranceId: String, engine: SpeechEngine) {
+        mainHandler.postDelayed(
+            {
+                val retryText = synchronized(playbackLock) {
+                    if (!isCurrentChunkLocked(utteranceId, engine) || currentUtteranceStarted) {
+                        return@synchronized null
+                    }
+                    currentChunkText.also { clearCurrentChunkLocked() }
+                }
+                if (retryText != null && startChunk(retryText, skipEngine = engine)) return@postDelayed
+                if (retryText != null) {
+                    synchronized(playbackLock) {
+                        pendingChunks.clear()
+                        resetChunkProgressLocked()
+                    }
+                    setSpeaking(false)
+                    post { onError("语音朗读启动超时") }
+                }
+            },
+            StartTimeoutMs,
+        )
+    }
+
+    private fun hasActiveChunkLocked(): Boolean =
+        currentEngine != null || currentAndroidUtteranceId != null || currentRokidUtteranceId != null
+
+    private fun isCurrentChunkLocked(utteranceId: String?, engine: SpeechEngine): Boolean {
+        if (utteranceId.isNullOrBlank() || currentEngine != engine) return false
+        return when (engine) {
+            SpeechEngine.ANDROID -> utteranceId == currentAndroidUtteranceId
+            SpeechEngine.ROKID -> utteranceId == currentRokidUtteranceId
+        }
+    }
+
+    private fun clearCurrentChunkLocked() {
+        currentAndroidUtteranceId = null
+        currentRokidUtteranceId = null
+        currentChunkText = null
+        currentEngine = null
+        currentUtteranceStarted = false
+    }
+
+    private fun resetChunkProgressLocked() {
+        currentChunkIndex = 0
+        nextChunkIndex = 0
+        currentSpeechChunkCount = 0
+    }
+
     private fun setSpeaking(value: Boolean) {
+        if (speaking == value) return
         speaking = value
         post { onSpeakingChanged(value) }
     }
@@ -280,7 +508,7 @@ class SpeechOutput(
     }
 
     companion object {
-        private const val MaxSpeechChars = 700
+        private const val StartTimeoutMs = 3_000L
         private const val RokidTtsPackage = "com.rokid.os.sprite.assistserver"
         private const val RokidTtsService = "com.rokid.os.sprite.tts.TtsService"
 
@@ -292,17 +520,6 @@ class SpeechOutput(
                 ch.code in 0x3400..0x4DBF ||
                 ch.code in 0x3040..0x30FF ||
                 ch.code in 0xAC00..0xD7AF
-        }
-
-        private fun cleanForSpeech(value: String): String {
-            return value
-                .replace(Regex("```[\\s\\S]*?```"), " 代码省略 ")
-                .replace(Regex("`([^`]+)`"), "$1")
-                .replace(Regex("\\[([^\\]]+)]\\([^)]*\\)"), "$1")
-                .replace(Regex("[#>*_~\\-]+"), " ")
-                .replace(Regex("\\s+"), " ")
-                .trim()
-                .take(MaxSpeechChars)
         }
     }
 }
