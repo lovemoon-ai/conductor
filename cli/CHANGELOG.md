@@ -1,5 +1,13 @@
 # @love-moon/conductor-cli
 
+## 0.7.1
+
+### Patch Changes
+
+- Updated dependencies [3f35925]
+  - @love-moon/conductor-sdk@0.7.1
+  - @love-moon/ai-sdk@0.7.1
+
 ## 0.7.0
 
 ### Minor Changes

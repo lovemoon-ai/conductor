@@ -1,5 +1,11 @@
 # @love-moon/conductor-sdk
 
+## 0.7.1
+
+### Patch Changes
+
+- 3f35925: Canonicalize the `github-duinodu` SSH host alias when normalizing Git remotes.
+
 ## 0.7.0
 
 ### Minor Changes
