@@ -45,6 +45,8 @@ model User {
   invitedBy User? @relation("UserInvites", fields: [invitedByUserId], references: [id])
   invitedUsers User[] @relation("UserInvites")
   scheduledMessages ScheduledMessage[]
+  dailyReportSetting DailyReportSetting?
+  dailyReportRuns DailyReportRun[]
 
   @@unique([provider, providerId])
   @@index([email])
@@ -389,6 +391,48 @@ model ScheduledMessage {
   @@index([status, nextRunAt])
   @@index([sourceMessageId])
   @@map("scheduled_messages")
+}
+
+model DailyReportSetting {
+  id               String    @id @default(uuid())
+  userId           String    @unique @map("user_id")
+  enabled          Boolean   @default(false)
+  timezone         String    @default("Asia/Shanghai")
+  sendTimeLocal    String    @default("20:00") @map("send_time_local")
+  deliveryChannels String    @default("[\"in_app\"]") @map("delivery_channels")
+  nextRunAt        DateTime? @map("next_run_at")
+  lastSentForDate  String?   @map("last_sent_for_date")
+  lastRunAt        DateTime? @map("last_run_at")
+  lastError        String?   @map("last_error")
+  metadata         String?
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([enabled, nextRunAt])
+  @@map("daily_report_settings")
+}
+
+model DailyReportRun {
+  id               String    @id @default(uuid())
+  userId           String    @map("user_id")
+  reportDate       String    @map("report_date")
+  timezone         String
+  status           String    @default("generated")
+  summaryMarkdown  String    @map("summary_markdown")
+  payloadJson      String    @map("payload_json")
+  deliveryChannels String    @default("[\"in_app\"]") @map("delivery_channels")
+  sentAt           DateTime? @map("sent_at")
+  lastError        String?   @map("last_error")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, reportDate])
+  @@index([userId, createdAt])
+  @@map("daily_report_runs")
 }
 
 model AgentOutbox {

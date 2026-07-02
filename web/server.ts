@@ -14,6 +14,11 @@ import { setupAgentGateway, AGENT_WS_PATH } from "./src/lib/realtime/agent-gatew
 import { setupSpeechGateway, SPEECH_WS_PATH } from "./src/lib/speech/gateway";
 import { startTaskAttachmentJanitor } from "./src/lib/tasks/task-file-storage";
 import { startScheduledMessageDispatcher } from "./src/lib/tasks/scheduled-messages";
+import {
+  reconcileDailyReportSchedules,
+  startDailyReportDispatcher,
+} from "./src/lib/daily-reports/daily-report";
+import { ensureDailyReportSchema } from "./src/lib/daily-reports/schema";
 import { realtimeHub } from "./src/lib/realtime/hub";
 import { db } from "./src/lib/db";
 import { backfillIssueAiSessionIfNeeded } from "./src/lib/issues/backfill-ai-session";
@@ -69,6 +74,20 @@ app.prepare().then(async () => {
     return tasks;
   });
   startScheduledMessageDispatcher();
+  const dailyReportSchema = await ensureDailyReportSchema();
+  if (dailyReportSchema.skippedReason === "error") {
+    console.warn(
+      `[daily-reports] failed to ensure local schema: ${dailyReportSchema.error}`,
+    );
+  }
+  await reconcileDailyReportSchedules().catch((error) => {
+    console.warn(
+      `[daily-reports] failed to reconcile schedules: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  });
+  startDailyReportDispatcher();
 
   // Idempotent boot-time backfill of issue.ai_backend_type / ai_session_id
   // from any task that already carries those values. Required because

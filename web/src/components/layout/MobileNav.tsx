@@ -2,8 +2,10 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useEffect, type ReactNode } from 'react';
 import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
+import { useDailyReportsStore } from '@/features/daily-reports';
 import {
   AI_MANAGER_PATH_PREFIX,
   SETTINGS_ROOT_PATH,
@@ -13,6 +15,13 @@ import {
 
 type NavIconProps = {
   active: boolean;
+};
+
+type NavItem = {
+  href: string;
+  activePaths: string[];
+  label: string;
+  Icon: (props: NavIconProps) => ReactNode;
 };
 
 const TasksIcon = ({ active }: NavIconProps) => (
@@ -48,6 +57,17 @@ const IssuesIcon = ({ active }: NavIconProps) => (
   </svg>
 );
 
+const DailyIcon = ({ active }: NavIconProps) => (
+  <svg
+    className={`w-6 h-6 transition-all duration-200 ${active ? 'scale-110' : ''}`}
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={active ? 2.4 : 2} d="M8 7h8M8 11h8M8 15h5M5 3h14a2 2 0 012 2v14l-4-2-4 2-4-2-4 2V5a2 2 0 012-2z" />
+  </svg>
+);
+
 const SettingsIcon = ({ active }: NavIconProps) => (
   <svg
     className={`w-6 h-6 transition-all duration-200 ${active ? 'scale-110 rotate-12' : ''}`}
@@ -60,10 +80,15 @@ const SettingsIcon = ({ active }: NavIconProps) => (
   </svg>
 );
 
+const DAILY_REPORTS_PATH = '/app/daily-reports';
+
 export function MobileNav() {
   const pathname = usePathname();
   const unreadCount = useTasksStore((state) => state.unreadTaskIds.size);
   const selectedProjectId = useProjectsStore((state) => state.selectedProjectId);
+  const dailyReportSetting = useDailyReportsStore((state) => state.setting);
+  const isLoadingDailyReportSetting = useDailyReportsStore((state) => state.isLoadingSetting);
+  const hydrateDailyReportSetting = useDailyReportsStore((state) => state.hydrateSetting);
   const lastSettingsPath = useSettingsNavStore((state) => state.lastPath);
   const tasksHref = selectedProjectId
     ? `/app/tasks?projectId=${encodeURIComponent(selectedProjectId)}`
@@ -72,8 +97,15 @@ export function MobileNav() {
     ? `/app/issues?projectId=${encodeURIComponent(selectedProjectId)}`
     : '/app/issues';
   const settingsHref = resolveSettingsHref(pathname, lastSettingsPath);
+  const showDailyReports = Boolean(dailyReportSetting?.enabled);
 
-  const navItems = [
+  useEffect(() => {
+    if (!dailyReportSetting && !isLoadingDailyReportSetting) {
+      void hydrateDailyReportSetting();
+    }
+  }, [dailyReportSetting, hydrateDailyReportSetting, isLoadingDailyReportSetting]);
+
+  const navItems: NavItem[] = [
     {
       href: '/app/projects',
       activePaths: ['/app/projects'],
@@ -92,6 +124,14 @@ export function MobileNav() {
       label: 'Tasks',
       Icon: TasksIcon,
     },
+    ...(showDailyReports
+      ? [{
+        href: DAILY_REPORTS_PATH,
+        activePaths: [DAILY_REPORTS_PATH],
+        label: 'Daily',
+        Icon: DailyIcon,
+      }]
+      : []),
     {
       href: settingsHref,
       activePaths: [SETTINGS_ROOT_PATH, AI_MANAGER_PATH_PREFIX],
@@ -109,7 +149,7 @@ export function MobileNav() {
           <Link
             key={item.label}
             href={item.href}
-            className={`flex flex-col items-center gap-0.5 px-6 py-2 relative transition-colors ${
+            className={`relative flex min-w-0 flex-1 flex-col items-center gap-0.5 px-1 py-2 transition-colors ${
               isActive ? 'text-accent' : 'text-muted'
             }`}
           >
