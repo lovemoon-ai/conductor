@@ -3,9 +3,10 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
+import { useDailyReportsStore } from '@/features/daily-reports';
 import {
   AI_MANAGER_PATH_PREFIX,
   SETTINGS_ROOT_PATH,
@@ -16,6 +17,14 @@ import {
 type NavIconProps = {
   active: boolean;
   compact?: boolean;
+};
+
+type NavItem = {
+  href: string;
+  activePaths: string[];
+  label: string;
+  Icon: (props: NavIconProps) => ReactNode;
+  badge: number | null;
 };
 
 const TasksIcon = ({ active, compact = false }: NavIconProps) => (
@@ -51,6 +60,17 @@ const IssuesIcon = ({ active, compact = false }: NavIconProps) => (
   </svg>
 );
 
+const DailyIcon = ({ active, compact = false }: NavIconProps) => (
+  <svg
+    className={compact ? 'h-[18px] w-[18px]' : 'h-[18px] w-[18px]'}
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={active ? 2.2 : 1.9} d="M8 7h8M8 11h8M8 15h5M5 3h14a2 2 0 012 2v14l-4-2-4 2-4-2-4 2V5a2 2 0 012-2z" />
+  </svg>
+);
+
 const SettingsIcon = ({ active, compact = false }: NavIconProps) => (
   <svg
     className={compact ? 'h-[18px] w-[18px]' : 'h-[18px] w-[18px]'}
@@ -69,6 +89,8 @@ const CollapseIcon = () => (
     <path strokeLinecap="round" strokeWidth="1.9" d="M10 7.5v9" />
   </svg>
 );
+
+const DAILY_REPORTS_PATH = '/app/daily-reports';
 
 interface SidebarProps {
   collapsed?: boolean;
@@ -104,6 +126,9 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
   const pathname = usePathname();
   const unreadCount = useTasksStore((state) => state.unreadTaskIds.size);
   const selectedProjectId = useProjectsStore((state) => state.selectedProjectId);
+  const dailyReportSetting = useDailyReportsStore((state) => state.setting);
+  const isLoadingDailyReportSetting = useDailyReportsStore((state) => state.isLoadingSetting);
+  const hydrateDailyReportSetting = useDailyReportsStore((state) => state.hydrateSetting);
   const lastSettingsPath = useSettingsNavStore((state) => state.lastPath);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const iconRailClassName = 'flex h-10 w-[52px] shrink-0 items-center justify-center';
@@ -114,11 +139,33 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
     ? `/app/issues?projectId=${encodeURIComponent(selectedProjectId)}`
     : '/app/issues';
   const settingsHref = resolveSettingsHref(pathname, lastSettingsPath);
+  const showDailyReports = Boolean(dailyReportSetting?.enabled);
 
-  const navItems = [
+  useEffect(() => {
+    if (!dailyReportSetting && !isLoadingDailyReportSetting) {
+      void hydrateDailyReportSetting();
+    }
+  }, [dailyReportSetting, hydrateDailyReportSetting, isLoadingDailyReportSetting]);
+
+  const navItems: NavItem[] = [
     { href: '/app/projects', activePaths: ['/app/projects'], label: 'Projects', Icon: ProjectsIcon, badge: null },
     { href: issuesHref, activePaths: ['/app/issues'], label: 'Issues', Icon: IssuesIcon, badge: null },
-    { href: tasksHref, activePaths: ['/app/tasks'], label: 'Tasks', Icon: TasksIcon, badge: unreadCount > 0 ? unreadCount : null },
+    {
+      href: tasksHref,
+      activePaths: ['/app/tasks'],
+      label: 'Tasks',
+      Icon: TasksIcon,
+      badge: unreadCount > 0 ? unreadCount : null,
+    },
+    ...(showDailyReports
+      ? [{
+        href: DAILY_REPORTS_PATH,
+        activePaths: [DAILY_REPORTS_PATH],
+        label: 'Daily',
+        Icon: DailyIcon,
+        badge: null,
+      }]
+      : []),
     {
       href: settingsHref,
       activePaths: [SETTINGS_ROOT_PATH, AI_MANAGER_PATH_PREFIX],

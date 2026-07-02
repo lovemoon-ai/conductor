@@ -45,10 +45,18 @@ vi.mock('@/features/agents', () => ({
   useAgentsStore: () => agentsState,
 }));
 
+vi.mock('@/features/daily-reports', () => ({
+  DailyReportSettingsCard: () => <div>daily-report-settings-card</div>,
+}));
+
 describe('SettingsPage', () => {
   beforeEach(() => {
     pushMock.mockReset();
     fetchAgentsMock.mockReset();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ version: '0.0.0-test', gitCommitId: 'test-commit' }),
+    }));
     fetchAgentsMock.mockResolvedValue(undefined);
     agentsState.agents = [];
     agentsState.error = null;

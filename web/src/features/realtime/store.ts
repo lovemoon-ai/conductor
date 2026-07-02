@@ -9,6 +9,7 @@ import { useRuntimeStore } from '@/features/realtime/runtime-store';
 import { useTerminalStore } from '@/features/terminal';
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
 import { normalizeCatchphrases, useCatchphrasesStore } from '@/features/catchphrases/store';
+import { useDailyReportsStore } from '@/features/daily-reports/store';
 
 interface WebSocketState {
   status: WSConnectionStatus;
@@ -377,6 +378,16 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
       // diff. Pass it straight through normalize → store.
       const catchphrases = normalizeCatchphrases(payload.catchphrases);
       useCatchphrasesStore.getState().applyCatchphrases(catchphrases);
+      break;
+    }
+
+    case 'daily_report_ready': {
+      void useDailyReportsStore.getState().handleReportReady(payload);
+      break;
+    }
+
+    case 'daily_report_setting_update': {
+      useDailyReportsStore.getState().applySettingUpdate(payload.setting);
       break;
     }
 

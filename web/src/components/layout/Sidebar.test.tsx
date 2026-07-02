@@ -6,6 +6,9 @@ import { useSettingsNavStore } from '@/features/settings';
 let pathname = '/app/tasks';
 let unreadCount = 3;
 let selectedProjectId: string | null = null;
+let dailyReportEnabled = true;
+let dailyReportLoading = false;
+const hydrateDailyReportSettingMock = vi.fn();
 
 vi.mock('next/navigation', () => ({
   usePathname: () => pathname,
@@ -27,11 +30,28 @@ vi.mock('@/features/projects', () => ({
     selector({ selectedProjectId }),
 }));
 
+vi.mock('@/features/daily-reports', () => ({
+  useDailyReportsStore: (selector: (state: {
+    setting: { enabled: boolean } | null;
+    isLoadingSetting: boolean;
+    hydrateSetting: () => Promise<null>;
+  }) => unknown) =>
+    selector({
+      setting: { enabled: dailyReportEnabled },
+      isLoadingSetting: dailyReportLoading,
+      hydrateSetting: hydrateDailyReportSettingMock,
+    }),
+}));
+
 describe('Sidebar', () => {
   beforeEach(() => {
     pathname = '/app/tasks';
     unreadCount = 3;
     selectedProjectId = null;
+    dailyReportEnabled = true;
+    dailyReportLoading = false;
+    hydrateDailyReportSettingMock.mockResolvedValue(null);
+    hydrateDailyReportSettingMock.mockClear();
     useSettingsNavStore.getState().reset();
   });
 
@@ -41,11 +61,16 @@ describe('Sidebar', () => {
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
     const links = within(navigation).getAllByRole('link').filter((link) => {
       const href = link.getAttribute('href');
-      return href === '/app/projects' || href === '/app/issues' || href === '/app/tasks' || href === '/app/settings';
+      return href === '/app/projects' ||
+        href === '/app/issues' ||
+        href === '/app/tasks' ||
+        href === '/app/daily-reports' ||
+        href === '/app/settings';
     });
 
     expect(navigation).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Tasks/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Daily/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Projects/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Issues/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Settings/i })).toBeInTheDocument();
@@ -55,6 +80,7 @@ describe('Sidebar', () => {
       '/app/projects',
       '/app/issues',
       '/app/tasks',
+      '/app/daily-reports',
       '/app/settings',
     ]);
   });
@@ -73,6 +99,27 @@ describe('Sidebar', () => {
     render(<Sidebar />);
 
     expect(screen.getByRole('link', { name: /Tasks/i })).toHaveAttribute('href', '/app/tasks?projectId=project-1');
+  });
+
+  it('renders Daily as a standalone active navigation item', () => {
+    pathname = '/app/daily-reports';
+    render(<Sidebar />);
+
+    const dailyLink = screen.getByRole('link', { name: /Daily/i });
+    const tasksLink = screen.getByRole('link', { name: /Tasks/i });
+
+    expect(dailyLink).toHaveAttribute('href', '/app/daily-reports');
+    expect(dailyLink).toHaveAttribute('aria-current', 'page');
+    expect(tasksLink).toHaveAttribute('href', '/app/tasks');
+    expect(tasksLink).not.toHaveAttribute('aria-current');
+  });
+
+  it('hides Daily when daily summaries are disabled', () => {
+    dailyReportEnabled = false;
+    render(<Sidebar />);
+
+    expect(screen.queryByRole('link', { name: /Daily/i })).toBeNull();
+    expect(screen.getByRole('link', { name: /Tasks/i })).toHaveAttribute('href', '/app/tasks');
   });
 
   it('highlights the active route and exposes aria-current', () => {
