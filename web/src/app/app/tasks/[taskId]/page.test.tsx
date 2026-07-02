@@ -7,10 +7,14 @@ const pushMock = vi.fn();
 const fetchTaskMock = vi.fn();
 const markTaskReadMock = vi.fn();
 const headerMock = vi.fn();
+let searchParamsState = new URLSearchParams();
 
 vi.mock('next/navigation', () => ({
   useParams: () => ({ taskId: 'task-pty-1' }),
   useRouter: () => ({ push: pushMock }),
+  useSearchParams: () => ({
+    get: (key: string) => searchParamsState.get(key),
+  }),
 }));
 
 vi.mock('@/components/layout/Header', () => ({
@@ -104,6 +108,7 @@ describe('TaskDetailPage', () => {
     markTaskReadMock.mockReset();
     pushMock.mockReset();
     headerMock.mockReset();
+    searchParamsState = new URLSearchParams();
     fetchTaskMock.mockResolvedValue(null);
   });
 
@@ -130,5 +135,15 @@ describe('TaskDetailPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'back' }));
 
     expect(pushMock).toHaveBeenCalledWith('/app/tasks?projectId=project-1');
+  });
+
+  it('prefers a safe graph return href when present', async () => {
+    searchParamsState.set('from', '/app/tasks?projectId=project-1&view=graph');
+
+    render(<TaskDetailPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'back' }));
+
+    expect(pushMock).toHaveBeenCalledWith('/app/tasks?projectId=project-1&view=graph');
   });
 });

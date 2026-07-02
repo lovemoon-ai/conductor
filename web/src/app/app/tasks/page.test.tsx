@@ -14,6 +14,7 @@ const setProjectGroupFilterMock = vi.fn();
 const setSelectedProjectIdMock = vi.fn();
 const fetchTasksMock = vi.fn();
 const fetchTasksForProjectsMock = vi.fn();
+const pushMock = vi.fn();
 const replaceMock = vi.fn();
 const headerMock = vi.fn();
 
@@ -35,6 +36,7 @@ type MockProject = {
   daemonHost?: string | null;
   gitRemoteUrl?: string | null;
   mergeOptOut?: boolean;
+  metadata?: Record<string, unknown> | null;
 };
 let projectsState: MockProject[] = [
   { id: 'project-1', name: 'Conductor' },
@@ -43,6 +45,7 @@ let projectsState: MockProject[] = [
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
+    push: pushMock,
     replace: (url: string, opts?: unknown) => {
       const qIdx = url.indexOf('?');
       searchParamsState = qIdx >= 0 ? new URLSearchParams(url.slice(qIdx + 1)) : new URLSearchParams();
@@ -110,9 +113,10 @@ vi.mock('@/features/tasks', async () => {
         : Array.isArray(projectFilter)
           ? `group:${projectFilter.join(',')}`
           : `single:${projectFilter}`;
+      const openMode = onOpenTask ? (viewMode === 'graph' ? 'graph-open' : 'inline') : 'route';
       return (
         <>
-          <div>task-list:{viewMode}:{activeTaskId ?? 'none'}:{onOpenTask ? 'inline' : 'route'}</div>
+          <div>task-list:{viewMode}:{activeTaskId ?? 'none'}:{openMode}</div>
           <div>running-only:{runningOnly ? 'yes' : 'no'}</div>
           <div>project-filter:{projectFilterTag}</div>
           <button type="button" onClick={() => onOpenTask?.('task-2')}>
@@ -202,6 +206,7 @@ describe('TasksPage', () => {
     setSelectedProjectIdMock.mockReset();
     fetchTasksMock.mockReset();
     fetchTasksForProjectsMock.mockReset();
+    pushMock.mockReset();
     replaceMock.mockReset();
     headerMock.mockReset();
     pushToastMock.mockReset();
@@ -299,6 +304,34 @@ describe('TasksPage', () => {
         showConnectionStatus: true,
         connectionTaskId: 'task-2',
       }),
+    );
+  });
+
+  it('shows graph view as a full-page task surface when enabled for the project', () => {
+    isDesktopViewport = true;
+    searchParamsState = new URLSearchParams('projectId=project-1&view=graph');
+    projectsState = [
+      { id: 'project-1', name: 'Conductor', metadata: { taskGraphEnabled: true } },
+    ];
+
+    render(<TasksPage />);
+
+    expect(screen.getByText('task-list:graph:none:graph-open')).toBeInTheDocument();
+    expect(screen.getByText('project-filter:group:project-1')).toBeInTheDocument();
+    expect(screen.queryByText(/task-detail:/)).not.toBeInTheDocument();
+    expect(replaceMock).not.toHaveBeenCalledWith('/app/tasks?projectId=project-1&taskId=task-1', { scroll: false });
+    expect(headerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Conductor (2 tasks)',
+        showConnectionStatus: false,
+        connectionTaskId: null,
+      }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'select-task-2' }));
+
+    expect(pushMock).toHaveBeenCalledWith(
+      '/app/tasks/task-2?from=%2Fapp%2Ftasks%3FprojectId%3Dproject-1%26view%3Dgraph',
     );
   });
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { TaskType } from '@/lib/tasks/task-config';
 import { orderTasksWithPinnedFirst, useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
@@ -9,8 +9,9 @@ import { TaskItem } from './TaskItem';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { EmptyState } from '@/components/common/EmptyState';
 import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
+import { TaskGraphView } from './TaskGraphView';
 
-export type TaskListViewMode = 'list';
+export type TaskListViewMode = 'list' | 'graph';
 
 const EmptyIcon = () => (
   <svg className="size-16 text-muted/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -60,6 +61,7 @@ interface TaskListProps {
 }
 
 export function TaskList({
+  viewMode,
   activeTaskId = null,
   onOpenTask,
   desktopListPaneMode = false,
@@ -119,6 +121,12 @@ export function TaskList({
       ? effectiveProjectFilter.filter(Boolean)
       : [effectiveProjectFilter];
   }, [effectiveProjectFilter]);
+  const graphStateKey = useMemo(() => {
+    const projectScope = effectiveProjectFilterIds.length > 0
+      ? [...effectiveProjectFilterIds].sort().join(',')
+      : 'all';
+    return `projects:${projectScope}`;
+  }, [effectiveProjectFilterIds]);
   const isMergedScope = effectiveProjectFilterIds.length > 1;
   const runningFilteredTasks = useMemo(
     () => runningOnly
@@ -221,7 +229,7 @@ export function TaskList({
   ), [selectedTaskIds, visibleTaskIdSet]);
   const selectedCount = selectedTaskIdSet.size;
   const selectionMode = selectedCount > 0;
-  const hasToolbarContent = selectionMode;
+  const hasToolbarContent = viewMode === 'list' && selectionMode;
   const allSelected = allTaskIds.length > 0 && selectedCount === allTaskIds.length;
 
   useEffect(() => (
@@ -231,6 +239,12 @@ export function TaskList({
       }
     }
   ), []);
+
+  useEffect(() => {
+    if (viewMode === 'graph' && selectedTaskIds.size > 0) {
+      setSelectedTaskIds(new Set());
+    }
+  }, [selectedTaskIds.size, viewMode]);
 
   useLayoutEffect(() => {
     const currentRects = new Map<string, DOMRect>();
@@ -243,6 +257,7 @@ export function TaskList({
 
     const previousOrder = previousOrderRef.current;
     const shouldAnimate =
+      viewMode === 'list' &&
       desktopListPaneMode &&
       previousOrder.length > 0 &&
       previousOrder.join('|') !== allTaskIds.join('|') &&
@@ -291,7 +306,7 @@ export function TaskList({
 
     previousRectsRef.current = currentRects;
     previousOrderRef.current = [...allTaskIds];
-  }, [allTaskIds, desktopListPaneMode]);
+  }, [allTaskIds, desktopListPaneMode, viewMode]);
 
   const setItemWrapperRef = (taskId: string) => (node: HTMLDivElement | null) => {
     if (node) {
@@ -399,8 +414,43 @@ export function TaskList({
       ) : null}
     </div>
   ) : null;
+  const rootClassName = viewMode === 'graph'
+    ? `flex h-full min-h-0 flex-col ${hasToolbarContent || tagFilterBar ? 'gap-4' : ''}`
+    : hasToolbarContent || tagFilterBar
+      ? 'space-y-4'
+      : '';
+  const renderGraphCanvas = (overlay?: ReactNode) => (
+    <div className="min-h-0 flex-1">
+      <div className="relative h-full min-h-[420px]">
+        <TaskGraphView
+          tasks={visibleTasks}
+          activeTaskId={activeTaskId}
+          onOpenTask={onOpenTask}
+          stateKey={graphStateKey}
+        />
+        {overlay ? (
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center p-6">
+            {overlay}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
 
   if (isLoading && visibleTasks.length === 0) {
+    if (viewMode === 'graph') {
+      return (
+        <div className={rootClassName}>
+          {tagFilterBar}
+          {renderGraphCanvas(
+            <div className="rounded-lg bg-panel/90 p-4 shadow-sm">
+              <LoadingSpinner size="lg" />
+            </div>,
+          )}
+        </div>
+      );
+    }
+
     return (
       <div className="flex h-64 items-center justify-center">
         <LoadingSpinner size="lg" />
@@ -417,39 +467,54 @@ export function TaskList({
       .filter((value): value is string => Boolean(value))
       .join(' + ');
     const filterSuffix = filterSummary ? ` matching ${filterSummary}` : '';
+    const emptyState = (
+      <EmptyState
+        className={viewMode === 'graph'
+          ? 'pointer-events-auto max-w-lg border-border/60 bg-panel/90 shadow-sm'
+          : 'h-72'}
+        icon={<EmptyIcon />}
+        title={
+          hasTagFilter
+            ? `No tasks${filterSuffix}`
+            : runningOnly
+              ? 'No running tasks'
+              : 'No tasks yet'
+        }
+        description={
+          hasTagFilter
+            ? currentProjectName
+              ? `No tasks${filterSuffix} in ${currentProjectName}. Adjust the tag filter to see more.`
+              : `No tasks${filterSuffix}. Adjust the tag filter to see more.`
+            : runningOnly
+              ? currentProjectName
+                ? `No running tasks found in ${currentProjectName}.`
+                : 'No running tasks right now.'
+              : currentProjectName
+                ? `No tasks found in ${currentProjectName}. Switch projects or create a new task to start work here.`
+                : 'Create your first task to start building with Conductor.'
+        }
+      />
+    );
+
+    if (viewMode === 'graph') {
+      return (
+        <div className={rootClassName}>
+          {tagFilterBar}
+          {renderGraphCanvas(emptyState)}
+        </div>
+      );
+    }
+
     return (
       <div className={tagFilterBar ? 'space-y-3' : ''}>
         {tagFilterBar}
-        <EmptyState
-          className="h-72"
-          icon={<EmptyIcon />}
-          title={
-            hasTagFilter
-              ? `No tasks${filterSuffix}`
-              : runningOnly
-                ? 'No running tasks'
-                : 'No tasks yet'
-          }
-          description={
-            hasTagFilter
-              ? currentProjectName
-                ? `No tasks${filterSuffix} in ${currentProjectName}. Adjust the tag filter to see more.`
-                : `No tasks${filterSuffix}. Adjust the tag filter to see more.`
-              : runningOnly
-                ? currentProjectName
-                  ? `No running tasks found in ${currentProjectName}.`
-                  : 'No running tasks right now.'
-                : currentProjectName
-                  ? `No tasks found in ${currentProjectName}. Switch projects or create a new task to start work here.`
-                  : 'Create your first task to start building with Conductor.'
-          }
-        />
+        {emptyState}
       </div>
     );
   }
 
   return (
-    <div className={hasToolbarContent || tagFilterBar ? 'space-y-4' : ''}>
+    <div className={rootClassName}>
       {tagFilterBar}
       {hasToolbarContent ? (
         <div className="flex flex-col gap-3 rounded-2xl bg-panel/80 p-4 lg:flex-row lg:items-center lg:justify-between">
@@ -483,55 +548,57 @@ export function TaskList({
         </div>
       ) : null}
 
-      <div className="space-y-3">
-        {visibleTasks.map((task) => {
-          const projectEntry = projectMap.get(task.projectId ?? '');
-          // Resolve the per-card daemon via the same fallback chain used by
-          // the filter / detection helpers above so that, e.g., tasks on the
-          // server-side Default Project (project.daemonHost is null) still
-          // render their daemon chip from `task.metadata.daemonName`.
-          const taskDaemonHost = showDaemonHost
-            ? resolveTaskDaemonHost(task, projectDaemonHostMap)
-            : null;
-          return (
-          <div
-            key={task.id}
-            ref={setItemWrapperRef(task.id)}
-            data-task-item-wrapper={task.id}
-          >
-            <TaskItem
-              task={task}
-              isUnread={unreadTaskIds.has(task.id)}
-              isSelected={selectedTaskIds.has(task.id)}
-              isActive={activeTaskId === task.id}
-              selectionMode={selectionMode}
-              onToggleSelect={toggleTaskSelection}
-              onOpenTask={onOpenTask}
-              desktopListPaneMode={desktopListPaneMode}
-              showProjectName={showProjectName}
-              showDaemonHost={showDaemonHost}
-              projectName={showProjectName ? projectEntry?.name ?? null : null}
-              projectDaemonHost={taskDaemonHost}
-              activeTaskTypeFilter={taskTypeFilter}
-              activeProjectFilter={
-                // In merged cross-daemon scope no single id is "the" filter,
-                // so the per-card chip is rendered without the active state
-                // (still clickable to drill into a specific member).
-                isMergedScope
-                  ? null
-                  : (effectiveProjectFilterIds[0] ?? null)
-              }
-              activeDaemonHostFilter={daemonHostFilter}
-              activeBackendFilter={backendFilter}
-              onFilterByTaskType={onFilterByTaskType}
-              onFilterByProject={onFilterByProject}
-              onFilterByDaemonHost={onFilterByDaemonHost}
-              onFilterByBackend={onFilterByBackend}
-            />
-          </div>
-          );
-        })}
-      </div>
+      {viewMode === 'graph' ? renderGraphCanvas() : (
+        <div className="space-y-3">
+          {visibleTasks.map((task) => {
+            const projectEntry = projectMap.get(task.projectId ?? '');
+            // Resolve the per-card daemon via the same fallback chain used by
+            // the filter / detection helpers above so that, e.g., tasks on the
+            // server-side Default Project (project.daemonHost is null) still
+            // render their daemon chip from `task.metadata.daemonName`.
+            const taskDaemonHost = showDaemonHost
+              ? resolveTaskDaemonHost(task, projectDaemonHostMap)
+              : null;
+            return (
+            <div
+              key={task.id}
+              ref={setItemWrapperRef(task.id)}
+              data-task-item-wrapper={task.id}
+            >
+              <TaskItem
+                task={task}
+                isUnread={unreadTaskIds.has(task.id)}
+                isSelected={selectedTaskIds.has(task.id)}
+                isActive={activeTaskId === task.id}
+                selectionMode={selectionMode}
+                onToggleSelect={toggleTaskSelection}
+                onOpenTask={onOpenTask}
+                desktopListPaneMode={desktopListPaneMode}
+                showProjectName={showProjectName}
+                showDaemonHost={showDaemonHost}
+                projectName={showProjectName ? projectEntry?.name ?? null : null}
+                projectDaemonHost={taskDaemonHost}
+                activeTaskTypeFilter={taskTypeFilter}
+                activeProjectFilter={
+                  // In merged cross-daemon scope no single id is "the" filter,
+                  // so the per-card chip is rendered without the active state
+                  // (still clickable to drill into a specific member).
+                  isMergedScope
+                    ? null
+                    : (effectiveProjectFilterIds[0] ?? null)
+                }
+                activeDaemonHostFilter={daemonHostFilter}
+                activeBackendFilter={backendFilter}
+                onFilterByTaskType={onFilterByTaskType}
+                onFilterByProject={onFilterByProject}
+                onFilterByDaemonHost={onFilterByDaemonHost}
+                onFilterByBackend={onFilterByBackend}
+              />
+            </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

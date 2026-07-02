@@ -4,6 +4,7 @@ import { TaskList } from './TaskList';
 
 const deleteTaskMock = vi.fn();
 const taskItemMock = vi.fn();
+const taskGraphViewMock = vi.fn();
 
 type FakeTask = {
   id: string;
@@ -73,14 +74,33 @@ vi.mock('./TaskItem', () => ({
   },
 }));
 
+vi.mock('./TaskGraphView', () => ({
+  TaskGraphView: (props: { tasks: Array<{ id: string; title: string }>; stateKey?: string | null }) => {
+    taskGraphViewMock(props);
+    return (
+      <div data-testid="task-graph-view" data-state-key={props.stateKey ?? ''}>
+        graph:{props.tasks.map((task) => task.id).join(',')}
+      </div>
+    );
+  },
+}));
+
 vi.mock('@/components/common/LoadingSpinner', () => ({
   LoadingSpinner: () => <div data-testid="loading-spinner" />,
 }));
 
 describe('TaskList', () => {
+  const expectFullHeightGraphShell = () => {
+    const graphView = screen.getByTestId('task-graph-view');
+    expect(graphView.parentElement).toHaveClass('relative', 'h-full', 'min-h-[420px]');
+    expect(graphView.parentElement?.parentElement).toHaveClass('min-h-0', 'flex-1');
+    expect(graphView.parentElement?.parentElement?.parentElement).toHaveClass('flex', 'h-full', 'min-h-0', 'flex-col');
+  };
+
   beforeEach(() => {
     deleteTaskMock.mockReset();
     taskItemMock.mockReset();
+    taskGraphViewMock.mockReset();
 
     tasksState = {
       tasks: [
@@ -122,6 +142,53 @@ describe('TaskList', () => {
     render(<TaskList viewMode="list" />);
 
     expect(screen.getByTestId('loading-spinner')).toBeInTheDocument();
+  });
+
+  it('renders graph view with the same filtered tasks', () => {
+    tasksState = {
+      ...tasksState,
+      currentProjectFilter: null,
+    };
+
+    render(<TaskList viewMode="graph" projectFilter="project-1" />);
+
+    expect(screen.getByTestId('task-graph-view')).toHaveTextContent('graph:task-1');
+    expectFullHeightGraphShell();
+    expect(screen.queryByTestId('task-item-task-1')).toBeNull();
+    expect(taskGraphViewMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tasks: [expect.objectContaining({ id: 'task-1' })],
+        stateKey: 'projects:project-1',
+      }),
+    );
+  });
+
+  it('keeps graph view full-height while loading an empty initial task set', () => {
+    tasksState = {
+      ...tasksState,
+      tasks: [],
+      isLoading: true,
+    };
+
+    render(<TaskList viewMode="graph" projectFilter="project-1" />);
+
+    expect(screen.getByTestId('task-graph-view')).toHaveTextContent('graph:');
+    expect(screen.getByTestId('loading-spinner')).toBeInTheDocument();
+    expectFullHeightGraphShell();
+  });
+
+  it('keeps graph view full-height for the empty task state', () => {
+    tasksState = {
+      ...tasksState,
+      tasks: [],
+      isLoading: false,
+    };
+
+    render(<TaskList viewMode="graph" projectFilter="project-1" />);
+
+    expect(screen.getByTestId('task-graph-view')).toHaveTextContent('graph:');
+    expect(screen.getByText('No tasks yet')).toBeInTheDocument();
+    expectFullHeightGraphShell();
   });
 
   it('excludes hidden project tasks from all-project lists', () => {
