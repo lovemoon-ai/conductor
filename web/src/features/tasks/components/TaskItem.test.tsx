@@ -718,7 +718,7 @@ describe('TaskItem', () => {
       />,
     );
 
-    expect(screen.getByLabelText('Pinned task')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unpin task' })).toBeInTheDocument();
 
     const card = screen.getByText('Unpin Task').closest('[role="button"]');
     expect(card).not.toBeNull();
@@ -727,6 +727,8 @@ describe('TaskItem', () => {
     fireEvent.pointerMove(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
     fireEvent.pointerUp(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
     fireEvent.click(await screen.findByRole('button', { name: 'Unpin task' }));
+    expect(updateTaskMock).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm unpin' }));
 
     await waitFor(() => {
       expect(updateTaskMock).toHaveBeenCalledWith('task-unpin-1', {
