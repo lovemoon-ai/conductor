@@ -13,9 +13,34 @@ import {
   normalizeLanguageTag,
   pcm16MonoToWav,
   transcribeSpeechFile,
+  transcribeSpeechFileStream,
 } from "@/lib/speech/transcribe";
 
 export const SPEECH_WS_PATH = "/ws/speech";
+
+const DEFAULT_PARTIAL_TRANSCRIBE_INTERVAL_MS = 2_000;
+const DEFAULT_PARTIAL_TRANSCRIBE_MAX_REQUESTS = 12;
+
+const parsePositiveIntegerEnv = (name: string, fallback: number): number => {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const partialTranscribeIntervalMs = (): number =>
+  parsePositiveIntegerEnv(
+    "SPEECH_PARTIAL_TRANSCRIBE_INTERVAL_MS",
+    DEFAULT_PARTIAL_TRANSCRIBE_INTERVAL_MS,
+  );
+
+const partialTranscribeMaxRequests = (): number =>
+  parsePositiveIntegerEnv(
+    "SPEECH_PARTIAL_TRANSCRIBE_MAX_REQUESTS",
+    DEFAULT_PARTIAL_TRANSCRIBE_MAX_REQUESTS,
+  );
+
+const minPartialAudioBytes = (sampleRate: number): number => sampleRate * 2;
 
 const sendEnvelope = (socket: WebSocket, envelope: Record<string, unknown>) => {
   if (socket.readyState !== WebSocket.OPEN) return;
@@ -59,14 +84,115 @@ export const setupSpeechGateway = (): WebSocketServer => {
     let byteCount = 0;
     const chunks: Buffer[] = [];
     const connectedAt = Date.now();
+    let socketClosed = false;
+    let partialTimer: ReturnType<typeof setTimeout> | null = null;
+    let partialInFlight = false;
+    let partialPending = false;
+    let partialRequestCount = 0;
+    let lastPartialStartedAt = 0;
+    let lastPartialText = "";
+    let partialGeneration = 0;
 
     const sendError = (message: string, extra: Record<string, unknown> = {}) => {
       sendEnvelope(socket, { type: "error", payload: { message, ...extra } });
     };
 
+    const clearPartialTimer = () => {
+      if (!partialTimer) return;
+      clearTimeout(partialTimer);
+      partialTimer = null;
+    };
+
+    const stopPartialTranscription = () => {
+      partialPending = false;
+      partialGeneration += 1;
+      clearPartialTimer();
+    };
+
+    const runPartialTranscription = async () => {
+      if (
+        partialInFlight ||
+        finishing ||
+        socketClosed ||
+        !started ||
+        byteCount < minPartialAudioBytes(sampleRate) ||
+        partialRequestCount >= partialTranscribeMaxRequests()
+      ) {
+        return;
+      }
+
+      partialInFlight = true;
+      partialPending = false;
+      partialRequestCount += 1;
+      lastPartialStartedAt = Date.now();
+      const requestGeneration = partialGeneration;
+      const pcm = Buffer.concat(chunks, byteCount);
+      const wav = pcm16MonoToWav(pcm, sampleRate);
+      const wavBlob = new Blob([new Uint8Array(wav)], { type: "audio/wav" });
+
+      try {
+        const result = await transcribeSpeechFile({
+          file: wavBlob,
+          filename: "speech-partial.wav",
+          language,
+          source: "websocket",
+        });
+        if (
+          result.ok &&
+          !finishing &&
+          !socketClosed &&
+          requestGeneration === partialGeneration &&
+          result.text &&
+          result.text !== lastPartialText
+        ) {
+          lastPartialText = result.text;
+          sendEnvelope(socket, {
+            type: "partial",
+            payload: { text: result.text, phase: "listening" },
+          });
+        } else if (!result.ok && result.status !== 422) {
+          console.info("speech_stream_partial_failed", {
+            status: result.status,
+            error: result.error,
+          });
+        }
+      } finally {
+        partialInFlight = false;
+        if (partialPending && !finishing && !socketClosed) {
+          schedulePartialTranscription();
+        }
+      }
+    };
+
+    const schedulePartialTranscription = () => {
+      if (
+        finishing ||
+        socketClosed ||
+        !started ||
+        byteCount < minPartialAudioBytes(sampleRate) ||
+        partialRequestCount >= partialTranscribeMaxRequests()
+      ) {
+        return;
+      }
+      if (partialInFlight) {
+        partialPending = true;
+        return;
+      }
+      if (partialTimer) return;
+      const waitMs = Math.max(
+        0,
+        partialTranscribeIntervalMs() - (Date.now() - lastPartialStartedAt),
+      );
+      partialTimer = setTimeout(() => {
+        partialTimer = null;
+        void runPartialTranscription();
+      }, waitMs);
+    };
+
     const finishTranscription = async () => {
       if (finishing) return;
       finishing = true;
+      stopPartialTranscription();
 
       if (!started) {
         sendError("speech stream not started");
@@ -92,11 +218,19 @@ export const setupSpeechGateway = (): WebSocketServer => {
       }
 
       const wavBlob = new Blob([new Uint8Array(wav)], { type: "audio/wav" });
-      const result = await transcribeSpeechFile({
+      const result = await transcribeSpeechFileStream({
         file: wavBlob,
         filename: "speech.wav",
         language,
         source: "websocket",
+        onPartial: (text) => {
+          if (text === lastPartialText) return;
+          lastPartialText = text;
+          sendEnvelope(socket, {
+            type: "partial",
+            payload: { text, phase: "recognizing" },
+          });
+        },
       });
       if (!result.ok) {
         sendError(result.error, {
@@ -134,6 +268,7 @@ export const setupSpeechGateway = (): WebSocketServer => {
             return;
           }
           chunks.push(chunk);
+          schedulePartialTranscription();
           return;
         }
 
@@ -175,6 +310,11 @@ export const setupSpeechGateway = (): WebSocketServer => {
         });
         sendError("speech stream failed");
       });
+    });
+
+    socket.on("close", () => {
+      socketClosed = true;
+      stopPartialTranscription();
     });
   });
 

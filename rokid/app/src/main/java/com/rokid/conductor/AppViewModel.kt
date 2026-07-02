@@ -172,6 +172,9 @@ private fun Char.isCjkSpeechChar(): Boolean =
         code in 0x3040..0x30FF ||
         code in 0xAC00..0xD7AF
 
+internal fun voiceStatusForSpeechPartial(currentStatus: String?): String =
+    if (currentStatus == "正在识别") "正在识别" else "正在听"
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val prefs = app.getSharedPreferences("rokid_conductor", Context.MODE_PRIVATE)
@@ -220,7 +223,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val chatScrollPositionsByTaskId = mutableMapOf<String, ChatScrollPosition>()
     private val manuallyScrolledTaskIds = mutableSetOf<String>()
     private var nextChatScrollRequestId = 0L
-    private var autoSubmitCurrentVoiceInput = false
 
     init {
         _state.update { it.copy(sttAvailable = SpeechInput.isAvailable(app.applicationContext)) }
@@ -599,7 +601,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---- Speech ----
 
     fun startVoice() {
-        startVoice(autoSubmitFinal = false)
+        startVoiceInternal()
     }
 
     fun handleBlankedChatSelect() {
@@ -614,45 +616,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             confirmVoiceCandidate()
             return
         }
-        startVoice(autoSubmitFinal = true)
+        startVoiceInternal()
     }
 
-    private fun startVoice(autoSubmitFinal: Boolean) {
+    private fun startVoiceInternal() {
         if (_state.value.sttListening) return
         if (hasActiveOrQueuedSpeech()) return
         val si = speech ?: SpeechInput(
             context = getApplication(),
-            onPartial = { p -> _state.update { it.copy(sttPartial = p, voiceStatus = "正在听") } },
+            onPartial = { p ->
+                _state.update {
+                    it.copy(
+                        sttPartial = p,
+                        voiceStatus = voiceStatusForSpeechPartial(it.voiceStatus),
+                    )
+                }
+            },
             onFinal = { text ->
                 val candidate = text.trim()
                 val command = VoiceCommandMatcher.match(candidate)
-                val shouldAutoSubmit = autoSubmitCurrentVoiceInput || _state.value.displayBlanked
-                autoSubmitCurrentVoiceInput = false
-                if (shouldAutoSubmit && candidate.isNotBlank()) {
-                    _state.update {
-                        it.copy(
-                            sttListening = false,
-                            sttPartial = "",
-                            sttCandidate = "",
-                            sttCandidateCommand = null,
-                            voiceStatus = null,
-                        )
-                    }
+                _state.update {
+                    it.copy(
+                        sttListening = false,
+                        sttPartial = "",
+                        sttCandidate = "",
+                        sttCandidateCommand = null,
+                        voiceStatus = null,
+                    )
+                }
+                if (candidate.isNotBlank()) {
                     submitVoiceCandidate(candidate, command)
-                } else {
-                    _state.update {
-                        it.copy(
-                            sttListening = false,
-                            sttPartial = "",
-                            sttCandidate = candidate,
-                            sttCandidateCommand = command,
-                            voiceStatus = if (command == null) "请确认语音内容" else "请确认语音命令",
-                        )
-                    }
                 }
             },
             onError = { msg ->
-                autoSubmitCurrentVoiceInput = false
                 _state.update { it.copy(sttListening = false, sttPartial = "") }
                 if (msg.isNotBlank()) {
                     _state.update {
@@ -669,7 +665,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             onEnd = { _state.update { it.copy(voiceStatus = "正在识别") } },
         ).also { speech = it }
         if (!si.available) {
-            autoSubmitCurrentVoiceInput = false
             _state.update {
                 it.copy(
                     sttAvailable = false,
@@ -680,7 +675,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             return
         }
-        autoSubmitCurrentVoiceInput = autoSubmitFinal
         _state.update {
             it.copy(
                 sttAvailable = true,

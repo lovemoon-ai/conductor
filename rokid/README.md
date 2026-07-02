@@ -26,16 +26,20 @@ navigation. It does not use the phone-side CXR-M Bluetooth companion SDK.
   return silent PCM; processed sources remain fallback options. It uses
   best-effort audio effects, local VAD, and backend STT through
   `/ws/speech` streaming PCM upload with `/api/speech/transcribe` REST fallback.
-  The server still performs final GLM batch ASR after receiving the utterance,
-  so this is not provider-level partial transcription. Recognized text is shown for confirmation before it
-  is sent, and common phrases such as `继续`, `总结进展`, `下一步`, `朗读最新`,
-  and `停止朗读` are routed through local command confirmation. Voice output uses
+  The WebSocket path sends throttled partial transcript snapshots while PCM is
+  still arriving, then sends one final transcript after the utterance is
+  captured. Recognized text is auto-sent after 5 seconds of silence, or
+  immediately when the user taps during capture. Common phrases such
+  as `继续`, `总结进展`, `下一步`, `朗读最新`,
+  and `停止朗读` are routed through local command handling. Voice output uses
   Android `TextToSpeech`, with a Rokid TTS Binder fallback when no standard
   Android TTS engine is exposed. AI replies are auto-read when they arrive; the
   quick-reply strip can also read or stop the latest AI reply.
-- **Rokid touchpad**: tap selects or toggles voice capture, double-tap goes
-  back/exits, swipe forward moves next/newer, swipe backward moves
-  previous/older.
+- **Rokid touchpad**: tap selects or starts voice capture, tap during capture
+  sends immediately, double-tap goes back/exits, swipe forward moves next/newer,
+  swipe backward moves previous/older, and an opposite forward/backward swipe
+  pair within one second blanks the display without stopping speech input or
+  output.
 - **Quick replies**: in chat, swipe cycles `hi` / `继续` / `总结进展` /
   `下一步` / `语音输入` / `朗读最新` / `停止朗读`; tap sends the selected reply,
   starts voice input, reads the latest AI reply, or stops speech output.
@@ -104,6 +108,9 @@ adb shell cmd package query-services -a android.intent.action.TTS_SERVICE
 TTS still works through the Rokid Binder fallback. STT requires the user to be
 logged in and the backend to have `GLM_API_KEY` configured. The model can be
 overridden with `GLM_ASR_MODEL`; otherwise the server uses `glm-asr-2512`. If
+needed, backend partial snapshot cadence can be tuned with
+`SPEECH_PARTIAL_TRANSCRIBE_INTERVAL_MS` and
+`SPEECH_PARTIAL_TRANSCRIBE_MAX_REQUESTS`. If
 the HUD reports that the speech backend is not published, deploy the web app
 version that includes `/ws/speech` and `/api/speech/transcribe`.
 
@@ -134,9 +141,9 @@ events only moves one item.
   `/ws/speech`; if the stream cannot be opened or completed, the same captured
   PCM is wrapped as WAV and sent to `/api/speech/transcribe`. The backend
   forwards the device language tag to the ASR provider when present.
-  Final recognition results enter a confirmation state; tap sends the candidate,
-  swipe can choose re-record or cancel, and double-tap cancels. Local command
-  matches use `执行命令` instead of `发送语音`.
+  Final recognition results are sent automatically. Local command matches still
+  route through the corresponding app action instead of blindly sending arbitrary
+  dictated text.
 - Speech diagnostics are emitted through logcat (`ConductorSpeechInput` /
   `ConductorSpeechTranscriber`) and web server logs. They include direct/fallback
   startup latency, recorder source, noise suppression availability, captured

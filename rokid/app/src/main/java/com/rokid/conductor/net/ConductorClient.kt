@@ -383,7 +383,11 @@ class ConductorClient(
             JSONObject(exec(req)).optString("text").trim()
         }
 
-    suspend fun openSpeechStream(languageTag: String?, sampleRate: Int): SpeechStream =
+    suspend fun openSpeechStream(
+        languageTag: String?,
+        sampleRate: Int,
+        onPartial: (String) -> Unit = {},
+    ): SpeechStream =
         withContext(Dispatchers.IO) {
             val authToken = token?.trim().takeUnless { it.isNullOrBlank() }
                 ?: throw ConductorException("Token required")
@@ -424,6 +428,10 @@ class ConductorClient(
                             if (!result.isCompleted) {
                                 result.complete(payload?.optString("text").orEmpty().trim())
                             }
+                        }
+                        "partial" -> {
+                            val partial = payload?.optString("text").orEmpty().trim()
+                            if (partial.isNotBlank()) onPartial(partial)
                         }
                         "error" -> {
                             fail(payload?.optString("message").orEmpty().ifBlank { "speech stream failed" })

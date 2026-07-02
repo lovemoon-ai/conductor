@@ -92,7 +92,11 @@ internal class ConductorSpeechTranscriber(
         val recorder = recorderHandle.recorder
         val effects = AudioEffects.attach(recorder.audioSessionId)
         val streamDeferred = scope.async {
-            runCatching { client.openSpeechStream(languageTag, SampleRate) }
+            runCatching {
+                client.openSpeechStream(languageTag, SampleRate) { partial ->
+                    callbacks.onPartial(partial)
+                }
+            }
                 .onFailure { Log.i(Tag, "speech stream unavailable: ${it.message}") }
                 .getOrNull()
         }
@@ -359,6 +363,7 @@ internal class ConductorSpeechTranscriber(
         fun onReady() {}
         fun onBeginning() {}
         fun onRmsChanged(value: Float) {}
+        fun onPartial(text: String) {}
         fun onEnd() {}
         fun onResult(text: String)
         fun onError(error: Error)
@@ -380,9 +385,8 @@ internal class ConductorSpeechTranscriber(
         private const val SampleRate = 16_000
         private const val MinRecordingMs = 700L
         private const val MinSpeechMs = 280L
-        private const val ShortUtteranceAutoSilenceMs = 3_000L
-        private const val LongSpeechManualOnlyMs = 10_000L
-        private const val LongNoSpeechTimeoutMs = 15_000L
+        private const val AutoSubmitSilenceMs = 5_000L
+        private const val LongNoSpeechTimeoutMs = AutoSubmitSilenceMs
         private const val InitialNoSpeechTimeoutMs = 15_000L
         private const val SpeechRunResetSilenceMs = 700L
         private const val PreRollMs = 320
@@ -399,9 +403,8 @@ internal class ConductorSpeechTranscriber(
         private const val MinPcmBytes = SampleRate * 2 / 3
         private const val Tag = "ConductorSpeechTranscriber"
 
-        internal fun shouldRequireManualStop(now: Long, currentSpeechRunStartedAt: Long): Boolean =
-            currentSpeechRunStartedAt > 0L &&
-                now - currentSpeechRunStartedAt >= LongSpeechManualOnlyMs
+        @Suppress("UNUSED_PARAMETER")
+        internal fun shouldRequireManualStop(now: Long, currentSpeechRunStartedAt: Long): Boolean = false
 
         internal fun shouldStopCapture(
             now: Long,
@@ -419,10 +422,8 @@ internal class ConductorSpeechTranscriber(
                 return now - captureStartedAt >= InitialNoSpeechTimeoutMs
             }
             val silenceMs = now - lastSpeechAt
-            if (manualStopRequired) {
-                return silenceMs >= LongNoSpeechTimeoutMs
-            }
-            return silenceMs >= ShortUtteranceAutoSilenceMs &&
+            val silenceLimitMs = if (manualStopRequired) LongNoSpeechTimeoutMs else AutoSubmitSilenceMs
+            return silenceMs >= silenceLimitMs &&
                 now - captureStartedAt >= MinRecordingMs &&
                 now - speechStartedAt >= MinSpeechMs
         }

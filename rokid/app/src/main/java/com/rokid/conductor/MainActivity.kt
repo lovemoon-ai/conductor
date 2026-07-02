@@ -29,8 +29,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.lifecycle.lifecycleScope
 import com.rokid.conductor.ui.RokidConductorApp
 import kotlin.math.abs
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -50,6 +52,8 @@ class MainActivity : ComponentActivity() {
     private var wakeTouchDownX = 0f
     private var wakeTouchDownY = 0f
     private var wakeTouchDownAtMs = 0L
+    private var lastDisplayActivitySnapshot: DisplayActivitySnapshot? = null
+    private val manualBlankGestureTracker = ManualDisplayBlankGestureTracker()
     private val inactivityHandler = Handler(Looper.getMainLooper())
     private val inactivityBlankRunnable = Runnable { blankDisplay() }
 
@@ -61,11 +65,13 @@ class MainActivity : ComponentActivity() {
 
                 override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                     if (displayBlanked) return true
+                    resetManualBlankGestureTracker()
                     return dispatchHudAction(HudAction.SELECT)
                 }
 
                 override fun onDoubleTap(e: MotionEvent): Boolean {
                     if (displayBlanked) return true
+                    resetManualBlankGestureTracker()
                     if (!viewModel.handleBack()) finish()
                     return true
                 }
@@ -93,6 +99,7 @@ class MainActivity : ComponentActivity() {
                     val dx = e2.x - start.x
                     val dy = e2.y - start.y
                     if (abs(dx) < swipeThresholdPx || abs(dx) <= abs(dy)) return false
+                    if (recordManualBlankSwipe(directionFromDx(dx), e2.eventTime)) return true
                     if (viewModel.isChatScreen()) return true
                     dispatchHudAction(if (dx > 0f) HudAction.NEXT else HudAction.PREVIOUS)
                     return true
@@ -125,6 +132,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        observeDisplayActivity()
         scheduleInactivityBlank()
     }
 
@@ -225,6 +233,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleNavigationKey(keyCode: Int): Boolean {
+        directionFromNavigationKey(keyCode)?.let { direction ->
+            if (recordManualBlankSwipe(direction, SystemClock.elapsedRealtime())) {
+                return true
+            }
+        } ?: resetManualBlankGestureTracker()
         return when (keyCode) {
             KeyEvent.KEYCODE_ENTER,
             KeyEvent.KEYCODE_NUMPAD_ENTER,
@@ -245,8 +258,31 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun directionFromNavigationKey(keyCode: Int): HorizontalSwipeDirection? =
+        when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_RIGHT -> HorizontalSwipeDirection.FORWARD
+            KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_LEFT -> HorizontalSwipeDirection.BACKWARD
+            else -> null
+        }
+
+    private fun directionFromDx(dx: Float): HorizontalSwipeDirection =
+        if (dx > 0f) HorizontalSwipeDirection.FORWARD else HorizontalSwipeDirection.BACKWARD
+
+    private fun recordManualBlankSwipe(direction: HorizontalSwipeDirection, atMs: Long): Boolean {
+        if (!manualBlankGestureTracker.record(direction, atMs)) return false
+        blankDisplay()
+        return true
+    }
+
+    private fun resetManualBlankGestureTracker() {
+        manualBlankGestureTracker.reset()
+    }
+
     private fun dispatchHudAction(action: HudAction): Boolean {
         if (action == HudAction.SELECT) {
+            resetManualBlankGestureTracker()
             val now = SystemClock.elapsedRealtime()
             if (now - lastSelectActionAtMs < SelectActionDebounceMs) {
                 return true
@@ -269,6 +305,7 @@ class MainActivity : ComponentActivity() {
 
     private fun blankDisplay() {
         if (displayBlanked) return
+        manualBlankGestureTracker.reset()
         inactivityHandler.removeCallbacks(inactivityBlankRunnable)
         val attributes = window.attributes
         previousScreenBrightness = attributes.screenBrightness
@@ -287,12 +324,26 @@ class MainActivity : ComponentActivity() {
         previousScreenBrightness = null
         displayBlanked = false
         viewModel.setDisplayBlanked(false)
+        manualBlankGestureTracker.reset()
         hideSystemBars()
     }
 
     private fun scheduleInactivityBlank() {
         inactivityHandler.removeCallbacks(inactivityBlankRunnable)
+        if (displayBlanked || shouldPauseAutoBlanking(viewModel.state.value)) return
         inactivityHandler.postDelayed(inactivityBlankRunnable, DisplayInactivityTimeoutMs)
+    }
+
+    private fun observeDisplayActivity() {
+        lifecycleScope.launch {
+            viewModel.state.collect { state ->
+                val snapshot = displayActivitySnapshot(state)
+                if (snapshot == lastDisplayActivitySnapshot) return@collect
+                lastDisplayActivitySnapshot = snapshot
+                if (displayBlanked) return@collect
+                scheduleInactivityBlank()
+            }
+        }
     }
 
     @SuppressLint("WakelockTimeout")
@@ -329,6 +380,6 @@ class MainActivity : ComponentActivity() {
         private const val DirectionalActionDebounceMs = 360L
         private const val SelectActionDebounceMs = 450L
         private const val TouchpadScrollScale = 1.4f
-        private const val DisplayInactivityTimeoutMs = 10_000L
+        private const val DisplayInactivityTimeoutMs = 20_000L
     }
 }

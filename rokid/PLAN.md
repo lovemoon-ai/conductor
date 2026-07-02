@@ -32,12 +32,12 @@ chat using the glasses microphone and touchpad gestures.
   processed sources if needed. Capture uses best-effort noise suppression / AGC /
   echo cancellation, local VAD with short pre-roll, and backend STT via
   `/ws/speech` PCM streaming upload with
-  `/api/speech/transcribe` REST fallback. The server still performs final GLM
-  batch ASR after the utterance is received, so provider-level partial
-  transcription remains future work. Final text is shown in the HUD
-  for send / re-record / cancel confirmation instead of being sent immediately.
+  `/api/speech/transcribe` REST fallback. The server sends throttled partial
+  transcript snapshots while PCM is still arriving, then requests GLM ASR event
+  stream transcription for the final utterance. Final text is sent automatically
+  after 5 seconds of silence, or immediately when the user taps during capture.
   Common commands (`继续`, `总结进展`, `下一步`, `朗读最新`, `停止朗读`) are matched
-  locally and confirmed as commands, not blindly sent as arbitrary dictated text.
+  locally and routed as commands, not blindly sent as arbitrary dictated text.
   Android logcat and web logs record speech startup, capture, VAD, and upstream
   ASR timing fields for diagnosis without logging transcript contents.
 - Speech output uses Android `TextToSpeech`, falls back to Rokid's system

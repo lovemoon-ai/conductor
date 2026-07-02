@@ -161,6 +161,10 @@ class SpeechInput(
                     postIfActive(session) { onBeginning() }
                 }
 
+                override fun onPartial(text: String) {
+                    postIfActive(session) { onPartial(text) }
+                }
+
                 override fun onEnd() {
                     postIfActive(session) { onEnd() }
                 }
@@ -250,8 +254,8 @@ class SpeechInput(
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 0L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3_000L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 3_000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, AutoSubmitSilenceMs)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, AutoSubmitSilenceMs)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, appContext.packageName)
         }
 
@@ -335,6 +339,7 @@ class SpeechInput(
         private const val PrefForceDirectRecognition = "speech_force_direct_recognition"
         private const val Tag = "ConductorSpeechInput"
         private const val PlatformReadyTimeoutMs = 1_500L
+        private const val AutoSubmitSilenceMs = 5_000L
         private const val RecognitionServiceAction = "android.speech.RecognitionService"
 
         fun isAvailable(context: Context): Boolean =

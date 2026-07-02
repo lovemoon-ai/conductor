@@ -6,10 +6,10 @@ import org.junit.Test
 
 class SpeechCapturePolicyTest {
     @Test
-    fun shortSpeechAutoStopsAfterThreeSecondsOfSilence() {
+    fun speechAutoStopsAfterFiveSecondsOfSilence() {
         assertFalse(
             ConductorSpeechTranscriber.shouldStopCapture(
-                now = 6_999L,
+                now = 8_999L,
                 captureStartedAt = 0L,
                 speechStarted = true,
                 speechStartedAt = 1_000L,
@@ -20,7 +20,7 @@ class SpeechCapturePolicyTest {
         )
         assertTrue(
             ConductorSpeechTranscriber.shouldStopCapture(
-                now = 7_000L,
+                now = 9_000L,
                 captureStartedAt = 0L,
                 speechStarted = true,
                 speechStartedAt = 1_000L,
@@ -32,27 +32,27 @@ class SpeechCapturePolicyTest {
     }
 
     @Test
-    fun longSpeechRequiresManualStopUnlessSilenceIsLong() {
-        assertTrue(ConductorSpeechTranscriber.shouldRequireManualStop(now = 11_000L, currentSpeechRunStartedAt = 1_000L))
+    fun longSpeechStillAutoStopsAfterFiveSecondsOfSilence() {
+        assertFalse(ConductorSpeechTranscriber.shouldRequireManualStop(now = 11_000L, currentSpeechRunStartedAt = 1_000L))
         assertFalse(
             ConductorSpeechTranscriber.shouldStopCapture(
-                now = 15_000L,
+                now = 16_999L,
                 captureStartedAt = 0L,
                 speechStarted = true,
                 speechStartedAt = 1_000L,
                 lastSpeechAt = 12_000L,
-                manualStopRequired = true,
+                manualStopRequired = false,
                 stopRequested = false,
             )
         )
         assertTrue(
             ConductorSpeechTranscriber.shouldStopCapture(
-                now = 27_000L,
+                now = 17_000L,
                 captureStartedAt = 0L,
                 speechStarted = true,
                 speechStartedAt = 1_000L,
                 lastSpeechAt = 12_000L,
-                manualStopRequired = true,
+                manualStopRequired = false,
                 stopRequested = false,
             )
         )
