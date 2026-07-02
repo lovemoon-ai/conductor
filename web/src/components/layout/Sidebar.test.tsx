@@ -6,9 +6,17 @@ import { useSettingsNavStore } from '@/features/settings';
 let pathname = '/app/tasks';
 let unreadCount = 3;
 let selectedProjectId: string | null = null;
+let searchParamsState = new URLSearchParams();
+let projectsState: Array<{ id: string; name: string; metadata?: Record<string, unknown> | null }> = [];
+const pushMock = vi.fn();
 
 vi.mock('next/navigation', () => ({
   usePathname: () => pathname,
+  useRouter: () => ({ push: pushMock }),
+  useSearchParams: () => ({
+    get: (key: string) => searchParamsState.get(key),
+    toString: () => searchParamsState.toString(),
+  }),
 }));
 
 vi.mock('next/image', () => ({
@@ -23,8 +31,11 @@ vi.mock('@/features/tasks', () => ({
 }));
 
 vi.mock('@/features/projects', () => ({
-  useProjectsStore: (selector: (state: { selectedProjectId: string | null }) => unknown) =>
-    selector({ selectedProjectId }),
+  useProjectsStore: (selector: (state: {
+    selectedProjectId: string | null;
+    projects: Array<{ id: string; name: string; metadata?: Record<string, unknown> | null }>;
+  }) => unknown) =>
+    selector({ selectedProjectId, projects: projectsState }),
 }));
 
 describe('Sidebar', () => {
@@ -32,6 +43,9 @@ describe('Sidebar', () => {
     pathname = '/app/tasks';
     unreadCount = 3;
     selectedProjectId = null;
+    searchParamsState = new URLSearchParams();
+    projectsState = [];
+    pushMock.mockReset();
     useSettingsNavStore.getState().reset();
   });
 
@@ -73,6 +87,36 @@ describe('Sidebar', () => {
     render(<Sidebar />);
 
     expect(screen.getByRole('link', { name: /Tasks/i })).toHaveAttribute('href', '/app/tasks?projectId=project-1');
+  });
+
+  it('double-clicks tasks navigation into graph view when the selected project enables it', () => {
+    pathname = '/app/projects';
+    selectedProjectId = 'project-1';
+    projectsState = [
+      { id: 'project-1', name: 'Graph Project', metadata: { taskGraphEnabled: true } },
+    ];
+
+    render(<Sidebar />);
+
+    fireEvent.doubleClick(screen.getByRole('link', { name: /Tasks/i }));
+
+    expect(pushMock).toHaveBeenCalledWith('/app/tasks?projectId=project-1&view=graph');
+  });
+
+  it('keeps graph return href and graph icon on task detail routes', () => {
+    pathname = '/app/tasks/task-1';
+    searchParamsState.set('from', '/app/tasks?projectId=project-1&view=graph');
+
+    render(<Sidebar />);
+
+    expect(screen.getByRole('link', { name: /Tasks/i })).toHaveAttribute(
+      'href',
+      '/app/tasks?projectId=project-1&view=graph',
+    );
+    expect(screen.getByTestId('sidebar-tasks-icon')).toHaveAttribute('data-task-nav-icon', 'graph');
+    expect(screen.getByTestId('sidebar-tasks-icon').firstElementChild).toHaveStyle({
+      transform: 'rotateY(180deg)',
+    });
   });
 
   it('highlights the active route and exposes aria-current', () => {

@@ -143,6 +143,41 @@ describe('ProjectDetailsDialog', () => {
     expect(fetchProjectsMock).toHaveBeenCalledTimes(1);
   });
 
+  it('toggles task graph view setting while preserving existing metadata', async () => {
+    const project = {
+      ...baseProject,
+      metadata: {
+        bindingCandidate: { daemonHost: 'daemon-a', workspacePath: '/repo/memo' },
+        memos: [
+          { id: 'm1', content: 'first memo', createdAt: '2026-05-01T08:00:00.000Z' },
+        ],
+      },
+    } as any;
+    resetStoreProjects([project]);
+    updateProjectMock.mockResolvedValueOnce({
+      ...project,
+      metadata: { ...project.metadata, taskGraphEnabled: true },
+    });
+
+    render(<ProjectDetailsDialog open project={project} onClose={vi.fn()} />);
+
+    const switchButton = screen.getByRole('switch', { name: 'Graph view' });
+    expect(switchButton).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(switchButton);
+
+    await waitFor(() => expect(updateProjectMock).toHaveBeenCalledTimes(1));
+    const [projectId, payload] = updateProjectMock.mock.calls[0];
+    expect(projectId).toBe('project-memo');
+    expect(payload.metadata).toEqual({
+      bindingCandidate: { daemonHost: 'daemon-a', workspacePath: '/repo/memo' },
+      memos: [
+        { id: 'm1', content: 'first memo', createdAt: '2026-05-01T08:00:00.000Z' },
+      ],
+      taskGraphEnabled: true,
+    });
+    expect(screen.getByRole('switch', { name: 'Graph view' })).toHaveAttribute('aria-checked', 'true');
+  });
+
   it('adds a new memo by prepending and patching metadata', async () => {
     const project = {
       ...baseProject,

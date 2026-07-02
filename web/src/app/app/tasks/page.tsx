@@ -13,7 +13,9 @@ import { TaskDetailPane } from '@/features/tasks';
 import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
 import { computeProjectGroups } from '@/features/projects/utils/project-groups';
+import { isProjectTaskGraphEnabled } from '@/features/projects/utils/task-graph-settings';
 import { filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } from '@/features/tasks';
+import { buildTaskDetailHref } from '@/features/tasks/utils/task-navigation';
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
 import { parseTaskType, type TaskType } from '@/lib/tasks/task-config';
 
@@ -38,11 +40,10 @@ const getDesktopViewportSnapshot = () =>
   typeof window !== 'undefined' && window.matchMedia(DESKTOP_MEDIA_QUERY).matches;
 
 function TasksPageContent() {
-  const { replace } = useRouter();
+  const { push, replace } = useRouter();
   const searchParams = useSearchParams();
   const { pushToast } = useToast();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
-  const viewMode = 'list' as const;
   const isDesktop = useSyncExternalStore(subscribeToDesktopViewport, getDesktopViewportSnapshot, () => false);
   const previousRequestedTaskIdRef = useRef<string | null>(null);
   const shouldHonorIncomingTaskIdRef = useRef(false);
@@ -69,6 +70,7 @@ function TasksPageContent() {
   const daemonHostFilter = daemonHostFilterParam && daemonHostFilterParam.trim() ? daemonHostFilterParam : null;
   const backendFilterParam = searchParams.get('backend');
   const backendFilter = backendFilterParam && backendFilterParam.trim() ? backendFilterParam : null;
+  const requestedViewMode = searchParams.get('view') === 'graph' ? 'graph' : 'list';
   const projectDaemonHostMap = useMemo(() => {
     const map = new Map<string, string | null>();
     for (const project of projects) {
@@ -103,6 +105,14 @@ function TasksPageContent() {
     return projectId ? [projectId] : [];
   }, [isMergedGroup, currentGroupMemberIds, projectId]);
   const projectScopeKey = useMemo(() => projectScope.slice().sort().join(','), [projectScope]);
+  const taskGraphEnabled = useMemo(() => {
+    if (projectScope.length === 0) return false;
+    const scopedProjectIds = new Set(projectScope);
+    return projects.some((project) =>
+      scopedProjectIds.has(project.id) && isProjectTaskGraphEnabled(project),
+    );
+  }, [projectScope, projects]);
+  const viewMode = taskGraphEnabled && requestedViewMode === 'graph' ? 'graph' : 'list';
   // Defense-in-depth: even though the server-side list endpoint already
   // hides PTY tasks that are bound to an AI task via AttachedTerminal, any
   // single-task fetch path (e.g. deep-linking to a PTY id, or a stale WS
@@ -157,7 +167,7 @@ function TasksPageContent() {
     ? projects.find((project) => project.id === projectId)?.name
     : null;
   const projectTaskCountLabel = `${taskCount} ${taskCount === 1 ? 'task' : 'tasks'}`;
-  const desktopListMode = isDesktop;
+  const desktopListMode = isDesktop && viewMode === 'list';
   const inlineDetailEnabled = desktopListMode && taskCount > 0;
   const visibleTaskIds = useMemo(() => new Set(visibleTasks.map((task) => task.id)), [visibleTasks]);
 
@@ -319,6 +329,20 @@ function TasksPageContent() {
     });
   }, [inlineDetailEnabled, replaceTaskRoute]);
 
+  const buildCurrentTaskListHref = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete('taskId');
+    if (viewMode === 'graph') {
+      params.set('view', 'graph');
+    }
+    const query = params.toString();
+    return query ? `/app/tasks?${query}` : '/app/tasks';
+  }, [searchParams, viewMode]);
+
+  const handleOpenTaskPage = useCallback((taskId: string) => {
+    push(buildTaskDetailHref(taskId, buildCurrentTaskListHref()));
+  }, [buildCurrentTaskListHref, push]);
+
   const handleTaskCreated = useCallback((taskId: string) => {
     setSelectedTaskId(taskId);
     replaceTaskRoute((params) => {
@@ -363,7 +387,7 @@ function TasksPageContent() {
         }
       />
 
-      <div className="flex-1 overflow-hidden px-4 pb-4 pt-4">
+      <div className={viewMode === 'graph' ? 'flex-1 overflow-hidden' : 'flex-1 overflow-hidden px-4 pb-4 pt-4'}>
         {inlineDetailEnabled ? (
           <div className="flex h-full gap-4">
             <div className="min-h-0 min-w-0 shrink-0 overflow-y-auto pr-1 webapp-scrollbar md:w-[19.2rem] lg:w-[20.8rem] xl:w-[24rem]">
@@ -395,7 +419,7 @@ function TasksPageContent() {
             </div>
           </div>
         ) : (
-          <div className="h-full overflow-y-auto webapp-scrollbar">
+          <div className={viewMode === 'graph' ? 'h-full' : 'h-full overflow-y-auto webapp-scrollbar'}>
             <TaskList
               viewMode={viewMode}
               // Must mirror the inline (desktop) branch's expanded scope —
@@ -415,6 +439,7 @@ function TasksPageContent() {
               onFilterByProject={handleFilterByProject}
               onFilterByDaemonHost={handleFilterByDaemonHost}
               onFilterByBackend={handleFilterByBackend}
+              onOpenTask={viewMode === 'graph' ? handleOpenTaskPage : undefined}
             />
           </div>
         )}

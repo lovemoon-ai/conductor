@@ -15,6 +15,10 @@ import {
   readProjectMemos,
 } from './ProjectDetailsDialog.utils';
 import { useProjectsStore } from '../store';
+import {
+  buildMetadataWithTaskGraphEnabled,
+  isProjectTaskGraphEnabled,
+} from '../utils/task-graph-settings';
 
 interface ProjectDetailsDialogProps {
   open: boolean;
@@ -132,6 +136,8 @@ export function ProjectDetailsDialog({
   const { confirm } = useConfirm();
   const [draft, setDraft] = useState('');
   const [isMutating, setIsMutating] = useState(false);
+  const [isTaskGraphMutating, setIsTaskGraphMutating] = useState(false);
+  const [pendingTaskGraphEnabled, setPendingTaskGraphEnabled] = useState<boolean | null>(null);
   const [activeProjectId, setActiveProjectId] = useState(project.id);
   // React 18 silently drops setState calls after unmount, but we still want
   // to avoid running through error UX (draft restore, button toggle) when
@@ -172,6 +178,10 @@ export function ProjectDetailsDialog({
     setActiveProjectId(detailProjects[0]?.id ?? project.id);
   }, [activeProjectId, detailProjects, project.id]);
 
+  useEffect(() => {
+    setPendingTaskGraphEnabled(null);
+  }, [activeProject.id]);
+
   const memoEntries = useMemo<MemoTimelineEntry[]>(() => {
     const entries = detailProjects.flatMap((member) =>
       readProjectMemos(member).map((memo) => ({
@@ -199,6 +209,7 @@ export function ProjectDetailsDialog({
     0,
   );
   const activeDaemonLabel = getDaemonLabel(activeProject);
+  const taskGraphEnabled = pendingTaskGraphEnabled ?? isProjectTaskGraphEnabled(activeProject);
   const isOverLengthLimit = draftLength > MAX_MEMO_CONTENT_CHARS;
   const isOverCountLimit = activeProjectMemoCount >= MAX_MEMOS_PER_PROJECT;
   const canSubmitDraft =
@@ -225,6 +236,30 @@ export function ProjectDetailsDialog({
     await updateProject(latestTarget.id, {
       metadata: buildMetadataWithMemos(latestTarget, nextMemos),
     });
+  };
+
+  const handleToggleTaskGraph = async () => {
+    if (isTaskGraphMutating) return;
+    const nextEnabled = !taskGraphEnabled;
+    const latestProject = readLatestProject(activeProject);
+    setPendingTaskGraphEnabled(nextEnabled);
+    setIsTaskGraphMutating(true);
+    try {
+      await updateProject(latestProject.id, {
+        metadata: buildMetadataWithTaskGraphEnabled(latestProject, nextEnabled),
+      });
+    } catch (error) {
+      setPendingTaskGraphEnabled(isProjectTaskGraphEnabled(latestProject));
+      pushToast({
+        title: 'Failed to update task graph setting',
+        description: error instanceof Error ? error.message : 'Please try again.',
+        variant: 'error',
+      });
+    } finally {
+      if (isMountedRef.current) {
+        setIsTaskGraphMutating(false);
+      }
+    }
   };
 
   const handleAddMemo = async () => {
@@ -363,6 +398,34 @@ export function ProjectDetailsDialog({
               />
             ) : null}
             <DetailRow label="Created" value={formatTimestamp(activeProject.createdAt)} />
+          </div>
+        </section>
+
+        <section>
+          <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-paper/40 px-4 py-3">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold uppercase tracking-wide text-muted">Task view</h3>
+              <p className="mt-1 text-sm font-medium text-ink">Graph view</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={taskGraphEnabled}
+              aria-label="Graph view"
+              onClick={() => void handleToggleTaskGraph()}
+              disabled={isTaskGraphMutating}
+              className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors disabled:opacity-60 ${
+                taskGraphEnabled
+                  ? 'border-[var(--accent)] bg-[var(--accent)]'
+                  : 'border-border bg-[var(--surface-subtle)]'
+              }`}
+            >
+              <span
+                className={`inline-block size-5 rounded-full bg-white shadow-sm transition-transform ${
+                  taskGraphEnabled ? 'translate-x-5' : 'translate-x-1'
+                }`}
+              />
+            </button>
           </div>
         </section>
 
