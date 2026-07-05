@@ -18,12 +18,15 @@ export type GlmDailyReportSummaryResult = {
   summarizer: DailyReportSummarizerMetadata;
 };
 
+type DailyReportPromptEvent =
+  DailyReportPayload["projects"][number]["timeline"][number]["events"][number];
+
 const DEFAULT_GLM_API_BASE_URL = "https://open.bigmodel.cn/api/paas/v4";
 const DEFAULT_GLM_DAILY_REPORT_MODEL = "glm-5.2";
 const DEFAULT_GLM_TIMEOUT_MS = 20_000;
 const MAX_PROJECTS = 30;
 const MAX_SEGMENTS_PER_PROJECT = 80;
-const MAX_EVENTS_PER_SEGMENT = 8;
+const MAX_EVENTS_PER_SEGMENT = 12;
 const MAX_DETAIL_LENGTH = 240;
 
 const DISABLED_VALUES = new Set(["0", "false", "off", "no", "disabled"]);
@@ -64,6 +67,17 @@ const makeRulesMetadata = (
   error: error ? truncateText(error, 500) : null,
 });
 
+const compactEventKind = (event: DailyReportPromptEvent): string => {
+  if (event.type === "message") {
+    const role = event.role?.trim().toLowerCase();
+    if (role === "user") return "user_message";
+    if (role === "assistant" || role === "ai") return "assistant_message";
+    return role ? `${role}_message` : "message";
+  }
+  if (event.type === "status") return "status_change";
+  return event.type;
+};
+
 const compactPayloadForPrompt = (payload: DailyReportPayload) => ({
   reportDate: payload.reportDate,
   timezone: payload.timezone,
@@ -71,26 +85,29 @@ const compactPayloadForPrompt = (payload: DailyReportPayload) => ({
   rangeStart: payload.rangeStart,
   rangeEnd: payload.rangeEnd,
   totals: payload.totals,
+  source: {
+    description:
+      "Conductor 后台按当前用户和报告日期筛选的活动 evidence。只使用这些 evidence。",
+    includes: ["projects", "tasks", "user messages", "AI messages", "task status events"],
+  },
   projects: payload.projects.slice(0, MAX_PROJECTS).map((project) => ({
     projectName: project.projectName,
     daemonHost: project.daemonHost,
-    summary: project.summary,
     stats: project.stats,
     truncatedTasks: Math.max(0, project.timeline.length - MAX_SEGMENTS_PER_PROJECT),
-    timeline: project.timeline.slice(0, MAX_SEGMENTS_PER_PROJECT).map((segment) => ({
-      timeRange: segment.timeRange,
+    taskEvidence: project.timeline.slice(0, MAX_SEGMENTS_PER_PROJECT).map((segment) => ({
       taskTitle: segment.taskTitle,
       issueTitle: segment.issueTitle,
       status: segment.status,
-      summary: segment.summary,
-      events: segment.events.slice(0, MAX_EVENTS_PER_SEGMENT).map((event) => ({
+      activitySummary: segment.summary,
+      activityMessages: segment.events.slice(0, MAX_EVENTS_PER_SEGMENT).map((event) => ({
         time: event.time,
-        title: event.title,
-        detail: truncateText(event.detail),
+        kind: compactEventKind(event),
+        text: truncateText(event.detail),
         role: event.role ?? null,
         status: event.status ?? null,
       })),
-      truncatedEvents: Math.max(0, segment.events.length - MAX_EVENTS_PER_SEGMENT),
+      truncatedMessages: Math.max(0, segment.events.length - MAX_EVENTS_PER_SEGMENT),
     })),
   })),
   truncatedProjects: Math.max(0, payload.projects.length - MAX_PROJECTS),
@@ -100,20 +117,41 @@ const buildMessages = (payload: DailyReportPayload, fallbackSummaryMarkdown: str
   {
     role: "system",
     content: [
-      "你是 Conductor 的每日工作日报 summarizer。",
-      "只根据用户提供的 JSON 和规则摘要生成中文 Markdown，不要编造不存在的任务、时间、项目、结论。",
-      "输出需要按 Project 组织，并保留当天时间轴。",
+      "你是 Conductor 后台服务里的开发者每日复盘 summarizer。",
+      "输入 JSON 是 Conductor 后台按当前用户、报告日期和 timezone 查询到的当天活动 evidence，包括项目、任务、用户消息、AI 消息和任务状态事件。",
+      "只能根据输入 JSON 生成中文 Markdown，不要使用本地仓库上下文、外部知识、commit 记录或未提供的信息。",
+      "目标不是罗列活动，而是帮助开发者复盘为什么做这些事、是否值得继续投入、注意力是否发散，以及明天如何收敛。",
+      "不要写产物、commit、命令、链接、任务时间线或逐条消息流水账。",
+      "按 Project 聚合，但最多重点复盘 3 个主要项目；其余项目合并到注意力评估。",
+      "每个项目必须评估：做了什么、为什么做、是否值得、评估理由、今天获得的判断、下一步。",
+      "如果输入无法支持某个原因或价值判断，直接写无法判断，不要编造。",
+      "必须明确判断今日主线是否聚焦；如果多个项目并行，要分析是否发散以及发散代价。",
       "如果没有活动，用一句话说明当天没有记录到任务活动。",
-      "推荐结构：# 每日总结 - 日期、## 总览、每个项目的 ## 项目名、### 时间轴。",
-      "语言要简洁、可直接发送给用户。",
+      "输出结构固定为：# 每日复盘 - 日期、## 1. 今日主线判断、## 2. 项目复盘、## 3. 注意力评估、## 4. 明日聚焦。",
+      "语言要简洁、有判断，适合开发者自己复盘。",
     ].join("\n"),
   },
   {
     role: "user",
     content: JSON.stringify(
       {
-        instruction: "请将下面的日报数据整理成一份中文 Markdown 日报。",
-        existingRuleSummary: fallbackSummaryMarkdown,
+        instruction:
+          "请根据 Conductor 后台活动 evidence 生成开发者自用每日复盘。不要复述时间线，重点分析为什么做、是否值得、是否发散、明天如何聚焦。",
+        outputTemplate: [
+          "# 每日复盘 - YYYY-MM-DD",
+          "## 1. 今日主线判断",
+          "## 2. 项目复盘",
+          "### 项目名",
+          "- 做了什么：",
+          "- 为什么做：",
+          "- 是否值得：值得 / 一般 / 不值得 / 无法判断",
+          "- 评估理由：",
+          "- 今天获得的判断：",
+          "- 下一步：继续 / 收敛 / 暂停 / 放弃 / 无法判断",
+          "## 3. 注意力评估",
+          "## 4. 明日聚焦",
+        ],
+        fallbackSummaryAvailable: Boolean(fallbackSummaryMarkdown),
         reportData: compactPayloadForPrompt(payload),
       },
       null,

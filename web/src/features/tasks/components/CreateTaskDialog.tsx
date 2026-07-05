@@ -490,34 +490,6 @@ export function CreateTaskDialog({
           </InlineNotice>
         ) : null}
 
-        {canCreateTaskWorktree ? (
-          <div className="rounded-2xl border border-border bg-paper/50 p-4">
-            <label htmlFor="create-task-worktree" className="flex cursor-pointer items-start gap-3">
-              <input
-                id="create-task-worktree"
-                type="checkbox"
-                aria-label="Create task in a separate worktree"
-                checked={createWorktree}
-                onChange={(e) => {
-                  dispatch({ type: 'set-create-worktree', createWorktree: e.target.checked });
-                }}
-                className="mt-0.5 size-4 rounded border-border text-[var(--accent)] focus:ring-[var(--accent)]"
-              />
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-ink">worktree</span>
-                  <HelpTip label="worktree" align="right">
-                    Create this task in an isolated git worktree and branch for the selected project.
-                  </HelpTip>
-                </div>
-                <p className="mt-1 text-xs text-muted">
-                  Each new task from the project gets its own branch. Tasks continued from an existing worktree reuse that same branch.
-                </p>
-              </div>
-            </label>
-          </div>
-        ) : null}
-
         <div className="rounded-2xl border border-border bg-paper/50 p-4">
           <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -637,6 +609,34 @@ export function CreateTaskDialog({
             </InlineNotice>
           )}
         </div>
+
+        {canCreateTaskWorktree ? (
+          <div className="rounded-2xl border border-border bg-paper/50 p-4">
+            <label htmlFor="create-task-worktree" className="flex cursor-pointer items-start gap-3">
+              <input
+                id="create-task-worktree"
+                type="checkbox"
+                aria-label="Create task in a separate worktree"
+                checked={createWorktree}
+                onChange={(e) => {
+                  dispatch({ type: 'set-create-worktree', createWorktree: e.target.checked });
+                }}
+                className="mt-0.5 size-4 rounded border-border text-[var(--accent)] focus:ring-[var(--accent)]"
+              />
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-ink">worktree</span>
+                  <HelpTip label="worktree" align="right">
+                    Create this task in an isolated git worktree and branch for the selected project.
+                  </HelpTip>
+                </div>
+                <p className="mt-1 text-xs text-muted">
+                  Each new task from the project gets its own branch. Tasks continued from an existing worktree reuse that same branch.
+                </p>
+              </div>
+            </label>
+          </div>
+        ) : null}
 
         {submitError ? (
           <InlineNotice variant="error" title="Task creation failed">

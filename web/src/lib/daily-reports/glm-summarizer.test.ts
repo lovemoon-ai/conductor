@@ -140,6 +140,49 @@ describe("GLM daily report summarizer", () => {
     });
     expect(requestBody.messages[0]).toMatchObject({ role: "system" });
     expect(requestBody.messages[1].content).toContain("Ship daily reports");
+
+    const systemPrompt = String(requestBody.messages[0].content);
+    expect(systemPrompt).toContain("当前用户");
+    expect(systemPrompt).toContain("不要使用本地仓库上下文");
+    expect(systemPrompt).toContain("不要写产物");
+    expect(systemPrompt).toContain("任务时间线");
+    expect(systemPrompt).toContain("为什么做这些事");
+    expect(systemPrompt).not.toContain("保留当天时间轴");
+
+    const promptPayload = JSON.parse(String(requestBody.messages[1].content));
+    expect(promptPayload).not.toHaveProperty("existingRuleSummary");
+    expect(promptPayload).toMatchObject({
+      fallbackSummaryAvailable: true,
+      outputTemplate: expect.arrayContaining([
+        "# 每日复盘 - YYYY-MM-DD",
+        "## 1. 今日主线判断",
+        "## 2. 项目复盘",
+        "## 3. 注意力评估",
+        "## 4. 明日聚焦",
+      ]),
+    });
+    expect(promptPayload.reportData.source).toMatchObject({
+      description: expect.stringContaining("当前用户"),
+      includes: expect.arrayContaining(["user messages", "AI messages", "task status events"]),
+    });
+    expect(promptPayload.reportData.projects[0].taskEvidence[0]).toMatchObject({
+      taskTitle: "Ship daily reports",
+      issueTitle: "Daily summary",
+      status: "completed",
+      activitySummary: "2 messages; status completed; latest: Done",
+      activityMessages: [
+        expect.objectContaining({
+          time: "09:10",
+          kind: "user_message",
+          text: "Add the report",
+          role: "user",
+        }),
+      ],
+    });
+    expect(promptPayload.reportData.projects[0]).not.toHaveProperty("timeline");
+    expect(promptPayload.reportData.projects[0].taskEvidence[0]).not.toHaveProperty("timeRange");
+    expect(promptPayload.reportData.projects[0].taskEvidence[0].activityMessages[0]).not.toHaveProperty("title");
+    expect(String(requestBody.messages[1].content)).not.toContain("# Rule summary");
   });
 
   it("falls back to the rule summary when GLM fails", async () => {

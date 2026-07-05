@@ -174,7 +174,12 @@ describe('CreateTaskDialog', () => {
 
     render(<CreateTaskDialog open onClose={() => {}} />);
 
-    expect(await screen.findByText('worktree')).toBeInTheDocument();
+    const worktreeLabel = await screen.findByText('worktree');
+    expect(worktreeLabel).toBeInTheDocument();
+    const executionHeading = screen.getByRole('heading', { name: 'Execution' });
+    expect(
+      Boolean(executionHeading.compareDocumentPosition(worktreeLabel) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true);
     const worktreeCheckbox = await screen.findByRole('checkbox');
     fireEvent.click(worktreeCheckbox);
     fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
