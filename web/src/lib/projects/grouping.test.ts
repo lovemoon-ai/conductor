@@ -86,7 +86,8 @@ describe('canMergeProjectsByFields', () => {
     ).toBe(true);
   });
 
-  it('treats the github-duinodu SSH host alias as github.com for remote comparison', () => {
+  it('treats any GitHub SSH host alias as github.com so only owner/repo decides the merge', () => {
+    // Different aliases for the same account/repo (the real-world m1/m2/windows case).
     expect(
       canMergeProjectsByFields(
         { ...base(), gitRemoteUrl: 'github-duinodu/lovemoon-ai/robotcloud' },
@@ -94,9 +95,34 @@ describe('canMergeProjectsByFields', () => {
       ),
     ).toBe(true);
 
+    // A brand-new alias we have never hardcoded must still merge (the M2 bug).
     expect(
       canMergeProjectsByFields(
-        { ...base(), gitRemoteUrl: 'github-duinodu/duinodu/robotcloud' },
+        { ...base(), gitRemoteUrl: 'github-dang217/lovemoon-ai/robotcloud' },
+        { ...base(), daemonHost: 'daemon-b', gitRemoteUrl: 'github-duinodu/lovemoon-ai/robotcloud' },
+      ),
+    ).toBe(true);
+
+    // `github.com-work` style aliases too.
+    expect(
+      canMergeProjectsByFields(
+        { ...base(), gitRemoteUrl: 'github.com-work/lovemoon-ai/operator' },
+        { ...base(), daemonHost: 'daemon-b', gitRemoteUrl: 'github.com/lovemoon-ai/operator' },
+      ),
+    ).toBe(true);
+
+    // owner/repo path stays strict: same repo name under a different owner must NOT merge.
+    expect(
+      canMergeProjectsByFields(
+        { ...base(), gitRemoteUrl: 'github-dang217/duinodu/robotcloud' },
+        { ...base(), daemonHost: 'daemon-b', gitRemoteUrl: 'github.com/lovemoon-ai/robotcloud' },
+      ),
+    ).toBe(false);
+
+    // Non-GitHub host is left untouched: a GitHub repo never merges with a GitLab repo of the same path.
+    expect(
+      canMergeProjectsByFields(
+        { ...base(), gitRemoteUrl: 'gitlab.com/lovemoon-ai/robotcloud' },
         { ...base(), daemonHost: 'daemon-b', gitRemoteUrl: 'github.com/lovemoon-ai/robotcloud' },
       ),
     ).toBe(false);

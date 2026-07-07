@@ -114,9 +114,20 @@ describe('normalizeGitRemoteUrl', () => {
     expect(normalizeGitRemoteUrl('ssh://git@github.com/owner/repo')).toBe('github.com/owner/repo');
   });
 
-  test('canonicalizes the github-duinodu SSH host alias to github.com', () => {
+  test('canonicalizes any GitHub SSH host alias to github.com', () => {
     expect(normalizeGitRemoteUrl('github-duinodu:lovemoon-ai/robotcloud.git')).toBe(
       'github.com/lovemoon-ai/robotcloud',
+    );
+    // Aliases we have never hardcoded must canonicalize too (the M2 daemon bug).
+    expect(normalizeGitRemoteUrl('github-dang217:lovemoon-ai/robotcloud.git')).toBe(
+      'github.com/lovemoon-ai/robotcloud',
+    );
+    expect(normalizeGitRemoteUrl('git@github.com-work:lovemoon-ai/operator.git')).toBe(
+      'github.com/lovemoon-ai/operator',
+    );
+    // GitHub Enterprise stays a distinct host; owner/repo alone must not merge it with github.com.
+    expect(normalizeGitRemoteUrl('git@github.mycompany.com:team/app.git')).toBe(
+      'github.mycompany.com/team/app',
     );
   });
 
