@@ -22,9 +22,26 @@ export type ProjectGroupingFields = {
   mergeOptOut?: boolean | null | undefined;
 };
 
-const GIT_REMOTE_HOST_ALIASES: Record<string, string> = {
-  // Local SSH config alias for GitHub; keep the owner/repo path unchanged.
-  'github-duinodu': 'github.com',
+/**
+ * Collapse any GitHub SSH config alias to the canonical `github.com` host.
+ * Users create aliases like `github-duinodu`, `github-dang217`, or
+ * `github.com-work` in `~/.ssh/config` to juggle multiple accounts/keys. GitHub
+ * identifies a repository solely by its `owner/repo` path, so the local alias
+ * prefix carries no identity — we ignore it and let the path decide equality,
+ * rather than maintaining a per-alias allowlist that breaks on the next new one.
+ * Non-GitHub hosts (gitlab.com, self-hosted, GitHub Enterprise like
+ * `github.mycompany.com`) are left untouched so unrelated repos never merge.
+ */
+const canonicalGitRemoteHost = (host: string): string => {
+  const normalized = host.trim().toLowerCase();
+  if (
+    normalized === 'github.com' ||
+    normalized.startsWith('github-') ||
+    normalized.startsWith('github.com-')
+  ) {
+    return 'github.com';
+  }
+  return normalized;
 };
 
 const normalizeComparableGitRemoteUrl = (
@@ -36,7 +53,7 @@ const normalizeComparableGitRemoteUrl = (
   if (slashIndex < 0) return normalized;
   const host = normalized.slice(0, slashIndex);
   const path = normalized.slice(slashIndex);
-  return `${GIT_REMOTE_HOST_ALIASES[host] ?? host}${path}`;
+  return `${canonicalGitRemoteHost(host)}${path}`;
 };
 
 export const canMergeProjectsByFields = (

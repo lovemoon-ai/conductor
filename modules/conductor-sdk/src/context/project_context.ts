@@ -229,8 +229,16 @@ export function normalizeGitRemoteUrl(raw: string | null | undefined): string | 
 
 function canonicalGitRemoteHost(host: string): string {
   const normalized = host.trim().toLowerCase();
-  // SSH config alias used for GitHub remotes in our deployments.
-  if (normalized === 'github-duinodu') {
+  // Any GitHub SSH config alias points at github.com. Users create these in
+  // `~/.ssh/config` to juggle multiple accounts/keys (e.g. `github-duinodu`,
+  // `github-dang217`, `github.com-work`). GitHub identifies a repository solely
+  // by its `owner/repo` path, so we collapse every alias to `github.com` and
+  // let the path decide equality — instead of maintaining a per-alias allowlist.
+  if (
+    normalized === 'github.com' ||
+    normalized.startsWith('github-') ||
+    normalized.startsWith('github.com-')
+  ) {
     return 'github.com';
   }
   return normalized;
