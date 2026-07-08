@@ -1,5 +1,14 @@
 # @love-moon/conductor-cli
 
+## 0.7.3
+
+### Patch Changes
+
+- 689fd07: Normalize daemon backend HTTP URLs and extend the watchdog self-heal budget.
+- Updated dependencies [689fd07]
+  - @love-moon/ai-sdk@0.7.3
+  - @love-moon/conductor-sdk@0.7.3
+
 ## 0.7.2
 
 ### Patch Changes

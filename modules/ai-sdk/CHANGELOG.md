@@ -1,5 +1,11 @@
 # @love-moon/ai-sdk
 
+## 0.7.3
+
+### Patch Changes
+
+- 689fd07: Accept the current Copilot SDK token option spelling in quota helpers.
+
 ## 0.7.2
 
 ## 0.7.1
