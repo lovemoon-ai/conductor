@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { ConnectionStatus } from '../common/ConnectionStatus';
 
 interface HeaderProps {
@@ -12,8 +13,13 @@ interface HeaderProps {
   connectionTaskId?: string | null;
   onTitleClick?: () => void;
   onTitleDoubleClick?: () => void;
+  onTitleSwipeLeft?: () => void;
+  onTitleSwipeRight?: () => void;
   titleDoubleClickHint?: string;
 }
+
+const TITLE_SWIPE_DISTANCE_PX = 48;
+const TITLE_SWIPE_VERTICAL_TOLERANCE_PX = 32;
 
 const BackIcon = () => (
   <svg className="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -31,9 +37,111 @@ export function Header({
   connectionTaskId,
   onTitleClick,
   onTitleDoubleClick,
+  onTitleSwipeLeft,
+  onTitleSwipeRight,
   titleDoubleClickHint,
 }: HeaderProps) {
-  const isTitleInteractive = Boolean(onTitleClick || onTitleDoubleClick);
+  const titleSwipeGestureRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+  const titleDidSwipeRef = useRef(false);
+  const titleSwipeClickResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isTitleSwipeEnabled = Boolean(onTitleSwipeLeft || onTitleSwipeRight);
+  const isTitleInteractive = Boolean(onTitleClick || onTitleDoubleClick || isTitleSwipeEnabled);
+
+  useEffect(() => (
+    () => {
+      if (titleSwipeClickResetTimeoutRef.current !== null) {
+        clearTimeout(titleSwipeClickResetTimeoutRef.current);
+      }
+    }
+  ), []);
+
+  const handleTitlePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!isTitleSwipeEnabled) {
+      return;
+    }
+    if (event.pointerType === 'mouse') {
+      return;
+    }
+    titleSwipeGestureRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+    };
+
+    if (typeof event.currentTarget.setPointerCapture === 'function') {
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // Pointer capture can fail if the browser has already cancelled it.
+      }
+    }
+  };
+
+  const releaseTitlePointer = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (
+      typeof event.currentTarget.hasPointerCapture === 'function'
+      && event.currentTarget.hasPointerCapture(event.pointerId)
+      && typeof event.currentTarget.releasePointerCapture === 'function'
+    ) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const handleTitlePointerEnd = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const gesture = titleSwipeGestureRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) {
+      return;
+    }
+
+    titleSwipeGestureRef.current = null;
+    releaseTitlePointer(event);
+
+    const deltaX = event.clientX - gesture.startX;
+    const deltaY = event.clientY - gesture.startY;
+    if (
+      Math.abs(deltaX) < TITLE_SWIPE_DISTANCE_PX
+      || Math.abs(deltaY) > TITLE_SWIPE_VERTICAL_TOLERANCE_PX
+    ) {
+      return;
+    }
+
+    titleDidSwipeRef.current = true;
+    if (titleSwipeClickResetTimeoutRef.current !== null) {
+      clearTimeout(titleSwipeClickResetTimeoutRef.current);
+    }
+    titleSwipeClickResetTimeoutRef.current = setTimeout(() => {
+      titleDidSwipeRef.current = false;
+      titleSwipeClickResetTimeoutRef.current = null;
+    }, 0);
+    event.preventDefault();
+    if (deltaX < 0) {
+      onTitleSwipeLeft?.();
+    } else {
+      onTitleSwipeRight?.();
+    }
+  };
+
+  const handleTitlePointerCancel = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    titleSwipeGestureRef.current = null;
+    releaseTitlePointer(event);
+  };
+
+  const handleTitleClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    if (titleDidSwipeRef.current) {
+      titleDidSwipeRef.current = false;
+      if (titleSwipeClickResetTimeoutRef.current !== null) {
+        clearTimeout(titleSwipeClickResetTimeoutRef.current);
+        titleSwipeClickResetTimeoutRef.current = null;
+      }
+      event.preventDefault();
+      return;
+    }
+    onTitleClick?.();
+  };
 
   return (
     <header className={`bg-panel border-b border-border flex items-center justify-between px-4 md:px-6 ${compact ? 'h-12' : 'h-16'}`}>
@@ -55,10 +163,14 @@ export function Header({
             {isTitleInteractive ? (
               <button
                 type="button"
-                onClick={onTitleClick}
+                onClick={handleTitleClick}
                 onDoubleClick={onTitleDoubleClick}
+                onPointerDown={handleTitlePointerDown}
+                onPointerUp={handleTitlePointerEnd}
+                onPointerCancel={handleTitlePointerCancel}
                 title={titleDoubleClickHint}
                 className="block max-w-full truncate rounded bg-transparent p-0 text-left text-inherit"
+                style={isTitleSwipeEnabled ? { touchAction: 'pan-y' } : undefined}
               >
                 {title}
               </button>

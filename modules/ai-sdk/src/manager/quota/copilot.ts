@@ -83,6 +83,11 @@ interface CopilotAuthIndex {
   cacheKey: string;
 }
 
+type CopilotClientOptionsWithLegacyToken = CopilotClientOptions & {
+  githubToken?: string;
+  gitHubToken?: string;
+};
+
 interface ResolveBundledCopilotCliPathOptions {
   platform?: NodeJS.Platform | string;
   arch?: string;
@@ -101,7 +106,7 @@ export interface GetCopilotQuotaOptions {
   /** Explicit token to pass to the Copilot SDK; otherwise SDK auth discovery is used. */
   githubToken?: string;
   /** SDK client options. Useful for enterprise hosts or tests. */
-  clientOptions?: CopilotClientOptions;
+  clientOptions?: CopilotClientOptionsWithLegacyToken;
   /** Override global fetch for GitHub login lookup tests. */
   fetcher?: typeof fetch;
   /** Override SDK module for tests. */
@@ -603,7 +608,7 @@ function resolveExplicitAuthCacheKey(opts: GetCopilotQuotaOptions): string | und
 function resolveClientOptions(opts: GetCopilotQuotaOptions): CopilotClientOptions {
   const explicitGithubToken = resolveExplicitGithubToken(opts);
   const baseEnv = opts.clientOptions?.env ?? process.env;
-  const options: CopilotClientOptions = {
+  const options: CopilotClientOptionsWithLegacyToken = {
     logLevel: "none",
     ...opts.clientOptions,
     env: explicitGithubToken ? baseEnv : withoutGitHubTokenEnv(baseEnv),
@@ -611,7 +616,10 @@ function resolveClientOptions(opts: GetCopilotQuotaOptions): CopilotClientOption
       explicitGithubToken
         ? opts.clientOptions?.useLoggedInUser
         : opts.clientOptions?.useLoggedInUser ?? true,
-    ...(opts.githubToken ? { gitHubToken: opts.githubToken } : {}),
+    ...(explicitGithubToken ? {
+      githubToken: explicitGithubToken,
+      gitHubToken: explicitGithubToken,
+    } : {}),
   };
   if (
     options.cliPath === undefined &&
@@ -627,7 +635,7 @@ function resolveClientOptions(opts: GetCopilotQuotaOptions): CopilotClientOption
 }
 
 function resolveExplicitGithubToken(opts: GetCopilotQuotaOptions): string | undefined {
-  return opts.githubToken ?? opts.clientOptions?.gitHubToken;
+  return opts.githubToken ?? opts.clientOptions?.githubToken ?? opts.clientOptions?.gitHubToken;
 }
 
 function hasExplicitCopilotCliPathEnv(env: Record<string, string | undefined> | undefined): boolean {
@@ -737,7 +745,10 @@ function resolveKnownGitHubHost(rawHost?: string): string | undefined {
 }
 
 function resolveGitHubLoginToken(opts: GetCopilotQuotaOptions): string | undefined {
-  return opts.githubToken ?? opts.clientOptions?.gitHubToken ?? process.env.GITHUB_TOKEN;
+  return opts.githubToken
+    ?? opts.clientOptions?.githubToken
+    ?? opts.clientOptions?.gitHubToken
+    ?? process.env.GITHUB_TOKEN;
 }
 
 async function fetchCopilotUserQuota(

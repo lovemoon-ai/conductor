@@ -30,12 +30,23 @@ let tasksState: {
 let searchParamsState = new URLSearchParams();
 let isDesktopViewport = false;
 let hiddenProjectIdsState: string[] = [];
+let agentsState: Array<{ id: string; host: string }> = [];
 type MockProject = {
   id: string;
   name: string;
   daemonHost?: string | null;
   gitRemoteUrl?: string | null;
   mergeOptOut?: boolean;
+  hidden?: boolean;
+  workspacePath?: string | null;
+  collaborationId?: string | null;
+  collaboration?: {
+    id: string;
+    inviteToken: string;
+    memberCount: number;
+    maxMembers: number;
+    members: Array<unknown>;
+  } | null;
   metadata?: Record<string, unknown> | null;
 };
 let projectsState: MockProject[] = [
@@ -165,6 +176,11 @@ vi.mock('@/features/projects', () => ({
     }),
 }));
 
+vi.mock('@/features/agents', () => ({
+  useAgentsStore: (selector: (state: { agents: Array<{ id: string; host: string }> }) => unknown) =>
+    selector({ agents: agentsState }),
+}));
+
 vi.mock('@/components/layout/Header', () => ({
   Header: ({
     title,
@@ -172,6 +188,8 @@ vi.mock('@/components/layout/Header', () => ({
     showConnectionStatus,
     connectionTaskId,
     onTitleDoubleClick,
+    onTitleSwipeLeft,
+    onTitleSwipeRight,
     titleDoubleClickHint,
   }: {
     title?: string;
@@ -179,12 +197,31 @@ vi.mock('@/components/layout/Header', () => ({
     showConnectionStatus?: boolean;
     connectionTaskId?: string | null;
     onTitleDoubleClick?: () => void;
+    onTitleSwipeLeft?: () => void;
+    onTitleSwipeRight?: () => void;
     titleDoubleClickHint?: string;
   }) => {
-    headerMock({ title, showConnectionStatus, connectionTaskId, titleDoubleClickHint });
+    headerMock({
+      title,
+      showConnectionStatus,
+      connectionTaskId,
+      titleDoubleClickHint,
+      hasTitleSwipeLeft: Boolean(onTitleSwipeLeft),
+      hasTitleSwipeRight: Boolean(onTitleSwipeRight),
+    });
     return (
       <div>
         <h1 onDoubleClick={onTitleDoubleClick} title={titleDoubleClickHint}>{title}</h1>
+        {onTitleSwipeLeft ? (
+          <button type="button" onClick={onTitleSwipeLeft}>
+            mock-title-swipe-left
+          </button>
+        ) : null}
+        {onTitleSwipeRight ? (
+          <button type="button" onClick={onTitleSwipeRight}>
+            mock-title-swipe-right
+          </button>
+        ) : null}
         <div>{actions}</div>
       </div>
     );
@@ -197,6 +234,7 @@ describe('TasksPage', () => {
     searchParamsState = new URLSearchParams();
     isDesktopViewport = false;
     hiddenProjectIdsState = [];
+    agentsState = [];
     projectsState = [
       { id: 'project-1', name: 'Conductor' },
       { id: 'project-hidden', name: 'Hidden' },
@@ -492,6 +530,71 @@ describe('TasksPage', () => {
     expect(screen.getByText('create-dialog:project-1')).toBeInTheDocument();
   });
 
+  it('swipes the mobile task title left to switch to the next project', () => {
+    searchParamsState = new URLSearchParams(
+      'projectId=project-1&taskId=task-1&view=graph&taskType=pty_task&daemonHost=daemon-a&backend=codex',
+    );
+    projectsState = [
+      { id: 'project-1', name: 'Conductor' },
+      { id: 'project-2', name: 'Website' },
+      { id: 'project-3', name: 'CLI' },
+    ];
+
+    render(<TasksPage />);
+
+    expect(headerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hasTitleSwipeLeft: true,
+        hasTitleSwipeRight: true,
+      }),
+    );
+
+    setSelectedProjectIdMock.mockClear();
+    replaceMock.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'mock-title-swipe-left' }));
+
+    expect(setSelectedProjectIdMock).toHaveBeenCalledWith('project-2');
+    expect(replaceMock).toHaveBeenCalledWith(
+      '/app/tasks?projectId=project-2&taskType=pty_task&daemonHost=daemon-a&backend=codex',
+      { scroll: false },
+    );
+  });
+
+  it('swipes the mobile task title right to switch to the previous project', () => {
+    searchParamsState = new URLSearchParams('projectId=project-2&taskId=task-1');
+    projectsState = [
+      { id: 'project-1', name: 'Conductor' },
+      { id: 'project-2', name: 'Website' },
+      { id: 'project-3', name: 'CLI' },
+    ];
+
+    render(<TasksPage />);
+
+    setSelectedProjectIdMock.mockClear();
+    replaceMock.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'mock-title-swipe-right' }));
+
+    expect(setSelectedProjectIdMock).toHaveBeenCalledWith('project-1');
+    expect(replaceMock).toHaveBeenCalledWith('/app/tasks?projectId=project-1', { scroll: false });
+  });
+
+  it('does not wrap project title swipes past the project list edges', () => {
+    searchParamsState = new URLSearchParams('projectId=project-1');
+    projectsState = [
+      { id: 'project-1', name: 'Conductor' },
+      { id: 'project-2', name: 'Website' },
+    ];
+
+    render(<TasksPage />);
+
+    setSelectedProjectIdMock.mockClear();
+    replaceMock.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'mock-title-swipe-right' }));
+
+    expect(setSelectedProjectIdMock).not.toHaveBeenCalled();
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
   it('excludes hidden project tasks when no project is selected', () => {
     hiddenProjectIdsState = ['project-hidden'];
     tasksState = {
@@ -542,6 +645,28 @@ describe('TasksPage', () => {
       { recoverStale: true },
     );
     expect(fetchTasksMock).not.toHaveBeenCalled();
+  });
+
+  it('swipes across merged project groups using the project list order', () => {
+    projectsState = [
+      { id: 'proj-host-a', name: 'Shared', daemonHost: 'host-a' },
+      { id: 'proj-host-b', name: 'Shared', daemonHost: 'host-b' },
+      { id: 'proj-next', name: 'Next' },
+    ];
+    agentsState = [
+      { id: 'agent-a', host: 'host-a' },
+      { id: 'agent-b', host: 'host-b' },
+    ];
+    searchParamsState = new URLSearchParams('projectId=proj-host-b&taskId=task-b');
+
+    render(<TasksPage />);
+
+    setSelectedProjectIdMock.mockClear();
+    replaceMock.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'mock-title-swipe-left' }));
+
+    expect(setSelectedProjectIdMock).toHaveBeenCalledWith('proj-next');
+    expect(replaceMock).toHaveBeenCalledWith('/app/tasks?projectId=proj-next', { scroll: false });
   });
 
   it('expands the merged project in the desktop split-pane render path too', () => {

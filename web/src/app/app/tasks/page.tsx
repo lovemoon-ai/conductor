@@ -12,7 +12,9 @@ import { CreateTaskDialog } from '@/features/tasks';
 import { TaskDetailPane } from '@/features/tasks';
 import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
+import { useAgentsStore } from '@/features/agents';
 import { computeProjectGroups } from '@/features/projects/utils/project-groups';
+import { getVisibleProjectGroupsForProjectList } from '@/features/projects/utils/project-list-order';
 import { isProjectTaskGraphEnabled } from '@/features/projects/utils/task-graph-settings';
 import { filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } from '@/features/tasks';
 import { buildTaskDetailHref } from '@/features/tasks/utils/task-navigation';
@@ -60,6 +62,7 @@ function TasksPageContent() {
   const projects = useProjectsStore((state) => state.projects);
   const hiddenProjectIds = useProjectsStore((state) => state.hiddenProjectIds);
   const setSelectedProjectId = useProjectsStore((state) => state.setSelectedProjectId);
+  const agents = useAgentsStore((state) => state.agents);
   const projectIdFromUrl = searchParams.get('projectId');
   const hiddenProjectIdSet = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
   const projectId = projectIdFromUrl && !hiddenProjectIdSet.has(projectIdFromUrl) ? projectIdFromUrl : null;
@@ -78,6 +81,20 @@ function TasksPageContent() {
     }
     return map;
   }, [projects]);
+  const onlineDaemonHosts = useMemo(
+    () => new Set(agents.flatMap((agent) => {
+      const host = agent.host.trim();
+      return host ? [host] : [];
+    })),
+    [agents],
+  );
+  const switchableProjectGroups = useMemo(
+    () => getVisibleProjectGroupsForProjectList(projects, {
+      hiddenProjectIds,
+      onlineDaemonHosts,
+    }),
+    [hiddenProjectIds, onlineDaemonHosts, projects],
+  );
   // When the URL-selected project belongs to a cross-daemon merged group,
   // expand it to every member so the task list pulls tasks from each
   // daemon's same-named project. Single-member groups behave exactly as
@@ -113,6 +130,14 @@ function TasksPageContent() {
     );
   }, [projectScope, projects]);
   const viewMode = taskGraphEnabled && requestedViewMode === 'graph' ? 'graph' : 'list';
+  const currentProjectSwitchIndex = useMemo(() => {
+    if (!projectId) {
+      return -1;
+    }
+    return switchableProjectGroups.findIndex((group) =>
+      group.members.some((member) => member.id === projectId),
+    );
+  }, [projectId, switchableProjectGroups]);
   // Defense-in-depth: even though the server-side list endpoint already
   // hides PTY tasks that are bound to an AI task via AttachedTerminal, any
   // single-task fetch path (e.g. deep-linking to a PTY id, or a stale WS
@@ -233,6 +258,30 @@ function TasksPageContent() {
     },
     [replace, searchParams],
   );
+
+  const handleProjectTitleSwipe = useCallback((offset: -1 | 1) => {
+    if (currentProjectSwitchIndex === -1) {
+      return;
+    }
+    const targetGroup = switchableProjectGroups[currentProjectSwitchIndex + offset];
+    const targetProjectId = targetGroup?.members[0]?.id;
+    if (!targetProjectId) {
+      return;
+    }
+
+    setSelectedProjectId(targetProjectId);
+    replaceTaskRoute((params) => {
+      params.set('projectId', targetProjectId);
+      params.delete('taskId');
+      params.delete('view');
+    });
+  }, [currentProjectSwitchIndex, replaceTaskRoute, setSelectedProjectId, switchableProjectGroups]);
+
+  const canSwipeProjectTitle =
+    !isDesktop
+    && viewMode === 'list'
+    && currentProjectSwitchIndex >= 0
+    && switchableProjectGroups.length > 1;
 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
@@ -356,6 +405,8 @@ function TasksPageContent() {
         title={currentProjectName ? `${currentProjectName} (${projectTaskCountLabel})` : `Tasks(${taskCount})`}
         compact
         onTitleDoubleClick={handleTitleDoubleClick}
+        onTitleSwipeLeft={canSwipeProjectTitle ? () => handleProjectTitleSwipe(1) : undefined}
+        onTitleSwipeRight={canSwipeProjectTitle ? () => handleProjectTitleSwipe(-1) : undefined}
         titleDoubleClickHint={showRunningOnly
           ? 'Double-click to show all tasks.'
           : 'Double-click to show running tasks only.'}

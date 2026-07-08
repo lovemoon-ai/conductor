@@ -578,6 +578,64 @@ test("getCopilotQuota falls back to copilot_internal/user when SDK quota snapsho
   });
 });
 
+test("getCopilotQuota forwards current and legacy explicit token option spellings", async () => {
+  await withTmp(async (dir) => {
+    const currentState = { started: 0, stopped: 0, quotaCalls: 0 };
+    const currentCaptured: any[] = [];
+    await getCopilotQuota({
+      cacheDir: dir,
+      ttlSeconds: 0,
+      sdkModule: makeSdk(
+        {
+          quotaSnapshots: {
+            chat: {
+              entitlementRequests: 10,
+              usedRequests: 1,
+              remainingPercentage: 90,
+              overage: 0,
+              overageAllowedWithExhaustedQuota: false,
+            },
+          },
+        },
+        currentState,
+        undefined,
+        currentCaptured,
+      ),
+      clientOptions: { githubToken: "current-token" },
+    });
+
+    assert.equal(currentCaptured[0]?.githubToken, "current-token");
+    assert.equal(currentCaptured[0]?.gitHubToken, "current-token");
+
+    const legacyState = { started: 0, stopped: 0, quotaCalls: 0 };
+    const legacyCaptured: any[] = [];
+    await getCopilotQuota({
+      cacheDir: dir,
+      ttlSeconds: 0,
+      sdkModule: makeSdk(
+        {
+          quotaSnapshots: {
+            chat: {
+              entitlementRequests: 10,
+              usedRequests: 2,
+              remainingPercentage: 80,
+              overage: 0,
+              overageAllowedWithExhaustedQuota: false,
+            },
+          },
+        },
+        legacyState,
+        undefined,
+        legacyCaptured,
+      ),
+      clientOptions: { gitHubToken: "legacy-token" },
+    });
+
+    assert.equal(legacyCaptured[0]?.githubToken, "legacy-token");
+    assert.equal(legacyCaptured[0]?.gitHubToken, "legacy-token");
+  });
+});
+
 test("getCopilotQuota fetches through SDK RPC and returns cached quota", async () => {
   await withTmp(async (dir) => {
     const state = { started: 0, stopped: 0 };

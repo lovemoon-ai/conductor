@@ -26,7 +26,7 @@ import {
   flattenGroupsToProjectIds,
   reorderProjectGroupsLocally,
 } from './project-list-utils';
-import { computeProjectGroups } from '../utils/project-groups';
+import { getProjectListVisibility } from '../utils/project-list-order';
 
 const collisionDetection: CollisionDetection = (args) => {
   const pointerIntersections = pointerWithin(args);
@@ -39,51 +39,6 @@ const collisionDetection: CollisionDetection = (args) => {
 const PROJECT_DRAG_ACTIVATION_DELAY_MS = 350;
 const PROJECT_DRAG_ACTIVATION_TOLERANCE_PX = 8;
 const PROJECT_DRAG_ACTIVATION_DISTANCE_PX = 6;
-
-const getProjectDaemonHost = (project: Project): string | null => {
-  if (typeof project.daemonHost !== 'string') {
-    return null;
-  }
-  return project.daemonHost.trim() || null;
-};
-
-const getCollaborationMemberCount = (project: Project): number =>
-  project.collaboration?.memberCount ?? project.collaboration?.members.length ?? 0;
-
-const getProjectWorkspaceKey = (project: Project): string | null => {
-  const workspacePath = typeof project.workspacePath === 'string'
-    ? project.workspacePath.trim().replace(/\/+$/, '')
-    : '';
-  const name = project.name.trim();
-  if (!workspacePath || !name) {
-    return null;
-  }
-  return `${name}\u0000${workspacePath}`;
-};
-
-const getDuplicateSoloCollaborationProjectIds = (projects: Project[]): Set<string> => {
-  const sharedKeys = new Set<string>();
-  for (const project of projects) {
-    const key = getProjectWorkspaceKey(project);
-    if (key && getCollaborationMemberCount(project) > 1) {
-      sharedKeys.add(key);
-    }
-  }
-
-  const duplicateIds = new Set<string>();
-  for (const project of projects) {
-    const key = getProjectWorkspaceKey(project);
-    if (
-      key
-      && sharedKeys.has(key)
-      && Boolean(project.collaborationId || project.collaboration)
-      && getCollaborationMemberCount(project) <= 1
-    ) {
-      duplicateIds.add(project.id);
-    }
-  }
-  return duplicateIds;
-};
 
 export function ProjectList() {
   const {
@@ -105,28 +60,20 @@ export function ProjectList() {
     })),
     [agents],
   );
-  const hiddenProjectIdSet = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
-  const duplicateSoloCollaborationProjectIds = useMemo(
-    () => getDuplicateSoloCollaborationProjectIds(projects),
-    [projects],
+  const projectListVisibility = useMemo(
+    () => getProjectListVisibility(projects, {
+      hiddenProjectIds,
+      showHiddenProjects,
+      onlineDaemonHosts,
+    }),
+    [hiddenProjectIds, onlineDaemonHosts, projects, showHiddenProjects],
   );
-  const onlineProjects = useMemo(
-    () =>
-      projects.filter((project) => {
-        if (duplicateSoloCollaborationProjectIds.has(project.id)) {
-          return false;
-        }
-        const daemonHost = getProjectDaemonHost(project);
-        const hasCollaboration = Boolean(project.collaborationId || project.collaboration);
-        return !daemonHost || onlineDaemonHosts.has(daemonHost) || hasCollaboration;
-      }),
-    [duplicateSoloCollaborationProjectIds, onlineDaemonHosts, projects],
-  );
-  const visibleProjects = useMemo(
-    () =>
-      onlineProjects.filter((project) => showHiddenProjects || !hiddenProjectIdSet.has(project.id)),
-    [hiddenProjectIdSet, onlineProjects, showHiddenProjects],
-  );
+  const {
+    hiddenProjectIdSet,
+    onlineProjects,
+    visibleProjects,
+    visibleGroups,
+  } = projectListVisibility;
   const sensors = useSensors(
     useSensor(MouseSensor, {
       activationConstraint: {
@@ -143,7 +90,6 @@ export function ProjectList() {
   // Compute groups (one card per merged set) from the currently visible
   // projects. Single-member groups behave like the old single-project rows;
   // merged groups render one card with multiple daemon badges.
-  const visibleGroups = useMemo(() => computeProjectGroups(visibleProjects), [visibleProjects]);
   const [dragOrderKeys, setDragOrderKeys] = useState<string[] | null>(null);
   const [activeGroupKey, setActiveGroupKey] = useState<string | null>(null);
 
