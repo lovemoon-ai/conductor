@@ -40,6 +40,11 @@ import {
   isConductorFireHost,
 } from "@/lib/subscription/plan-limits";
 import { recoverStaleDisconnectedAgentTasks } from "@/lib/tasks/stale-recovery";
+import {
+  findAttachedPtyTaskIdsByProjects,
+  findAttachedTerminalsByAiTaskIds,
+} from "@/lib/tasks/attached-terminal";
+import { countActiveScheduledMessagesForTasks } from "@/lib/tasks/scheduled-messages";
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
@@ -265,7 +270,27 @@ export async function GET(request: NextRequest) {
     return NextResponse.json([]);
   }
 
-  const tasks = await findTasksForList(user.id, projectIdFilter);
+  const rawTasks = await findTasksForList(user.id, projectIdFilter);
+
+  // Exclude PTY tasks that are attached to an AI task — they are rendered
+  // inside the AI task's detail pane, not as standalone cards. We exclude
+  // by TWO independent signals so an orphaned AttachedTerminal row (or a
+  // PTY task whose AttachedTerminal was deleted out of band) doesn't leak
+  // into the list:
+  //   (a) AttachedTerminal table maps ptyTaskId → an AI task in scope
+  //   (b) The PTY task's own metadata carries `attachedToAiTaskId`
+  const attachedPtyTaskIds = await findAttachedPtyTaskIdsByProjects(
+    user.id,
+    projectIdFilter,
+  );
+  const tasks = rawTasks.filter((task) => {
+    if (attachedPtyTaskIds.has(task.id)) return false;
+    if ((task.taskType ?? "ai_task") === "pty_task") {
+      const metadata = parseJsonObject(task.metadata);
+      if (typeof metadata?.attachedToAiTaskId === "string") return false;
+    }
+    return true;
+  });
 
   if (recoverStale) {
     await recoverStaleDisconnectedAgentTasks(user.id, tasks as any);
@@ -273,6 +298,16 @@ export async function GET(request: NextRequest) {
 
   const taskIds = tasks.map((task) => task.id);
   const messagePreviews = await buildTaskMessagePreviews(taskIds);
+  // Only AI tasks can have attached terminals; restricting the lookup
+  // keeps the query small.
+  const aiTaskIds = tasks
+    .filter((task) => (task.taskType ?? "ai_task") === "ai_task")
+    .map((task) => task.id);
+  const attachedTerminals = await findAttachedTerminalsByAiTaskIds(aiTaskIds);
+  const activeScheduledMessageCounts = await countActiveScheduledMessagesForTasks({
+    userId: user.id,
+    taskIds,
+  });
 
   const response = tasks
     .slice()
@@ -283,13 +318,16 @@ export async function GET(request: NextRequest) {
       }
       return b.createdAt.getTime() - a.createdAt.getTime();
     })
-    .map((task) =>
-      serializeTaskResponse({
+    .map((task) => {
+      const attached = attachedTerminals.get(task.id) ?? null;
+      return serializeTaskResponse({
         ...task,
         lastUserMessage: messagePreviews[task.id]?.lastUserMessage ?? null,
         lastAssistantMessage: messagePreviews[task.id]?.lastAssistantMessage ?? null,
-      }),
-    );
+        attachedTerminal: attached,
+        activeScheduledMessageCount: activeScheduledMessageCounts.get(task.id) ?? 0,
+      });
+    });
 
   return NextResponse.json(response);
 }

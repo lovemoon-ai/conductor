@@ -1,5 +1,52 @@
 # @love-moon/conductor-cli
 
+## 0.7.2
+
+### Patch Changes
+
+- Updated dependencies [80c5255]
+  - @love-moon/conductor-sdk@0.7.2
+  - @love-moon/ai-sdk@0.7.2
+
+## 0.7.1
+
+### Patch Changes
+
+- Updated dependencies [3f35925]
+  - @love-moon/conductor-sdk@0.7.1
+  - @love-moon/ai-sdk@0.7.1
+
+## 0.7.0
+
+### Minor Changes
+
+- 689fc50: Add scheduled message management APIs and conductor task schedule list/create/delete commands.
+
+### Patch Changes
+
+- Updated dependencies [689fc50]
+  - @love-moon/conductor-sdk@0.7.0
+  - @love-moon/ai-sdk@0.7.0
+
+## 0.6.1
+
+### Patch Changes
+
+- Updated dependencies [650fc55]
+  - @love-moon/ai-sdk@0.6.1
+  - @love-moon/conductor-sdk@0.6.1
+
+## 0.6.0
+
+### Minor Changes
+
+- bcc80b5: Initialize Git submodules automatically when preparing task worktrees.
+
+### Patch Changes
+
+- @love-moon/conductor-sdk@0.6.0
+- @love-moon/ai-sdk@0.6.0
+
 ## 0.5.1
 
 ### Patch Changes

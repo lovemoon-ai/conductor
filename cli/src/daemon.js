@@ -16,6 +16,7 @@ import {
   ProjectContext,
 } from "@love-moon/conductor-sdk";
 import { DaemonLogCollector } from "./log-collector.js";
+import { envForExplicitConfigFile } from "./config-env.js";
 import { createAiManagerHandlers, handleAiManagerRequest } from "./ai-manager-handlers.js";
 import {
   CUSTOM_COMMANDS_CAPABILITY,
@@ -598,6 +599,7 @@ function normalizeTerminalEnv(value) {
 }
 
 const PTY_TASK_SCOPED_ENV_KEYS = [
+  "CONDUCTOR_CLI_COMMAND",
   "CONDUCTOR_PROJECT_ID",
   "CONDUCTOR_TASK_ID",
   "CONDUCTOR_PTY_SESSION_ID",
@@ -667,8 +669,9 @@ export function startDaemon(config = {}, deps = {}) {
   };
 
   let fileConfig;
+  const configFileEnv = envForExplicitConfigFile(config.CONFIG_FILE, process.env);
   try {
-    fileConfig = loadConfig(config.CONFIG_FILE);
+    fileConfig = loadConfig(config.CONFIG_FILE, { env: configFileEnv });
     log(`Loaded config from ${config.CONFIG_FILE || "~/.conductor/config.yaml"}`);
   } catch (err) {
     if (!(err instanceof ConfigFileNotFound)) {
@@ -677,15 +680,15 @@ export function startDaemon(config = {}, deps = {}) {
   }
 
   const userConfig = getUserConfig(config.CONFIG_FILE);
+  const allowEnvConfigOverrides = !config.CONFIG_FILE;
   const explicitWsUrl =
     config.BACKEND_URL ||
-    process.env.CONDUCTOR_BACKEND_WS_URL ||
-    process.env.CONDUCTOR_WS_URL ||
+    (allowEnvConfigOverrides ? process.env.CONDUCTOR_BACKEND_WS_URL || process.env.CONDUCTOR_WS_URL : null) ||
     null;
   const derivedHttpFromWs = explicitWsUrl ? deriveBackendHttpFromWebsocket(explicitWsUrl) : null;
   const BACKEND_HTTP = (
     config.BACKEND_HTTP ||
-    process.env.CONDUCTOR_BACKEND_URL ||
+    (allowEnvConfigOverrides ? process.env.CONDUCTOR_BACKEND_URL : null) ||
     derivedHttpFromWs ||
     fileConfig?.backendUrl ||
     "http://localhost:6152"
@@ -694,7 +697,10 @@ export function startDaemon(config = {}, deps = {}) {
     explicitWsUrl ||
     deriveWebsocketUrlFromHttp(BACKEND_HTTP);
   const AGENT_TOKEN =
-    config.AGENT_TOKEN || process.env.CONDUCTOR_AGENT_TOKEN || fileConfig?.agentToken || "default-agent-token";
+    config.AGENT_TOKEN ||
+    (allowEnvConfigOverrides ? process.env.CONDUCTOR_AGENT_TOKEN : null) ||
+    fileConfig?.agentToken ||
+    "default-agent-token";
   const configuredDaemonName =
     (typeof userConfig.daemon_name === "string" && userConfig.daemon_name.trim()) ||
     (typeof fileConfig?.daemonName === "string" && fileConfig.daemonName.trim()) ||
@@ -1257,6 +1263,8 @@ export function startDaemon(config = {}, deps = {}) {
     "",
     "worktree:",
     "  sync_branch: false",
+    "  sync_submodules: true",
+    "  # When .gitmodules exists, initialize/update submodules in task worktrees.",
     "  symlink: []",
     "  # Example: symlink paths from the parent workspace into each worktree",
     "  # symlink:",
@@ -1264,6 +1272,72 @@ export function startDaemon(config = {}, deps = {}) {
     "  #   - .env",
     "",
   ].join("\n");
+
+  const MAX_PROJECT_ICON_IMAGE_BYTES = 128 * 1024;
+  const PROJECT_ICON_MIME_BY_EXTENSION = {
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+    ".avif": "image/avif",
+  };
+
+  function getProjectSettingsCandidates(projectWorkspacePath) {
+    return [
+      path.join(projectWorkspacePath, ".conductor", "settings.yaml"),
+      path.join(projectWorkspacePath, ".conductor", "settings.yml"),
+      path.join(projectWorkspacePath, ".conductor", "setttings.yaml"),
+      path.join(projectWorkspacePath, ".conductor", "setttings.yml"),
+    ];
+  }
+
+  function extractProjectIconFromSettings(parsed) {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const direct = normalizeOptionalString(parsed.icon);
+    if (direct) return direct;
+    const projectSettings = parsed.project;
+    if (
+      projectSettings &&
+      typeof projectSettings === "object" &&
+      !Array.isArray(projectSettings)
+    ) {
+      return normalizeOptionalString(projectSettings.icon);
+    }
+    return null;
+  }
+
+  function projectIconLooksLikeFilesystemPath(iconValue) {
+    if (/^(https?:\/\/|data:)/i.test(iconValue)) return false;
+    if (iconValue.startsWith("/") || iconValue.startsWith("./") || iconValue.startsWith("../")) {
+      return true;
+    }
+    if (!iconValue.includes("/")) return false;
+    const ext = path.extname(iconValue).toLowerCase();
+    return Object.prototype.hasOwnProperty.call(PROJECT_ICON_MIME_BY_EXTENSION, ext);
+  }
+
+  function readProjectIconAsDataUri(settingsDir, iconValue) {
+    const resolvedPath = path.isAbsolute(iconValue)
+      ? iconValue
+      : path.resolve(settingsDir, iconValue);
+    const ext = path.extname(resolvedPath).toLowerCase();
+    const mime = PROJECT_ICON_MIME_BY_EXTENSION[ext];
+    if (!mime) return null;
+    try {
+      const stat = statSyncFn(resolvedPath);
+      if (!stat.isFile() || stat.size === 0 || stat.size > MAX_PROJECT_ICON_IMAGE_BYTES) {
+        return null;
+      }
+      return `data:${mime};base64,${readFileSyncFn(resolvedPath).toString("base64")}`;
+    } catch {
+      return null;
+    }
+  }
 
   function ensureProjectSettingsTemplate(projectWorkspacePath) {
     const settingsPath = path.join(projectWorkspacePath, ".conductor", "settings.yaml");
@@ -1278,15 +1352,28 @@ export function startDaemon(config = {}, deps = {}) {
     }
   }
 
-  function readProjectWorktreeSettings(projectWorkspacePath) {
-    const settingsCandidates = [
-      path.join(projectWorkspacePath, ".conductor", "settings.yaml"),
-      path.join(projectWorkspacePath, ".conductor", "settings.yml"),
-      path.join(projectWorkspacePath, ".conductor", "setttings.yaml"),
-      path.join(projectWorkspacePath, ".conductor", "setttings.yml"),
-    ];
+  function readProjectIconSetting(projectWorkspacePath) {
+    for (const settingsPath of getProjectSettingsCandidates(projectWorkspacePath)) {
+      if (!existsSyncFn(settingsPath)) {
+        continue;
+      }
+      let rawIcon = null;
+      try {
+        rawIcon = extractProjectIconFromSettings(yaml.load(readFileSyncFn(settingsPath, "utf8")));
+      } catch {
+        return null;
+      }
+      if (!rawIcon) return null;
+      if (!projectIconLooksLikeFilesystemPath(rawIcon)) {
+        return rawIcon;
+      }
+      return readProjectIconAsDataUri(path.dirname(settingsPath), rawIcon);
+    }
+    return null;
+  }
 
-    for (const settingsPath of settingsCandidates) {
+  function readProjectWorktreeSettings(projectWorkspacePath) {
+    for (const settingsPath of getProjectSettingsCandidates(projectWorkspacePath)) {
       if (!existsSyncFn(settingsPath)) {
         continue;
       }
@@ -1300,6 +1387,7 @@ export function startDaemon(config = {}, deps = {}) {
         return {
           symlinkPaths: normalizeConfiguredPathList(worktreeSettings.symlink, projectWorkspacePath),
           syncBranch: worktreeSettings.sync_branch === true || worktreeSettings.syncBranch === true,
+          syncSubmodules: worktreeSettings.sync_submodules !== false && worktreeSettings.syncSubmodules !== false,
           settingsPath,
         };
       } catch (error) {
@@ -1310,6 +1398,7 @@ export function startDaemon(config = {}, deps = {}) {
     return {
       symlinkPaths: [],
       syncBranch: false,
+      syncSubmodules: true,
       settingsPath: null,
     };
   }
@@ -1376,6 +1465,28 @@ export function startDaemon(config = {}, deps = {}) {
 
       const relativeTarget = path.relative(path.dirname(linkPath), sourcePath) || ".";
       symlinkSyncFn(relativeTarget, linkPath);
+    }
+  }
+
+  async function ensureTaskWorktreeSubmodules({ taskId, projectWorkspacePath, worktreeRoot }) {
+    const { syncSubmodules } = readProjectWorktreeSettings(projectWorkspacePath);
+    if (!syncSubmodules || !existsSyncFn(path.join(worktreeRoot, ".gitmodules"))) {
+      return;
+    }
+
+    try {
+      await runSpawnProcess(
+        "git",
+        ["-C", worktreeRoot, "submodule", "sync", "--recursive"],
+        { cwd: worktreeRoot, timeoutMs: WORKTREE_SUBMODULE_SYNC_TIMEOUT_MS },
+      );
+      await runSpawnProcess(
+        "git",
+        ["-C", worktreeRoot, "submodule", "update", "--init", "--recursive"],
+        { cwd: worktreeRoot, timeoutMs: WORKTREE_SUBMODULE_SYNC_TIMEOUT_MS },
+      );
+    } catch (error) {
+      throw new Error(`Failed to sync git submodules for ${taskId}: ${error?.message || error}`);
     }
   }
 
@@ -1567,6 +1678,11 @@ export function startDaemon(config = {}, deps = {}) {
       }
     }
 
+    await ensureTaskWorktreeSubmodules({
+      taskId,
+      projectWorkspacePath: worktreeConfig.projectWorkspacePath,
+      worktreeRoot,
+    });
     mkdirSyncFn(finalCwd, { recursive: true });
     await ensureTaskWorktreeSymlinks({
       projectRepoRoot: worktreeConfig.projectRepoRoot,
@@ -1601,6 +1717,10 @@ export function startDaemon(config = {}, deps = {}) {
   const WORKTREE_SYNC_TIMEOUT_MS = parsePositiveInt(
     process.env.CONDUCTOR_WORKTREE_SYNC_TIMEOUT_MS,
     5_000,
+  );
+  const WORKTREE_SUBMODULE_SYNC_TIMEOUT_MS = parsePositiveInt(
+    process.env.CONDUCTOR_WORKTREE_SUBMODULE_SYNC_TIMEOUT_MS,
+    120_000,
   );
   const SHUTDOWN_STATUS_REPORT_TIMEOUT_MS = parsePositiveInt(
     process.env.CONDUCTOR_SHUTDOWN_STATUS_REPORT_TIMEOUT_MS,
@@ -4339,6 +4459,7 @@ export function startDaemon(config = {}, deps = {}) {
       lastCommit: null,
       lastCommitAt: null,
       fileCount: null,
+      icon: null,
       error: null,
       errorCode: null,
       validatedAt,
@@ -4392,6 +4513,7 @@ export function startDaemon(config = {}, deps = {}) {
             typeof snapshot?.fileCount === "number" && Number.isInteger(snapshot.fileCount)
               ? snapshot.fileCount
               : null,
+          icon: readProjectIconSetting(effectiveWorkspace),
         };
       }
     } catch (error) {
@@ -4415,6 +4537,7 @@ export function startDaemon(config = {}, deps = {}) {
           last_commit_at: result.lastCommitAt,
           git_remote_url: result.gitRemoteUrl,
           file_count: result.fileCount,
+          icon: result.icon,
           error: result.error,
           error_code: result.errorCode,
           validated_at: result.validatedAt,
@@ -5148,7 +5271,7 @@ export function startDaemon(config = {}, deps = {}) {
       });
 
       const env = {
-        ...process.env,
+        ...stripPtyTaskScopedEnv(process.env),
         PWD: taskDir,
         CONDUCTOR_PROJECT_ID: projectId,
         CONDUCTOR_TASK_ID: taskId,
@@ -5791,7 +5914,7 @@ export function startDaemon(config = {}, deps = {}) {
     }
 
     const env = {
-      ...process.env,
+      ...stripPtyTaskScopedEnv(process.env),
       PWD: taskDir,
       CONDUCTOR_PROJECT_ID: normalizedProjectId,
       CONDUCTOR_TASK_ID: normalizedTargetTaskId,

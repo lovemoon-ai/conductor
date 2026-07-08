@@ -38,8 +38,8 @@ importers:
         version: 5.9.3
     optionalDependencies:
       '@love-moon/chat-web':
-        specifier: ^0.4.1
-        version: 0.4.1
+        specifier: ^0.6.0
+        version: 0.6.0
 
 packages:
 
@@ -350,8 +350,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@love-moon/chat-web@0.4.1':
-    resolution: {integrity: sha512-lNeZkGaOy29cjxeF1ykWXrSmvGTyuLTg9Gni9Cn/Mz7MxQP12Tb3rZNe/2TQjxNjKYpGNWvzRF6DAAlE0PE7zw==}
+  '@love-moon/chat-web@0.6.0':
+    resolution: {integrity: sha512-ffUtdYYblkPMtbe1VBdjgbqE3gnYgMl2dd3Yfb/nDV42ix5959qmdXGYE6yhBQJjLtRkOW5evctqaouQmrOacA==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -621,7 +621,7 @@ snapshots:
   '@img/sharp-win32-x64@0.34.5':
     optional: true
 
-  '@love-moon/chat-web@0.4.1':
+  '@love-moon/chat-web@0.6.0':
     dependencies:
       playwright: 1.60.0
     optional: true

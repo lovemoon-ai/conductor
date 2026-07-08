@@ -4,6 +4,7 @@ import { TaskList } from './TaskList';
 
 const deleteTaskMock = vi.fn();
 const taskItemMock = vi.fn();
+const taskGraphViewMock = vi.fn();
 
 type FakeTask = {
   id: string;
@@ -28,6 +29,25 @@ let projectsState: {
 };
 
 vi.mock('../store', () => ({
+  orderTasksWithPinnedFirst: <T extends { metadata?: Record<string, unknown> | null }>(tasks: T[]): T[] =>
+    tasks
+      .map((task, index) => {
+        const value = task.metadata?.pinnedAt;
+        const pinnedAt = typeof value === 'string' && Number.isFinite(Date.parse(value))
+          ? Date.parse(value)
+          : null;
+        return { task, index, pinnedAt };
+      })
+      .sort((left, right) => {
+        if (left.pinnedAt !== null && right.pinnedAt !== null) {
+          const pinnedDelta = right.pinnedAt - left.pinnedAt;
+          return pinnedDelta !== 0 ? pinnedDelta : left.index - right.index;
+        }
+        if (left.pinnedAt !== null) return -1;
+        if (right.pinnedAt !== null) return 1;
+        return left.index - right.index;
+      })
+      .map(({ task }) => task),
   useTasksStore: (selector?: (state: typeof tasksState) => unknown) =>
     typeof selector === 'function' ? selector(tasksState) : tasksState,
 }));
@@ -54,14 +74,33 @@ vi.mock('./TaskItem', () => ({
   },
 }));
 
+vi.mock('./TaskGraphView', () => ({
+  TaskGraphView: (props: { tasks: Array<{ id: string; title: string }>; stateKey?: string | null }) => {
+    taskGraphViewMock(props);
+    return (
+      <div data-testid="task-graph-view" data-state-key={props.stateKey ?? ''}>
+        graph:{props.tasks.map((task) => task.id).join(',')}
+      </div>
+    );
+  },
+}));
+
 vi.mock('@/components/common/LoadingSpinner', () => ({
   LoadingSpinner: () => <div data-testid="loading-spinner" />,
 }));
 
 describe('TaskList', () => {
+  const expectFullHeightGraphShell = () => {
+    const graphView = screen.getByTestId('task-graph-view');
+    expect(graphView.parentElement).toHaveClass('relative', 'h-full', 'min-h-[420px]');
+    expect(graphView.parentElement?.parentElement).toHaveClass('min-h-0', 'flex-1');
+    expect(graphView.parentElement?.parentElement?.parentElement).toHaveClass('flex', 'h-full', 'min-h-0', 'flex-col');
+  };
+
   beforeEach(() => {
     deleteTaskMock.mockReset();
     taskItemMock.mockReset();
+    taskGraphViewMock.mockReset();
 
     tasksState = {
       tasks: [
@@ -105,6 +144,53 @@ describe('TaskList', () => {
     expect(screen.getByTestId('loading-spinner')).toBeInTheDocument();
   });
 
+  it('renders graph view with the same filtered tasks', () => {
+    tasksState = {
+      ...tasksState,
+      currentProjectFilter: null,
+    };
+
+    render(<TaskList viewMode="graph" projectFilter="project-1" />);
+
+    expect(screen.getByTestId('task-graph-view')).toHaveTextContent('graph:task-1');
+    expectFullHeightGraphShell();
+    expect(screen.queryByTestId('task-item-task-1')).toBeNull();
+    expect(taskGraphViewMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tasks: [expect.objectContaining({ id: 'task-1' })],
+        stateKey: 'projects:project-1',
+      }),
+    );
+  });
+
+  it('keeps graph view full-height while loading an empty initial task set', () => {
+    tasksState = {
+      ...tasksState,
+      tasks: [],
+      isLoading: true,
+    };
+
+    render(<TaskList viewMode="graph" projectFilter="project-1" />);
+
+    expect(screen.getByTestId('task-graph-view')).toHaveTextContent('graph:');
+    expect(screen.getByTestId('loading-spinner')).toBeInTheDocument();
+    expectFullHeightGraphShell();
+  });
+
+  it('keeps graph view full-height for the empty task state', () => {
+    tasksState = {
+      ...tasksState,
+      tasks: [],
+      isLoading: false,
+    };
+
+    render(<TaskList viewMode="graph" projectFilter="project-1" />);
+
+    expect(screen.getByTestId('task-graph-view')).toHaveTextContent('graph:');
+    expect(screen.getByText('No tasks yet')).toBeInTheDocument();
+    expectFullHeightGraphShell();
+  });
+
   it('excludes hidden project tasks from all-project lists', () => {
     tasksState = {
       ...tasksState,
@@ -136,6 +222,45 @@ describe('TaskList', () => {
     expect(screen.getByText('Task One:idle')).toBeInTheDocument();
     expect(screen.getByText('Task Three:idle')).toBeInTheDocument();
     expect(screen.queryByText('Task Two:idle')).toBeNull();
+  });
+
+  it('keeps pinned tasks above updated-at order and sorts pins by pin time', () => {
+    tasksState = {
+      ...tasksState,
+      tasks: [
+        {
+          id: 'task-unpinned-new',
+          title: 'Unpinned New',
+          projectId: 'project-1',
+          status: 'running',
+          metadata: null,
+        },
+        {
+          id: 'task-pinned-old',
+          title: 'Pinned Old',
+          projectId: 'project-1',
+          status: 'running',
+          metadata: { pinnedAt: '2024-01-01T00:00:00.000Z' },
+        },
+        {
+          id: 'task-pinned-new',
+          title: 'Pinned New',
+          projectId: 'project-1',
+          status: 'running',
+          metadata: { pinnedAt: '2024-01-02T00:00:00.000Z' },
+        },
+      ],
+    };
+
+    render(<TaskList viewMode="list" projectFilter="project-1" />);
+
+    const renderedIds = Array.from(document.querySelectorAll('[data-testid^="task-item-"]'))
+      .map((node) => node.getAttribute('data-testid'));
+    expect(renderedIds).toEqual([
+      'task-item-task-pinned-new',
+      'task-item-task-pinned-old',
+      'task-item-task-unpinned-new',
+    ]);
   });
 
   describe('project name / daemon host chip visibility', () => {

@@ -959,6 +959,14 @@ export function TerminalView({ task }: TerminalViewProps) {
           className="h-[calc(100%-2.5rem)] w-full cursor-text p-2"
           onClick={() => terminalRef.current?.focus()}
           onKeyDown={(event) => {
+            // Only the container itself is a "click-to-focus" button — once
+            // xterm's internal textarea has focus the keystrokes belong to
+            // the shell. Without this guard the bubbled keydown for Space
+            // (and Enter) would have its default suppressed here, swallowing
+            // the printable input before xterm.onData ever sees it.
+            if (event.target !== event.currentTarget) {
+              return;
+            }
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault();
               terminalRef.current?.focus();

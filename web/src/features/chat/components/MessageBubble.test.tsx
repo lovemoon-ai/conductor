@@ -67,7 +67,8 @@ describe('MessageBubble', () => {
     fireEvent.doubleClick(bubble);
 
     expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
-    expect(screen.queryByText('Copy')).not.toBeInTheDocument();
+    // Each toolbar button now carries a short single-word caption beneath it.
+    expect(screen.getByText('Copy')).toBeInTheDocument();
   });
 
   it('calls onResend with the current message from the double-click toolbar', () => {
@@ -87,6 +88,24 @@ describe('MessageBubble', () => {
 
     expect(onResend).toHaveBeenCalledWith('repeat this');
     expect(screen.queryByRole('button', { name: 'Resend message' })).not.toBeInTheDocument();
+  });
+
+  it('calls onSchedule with the current message from the double-click toolbar', () => {
+    const onSchedule = vi.fn();
+    const message = makeMessage({ role: 'user', content: 'send this later' });
+    const { container } = render(
+      <MessageBubble
+        message={message}
+        onSchedule={onSchedule}
+      />,
+    );
+
+    const bubble = container.querySelector('[role="button"]') as HTMLElement;
+    fireEvent.doubleClick(bubble);
+    fireEvent.click(screen.getByTestId('message-bubble-schedule-button'));
+
+    expect(onSchedule).toHaveBeenCalledWith(message);
+    expect(screen.queryByTestId('message-bubble-schedule-button')).not.toBeInTheDocument();
   });
 
   it('calls onRestart from the message action sheet', () => {

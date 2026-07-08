@@ -38,6 +38,15 @@ npm run changeset
 Select the affected package(s), choose `patch`, `minor`, or `major`, and commit
 the generated `.changeset/*.md` file with the feature.
 
+### CLI semver bump rule
+
+For `@love-moon/conductor-cli`, default to a patch release for small batches of
+CLI work. Use a minor release only when the release includes more than 5
+CLI-related commits since the previous CLI release. For example:
+
+- `0.5.0 -> 0.5.1` when there are 5 or fewer CLI-related commits.
+- `0.5.0 -> 0.6.0` when there are more than 5 CLI-related commits.
+
 ### AI / Author decision rule
 
 The agent or author should decide whether to run `npm run changeset` from the

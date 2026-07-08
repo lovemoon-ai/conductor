@@ -3,10 +3,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useChatStore } from '../store';
 import { useRuntimeStore } from '@/features/realtime';
+import { useProjectsStore } from '@/features/projects';
 import { useTasksStore } from '@/features/tasks';
 import { useWebSocketStore } from '@/features/realtime';
 import { MessageBubble } from './MessageBubble';
 import { MessageInput, type MessageInputHandle } from './MessageInput';
+import { ScheduledMessageDialog } from './ScheduledMessageDialog';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { QuestionNav } from '@/components/common/QuestionNav';
@@ -155,6 +157,7 @@ type ComposerFeedback = {
 interface ChatViewUiState {
   composerFeedback: ComposerFeedback | null;
   interruptPending: boolean;
+  insertPending: boolean;
   latestSentReplyTo: string | null;
   awaitingRuntimeReply: boolean;
   restartPending: boolean;
@@ -163,18 +166,21 @@ interface ChatViewUiState {
 type ChatViewUiAction =
   | { type: 'clearTaskNotReadyFeedback' }
   | { type: 'interruptRequested' }
+  | { type: 'insertRequested' }
   | { type: 'recordSentMessage'; replyTo: string }
   | { type: 'runtimeReplyStarted' }
   | { type: 'runtimeReplyStopped' }
   | { type: 'setComposerFeedback'; feedback: ComposerFeedback | null }
   | { type: 'setRestartPending'; value: boolean }
-  | { type: 'settleInterrupt' };
+  | { type: 'settleInterrupt' }
+  | { type: 'settleInsert' };
 
 const EMPTY_MESSAGES: Message[] = [];
 
 const INITIAL_CHAT_VIEW_UI_STATE: ChatViewUiState = {
   composerFeedback: null,
   interruptPending: false,
+  insertPending: false,
   latestSentReplyTo: null,
   awaitingRuntimeReply: false,
   restartPending: false,
@@ -188,6 +194,8 @@ const chatViewUiReducer = (state: ChatViewUiState, action: ChatViewUiAction): Ch
         : state;
     case 'interruptRequested':
       return state.interruptPending ? state : { ...state, interruptPending: true };
+    case 'insertRequested':
+      return state.insertPending ? state : { ...state, insertPending: true };
     case 'recordSentMessage':
       return {
         ...state,
@@ -199,12 +207,18 @@ const chatViewUiReducer = (state: ChatViewUiState, action: ChatViewUiAction): Ch
         ? { ...state, awaitingRuntimeReply: false }
         : state;
     case 'runtimeReplyStopped':
-      if (!state.interruptPending && !state.latestSentReplyTo && !state.awaitingRuntimeReply) {
+      if (
+        !state.interruptPending &&
+        !state.insertPending &&
+        !state.latestSentReplyTo &&
+        !state.awaitingRuntimeReply
+      ) {
         return state;
       }
       return {
         ...state,
         interruptPending: false,
+        insertPending: false,
         latestSentReplyTo: null,
         awaitingRuntimeReply: false,
       };
@@ -220,6 +234,10 @@ const chatViewUiReducer = (state: ChatViewUiState, action: ChatViewUiAction): Ch
       return state.interruptPending
         ? { ...state, interruptPending: false }
         : state;
+    case 'settleInsert':
+      return state.insertPending
+        ? { ...state, insertPending: false }
+        : state;
     default:
       return state;
   }
@@ -233,6 +251,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const interruptTimeoutRef = useRef<number | null>(null);
   const interruptPendingRef = useRef(false);
+  const insertTimeoutRef = useRef<number | null>(null);
   const previousRuntimeReplyInProgressRef = useRef(false);
   const previousMessageCountRef = useRef(0);
   const pendingRestoreScrollStateRef = useRef<StoredScrollState | null>(readStoredScrollState(taskId));
@@ -244,11 +263,13 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const previousWebSocketStatusRef = useRef<'connected' | 'connecting' | 'disconnected' | null>(null);
   const pendingInterruptReplyToRef = useRef<string | null>(null);
   const messageInputRef = useRef<MessageInputHandle>(null);
-  const { messagesByTask, historyStateByTask, loadingTasks, fetchMessages, sendMessage } = useChatStore();
+  const { messagesByTask, historyStateByTask, loadingTasks, fetchMessages, sendMessage, insertMessage } = useChatStore();
   const runtime = useRuntimeStore((state) => state.byTask[taskId]);
   const clearRuntime = useRuntimeStore((state) => state.clearTask);
   const tasks = useTasksStore((state) => state.tasks);
+  const fetchTask = useTasksStore((state) => state.fetchTask);
   const restartTask = useTasksStore((state) => state.restartTask);
+  const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const websocketStatus = useWebSocketStore((state) => state.status);
   const task = tasks.find((t) => t.id === taskId);
   const isTaskRunning = task?.status === 'running';
@@ -256,6 +277,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [showQuestionNav, setShowQuestionNav] = useState(false);
   const [activeQuestion, setActiveQuestion] = useState(0);
+  const [scheduledMessage, setScheduledMessage] = useState<Message | null>(null);
   const questionRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const isJumpingQuestionRef = useRef(false);
   const lastScrollTopRef = useRef(0);
@@ -316,6 +338,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   ), [messages, pendingInterruptReplyTo, uiState.interruptPending]);
   const restartPending = uiState.restartPending;
   const interruptPending = uiState.interruptPending;
+  const insertPending = uiState.insertPending;
   const composerFeedback = uiState.composerFeedback;
   const visibleComposerFeedback = useMemo(() => (
     composerFeedback?.code === 'task_not_ready' && isTaskRunning ? null : composerFeedback
@@ -328,6 +351,9 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     !interruptPending,
   );
   const interruptEnabled = Boolean(isTaskRunning && activeInterruptReplyTo && !restartPending);
+  const insertEnabled = Boolean(
+    isTaskRunning && activeInterruptReplyTo && !restartPending && !interruptPending && !insertPending,
+  );
   const showEmptyStateRestart = Boolean(
     task &&
     (task.taskType ?? 'ai_task') === 'ai_task' &&
@@ -450,6 +476,10 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   useEffect(() => (
     () => {
       clearInterruptTimeout();
+      if (insertTimeoutRef.current !== null) {
+        window.clearTimeout(insertTimeoutRef.current);
+        insertTimeoutRef.current = null;
+      }
     }
   ), [clearInterruptTimeout]);
 
@@ -664,6 +694,15 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     }
   };
 
+  const handleScheduleMessage = useCallback((message: Message) => {
+    setScheduledMessage(message);
+  }, []);
+
+  const refreshScheduledMessageSummary = useCallback(() => {
+    void fetchTask(taskId);
+    void fetchProjects();
+  }, [fetchProjects, fetchTask, taskId]);
+
   const handleRestart = useCallback(async () => {
     if (interruptPending) {
       dispatchUiState({
@@ -771,6 +810,69 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const handleResend = useCallback((content: string) => {
     messageInputRef.current?.resend(content);
   }, []);
+
+  const handleInsert = useCallback(async (content: string) => {
+    const trimmed = content.trim();
+    if (!trimmed) {
+      return;
+    }
+    if (restartPending || interruptPending || insertPending) {
+      dispatchUiState({
+        type: 'setComposerFeedback',
+        feedback: {
+          variant: 'warning',
+          message: 'Wait for the current action to finish before inserting a message.',
+        },
+      });
+      return;
+    }
+    if (!isTaskRunning || !activeInterruptReplyTo) {
+      dispatchUiState({
+        type: 'setComposerFeedback',
+        feedback: {
+          variant: 'warning',
+          message: 'Insert is only available while a reply is in progress.',
+        },
+      });
+      return;
+    }
+
+    const targetReplyTo = activeInterruptReplyTo;
+    const clearInsertTimeout = () => {
+      if (insertTimeoutRef.current !== null) {
+        window.clearTimeout(insertTimeoutRef.current);
+        insertTimeoutRef.current = null;
+      }
+    };
+    try {
+      dispatchUiState({ type: 'setComposerFeedback', feedback: null });
+      dispatchUiState({ type: 'insertRequested' });
+      forceScrollToBottomRef.current = true;
+      clearInsertTimeout();
+      // Safety net: clear the pending flag even if the runtime never reports a
+      // new reply (the reducer also clears it on the next runtimeReplyStopped).
+      insertTimeoutRef.current = window.setTimeout(() => {
+        insertTimeoutRef.current = null;
+        dispatchUiState({ type: 'settleInsert' });
+      }, INTERRUPT_CONFIRMATION_TIMEOUT_MS);
+      await insertMessage(taskId, { content: trimmed, targetReplyTo });
+      // The request is delivered; settle immediately rather than waiting on the
+      // runtime to report a new reply (which may not happen when the insert only
+      // queues, e.g. the turn already finished). The timeout is just a backstop.
+      clearInsertTimeout();
+      dispatchUiState({ type: 'settleInsert' });
+    } catch {
+      clearInsertTimeout();
+      dispatchUiState({ type: 'settleInsert' });
+      dispatchUiState({
+        type: 'setComposerFeedback',
+        feedback: {
+          variant: 'error',
+          message: 'Failed to insert the message. Please try again in a moment.',
+        },
+      });
+    }
+  }, [activeInterruptReplyTo, insertMessage, insertPending, interruptPending, isTaskRunning, restartPending, taskId]);
 
   const handleScroll = () => {
     persistScrollPosition();
@@ -900,6 +1002,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
                   <MessageBubble
                     message={message}
                     onResend={handleResend}
+                    onSchedule={handleScheduleMessage}
                     onRestart={() => {
                       void handleRestart();
                     }}
@@ -989,13 +1092,25 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
         ref={messageInputRef}
         taskId={taskId}
         onSend={handleSend}
+        onInsert={(content) => {
+          void handleInsert(content);
+        }}
         onInterrupt={() => {
           void handleInterrupt();
         }}
         sendDisabled={!isTaskRunning || interruptPending || restartPending}
         interruptEnabled={interruptEnabled}
         interruptPending={interruptPending}
+        insertEnabled={insertEnabled}
+        insertPending={insertPending}
         autoFocus={autoFocusComposer}
+      />
+      <ScheduledMessageDialog
+        open={scheduledMessage !== null}
+        taskId={taskId}
+        message={scheduledMessage}
+        onClose={() => setScheduledMessage(null)}
+        onCreated={refreshScheduledMessageSummary}
       />
     </div>
   );

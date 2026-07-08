@@ -762,8 +762,22 @@ export async function POST(
     restartSourceBackendType: sourceBackend,
     restartStrategy: "new_task",
   };
+  // Workspace continuity contract for "new task from this":
+  //   1. If the source task is on a git worktree, inherit the full worktree
+  //      launch_config so the daemon lands the successor in the SAME
+  //      `.conductor/worktrees/<branch>` folder (identity is keyed off
+  //      `worktreeBranch`, see worktree.ts::sanitizeWorktreeFolderName and
+  //      daemon.js::buildTaskWorktreeRoot).
+  //   2. Otherwise preserve the source task's own `cwd` rather than silently
+  //      resetting to `projectWorkspacePath`. A source task whose
+  //      launch_config.cwd points at a subdirectory (or a different workspace
+  //      entirely) must not have its successor jump back to the project root
+  //      — that breaks the user's expectation that "continue this work" means
+  //      "continue in the same place".
+  const sourceCwd = normalizeOptionalString(sourceLaunchConfig?.cwd);
+  const successorCwd = sourceCwd ?? projectWorkspacePath ?? null;
   const successorLaunchConfig = inheritedWorktreeLaunchConfig ?? {
-    ...(projectWorkspacePath ? { cwd: projectWorkspacePath } : {}),
+    ...(successorCwd ? { cwd: successorCwd } : {}),
     ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
   };
 

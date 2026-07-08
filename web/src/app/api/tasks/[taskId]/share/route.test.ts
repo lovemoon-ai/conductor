@@ -12,6 +12,7 @@ vi.mock("@/lib/db", () => ({
       findFirst: vi.fn(),
     },
     sharedTask: {
+      findUnique: vi.fn(),
       upsert: vi.fn(),
       deleteMany: vi.fn(),
     },
@@ -31,6 +32,7 @@ describe("/api/tasks/[taskId]/share", () => {
       email: "test@example.com",
       phone: null,
     } as any);
+    vi.mocked(db.sharedTask.findUnique).mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -64,12 +66,13 @@ describe("/api/tasks/[taskId]/share", () => {
       expect(data).toEqual({ error: "Not found" });
     });
 
-    it("returns existing token via upsert when share already exists", async () => {
+    it("returns an unexpired existing share without regenerating a token", async () => {
       vi.mocked(db.task.findFirst).mockResolvedValue({ id: "task-1", projectId: "proj-1" } as any);
-      vi.mocked(db.sharedTask.upsert).mockResolvedValue({
+      vi.mocked(db.sharedTask.findUnique).mockResolvedValue({
         id: "shared-1",
         taskId: "task-1",
         userId: "user-1",
+        kind: "user",
         token: "existing-token-abc",
         expiresAt: new Date("2026-04-17T12:00:00.000Z"),
       } as any);
@@ -85,19 +88,42 @@ describe("/api/tasks/[taskId]/share", () => {
         token: "existing-token-abc",
         expiresAt: "2026-04-17T12:00:00.000Z",
       });
-      expect(db.sharedTask.deleteMany).toHaveBeenCalledWith({
+      expect(db.sharedTask.findUnique).toHaveBeenCalledWith({
         where: {
-          userId: "user-1",
-          taskId: "task-1",
-          kind: "user",
-          expiresAt: { lte: new Date("2026-04-10T12:00:00.000Z") },
+          taskId_userId_kind: { taskId: "task-1", userId: "user-1", kind: "user" },
         },
+      });
+      expect(db.sharedTask.upsert).not.toHaveBeenCalled();
+    });
+
+    it("creates a new share token via upsert when none exists", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue({ id: "task-1", projectId: "proj-1" } as any);
+      vi.mocked(db.sharedTask.findUnique).mockResolvedValue(null);
+      vi.mocked(db.sharedTask.upsert).mockResolvedValue({
+        id: "shared-1",
+        taskId: "task-1",
+        userId: "user-1",
+        token: "new-token-xyz",
+        expiresAt: new Date("2026-04-17T12:00:00.000Z"),
+      } as any);
+
+      const response = await POST(
+        createMockRequest({ method: "POST", url: "http://localhost:6152/api/tasks/task-1/share" }),
+        { params: Promise.resolve({ taskId: "task-1" }) },
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data).toEqual({
+        token: "new-token-xyz",
+        expiresAt: "2026-04-17T12:00:00.000Z",
       });
       expect(db.sharedTask.upsert).toHaveBeenCalledWith({
         where: {
           taskId_userId_kind: { taskId: "task-1", userId: "user-1", kind: "user" },
         },
         update: {
+          token: expect.any(String),
           expiresAt: new Date("2026-04-17T12:00:00.000Z"),
         },
         create: {
@@ -110,8 +136,16 @@ describe("/api/tasks/[taskId]/share", () => {
       });
     });
 
-    it("creates a new share token via upsert when none exists", async () => {
+    it("rotates an expired share token via upsert", async () => {
       vi.mocked(db.task.findFirst).mockResolvedValue({ id: "task-1", projectId: "proj-1" } as any);
+      vi.mocked(db.sharedTask.findUnique).mockResolvedValue({
+        id: "shared-1",
+        taskId: "task-1",
+        userId: "user-1",
+        kind: "user",
+        token: "expired-token",
+        expiresAt: new Date("2026-04-10T11:59:59.000Z"),
+      } as any);
       vi.mocked(db.sharedTask.upsert).mockResolvedValue({
         id: "shared-1",
         taskId: "task-1",
@@ -130,6 +164,22 @@ describe("/api/tasks/[taskId]/share", () => {
       expect(data).toEqual({
         token: "new-token-xyz",
         expiresAt: "2026-04-17T12:00:00.000Z",
+      });
+      expect(db.sharedTask.upsert).toHaveBeenCalledWith({
+        where: {
+          taskId_userId_kind: { taskId: "task-1", userId: "user-1", kind: "user" },
+        },
+        update: {
+          token: expect.any(String),
+          expiresAt: new Date("2026-04-17T12:00:00.000Z"),
+        },
+        create: {
+          taskId: "task-1",
+          userId: "user-1",
+          kind: "user",
+          token: expect.any(String),
+          expiresAt: new Date("2026-04-17T12:00:00.000Z"),
+        },
       });
     });
 

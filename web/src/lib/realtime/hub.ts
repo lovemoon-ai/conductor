@@ -60,6 +60,7 @@ export type ProjectPathValidationResult = {
   last_commit_at: string | null;
   git_remote_url: string | null;
   file_count: number | null;
+  icon?: string | null;
   error: string | null;
   error_code: string | null;
   validated_at: string;

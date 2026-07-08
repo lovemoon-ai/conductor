@@ -5,9 +5,13 @@ vi.mock('@/lib/db', () => ({
   db: {
     project: { findFirst: vi.fn() },
     task: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
-    message: { create: vi.fn(), findMany: vi.fn() },
+    message: { create: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
     $transaction: vi.fn(),
     user: { findUnique: vi.fn() },
+    attachedTerminal: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
   },
 }));
 
@@ -96,6 +100,7 @@ describe('task-ingress-service', () => {
       content: 'hello',
       createdAt: new Date('2026-03-16T00:00:01.000Z'),
     } as any);
+    vi.mocked(db.message.findFirst).mockResolvedValue(null as any);
     vi.mocked(db.task.update).mockResolvedValue({
       id: 'task-1',
       updatedAt: new Date('2026-03-16T00:00:01.000Z'),
@@ -233,6 +238,61 @@ describe('task-ingress-service', () => {
       expect.objectContaining({
         agentHost: 'conductor-fire-runtime',
         eventType: 'task_user_message',
+      }),
+      expect.objectContaining({
+        agentHost: 'conductor-fire-runtime',
+      }),
+    );
+  });
+
+  it('reuses an existing client message id and still enqueues the user message command', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1',
+      projectId: 'proj-1',
+      agentHost: 'conductor-fire-fallback',
+      executionHost: 'conductor-fire-runtime',
+    } as any);
+    vi.mocked(db.message.create).mockRejectedValueOnce(
+      Object.assign(new Error('Unique constraint failed'), { code: 'P2002' }),
+    );
+    vi.mocked(db.message.findFirst).mockResolvedValue({
+      id: 'msg-existing',
+      taskId: 'task-1',
+      role: 'user',
+      content: 'scheduled retry',
+      metadata: JSON.stringify({ scheduledMessageId: 'sched-1' }),
+      clientMessageId: 'scheduled-message:sched-1:1',
+      createdAt: new Date('2026-03-16T00:00:01.000Z'),
+    } as any);
+
+    const result = await appendUserMessageToTask({
+      userId: 'user-1',
+      taskId: 'task-1',
+      content: 'scheduled retry',
+      role: 'user',
+      clientMessageId: 'scheduled-message:sched-1:1',
+      metadata: { scheduledMessageId: 'sched-1' },
+    });
+
+    expect(result.message.id).toBe('msg-existing');
+    expect(projectTaskMessage).not.toHaveBeenCalled();
+    expect(db.message.findFirst).toHaveBeenCalledWith({
+      where: {
+        taskId: 'task-1',
+        clientMessageId: 'scheduled-message:sched-1:1',
+      },
+    });
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentHost: 'conductor-fire-runtime',
+        eventType: 'task_user_message',
+        requestId: 'msg-existing',
+        envelope: expect.objectContaining({
+          payload: expect.objectContaining({
+            message_id: 'msg-existing',
+            content: 'scheduled retry',
+          }),
+        }),
       }),
       expect.objectContaining({
         agentHost: 'conductor-fire-runtime',

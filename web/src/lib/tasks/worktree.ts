@@ -118,6 +118,49 @@ export const getTaskWorktreeRootKey = (launchConfig: unknown): string | null => 
   return `${sanitizeWorktreeFolderName(parsed.worktreeBranch)}\u0000${parsed.projectWorkspacePath}`;
 };
 
+/**
+ * Resolve the actual on-disk working directory for an AI task whose
+ * launch_config describes a worktree. Mirrors the daemon-side path math in
+ * `cli/src/daemon.js` (`buildTaskWorktreeRoot` + `resolveTaskWorktreeCwd`) so
+ * that an attached PTY can land in the *same* directory the AI task is
+ * running in.
+ *
+ * Cross-platform contract: the daemon's `buildTaskWorktreeRoot` uses Node's
+ * runtime-default `path` module (POSIX on macOS/Linux, win32 on Windows).
+ * The daemon itself is the source of truth for which separator is correct.
+ * We approximate it with `selectPathApi`, which inspects the string shape of
+ * the inputs (`isWindowsStylePath`) — that is faithful for any path the
+ * daemon previously stored in its native style, which is the only way these
+ * launch_config fields are populated today. If a future feature ever stores
+ * a POSIX-shaped string from a Windows daemon (or vice versa), this helper
+ * and the daemon will diverge — keep them in sync, or have the daemon round
+ * trip its `process.platform` choice through launch_config.
+ *
+ * Returns null when the launch_config does not describe a worktree (the
+ * caller falls back to `launch_config.cwd` / projectWorkspacePath in that
+ * case).
+ */
+export const resolveTaskWorktreeCwdFromLaunchConfig = (
+  launchConfig: unknown,
+): string | null => {
+  const parsed = parseTaskWorktreeLaunchConfig(launchConfig);
+  if (!parsed) {
+    return null;
+  }
+  const pathApi = selectPathApi(parsed.projectWorkspacePath, parsed.projectRelativePath);
+  const folder = sanitizeWorktreeFolderName(parsed.worktreeBranch);
+  const worktreeRoot = pathApi.join(
+    parsed.projectWorkspacePath,
+    ".conductor",
+    "worktrees",
+    folder,
+  );
+  if (!parsed.projectRelativePath || parsed.projectRelativePath === ".") {
+    return worktreeRoot;
+  }
+  return pathApi.join(worktreeRoot, parsed.projectRelativePath);
+};
+
 export const resolveTaskWorktreeCleanupHost = (args: {
   boundHost?: unknown;
   agentHost?: unknown;

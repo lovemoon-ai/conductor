@@ -31,6 +31,7 @@ export type ValidatedProjectBinding = {
   lastCommitAt: string | null;
   gitRemoteUrl: string | null;
   fileCount: number | null;
+  icon?: string | null;
 };
 
 export async function validateProjectBindingWithDaemon(params: {
@@ -119,5 +120,6 @@ export async function validateProjectBindingWithDaemon(params: {
     lastCommitAt: result.last_commit_at,
     gitRemoteUrl: result.git_remote_url ?? null,
     fileCount: result.file_count,
+    icon: Object.prototype.hasOwnProperty.call(result, "icon") ? result.icon ?? null : undefined,
   };
 }

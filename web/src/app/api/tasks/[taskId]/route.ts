@@ -53,6 +53,12 @@ import {
   stopTaskBeforeRelaunch,
 } from "@/lib/tasks/task-stop";
 import { persistIssueAiSession } from "@/lib/issues/persist-ai-session";
+import {
+  deletePtyTaskWithKill,
+  findAttachedTerminalForAiTask,
+  loadAttachedTerminalSummary,
+} from "@/lib/tasks/attached-terminal";
+import { countActiveScheduledMessagesForTasks } from "@/lib/tasks/scheduled-messages";
 
 const DELETE_SNAPSHOT_TRIGGER = "task_delete";
 const KILLING_TIMEOUT_MS = 60_000;
@@ -366,7 +372,25 @@ export async function GET(
     await recoverStaleDisconnectedAgentTasks(user.id, [task] as any);
   }
 
-  return NextResponse.json(serializeTaskResponse(task));
+  // Enrich AI tasks with their attached terminal summary (including the PTY
+  // task's status, so the UI can render the toggle dot without a second
+  // round-trip).
+  const attachedTerminal =
+    (task.taskType ?? "ai_task") === "ai_task"
+      ? await loadAttachedTerminalSummary(task.id)
+      : null;
+  const activeScheduledMessageCounts = await countActiveScheduledMessagesForTasks({
+    userId: user.id,
+    taskIds: [task.id],
+  });
+
+  return NextResponse.json(
+    serializeTaskResponse({
+      ...task,
+      attachedTerminal,
+      activeScheduledMessageCount: activeScheduledMessageCounts.get(task.id) ?? 0,
+    }),
+  );
 }
 
 export async function PATCH(
@@ -541,19 +565,58 @@ export async function PATCH(
         }
       : null;
 
+  // Sticky fields that must survive every PATCH regardless of what the
+  // client sends, because UI/store correctness depends on them existing on
+  // the task row at all times:
+  //   - `attachedToAiTaskId` on a PTY task identifies it as an attached
+  //     terminal so the client-side store and server-side list filter can
+  //     exclude it from the top-level task list. A PATCH that sets
+  //     metadata to null (or omits this key) would otherwise wipe it and
+  //     cause the attached PTY to leak into the list as a standalone card.
+  const stickyMetadataFields: Record<string, unknown> = {};
+  if (
+    (existing.taskType ?? "ai_task") === "pty_task" &&
+    typeof existingMetadataObject?.attachedToAiTaskId === "string"
+  ) {
+    stickyMetadataFields.attachedToAiTaskId = existingMetadataObject.attachedToAiTaskId;
+  }
+  // Defense-in-depth: strip `attachedToAiTaskId` from user-provided
+  // metadata. Even though the sticky-spread-last logic below would
+  // overwrite it for already-attached PTY tasks, a PATCH that *creates*
+  // the metadata field on a not-yet-attached row, or flips `task_type`
+  // mid-PATCH, could otherwise let the client forge an attachment claim.
+  // The only legitimate writer of this field is `createAttachedTerminalRecord`.
+  if (parsedMetadataInput && "attachedToAiTaskId" in parsedMetadataInput) {
+    delete (parsedMetadataInput as Record<string, unknown>).attachedToAiTaskId;
+  }
+  // Metadata semantics:
+  //   - PATCH without a metadata field            → keep existing metadata.
+  //   - PATCH with `metadata: <object>`           → merge object into existing.
+  //   - PATCH with `metadata: null`               → wipe metadata, BUT preserve
+  //     "sticky" fields that are infrastructure invariants, not user data
+  //     (currently just `attachedToAiTaskId` on attached PTY tasks). This is
+  //     intentional even though it deviates from pure null-wipe semantics —
+  //     dropping the sticky would cause the attached PTY to leak into the
+  //     top-level task list as a standalone card.
+  //   - During a kill (shouldStopTask)             → also stamp killingStartedAt/
+  //     timeout/requestId on top, regardless of the metadata input.
   const nextMetadata = shouldStopTask
     ? JSON.stringify({
         ...(hasMetadataField ? parsedMetadataInput ?? {} : existingMetadataObject ?? {}),
+        ...stickyMetadataFields,
         killingStartedAt,
         killingTimeoutMs: KILLING_TIMEOUT_MS,
         killRequestId: stopTaskRequestId,
       })
     : hasMetadataField
       ? metadataInput == null
-        ? null
+        ? Object.keys(stickyMetadataFields).length > 0
+          ? JSON.stringify(stickyMetadataFields)
+          : null
         : JSON.stringify({
             ...(existingMetadataObject ?? {}),
             ...(parsedMetadataInput ?? {}),
+            ...stickyMetadataFields,
           })
       : existing.metadata;
   const baseAiTaskUpdateData = {
@@ -899,7 +962,16 @@ export async function PATCH(
     }
   }
 
-  return NextResponse.json(serializeTaskResponse({ ...task, ptySession }));
+  const responseAttachedTerminal =
+    nextTaskType === "ai_task" ? await loadAttachedTerminalSummary(task.id) : null;
+
+  return NextResponse.json(
+    serializeTaskResponse({
+      ...task,
+      ptySession,
+      attachedTerminal: responseAttachedTerminal,
+    }),
+  );
 }
 
 export async function DELETE(
@@ -930,6 +1002,60 @@ export async function DELETE(
     },
   });
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // If an AI task has an attached terminal, kill that PTY task FIRST so the
+  // agent receives the kill signal. Doing it before deleting the AI task
+  // also avoids races where the cascade fires before the daemon hears about
+  // the stop. The AttachedTerminal row will cascade away when the PTY task
+  // is deleted (FK relation "AttachedTerminalPtyTask" has onDelete: Cascade).
+  //
+  // Orphan-prevention contract: if `deletePtyTaskWithKill` fails part-way,
+  // the AttachedTerminal row may still be live, and the AI-task delete below
+  // would cascade it away (Cascade on aiTaskId) — stranding the underlying
+  // PTY Task row and its agent process. To prevent that, the catch path
+  // attempts a bare `task.delete` on the PTY row so it can't outlive the AI
+  // task. If the bare delete ALSO fails, we surface a 409 so the user can
+  // retry instead of silently leaking.
+  if ((existing.taskType ?? "ai_task") === "ai_task") {
+    const attached = await findAttachedTerminalForAiTask(taskId);
+    if (attached) {
+      try {
+        await deletePtyTaskWithKill({
+          userId: user.id,
+          ptyTaskId: attached.ptyTaskId,
+        });
+      } catch (primaryError) {
+        console.error(
+          `[tasks] deletePtyTaskWithKill failed before AI task delete: aiTaskId=${taskId}, ptyTaskId=${attached.ptyTaskId}, error=${
+            primaryError instanceof Error ? primaryError.message : String(primaryError)
+          }`,
+        );
+        // Fallback: drop the PTY task row directly. The agent process may
+        // already be gone (or may need reconnect+cleanup), but the DB will
+        // be consistent. If the row already does not exist (the primary
+        // delete reached `task.delete` before throwing), Prisma raises
+        // P2025; we treat that as already-clean and continue.
+        try {
+          await db.task.delete({ where: { id: attached.ptyTaskId } });
+        } catch (fallbackError) {
+          if ((fallbackError as { code?: unknown })?.code !== "P2025") {
+            console.error(
+              `[tasks] fallback PTY row delete also failed; refusing AI task delete: aiTaskId=${taskId}, ptyTaskId=${attached.ptyTaskId}, error=${
+                fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+              }`,
+            );
+            return NextResponse.json(
+              {
+                error:
+                  "Failed to clean up the attached terminal; refusing to delete the AI task. Please retry.",
+              },
+              { status: 409 },
+            );
+          }
+        }
+      }
+    }
+  }
 
   try {
     const payload = await buildTaskDiagnosticsPayload({

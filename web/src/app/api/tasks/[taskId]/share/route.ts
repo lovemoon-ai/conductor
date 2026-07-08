@@ -28,31 +28,41 @@ export async function POST(
 
   try {
     const now = new Date();
-    const expiresAt = buildShareExpiration(now);
+    const shareKey = {
+      taskId,
+      userId: user.id,
+      kind: SHARED_TASK_KIND_USER,
+    };
 
-    await db.sharedTask.deleteMany({
+    const existingShare = await db.sharedTask.findUnique({
       where: {
-        userId: user.id,
-        taskId,
-        kind: SHARED_TASK_KIND_USER,
-        expiresAt: { lte: now },
+        taskId_userId_kind: shareKey,
       },
     });
 
+    if (existingShare && (!existingShare.expiresAt || existingShare.expiresAt.getTime() > now.getTime())) {
+      return NextResponse.json({
+        token: existingShare.token,
+        expiresAt: existingShare.expiresAt?.toISOString() ?? null,
+      });
+    }
+
+    const expiresAt = buildShareExpiration(now);
+    const token = generateShareToken();
+
     const shared = await db.sharedTask.upsert({
       where: {
-        taskId_userId_kind: {
-          taskId,
-          userId: user.id,
-          kind: SHARED_TASK_KIND_USER,
-        },
+        taskId_userId_kind: shareKey,
       },
-      update: { expiresAt },
+      update: {
+        token,
+        expiresAt,
+      },
       create: {
         taskId,
         userId: user.id,
         kind: SHARED_TASK_KIND_USER,
-        token: generateShareToken(),
+        token,
         expiresAt,
       },
     });

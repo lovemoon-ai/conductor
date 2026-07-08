@@ -586,6 +586,44 @@ export class BackendApiClient {
     return this.parseJson(response);
   }
 
+  /**
+   * POST /tasks/[taskId]/insert — insert a mid-turn message. Unlike
+   * {@link postTaskMessage}, which queues a message for after the current turn,
+   * this interrupts the running turn so the inserted message is processed next.
+   */
+  async postTaskInsert(taskId: string, params: Record<string, unknown>): Promise<Record<string, any>> {
+    const response = await this.request('POST', `/tasks/${taskId}/insert`, {
+      body: JSON.stringify(params),
+    });
+    return this.parseJson(response);
+  }
+
+  async listScheduledMessages(taskId: string): Promise<Record<string, any>[]> {
+    const response = await this.request('GET', `/tasks/${taskId}/scheduled-messages`);
+    const payload = await this.parseJson(response);
+    if (payload && typeof payload === 'object' && Array.isArray((payload as any).schedules)) {
+      return (payload as any).schedules as Record<string, any>[];
+    }
+    if (Array.isArray(payload)) {
+      return payload as Record<string, any>[];
+    }
+    throw new BackendApiError('Invalid scheduled messages response', response.status, payload);
+  }
+
+  async createScheduledMessage(
+    taskId: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, any>> {
+    const response = await this.request('POST', `/tasks/${taskId}/scheduled-messages`, {
+      body: JSON.stringify(params),
+    });
+    return this.parseJson(response);
+  }
+
+  async deleteScheduledMessage(taskId: string, scheduleId: string): Promise<void> {
+    await this.request('DELETE', `/tasks/${taskId}/scheduled-messages/${scheduleId}`);
+  }
+
   private async request(
     method: string,
     pathname: string,

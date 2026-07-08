@@ -12,6 +12,7 @@ import {
 import { stopTaskBeforeRelaunch } from "@/lib/tasks/task-stop";
 import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 import { realtimeHub } from "@/lib/realtime/hub";
+import { countActiveScheduledMessagesForProjects } from "@/lib/tasks/scheduled-messages";
 import {
   hasOwn,
   isBindingConfirmed,
@@ -117,9 +118,17 @@ export async function GET(
     where: { userId: user.id },
     select: { projectId: true },
   });
+  const activeScheduledMessageCounts = await countActiveScheduledMessagesForProjects({
+    userId: user.id,
+    projectIds: [projectId],
+  });
 
   return NextResponse.json(
-    serializeProject(project, defaultProject?.projectId === projectId),
+    {
+      ...serializeProject(project, defaultProject?.projectId === projectId),
+      activeScheduledMessageCount: activeScheduledMessageCounts.get(projectId) ?? 0,
+      active_scheduled_message_count: activeScheduledMessageCounts.get(projectId) ?? 0,
+    },
   );
 }
 

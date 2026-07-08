@@ -3,6 +3,8 @@ import { GET, POST } from "@/app/api/tasks/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
 import * as authService from "@/lib/auth/service";
 
+const countActiveScheduledMessagesForTasksMock = vi.hoisted(() => vi.fn());
+
 vi.mock("@/lib/realtime/hub", () => ({
   realtimeHub: {
     broadcast: vi.fn(),
@@ -20,6 +22,10 @@ vi.mock("@/lib/realtime/hub", () => ({
 
 vi.mock("@/lib/realtime/agent-outbox", () => ({
   enqueueAndAttemptAgentCommand: vi.fn(),
+}));
+
+vi.mock("@/lib/tasks/scheduled-messages", () => ({
+  countActiveScheduledMessagesForTasks: countActiveScheduledMessagesForTasksMock,
 }));
 
 vi.mock("@/lib/subscription/service", async (importOriginal) => {
@@ -53,6 +59,10 @@ vi.mock("@/lib/db", () => ({
     },
     user: {
       findUnique: vi.fn(),
+    },
+    attachedTerminal: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findUnique: vi.fn().mockResolvedValue(null),
     },
   },
 }));
@@ -88,6 +98,9 @@ describe("/api/tasks", () => {
           : callback,
     );
     vi.mocked(db.task.findMany).mockResolvedValue([]);
+    countActiveScheduledMessagesForTasksMock.mockResolvedValue(new Map());
+    vi.mocked(db.attachedTerminal.findMany).mockResolvedValue([]);
+    vi.mocked(db.attachedTerminal.findUnique).mockResolvedValue(null);
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([]);
     vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
     vi.mocked(realtimeHub.getAgentDisconnectAt).mockReturnValue(null);
@@ -184,6 +197,7 @@ describe("/api/tasks", () => {
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
       vi.mocked(db.task.findMany).mockResolvedValue(mockTasks as any);
+      countActiveScheduledMessagesForTasksMock.mockResolvedValue(new Map([["task-1", 2]]));
       vi.mocked(db.message.findMany).mockResolvedValue([
         {
           id: "msg-2",
@@ -214,6 +228,12 @@ describe("/api/tasks", () => {
       expect(data[0].launch_config).toBeNull();
       expect(data[0].last_user_message).toBe("User prompt");
       expect(data[0].last_assistant_message).toBe("Assistant reply");
+      expect(data[0].active_scheduled_message_count).toBe(2);
+      expect(data[0].activeScheduledMessageCount).toBe(2);
+      expect(countActiveScheduledMessagesForTasksMock).toHaveBeenCalledWith({
+        userId: "user-1",
+        taskIds: ["task-1"],
+      });
       expect(data[0].pty_session).toEqual(
         expect.objectContaining({
           id: "pty-1",

@@ -6,6 +6,19 @@ import { useRuntimeStore } from './runtime-store';
 import { useTasksStore } from '@/features/tasks';
 import { clearAllTerminalOutputSnapshots, getTerminalOutputSnapshot, useTerminalStore } from '@/features/terminal';
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
+import { useCatchphrasesStore } from '@/features/catchphrases/store';
+import { useDailyReportsStore } from '@/features/daily-reports/store';
+
+const dailyReportActions = {
+  hydrateSetting: useDailyReportsStore.getState().hydrateSetting,
+  updateSetting: useDailyReportsStore.getState().updateSetting,
+  fetchReport: useDailyReportsStore.getState().fetchReport,
+  generateReport: useDailyReportsStore.getState().generateReport,
+  fetchHistory: useDailyReportsStore.getState().fetchHistory,
+  applySettingUpdate: useDailyReportsStore.getState().applySettingUpdate,
+  handleReportReady: useDailyReportsStore.getState().handleReportReady,
+  clearError: useDailyReportsStore.getState().clearError,
+};
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
@@ -195,6 +208,17 @@ describe('websocket runtime status handling', () => {
       taskListPreferencesLoading: false,
       taskListPreferencesError: null,
     });
+    useDailyReportsStore.setState({
+      setting: null,
+      currentReport: null,
+      history: [],
+      isLoadingSetting: false,
+      isLoadingReport: false,
+      isSavingSetting: false,
+      isGenerating: false,
+      error: null,
+      ...dailyReportActions,
+    });
   });
 
   it('stores runtime status from task_runtime_status events', () => {
@@ -238,6 +262,119 @@ describe('websocket runtime status handling', () => {
 
     expect(useUserPreferencesStore.getState().taskListRunningOnly).toBe(true);
     expect(useUserPreferencesStore.getState().taskListPreferencesHydrated).toBe(true);
+  });
+
+  it('applies the full catchphrase snapshot from user_catchphrase_update events (RFC 0032)', () => {
+    // Seed pre-existing local state — the realtime push must overwrite, not merge.
+    useCatchphrasesStore.setState({
+      catchphrases: [
+        {
+          id: 'stale-1',
+          text: 'stale',
+          sortOrder: 0,
+          lastUsedAt: null,
+          createdAt: '2026-06-06T00:00:00Z',
+          updatedAt: '2026-06-06T00:00:00Z',
+        },
+      ],
+      hydrated: true,
+      loading: false,
+      error: null,
+    });
+
+    handleWSMessage({
+      type: 'user_catchphrase_update',
+      payload: {
+        catchphrases: [
+          {
+            id: 'fresh-1',
+            text: 'fresh A',
+            sortOrder: 0,
+            lastUsedAt: null,
+            createdAt: '2026-06-07T00:00:00Z',
+            updatedAt: '2026-06-07T00:00:00Z',
+          },
+          {
+            id: 'fresh-2',
+            text: 'fresh B',
+            sortOrder: 1,
+            lastUsedAt: null,
+            createdAt: '2026-06-07T00:00:00Z',
+            updatedAt: '2026-06-07T00:00:00Z',
+          },
+        ],
+        updated_at: '2026-06-07T00:00:00Z',
+      },
+    });
+
+    const state = useCatchphrasesStore.getState();
+    expect(state.catchphrases.map((row) => row.id)).toEqual(['fresh-1', 'fresh-2']);
+    expect(state.hydrated).toBe(true);
+  });
+
+  it('applies daily report setting updates from realtime events', () => {
+    handleWSMessage({
+      type: 'daily_report_setting_update',
+      payload: {
+        setting: {
+          enabled: false,
+          timezone: 'Europe/London',
+          sendTimeLocal: '20:00',
+          deliveryChannels: ['in_app'],
+          nextRunAt: null,
+          lastSentForDate: '2026-07-01',
+          lastRunAt: null,
+          lastError: null,
+        },
+      },
+    });
+
+    expect(useDailyReportsStore.getState().setting).toMatchObject({
+      enabled: false,
+      timezone: 'Europe/London',
+      sendTimeLocal: '20:00',
+      lastSentForDate: '2026-07-01',
+    });
+  });
+
+  it('refreshes daily report history and the open report from ready events', async () => {
+    const fetchHistory = vi.fn().mockResolvedValue(undefined);
+    const fetchReport = vi.fn().mockResolvedValue(null);
+    useDailyReportsStore.setState({
+      currentReport: {
+        id: 'report-preview',
+        reportDate: '2026-07-01',
+        timezone: 'Asia/Shanghai',
+        status: 'preview',
+        summaryMarkdown: '# old',
+        payload: {
+          totals: { projects: 0, tasks: 0, messages: 0, completed: 0, running: 0, killed: 0 },
+          projects: [],
+          summarizer: null,
+        },
+        deliveryChannels: ['in_app'],
+        sentAt: null,
+        lastError: null,
+        persisted: false,
+        createdAt: null,
+        updatedAt: null,
+      },
+      fetchHistory,
+      fetchReport,
+    });
+
+    handleWSMessage({
+      type: 'daily_report_ready',
+      payload: {
+        reportDate: '2026-07-01',
+        timezone: 'Asia/Shanghai',
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fetchHistory).toHaveBeenCalledTimes(1);
+    expect(fetchReport).toHaveBeenCalledWith('2026-07-01', 'Asia/Shanghai');
   });
 
   it('preserves stable runtime details across partial task_runtime_status updates', () => {

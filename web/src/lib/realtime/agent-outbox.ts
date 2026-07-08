@@ -54,6 +54,10 @@ export function isMissingAgentOutboxTableError(error: unknown): boolean {
   return code === "P2021" && message.includes("agent_outbox");
 }
 
+function isUniqueConstraintError(error: unknown): boolean {
+  return (error as { code?: unknown })?.code === "P2002";
+}
+
 export function warnMissingAgentOutboxTable(error: unknown): void {
   if (warnedMissingAgentOutboxTable) {
     return;
@@ -231,7 +235,19 @@ export async function enqueueAndAttemptAgentCommand(
       });
       return { requestId: input.requestId, delivered };
     }
-    throw error;
+    if (isUniqueConstraintError(error)) {
+      row = await db.agentOutbox.findUnique({
+        where: { requestId: input.requestId },
+      });
+      if (!row) {
+        throw error;
+      }
+    } else {
+      throw error;
+    }
+  }
+  if (!row) {
+    throw new Error(`failed to enqueue agent command ${input.requestId}`);
   }
   if (!targetHost || !options?.sendToAgentHost) {
     return { requestId: row.requestId, delivered: false };

@@ -5,6 +5,8 @@ import { useAgentsStore } from '@/features/agents';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { SETTINGS_ROOT_PATH, useSettingsNavStore } from '@/features/settings';
+import { CatchphraseSettingsCard } from '@/features/catchphrases';
+import { DailyReportSettingsCard } from '@/features/daily-reports';
 
 const BUILD_TIME_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'Asia/Shanghai',
@@ -164,6 +166,11 @@ export default function SettingsPage() {
             </div>
           )}
         </section>
+
+        {/* Catchphrases (RFC 0032) */}
+        <CatchphraseSettingsCard />
+
+        <DailyReportSettingsCard />
 
         {/* Build Info Section */}
         <section className="webapp-card p-5">

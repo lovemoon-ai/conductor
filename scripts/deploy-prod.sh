@@ -14,6 +14,34 @@ if [ ! -f $env ]; then
     exit 1
 fi
 
+# Reject builds where both web/.env and web/.env.production.local exist.
+#
+# Background: production uses ONE env file, .env.production.local.
+# server.ts loads that one explicitly; Next.js's loadEnvConfig also
+# loads .env underneath whether we want it to or not. When both files
+# are present and drift apart (which happens silently because both are
+# gitignored — nothing flags it), the older .env can reverse-shadow
+# .env.production.local through Next's env precedence. A 2026-06-06
+# incident wasted an afternoon on this when a stale .env masked a new
+# SSO client added to .env.production.local. One source of truth, full
+# stop.
+if [[ -f web/.env && -f web/.env.production.local ]]; then
+    cat >&2 <<'GUARD'
+❌ Both web/.env and web/.env.production.local exist on this machine.
+
+   Production uses only .env.production.local. Having .env alongside it
+   is a known foot-gun: when the two drift, Next.js's loadEnvConfig can
+   silently shadow your new values with stale ones from .env. Pick one:
+
+     mv web/.env web/.env.deleted-$(date +%s)   # if you want a backup
+     # OR
+     rm web/.env
+
+   Then re-run this script.
+GUARD
+    exit 1
+fi
+
 echo "🚀 Starting Conductor Web on Volcengine..."
 
 # 0. Pre-deploy guard: warn (do not block) if there are pending changesets.
@@ -52,6 +80,26 @@ if ! command -v node >/dev/null 2>&1; then
   echo "❌ Node not found. Please install Node.js first." >&2
   exit 1
 fi
+
+read_env_value() {
+  local key="$1"
+
+  node - "$env" "$key" <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const envPath = process.argv[2];
+const key = process.argv[3];
+const dotenv = require(path.join(process.cwd(), "web/node_modules/dotenv"));
+
+const parsed = dotenv.parse(fs.readFileSync(envPath));
+const value = parsed[key];
+
+if (value !== undefined) {
+  process.stdout.write(value);
+}
+NODE
+}
 
 # 2. Make sure dependencies are installed
 if [[ ! -d web/node_modules ]]; then
@@ -117,9 +165,9 @@ fi
 # 6. Start the web service
 echo "🌐 Starting web service..."
 
-# Load environment variables
-if [ -f web/.env.production.local ]; then
-  export $(grep -v '^#' web/.env.production.local | xargs)
+if [ -z "${PORT:-}" ]; then
+  PORT=$(read_env_value PORT || true)
+  export PORT
 fi
 
 if [ -n "${PORT:-}" ]; then
@@ -140,8 +188,12 @@ else
 fi
 
 echo "Using nohup..."
-pkill -f "tsx server.ts" || true
-pkill -f "web/server.ts" || true
+# IMPORTANT: scope the pkill to conductor's own install path so we do
+# NOT kill sibling apps on the same box (e.g. operator, which runs its
+# own `tsx server.ts` out of /opt/conductor/operator/web/app). Without
+# this anchor the regex matches both processes and a conductor deploy
+# would take operator offline until its systemd unit restarted.
+pkill -f "/opt/conductor/conductor/.*server\.ts" || true
 sleep 1
 nohup npm --prefix web run start > $LOG 2>&1 &
 echo "Started with PID: $!"
@@ -223,7 +275,8 @@ CRON_JOB="* * * * * cd $REMOTE_DIR && curl -s -H \"Authorization: Bearer \${CRON
 if ! crontab -l 2>/dev/null | grep -q "outbox-processor"; then
   # Make sure CRON_SECRET is available
   if [ -z "${CRON_SECRET:-}" ] && [ -f web/.env.production.local ]; then
-    export CRON_SECRET=$(grep -E "^CRON_SECRET=" web/.env.production.local | cut -d'=' -f2 | tr -d '"' || echo "")
+    CRON_SECRET=$(read_env_value CRON_SECRET || true)
+    export CRON_SECRET
   fi
 
   if [ -n "${CRON_SECRET:-}" ]; then
@@ -243,6 +296,10 @@ fi
 echo ""
 echo "📋 Current Crontab:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-crontab -l 2>/dev/null | grep -A2 "Conductor Outbox" || echo "  (No Conductor cron jobs found)"
+if crontab -l 2>/dev/null | grep -E "Conductor Outbox|outbox-processor" | sed -E 's/^(CRON_SECRET=).*/\1[redacted]/; s/(Bearer )[^"[:space:]]+/\1[redacted]/'; then
+  :
+else
+  echo "  (No Conductor cron jobs found)"
+fi
 echo ""
 echo "✅ All done!"

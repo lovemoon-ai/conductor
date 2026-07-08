@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import yargs from "yargs/yargs";
 import { hideBin } from "yargs/helpers";
 import { ConductorConfig, loadConfig } from "@love-moon/conductor-sdk";
+import { envForExplicitConfigFile } from "../src/config-env.js";
 
 const DEFAULT_MIME_TYPE = "application/octet-stream";
 const DEFAULT_CONFIG_PATH = path.join(os.homedir(), ".conductor", "config.yaml");
@@ -110,8 +111,9 @@ export function detectTaskId(options = {}) {
 
 function loadCliConfig(configFile, env = process.env) {
   const configPath = configFile ? path.resolve(configFile) : DEFAULT_CONFIG_PATH;
+  const configEnv = envForExplicitConfigFile(configFile, env);
   if (fs.existsSync(configPath)) {
-    return loadConfig(configPath, { env });
+    return loadConfig(configPath, { env: configEnv });
   }
 
   const agentToken = typeof env.CONDUCTOR_AGENT_TOKEN === "string" ? env.CONDUCTOR_AGENT_TOKEN.trim() : "";
@@ -123,7 +125,7 @@ function loadCliConfig(configFile, env = process.env) {
     });
   }
 
-  return loadConfig(configPath, { env });
+  return loadConfig(configPath, { env: configEnv });
 }
 
 export function guessMimeType(fileName, preferredMimeType = "") {

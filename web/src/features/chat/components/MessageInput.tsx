@@ -2,6 +2,7 @@
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { Message } from '@/shared/types';
+import { CatchphrasePopover } from '@/features/catchphrases/components/CatchphrasePopover';
 import { useChatStore } from '../store';
 
 const SEND_BUTTON_SIZE_PX = 32;
@@ -23,13 +24,21 @@ const PLACEHOLDER_MESSAGES = [
 interface MessageInputProps {
   taskId: string;
   onSend: (content: string) => void;
+  onInsert?: (content: string) => void;
   onInterrupt?: () => void;
   disabled?: boolean;
   sendDisabled?: boolean;
   interruptEnabled?: boolean;
   interruptPending?: boolean;
+  insertEnabled?: boolean;
+  insertPending?: boolean;
   autoFocus?: boolean;
 }
+
+// How long (ms) a single send-button click waits for a possible second click
+// before committing to a normal send. Only used while an insert is actually
+// possible, so ordinary sending keeps zero latency the rest of the time.
+const SEND_BUTTON_DOUBLE_CLICK_MS = 250;
 
 export interface MessageInputHandle {
   resend: (content: string) => void;
@@ -116,15 +125,19 @@ const deriveSentHistoryFromMessages = (messages: Message[]): string[] => {
 const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(function MessageInputInner({
   taskId,
   onSend,
+  onInsert,
   onInterrupt,
   disabled,
   sendDisabled = false,
   interruptEnabled = false,
   interruptPending = false,
+  insertEnabled = false,
+  insertPending = false,
   autoFocus = false,
 }: MessageInputProps, ref) {
   const [content, setContent] = useState(() => readStoredDraft(taskId));
   const [layoutState, setLayoutState] = useState(INITIAL_LAYOUT_STATE);
+  const [isCatchphraseOpen, setIsCatchphraseOpen] = useState(false);
   const taskMessages = useChatStore((state) => state.messagesByTask[taskId]);
   const sentHistory = useMemo(
     () => deriveSentHistoryFromMessages(taskMessages ?? []),
@@ -143,6 +156,10 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   // its position in the list changed since the previous keypress.
   const historyCursorRef = useRef<string | null>(null);
   const historyDraftRef = useRef('');
+  // Pending single-click timer for the send button. While an insert is
+  // possible, a single click is deferred briefly so a second click (double
+  // click) can be recognized as "insert" instead of "send".
+  const sendClickTimerRef = useRef<number | null>(null);
 
   const updateContent = useCallback((nextContent: string) => {
     setContent(nextContent);
@@ -295,6 +312,94 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
     submitContent(content);
   };
 
+  // Insert the composer text into the in-flight turn (interrupt + run next).
+  // Falls back to a normal send when insert isn't available so the action is
+  // never silently lost.
+  const submitInsert = useCallback((nextContent: string) => {
+    const trimmed = nextContent.trim();
+    if (!trimmed || disabled || sendDisabled) return false;
+    if (!insertEnabled || !onInsert) {
+      return submitContent(nextContent);
+    }
+    onInsert(trimmed);
+    historyCursorRef.current = null;
+    historyDraftRef.current = '';
+    updateContent('');
+    return true;
+  }, [disabled, insertEnabled, onInsert, sendDisabled, submitContent, updateContent]);
+
+  const clearSendClickTimer = useCallback(() => {
+    if (sendClickTimerRef.current !== null) {
+      window.clearTimeout(sendClickTimerRef.current);
+      sendClickTimerRef.current = null;
+    }
+  }, []);
+
+  // Send button: single click / Enter => normal send (queues after the current
+  // turn); double click => insert into the current turn. We only disambiguate
+  // single vs double when an insert is actually possible, so normal sending
+  // keeps zero latency the rest of the time. Enter always sends immediately
+  // (handled in handleKeyDown), preserving the original semantics.
+  const handleSendButtonClick = () => {
+    if (!insertEnabled) {
+      // Cancel any deferred send still pending from a prior click so that a
+      // second click landing here (insert became unavailable mid double-click)
+      // can't fire the queued send on top of this one.
+      clearSendClickTimer();
+      handleSubmit();
+      return;
+    }
+    if (sendClickTimerRef.current !== null) {
+      // Second click within the window => insert.
+      clearSendClickTimer();
+      submitInsert(content);
+      return;
+    }
+    const pendingContent = content;
+    sendClickTimerRef.current = window.setTimeout(() => {
+      sendClickTimerRef.current = null;
+      submitContent(pendingContent);
+    }, SEND_BUTTON_DOUBLE_CLICK_MS);
+  };
+
+  useEffect(() => clearSendClickTimer, [clearSendClickTimer]);
+
+  // RFC 0032: empty-input double-click is the only trigger for the
+  // catchphrase popover. The handler returns early (no preventDefault) on a
+  // non-empty textarea so the browser's native double-click-to-select-word
+  // remains fully intact. IME composition is also skipped so half-finished
+  // pinyin/IME input doesn't accidentally "look empty".
+  const handleTextareaDoubleClick = useCallback(() => {
+    if (isComposingRef.current) return;
+    if (content.trim() !== '') return;
+    setIsCatchphraseOpen(true);
+  }, [content]);
+
+  // Auto-close the popover the moment the textarea becomes non-empty so it
+  // never obscures the user's typing.
+  useEffect(() => {
+    if (isCatchphraseOpen && content.trim() !== '') {
+      setIsCatchphraseOpen(false);
+    }
+  }, [isCatchphraseOpen, content]);
+
+  const handleCatchphrasePick = useCallback((catchphrase: { text: string }) => {
+    setIsCatchphraseOpen(false);
+    updateContent(catchphrase.text);
+    moveCaretToEnd(catchphrase.text);
+  }, [moveCaretToEnd, updateContent]);
+
+  const handleCatchphraseSend = useCallback((catchphrase: { text: string }) => {
+    setIsCatchphraseOpen(false);
+    const didSubmit = submitContent(catchphrase.text);
+    if (!didSubmit) {
+      // Sending was blocked (disabled or sendDisabled); fall back to fill so
+      // the user can retry once the composer is enabled.
+      updateContent(catchphrase.text);
+      moveCaretToEnd(catchphrase.text);
+    }
+  }, [moveCaretToEnd, submitContent, updateContent]);
+
   const triggerInterrupt = useCallback(() => {
     if (!interruptEnabled || interruptPending) {
       return;
@@ -402,7 +507,13 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   };
 
   return (
-    <div className="border-t border-border bg-panel/95 px-4 py-3 backdrop-blur-sm md:px-6">
+    <div className="relative border-t border-border bg-panel/95 px-4 py-3 backdrop-blur-sm md:px-6">
+      <CatchphrasePopover
+        open={isCatchphraseOpen}
+        onClose={() => setIsCatchphraseOpen(false)}
+        onPick={handleCatchphrasePick}
+        onSend={handleCatchphraseSend}
+      />
       <div className="w-full">
         <div
           ref={composerRef}
@@ -416,6 +527,7 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
               value={content}
               onChange={(e) => updateContent(e.target.value)}
               onKeyDown={handleKeyDown}
+              onDoubleClick={handleTextareaDoubleClick}
               onCompositionStart={() => { isComposingRef.current = true; }}
               onCompositionEnd={() => { isComposingRef.current = false; }}
               placeholder={PLACEHOLDER_MESSAGES[placeholderIndex]}
@@ -430,15 +542,22 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
             />
             <div className={isSendOnNextLine ? 'flex w-full justify-end' : 'flex shrink-0'}>
               <button type="button"
-                onClick={handleSubmit}
+                onClick={handleSendButtonClick}
                 disabled={!canSend}
+                data-testid="message-input-send-button"
                 className={`flex h-8 w-8 items-center justify-center rounded-md transition-all ${
                   canSend
                     ? 'webapp-gradient-bg text-white shadow-[0_2px_8px_rgba(228,87,46,0.25)] hover:brightness-105'
                     : 'border border-zinc-300 bg-transparent text-zinc-400 dark:border-zinc-600 dark:text-zinc-500'
-                }`}
-                title={sendDisabled ? 'Sending will be available when the session is ready' : 'Send'}
-                aria-label="Send message"
+                } ${insertEnabled ? 'ring-2 ring-accent/50 ring-offset-1 ring-offset-paper' : ''}`}
+                title={
+                  sendDisabled
+                    ? 'Sending will be available when the session is ready'
+                    : insertEnabled
+                      ? 'Click to send · double-click to insert into the current reply'
+                      : 'Send'
+                }
+                aria-label={insertEnabled ? 'Send message (double-click to insert into the current reply)' : 'Send message'}
               >
                 <svg className="size-3.5 translate-x-px" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                   <path d="M4 3l12 7-12 7V3z" />

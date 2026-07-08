@@ -41,6 +41,9 @@ const normalizeOptionalString = (value: unknown): string | null => {
   return normalized || null;
 };
 
+const isUniqueConstraintError = (error: unknown): boolean =>
+  (error as { code?: unknown })?.code === "P2002";
+
 const supportsBackend = (agent: ConnectedAgent, backendType: string): boolean =>
   agent.supportedBackends.some(
     (supported) => supported.trim().toLowerCase() === backendType,
@@ -267,6 +270,7 @@ export async function appendUserMessageToTask(input: {
   taskId: string;
   content: string;
   role?: string | null;
+  clientMessageId?: string | null;
   metadata?: Record<string, unknown> | null;
 }): Promise<{
   task: Awaited<ReturnType<typeof db.task.findFirst>>;
@@ -297,26 +301,55 @@ export async function appendUserMessageToTask(input: {
     );
   }
 
-  const [message] = await db.$transaction([
-    db.message.create({
-      data: {
+  const clientMessageId = normalizeOptionalString(input.clientMessageId);
+  const messageData = {
+    taskId: input.taskId,
+    role: input.role ?? "sdk",
+    content: input.content,
+    metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+    ...(clientMessageId ? { clientMessageId } : {}),
+  };
+
+  let message: Awaited<ReturnType<typeof db.message.create>>;
+  let createdMessage = true;
+  try {
+    [message] = await db.$transaction([
+      db.message.create({
+        data: messageData,
+      }),
+      db.task.update({
+        where: { id: input.taskId },
+        data: { updatedAt: new Date() },
+      }),
+    ]);
+  } catch (error) {
+    if (!clientMessageId || !isUniqueConstraintError(error)) {
+      throw error;
+    }
+    const existingMessage = await db.message.findFirst({
+      where: {
         taskId: input.taskId,
-        role: input.role ?? "sdk",
-        content: input.content,
-        metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+        clientMessageId,
       },
-    }),
-    db.task.update({
+    });
+    if (!existingMessage) {
+      throw error;
+    }
+    message = existingMessage;
+    createdMessage = false;
+    await db.task.update({
       where: { id: input.taskId },
       data: { updatedAt: new Date() },
-    }),
-  ]);
+    });
+  }
 
-  await projectTaskMessage({
-    userId: input.userId,
-    projectId: task.projectId,
-    message,
-  });
+  if (createdMessage) {
+    await projectTaskMessage({
+      userId: input.userId,
+      projectId: task.projectId,
+      message,
+    });
+  }
 
   if (normalizedInputRole === "user") {
     const targetHost = userMessageTargetHost;

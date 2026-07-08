@@ -20,6 +20,9 @@ export {
   type ListTasksInput,
   type SendTaskMessageOptions,
   type ListTaskMessagesOptions,
+  type ScheduledMessage,
+  type ScheduledMessageSchedule,
+  type CreateScheduledMessageInput,
 } from './tasks.js';
 export {
   ProjectNotResolvedError,

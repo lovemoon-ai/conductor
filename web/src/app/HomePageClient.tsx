@@ -383,15 +383,15 @@ export default function Home() {
             {/* CLI Install Command */}
             <div>
                 <div className="flex items-center justify-between gap-3 px-4 py-3 bg-black/5 rounded-lg border border-[var(--border)]">
-                  <code className="text-sm break-all flex-1">curl -fsSL https://conductor-ai.top/install.sh | bash</code>
+                  <code className="text-sm break-all flex-1">curl -fsSL https://conductor.conductor-ai.top/install.sh | bash</code>
                   <button
                     type="button"
-                    onClick={() => copyCommand("curl -fsSL https://conductor-ai.top/install.sh | bash")}
+                    onClick={() => copyCommand("curl -fsSL https://conductor.conductor-ai.top/install.sh | bash")}
                     className="p-2 border border-[var(--border)] rounded-full transition-transform active:scale-90 flex-shrink-0"
-                    aria-label={copiedCommand === "curl -fsSL https://conductor-ai.top/install.sh | bash" ? t.home.tokenCopied : t.home.tokenCopy}
-                    title={copiedCommand === "curl -fsSL https://conductor-ai.top/install.sh | bash" ? t.home.tokenCopied : t.home.tokenCopy}
+                    aria-label={copiedCommand === "curl -fsSL https://conductor.conductor-ai.top/install.sh | bash" ? t.home.tokenCopied : t.home.tokenCopy}
+                    title={copiedCommand === "curl -fsSL https://conductor.conductor-ai.top/install.sh | bash" ? t.home.tokenCopied : t.home.tokenCopy}
                   >
-                    {copiedCommand === "curl -fsSL https://conductor-ai.top/install.sh | bash" ? (
+                    {copiedCommand === "curl -fsSL https://conductor.conductor-ai.top/install.sh | bash" ? (
                       <svg
                         aria-hidden="true"
                         viewBox="0 0 24 24"

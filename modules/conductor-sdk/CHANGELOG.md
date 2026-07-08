@@ -1,5 +1,33 @@
 # @love-moon/conductor-sdk
 
+## 0.7.2
+
+### Patch Changes
+
+- 80c5255: Canonicalize every GitHub SSH host alias (`github.com`, `github-*`,
+  `github.com-*`) to `github.com` when normalizing git remote URLs. GitHub
+  identifies a repository solely by its `owner/repo` path, so the same repo cloned
+  through different SSH aliases (e.g. `github-dang217` vs `github-duinodu`) now
+  merges across daemons by owner/repo instead of being blocked by a hardcoded
+  per-alias allowlist. Non-GitHub hosts (gitlab.com, self-hosted, GitHub
+  Enterprise) are left untouched so unrelated repos never merge.
+
+## 0.7.1
+
+### Patch Changes
+
+- 3f35925: Canonicalize the `github-duinodu` SSH host alias when normalizing Git remotes.
+
+## 0.7.0
+
+### Minor Changes
+
+- 689fc50: Add scheduled message management APIs and conductor task schedule list/create/delete commands.
+
+## 0.6.1
+
+## 0.6.0
+
 ## 0.5.1
 
 ## 0.5.0

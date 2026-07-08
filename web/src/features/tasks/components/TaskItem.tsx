@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type {
   CSSProperties,
   MouseEvent as ReactMouseEvent,
@@ -11,7 +12,9 @@ import type { Task } from '@/shared/types';
 import type { TaskType } from '@/lib/tasks/task-config';
 import { TaskStatusBadge } from './TaskStatusBadge';
 import { RestartTaskControls } from './RestartTaskControls';
+import { PtyToggleButton } from './PtyToggleButton';
 import { useTasksStore } from '../store';
+import { usePtyToggleStore } from '../pty-toggle-store';
 import { getStableTaskBackend } from '../utils/task-filter';
 import { useRuntimeStore } from '@/features/realtime';
 import { getApiClient } from '@/shared/api/client';
@@ -52,6 +55,12 @@ interface ShareDialogState {
   title: string;
   shareUrl: string;
   aiShareUrl: string;
+  expiresAt: string | null;
+}
+
+interface ShareResponse {
+  token: string;
+  expiresAt?: string | null;
 }
 
 type StatusAction = 'idle' | 'confirm-kill' | 'killing' | 'confirm-restart' | 'restarting';
@@ -60,6 +69,61 @@ const LEFT_ACTION_WIDTH = 52;
 const RIGHT_ACTION_BUTTON_WIDTH = 72;
 const SWIPE_OPEN_THRESHOLD = 0.45;
 const SWIPE_START_THRESHOLD = 8;
+
+// Class strings for the right-swipe action buttons. The icon is the only
+// child of the button — no inline label — so the icon stays perfectly
+// centred regardless of hover state. The label lives in a SwipeActionPopup
+// portal rendered into document.body (see below); see TaskItem's render
+// for the per-button onMouseEnter/onFocus/onMouseLeave/onBlur wiring.
+const SWIPE_ACTION_BUTTON_BASE =
+  'relative flex items-center justify-center transition-colors';
+const swipeActionButtonClassName = (
+  tone: 'default' | 'pinned' | 'danger',
+): string => {
+  switch (tone) {
+    case 'danger':
+      // Icon stays red (text-[var(--error)] → SVG strokes inherit
+      // currentColor) but the cell carries no default tinted background.
+      // A soft red wash appears only on hover.
+      return `${SWIPE_ACTION_BUTTON_BASE} text-[var(--error)] hover:bg-[var(--error)]/10`;
+    case 'pinned':
+      return `${SWIPE_ACTION_BUTTON_BASE} text-[var(--accent)] hover:bg-[var(--accent)]/15`;
+    default:
+      return `${SWIPE_ACTION_BUTTON_BASE} text-muted hover:bg-[var(--accent)]/10 hover:text-ink`;
+  }
+};
+
+interface SwipeActionPopupState {
+  label: string;
+  anchorRect: { top: number; left: number; width: number };
+}
+
+// Floating-pill tooltip rendered into document.body via React Portal so it
+// escapes the task card wrapper's `overflow-hidden rounded-2xl` clipping
+// box and floats freely above the page. Positioned just above the anchor
+// button using viewport coordinates (`position: fixed`).
+const SwipeActionPopup = ({ state }: { state: SwipeActionPopupState }) => {
+  if (typeof document === 'undefined') return null;
+  const { label, anchorRect } = state;
+  return createPortal(
+    <div
+      role="tooltip"
+      aria-hidden="true"
+      style={{
+        position: 'fixed',
+        top: anchorRect.top - 8,
+        left: anchorRect.left + anchorRect.width / 2,
+        transform: 'translate(-50%, -100%)',
+        zIndex: 9999,
+      }}
+      className="pointer-events-none whitespace-nowrap rounded bg-[var(--ink)]/95 px-2 py-1 text-[11px] leading-none text-[var(--paper)] shadow-lg"
+    >
+      {label}
+    </div>,
+    document.body,
+  );
+};
+
 const DEFAULT_KILLING_TIMEOUT_MS = 60_000;
 const ROUTE_OPEN_DELAY_MS = 500;
 
@@ -98,6 +162,14 @@ const schedulePendingTaskOpenState = (
 };
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const isShareDialogStateValid = (share: ShareDialogState): boolean => {
+  if (!share.expiresAt) {
+    return true;
+  }
+  const expiresAt = Date.parse(share.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt > Date.now();
+};
+
 const copyToClipboard = async (value: string): Promise<boolean> => {
   if (navigator.clipboard && window.isSecureContext) {
     await navigator.clipboard.writeText(value);
@@ -127,6 +199,16 @@ const normalizeOptionalString = (value: unknown): string | null => {
 };
 const normalizePositiveNumber = (value: unknown): number | null =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+const normalizePinnedAt = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+  return Number.isFinite(Date.parse(normalized)) ? normalized : null;
+};
 const normalizeBoolean = (value: unknown): boolean => {
   if (typeof value === 'boolean') {
     return value;
@@ -194,9 +276,33 @@ const ShareIcon = () => (
   </svg>
 );
 
+const PinIcon = ({ filled = false, className = 'size-4' }: { filled?: boolean; className?: string }) => (
+  <svg
+    className={className}
+    fill={filled ? 'currentColor' : 'none'}
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={2}
+      d="M14 4l6 6-4 1-3.5 3.5L14 19l-1 1-4.5-4.5L5 19l-1-1 3.5-3.5L3 10l1-1 4.5 1.5L13 6l1-2z"
+    />
+  </svg>
+);
+
 const SelectIcon = ({ selected }: { selected: boolean }) => (
   <svg className="size-3.5" fill={selected ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+  </svg>
+);
+
+const TerminalIcon = () => (
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <rect x="3" y="5" width="18" height="14" rx="2" strokeWidth={2} />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 10l3 2-3 2" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15h4" />
   </svg>
 );
 
@@ -230,6 +336,48 @@ export function TaskItem({
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
   const [shareDialog, setShareDialog] = useState<ShareDialogState | null>(null);
+  const [lastShareDialog, setLastShareDialog] = useState<ShareDialogState | null>(null);
+  const [swipeActionPopup, setSwipeActionPopup] = useState<SwipeActionPopupState | null>(null);
+  // Two-click in-place unpin confirmation. First click on the trailing pin
+  // icon arms the confirmation; a second click within the timeout actually
+  // unpins. Any other interaction (or the timeout) silently disarms it.
+  const [pendingUnpinConfirm, setPendingUnpinConfirm] = useState(false);
+  const pendingUnpinTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showSwipeActionPopup = useCallback(
+    (label: string) =>
+      (event: React.MouseEvent<HTMLButtonElement> | React.FocusEvent<HTMLButtonElement>) => {
+        const target = event.currentTarget;
+        if (!target) return;
+        const rect = target.getBoundingClientRect();
+        setSwipeActionPopup({
+          label,
+          anchorRect: { top: rect.top, left: rect.left, width: rect.width },
+        });
+      },
+    [],
+  );
+  const hideSwipeActionPopup = useCallback(() => {
+    setSwipeActionPopup(null);
+  }, []);
+  // The popup is bound to a specific button instance via getBoundingClientRect.
+  // When the card un-mounts or the swipe panel hides, force the popup state
+  // closed so it doesn't linger above an element that's no longer visible.
+  useEffect(() => {
+    if (swipeOffset === 0 && swipeActionPopup) {
+      setSwipeActionPopup(null);
+    }
+  }, [swipeOffset, swipeActionPopup]);
+
+  // Cancel any armed unpin-confirm if the task gets unpinned out-of-band
+  // (e.g. another tab) and clear the timer when the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (pendingUnpinTimerRef.current) {
+        clearTimeout(pendingUnpinTimerRef.current);
+        pendingUnpinTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressStartXRef = useRef(0);
@@ -246,7 +394,7 @@ export function TaskItem({
   const dismissedStatusConfirmationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusBadgeRef = useRef<HTMLDivElement | null>(null);
 
-  const { updateTask, restartTask, deleteTask, markTaskRead } = useTasksStore();
+  const { updateTask, restartTask, deleteTask, markTaskRead, fetchTask } = useTasksStore();
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
 
@@ -264,14 +412,46 @@ export function TaskItem({
       : DEFAULT_KILLING_TIMEOUT_MS;
   const taskType = task.taskType ?? 'ai_task';
   const worktreeBranch = parseTaskWorktreeBranch(task);
+  // The PTY task is filtered out of the top-level task list, so its live
+  // status arrives via the AI task's denormalised `attachedTerminal.ptyTaskStatus`
+  // field instead of the standalone Task row in `useTasksStore`. WebSocket
+  // status broadcasts refresh the AI task → fresh status flows through.
+  const attachedPtyTaskStatus = task.attachedTerminal?.ptyTaskStatus ?? null;
   const showRestartAction = taskType === 'ai_task';
   const showShareAction = taskType === 'ai_task';
+  // Only offer the "attach a terminal" swipe action on AI tasks that don't
+  // already have one — 1:1 is enforced by the DB, but the UI surfaces the
+  // same constraint by hiding the button. Once the PtyToggleButton is
+  // visible next to the status badge, it becomes the entry point for
+  // toggling / deleting that terminal.
+  const showAttachedTerminalAction =
+    taskType === 'ai_task' && !task.attachedTerminal;
   const useMobileRenameBehavior = !desktopListPaneMode;
-  const rightActionWidth = RIGHT_ACTION_BUTTON_WIDTH * (
-    1 +
+  const pinnedAt = normalizePinnedAt(taskMetadata?.pinnedAt);
+  const isPinned = pinnedAt !== null;
+  // Right-swipe actions are laid out as a 2-row grid that fills column-by-
+  // column (CSS `grid-auto-flow: column`). Each grid cell is half the card
+  // height so the icons stay the same visual size as before but the total
+  // swipe-reveal width is halved when 4-5 buttons are visible — previously a
+  // single 5-button row took 5 × 72 = 360px, now it takes ceil(5/2) × 72 =
+  // 216px.
+  // Pinned tasks unpin via the trailing pin icon on the title (two-click
+  // in-place confirm), so the swipe-action panel hides its Pin button to
+  // avoid two redundant entry points; unpinned tasks still get the swipe
+  // Pin button as the primary "make this important" action.
+  const showSwipePinAction = !isPinned;
+  const rightActionButtonCount =
+    1 + // delete (always)
+    (showSwipePinAction ? 1 : 0) +
     (showRestartAction ? 1 : 0) +
-    (showShareAction ? 1 : 0)
-  );
+    (showShareAction ? 1 : 0) +
+    (showAttachedTerminalAction ? 1 : 0);
+  const rightActionColumns = Math.max(1, Math.ceil(rightActionButtonCount / 2));
+  const rightActionWidth = RIGHT_ACTION_BUTTON_WIDTH * rightActionColumns;
+  // When the button count is odd, the bottom-right cell would otherwise be
+  // a void. We render a small decorative slot there so the row stays
+  // visually balanced (and gives the user a tiny moment of delight).
+  const rightActionHasEmptyCell = rightActionButtonCount % 2 === 1;
   const stableBackend = getStableTaskBackend(task);
   const backend = stableBackend ?? runtime?.backend ?? null;
   const runtimeText = runtime?.statusLine || runtime?.statusDoneLine || runtime?.replyPreview || runtime?.state || null;
@@ -607,6 +787,15 @@ export function TaskItem({
   };
 
   const handleShare = async () => {
+    if (lastShareDialog && isShareDialogStateValid(lastShareDialog)) {
+      setShareDialog(lastShareDialog);
+      closeSwipeActions();
+      return;
+    }
+    if (lastShareDialog) {
+      setLastShareDialog(null);
+    }
+
     const accepted = await confirm({
       title: 'Share this conversation?',
       description: 'Anyone with the link can view all messages in this task without logging in. The link expires in 7 days.',
@@ -619,7 +808,7 @@ export function TaskItem({
 
     try {
       const api = getApiClient();
-      const { token } = await api.post<{ token: string }>(`/tasks/${task.id}/share`);
+      const { token, expiresAt = null } = await api.post<ShareResponse>(`/tasks/${task.id}/share`);
       const url = `${window.location.origin}/share/${token}`;
       const aiUrl = `${url}/plain`;
       try {
@@ -631,17 +820,64 @@ export function TaskItem({
       } catch {
         pushToast({ title: 'Link created', description: url, variant: 'success' });
       }
-      setShareDialog({
+      const nextShareDialog = {
         title: task.title,
         shareUrl: url,
         aiShareUrl: aiUrl,
-      });
+        expiresAt,
+      };
+      setLastShareDialog(nextShareDialog);
+      setShareDialog(nextShareDialog);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create share link';
       pushToast({ title: 'Share failed', description: message, variant: 'error' });
     } finally {
       closeSwipeActions();
     }
+  };
+
+  const handleTogglePin = async () => {
+    try {
+      await updateTask(task.id, {
+        metadata: {
+          pinnedAt: isPinned ? null : new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      pushToast({
+        title: isPinned ? 'Failed to unpin task' : 'Failed to pin task',
+        description: error instanceof Error ? error.message : 'Please try again in a moment.',
+        variant: 'error',
+      });
+    } finally {
+      closeSwipeActions();
+    }
+  };
+
+  const clearPendingUnpinTimer = () => {
+    if (pendingUnpinTimerRef.current) {
+      clearTimeout(pendingUnpinTimerRef.current);
+      pendingUnpinTimerRef.current = null;
+    }
+  };
+
+  // Trailing pin icon click flow:
+  //   1st click → arm in-place confirmation (icon flips to accent color).
+  //   2nd click within 2.5 s → actually unpin.
+  //   timeout / outside interaction → silently disarm.
+  const handleTrailingPinClick = () => {
+    if (pendingUnpinConfirm) {
+      clearPendingUnpinTimer();
+      setPendingUnpinConfirm(false);
+      void handleTogglePin();
+      return;
+    }
+    setPendingUnpinConfirm(true);
+    clearPendingUnpinTimer();
+    pendingUnpinTimerRef.current = setTimeout(() => {
+      setPendingUnpinConfirm(false);
+      pendingUnpinTimerRef.current = null;
+    }, 2500);
   };
 
   const handleCopyShareDialogLink = useCallback(async (value: string) => {
@@ -651,7 +887,44 @@ export function TaskItem({
       description: copied ? value : undefined,
       variant: copied ? 'success' : 'error',
     });
+    setShareDialog(null);
   }, [pushToast]);
+
+  const setPtyActive = usePtyToggleStore((s) => s.setActive);
+  // Guards against double-tap on the swipe Terminal action firing two POSTs.
+  // The DB unique constraint would reject the second one with a confusing
+  // 409, surfacing a "this task already has an attached terminal" toast for
+  // what looked like a single click.
+  const attachInFlightRef = useRef(false);
+
+  const handleAttachTerminal = async () => {
+    if (attachInFlightRef.current) return;
+    attachInFlightRef.current = true;
+    closeSwipeActions();
+    try {
+      const api = getApiClient();
+      await api.post(`/tasks/${task.id}/terminal`, {});
+      // Default to showing the new terminal — the user just asked for it.
+      setPtyActive(task.id, true);
+      // Refetch *this AI task only* so its `attachedTerminal` field lands in
+      // the store and the PTY chip appears without a manual refresh. We used
+      // to call `fetchTasks(undefined)` here, but the tasks page sets
+      // `currentProjectFilter` from the URL `projectId`; the store's race
+      // guard in `fetchTasks` discards a no-filter response whenever a
+      // project filter is active, so the new `attachedTerminal` never made
+      // it into the UI until the user reloaded.
+      await fetchTask(task.id).catch(() => {});
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to attach terminal';
+      pushToast({
+        title: 'Failed to attach terminal',
+        description: message,
+        variant: 'error',
+      });
+    } finally {
+      attachInFlightRef.current = false;
+    }
+  };
 
   const handleRunningStatusClick = async () => {
     if (!isTaskRunning || isKillingTask || isRestartingTask) {
@@ -923,7 +1196,57 @@ export function TaskItem({
         </button>
       </div>
 
-      <div className="absolute inset-y-0 right-0 z-0 flex" aria-hidden={!isRightActionsOpen}>
+      {/*
+        2-row, column-flow grid. With `grid-auto-flow: column` the items fill
+        column-by-column (item 1 → row 1 col 1, item 2 → row 2 col 1, item 3
+        → row 1 col 2, …). No static dividers — each cell reveals its label
+        on hover and a soft tint stands in for the visual separation.
+      */}
+      <div
+        className="absolute inset-y-0 right-0 z-0 grid grid-flow-col grid-rows-2 bg-[var(--paper)]"
+        style={{ gridTemplateColumns: `repeat(${rightActionColumns}, ${RIGHT_ACTION_BUTTON_WIDTH}px)` }}
+        aria-hidden={!isRightActionsOpen}
+      >
+        {showAttachedTerminalAction ? (
+          <button
+            type="button"
+            tabIndex={isRightActionsOpen ? 0 : -1}
+            aria-label="Attach terminal"
+            title="Attach terminal"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              void handleAttachTerminal();
+            }}
+            onMouseEnter={showSwipeActionPopup('Attach')}
+            onMouseLeave={hideSwipeActionPopup}
+            onFocus={showSwipeActionPopup('Attach')}
+            onBlur={hideSwipeActionPopup}
+            className={swipeActionButtonClassName('default')}
+          >
+            <TerminalIcon />
+          </button>
+        ) : null}
+        {showSwipePinAction ? (
+          <button
+            type="button"
+            tabIndex={isRightActionsOpen ? 0 : -1}
+            aria-label="Pin task"
+            title="Pin"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              void handleTogglePin();
+            }}
+            onMouseEnter={showSwipeActionPopup('Pin')}
+            onMouseLeave={hideSwipeActionPopup}
+            onFocus={showSwipeActionPopup('Pin')}
+            onBlur={hideSwipeActionPopup}
+            className={swipeActionButtonClassName('default')}
+          >
+            <PinIcon filled={false} />
+          </button>
+        ) : null}
         {showRestartAction ? (
           <button
             type="button"
@@ -936,7 +1259,11 @@ export function TaskItem({
               setIsRestartDialogOpen(true);
               closeSwipeActions();
             }}
-            className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
+            onMouseEnter={showSwipeActionPopup('New')}
+            onMouseLeave={hideSwipeActionPopup}
+            onFocus={showSwipeActionPopup('New')}
+            onBlur={hideSwipeActionPopup}
+            className={swipeActionButtonClassName('default')}
           >
             <NewTaskIcon />
           </button>
@@ -952,7 +1279,11 @@ export function TaskItem({
               e.stopPropagation();
               void handleShare();
             }}
-            className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--paper)] text-muted transition-colors hover:text-ink"
+            onMouseEnter={showSwipeActionPopup('Share')}
+            onMouseLeave={hideSwipeActionPopup}
+            onFocus={showSwipeActionPopup('Share')}
+            onBlur={hideSwipeActionPopup}
+            className={swipeActionButtonClassName('default')}
           >
             <ShareIcon />
           </button>
@@ -967,10 +1298,25 @@ export function TaskItem({
             e.stopPropagation();
             void handleDelete();
           }}
-          className="flex h-full w-[72px] items-center justify-center border-l border-border bg-[var(--error)]/10 text-[var(--error)] transition-colors hover:bg-[var(--error)]/20"
+          onMouseEnter={showSwipeActionPopup('Delete')}
+          onMouseLeave={hideSwipeActionPopup}
+          onFocus={showSwipeActionPopup('Delete')}
+          onBlur={hideSwipeActionPopup}
+          className={swipeActionButtonClassName('danger')}
         >
           <TrashIcon />
         </button>
+        {rightActionHasEmptyCell ? (
+          // Pure decoration — the empty cell at the bottom of the last
+          // column when the visible button count is odd (5 or 3 buttons).
+          // Non-interactive, no aria-label, hidden from the tab order.
+          <div
+            aria-hidden="true"
+            className="flex items-center justify-center text-lg select-none"
+          >
+            <span role="img" aria-label="smile">😊</span>
+          </div>
+        ) : null}
       </div>
 
       <div
@@ -1034,6 +1380,24 @@ export function TaskItem({
                   {task.title}
                 </h3>
               )}
+              {isPinned ? (
+                <button
+                  type="button"
+                  aria-label={pendingUnpinConfirm ? 'Confirm unpin' : 'Unpin task'}
+                  title={pendingUnpinConfirm ? 'Click again to unpin' : 'Pinned — click to unpin'}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleTrailingPinClick();
+                  }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  className={`shrink-0 transition-colors ${
+                    pendingUnpinConfirm ? 'text-[var(--accent)]' : 'text-muted'
+                  }`}
+                >
+                  <PinIcon className="size-3.5" />
+                </button>
+              ) : null}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted">
               {metadataChips}
@@ -1044,7 +1408,13 @@ export function TaskItem({
               </p>
             ) : null}
           </div>
-          <div ref={statusBadgeRef}>
+          <div ref={statusBadgeRef} className="flex items-center gap-1.5">
+            {task.attachedTerminal ? (
+              <PtyToggleButton
+                aiTaskId={task.id}
+                attachedPtyTaskStatus={attachedPtyTaskStatus}
+              />
+            ) : null}
             <TaskStatusBadge
               status={task.status}
               statusStartedAt={killingStartedAt}
@@ -1054,6 +1424,7 @@ export function TaskItem({
           </div>
         </div>
       </div>
+      {swipeActionPopup ? <SwipeActionPopup state={swipeActionPopup} /> : null}
       {showRestartAction ? (
         <RestartTaskControls
           task={task}

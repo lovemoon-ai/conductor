@@ -4,6 +4,8 @@ import { DELETE, GET, PATCH } from "@/app/api/tasks/[taskId]/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
 import * as authService from "@/lib/auth/service";
 
+const countActiveScheduledMessagesForTasksMock = vi.hoisted(() => vi.fn());
+
 vi.mock("@/lib/subscription/service", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/subscription/service")>();
   return {
@@ -47,6 +49,10 @@ vi.mock("@/lib/tasks/task-file-storage", () => ({
   deleteTaskAttachmentDirectory: vi.fn(),
 }));
 
+vi.mock("@/lib/tasks/scheduled-messages", () => ({
+  countActiveScheduledMessagesForTasks: countActiveScheduledMessagesForTasksMock,
+}));
+
 vi.mock("@/lib/db", () => ({
   db: {
     $transaction: vi.fn(),
@@ -81,6 +87,10 @@ vi.mock("@/lib/db", () => ({
     user: {
       findUnique: vi.fn(),
     },
+    attachedTerminal: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
   },
 }));
 
@@ -98,6 +108,8 @@ const prismaError = (code: string, message: string) =>
 describe("/api/tasks/[taskId]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.attachedTerminal.findUnique).mockResolvedValue(null);
+    vi.mocked(db.attachedTerminal.findMany).mockResolvedValue([]);
     vi.spyOn(authService, "authenticateToken").mockResolvedValue({
       id: "user-1",
       email: "test@example.com",
@@ -147,6 +159,7 @@ describe("/api/tasks/[taskId]", () => {
     vi.mocked(db.message.findMany).mockResolvedValue([]);
     vi.mocked(db.message.count).mockResolvedValue(0);
     vi.mocked(db.task.findMany).mockResolvedValue([] as any);
+    countActiveScheduledMessagesForTasksMock.mockResolvedValue(new Map());
     vi.mocked(db.taskStatusEvent.findFirst).mockResolvedValue(null);
     vi.mocked(db.ptySession.upsert).mockResolvedValue({
       id: "pty-1",
@@ -259,6 +272,7 @@ describe("/api/tasks/[taskId]", () => {
         updatedAt: new Date("2024-01-01T00:01:00.000Z"),
       },
     } as any);
+    countActiveScheduledMessagesForTasksMock.mockResolvedValue(new Map([["task-pty-1", 3]]));
 
     const request = createMockRequest({ method: "GET", token });
     const response = await GET(request, { params: Promise.resolve({ taskId: "task-pty-1" }) });
@@ -266,6 +280,12 @@ describe("/api/tasks/[taskId]", () => {
 
     expect(response.status).toBe(200);
     expect(data.task_type).toBe("pty_task");
+    expect(data.active_scheduled_message_count).toBe(3);
+    expect(data.activeScheduledMessageCount).toBe(3);
+    expect(countActiveScheduledMessagesForTasksMock).toHaveBeenCalledWith({
+      userId: "user-1",
+      taskIds: ["task-pty-1"],
+    });
     expect(data.launch_config).toEqual({
       entrypointType: "tool_preset",
       toolPreset: "codex",
@@ -1157,6 +1177,70 @@ describe("/api/tasks/[taskId]", () => {
       source: "manual-fire",
       daemonName: "daemon-a",
     });
+  });
+
+  it("persists pinnedAt in task metadata via PATCH", async () => {
+    const token = createTestToken("user-1");
+    const pinnedAt = "2024-01-02T00:00:00.000Z";
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-pin-1",
+      projectId: "proj-1",
+      title: "Pinned task",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: "session-pin-1",
+      sessionFilePath: "/tmp/session-pin-1.jsonl",
+      launchConfig: null,
+      ptySession: null,
+      issueId: null,
+      metadata: JSON.stringify({ initialContent: "hello" }),
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:00:00.000Z"),
+    } as any);
+    vi.mocked(db.task.update).mockResolvedValue({
+      id: "task-pin-1",
+      projectId: "proj-1",
+      title: "Pinned task",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: "session-pin-1",
+      sessionFilePath: "/tmp/session-pin-1.jsonl",
+      launchConfig: null,
+      ptySession: null,
+      issueId: null,
+      metadata: JSON.stringify({ initialContent: "hello", pinnedAt }),
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+    } as any);
+
+    const request = createMockRequest({
+      method: "PATCH",
+      token,
+      body: {
+        metadata: {
+          pinnedAt,
+        },
+      },
+    });
+    const response = await PATCH(request, { params: Promise.resolve({ taskId: "task-pin-1" }) });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "task-pin-1" },
+        data: expect.objectContaining({
+          metadata: JSON.stringify({ initialContent: "hello", pinnedAt }),
+        }),
+      }),
+    );
+    expect(data.metadata).toEqual({ initialContent: "hello", pinnedAt });
   });
 
   it("sets a running task to killing and queues stop_task when PATCH requests killed", async () => {

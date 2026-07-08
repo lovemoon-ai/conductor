@@ -333,4 +333,51 @@ describe("claude agent-sdk session", () => {
     assert.equal(session.getSnapshot().capabilities?.goal, true);
     assert.equal(ClaudeAgentSdkSession.capabilities.goal, true);
   });
+
+  it("lifts --effort out of the configured commandLine when not passed explicitly", () => {
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      commandLine: "claude --model fable --effort low",
+    });
+    assert.equal(session.options.effort, "low");
+  });
+
+  it("supports --effort=value syntax in commandLine", () => {
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      commandLine: "claude --model=fable --effort=high",
+    });
+    assert.equal(session.options.effort, "high");
+  });
+
+  it("prefers explicit options.effort over commandLine-derived effort", () => {
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      effort: "medium",
+      commandLine: "claude --model fable --effort low",
+    });
+    assert.equal(session.options.effort, "medium");
+  });
+
+  it("forwards commandLine-derived effort through buildSdkOptions passthrough", () => {
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      commandLine: "claude --model fable --effort low",
+    });
+    const sdkOptions = session.buildSdkOptions(new AbortController());
+    assert.equal(sdkOptions.effort, "low");
+  });
+
+  it("leaves effort unset when commandLine has no --effort flag", () => {
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      commandLine: "claude --model fable",
+    });
+    assert.equal(session.options.effort, undefined);
+  });
 });

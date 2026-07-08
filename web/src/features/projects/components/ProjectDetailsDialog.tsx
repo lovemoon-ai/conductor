@@ -15,14 +15,18 @@ import {
   readProjectMemos,
 } from './ProjectDetailsDialog.utils';
 import { useProjectsStore } from '../store';
+import {
+  buildMetadataWithTaskGraphEnabled,
+  isProjectTaskGraphEnabled,
+} from '../utils/task-graph-settings';
 
 interface ProjectDetailsDialogProps {
   open: boolean;
   project: Project;
   /**
-   * All members of the merged project group this dialog represents. When > 1,
-   * a hint is shown so the user understands memos are stored per-daemon (and
-   * only the primary member's memos are visible here).
+   * All members of the merged project group this dialog represents. Details are
+   * shown per daemon, while memos stay on their source daemon project and render
+   * together in one timeline.
    */
   mergedMembers?: Project[];
   onClose: () => void;
@@ -31,6 +35,12 @@ interface ProjectDetailsDialogProps {
 interface DetailRowProps {
   label: string;
   value: ReactNode;
+}
+
+interface MemoTimelineEntry {
+  projectId: string;
+  daemonLabel: string;
+  memo: ProjectMemo;
 }
 
 const DetailRow = ({ label, value }: DetailRowProps) => (
@@ -42,28 +52,52 @@ const DetailRow = ({ label, value }: DetailRowProps) => (
   </div>
 );
 
+const collectProjectMembers = (project: Project, mergedMembers?: Project[]): Project[] => {
+  const members: Project[] = [];
+  const seen = new Set<string>();
+  const pushUnique = (candidate: Project) => {
+    if (seen.has(candidate.id)) return;
+    seen.add(candidate.id);
+    members.push(candidate);
+  };
+
+  pushUnique(project);
+  for (const member of mergedMembers ?? []) {
+    pushUnique(member);
+  }
+  return members;
+};
+
+const getDaemonLabel = (project: Project): string => {
+  const daemonHost = typeof project.daemonHost === 'string' ? project.daemonHost.trim() : '';
+  if (daemonHost) return daemonHost;
+
+  const workspacePath = typeof project.workspacePath === 'string' ? project.workspacePath.trim() : '';
+  if (workspacePath) return workspacePath;
+
+  return project.name || project.id;
+};
+
+const getActiveScheduledMessageCount = (project: Project): number =>
+  Math.max(0, project.activeScheduledMessageCount ?? 0);
+
 /**
- * Apply an optimistic mutation to a single project's memo list in the shared
- * store so the UI reflects the change immediately.
+ * Apply an optimistic mutation to project memo rows in the shared store so the
+ * UI reflects the change immediately.
  *
- * Returns the **single previous project snapshot** so a failure can restore
- * just that row instead of overwriting the entire `projects` array. The wider
- * "snapshot the whole list" pattern used by `hideProject` etc. is racy: if a
- * websocket-driven `fetchProjects` lands between the optimistic update and
- * the rollback, restoring the cached array would also wipe the fresh data.
- * Returning `null` means the project disappeared from the store mid-flight
- * (e.g. it was deleted by another tab), in which case there is nothing to
- * roll back to.
+ * Returns the previous snapshots for only the affected rows so a failure can
+ * restore them without overwriting unrelated websocket-driven project changes.
  */
 const applyOptimisticMemos = (
-  projectId: string,
+  projectIds: string[],
   mutate: (memos: ProjectMemo[]) => ProjectMemo[],
-): Project | null => {
-  let previousEntry: Project | null = null;
+): Project[] => {
+  const targetIds = new Set(projectIds);
+  const previousEntries: Project[] = [];
   useProjectsStore.setState((state) => ({
     projects: state.projects.map((candidate) => {
-      if (candidate.id !== projectId) return candidate;
-      previousEntry = candidate;
+      if (!targetIds.has(candidate.id)) return candidate;
+      previousEntries.push(candidate);
       const currentMemos = readProjectMemos(candidate);
       const nextMemos = mutate(currentMemos);
       return {
@@ -72,18 +106,20 @@ const applyOptimisticMemos = (
       };
     }),
   }));
-  return previousEntry;
+  return previousEntries;
 };
 
 /**
- * Roll back a single project's optimistic update. We do *not* overwrite the
- * whole `projects` array because other entries may have legitimately changed
+ * Roll back optimistic memo updates. We do *not* overwrite the whole
+ * `projects` array because other entries may have legitimately changed
  * (agent push, refresh, sort) while the PATCH was in flight.
  */
-const restoreProjectSnapshot = (snapshot: Project): void => {
+const restoreProjectSnapshots = (snapshots: Project[]): void => {
+  if (snapshots.length === 0) return;
+  const snapshotsById = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]));
   useProjectsStore.setState((state) => ({
     projects: state.projects.map((candidate) =>
-      candidate.id === snapshot.id ? snapshot : candidate,
+      snapshotsById.get(candidate.id) ?? candidate,
     ),
   }));
 };
@@ -95,10 +131,14 @@ export function ProjectDetailsDialog({
   onClose,
 }: ProjectDetailsDialogProps) {
   const updateProject = useProjectsStore((state) => state.updateProject);
+  const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const { pushToast } = useToast();
   const { confirm } = useConfirm();
   const [draft, setDraft] = useState('');
   const [isMutating, setIsMutating] = useState(false);
+  const [isTaskGraphMutating, setIsTaskGraphMutating] = useState(false);
+  const [pendingTaskGraphEnabled, setPendingTaskGraphEnabled] = useState<boolean | null>(null);
+  const [activeProjectId, setActiveProjectId] = useState(project.id);
   // React 18 silently drops setState calls after unmount, but we still want
   // to avoid running through error UX (draft restore, button toggle) when
   // the user has already closed the dialog. The toast itself still fires so
@@ -111,25 +151,67 @@ export function ProjectDetailsDialog({
     };
   }, []);
 
-  const groupSize = mergedMembers && mergedMembers.length > 0 ? mergedMembers.length : 1;
-  const isMergedGroup = groupSize > 1;
+  const detailProjects = useMemo(
+    () => collectProjectMembers(project, mergedMembers),
+    [mergedMembers, project],
+  );
+  const isMergedGroup = detailProjects.length > 1;
+  const activeProject = useMemo(
+    () =>
+      detailProjects.find((member) => member.id === activeProjectId)
+      ?? detailProjects[0]
+      ?? project,
+    [activeProjectId, detailProjects, project],
+  );
 
-  const memos = useMemo(() => {
-    const list = readProjectMemos(project);
+  useEffect(() => {
+    setActiveProjectId(project.id);
+  }, [project.id]);
+
+  useEffect(() => {
+    if (!open) return;
+    void fetchProjects();
+  }, [fetchProjects, open]);
+
+  useEffect(() => {
+    if (detailProjects.some((member) => member.id === activeProjectId)) return;
+    setActiveProjectId(detailProjects[0]?.id ?? project.id);
+  }, [activeProjectId, detailProjects, project.id]);
+
+  useEffect(() => {
+    setPendingTaskGraphEnabled(null);
+  }, [activeProject.id]);
+
+  const memoEntries = useMemo<MemoTimelineEntry[]>(() => {
+    const entries = detailProjects.flatMap((member) =>
+      readProjectMemos(member).map((memo) => ({
+        projectId: member.id,
+        daemonLabel: getDaemonLabel(member),
+        memo,
+      })),
+    );
     // Newest first — timeline reads chronologically downward.
-    return list.toSorted((a, b) => {
-      const aTime = new Date(a.createdAt).getTime();
-      const bTime = new Date(b.createdAt).getTime();
+    return entries.toSorted((a, b) => {
+      const aTime = new Date(a.memo.createdAt).getTime();
+      const bTime = new Date(b.memo.createdAt).getTime();
       return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime);
     });
-  }, [project]);
+  }, [detailProjects]);
 
-  const githubLink = githubProjectLink(project.gitRemoteUrl);
+  const githubLink = githubProjectLink(activeProject.gitRemoteUrl);
 
   const draftLength = draft.length;
-  const memoCount = memos.length;
+  const memoCount = memoEntries.length;
+  const activeProjectMemoCount = readProjectMemos(activeProject).length;
+  const activeProjectScheduledMessageCount = getActiveScheduledMessageCount(activeProject);
+  const totalScheduledMessageCount = detailProjects.reduce(
+    (sum, member) => sum + getActiveScheduledMessageCount(member),
+    0,
+  );
+  const activeDaemonLabel = getDaemonLabel(activeProject);
+  const taskGraphEnabled = pendingTaskGraphEnabled ?? isProjectTaskGraphEnabled(activeProject);
   const isOverLengthLimit = draftLength > MAX_MEMO_CONTENT_CHARS;
-  const isOverCountLimit = memoCount >= MAX_MEMOS_PER_PROJECT;
+  const isOverCountLimit = activeProjectMemoCount >= MAX_MEMOS_PER_PROJECT;
   const canSubmitDraft =
     Boolean(draft.trim())
     && !isOverLengthLimit
@@ -137,16 +219,47 @@ export function ProjectDetailsDialog({
     && !isMutating;
 
   /**
-   * Resolve the freshest snapshot for this project from the store. The
+   * Resolve the freshest snapshot for a memo source project from the store. The
    * `project` prop comes from a closure that may lag if the store updated
    * between renders (e.g. a websocket push); reading the latest snapshot
    * narrows the "last-write-wins" window for memo mutations.
    */
-  const readLatestProject = (): Project => {
+  const readLatestProject = (target: Project): Project => {
     const stored = useProjectsStore
       .getState()
-      .projects.find((candidate) => candidate.id === project.id);
-    return stored ?? project;
+      .projects.find((candidate) => candidate.id === target.id);
+    return stored ?? target;
+  };
+
+  const updateMemoTarget = async (target: Project, nextMemos: ProjectMemo[]) => {
+    const latestTarget = readLatestProject(target);
+    await updateProject(latestTarget.id, {
+      metadata: buildMetadataWithMemos(latestTarget, nextMemos),
+    });
+  };
+
+  const handleToggleTaskGraph = async () => {
+    if (isTaskGraphMutating) return;
+    const nextEnabled = !taskGraphEnabled;
+    const latestProject = readLatestProject(activeProject);
+    setPendingTaskGraphEnabled(nextEnabled);
+    setIsTaskGraphMutating(true);
+    try {
+      await updateProject(latestProject.id, {
+        metadata: buildMetadataWithTaskGraphEnabled(latestProject, nextEnabled),
+      });
+    } catch (error) {
+      setPendingTaskGraphEnabled(isProjectTaskGraphEnabled(latestProject));
+      pushToast({
+        title: 'Failed to update task graph setting',
+        description: error instanceof Error ? error.message : 'Please try again.',
+        variant: 'error',
+      });
+    } finally {
+      if (isMountedRef.current) {
+        setIsTaskGraphMutating(false);
+      }
+    }
   };
 
   const handleAddMemo = async () => {
@@ -159,27 +272,20 @@ export function ProjectDetailsDialog({
       createdAt: new Date().toISOString(),
     };
 
-    const latestProject = readLatestProject();
+    const latestProject = readLatestProject(activeProject);
     const nextMemos = [newMemo, ...readProjectMemos(latestProject)];
-    const nextMetadata = buildMetadataWithMemos(latestProject, nextMemos);
 
-    // Optimistic update so the new memo appears immediately. We capture the
-    // pre-mutation snapshot for this *one* project so a failure restores
-    // only this row — unrelated `projects[]` updates that may have landed in
-    // the meantime are preserved.
-    const previousSnapshot = applyOptimisticMemos(project.id, () => nextMemos);
+    const previousSnapshots = applyOptimisticMemos([activeProject.id], () => nextMemos);
     setIsMutating(true);
     try {
-      await updateProject(project.id, { metadata: nextMetadata });
+      await updateMemoTarget(activeProject, nextMemos);
       // Clear the composition only on success so a failed save leaves the
       // user's text in place — no "disappears then reappears" flicker.
       if (isMountedRef.current) {
         setDraft('');
       }
     } catch (error) {
-      if (previousSnapshot) {
-        restoreProjectSnapshot(previousSnapshot);
-      }
+      restoreProjectSnapshots(previousSnapshots);
       pushToast({
         title: 'Failed to save memo',
         description: error instanceof Error ? error.message : 'Please try again.',
@@ -192,7 +298,7 @@ export function ProjectDetailsDialog({
     }
   };
 
-  const handleDeleteMemo = async (memoId: string) => {
+  const handleDeleteMemo = async (sourceProjectId: string, memoId: string) => {
     if (isMutating) return;
     const accepted = await confirm({
       title: 'Delete memo?',
@@ -202,20 +308,18 @@ export function ProjectDetailsDialog({
     });
     if (!accepted) return;
 
-    const latestProject = readLatestProject();
+    const sourceProject =
+      detailProjects.find((member) => member.id === sourceProjectId)
+      ?? activeProject;
+    const latestProject = readLatestProject(sourceProject);
     const nextMemos = readProjectMemos(latestProject).filter((memo) => memo.id !== memoId);
-    const nextMetadata = buildMetadataWithMemos(latestProject, nextMemos);
 
-    const previousSnapshot = applyOptimisticMemos(project.id, (current) =>
-      current.filter((memo) => memo.id !== memoId),
-    );
+    const previousSnapshots = applyOptimisticMemos([sourceProject.id], () => nextMemos);
     setIsMutating(true);
     try {
-      await updateProject(project.id, { metadata: nextMetadata });
+      await updateMemoTarget(sourceProject, nextMemos);
     } catch (error) {
-      if (previousSnapshot) {
-        restoreProjectSnapshot(previousSnapshot);
-      }
+      restoreProjectSnapshots(previousSnapshots);
       pushToast({
         title: 'Failed to delete memo',
         description: error instanceof Error ? error.message : 'Please try again.',
@@ -239,11 +343,45 @@ export function ProjectDetailsDialog({
       <div className="space-y-6">
         <section>
           <h3 className="text-sm font-semibold uppercase tracking-wide text-muted">Overview</h3>
-          <div className="mt-2 rounded-xl border border-border bg-paper/40 px-4 py-2">
-            <DetailRow label="Daemon" value={project.daemonHost ?? null} />
-            <DetailRow label="Workspace" value={project.workspacePath ?? null} />
-            <DetailRow label="Branch" value={project.worktreeBranch ?? null} />
-            <DetailRow label="Last commit" value={formatTimestamp(project.lastCommitAt)} />
+          {isMergedGroup ? (
+            <div className="mt-2 flex flex-wrap gap-2" role="tablist" aria-label="Daemon details">
+              {detailProjects.map((member) => {
+                const selected = member.id === activeProject.id;
+                return (
+                  <button
+                    key={member.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={selected}
+                    onClick={() => setActiveProjectId(member.id)}
+                    className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                      selected
+                        ? 'border-[var(--accent)] bg-paper text-[var(--accent)]'
+                        : 'border-border bg-panel text-muted hover:text-ink'
+                    }`}
+                  >
+                    {getDaemonLabel(member)}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+          <div
+            role={isMergedGroup ? 'tabpanel' : undefined}
+            className={`${isMergedGroup ? 'mt-3' : 'mt-2'} rounded-xl border border-border bg-paper/40 px-4 py-2`}
+          >
+            <DetailRow label="Daemon" value={activeProject.daemonHost ?? null} />
+            <DetailRow label="Workspace" value={activeProject.workspacePath ?? null} />
+            <DetailRow label="Branch" value={activeProject.worktreeBranch ?? null} />
+            <DetailRow label="Last commit" value={formatTimestamp(activeProject.lastCommitAt)} />
+            <DetailRow
+              label="Scheduled"
+              value={
+                isMergedGroup
+                  ? `${activeProjectScheduledMessageCount} active on ${activeDaemonLabel}, ${totalScheduledMessageCount} total`
+                  : `${activeProjectScheduledMessageCount} active`
+              }
+            />
             {githubLink ? (
               <DetailRow
                 label="GitHub"
@@ -259,7 +397,35 @@ export function ProjectDetailsDialog({
                 )}
               />
             ) : null}
-            <DetailRow label="Created" value={formatTimestamp(project.createdAt)} />
+            <DetailRow label="Created" value={formatTimestamp(activeProject.createdAt)} />
+          </div>
+        </section>
+
+        <section>
+          <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-paper/40 px-4 py-3">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold uppercase tracking-wide text-muted">Task view</h3>
+              <p className="mt-1 text-sm font-medium text-ink">Graph view</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={taskGraphEnabled}
+              aria-label="Graph view"
+              onClick={() => void handleToggleTaskGraph()}
+              disabled={isTaskGraphMutating}
+              className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors disabled:opacity-60 ${
+                taskGraphEnabled
+                  ? 'border-[var(--accent)] bg-[var(--accent)]'
+                  : 'border-border bg-[var(--surface-subtle)]'
+              }`}
+            >
+              <span
+                className={`inline-block size-5 rounded-full bg-white shadow-sm transition-transform ${
+                  taskGraphEnabled ? 'translate-x-5' : 'translate-x-1'
+                }`}
+              />
+            </button>
           </div>
         </section>
 
@@ -267,20 +433,11 @@ export function ProjectDetailsDialog({
           <div className="flex items-baseline justify-between">
             <h3 className="text-sm font-semibold uppercase tracking-wide text-muted">Memo</h3>
             <span className="text-xs text-muted">
-              {memoCount} / {MAX_MEMOS_PER_PROJECT}
+              {isMergedGroup
+                ? `${memoCount} total, ${activeProjectMemoCount} / ${MAX_MEMOS_PER_PROJECT} on ${activeDaemonLabel}`
+                : `${memoCount} / ${MAX_MEMOS_PER_PROJECT}`}
             </span>
           </div>
-
-          {isMergedGroup ? (
-            // Merged-group memos are written to the primary daemon's project
-            // row only — surface that so the user doesn't expect a unified
-            // timeline across daemons.
-            <p className="mt-2 rounded-lg border border-dashed border-border bg-paper/30 px-3 py-2 text-xs text-muted">
-              This project is merged across {groupSize} daemons. Memos shown here are
-              stored on <code className="font-mono">{project.daemonHost ?? 'this row'}</code>{' '}
-              only.
-            </p>
-          ) : null}
 
           <div className="mt-2 space-y-2">
             <textarea
@@ -308,7 +465,7 @@ export function ProjectDetailsDialog({
                 {draftLength} / {MAX_MEMO_CONTENT_CHARS}
                 {isOverLengthLimit ? ' — memo too long' : ''}
                 {!isOverLengthLimit && isOverCountLimit
-                  ? ` — limit reached (${MAX_MEMOS_PER_PROJECT}). Delete an old memo first.`
+                  ? ` — limit reached for ${activeDaemonLabel} (${MAX_MEMOS_PER_PROJECT}). Delete an old memo first.`
                   : ''}
               </span>
               <button
@@ -329,20 +486,27 @@ export function ProjectDetailsDialog({
               </div>
             ) : (
               <ol className="relative space-y-4 border-l border-border pl-5">
-                {memos.map((memo) => (
-                  <li key={memo.id} className="relative">
+                {memoEntries.map(({ projectId, daemonLabel, memo }) => (
+                  <li key={`${projectId}:${memo.id}`} className="relative">
                     <span
                       aria-hidden="true"
                       className="absolute -left-[27px] top-1.5 inline-block size-3 rounded-full border-2 border-panel bg-[var(--accent)]"
                     />
                     <div className="rounded-xl border border-border bg-paper/30 px-3 py-2">
                       <div className="flex items-center justify-between gap-2">
-                        <time className="text-xs text-muted" dateTime={memo.createdAt}>
-                          {formatTimestamp(memo.createdAt) ?? memo.createdAt}
-                        </time>
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                          <time className="text-xs text-muted" dateTime={memo.createdAt}>
+                            {formatTimestamp(memo.createdAt) ?? memo.createdAt}
+                          </time>
+                          {isMergedGroup ? (
+                            <span className="text-[11px] font-medium text-muted">
+                              {daemonLabel}
+                            </span>
+                          ) : null}
+                        </div>
                         <button
                           type="button"
-                          onClick={() => void handleDeleteMemo(memo.id)}
+                          onClick={() => void handleDeleteMemo(projectId, memo.id)}
                           disabled={isMutating}
                           className="text-xs text-muted transition-colors hover:text-[var(--error)] disabled:opacity-50"
                           aria-label="Delete memo"

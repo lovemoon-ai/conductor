@@ -9,6 +9,7 @@ import {
 } from './ProjectDetailsDialog.utils';
 
 const updateProjectMock = vi.fn();
+const fetchProjectsMock = vi.fn();
 const pushToastMock = vi.fn();
 const confirmMock = vi.fn();
 
@@ -43,8 +44,13 @@ vi.mock('@/components/common/FeedbackProvider', () => ({
 }));
 
 vi.mock('../store', () => {
-  const hook = (selector?: (state: { updateProject: typeof updateProjectMock }) => unknown) =>
-    selector ? selector({ updateProject: updateProjectMock }) : { updateProject: updateProjectMock };
+  const hook = (selector?: (state: {
+    updateProject: typeof updateProjectMock;
+    fetchProjects: typeof fetchProjectsMock;
+  }) => unknown) =>
+    selector
+      ? selector({ updateProject: updateProjectMock, fetchProjects: fetchProjectsMock })
+      : { updateProject: updateProjectMock, fetchProjects: fetchProjectsMock };
   // Mirror zustand's static accessors so the dialog can read/write the
   // shared `projects` list for optimistic updates.
   (hook as any).getState = () => storeState;
@@ -67,6 +73,8 @@ const baseProject = {
 describe('ProjectDetailsDialog', () => {
   beforeEach(() => {
     updateProjectMock.mockReset();
+    fetchProjectsMock.mockReset();
+    fetchProjectsMock.mockResolvedValue(undefined);
     pushToastMock.mockReset();
     confirmMock.mockReset();
     resetStoreProjects([]);
@@ -120,6 +128,54 @@ describe('ProjectDetailsDialog', () => {
       'href',
       'https://github.com/foo/bar',
     );
+  });
+
+  it('shows active scheduled message count in overview', () => {
+    const project = {
+      ...baseProject,
+      activeScheduledMessageCount: 3,
+    } as any;
+
+    render(<ProjectDetailsDialog open project={project} onClose={vi.fn()} />);
+
+    expect(screen.getByText('Scheduled')).toBeInTheDocument();
+    expect(screen.getByText('3 active')).toBeInTheDocument();
+    expect(fetchProjectsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('toggles task graph view setting while preserving existing metadata', async () => {
+    const project = {
+      ...baseProject,
+      metadata: {
+        bindingCandidate: { daemonHost: 'daemon-a', workspacePath: '/repo/memo' },
+        memos: [
+          { id: 'm1', content: 'first memo', createdAt: '2026-05-01T08:00:00.000Z' },
+        ],
+      },
+    } as any;
+    resetStoreProjects([project]);
+    updateProjectMock.mockResolvedValueOnce({
+      ...project,
+      metadata: { ...project.metadata, taskGraphEnabled: true },
+    });
+
+    render(<ProjectDetailsDialog open project={project} onClose={vi.fn()} />);
+
+    const switchButton = screen.getByRole('switch', { name: 'Graph view' });
+    expect(switchButton).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(switchButton);
+
+    await waitFor(() => expect(updateProjectMock).toHaveBeenCalledTimes(1));
+    const [projectId, payload] = updateProjectMock.mock.calls[0];
+    expect(projectId).toBe('project-memo');
+    expect(payload.metadata).toEqual({
+      bindingCandidate: { daemonHost: 'daemon-a', workspacePath: '/repo/memo' },
+      memos: [
+        { id: 'm1', content: 'first memo', createdAt: '2026-05-01T08:00:00.000Z' },
+      ],
+      taskGraphEnabled: true,
+    });
+    expect(screen.getByRole('switch', { name: 'Graph view' })).toHaveAttribute('aria-checked', 'true');
   });
 
   it('adds a new memo by prepending and patching metadata', async () => {
@@ -317,12 +373,33 @@ describe('ProjectDetailsDialog', () => {
     expect(readProjectMemos(storeState.projects[0] as any)).toHaveLength(1);
   });
 
-  it('shows the merged-group hint when more than one daemon shares this project', () => {
-    const project = { ...baseProject, daemonHost: 'daemon-a' } as any;
+  it('renders merged project memos from every daemon in one timeline', () => {
+    const project = {
+      ...baseProject,
+      daemonHost: 'daemon-a',
+      workspacePath: '/repo/memo-a',
+      metadata: {
+        memos: [
+          { id: 'daemon-a', content: 'daemon a memo', createdAt: '2026-05-10T12:30:00.000Z' },
+        ],
+      },
+    } as any;
+    const projectB = {
+      ...baseProject,
+      id: 'project-memo-b',
+      daemonHost: 'daemon-b',
+      workspacePath: '/repo/memo-b',
+      metadata: {
+        memos: [
+          { id: 'daemon-b', content: 'daemon b memo', createdAt: '2026-05-11T12:30:00.000Z' },
+        ],
+      },
+    } as any;
     const mergedMembers = [
       project,
-      { ...baseProject, id: 'project-memo-b', daemonHost: 'daemon-b' },
-    ] as any;
+      projectB,
+    ];
+    resetStoreProjects(mergedMembers);
 
     render(
       <ProjectDetailsDialog
@@ -332,16 +409,143 @@ describe('ProjectDetailsDialog', () => {
         onClose={vi.fn()}
       />,
     );
-    const hint = screen.getByText(/merged across 2 daemons/);
-    expect(hint).toBeInTheDocument();
-    // Daemon host appears both in the Overview row and the merged hint; assert
-    // the hint specifically by scoping the lookup to the hint element.
-    expect(hint.textContent).toMatch(/daemon-a/);
+
+    const memoItems = screen.getAllByRole('listitem');
+    expect(memoItems).toHaveLength(2);
+    expect(memoItems[0]).toHaveTextContent('daemon b memo');
+    expect(memoItems[0]).toHaveTextContent('daemon-b');
+    expect(memoItems[1]).toHaveTextContent('daemon a memo');
+    expect(memoItems[1]).toHaveTextContent('daemon-a');
   });
 
-  it('hides the merged-group hint for a single-member group', () => {
-    render(<ProjectDetailsDialog open project={baseProject as any} onClose={vi.fn()} />);
-    expect(screen.queryByText(/merged across/)).toBeNull();
+  it('shows merged project details as daemon tabs', () => {
+    const project = {
+      ...baseProject,
+      daemonHost: 'daemon-a',
+      workspacePath: '/repo/memo-a',
+      worktreeBranch: 'main',
+    } as any;
+    const projectB = {
+      ...baseProject,
+      id: 'project-memo-b',
+      daemonHost: 'daemon-b',
+      workspacePath: '/repo/memo-b',
+      worktreeBranch: 'feature-b',
+    } as any;
+    const mergedMembers = [project, projectB];
+
+    render(
+      <ProjectDetailsDialog
+        open
+        project={project}
+        mergedMembers={mergedMembers}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const daemonATab = screen.getByRole('tab', { name: 'daemon-a' });
+    const daemonBTab = screen.getByRole('tab', { name: 'daemon-b' });
+    expect(daemonATab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('/repo/memo-a')).toBeInTheDocument();
+    expect(screen.getByText('main')).toBeInTheDocument();
+
+    fireEvent.click(daemonBTab);
+
+    expect(daemonBTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('/repo/memo-b')).toBeInTheDocument();
+    expect(screen.getByText('feature-b')).toBeInTheDocument();
+    expect(screen.queryByText('/repo/memo-a')).toBeNull();
+  });
+
+  it('adds merged project memos to the active daemon tab only', async () => {
+    const project = {
+      ...baseProject,
+      daemonHost: 'daemon-a',
+      workspacePath: '/repo/memo-a',
+      metadata: {
+        memos: [
+          { id: 'm1', content: 'existing daemon a memo', createdAt: '2026-05-01T08:00:00.000Z' },
+        ],
+      },
+    } as any;
+    const projectB = {
+      ...baseProject,
+      id: 'project-memo-b',
+      daemonHost: 'daemon-b',
+      workspacePath: '/repo/memo-b',
+      metadata: { color: 'blue' },
+    } as any;
+    const mergedMembers = [project, projectB];
+    resetStoreProjects(mergedMembers);
+    updateProjectMock.mockResolvedValue(projectB);
+
+    render(
+      <ProjectDetailsDialog
+        open
+        project={project}
+        mergedMembers={mergedMembers}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'daemon-b' }));
+    fireEvent.change(screen.getByLabelText('New memo'), { target: { value: 'new daemon b memo' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add memo' }));
+
+    await waitFor(() => expect(updateProjectMock).toHaveBeenCalledTimes(1));
+    const [projectId, payload] = updateProjectMock.mock.calls[0];
+    expect(projectId).toBe('project-memo-b');
+    expect(payload.metadata.color).toBe('blue');
+    expect(payload.metadata.memos).toHaveLength(1);
+    expect(payload.metadata.memos[0].content).toBe('new daemon b memo');
+    expect(readProjectMemos(storeState.projects[0] as any)[0].id).toBe('m1');
+    expect(readProjectMemos(storeState.projects[1] as any)[0].content).toBe('new daemon b memo');
+  });
+
+  it('deletes a merged project memo from its source daemon only', async () => {
+    confirmMock.mockResolvedValueOnce(true);
+    const project = {
+      ...baseProject,
+      daemonHost: 'daemon-a',
+      metadata: {
+        memos: [
+          { id: 'daemon-a', content: 'keep daemon a memo', createdAt: '2026-05-10T12:30:00.000Z' },
+        ],
+      },
+    } as any;
+    const projectB = {
+      ...baseProject,
+      id: 'project-memo-b',
+      daemonHost: 'daemon-b',
+      metadata: {
+        color: 'blue',
+        memos: [
+          { id: 'daemon-b', content: 'remove daemon b memo', createdAt: '2026-05-11T12:30:00.000Z' },
+        ],
+      },
+    } as any;
+    const mergedMembers = [project, projectB];
+    resetStoreProjects(mergedMembers);
+    updateProjectMock.mockResolvedValue(projectB);
+
+    render(
+      <ProjectDetailsDialog
+        open
+        project={project}
+        mergedMembers={mergedMembers}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByLabelText('Delete memo')[0]);
+
+    await waitFor(() => expect(updateProjectMock).toHaveBeenCalledTimes(1));
+    const [projectId, payload] = updateProjectMock.mock.calls[0];
+    expect(projectId).toBe('project-memo-b');
+    expect(payload.metadata.color).toBe('blue');
+    expect(payload.metadata.memos).toEqual([]);
+    expect(readProjectMemos(storeState.projects[0] as any)).toHaveLength(1);
+    expect(readProjectMemos(storeState.projects[1] as any)).toHaveLength(0);
   });
 
   it('disables the submit button when the draft exceeds the per-memo length cap', () => {

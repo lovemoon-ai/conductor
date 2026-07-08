@@ -2,10 +2,14 @@
 
 import Image from 'next/image';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react';
 import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
+import { useDailyReportsStore } from '@/features/daily-reports';
+import { computeProjectGroups } from '@/features/projects/utils/project-groups';
+import { isProjectTaskGraphEnabled } from '@/features/projects/utils/task-graph-settings';
+import { isTaskGraphReturnHref, normalizeTaskListReturnHref } from '@/features/tasks/utils/task-navigation';
 import {
   AI_MANAGER_PATH_PREFIX,
   SETTINGS_ROOT_PATH,
@@ -18,6 +22,15 @@ type NavIconProps = {
   compact?: boolean;
 };
 
+type NavItem = {
+  href: string;
+  activePaths: string[];
+  label: string;
+  Icon: (props: NavIconProps) => ReactNode;
+  badge: number | null;
+  onDoubleClick?: (event: MouseEvent<HTMLAnchorElement>) => void;
+};
+
 const TasksIcon = ({ active, compact = false }: NavIconProps) => (
   <svg
     className={compact ? 'h-[18px] w-[18px]' : 'h-[18px] w-[18px]'}
@@ -27,6 +40,51 @@ const TasksIcon = ({ active, compact = false }: NavIconProps) => (
   >
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={active ? 2.2 : 1.9} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
   </svg>
+);
+
+const GraphIcon = ({ active, compact = false }: NavIconProps) => (
+  <svg
+    className={compact ? 'h-[18px] w-[18px]' : 'h-[18px] w-[18px]'}
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <circle cx="6.5" cy="7" r="2.5" strokeWidth={active ? 2.2 : 1.9} />
+    <circle cx="17.5" cy="7" r="2.5" strokeWidth={active ? 2.2 : 1.9} />
+    <circle cx="12" cy="17" r="2.5" strokeWidth={active ? 2.2 : 1.9} />
+    <path strokeLinecap="round" strokeWidth={active ? 2.2 : 1.9} d="M8.7 8.2l6.6 0M7.8 9.2l3.1 5.6M16.2 9.2l-3.1 5.6" />
+  </svg>
+);
+
+const FlippingTasksIcon = ({
+  active,
+  compact = false,
+  graph,
+}: NavIconProps & { graph: boolean }) => (
+  <span
+    data-testid="sidebar-tasks-icon"
+    data-task-nav-icon={graph ? 'graph' : 'list'}
+    className="relative inline-block h-[18px] w-[18px]"
+    style={{ perspective: '600px' }}
+  >
+    <span
+      className="absolute inset-0 transition-transform duration-300 motion-reduce:transition-none"
+      style={{
+        transform: graph ? 'rotateY(180deg)' : 'rotateY(0deg)',
+        transformStyle: 'preserve-3d',
+      }}
+    >
+      <span className="absolute inset-0" style={{ backfaceVisibility: 'hidden' }}>
+        <TasksIcon active={active} compact={compact} />
+      </span>
+      <span
+        className="absolute inset-0"
+        style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
+      >
+        <GraphIcon active={active} compact={compact} />
+      </span>
+    </span>
+  </span>
 );
 
 const ProjectsIcon = ({ active, compact = false }: NavIconProps) => (
@@ -51,6 +109,17 @@ const IssuesIcon = ({ active, compact = false }: NavIconProps) => (
   </svg>
 );
 
+const DailyIcon = ({ active, compact = false }: NavIconProps) => (
+  <svg
+    className={compact ? 'h-[18px] w-[18px]' : 'h-[18px] w-[18px]'}
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={active ? 2.2 : 1.9} d="M8 7h8M8 11h8M8 15h5M5 3h14a2 2 0 012 2v14l-4-2-4 2-4-2-4 2V5a2 2 0 012-2z" />
+  </svg>
+);
+
 const SettingsIcon = ({ active, compact = false }: NavIconProps) => (
   <svg
     className={compact ? 'h-[18px] w-[18px]' : 'h-[18px] w-[18px]'}
@@ -69,6 +138,8 @@ const CollapseIcon = () => (
     <path strokeLinecap="round" strokeWidth="1.9" d="M10 7.5v9" />
   </svg>
 );
+
+const DAILY_REPORTS_PATH = '/app/daily-reports';
 
 interface SidebarProps {
   collapsed?: boolean;
@@ -102,23 +173,96 @@ function SidebarTooltip({
 
 export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const { push } = useRouter();
   const unreadCount = useTasksStore((state) => state.unreadTaskIds.size);
   const selectedProjectId = useProjectsStore((state) => state.selectedProjectId);
+  const dailyReportSetting = useDailyReportsStore((state) => state.setting);
+  const isLoadingDailyReportSetting = useDailyReportsStore((state) => state.isLoadingSetting);
+  const hydrateDailyReportSetting = useDailyReportsStore((state) => state.hydrateSetting);
+  const projects = useProjectsStore((state) => state.projects);
   const lastSettingsPath = useSettingsNavStore((state) => state.lastPath);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const iconRailClassName = 'flex h-10 w-[52px] shrink-0 items-center justify-center';
-  const tasksHref = selectedProjectId
-    ? `/app/tasks?projectId=${encodeURIComponent(selectedProjectId)}`
-    : '/app/tasks';
+  const urlProjectId = pathname.startsWith('/app/tasks') ? searchParams.get('projectId') : null;
+  const taskProjectId = selectedProjectId ?? urlProjectId;
+  const taskReturnHref = normalizeTaskListReturnHref(searchParams.get('from'));
+  const taskGraphEnabled = useMemo(() => {
+    if (!taskProjectId) return false;
+    const groups = computeProjectGroups(projects);
+    const group = groups.find((entry) =>
+      entry.members.some((member) => member.id === taskProjectId),
+    );
+    const members = group?.members ?? projects.filter((project) => project.id === taskProjectId);
+    return members.some((project) => isProjectTaskGraphEnabled(project));
+  }, [projects, taskProjectId]);
+  const isTaskDetailRoute = pathname.startsWith('/app/tasks/');
+  const isTaskGraphView = pathname.startsWith('/app/tasks') && (
+    searchParams.get('view') === 'graph' || (isTaskDetailRoute && isTaskGraphReturnHref(taskReturnHref))
+  );
+  const buildTasksHref = (includeGraphView: boolean) => {
+    const params = new URLSearchParams();
+    if (taskProjectId) {
+      params.set('projectId', taskProjectId);
+    }
+    if (includeGraphView && taskGraphEnabled) {
+      params.set('view', 'graph');
+    }
+    const query = params.toString();
+    return query ? `/app/tasks?${query}` : '/app/tasks';
+  };
+  const tasksHref = isTaskDetailRoute && taskReturnHref ? taskReturnHref : buildTasksHref(isTaskGraphView);
   const issuesHref = selectedProjectId
     ? `/app/issues?projectId=${encodeURIComponent(selectedProjectId)}`
     : '/app/issues';
   const settingsHref = resolveSettingsHref(pathname, lastSettingsPath);
+  const showDailyReports = Boolean(dailyReportSetting?.enabled);
+  const handleTasksDoubleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (!taskGraphEnabled) return;
+    event.preventDefault();
+    const params = pathname.startsWith('/app/tasks')
+      ? new URLSearchParams(searchParams.toString())
+      : new URLSearchParams();
+    if (taskProjectId) {
+      params.set('projectId', taskProjectId);
+    }
+    params.delete('from');
+    params.delete('taskId');
+    if (params.get('view') === 'graph') {
+      params.delete('view');
+    } else {
+      params.set('view', 'graph');
+    }
+    const query = params.toString();
+    push(query ? `/app/tasks?${query}` : '/app/tasks');
+  };
 
-  const navItems = [
+  useEffect(() => {
+    if (!dailyReportSetting && !isLoadingDailyReportSetting) {
+      void hydrateDailyReportSetting();
+    }
+  }, [dailyReportSetting, hydrateDailyReportSetting, isLoadingDailyReportSetting]);
+
+  const navItems: NavItem[] = [
     { href: '/app/projects', activePaths: ['/app/projects'], label: 'Projects', Icon: ProjectsIcon, badge: null },
     { href: issuesHref, activePaths: ['/app/issues'], label: 'Issues', Icon: IssuesIcon, badge: null },
-    { href: tasksHref, activePaths: ['/app/tasks'], label: 'Tasks', Icon: TasksIcon, badge: unreadCount > 0 ? unreadCount : null },
+    {
+      href: tasksHref,
+      activePaths: ['/app/tasks'],
+      label: 'Tasks',
+      Icon: (props: NavIconProps) => <FlippingTasksIcon {...props} graph={isTaskGraphView} />,
+      badge: unreadCount > 0 ? unreadCount : null,
+      onDoubleClick: handleTasksDoubleClick,
+    },
+    ...(showDailyReports
+      ? [{
+        href: DAILY_REPORTS_PATH,
+        activePaths: [DAILY_REPORTS_PATH],
+        label: 'Daily',
+        Icon: DailyIcon,
+        badge: null,
+      }]
+      : []),
     {
       href: settingsHref,
       activePaths: [SETTINGS_ROOT_PATH, AI_MANAGER_PATH_PREFIX],
@@ -202,6 +346,7 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
                 aria-current={isActive ? 'page' : undefined}
                 aria-describedby={isTooltipVisible ? tooltipId : undefined}
                 title={collapsed ? item.label : undefined}
+                onDoubleClick={item.onDoubleClick}
                 onMouseEnter={() => {
                   if (collapsed) {
                     setActiveTooltip(item.label);

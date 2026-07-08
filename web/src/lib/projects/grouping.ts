@@ -22,6 +22,40 @@ export type ProjectGroupingFields = {
   mergeOptOut?: boolean | null | undefined;
 };
 
+/**
+ * Collapse any GitHub SSH config alias to the canonical `github.com` host.
+ * Users create aliases like `github-duinodu`, `github-dang217`, or
+ * `github.com-work` in `~/.ssh/config` to juggle multiple accounts/keys. GitHub
+ * identifies a repository solely by its `owner/repo` path, so the local alias
+ * prefix carries no identity — we ignore it and let the path decide equality,
+ * rather than maintaining a per-alias allowlist that breaks on the next new one.
+ * Non-GitHub hosts (gitlab.com, self-hosted, GitHub Enterprise like
+ * `github.mycompany.com`) are left untouched so unrelated repos never merge.
+ */
+const canonicalGitRemoteHost = (host: string): string => {
+  const normalized = host.trim().toLowerCase();
+  if (
+    normalized === 'github.com' ||
+    normalized.startsWith('github-') ||
+    normalized.startsWith('github.com-')
+  ) {
+    return 'github.com';
+  }
+  return normalized;
+};
+
+const normalizeComparableGitRemoteUrl = (
+  value: string | null | undefined,
+): string => {
+  const normalized = (value ?? '').trim().toLowerCase();
+  if (!normalized) return '';
+  const slashIndex = normalized.indexOf('/');
+  if (slashIndex < 0) return normalized;
+  const host = normalized.slice(0, slashIndex);
+  const path = normalized.slice(slashIndex);
+  return `${canonicalGitRemoteHost(host)}${path}`;
+};
+
 export const canMergeProjectsByFields = (
   a: ProjectGroupingFields,
   b: ProjectGroupingFields,
@@ -32,8 +66,8 @@ export const canMergeProjectsByFields = (
   const bHost = (b.daemonHost ?? '').trim();
   if (!aHost || !bHost) return false;
   if (aHost === bHost) return false;
-  const aUrl = (a.gitRemoteUrl ?? '').trim().toLowerCase();
-  const bUrl = (b.gitRemoteUrl ?? '').trim().toLowerCase();
+  const aUrl = normalizeComparableGitRemoteUrl(a.gitRemoteUrl);
+  const bUrl = normalizeComparableGitRemoteUrl(b.gitRemoteUrl);
   if (aUrl && bUrl && aUrl !== bUrl) return false;
   return true;
 };

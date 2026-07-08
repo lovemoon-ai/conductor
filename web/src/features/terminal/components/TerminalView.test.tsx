@@ -194,6 +194,65 @@ describe('TerminalView', () => {
     });
   });
 
+  it('does not preventDefault Space/Enter that bubble from inside xterm (regression: PTY swallowed printable keys)', async () => {
+    // The container <div role="button"> has an onKeyDown that focuses the
+    // terminal when the user activates the "click-to-focus" affordance with
+    // Space/Enter. Without a `event.target !== event.currentTarget` guard
+    // the same handler also fires for keydowns *bubbled up from xterm's
+    // internal textarea*, calls preventDefault, and swallows the input
+    // event — so Space and Enter typed into the running terminal never
+    // reach the shell. The fix is the guard; this test pins it.
+    const task = {
+      id: 'task-pty-keydown',
+      title: 'PTY Keydown',
+      taskType: 'pty_task',
+      status: 'running',
+      agentHost: 'debug',
+      executionHost: 'debug',
+      launchConfig: null,
+      ptySession: { cols: 80, rows: 24 },
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: null,
+    } as any;
+
+    const view = await renderTerminalView(task);
+    const container = view.container.querySelector(
+      '[aria-label="Focus terminal"]',
+    ) as HTMLElement;
+    expect(container).not.toBeNull();
+
+    // Simulate a key bubbling up from a *child* element (xterm's textarea).
+    // Using a real child node makes `event.target !== event.currentTarget`
+    // true the way it would be at runtime.
+    const childTextarea = document.createElement('textarea');
+    container.appendChild(childTextarea);
+
+    const spaceEvent = new KeyboardEvent('keydown', {
+      key: ' ',
+      bubbles: true,
+      cancelable: true,
+    });
+    childTextarea.dispatchEvent(spaceEvent);
+    expect(spaceEvent.defaultPrevented).toBe(false);
+
+    const enterEvent = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+    childTextarea.dispatchEvent(enterEvent);
+    expect(enterEvent.defaultPrevented).toBe(false);
+
+    // The container's own Space keydown (target === currentTarget) still
+    // gets intercepted — that's the accessibility affordance we want to
+    // keep working. fireEvent dispatches with target = the element it's
+    // called on.
+    const containerSpace = fireEvent.keyDown(container, { key: ' ' });
+    expect(containerSpace).toBe(false);
+
+    view.unmount();
+  });
+
   it('restores buffered terminal output after remounting the same task', async () => {
     const task = {
       id: 'task-pty-history',

@@ -4,6 +4,7 @@ vi.mock("@/lib/db", () => ({
   db: {
     agentOutbox: {
       findMany: vi.fn(),
+      findUnique: vi.fn(),
       update: vi.fn(),
       create: vi.fn(),
     },
@@ -11,13 +12,30 @@ vi.mock("@/lib/db", () => ({
 }));
 
 import { db } from "@/lib/db";
-import { deliverAgentOutboxForHost } from "@/lib/realtime/agent-outbox";
+import {
+  deliverAgentOutboxForHost,
+  enqueueAndAttemptAgentCommand,
+} from "@/lib/realtime/agent-outbox";
 
 describe("agent-outbox delivery", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(db.agentOutbox.findMany).mockResolvedValue([] as any);
+    vi.mocked(db.agentOutbox.findUnique).mockResolvedValue(null as any);
     vi.mocked(db.agentOutbox.update).mockResolvedValue({ id: "row-1" } as any);
+    vi.mocked(db.agentOutbox.create).mockResolvedValue({
+      id: "row-1",
+      userId: "user-1",
+      agentHost: "fire-1",
+      taskId: "task-1",
+      eventType: "task_user_message",
+      requestId: "req-1",
+      createdAt: new Date("2026-03-10T10:00:00.000Z"),
+      payloadJson: JSON.stringify({
+        type: "task_user_message",
+        payload: { request_id: "req-1" },
+      }),
+    } as any);
   });
 
   it("injects delivery cursor into replayed payloads", async () => {
@@ -101,5 +119,64 @@ describe("agent-outbox delivery", () => {
         orderBy: [{ status: "asc" }, { createdAt: "asc" }, { requestId: "asc" }],
       }),
     );
+  });
+
+  it("reuses an existing outbox row when enqueue sees the same request id", async () => {
+    vi.mocked(db.agentOutbox.create).mockRejectedValueOnce(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" }),
+    );
+    vi.mocked(db.agentOutbox.findUnique).mockResolvedValue({
+      id: "row-existing",
+      userId: "user-1",
+      agentHost: "fire-1",
+      taskId: "task-1",
+      eventType: "task_user_message",
+      requestId: "req-existing",
+      createdAt: new Date("2026-03-10T10:00:00.000Z"),
+      payloadJson: JSON.stringify({
+        type: "task_user_message",
+        payload: {
+          request_id: "req-existing",
+          task_id: "task-1",
+          content: "scheduled retry",
+        },
+      }),
+    } as any);
+
+    const deliveredPayloads: Array<Record<string, unknown>> = [];
+    const result = await enqueueAndAttemptAgentCommand(
+      {
+        userId: "user-1",
+        agentHost: "fire-1",
+        taskId: "task-1",
+        eventType: "task_user_message",
+        requestId: "req-existing",
+        envelope: {
+          type: "task_user_message",
+          payload: { request_id: "req-existing" },
+        },
+      },
+      {
+        agentHost: "fire-1",
+        sendToAgentHost: ({ envelope }) => {
+          deliveredPayloads.push(envelope);
+          return true;
+        },
+      },
+    );
+
+    expect(result).toEqual({ requestId: "req-existing", delivered: true });
+    expect(db.agentOutbox.findUnique).toHaveBeenCalledWith({
+      where: { requestId: "req-existing" },
+    });
+    expect(deliveredPayloads).toEqual([
+      {
+        type: "task_user_message",
+        payload: expect.objectContaining({
+          request_id: "req-existing",
+          content: "scheduled retry",
+        }),
+      },
+    ]);
   });
 });

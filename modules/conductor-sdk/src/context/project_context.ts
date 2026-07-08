@@ -206,7 +206,7 @@ export function normalizeGitRemoteUrl(raw: string | null | undefined): string | 
     // `pathname` preserves the leading slash so `${host}${pathname}` reads
     // naturally; we drop trailing `/` and trailing `.git` afterwards.
     const path = parsed.pathname.replace(/\/+$/, '');
-    const combined = `${parsed.host}${path}`.replace(/\.git$/i, '');
+    const combined = `${canonicalGitRemoteHost(parsed.host)}${path}`.replace(/\.git$/i, '');
     return combined.toLowerCase() || null;
   }
 
@@ -216,7 +216,7 @@ export function normalizeGitRemoteUrl(raw: string | null | undefined): string | 
   // remote URL anyway).
   const scpMatch = trimmed.match(/^(?:[^@/:]+@)?([^/:]+):(?!\/)(.*)$/);
   if (scpMatch) {
-    const host = scpMatch[1];
+    const host = canonicalGitRemoteHost(scpMatch[1]);
     const path = scpMatch[2].replace(/\/+$/, '').replace(/\.git$/i, '');
     return `${host}/${path}`.toLowerCase() || null;
   }
@@ -225,6 +225,23 @@ export function normalizeGitRemoteUrl(raw: string | null | undefined): string | 
   // misleading "normalized" form that could accidentally collide with a
   // real upstream URL.
   return null;
+}
+
+function canonicalGitRemoteHost(host: string): string {
+  const normalized = host.trim().toLowerCase();
+  // Any GitHub SSH config alias points at github.com. Users create these in
+  // `~/.ssh/config` to juggle multiple accounts/keys (e.g. `github-duinodu`,
+  // `github-dang217`, `github.com-work`). GitHub identifies a repository solely
+  // by its `owner/repo` path, so we collapse every alias to `github.com` and
+  // let the path decide equality — instead of maintaining a per-alias allowlist.
+  if (
+    normalized === 'github.com' ||
+    normalized.startsWith('github-') ||
+    normalized.startsWith('github.com-')
+  ) {
+    return 'github.com';
+  }
+  return normalized;
 }
 
 function* walkFiles(root: string): Generator<string> {

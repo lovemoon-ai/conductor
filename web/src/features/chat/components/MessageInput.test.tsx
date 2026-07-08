@@ -3,7 +3,36 @@ import { createRef } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MessageInput, type MessageInputHandle } from './MessageInput';
 import { useChatStore } from '../store';
+import { useCatchphrasesStore, type Catchphrase } from '@/features/catchphrases/store';
 import type { Message } from '@/shared/types';
+
+const seedCatchphrases = (rows: Partial<Catchphrase>[]) => {
+  const normalized: Catchphrase[] = rows.map((row, index) => ({
+    id: row.id ?? `cp-${index}`,
+    text: row.text ?? `phrase ${index}`,
+    sortOrder: row.sortOrder ?? index,
+    lastUsedAt: row.lastUsedAt ?? null,
+    createdAt: row.createdAt ?? '2026-06-06T00:00:00Z',
+    updatedAt: row.updatedAt ?? '2026-06-06T00:00:00Z',
+  }));
+  useCatchphrasesStore.setState({
+    catchphrases: normalized,
+    hydrated: true,
+    loading: false,
+    error: null,
+  });
+};
+
+const resetCatchphrasesStore = () => {
+  useCatchphrasesStore.setState({
+    catchphrases: [],
+    // Mark hydrated so the popover does not fire its lazy GET when opened —
+    // tests don't want an async fetch leaking past act() boundaries.
+    hydrated: true,
+    loading: false,
+    error: null,
+  });
+};
 
 const resetChatStore = () => {
   useChatStore.setState({
@@ -47,6 +76,17 @@ describe('MessageInput', () => {
     vi.useRealTimers();
     sessionStorage.clear();
     resetChatStore();
+    resetCatchphrasesStore();
+    // The catchphrase popover fires `touch` (POST /api/.../touch) on pick/send
+    // as a best-effort recency bump. In tests there's no server, so without a
+    // stub we get ECONNREFUSED stderr noise. The store swallows the error
+    // (test passes either way), but stubbing keeps the output clean.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      ),
+    );
   });
 
   it('autofocuses the composer when requested', async () => {
@@ -210,6 +250,77 @@ describe('MessageInput', () => {
       expect(screen.getByTestId('message-input-textarea')).toHaveValue('retry when ready');
     });
     expect(onSendMock).not.toHaveBeenCalled();
+  });
+
+  it('double-clicking the send button inserts into the current turn when insert is enabled', () => {
+    const onSendMock = vi.fn();
+    const onInsertMock = vi.fn();
+    render(
+      <MessageInput
+        taskId="task-insert-dbl"
+        onSend={onSendMock}
+        onInsert={onInsertMock}
+        insertEnabled
+      />,
+    );
+    const textarea = screen.getByTestId('message-input-textarea');
+    fireEvent.change(textarea, { target: { value: 'urgent note' } });
+
+    const button = screen.getByTestId('message-input-send-button');
+    // Two clicks within the double-click window => insert, not send.
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(onInsertMock).toHaveBeenCalledWith('urgent note');
+    expect(onSendMock).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue('');
+  });
+
+  it('single-clicking the send button still sends (after the double-click window) when insert is enabled', () => {
+    vi.useFakeTimers();
+    try {
+      const onSendMock = vi.fn();
+      const onInsertMock = vi.fn();
+      render(
+        <MessageInput
+          taskId="task-insert-single"
+          onSend={onSendMock}
+          onInsert={onInsertMock}
+          insertEnabled
+        />,
+      );
+      const textarea = screen.getByTestId('message-input-textarea');
+      fireEvent.change(textarea, { target: { value: 'queued note' } });
+
+      fireEvent.click(screen.getByTestId('message-input-send-button'));
+      // Deferred until the double-click window elapses.
+      expect(onSendMock).not.toHaveBeenCalled();
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+      expect(onSendMock).toHaveBeenCalledWith('queued note');
+      expect(onInsertMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends immediately on a single click when insert is not available', () => {
+    const onSendMock = vi.fn();
+    const onInsertMock = vi.fn();
+    render(
+      <MessageInput
+        taskId="task-insert-off"
+        onSend={onSendMock}
+        onInsert={onInsertMock}
+      />,
+    );
+    const textarea = screen.getByTestId('message-input-textarea');
+    fireEvent.change(textarea, { target: { value: 'plain send' } });
+    fireEvent.click(screen.getByTestId('message-input-send-button'));
+
+    expect(onSendMock).toHaveBeenCalledWith('plain send');
+    expect(onInsertMock).not.toHaveBeenCalled();
   });
 
   it('keeps ArrowUp anchored to the current prompt when a new user message appears mid-browse', async () => {
@@ -453,5 +564,143 @@ describe('MessageInput', () => {
     fireEvent.doubleClick(screen.getByTestId('message-input-textarea'));
 
     expect(screen.queryByTestId('message-input-interrupt-button')).not.toBeInTheDocument();
+  });
+
+  describe('catchphrase popover (RFC 0032)', () => {
+    it('opens on double-clicking an empty textarea', () => {
+      seedCatchphrases([
+        { id: 'cp-a', text: 'phrase A' },
+        { id: 'cp-b', text: 'phrase B' },
+      ]);
+      render(<MessageInput taskId="task-cp-open" onSend={() => {}} />);
+      const textarea = screen.getByTestId('message-input-textarea');
+      fireEvent.doubleClick(textarea);
+      expect(screen.getByTestId('catchphrase-popover')).toBeInTheDocument();
+      expect(screen.getByTestId('catchphrase-popover-item-cp-a')).toBeInTheDocument();
+      expect(screen.getByTestId('catchphrase-popover-item-cp-b')).toBeInTheDocument();
+    });
+
+    it('uses theme-token classes for the popover surface and rows', () => {
+      seedCatchphrases([{ id: 'cp-a', text: 'phrase A' }]);
+      render(<MessageInput taskId="task-cp-theme" onSend={() => {}} />);
+      fireEvent.doubleClick(screen.getByTestId('message-input-textarea'));
+
+      const popover = screen.getByTestId('catchphrase-popover');
+      expect(popover).toHaveClass('catchphrase-popover-surface');
+      expect(popover.className).not.toContain('dark:bg');
+      expect(popover.className).not.toContain('dark:text');
+
+      const row = screen.getByTestId('catchphrase-popover-item-cp-a');
+      expect(row).toHaveClass('catchphrase-popover-row');
+      expect(row.className).not.toContain('dark:text');
+    });
+
+    it('does NOT open and does NOT preventDefault on a non-empty textarea', () => {
+      seedCatchphrases([{ id: 'cp-a', text: 'phrase A' }]);
+      render(<MessageInput taskId="task-cp-nonempty" onSend={() => {}} />);
+      const textarea = screen.getByTestId('message-input-textarea') as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: 'already typed' } });
+
+      // The dblclick event must NOT be defaultPrevented — that's how we leave
+      // the browser's native double-click-to-select-word behavior intact.
+      const event = new MouseEvent('dblclick', { bubbles: true, cancelable: true });
+      textarea.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+      expect(screen.queryByTestId('catchphrase-popover')).not.toBeInTheDocument();
+    });
+
+    it('does not open while IME composition is in progress', () => {
+      seedCatchphrases([{ id: 'cp-a', text: 'phrase A' }]);
+      render(<MessageInput taskId="task-cp-ime" onSend={() => {}} />);
+      const textarea = screen.getByTestId('message-input-textarea');
+      fireEvent.compositionStart(textarea);
+      fireEvent.doubleClick(textarea);
+      expect(screen.queryByTestId('catchphrase-popover')).not.toBeInTheDocument();
+      fireEvent.compositionEnd(textarea);
+    });
+
+    it('single-clicking a row fills the textarea, places caret at end, and closes the popover', async () => {
+      seedCatchphrases([{ id: 'cp-fill', text: '请用中文回答' }]);
+      render(<MessageInput taskId="task-cp-fill" onSend={() => {}} />);
+      const textarea = screen.getByTestId('message-input-textarea') as HTMLTextAreaElement;
+      fireEvent.doubleClick(textarea);
+
+      fireEvent.click(screen.getByTestId('catchphrase-popover-item-cp-fill'));
+
+      await waitFor(() => {
+        expect(textarea.value).toBe('请用中文回答');
+      });
+      // RFC 0032 acceptance bullet 3: caret must land at the end of the text
+      // so the user can append more without re-clicking.
+      await waitFor(() => {
+        expect(textarea.selectionStart).toBe(textarea.value.length);
+        expect(textarea.selectionEnd).toBe(textarea.value.length);
+      });
+      expect(screen.queryByTestId('catchphrase-popover')).not.toBeInTheDocument();
+    });
+
+    it('double-clicking a row submits the catchphrase via onSend', async () => {
+      vi.useFakeTimers();
+      seedCatchphrases([{ id: 'cp-send', text: 'ship it' }]);
+      const onSendMock = vi.fn();
+      render(<MessageInput taskId="task-cp-send" onSend={onSendMock} />);
+      const textarea = screen.getByTestId('message-input-textarea') as HTMLTextAreaElement;
+      fireEvent.doubleClick(textarea);
+
+      const row = screen.getByTestId('catchphrase-popover-item-cp-send');
+      fireEvent.click(row, { detail: 1 });
+      fireEvent.click(row, { detail: 2 });
+      fireEvent.doubleClick(row, { detail: 2 });
+
+      expect(onSendMock).toHaveBeenCalledWith('ship it');
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      act(() => {
+        vi.advanceTimersByTime(250);
+      });
+      expect(textarea.value).toBe('');
+      expect(screen.queryByTestId('catchphrase-popover')).not.toBeInTheDocument();
+      vi.useRealTimers();
+    });
+
+    it('auto-closes when the textarea becomes non-empty after opening', () => {
+      seedCatchphrases([{ id: 'cp-auto', text: 'phrase' }]);
+      render(<MessageInput taskId="task-cp-auto" onSend={() => {}} />);
+      const textarea = screen.getByTestId('message-input-textarea');
+      fireEvent.doubleClick(textarea);
+      expect(screen.getByTestId('catchphrase-popover')).toBeInTheDocument();
+
+      fireEvent.change(textarea, { target: { value: 'a' } });
+      expect(screen.queryByTestId('catchphrase-popover')).not.toBeInTheDocument();
+    });
+
+    it('shows the empty-state hint when the library is empty', () => {
+      // resetCatchphrasesStore already leaves catchphrases=[] and hydrated=true.
+      render(<MessageInput taskId="task-cp-empty" onSend={() => {}} />);
+      const textarea = screen.getByTestId('message-input-textarea');
+      fireEvent.doubleClick(textarea);
+      expect(screen.getByTestId('catchphrase-popover-empty-link')).toBeInTheDocument();
+    });
+
+    it('shows a retryable error instead of the empty state when hydrate fails', async () => {
+      resetCatchphrasesStore();
+      vi.mocked(fetch).mockRejectedValueOnce(new Error('network down'));
+      useCatchphrasesStore.setState({
+        hydrated: false,
+        loading: false,
+        error: null,
+      });
+      render(<MessageInput taskId="task-cp-hydrate-error" onSend={() => {}} />);
+      fireEvent.doubleClick(screen.getByTestId('message-input-textarea'));
+
+      await waitFor(() => {
+        expect(screen.getByText('network down')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('catchphrase-popover-retry')).toBeInTheDocument();
+      expect(screen.queryByTestId('catchphrase-popover-empty-link')).not.toBeInTheDocument();
+      expect(useCatchphrasesStore.getState().hydrated).toBe(false);
+    });
   });
 });

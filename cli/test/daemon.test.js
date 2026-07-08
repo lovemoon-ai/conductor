@@ -2044,6 +2044,225 @@ describe("Daemon", () => {
     }, 500);
   });
 
+  it("syncs git submodules automatically when a task worktree has .gitmodules", (t, done) => {
+    const taskPayload = {
+      task_id: "task-worktree-submodules",
+      project_id: "proj-git",
+      backend_type: "codex",
+      launch_config: {
+        worktree: true,
+        worktreeId: "task-worktree-submodules",
+        worktreeBranch: "task-worktree-submodules",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/tmp/repo",
+        projectWorkspacePath: "/tmp/repo",
+        projectRelativePath: ".",
+      },
+    };
+
+    const worktreeRoot = "/tmp/repo/.conductor/worktrees/task-worktree-submodules";
+    const gitCalls = [];
+    let runnerSpawned = false;
+    let daemonInstance = null;
+
+    wss.once("connection", (ws) => {
+      ws.send(
+        JSON.stringify({
+          type: "create_task",
+          payload: taskPayload,
+        }),
+      );
+    });
+
+    daemonInstance = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree-submodules",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree-submodules",
+      },
+      {
+        spawn: (cmd, args, opts) => {
+          if (cmd === "git") {
+            gitCalls.push({ args, opts });
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => child.emit("close", 0));
+            return child;
+          }
+
+          assert.strictEqual(cmd, process.execPath);
+          assert.strictEqual(opts.cwd, worktreeRoot);
+          runnerSpawned = true;
+          return {
+            pid: 24688,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => filePath === path.join(worktreeRoot, ".gitmodules"),
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+      },
+    );
+
+    setTimeout(() => {
+      try {
+        assert.deepStrictEqual(
+          gitCalls.map((entry) => entry.args),
+          [
+            [
+              "-C",
+              "/tmp/repo",
+              "worktree",
+              "add",
+              "-b",
+              "task-worktree-submodules",
+              worktreeRoot,
+              "main",
+            ],
+            ["-C", worktreeRoot, "submodule", "sync", "--recursive"],
+            ["-C", worktreeRoot, "submodule", "update", "--init", "--recursive"],
+          ],
+        );
+        assert.strictEqual(runnerSpawned, true);
+        if (daemonInstance && typeof daemonInstance.close === "function") {
+          daemonInstance.close();
+        }
+        done();
+      } catch (error) {
+        if (daemonInstance && typeof daemonInstance.close === "function") {
+          daemonInstance.close();
+        }
+        done(error);
+      }
+    }, 500);
+  });
+
+  it("skips git submodule sync when worktree.sync_submodules is false", (t, done) => {
+    const taskPayload = {
+      task_id: "task-worktree-submodules-disabled",
+      project_id: "proj-git",
+      backend_type: "codex",
+      launch_config: {
+        worktree: true,
+        worktreeId: "task-worktree-submodules-disabled",
+        worktreeBranch: "task-worktree-submodules-disabled",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/tmp/repo",
+        projectWorkspacePath: "/tmp/repo",
+        projectRelativePath: ".",
+      },
+    };
+
+    const worktreeRoot = "/tmp/repo/.conductor/worktrees/task-worktree-submodules-disabled";
+    const gitCalls = [];
+    let runnerSpawned = false;
+    let daemonInstance = null;
+
+    wss.once("connection", (ws) => {
+      ws.send(
+        JSON.stringify({
+          type: "create_task",
+          payload: taskPayload,
+        }),
+      );
+    });
+
+    daemonInstance = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree-submodules-disabled",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree-submodules-disabled",
+      },
+      {
+        spawn: (cmd, args, opts) => {
+          if (cmd === "git") {
+            gitCalls.push({ args, opts });
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            setImmediate(() => child.emit("close", 0));
+            return child;
+          }
+
+          assert.strictEqual(cmd, process.execPath);
+          assert.strictEqual(opts.cwd, worktreeRoot);
+          runnerSpawned = true;
+          return {
+            pid: 24689,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) =>
+          filePath === "/tmp/repo/.conductor/settings.yaml" ||
+          filePath === path.join(worktreeRoot, ".gitmodules"),
+        readFileSync: (filePath) => {
+          assert.strictEqual(filePath, "/tmp/repo/.conductor/settings.yaml");
+          return [
+            "worktree:",
+            "  sync_submodules: false",
+            "",
+          ].join("\n");
+        },
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+      },
+    );
+
+    setTimeout(() => {
+      try {
+        assert.deepStrictEqual(
+          gitCalls.map((entry) => entry.args),
+          [
+            [
+              "-C",
+              "/tmp/repo",
+              "worktree",
+              "add",
+              "-b",
+              "task-worktree-submodules-disabled",
+              worktreeRoot,
+              "main",
+            ],
+          ],
+        );
+        assert.strictEqual(runnerSpawned, true);
+        if (daemonInstance && typeof daemonInstance.close === "function") {
+          daemonInstance.close();
+        }
+        done();
+      } catch (error) {
+        if (daemonInstance && typeof daemonInstance.close === "function") {
+          daemonInstance.close();
+        }
+        done(error);
+      }
+    }, 500);
+  });
+
   it("bounds optional sync_branch before preparing an isolated worktree", (t, done) => {
     const previousTimeout = process.env.CONDUCTOR_WORKTREE_SYNC_TIMEOUT_MS;
     process.env.CONDUCTOR_WORKTREE_SYNC_TIMEOUT_MS = "5";
@@ -3354,7 +3573,9 @@ describe("Daemon", () => {
 
   it("advertises and launches external backends on daemon hosts", async (t) => {
     const previousProviderPath = process.env.AISDK_PROVIDER_PATH;
+    const previousCliCommand = process.env.CONDUCTOR_CLI_COMMAND;
     process.env.AISDK_PROVIDER_PATH = FIXTURE_EXTERNAL_PROVIDER;
+    process.env.CONDUCTOR_CLI_COMMAND = "codex";
     resetRuntimeBackendCacheForTests();
 
     let handler;
@@ -3418,6 +3639,11 @@ describe("Daemon", () => {
         delete process.env.AISDK_PROVIDER_PATH;
       } else {
         process.env.AISDK_PROVIDER_PATH = previousProviderPath;
+      }
+      if (previousCliCommand === undefined) {
+        delete process.env.CONDUCTOR_CLI_COMMAND;
+      } else {
+        process.env.CONDUCTOR_CLI_COMMAND = previousCliCommand;
       }
       resetRuntimeBackendCacheForTests();
       if (daemonInstance && typeof daemonInstance.close === "function") {
@@ -8234,6 +8460,7 @@ describe("Daemon", () => {
           last_commit_at: "2026-05-12T14:30:00.000Z",
           git_remote_url: "github.com/example/project-real",
           file_count: 8,
+          icon: null,
           error: null,
           error_code: null,
           validated_at: events[0]?.payload?.validated_at,
@@ -8242,6 +8469,104 @@ describe("Daemon", () => {
     ]);
     assert.ok(typeof events[0]?.payload?.validated_at === "string");
     assert.ok(projectSettingsTemplate.includes("  sync_branch: false"));
+
+    if (daemonInstance && typeof daemonInstance.close === "function") {
+      daemonInstance.close();
+    }
+  });
+
+  it("includes project icon from settings when validating workspace paths", async () => {
+    let handler;
+    const events = [];
+    const sampleSvg = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-validate-project-icon",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "validate-project-icon-daemon",
+      },
+      {
+        spawn: () => ({
+          on: () => {},
+          stdout: { on: () => {} },
+          stderr: { on: () => {} },
+        }),
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (targetPath) =>
+          targetPath === "/tmp/project-link" ||
+          targetPath === "/tmp/project-real/.conductor/settings.yaml" ||
+          targetPath === "/tmp/project-real/.conductor/logo.svg",
+        statSync: (targetPath) => {
+          if (targetPath === "/tmp/project-link") {
+            return { isDirectory: () => true, isFile: () => false };
+          }
+          if (targetPath === "/tmp/project-real/.conductor/logo.svg") {
+            return { isDirectory: () => false, isFile: () => true, size: sampleSvg.length };
+          }
+          throw new Error(`unexpected stat for ${targetPath}`);
+        },
+        readFileSync: (filePath) => {
+          if (filePath === "/tmp/project-real/.conductor/settings.yaml") {
+            return "icon: ./logo.svg\n";
+          }
+          if (filePath === "/tmp/project-real/.conductor/logo.svg") {
+            return Buffer.from(sampleSvg, "utf8");
+          }
+          return "";
+        },
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        resolveProjectSnapshot: () => ({
+          projectRoot: "/tmp/project-real",
+          repoRoot: "/tmp/project-real",
+          worktreeBranch: "main",
+          lastCommit: "abc123",
+          lastCommitAt: "2026-05-12T14:30:00.000Z",
+          gitRemoteUrl: "github.com/example/project-real",
+          fileCount: 8,
+        }),
+        createWebSocketClient: () => ({
+          registerHandler: (h) => {
+            handler = h;
+          },
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            events.push(payload);
+          },
+        }),
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+    handler({
+      type: "validate_project_path",
+      payload: {
+        request_id: "req-validate-icon",
+        workspace_path: "/tmp/project-link",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.strictEqual(
+      events[0]?.payload?.icon,
+      `data:image/svg+xml;base64,${Buffer.from(sampleSvg, "utf8").toString("base64")}`,
+    );
 
     if (daemonInstance && typeof daemonInstance.close === "function") {
       daemonInstance.close();

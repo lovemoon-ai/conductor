@@ -283,6 +283,103 @@ describe('tasks store', () => {
     });
   });
 
+  it('fetchTask upserts attachedTerminal even when a project filter is active (regression: pty chip not appearing after attach until manual refresh)', async () => {
+    // Reproduces the bug where TaskItem.handleAttachTerminal called
+    // `fetchTasks(undefined)` after POST /tasks/:id/terminal. The tasks page
+    // sets `currentProjectFilter` from the URL, so `requestedProjectId=null`
+    // never matched and the response was silently dropped — the new
+    // `attachedTerminal` field stayed invisible until the user reloaded.
+    // The fix swaps that call for `fetchTask(taskId)`, which sidesteps the
+    // filter guard entirely because it goes through `syncTask` / `upsertTask`.
+    useTasksStore.setState({
+      tasks: [
+        {
+          id: 'task-ai-1',
+          projectId: 'proj-1',
+          title: 'AI Task',
+          taskType: 'ai_task',
+          status: 'running',
+          attachedTerminal: null,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+      ],
+      currentProjectFilter: 'proj-1',
+    });
+    mockGet.mockResolvedValueOnce({
+      id: 'task-ai-1',
+      project_id: 'proj-1',
+      title: 'AI Task',
+      task_type: 'ai_task',
+      status: 'running',
+      attached_terminal: {
+        id: 'attached-1',
+        pty_task_id: 'pty-1',
+        pty_task_status: 'running',
+      },
+      created_at: '2024-01-01T00:00:00.000Z',
+      updated_at: '2024-01-01T00:01:00.000Z',
+    });
+
+    await useTasksStore.getState().fetchTask('task-ai-1');
+
+    expect(mockGet).toHaveBeenCalledWith('/tasks/task-ai-1?recover_stale=1');
+    expect(useTasksStore.getState().tasks[0]).toMatchObject({
+      id: 'task-ai-1',
+      attachedTerminal: {
+        id: 'attached-1',
+        ptyTaskId: 'pty-1',
+        ptyTaskStatus: 'running',
+      },
+    });
+    // The project filter must remain intact — `fetchTask` should not touch
+    // the scope state.
+    expect(useTasksStore.getState().currentProjectFilter).toBe('proj-1');
+  });
+
+  it('orders fetched pinned tasks before unpinned tasks by pin time', async () => {
+    mockGet.mockResolvedValueOnce([
+      {
+        id: 'task-unpinned-new',
+        project_id: 'proj-1',
+        title: 'Unpinned New',
+        task_type: 'ai_task',
+        status: 'running',
+        metadata: null,
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:03:00.000Z',
+      },
+      {
+        id: 'task-pinned-old',
+        project_id: 'proj-1',
+        title: 'Pinned Old',
+        task_type: 'ai_task',
+        status: 'running',
+        metadata: { pinnedAt: '2024-01-01T00:00:00.000Z' },
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:01:00.000Z',
+      },
+      {
+        id: 'task-pinned-new',
+        project_id: 'proj-1',
+        title: 'Pinned New',
+        task_type: 'ai_task',
+        status: 'running',
+        metadata: { pinnedAt: '2024-01-02T00:00:00.000Z' },
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:02:00.000Z',
+      },
+    ]);
+
+    await useTasksStore.getState().fetchTasks();
+
+    expect(useTasksStore.getState().tasks.map((task) => task.id)).toEqual([
+      'task-pinned-new',
+      'task-pinned-old',
+      'task-unpinned-new',
+    ]);
+  });
+
   it('fetches task detail and upserts persisted pty_session data', async () => {
     useTasksStore.setState({
       tasks: [

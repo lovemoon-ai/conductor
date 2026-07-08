@@ -59,6 +59,7 @@ export interface Project {
   mergeOptOut?: boolean;
   isDefault?: boolean;
   taskStatusCounts?: Record<string, number>;
+  activeScheduledMessageCount?: number;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -178,6 +179,21 @@ export interface PtySession {
   updatedAt?: string | null;
 }
 
+/**
+ * Summary of an AttachedTerminal — a PTY task that is bound to an AI task and
+ * rendered inside the AI task's detail pane instead of as a standalone card.
+ * Only AI tasks ever carry this field; for PTY tasks it is always null.
+ *
+ * `ptyTaskStatus` is denormalized from the PTY Task row so the AI task card
+ * can render the PTY toggle dot (alive vs dead) without a second fetch and
+ * without keeping the attached PTY task in the top-level list.
+ */
+export interface AttachedTerminalSummary {
+  id: string;
+  ptyTaskId: string;
+  ptyTaskStatus: TaskStatus | null;
+}
+
 export interface Task {
   id: string;
   projectId?: string | null;
@@ -195,6 +211,8 @@ export interface Task {
   lastUserMessage?: string | null;
   lastAssistantMessage?: string | null;
   ptySession?: PtySession | null;
+  attachedTerminal?: AttachedTerminalSummary | null;
+  activeScheduledMessageCount?: number;
   createdAt: string;
   updatedAt?: string | null;
 }
@@ -328,6 +346,7 @@ export interface UpdateTaskInput {
   taskType?: TaskType;
   status?: TaskStatus;
   launchConfig?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
   backendType?: string | null;
   sessionId?: string | null;
   sessionFilePath?: string | null;

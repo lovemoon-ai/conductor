@@ -15,6 +15,8 @@ class FakeApiClient {
   tasks: TaskRecord[] = [];
   postTaskMessageCalls: Array<{ id: string; body: any }> = [];
   listTaskMessagesCalls: Array<{ id: string; params: any }> = [];
+  createScheduledMessageCalls: Array<{ id: string; body: any }> = [];
+  deleteScheduledMessageCalls: Array<{ taskId: string; scheduleId: string }> = [];
 
   async listTasks(params: { projectId?: string; status?: string }) {
     let result = this.tasks.slice();
@@ -82,6 +84,65 @@ class FakeApiClient {
       metadata: body.metadata,
       created_at: '2026-01-01T00:00:02Z',
     };
+  }
+
+  async listScheduledMessages(taskId: string) {
+    return [
+      {
+        id: 'sched-1',
+        task_id: taskId,
+        source_message_id: null,
+        content: 'later',
+        kind: 'once_delay',
+        condition: 'none',
+        interval_ms: null,
+        timezone: null,
+        status: 'active',
+        next_run_at: '2026-01-01T01:00:00Z',
+        run_count: 0,
+        skip_count: 0,
+        failure_count: 0,
+        max_runs: null,
+        max_skips: null,
+        stop_at: null,
+        stop_when_task_not_running: true,
+        last_run_at: null,
+        last_error: null,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+    ];
+  }
+
+  async createScheduledMessage(taskId: string, body: any) {
+    this.createScheduledMessageCalls.push({ id: taskId, body });
+    return {
+      id: 'sched-new',
+      task_id: taskId,
+      source_message_id: body.sourceMessageId ?? null,
+      content: body.content,
+      kind: body.schedule.mode === 'interval' ? 'interval' : 'once_delay',
+      condition: body.schedule.condition ?? 'none',
+      interval_ms: null,
+      timezone: null,
+      status: 'active',
+      next_run_at: '2026-01-01T01:00:00Z',
+      run_count: 0,
+      skip_count: 0,
+      failure_count: 0,
+      max_runs: null,
+      max_skips: null,
+      stop_at: null,
+      stop_when_task_not_running: true,
+      last_run_at: null,
+      last_error: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    };
+  }
+
+  async deleteScheduledMessage(taskId: string, scheduleId: string) {
+    this.deleteScheduledMessageCalls.push({ taskId, scheduleId });
   }
 }
 
@@ -178,6 +239,39 @@ describe('TasksApi', () => {
     expect(client.listTaskMessagesCalls[0]).toEqual({
       id: 't1',
       params: { limit: 5, before: 'm-prev' },
+    });
+  });
+
+  test('scheduled message helpers wrap list/create/delete endpoints', async () => {
+    const { client, api } = makeApi();
+
+    const listed = await api.listScheduledMessages('t1');
+    expect(listed[0]).toMatchObject({
+      id: 'sched-1',
+      taskId: 't1',
+      status: 'active',
+      content: 'later',
+    });
+
+    const created = await api.createScheduledMessage('t1', {
+      content: '  run later  ',
+      sourceMessageId: 'm1',
+      schedule: { mode: 'delay', amount: 10, unit: 'minute' },
+    });
+    expect(created.id).toBe('sched-new');
+    expect(client.createScheduledMessageCalls[0]).toEqual({
+      id: 't1',
+      body: {
+        content: 'run later',
+        sourceMessageId: 'm1',
+        schedule: { mode: 'delay', amount: 10, unit: 'minute' },
+      },
+    });
+
+    await api.deleteScheduledMessage('t1', 'sched-1');
+    expect(client.deleteScheduledMessageCalls[0]).toEqual({
+      taskId: 't1',
+      scheduleId: 'sched-1',
     });
   });
 });

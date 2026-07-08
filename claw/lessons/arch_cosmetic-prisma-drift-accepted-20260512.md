@@ -13,6 +13,7 @@
 | `agent_outbox.max_attempts` | Migration `20260306100000_outbox_ttl_dlq` adds the column as `INTEGER DEFAULT 20` (nullable). Schema declares `Int @default(20)` (NOT NULL DEFAULT 20). | None — `ALTER TABLE … ADD COLUMN … DEFAULT 20` populates every existing row with 20 in SQLite, and the same backfill migration `UPDATE`s any straggler `status='pending'` rows. As of this release volc has 7425 rows, **0 NULL**. |
 | `agent_outbox.ttl_hours` | Same pattern as `max_attempts`. | Same: 7425 rows, 0 NULL on volc. |
 | `user_preferences.updated_at` | Migration declares `DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`. Schema declares `@updatedAt` (NOT NULL, no DB default — Prisma sets it on every write). | None — the column is already NOT NULL in DB; the only difference is the DDL-level default expression, which Prisma never relies on. |
+| `user_catchphrases.updated_at` | Same pattern as `user_preferences.updated_at`: migration `20260606120000_user_catchphrases/migration.sql` declares `DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`, schema declares `@updatedAt`. Accepted at release time alongside RFC 0032 (Catchphrase Management). | Same: column is NOT NULL in DB, default expression is DDL-level only and Prisma never reads it. |
 
 ## Decision
 

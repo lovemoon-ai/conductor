@@ -638,13 +638,105 @@ describe('TaskItem', () => {
     expect(card).not.toBeNull();
 
     fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
-    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 80, pointerType: 'touch' });
-    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 80, pointerType: 'touch' });
+    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
 
     expect(await screen.findByRole('button', { name: 'Share task' })).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: 'New task' }));
 
     expect(screen.getByTestId('restart-controls')).toBeInTheDocument();
+  });
+
+  it('pins a task from the swipe-left action menu', async () => {
+    updateTaskMock.mockResolvedValue({
+      id: 'task-pin-1',
+      title: 'Pin Task',
+      status: 'running',
+      createdAt: FIXED_DATE.toISOString(),
+    });
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-pin-1',
+          title: 'Pin Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          createdAt: FIXED_DATE.toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />,
+    );
+
+    const card = screen.getByText('Pin Task').closest('[role="button"]');
+    expect(card).not.toBeNull();
+
+    fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
+    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Pin task' }));
+
+    await waitFor(() => {
+      expect(updateTaskMock).toHaveBeenCalledWith('task-pin-1', {
+        metadata: {
+          pinnedAt: expect.any(String),
+        },
+      });
+    });
+    expect(Date.parse(updateTaskMock.mock.calls[0][1].metadata.pinnedAt)).not.toBeNaN();
+  });
+
+  it('shows an unpin action for pinned tasks', async () => {
+    updateTaskMock.mockResolvedValue({
+      id: 'task-unpin-1',
+      title: 'Unpin Task',
+      status: 'running',
+      createdAt: FIXED_DATE.toISOString(),
+    });
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-unpin-1',
+          title: 'Unpin Task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          metadata: { pinnedAt: '2024-01-15T10:30:00.000Z' },
+          createdAt: FIXED_DATE.toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Unpin task' })).toBeInTheDocument();
+
+    const card = screen.getByText('Unpin Task').closest('[role="button"]');
+    expect(card).not.toBeNull();
+
+    fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
+    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Unpin task' }));
+    expect(updateTaskMock).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm unpin' }));
+
+    await waitFor(() => {
+      expect(updateTaskMock).toHaveBeenCalledWith('task-unpin-1', {
+        metadata: {
+          pinnedAt: null,
+        },
+      });
+    });
   });
 
   it('copies the share link with execCommand fallback when clipboard api is unavailable', async () => {
@@ -679,8 +771,8 @@ describe('TaskItem', () => {
     expect(card).not.toBeNull();
 
     fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
-    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 80, pointerType: 'touch' });
-    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 80, pointerType: 'touch' });
+    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
 
     fireEvent.click(await screen.findByRole('button', { name: 'Share task' }));
 
@@ -693,7 +785,10 @@ describe('TaskItem', () => {
         variant: 'success',
       });
     });
-    expect(screen.getByText('Share')).toBeInTheDocument();
+    // The share dialog has a "Share" title; the swipe button also now
+    // carries a (visually hidden) "Share" label, so use getAllByText to
+    // assert at least one occurrence rather than failing on multiplicity.
+    expect(screen.getAllByText('Share').length).toBeGreaterThan(0);
     expect(screen.getByRole('link', { name: 'http://localhost:3000/share/shared-token-1' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'http://localhost:3000/share/shared-token-1/plain' })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Copy' })).toHaveLength(2);
@@ -708,9 +803,26 @@ describe('TaskItem', () => {
         variant: 'success',
       });
     });
+    await waitFor(() => {
+      expect(screen.queryByRole('link', { name: 'http://localhost:3000/share/shared-token-1/plain' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
+    });
+
+    apiPostMock.mockClear();
+    confirmMock.mockClear();
+
+    fireEvent.pointerDown(card!, { pointerId: 2, clientX: 240, pointerType: 'touch' });
+    fireEvent.pointerMove(card!, { pointerId: 2, clientX: 40, pointerType: 'touch' });
+    fireEvent.pointerUp(card!, { pointerId: 2, clientX: 40, pointerType: 'touch' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Share task' }));
+
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(apiPostMock).not.toHaveBeenCalled();
+    expect(screen.getByRole('link', { name: 'http://localhost:3000/share/shared-token-1' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'http://localhost:3000/share/shared-token-1/plain' })).toBeInTheDocument();
   });
 
-  it('only shows delete in the swipe action menu for pty tasks', async () => {
+  it('only shows pin and delete in the swipe action menu for pty tasks', async () => {
     render(
       <TaskItem
         task={{
@@ -741,6 +853,7 @@ describe('TaskItem', () => {
       expect(screen.queryByRole('button', { name: 'New task' })).not.toBeInTheDocument();
     });
     expect(screen.queryByRole('button', { name: 'Share task' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Pin task' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete task' })).toBeInTheDocument();
   });
 

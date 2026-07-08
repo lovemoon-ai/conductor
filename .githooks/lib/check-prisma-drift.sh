@@ -29,7 +29,7 @@ echo "$touched" | sed 's/^/    /'
 
 # Keep this list in sync with `ACCEPTED_DRIFT_TABLES` in
 # .github/workflows/pr-checks.yml so CI and local agree.
-ACCEPTED_DRIFT_TABLES=(agent_outbox user_preferences)
+ACCEPTED_DRIFT_TABLES=(agent_outbox user_preferences user_catchphrases)
 
 WEB_DIR="$REPO_ROOT/web"
 PRISMA_BIN=""
