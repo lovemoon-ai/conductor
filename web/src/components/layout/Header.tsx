@@ -15,6 +15,7 @@ interface HeaderProps {
   onTitleDoubleClick?: () => void;
   onTitleSwipeLeft?: () => void;
   onTitleSwipeRight?: () => void;
+  titleTransitionDirection?: 'forward' | 'backward' | null;
   titleDoubleClickHint?: string;
 }
 
@@ -39,6 +40,7 @@ export function Header({
   onTitleDoubleClick,
   onTitleSwipeLeft,
   onTitleSwipeRight,
+  titleTransitionDirection,
   titleDoubleClickHint,
 }: HeaderProps) {
   const titleSwipeGestureRef = useRef<{
@@ -50,6 +52,17 @@ export function Header({
   const titleSwipeClickResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTitleSwipeEnabled = Boolean(onTitleSwipeLeft || onTitleSwipeRight);
   const isTitleInteractive = Boolean(onTitleClick || onTitleDoubleClick || isTitleSwipeEnabled);
+  const titleTransitionClassName = titleTransitionDirection
+    ? `webapp-title-switch-${titleTransitionDirection}`
+    : '';
+  const titleContent = title ? (
+    <span
+      key={`${title}-${titleTransitionDirection ?? 'idle'}`}
+      className={`block max-w-full truncate ${titleTransitionClassName}`}
+    >
+      {title}
+    </span>
+  ) : null;
 
   useEffect(() => (
     () => {
@@ -172,10 +185,10 @@ export function Header({
                 className="block max-w-full truncate rounded bg-transparent p-0 text-left text-inherit"
                 style={isTitleSwipeEnabled ? { touchAction: 'pan-y' } : undefined}
               >
-                {title}
+                {titleContent}
               </button>
             ) : (
-              title
+              titleContent
             )}
           </h2>
         )}

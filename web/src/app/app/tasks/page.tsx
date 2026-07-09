@@ -22,6 +22,9 @@ import { useUserPreferencesStore } from '@/features/user-preferences/store';
 import { parseTaskType, type TaskType } from '@/lib/tasks/task-config';
 
 const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
+const PROJECT_SWITCH_ANIMATION_MS = 220;
+
+type ProjectSwitchDirection = 'forward' | 'backward';
 
 const subscribeToDesktopViewport = (onStoreChange: () => void) => {
   if (typeof window === 'undefined') {
@@ -46,9 +49,11 @@ function TasksPageContent() {
   const searchParams = useSearchParams();
   const { pushToast } = useToast();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [projectSwitchAnimation, setProjectSwitchAnimation] = useState<ProjectSwitchDirection | null>(null);
   const isDesktop = useSyncExternalStore(subscribeToDesktopViewport, getDesktopViewportSnapshot, () => false);
   const previousRequestedTaskIdRef = useRef<string | null>(null);
   const shouldHonorIncomingTaskIdRef = useRef(false);
+  const projectSwitchAnimationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showRunningOnly = useUserPreferencesStore((state) => state.taskListRunningOnly);
   const taskListPreferencesError = useUserPreferencesStore((state) => state.taskListPreferencesError);
   const hydrateTaskListPreferences = useUserPreferencesStore((state) => state.hydrateTaskListPreferences);
@@ -200,6 +205,14 @@ function TasksPageContent() {
     void hydrateTaskListPreferences();
   }, [hydrateTaskListPreferences]);
 
+  useEffect(() => (
+    () => {
+      if (projectSwitchAnimationTimeoutRef.current !== null) {
+        clearTimeout(projectSwitchAnimationTimeoutRef.current);
+      }
+    }
+  ), []);
+
   useEffect(() => {
     if (!taskListPreferencesError) {
       return;
@@ -269,6 +282,16 @@ function TasksPageContent() {
       return;
     }
 
+    const direction: ProjectSwitchDirection = offset > 0 ? 'forward' : 'backward';
+    setProjectSwitchAnimation(direction);
+    if (projectSwitchAnimationTimeoutRef.current !== null) {
+      clearTimeout(projectSwitchAnimationTimeoutRef.current);
+    }
+    projectSwitchAnimationTimeoutRef.current = setTimeout(() => {
+      setProjectSwitchAnimation(null);
+      projectSwitchAnimationTimeoutRef.current = null;
+    }, PROJECT_SWITCH_ANIMATION_MS);
+
     setSelectedProjectId(targetProjectId);
     replaceTaskRoute((params) => {
       params.set('projectId', targetProjectId);
@@ -282,6 +305,9 @@ function TasksPageContent() {
     && viewMode === 'list'
     && currentProjectSwitchIndex >= 0
     && switchableProjectGroups.length > 1;
+  const projectSwitchAnimationClassName = !isDesktop && projectSwitchAnimation
+    ? `webapp-task-list-switch-${projectSwitchAnimation}`
+    : '';
 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
@@ -407,6 +433,7 @@ function TasksPageContent() {
         onTitleDoubleClick={handleTitleDoubleClick}
         onTitleSwipeLeft={canSwipeProjectTitle ? () => handleProjectTitleSwipe(1) : undefined}
         onTitleSwipeRight={canSwipeProjectTitle ? () => handleProjectTitleSwipe(-1) : undefined}
+        titleTransitionDirection={!isDesktop ? projectSwitchAnimation : null}
         titleDoubleClickHint={showRunningOnly
           ? 'Double-click to show all tasks.'
           : 'Double-click to show running tasks only.'}
@@ -470,7 +497,10 @@ function TasksPageContent() {
             </div>
           </div>
         ) : (
-          <div className={viewMode === 'graph' ? 'h-full' : 'h-full overflow-y-auto webapp-scrollbar'}>
+          <div className={viewMode === 'graph'
+            ? 'h-full'
+            : `h-full overflow-y-auto webapp-scrollbar ${projectSwitchAnimationClassName}`}
+          >
             <TaskList
               viewMode={viewMode}
               // Must mirror the inline (desktop) branch's expanded scope —

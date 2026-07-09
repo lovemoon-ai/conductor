@@ -73,4 +73,10 @@ describe('Header', () => {
     expect(onSwipeLeft).toHaveBeenCalledTimes(1);
     expect(onTitleClick).not.toHaveBeenCalled();
   });
+
+  it('applies the requested title transition direction', () => {
+    render(<Header title="Project A" titleTransitionDirection="forward" />);
+
+    expect(screen.getByText('Project A')).toHaveClass('webapp-title-switch-forward');
+  });
 });

@@ -190,6 +190,7 @@ vi.mock('@/components/layout/Header', () => ({
     onTitleDoubleClick,
     onTitleSwipeLeft,
     onTitleSwipeRight,
+    titleTransitionDirection,
     titleDoubleClickHint,
   }: {
     title?: string;
@@ -199,6 +200,7 @@ vi.mock('@/components/layout/Header', () => ({
     onTitleDoubleClick?: () => void;
     onTitleSwipeLeft?: () => void;
     onTitleSwipeRight?: () => void;
+    titleTransitionDirection?: 'forward' | 'backward' | null;
     titleDoubleClickHint?: string;
   }) => {
     headerMock({
@@ -208,6 +210,7 @@ vi.mock('@/components/layout/Header', () => ({
       titleDoubleClickHint,
       hasTitleSwipeLeft: Boolean(onTitleSwipeLeft),
       hasTitleSwipeRight: Boolean(onTitleSwipeRight),
+      titleTransitionDirection,
     });
     return (
       <div>
@@ -554,6 +557,11 @@ describe('TasksPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'mock-title-swipe-left' }));
 
     expect(setSelectedProjectIdMock).toHaveBeenCalledWith('project-2');
+    expect(headerMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        titleTransitionDirection: 'forward',
+      }),
+    );
     expect(replaceMock).toHaveBeenCalledWith(
       '/app/tasks?projectId=project-2&taskType=pty_task&daemonHost=daemon-a&backend=codex',
       { scroll: false },
@@ -575,6 +583,11 @@ describe('TasksPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'mock-title-swipe-right' }));
 
     expect(setSelectedProjectIdMock).toHaveBeenCalledWith('project-1');
+    expect(headerMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        titleTransitionDirection: 'backward',
+      }),
+    );
     expect(replaceMock).toHaveBeenCalledWith('/app/tasks?projectId=project-1', { scroll: false });
   });
 
