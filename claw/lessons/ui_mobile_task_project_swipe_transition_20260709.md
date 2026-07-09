@@ -21,8 +21,16 @@ the mobile task list container, using a subtle slide/fade animation. Respect
 `prefers-reduced-motion` so users who disable motion do not receive the
 transition.
 
+Follow-up: the switch also needs a gesture-coupled progress path, not only a
+post-release animation. While the title is being dragged, report normalized
+horizontal progress from the header, render the adjacent project title as a
+preview, and let the task list move/fade from the same progress value. Only
+commit the project route change after the swipe crosses the threshold.
+
 ## Prevention
 
 Swipe navigation should carry explicit transition direction state whenever the
 gesture changes routed content. For mobile route-filter switches, verify both the
 state transition and the visual continuity path in focused component tests.
+When a gesture is expected to feel continuous, add tests for the in-gesture
+progress props/styles as well as the final switch result.

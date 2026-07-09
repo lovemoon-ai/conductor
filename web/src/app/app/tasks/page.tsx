@@ -1,9 +1,9 @@
 'use client';
 
-import { Suspense, useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore } from 'react';
+import { Suspense, useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore, type CSSProperties } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/common/FeedbackProvider';
-import { Header } from '@/components/layout/Header';
+import { Header, type TitleSwipeProgress } from '@/components/layout/Header';
 import {
   RefreshIcon,
   TaskList,
@@ -23,8 +23,11 @@ import { parseTaskType, type TaskType } from '@/lib/tasks/task-config';
 
 const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
 const PROJECT_SWITCH_ANIMATION_MS = 220;
+const PROJECT_SWIPE_LIST_OFFSET_PX = 14;
+const PROJECT_SWIPE_LIST_MAX_OPACITY_DROP = 0.16;
 
 type ProjectSwitchDirection = 'forward' | 'backward';
+type ProjectSwipeState = Pick<TitleSwipeProgress, 'progress' | 'isDragging'>;
 
 const subscribeToDesktopViewport = (onStoreChange: () => void) => {
   if (typeof window === 'undefined') {
@@ -50,6 +53,10 @@ function TasksPageContent() {
   const { pushToast } = useToast();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [projectSwitchAnimation, setProjectSwitchAnimation] = useState<ProjectSwitchDirection | null>(null);
+  const [projectSwipeState, setProjectSwipeState] = useState<ProjectSwipeState>({
+    progress: 0,
+    isDragging: false,
+  });
   const isDesktop = useSyncExternalStore(subscribeToDesktopViewport, getDesktopViewportSnapshot, () => false);
   const previousRequestedTaskIdRef = useRef<string | null>(null);
   const shouldHonorIncomingTaskIdRef = useRef(false);
@@ -143,6 +150,13 @@ function TasksPageContent() {
       group.members.some((member) => member.id === projectId),
     );
   }, [projectId, switchableProjectGroups]);
+  const previousSwitchableProjectGroup = currentProjectSwitchIndex > 0
+    ? switchableProjectGroups[currentProjectSwitchIndex - 1] ?? null
+    : null;
+  const nextSwitchableProjectGroup =
+    currentProjectSwitchIndex >= 0 && currentProjectSwitchIndex < switchableProjectGroups.length - 1
+      ? switchableProjectGroups[currentProjectSwitchIndex + 1] ?? null
+      : null;
   // Defense-in-depth: even though the server-side list endpoint already
   // hides PTY tasks that are bound to an AI task via AttachedTerminal, any
   // single-task fetch path (e.g. deep-linking to a PTY id, or a stale WS
@@ -300,14 +314,45 @@ function TasksPageContent() {
     });
   }, [currentProjectSwitchIndex, replaceTaskRoute, setSelectedProjectId, switchableProjectGroups]);
 
+  const handleProjectTitleSwipeProgress = useCallback((state: TitleSwipeProgress) => {
+    setProjectSwipeState({
+      progress: state.progress,
+      isDragging: state.isDragging,
+    });
+  }, []);
+
   const canSwipeProjectTitle =
     !isDesktop
     && viewMode === 'list'
     && currentProjectSwitchIndex >= 0
     && switchableProjectGroups.length > 1;
+  const canSwipeProjectTitleLeft = canSwipeProjectTitle && Boolean(nextSwitchableProjectGroup);
+  const canSwipeProjectTitleRight = canSwipeProjectTitle && Boolean(previousSwitchableProjectGroup);
   const projectSwitchAnimationClassName = !isDesktop && projectSwitchAnimation
     ? `webapp-task-list-switch-${projectSwitchAnimation}`
     : '';
+  const projectSwipeProgress = !isDesktop && viewMode === 'list' ? projectSwipeState.progress : 0;
+  const projectSwipeClassName = !isDesktop && viewMode === 'list'
+    ? `webapp-task-list-swipe-follow ${
+        projectSwipeState.isDragging ? 'webapp-task-list-swipe-follow-dragging' : ''
+      }`
+    : '';
+  const projectSwipeStyle: CSSProperties | undefined = projectSwipeProgress !== 0
+    ? {
+        opacity: 1 - Math.min(Math.abs(projectSwipeProgress) * PROJECT_SWIPE_LIST_MAX_OPACITY_DROP, PROJECT_SWIPE_LIST_MAX_OPACITY_DROP),
+        transform: `translateX(${projectSwipeProgress * PROJECT_SWIPE_LIST_OFFSET_PX}px)`,
+      }
+    : undefined;
+
+  useEffect(() => {
+    if (canSwipeProjectTitle || (projectSwipeState.progress === 0 && !projectSwipeState.isDragging)) {
+      return;
+    }
+    setProjectSwipeState({
+      progress: 0,
+      isDragging: false,
+    });
+  }, [canSwipeProjectTitle, projectSwipeState.isDragging, projectSwipeState.progress]);
 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
@@ -431,8 +476,11 @@ function TasksPageContent() {
         title={currentProjectName ? `${currentProjectName} (${projectTaskCountLabel})` : `Tasks(${taskCount})`}
         compact
         onTitleDoubleClick={handleTitleDoubleClick}
-        onTitleSwipeLeft={canSwipeProjectTitle ? () => handleProjectTitleSwipe(1) : undefined}
-        onTitleSwipeRight={canSwipeProjectTitle ? () => handleProjectTitleSwipe(-1) : undefined}
+        onTitleSwipeLeft={canSwipeProjectTitleLeft ? () => handleProjectTitleSwipe(1) : undefined}
+        onTitleSwipeRight={canSwipeProjectTitleRight ? () => handleProjectTitleSwipe(-1) : undefined}
+        onTitleSwipeProgress={canSwipeProjectTitle ? handleProjectTitleSwipeProgress : undefined}
+        titleSwipePreviewLeft={previousSwitchableProjectGroup?.name ?? null}
+        titleSwipePreviewRight={nextSwitchableProjectGroup?.name ?? null}
         titleTransitionDirection={!isDesktop ? projectSwitchAnimation : null}
         titleDoubleClickHint={showRunningOnly
           ? 'Double-click to show all tasks.'
@@ -497,9 +545,11 @@ function TasksPageContent() {
             </div>
           </div>
         ) : (
-          <div className={viewMode === 'graph'
-            ? 'h-full'
-            : `h-full overflow-y-auto webapp-scrollbar ${projectSwitchAnimationClassName}`}
+          <div
+            className={viewMode === 'graph'
+              ? 'h-full'
+              : `h-full overflow-y-auto webapp-scrollbar ${projectSwitchAnimationClassName} ${projectSwipeClassName}`}
+            style={viewMode === 'graph' ? undefined : projectSwipeStyle}
           >
             <TaskList
               viewMode={viewMode}

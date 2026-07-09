@@ -314,13 +314,30 @@ body {
   will-change: opacity, transform;
 }
 
+.webapp-title-swipe-layer,
+.webapp-task-list-swipe-follow {
+  transition:
+    opacity 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+
+.webapp-title-swipe-layer-dragging,
+.webapp-task-list-swipe-follow-dragging {
+  transition: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .webapp-title-switch-forward,
   .webapp-title-switch-backward,
   .webapp-task-list-switch-forward,
-  .webapp-task-list-switch-backward {
+  .webapp-task-list-switch-backward,
+  .webapp-title-swipe-layer,
+  .webapp-task-list-swipe-follow {
     animation: none;
+    opacity: 1 !important;
     transform: none;
+    transition: none;
   }
 }
 

@@ -190,6 +190,9 @@ vi.mock('@/components/layout/Header', () => ({
     onTitleDoubleClick,
     onTitleSwipeLeft,
     onTitleSwipeRight,
+    onTitleSwipeProgress,
+    titleSwipePreviewLeft,
+    titleSwipePreviewRight,
     titleTransitionDirection,
     titleDoubleClickHint,
   }: {
@@ -200,6 +203,9 @@ vi.mock('@/components/layout/Header', () => ({
     onTitleDoubleClick?: () => void;
     onTitleSwipeLeft?: () => void;
     onTitleSwipeRight?: () => void;
+    onTitleSwipeProgress?: (state: { progress: number; direction: 'left' | 'right' | null; isDragging: boolean }) => void;
+    titleSwipePreviewLeft?: string | null;
+    titleSwipePreviewRight?: string | null;
     titleTransitionDirection?: 'forward' | 'backward' | null;
     titleDoubleClickHint?: string;
   }) => {
@@ -210,6 +216,9 @@ vi.mock('@/components/layout/Header', () => ({
       titleDoubleClickHint,
       hasTitleSwipeLeft: Boolean(onTitleSwipeLeft),
       hasTitleSwipeRight: Boolean(onTitleSwipeRight),
+      hasTitleSwipeProgress: Boolean(onTitleSwipeProgress),
+      titleSwipePreviewLeft,
+      titleSwipePreviewRight,
       titleTransitionDirection,
     });
     return (
@@ -224,6 +233,22 @@ vi.mock('@/components/layout/Header', () => ({
           <button type="button" onClick={onTitleSwipeRight}>
             mock-title-swipe-right
           </button>
+        ) : null}
+        {onTitleSwipeProgress ? (
+          <>
+            <button
+              type="button"
+              onClick={() => onTitleSwipeProgress({ progress: -0.5, direction: 'left', isDragging: true })}
+            >
+              mock-title-swipe-progress-left
+            </button>
+            <button
+              type="button"
+              onClick={() => onTitleSwipeProgress({ progress: 0, direction: null, isDragging: false })}
+            >
+              mock-title-swipe-progress-reset
+            </button>
+          </>
         ) : null}
         <div>{actions}</div>
       </div>
@@ -548,7 +573,10 @@ describe('TasksPage', () => {
     expect(headerMock).toHaveBeenCalledWith(
       expect.objectContaining({
         hasTitleSwipeLeft: true,
-        hasTitleSwipeRight: true,
+        hasTitleSwipeRight: false,
+        hasTitleSwipeProgress: true,
+        titleSwipePreviewLeft: null,
+        titleSwipePreviewRight: 'Website',
       }),
     );
 
@@ -580,6 +608,14 @@ describe('TasksPage', () => {
 
     setSelectedProjectIdMock.mockClear();
     replaceMock.mockClear();
+    expect(headerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hasTitleSwipeLeft: true,
+        hasTitleSwipeRight: true,
+        titleSwipePreviewLeft: 'Conductor',
+        titleSwipePreviewRight: 'CLI',
+      }),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'mock-title-swipe-right' }));
 
     expect(setSelectedProjectIdMock).toHaveBeenCalledWith('project-1');
@@ -602,10 +638,37 @@ describe('TasksPage', () => {
 
     setSelectedProjectIdMock.mockClear();
     replaceMock.mockClear();
-    fireEvent.click(screen.getByRole('button', { name: 'mock-title-swipe-right' }));
 
+    expect(screen.queryByRole('button', { name: 'mock-title-swipe-right' })).not.toBeInTheDocument();
     expect(setSelectedProjectIdMock).not.toHaveBeenCalled();
     expect(replaceMock).not.toHaveBeenCalled();
+  });
+
+  it('moves the mobile task list with the title swipe progress', () => {
+    searchParamsState = new URLSearchParams('projectId=project-2');
+    projectsState = [
+      { id: 'project-1', name: 'Conductor' },
+      { id: 'project-2', name: 'Website' },
+      { id: 'project-3', name: 'CLI' },
+    ];
+
+    render(<TasksPage />);
+
+    const taskListWrapper = screen.getByText('task-list:list:none:route').parentElement;
+    expect(taskListWrapper).toHaveClass('webapp-task-list-swipe-follow');
+
+    fireEvent.click(screen.getByRole('button', { name: 'mock-title-swipe-progress-left' }));
+
+    expect(taskListWrapper).toHaveClass('webapp-task-list-swipe-follow-dragging');
+    expect(taskListWrapper).toHaveStyle({
+      opacity: '0.92',
+      transform: 'translateX(-7px)',
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'mock-title-swipe-progress-reset' }));
+
+    expect(taskListWrapper).not.toHaveClass('webapp-task-list-swipe-follow-dragging');
+    expect(taskListWrapper).not.toHaveStyle('transform: translateX(-7px)');
   });
 
   it('excludes hidden project tasks when no project is selected', () => {
