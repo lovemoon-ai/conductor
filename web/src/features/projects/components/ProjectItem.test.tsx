@@ -630,6 +630,32 @@ describe('ProjectItem', () => {
       expect(screen.queryByText('Daemon offline')).toBeNull();
     });
 
+    it('shows the git badge when any merged member is git-backed', () => {
+      render(
+        <ProjectItem
+          project={{
+            ...mergedMembers[0],
+            repoRoot: null,
+            gitRemoteUrl: null,
+          } as any}
+          mergedMembers={[
+            {
+              ...mergedMembers[0],
+              repoRoot: null,
+              gitRemoteUrl: null,
+            },
+            {
+              ...mergedMembers[1],
+              workspacePath: 'C:\\repo\\alpha',
+              repoRoot: 'C:\\repo\\alpha',
+            },
+          ] as any}
+        />,
+      );
+
+      expect(screen.getByText('git')).toBeInTheDocument();
+    });
+
     it('fans out hide to every member via hideProjectGroup', () => {
       render(
         <ProjectItem

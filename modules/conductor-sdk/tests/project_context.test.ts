@@ -5,7 +5,9 @@ import { execFileSync } from 'node:child_process';
 
 import { describe, expect, test } from 'vitest';
 
-import { ProjectContext, normalizeGitRemoteUrl } from '../src/context/index.js';
+import { ProjectContext, normalizeGitRemoteUrl, resolveGitCommand } from '../src/context/index.js';
+
+const GIT_COMMAND = resolveGitCommand();
 
 function gitEnv(): NodeJS.ProcessEnv {
   return {
@@ -19,10 +21,10 @@ function gitEnv(): NodeJS.ProcessEnv {
 
 function initRepo(repoPath: string): void {
   fs.mkdirSync(repoPath, { recursive: true });
-  execFileSync('git', ['init'], { cwd: repoPath, env: gitEnv(), stdio: 'ignore' });
+  execFileSync(GIT_COMMAND, ['init'], { cwd: repoPath, env: gitEnv(), stdio: 'ignore' });
   fs.writeFileSync(path.join(repoPath, 'README.md'), '# Demo\n');
-  execFileSync('git', ['add', '.'], { cwd: repoPath, env: gitEnv(), stdio: 'ignore' });
-  execFileSync('git', ['commit', '-m', 'init'], { cwd: repoPath, env: gitEnv(), stdio: 'ignore' });
+  execFileSync(GIT_COMMAND, ['add', '.'], { cwd: repoPath, env: gitEnv(), stdio: 'ignore' });
+  execFileSync(GIT_COMMAND, ['commit', '-m', 'init'], { cwd: repoPath, env: gitEnv(), stdio: 'ignore' });
 }
 
 describe('ProjectContext', () => {
@@ -41,7 +43,7 @@ describe('ProjectContext', () => {
     initRepo(dir);
     fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'src', 'main.py'), 'print("hi")\n');
-    execFileSync('git', ['add', '.'], { cwd: dir, env: gitEnv(), stdio: 'ignore' });
+    execFileSync(GIT_COMMAND, ['add', '.'], { cwd: dir, env: gitEnv(), stdio: 'ignore' });
     const ctx = new ProjectContext(dir);
     const files = ctx.listFiles();
     expect(files).toContain('README.md');
@@ -63,14 +65,14 @@ describe('ProjectContext', () => {
     initRepo(dir);
     const ctx = new ProjectContext(dir);
     const snapshot = ctx.snapshot();
-    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, env: gitEnv() }).toString().trim();
-    const committedAt = execFileSync('git', ['show', '-s', '--format=%cI', 'HEAD'], { cwd: dir, env: gitEnv() })
+    const head = execFileSync(GIT_COMMAND, ['rev-parse', 'HEAD'], { cwd: dir, env: gitEnv() }).toString().trim();
+    const committedAt = execFileSync(GIT_COMMAND, ['show', '-s', '--format=%cI', 'HEAD'], { cwd: dir, env: gitEnv() })
       .toString()
       .trim();
-    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, env: gitEnv() })
+    const branch = execFileSync(GIT_COMMAND, ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, env: gitEnv() })
       .toString()
       .trim();
-    const files = execFileSync('git', ['ls-files'], { cwd: dir, env: gitEnv() })
+    const files = execFileSync(GIT_COMMAND, ['ls-files'], { cwd: dir, env: gitEnv() })
       .toString()
       .trim()
       .split(/\r?\n/)
@@ -90,7 +92,7 @@ describe('ProjectContext', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'project-context-'));
     initRepo(dir);
     execFileSync(
-      'git',
+      GIT_COMMAND,
       ['remote', 'add', 'origin', 'git@github.com:Owner/Repo.git'],
       { cwd: dir, env: gitEnv(), stdio: 'ignore' },
     );
@@ -174,5 +176,53 @@ describe('normalizeGitRemoteUrl', () => {
     expect(normalizeGitRemoteUrl(undefined)).toBeNull();
     expect(normalizeGitRemoteUrl('')).toBeNull();
     expect(normalizeGitRemoteUrl('   ')).toBeNull();
+  });
+});
+
+describe('resolveGitCommand', () => {
+  test('uses configured command before probing defaults', () => {
+    expect(resolveGitCommand({
+      configuredCommand: '"C:\\Tools\\Git\\cmd\\git.exe"',
+      platform: 'win32',
+      env: {},
+      existsSync: () => false,
+      readdirSync: () => [],
+    })).toBe('C:\\Tools\\Git\\cmd\\git.exe');
+  });
+
+  test('discovers Visual Studio bundled Git on Windows', () => {
+    const programFiles = 'C:\\Program Files';
+    const gitPath = path.join(
+      programFiles,
+      'Microsoft Visual Studio',
+      '18',
+      'Insiders',
+      'Common7',
+      'IDE',
+      'CommonExtensions',
+      'Microsoft',
+      'TeamFoundation',
+      'Team Explorer',
+      'Git',
+      'cmd',
+      'git.exe',
+    );
+    const readdirSync = (target: fs.PathLike, options?: unknown): fs.Dirent[] | string[] => {
+      void options;
+      if (target === path.join(programFiles, 'Microsoft Visual Studio')) {
+        return [{ name: '18', isDirectory: () => true } as fs.Dirent];
+      }
+      if (target === path.join(programFiles, 'Microsoft Visual Studio', '18')) {
+        return [{ name: 'Insiders', isDirectory: () => true } as fs.Dirent];
+      }
+      return [];
+    };
+
+    expect(resolveGitCommand({
+      platform: 'win32',
+      env: { ProgramFiles: programFiles },
+      existsSync: (target) => target === gitPath,
+      readdirSync: readdirSync as typeof fs.readdirSync,
+    })).toBe(gitPath);
   });
 });

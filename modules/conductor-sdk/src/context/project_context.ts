@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { resolveGitCommand } from './git_command.js';
 
 export interface GuessResult {
   projectRoot: string;
@@ -23,12 +24,31 @@ export interface WorkspaceSnapshot {
   fileCount?: number;
 }
 
+export interface ProjectContextOptions {
+  gitCommand?: string | null;
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  existsSync?: typeof fs.existsSync;
+  readdirSync?: typeof fs.readdirSync;
+  spawnSync?: typeof spawnSync;
+}
+
 export class ProjectContext {
   private readonly root: string;
+  private readonly gitCommand: string;
+  private readonly spawnSyncFn: typeof spawnSync;
 
-  constructor(targetPath?: string) {
+  constructor(targetPath?: string, options: ProjectContextOptions = {}) {
     const resolvedPath = path.resolve(targetPath ?? process.cwd());
     this.root = fs.realpathSync(resolvedPath);
+    this.gitCommand = resolveGitCommand({
+      configuredCommand: options.gitCommand,
+      env: options.env,
+      platform: options.platform,
+      existsSync: options.existsSync,
+      readdirSync: options.readdirSync,
+    });
+    this.spawnSyncFn = options.spawnSync ?? spawnSync;
   }
 
   guess(): GuessResult {
@@ -89,12 +109,12 @@ export class ProjectContext {
     if (staged) {
       args.push('--staged');
     }
-    return runGit(args, guess.repoRoot);
+    return this.runGit(args, guess.repoRoot);
   }
 
   private gitRoot(start: string): string | null {
     try {
-      const repoPath = runGit(['rev-parse', '--show-toplevel'], start).trim();
+      const repoPath = this.runGit(['rev-parse', '--show-toplevel'], start).trim();
       return fs.realpathSync(repoPath);
     } catch {
       return null;
@@ -103,7 +123,7 @@ export class ProjectContext {
 
   private gitBranch(repoRoot: string): string | null {
     try {
-      const branch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot).trim();
+      const branch = this.runGit(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot).trim();
       if (!branch || branch === 'HEAD') {
         return null;
       }
@@ -115,7 +135,7 @@ export class ProjectContext {
 
   private gitHead(repoRoot: string): string | null {
     try {
-      const head = runGit(['rev-parse', 'HEAD'], repoRoot).trim();
+      const head = this.runGit(['rev-parse', 'HEAD'], repoRoot).trim();
       return head || null;
     } catch {
       return null;
@@ -124,7 +144,7 @@ export class ProjectContext {
 
   private gitHeadCommittedAt(repoRoot: string): string | null {
     try {
-      const committedAt = runGit(['show', '-s', '--format=%cI', 'HEAD'], repoRoot).trim();
+      const committedAt = this.runGit(['show', '-s', '--format=%cI', 'HEAD'], repoRoot).trim();
       return committedAt || null;
     } catch {
       return null;
@@ -133,7 +153,7 @@ export class ProjectContext {
 
   private gitRemoteUrl(repoRoot: string): string | null {
     try {
-      const url = runGit(['config', '--get', 'remote.origin.url'], repoRoot).trim();
+      const url = this.runGit(['config', '--get', 'remote.origin.url'], repoRoot).trim();
       return normalizeGitRemoteUrl(url);
     } catch {
       return null;
@@ -150,7 +170,7 @@ export class ProjectContext {
 
   private gitListFiles(repoRoot: string): string[] {
     try {
-      const output = runGit(['ls-files'], repoRoot);
+      const output = this.runGit(['ls-files'], repoRoot);
       return output
         .split(/\r?\n/)
         .map((line) => line.trim())
@@ -159,13 +179,25 @@ export class ProjectContext {
       return [];
     }
   }
+
+  private runGit(args: string[], cwd: string): string {
+    return runGit(this.gitCommand, args, cwd, this.spawnSyncFn);
+  }
 }
 
-function runGit(args: string[], cwd: string): string {
-  const result = spawnSync('git', args, {
+function runGit(
+  gitCommand: string,
+  args: string[],
+  cwd: string,
+  spawnSyncFn: typeof spawnSync,
+): string {
+  const result = spawnSyncFn(gitCommand, args, {
     cwd,
     encoding: 'utf-8',
   });
+  if (result.error) {
+    throw result.error;
+  }
   if (result.status !== 0) {
     throw new Error(result.stderr || 'git command failed');
   }

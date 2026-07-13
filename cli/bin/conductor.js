@@ -33,7 +33,7 @@ const argv = process.argv.slice(2);
 
 export function runConductorCli(args = argv, deps = {}) {
   const consoleImpl = deps.console || console;
-  const importModule = deps.importModule || ((subcommandPath) => import(subcommandPath));
+  const importModule = deps.importModule || ((subcommandUrl) => import(subcommandUrl));
   const env = deps.env || process.env;
   const processArgv = deps.processArgv || process.argv;
   const fsExistsSync = deps.existsSync || fs.existsSync;
@@ -90,7 +90,8 @@ export function runConductorCli(args = argv, deps = {}) {
   }
 
   process.argv = [processArgv[0], subcommandPath, ...subcommandArgs];
-  importModule(subcommandPath).catch((error) => {
+  const subcommandUrl = pathToFileURL(subcommandPath).href;
+  importModule(subcommandUrl).catch((error) => {
     consoleImpl.error(`Error loading subcommand '${subcommand}': ${error.message}`);
     process.exit(1);
   });

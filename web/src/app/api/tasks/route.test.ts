@@ -1275,6 +1275,77 @@ describe("/api/tasks", () => {
       );
     });
 
+    it("builds Windows worktree launch config for git-backed ai tasks", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const createdAt = new Date("2024-01-03T00:00:00.000Z");
+      const mockProject = {
+        id: "proj-win-git",
+        name: "Windows Git Project",
+        userId: "user-1",
+        daemonHost: "windows",
+        workspacePath: "C:\\repo\\packages\\app",
+        repoRoot: "C:\\repo",
+        worktreeBranch: "main",
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(null);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        {
+          id: "agent-win",
+          host: "windows",
+          supportedBackends: ["codex"],
+          capabilities: [],
+        },
+      ]);
+      vi.mocked(db.task.create).mockImplementation(async ({ data }: any) => ({
+        id: data.id,
+        projectId: data.projectId,
+        title: data.title,
+        status: data.status,
+        agentHost: data.agentHost,
+        executionHost: data.executionHost,
+        backendType: data.backendType,
+        sessionId: data.sessionId,
+        sessionFilePath: data.sessionFilePath,
+        launchConfig: data.launchConfig,
+        metadata: data.metadata,
+        createdAt,
+        updatedAt: createdAt,
+      }) as any);
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {
+            project_id: "proj-win-git",
+            title: "Windows Isolated Task",
+            backend_type: "codex",
+            launch_config: {
+              worktree: true,
+            },
+          },
+        }),
+      );
+      const createdLaunchConfig = JSON.parse(
+        vi.mocked(db.task.create).mock.calls.at(-1)?.[0].data.launchConfig as string,
+      );
+
+      expect(response.status).toBe(200);
+      expect(createdLaunchConfig).toEqual({
+        backendType: "codex",
+        worktree: true,
+        worktreeId: expect.any(String),
+        worktreeBranch: expect.stringMatching(/^[0-9a-f]{6}$/),
+        worktreeBaseRef: "main",
+        projectRepoRoot: "C:\\repo",
+        projectWorkspacePath: "C:\\repo\\packages\\app",
+        projectRelativePath: "packages\\app",
+      });
+    });
+
     it("rejects worktree requests for projects without git metadata", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const mockProject = {

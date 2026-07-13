@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 
 import {
   ensurePnpmOnlyBuiltDependencies,
@@ -11,6 +12,7 @@ import {
   normalizeBuiltDependencyList,
   parsePnpmIgnoredBuildsOutput,
   repairAndVerifyGlobalNodePty,
+  resolvePackageManagerCommand,
   shouldIgnoreNodePtyVerificationErrorMessage,
 } from "../src/native-deps.js";
 
@@ -38,6 +40,14 @@ describe("native deps helpers", () => {
     ]);
   });
 
+  it("resolves package manager command shims on Windows", () => {
+    assert.strictEqual(resolvePackageManagerCommand("npm", { platform: "win32" }), "npm.cmd");
+    assert.strictEqual(resolvePackageManagerCommand("pnpm", { platform: "win32" }), "pnpm.cmd");
+    assert.strictEqual(resolvePackageManagerCommand("yarn", { platform: "win32" }), "yarn.cmd");
+    assert.strictEqual(resolvePackageManagerCommand("npm.cmd", { platform: "win32" }), "npm.cmd");
+    assert.strictEqual(resolvePackageManagerCommand("pnpm", { platform: "linux" }), "pnpm");
+  });
+
   it("parses pnpm ignored-builds output", () => {
     assert.deepStrictEqual(
       parsePnpmIgnoredBuildsOutput(`Automatically ignored builds during installation:
@@ -56,6 +66,7 @@ hint: To allow the execution of build scripts for a package, add its name to "pn
     const calls = [];
     const ignored = await detectPnpmIgnoredBuilds({
       cwd: "/tmp/global/node_modules/@love-moon/conductor-cli",
+      platform: "linux",
       runCommand: async (command, args, options) => {
         calls.push([command, args, options]);
         return {
@@ -85,12 +96,35 @@ hint: To allow the execution of build scripts for a package, add its name to "pn
       },
       dependencies: ["node-pty"],
       global: true,
+      platform: "linux",
     });
 
     assert.deepStrictEqual(merged, ["foo", "node-pty"]);
     assert.deepStrictEqual(calls, [
       ["pnpm", ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
       ["pnpm", ["config", "set", "--global", "onlyBuiltDependencies", '["foo","node-pty"]']],
+    ]);
+  });
+
+  it("uses pnpm.cmd for pnpm config on Windows", async () => {
+    const calls = [];
+    const merged = await ensurePnpmOnlyBuiltDependencies({
+      runCommand: async (command, args) => {
+        calls.push([command, args]);
+        if (args[1] === "get") {
+          return { success: true, code: 0, stdout: "[]", stderr: "" };
+        }
+        return { success: true, code: 0, stdout: "", stderr: "" };
+      },
+      dependencies: ["node-pty"],
+      global: true,
+      platform: "win32",
+    });
+
+    assert.deepStrictEqual(merged, ["node-pty"]);
+    assert.deepStrictEqual(calls, [
+      ["pnpm.cmd", ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
+      ["pnpm.cmd", ["config", "set", "--global", "onlyBuiltDependencies", '["node-pty"]']],
     ]);
   });
 
@@ -103,6 +137,7 @@ hint: To allow the execution of build scripts for a package, add its name to "pn
       },
       dependencies: ["node-pty"],
       global: true,
+      platform: "linux",
     });
 
     assert.deepStrictEqual(merged, ["node-pty"]);
@@ -119,30 +154,44 @@ hint: To allow the execution of build scripts for a package, add its name to "pn
 
   it("repairs missing spawn-helper execute permission before verification", () => {
     const chmodCalls = [];
+    const helperPath = path.posix.join(
+      "/tmp/conductor-cli",
+      "node_modules",
+      "node-pty",
+      "prebuilds",
+      "darwin-arm64",
+      "spawn-helper",
+    );
     const helperInfo = ensureNodePtySpawnHelperExecutableForPackageDirectory({
       packageDirectory: "/tmp/conductor-cli",
       platform: "darwin",
       arch: "arm64",
-      existsSync: (candidate) => candidate.endsWith("/prebuilds/darwin-arm64/spawn-helper"),
+      existsSync: (candidate) => candidate === helperPath,
       statSync: () => ({ mode: 0o100644 }),
       chmodSync: (candidate, mode) => chmodCalls.push([candidate, mode]),
     });
 
     assert.deepStrictEqual(helperInfo, {
-      helperPath: "/tmp/conductor-cli/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper",
+      helperPath,
       updated: true,
     });
-    assert.deepStrictEqual(chmodCalls, [
-      ["/tmp/conductor-cli/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper", 0o755],
-    ]);
+    assert.deepStrictEqual(chmodCalls, [[helperPath, 0o755]]);
   });
 
   it("does not chmod spawn-helper when it is already executable", () => {
+    const helperPath = path.posix.join(
+      "/tmp/conductor-cli",
+      "node_modules",
+      "node-pty",
+      "prebuilds",
+      "darwin-arm64",
+      "spawn-helper",
+    );
     const helperInfo = ensureNodePtySpawnHelperExecutableForPackageDirectory({
       packageDirectory: "/tmp/conductor-cli",
       platform: "darwin",
       arch: "arm64",
-      existsSync: (candidate) => candidate.endsWith("/prebuilds/darwin-arm64/spawn-helper"),
+      existsSync: (candidate) => candidate === helperPath,
       statSync: () => ({ mode: 0o100755 }),
       chmodSync: () => {
         throw new Error("chmod should not be called");
@@ -150,7 +199,7 @@ hint: To allow the execution of build scripts for a package, add its name to "pn
     });
 
     assert.deepStrictEqual(helperInfo, {
-      helperPath: "/tmp/conductor-cli/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper",
+      helperPath,
       updated: false,
     });
   });
@@ -170,6 +219,7 @@ hint: To allow the execution of build scripts for a package, add its name to "pn
       packageManager: "pnpm",
       packageName: "@love-moon/conductor-cli",
       nodeExecutable: "/usr/bin/node",
+      platform: "linux",
       runCommand: async (command, args, options = {}) => {
         calls.push([command, args, options]);
         if (command === "pnpm" && args[0] === "config" && args[1] === "get") {
@@ -195,6 +245,50 @@ hint: To allow the execution of build scripts for a package, add its name to "pn
     ]);
   });
 
+  it("uses Windows package manager shims while repairing node-pty", async () => {
+    const calls = [];
+    const packageRoot = "C:\\Users\\test\\AppData\\Local\\pnpm\\global\\5\\node_modules";
+    const packageDirectory = path.win32.join(packageRoot, "@love-moon/conductor-cli");
+
+    const result = await repairAndVerifyGlobalNodePty({
+      packageManager: "pnpm",
+      packageName: "@love-moon/conductor-cli",
+      nodeExecutable: "C:\\node\\node.exe",
+      platform: "win32",
+      runCommand: async (command, args, options = {}) => {
+        calls.push([command, args, options]);
+        if (command === "pnpm.cmd" && args[0] === "config" && args[1] === "get") {
+          return { success: true, code: 0, stdout: '"node-pty"', stderr: "" };
+        }
+        if (command === "pnpm.cmd" && args[0] === "root") {
+          return { success: true, code: 0, stdout: `${packageRoot}\n`, stderr: "" };
+        }
+        if (command === "pnpm.cmd" && args[0] === "ignored-builds") {
+          return {
+            success: true,
+            code: 0,
+            stdout: "Automatically ignored builds during installation:\n  None\n",
+            stderr: "",
+          };
+        }
+        return { success: true, code: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    assert.strictEqual(result, packageDirectory);
+    assert.deepStrictEqual(calls, [
+      ["pnpm.cmd", ["config", "get", "--global", "onlyBuiltDependencies", "--json"], {}],
+      ["pnpm.cmd", ["root", "-g"], {}],
+      ["pnpm.cmd", ["ignored-builds"], { cwd: packageDirectory }],
+      ["pnpm.cmd", ["rebuild", "node-pty"], { cwd: packageDirectory }],
+      [
+        "C:\\node\\node.exe",
+        ["-e", buildNodePtyVerificationScript(), packageDirectory],
+        { timeoutMs: 15_000 },
+      ],
+    ]);
+  });
+
   it("fails pnpm repair when node-pty build scripts are still ignored", async () => {
     const packageRoot = "/tmp/global/node_modules";
     const packageDirectory = `${packageRoot}/@love-moon/conductor-cli`;
@@ -204,6 +298,7 @@ hint: To allow the execution of build scripts for a package, add its name to "pn
         packageManager: "pnpm",
         packageName: "@love-moon/conductor-cli",
         nodeExecutable: "/usr/bin/node",
+        platform: "linux",
         runCommand: async (command, args) => {
           if (command === "pnpm" && args[0] === "config" && args[1] === "get") {
             return { success: true, code: 0, stdout: '"node-pty"', stderr: "" };

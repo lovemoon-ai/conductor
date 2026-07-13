@@ -185,11 +185,12 @@ export function ProjectItem({
   const isImageIcon = customIcon ? /^(https?:\/\/|data:|\/)/i.test(customIcon) : false;
   const daemonHost = typeof projectRecord.daemonHost === 'string' ? projectRecord.daemonHost : null;
   const workspacePath = typeof projectRecord.workspacePath === 'string' ? projectRecord.workspacePath : null;
-  const repoRoot = typeof projectRecord.repoRoot === 'string' ? projectRecord.repoRoot : null;
   const metadata = projectRecord.metadata && typeof projectRecord.metadata === 'object' && !Array.isArray(projectRecord.metadata)
     ? (projectRecord.metadata as Record<string, unknown>)
     : null;
-  const isGitProject = Boolean(repoRoot);
+  const isGitProject = groupMembers.some((member) =>
+    typeof member.repoRoot === 'string' && member.repoRoot.trim().length > 0,
+  );
   const bindingCandidate = readBindingCandidate(metadata);
   const isBoundProject = Boolean(daemonHost) && !isDefault;
   const isPendingBinding = !isDefault && !daemonHost && Boolean(bindingCandidate);

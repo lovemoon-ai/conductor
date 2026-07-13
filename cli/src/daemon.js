@@ -13,7 +13,7 @@ import {
   ConductorConfig,
   loadConfig,
   ConfigFileNotFound,
-  ProjectContext,
+  normalizeGitRemoteUrl,
 } from "@love-moon/conductor-sdk";
 import { DaemonLogCollector } from "./log-collector.js";
 import { envForExplicitConfigFile } from "./config-env.js";
@@ -49,11 +49,35 @@ import {
   buildPnpmAllowBuildArgs,
   ensurePnpmOnlyBuiltDependencies,
   repairAndVerifyGlobalNodePty,
+  resolvePackageManagerCommand,
 } from "./native-deps.js";
 import {
   maskHandoffUrlForLogs,
   maskErrorForLogs,
 } from "./handoff-log-mask.js";
+import {
+  resolveDefaultPtyShell,
+  resolvePtyInteractiveShellArgs,
+  resolvePtyShellCommandArgs,
+} from "./pty-shell.js";
+import {
+  defaultConfigPath,
+  dirnameForPath,
+  isAbsolutePath,
+  joinForBasePath,
+  relativeForBasePath,
+  resolveForBasePath,
+} from "./platform-paths.js";
+import {
+  resolveConfiguredGitCommand,
+  resolveGitCommand,
+} from "./git-command.js";
+
+export {
+  resolveDefaultPtyShell,
+  resolvePtyInteractiveShellArgs,
+  resolvePtyShellCommandArgs,
+} from "./pty-shell.js";
 
 dotenv.config();
 
@@ -156,8 +180,7 @@ function sleepSync(ms) {
 
 function getUserConfig(configFilePath) {
   try {
-    const home = os.homedir();
-    const configPath = configFilePath || path.join(home, ".conductor", "config.yaml");
+    const configPath = configFilePath || defaultConfigPath(process.env);
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, "utf8");
       const parsed = yaml.load(content);
@@ -319,42 +342,6 @@ async function defaultCreatePty(command, args, options) {
   return spawnPty(command, args, options);
 }
 
-export function resolveDefaultPtyShell({
-  explicitShell,
-  envShell = process.env.SHELL,
-  comspec = process.env.COMSPEC,
-  platform = process.platform,
-  existsSync = fs.existsSync,
-} = {}) {
-  const normalizedExplicitShell = normalizeOptionalString(explicitShell);
-  if (normalizedExplicitShell) {
-    return normalizedExplicitShell;
-  }
-
-  const normalizedEnvShell = normalizeOptionalString(envShell);
-  if (normalizedEnvShell) {
-    return normalizedEnvShell;
-  }
-
-  if (platform === "win32") {
-    return normalizeOptionalString(comspec) || "cmd.exe";
-  }
-
-  if (platform === "darwin") {
-    return "/bin/zsh";
-  }
-
-  if (existsSync("/bin/bash")) {
-    return "/bin/bash";
-  }
-
-  if (existsSync("/bin/sh")) {
-    return "/bin/sh";
-  }
-
-  return "/bin/bash";
-}
-
 export function ensureNodePtySpawnHelperExecutable(deps = {}) {
   const platform = deps.platform || process.platform;
   if (platform === "win32") {
@@ -405,19 +392,19 @@ export function isSafeTaskWorktreeRoot(projectWorkspacePath, worktreeRoot) {
     return false;
   }
 
-  const resolvedWorkspacePath = path.resolve(normalizedWorkspacePath);
-  const resolvedWorktreeRoot = path.resolve(normalizedWorktreeRoot);
+  const resolvedWorkspacePath = resolveForBasePath(normalizedWorkspacePath, ".");
+  const resolvedWorktreeRoot = resolveForBasePath(normalizedWorktreeRoot, ".");
   if (resolvedWorkspacePath === resolvedWorktreeRoot) {
     return false;
   }
 
-  const expectedParent = path.resolve(resolvedWorkspacePath, ".conductor", "worktrees");
-  const relativeToExpectedParent = path.relative(expectedParent, resolvedWorktreeRoot);
+  const expectedParent = joinForBasePath(resolvedWorkspacePath, ".conductor", "worktrees");
+  const relativeToExpectedParent = relativeForBasePath(expectedParent, resolvedWorktreeRoot);
   if (
     !relativeToExpectedParent ||
     relativeToExpectedParent === "." ||
     relativeToExpectedParent.startsWith("..") ||
-    path.isAbsolute(relativeToExpectedParent)
+    isAbsolutePath(relativeToExpectedParent)
   ) {
     return false;
   }
@@ -629,9 +616,97 @@ function buildPtyTaskEnv(baseEnv = process.env, launchEnv = {}) {
   };
 }
 
+function runGitSync(gitCommand, args, cwd, spawnSyncFn) {
+  const result = spawnSyncFn(gitCommand, args, {
+    cwd,
+    encoding: "utf8",
+  });
+  if (result?.error) {
+    throw result.error instanceof Error ? result.error : new Error(String(result.error));
+  }
+  if (result?.status !== 0) {
+    const detail = String(result?.stderr || result?.stdout || "").trim();
+    throw new Error(
+      `${gitCommand} ${args.join(" ")} failed` +
+        (result?.status == null ? "" : ` (exit ${result.status})`) +
+        (detail ? `: ${detail}` : ""),
+    );
+  }
+  return String(result?.stdout || "");
+}
+
+function createProjectSnapshot(projectPath, {
+  gitCommand,
+  spawnSync,
+  realpathSync,
+} = {}) {
+  const realProjectPath = realpathSync(projectPath);
+  const snapshot = {
+    projectRoot: realProjectPath,
+  };
+
+  let repoRoot;
+  try {
+    const repoPath = runGitSync(gitCommand, ["rev-parse", "--show-toplevel"], realProjectPath, spawnSync).trim();
+    repoRoot = repoPath ? realpathSync(repoPath) : null;
+  } catch {
+    return snapshot;
+  }
+  if (!repoRoot) {
+    return snapshot;
+  }
+
+  snapshot.repoRoot = repoRoot;
+  try {
+    const branch = runGitSync(gitCommand, ["rev-parse", "--abbrev-ref", "HEAD"], repoRoot, spawnSync).trim();
+    if (branch && branch !== "HEAD") {
+      snapshot.worktreeBranch = branch;
+    }
+  } catch {
+    // optional git metadata
+  }
+  try {
+    const head = runGitSync(gitCommand, ["rev-parse", "HEAD"], repoRoot, spawnSync).trim();
+    if (head) {
+      snapshot.lastCommit = head;
+    }
+  } catch {
+    // optional git metadata
+  }
+  try {
+    const committedAt = runGitSync(gitCommand, ["show", "-s", "--format=%cI", "HEAD"], repoRoot, spawnSync).trim();
+    if (committedAt) {
+      snapshot.lastCommitAt = committedAt;
+    }
+  } catch {
+    // optional git metadata
+  }
+  try {
+    const remoteUrl = runGitSync(gitCommand, ["config", "--get", "remote.origin.url"], repoRoot, spawnSync).trim();
+    const normalizedRemoteUrl = normalizeGitRemoteUrl(remoteUrl);
+    if (normalizedRemoteUrl) {
+      snapshot.gitRemoteUrl = normalizedRemoteUrl;
+    }
+  } catch {
+    // optional git metadata
+  }
+  try {
+    const files = runGitSync(gitCommand, ["ls-files"], repoRoot, spawnSync)
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    snapshot.fileCount = files.length;
+  } catch {
+    // optional git metadata
+  }
+
+  return snapshot;
+}
+
 export function startDaemon(config = {}, deps = {}) {
   const exitFn = deps.exit || process.exit;
   const killFn = deps.kill || process.kill;
+  const platform = deps.platform || process.platform;
   let requestShutdown = async () => {};
   let shutdownSignalHandled = false;
   let forcedSignalExitHandled = false;
@@ -663,6 +738,14 @@ export function startDaemon(config = {}, deps = {}) {
     } catch (err) {
       if (err && err.code === "ESRCH") {
         return false;
+      }
+      if (err && err.code === "EPERM" && platform === "win32") {
+        const result = spawnSyncFn("tasklist", ["/FI", `PID eq ${pid}`, "/NH"], {
+          encoding: "utf8",
+          windowsHide: true,
+        });
+        const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+        return new RegExp(`\\b${pid}\\b`).test(output);
       }
       throw err;
     }
@@ -805,8 +888,10 @@ export function startDaemon(config = {}, deps = {}) {
   const writeFileSyncFn = deps.writeFileSync || fs.writeFileSync;
   const existsSyncFn = deps.existsSync || fs.existsSync;
   const statSyncFn = deps.statSync || fs.statSync;
+  const realpathSyncFn = deps.realpathSync || fs.realpathSync;
   const lstatSyncFn = deps.lstatSync || fs.lstatSync;
   const readFileSyncFn = deps.readFileSync || fs.readFileSync;
+  const readdirSyncFn = deps.readdirSync || fs.readdirSync;
   const readlinkSyncFn = deps.readlinkSync || fs.readlinkSync;
   const symlinkSyncFn = deps.symlinkSync || fs.symlinkSync;
   const unlinkSyncFn = deps.unlinkSync || fs.unlinkSync;
@@ -819,8 +904,25 @@ export function startDaemon(config = {}, deps = {}) {
     deps.createWebSocketClient ||
     ((clientConfig, options) => new ConductorWebSocketClient(clientConfig, options));
   const createLogCollector = deps.createLogCollector || ((backendUrl) => new DaemonLogCollector(backendUrl));
+  const configuredGitCommand =
+    normalizeOptionalString(config.GIT_COMMAND) ||
+    normalizeOptionalString(config.GIT_PATH) ||
+    resolveConfiguredGitCommand(userConfig, process.env);
+  const GIT_COMMAND = resolveGitCommand({
+    configuredCommand: configuredGitCommand,
+    env: process.env,
+    platform: process.platform,
+    existsSync: existsSyncFn,
+    readdirSync: readdirSyncFn,
+  });
   const resolveProjectSnapshotFn =
-    deps.resolveProjectSnapshot || ((projectPath) => new ProjectContext(projectPath).snapshot());
+    deps.resolveProjectSnapshot ||
+    ((projectPath) =>
+      createProjectSnapshot(projectPath, {
+        gitCommand: GIT_COMMAND,
+        spawnSync: spawnSyncFn,
+        realpathSync: realpathSyncFn,
+      }));
 
   // ---- Fire tmux mode helpers ---------------------------------------------
   // Probe whether the `tmux` binary is available on PATH. Used at daemon
@@ -854,6 +956,9 @@ export function startDaemon(config = {}, deps = {}) {
     );
   } else if (FIRE_TMUX_MODE_ACTIVE) {
     log("Fire tmux mode enabled: each Fire process will run in a detached tmux session");
+  }
+  if (GIT_COMMAND !== "git") {
+    log(`Git command: ${GIT_COMMAND}`);
   }
 
   // Single-quote a value so it can be embedded inside a `bash -c '...'`
@@ -1200,12 +1305,12 @@ export function startDaemon(config = {}, deps = {}) {
 
   function buildTaskWorktreeRoot(projectWorkspacePath, worktreeBranch) {
     const sanitized = String(worktreeBranch).replace(/[/\\]/g, "_").replace(/\.\./g, "_");
-    return path.join(projectWorkspacePath, ".conductor", "worktrees", sanitized);
+    return joinForBasePath(projectWorkspacePath, ".conductor", "worktrees", sanitized);
   }
 
   function resolveTaskWorktreeCwd(worktreeRoot, projectRelativePath) {
     return projectRelativePath && projectRelativePath !== "."
-      ? path.join(worktreeRoot, projectRelativePath)
+      ? joinForBasePath(worktreeRoot, projectRelativePath)
       : worktreeRoot;
   }
 
@@ -1221,7 +1326,7 @@ export function startDaemon(config = {}, deps = {}) {
       if (!normalizedEntry) continue;
       const exactConfiguredPathExists =
         projectWorkspacePath &&
-        existsSyncFn(path.resolve(projectWorkspacePath, normalizedEntry));
+        existsSyncFn(resolveForBasePath(projectWorkspacePath, normalizedEntry));
       const normalizedEntries =
         !exactConfiguredPathExists && /\s/.test(normalizedEntry)
           ? normalizedEntry.split(/\s+/).map((part) => normalizeOptionalString(part)).filter(Boolean)
@@ -1237,13 +1342,13 @@ export function startDaemon(config = {}, deps = {}) {
   }
 
   function resolveProjectScopedPath(basePath, configuredPath, label) {
-    const resolvedPath = path.resolve(basePath, configuredPath);
-    const relativePath = path.relative(basePath, resolvedPath);
+    const resolvedPath = resolveForBasePath(basePath, configuredPath);
+    const relativePath = relativeForBasePath(basePath, resolvedPath);
     if (
       relativePath === "" ||
       relativePath === "." ||
       relativePath.startsWith("..") ||
-      path.isAbsolute(relativePath)
+      isAbsolutePath(relativePath)
     ) {
       throw new Error(`${label} must stay within ${basePath}`);
     }
@@ -1251,7 +1356,7 @@ export function startDaemon(config = {}, deps = {}) {
   }
 
   function normalizeGitPathspec(relativePath) {
-    return String(relativePath || "").split(path.sep).join("/");
+    return String(relativePath || "").replace(/\\/g, "/");
   }
 
   const PROJECT_SETTINGS_TEMPLATE = [
@@ -1287,10 +1392,10 @@ export function startDaemon(config = {}, deps = {}) {
 
   function getProjectSettingsCandidates(projectWorkspacePath) {
     return [
-      path.join(projectWorkspacePath, ".conductor", "settings.yaml"),
-      path.join(projectWorkspacePath, ".conductor", "settings.yml"),
-      path.join(projectWorkspacePath, ".conductor", "setttings.yaml"),
-      path.join(projectWorkspacePath, ".conductor", "setttings.yml"),
+      joinForBasePath(projectWorkspacePath, ".conductor", "settings.yaml"),
+      joinForBasePath(projectWorkspacePath, ".conductor", "settings.yml"),
+      joinForBasePath(projectWorkspacePath, ".conductor", "setttings.yaml"),
+      joinForBasePath(projectWorkspacePath, ".conductor", "setttings.yml"),
     ];
   }
 
@@ -1322,9 +1427,9 @@ export function startDaemon(config = {}, deps = {}) {
   }
 
   function readProjectIconAsDataUri(settingsDir, iconValue) {
-    const resolvedPath = path.isAbsolute(iconValue)
+    const resolvedPath = isAbsolutePath(iconValue)
       ? iconValue
-      : path.resolve(settingsDir, iconValue);
+      : resolveForBasePath(settingsDir, iconValue);
     const ext = path.extname(resolvedPath).toLowerCase();
     const mime = PROJECT_ICON_MIME_BY_EXTENSION[ext];
     if (!mime) return null;
@@ -1340,12 +1445,12 @@ export function startDaemon(config = {}, deps = {}) {
   }
 
   function ensureProjectSettingsTemplate(projectWorkspacePath) {
-    const settingsPath = path.join(projectWorkspacePath, ".conductor", "settings.yaml");
+    const settingsPath = joinForBasePath(projectWorkspacePath, ".conductor", "settings.yaml");
     if (existsSyncFn(settingsPath)) {
       return;
     }
     try {
-      mkdirSyncFn(path.join(projectWorkspacePath, ".conductor"), { recursive: true });
+      mkdirSyncFn(joinForBasePath(projectWorkspacePath, ".conductor"), { recursive: true });
       writeFileSyncFn(settingsPath, PROJECT_SETTINGS_TEMPLATE, "utf8");
     } catch (_error) {
       // best-effort; do not block project validation if template creation fails
@@ -1367,7 +1472,7 @@ export function startDaemon(config = {}, deps = {}) {
       if (!projectIconLooksLikeFilesystemPath(rawIcon)) {
         return rawIcon;
       }
-      return readProjectIconAsDataUri(path.dirname(settingsPath), rawIcon);
+      return readProjectIconAsDataUri(dirnameForPath(settingsPath), rawIcon);
     }
     return null;
   }
@@ -1404,19 +1509,18 @@ export function startDaemon(config = {}, deps = {}) {
   }
 
   async function isGitTrackedWorktreePath({ projectRepoRoot, sourcePath }) {
-    const relativeToRepo = path.relative(projectRepoRoot, sourcePath);
+    const relativeToRepo = relativeForBasePath(projectRepoRoot, sourcePath);
     if (
       !relativeToRepo ||
       relativeToRepo === "." ||
       relativeToRepo.startsWith("..") ||
-      path.isAbsolute(relativeToRepo)
+      isAbsolutePath(relativeToRepo)
     ) {
       return false;
     }
 
     try {
-      const { stdout } = await runSpawnProcess(
-        "git",
+      const { stdout } = await runGitProcess(
         ["-C", projectRepoRoot, "ls-files", "--", normalizeGitPathspec(relativeToRepo)],
         { cwd: projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
       );
@@ -1444,7 +1548,8 @@ export function startDaemon(config = {}, deps = {}) {
         configuredPath,
         `worktree.symlink destination ${configuredPath}`,
       );
-      mkdirSyncFn(path.dirname(linkPath), { recursive: true });
+      const linkDir = dirnameForPath(linkPath);
+      mkdirSyncFn(linkDir, { recursive: true });
 
       if (existsSyncFn(linkPath)) {
         try {
@@ -1453,7 +1558,7 @@ export function startDaemon(config = {}, deps = {}) {
             throw new Error(`worktree symlink destination already exists: ${linkPath}`);
           }
           const currentTarget = readlinkSyncFn(linkPath);
-          const currentResolvedTarget = path.resolve(path.dirname(linkPath), currentTarget);
+          const currentResolvedTarget = resolveForBasePath(linkDir, currentTarget);
           if (currentResolvedTarget === sourcePath) {
             continue;
           }
@@ -1463,25 +1568,23 @@ export function startDaemon(config = {}, deps = {}) {
         }
       }
 
-      const relativeTarget = path.relative(path.dirname(linkPath), sourcePath) || ".";
+      const relativeTarget = relativeForBasePath(linkDir, sourcePath) || ".";
       symlinkSyncFn(relativeTarget, linkPath);
     }
   }
 
   async function ensureTaskWorktreeSubmodules({ taskId, projectWorkspacePath, worktreeRoot }) {
     const { syncSubmodules } = readProjectWorktreeSettings(projectWorkspacePath);
-    if (!syncSubmodules || !existsSyncFn(path.join(worktreeRoot, ".gitmodules"))) {
+    if (!syncSubmodules || !existsSyncFn(joinForBasePath(worktreeRoot, ".gitmodules"))) {
       return;
     }
 
     try {
-      await runSpawnProcess(
-        "git",
+      await runGitProcess(
         ["-C", worktreeRoot, "submodule", "sync", "--recursive"],
         { cwd: worktreeRoot, timeoutMs: WORKTREE_SUBMODULE_SYNC_TIMEOUT_MS },
       );
-      await runSpawnProcess(
-        "git",
+      await runGitProcess(
         ["-C", worktreeRoot, "submodule", "update", "--init", "--recursive"],
         { cwd: worktreeRoot, timeoutMs: WORKTREE_SUBMODULE_SYNC_TIMEOUT_MS },
       );
@@ -1579,6 +1682,10 @@ export function startDaemon(config = {}, deps = {}) {
     });
   }
 
+  async function runGitProcess(args, options = {}) {
+    return runSpawnProcess(GIT_COMMAND, args, options);
+  }
+
   async function ensureTaskWorktree({ taskId, projectId, launchConfig }) {
     const worktreeConfig = parseTaskWorktreeLaunchConfig(launchConfig);
     if (!worktreeConfig) {
@@ -1590,39 +1697,34 @@ export function startDaemon(config = {}, deps = {}) {
       worktreeConfig.worktreeBranch,
     );
     const finalCwd = resolveTaskWorktreeCwd(worktreeRoot, worktreeConfig.projectRelativePath);
-    const gitMarkerPath = path.join(worktreeRoot, ".git");
+    const gitMarkerPath = joinForBasePath(worktreeRoot, ".git");
     if (!existsSyncFn(gitMarkerPath)) {
       const { syncBranch } = readProjectWorktreeSettings(worktreeConfig.projectWorkspacePath);
       if (syncBranch) {
         try {
-          const { stdout: remoteStdout } = await runSpawnProcess(
-            "git",
+          const { stdout: remoteStdout } = await runGitProcess(
             ["-C", worktreeConfig.projectRepoRoot, "remote"],
             { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
           );
           const hasRemote = remoteStdout.trim().length > 0;
           if (hasRemote) {
-            await runSpawnProcess(
-              "git",
+            await runGitProcess(
               ["-C", worktreeConfig.projectRepoRoot, "fetch"],
               { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
             );
-            const { stdout: branchStdout } = await runSpawnProcess(
-              "git",
+            const { stdout: branchStdout } = await runGitProcess(
               ["-C", worktreeConfig.projectRepoRoot, "rev-parse", "--abbrev-ref", "HEAD"],
               { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
             );
             const currentBranch = branchStdout.trim();
             if (currentBranch && currentBranch !== "HEAD") {
-              const { stdout: trackingStdout } = await runSpawnProcess(
-                "git",
+              const { stdout: trackingStdout } = await runGitProcess(
                 ["-C", worktreeConfig.projectRepoRoot, "rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`],
                 { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
               ).catch(() => ({ stdout: "" }));
               const upstream = trackingStdout.trim();
               if (upstream) {
-                await runSpawnProcess(
-                  "git",
+                await runGitProcess(
                   ["-C", worktreeConfig.projectRepoRoot, "merge", "--ff-only", upstream],
                   { cwd: worktreeConfig.projectRepoRoot, timeoutMs: WORKTREE_SYNC_TIMEOUT_MS },
                 ).catch(() => {});
@@ -1634,10 +1736,9 @@ export function startDaemon(config = {}, deps = {}) {
         }
       }
 
-      mkdirSyncFn(path.dirname(worktreeRoot), { recursive: true });
+      mkdirSyncFn(dirnameForPath(worktreeRoot), { recursive: true });
       try {
-        await runSpawnProcess(
-          "git",
+        await runGitProcess(
           [
             "-C",
             worktreeConfig.projectRepoRoot,
@@ -1655,8 +1756,7 @@ export function startDaemon(config = {}, deps = {}) {
       } catch (primaryError) {
         if (!existsSyncFn(gitMarkerPath)) {
           try {
-            await runSpawnProcess(
-              "git",
+            await runGitProcess(
               [
                 "-C",
                 worktreeConfig.projectRepoRoot,
@@ -2521,15 +2621,15 @@ export function startDaemon(config = {}, deps = {}) {
       let cmd, args;
       switch (pm) {
         case "pnpm":
-          cmd = "pnpm";
+          cmd = resolvePackageManagerCommand("pnpm");
           args = ["add", "-g", ...buildPnpmAllowBuildArgs(["node-pty"]), pkgSpec];
           break;
         case "yarn":
-          cmd = "yarn";
+          cmd = resolvePackageManagerCommand("yarn");
           args = ["global", "add", pkgSpec];
           break;
         default:
-          cmd = "npm";
+          cmd = resolvePackageManagerCommand("npm");
           args = ["install", "-g", pkgSpec];
           break;
       }
@@ -3394,6 +3494,7 @@ export function startDaemon(config = {}, deps = {}) {
 
   function resolvePtyLaunchSpec(launchConfig, fallbackCwd) {
     const normalizedLaunchConfig = normalizeLaunchConfig(launchConfig);
+    const platform = process.platform;
     const entrypointType =
       normalizeOptionalString(normalizedLaunchConfig.entrypoint_type) ||
       normalizeOptionalString(normalizedLaunchConfig.entrypointType) ||
@@ -3405,7 +3506,7 @@ export function startDaemon(config = {}, deps = {}) {
       explicitShell: normalizedLaunchConfig.shell,
       envShell: process.env.SHELL,
       comspec: process.env.COMSPEC,
-      platform: process.platform,
+      platform,
       existsSync: existsSyncFn,
     });
     const cwd =
@@ -3435,7 +3536,11 @@ export function startDaemon(config = {}, deps = {}) {
         entrypointType,
         toolPreset,
         command: preferredShell,
-        args: ["-lc", cliCommand],
+        args: resolvePtyShellCommandArgs({
+          shell: preferredShell,
+          command: cliCommand,
+          platform,
+        }),
         shell: preferredShell,
         cwd,
         env,
@@ -3469,7 +3574,10 @@ export function startDaemon(config = {}, deps = {}) {
       entrypointType: "shell",
       toolPreset: null,
       command: preferredShell,
-      args: ["-l"],
+      args: resolvePtyInteractiveShellArgs({
+        shell: preferredShell,
+        platform,
+      }),
       shell: preferredShell,
       cwd,
       env,
@@ -3714,12 +3822,12 @@ export function startDaemon(config = {}, deps = {}) {
       boundPath;
     if (!taskDir) {
       const now = new Date();
-      const dayDir = path.join(WORKSPACE_ROOT, formatWorkspaceDate(now));
+      const dayDir = joinForBasePath(WORKSPACE_ROOT, formatWorkspaceDate(now));
       const runTimestampPart = formatWorkspaceRunTimestamp(now);
       const taskSuffix = taskId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8) || String(process.pid);
       // PTY login shells can exit immediately if their cwd is renamed right after spawn.
       const pendingRunDir = `${runTimestampPart}_pty_${taskSuffix}`;
-      taskDir = path.join(dayDir, pendingRunDir);
+      taskDir = joinForBasePath(dayDir, pendingRunDir);
     }
 
     try {
@@ -3766,7 +3874,7 @@ export function startDaemon(config = {}, deps = {}) {
 
     const env = buildPtyTaskEnv(process.env, launchSpec.env);
 
-    const logPath = path.join(launchSpec.cwd, "conductor-terminal.log");
+    const logPath = joinForBasePath(launchSpec.cwd, "conductor-terminal.log");
     let logStream;
     try {
       logStream = createWriteStreamFn(logPath, { flags: "a" });
@@ -3802,7 +3910,7 @@ export function startDaemon(config = {}, deps = {}) {
         rejectCreatePtyTaskDuringShutdown(payload, { sendAck: false });
         return;
       }
-      const resolvedLogPath = path.join(taskDir, "conductor-terminal.log");
+      const resolvedLogPath = joinForBasePath(taskDir, "conductor-terminal.log");
 
       const startedAt = new Date().toISOString();
       const record = {
@@ -3969,8 +4077,7 @@ export function startDaemon(config = {}, deps = {}) {
     try {
       if (existsSyncFn(worktreeRoot)) {
         if (!forceCleanup) {
-          const { stdout } = await runSpawnProcess(
-            "git",
+          const { stdout } = await runGitProcess(
             ["-C", statusCwd, "status", "--porcelain"],
             { cwd: statusCwd },
           );
@@ -3978,8 +4085,7 @@ export function startDaemon(config = {}, deps = {}) {
             throw new Error("Worktree has uncommitted changes");
           }
         }
-        await runSpawnProcess(
-          "git",
+        await runGitProcess(
           [
             "-C",
             worktreeConfig.projectRepoRoot,
@@ -4466,7 +4572,7 @@ export function startDaemon(config = {}, deps = {}) {
     };
 
     try {
-      const resolvedPath = path.resolve(rawWorkspacePath);
+      const resolvedPath = resolveForBasePath(rawWorkspacePath, ".");
       if (!existsSyncFn(resolvedPath)) {
         result = {
           ...result,
@@ -5101,7 +5207,7 @@ export function startDaemon(config = {}, deps = {}) {
         if (stats.isDirectory()) {
           return normalizedSessionPath;
         }
-        return path.dirname(normalizedSessionPath);
+        return dirnameForPath(normalizedSessionPath);
       } catch {
         // ignore missing local path
       }
@@ -5253,15 +5359,15 @@ export function startDaemon(config = {}, deps = {}) {
       if (resolvedTaskWorkspace) {
         taskDir = resolvedTaskWorkspace;
         log(`Using task workspace: ${taskDir}`);
-        logPath = path.join(taskDir, "conductor.log");
+        logPath = joinForBasePath(taskDir, "conductor.log");
       } else {
         const now = new Date();
-        const dayDir = path.join(WORKSPACE_ROOT, formatWorkspaceDate(now));
+        const dayDir = joinForBasePath(WORKSPACE_ROOT, formatWorkspaceDate(now));
         runTimestampPart = formatWorkspaceRunTimestamp(now);
         const pendingRunDir = `${runTimestampPart}_pid_${process.pid}`;
-        taskDir = path.join(dayDir, pendingRunDir);
+        taskDir = joinForBasePath(dayDir, pendingRunDir);
         mkdirSyncFn(taskDir, { recursive: true });
-        logPath = path.join(taskDir, "conductor.log");
+        logPath = joinForBasePath(taskDir, "conductor.log");
       }
 
       const args = buildFireSpawnArgs({
@@ -5310,12 +5416,12 @@ export function startDaemon(config = {}, deps = {}) {
         Number.isInteger(child?.pid) &&
         child.pid > 0
       ) {
-        const desiredTaskDir = path.join(path.dirname(taskDir), `${runTimestampPart}_pid_${child.pid}`);
+        const desiredTaskDir = joinForBasePath(dirnameForPath(taskDir), `${runTimestampPart}_pid_${child.pid}`);
         if (desiredTaskDir !== taskDir) {
           try {
             renameSyncFn(taskDir, desiredTaskDir);
             taskDir = desiredTaskDir;
-            logPath = path.join(taskDir, "conductor.log");
+            logPath = joinForBasePath(taskDir, "conductor.log");
           } catch (err) {
             logError(
               `Failed to rename workspace dir from ${taskDir} to ${desiredTaskDir}: ${err?.message || err}`,
@@ -5879,7 +5985,7 @@ export function startDaemon(config = {}, deps = {}) {
     }
 
     let taskDir = resolvedResumeCwd;
-    let logPath = path.join(taskDir, "conductor.log");
+    let logPath = joinForBasePath(taskDir, "conductor.log");
 
     try {
       mkdirSyncFn(taskDir, { recursive: true });

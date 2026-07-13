@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import readline from "node:readline";
 
 import {
@@ -11,6 +13,123 @@ import {
 } from "../shared.js";
 
 const DEFAULT_CODEX_APP_SERVER_COMMAND = "codex app-server --listen stdio://";
+const DEFAULT_CODEX_APP_SERVER_BOOT_TIMEOUT_MS = 15000;
+
+function resolveBootTimeoutMs(value) {
+  if (value === undefined || value === null || value === "") {
+    return DEFAULT_CODEX_APP_SERVER_BOOT_TIMEOUT_MS;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_CODEX_APP_SERVER_BOOT_TIMEOUT_MS;
+  }
+  return parsed;
+}
+
+function withTimeout(promise, timeoutMs, createError) {
+  let timer = null;
+  return new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(createError());
+    }, timeoutMs);
+    if (typeof timer.unref === "function") {
+      timer.unref();
+    }
+    promise.then(resolve, reject).finally(() => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    });
+  });
+}
+
+function isWindowsCommandShim(command) {
+  const extension = path.extname(String(command || "")).toLowerCase();
+  return extension === ".cmd" || extension === ".bat";
+}
+
+function isPathLikeCommand(command) {
+  return /[\\/]/.test(String(command || ""));
+}
+
+function findOnPath(fileName, env = process.env) {
+  const pathValue = String(env.PATH || env.Path || "");
+  if (!pathValue) {
+    return "";
+  }
+  for (const entry of pathValue.split(path.delimiter)) {
+    const directory = entry.trim();
+    if (!directory) {
+      continue;
+    }
+    const candidate = path.join(directory, fileName);
+    try {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    } catch {
+      // ignore unreadable PATH entries
+    }
+  }
+  return "";
+}
+
+function isWindowsAppsCodexPath(command) {
+  const normalized = String(command || "").replace(/\//g, "\\").toLowerCase();
+  return (
+    normalized.includes("\\program files\\windowsapps\\openai.codex_") &&
+    /\\app\\resources\\codex(?:\.exe)?$/.test(normalized)
+  );
+}
+
+function windowsAppsCodexError(command) {
+  return (
+    `The resolved codex command is the WindowsApps packaged executable (${command}), ` +
+    "which Windows does not allow conductor to spawn as a CLI process. " +
+    "Install the standalone Codex CLI and configure allow_cli_list.codex to the standalone codex.exe or codex.cmd shim."
+  );
+}
+
+function resolveSpawnCommand(command, env = process.env) {
+  if (process.platform !== "win32") {
+    return { command, shell: false };
+  }
+
+  if (isWindowsAppsCodexPath(command)) {
+    return { command, shell: false, error: windowsAppsCodexError(command) };
+  }
+
+  const baseName = path.basename(String(command || "")).toLowerCase();
+  if (!isPathLikeCommand(command) && baseName === "codex") {
+    for (const candidateName of ["codex.cmd", "codex.bat", "codex.exe", "codex"]) {
+      const candidate = findOnPath(candidateName, env);
+      if (!candidate) {
+        continue;
+      }
+      if (isWindowsAppsCodexPath(candidate)) {
+        continue;
+      }
+      return {
+        command: candidate,
+        shell: isWindowsCommandShim(candidate),
+      };
+    }
+
+    const packagedCodex = findOnPath("codex.exe", env) || findOnPath("codex", env);
+    if (packagedCodex && isWindowsAppsCodexPath(packagedCodex)) {
+      return {
+        command,
+        shell: false,
+        error: windowsAppsCodexError(packagedCodex),
+      };
+    }
+  }
+
+  return {
+    command,
+    shell: isWindowsCommandShim(command),
+  };
+}
 
 /**
  * Add `--enable goals` to the codex app-server spawn args when goal mode is
@@ -92,6 +211,7 @@ export class CodexAppServerTransport extends EventEmitter {
     this.enableGoals = options.enableGoals === true;
     this.args = injectEnableGoalsArgs(args, this.enableGoals);
     this.env = options.env && typeof options.env === "object" ? { ...options.env } : {};
+    this.spawnShell = false;
     this.ignoreCodexApiKey = options.ignoreCodexApiKey === true;
     this.child = null;
     this.stdoutReader = null;
@@ -100,6 +220,9 @@ export class CodexAppServerTransport extends EventEmitter {
     this.nextRequestId = 1;
     this.bootPromise = null;
     this.booted = false;
+    this.bootTimeoutMs = resolveBootTimeoutMs(
+      options.bootTimeoutMs ?? process.env.CONDUCTOR_CODEX_APP_SERVER_BOOT_TIMEOUT_MS,
+    );
     this.closeRequested = false;
     this.closed = false;
     this.stderrTail = [];
@@ -129,15 +252,35 @@ export class CodexAppServerTransport extends EventEmitter {
 
   async bootInternal() {
     this.spawnChild();
-    const initializeResult = await this.requestRaw("initialize", {
-      clientInfo: {
-        name: "conductor-ai-sdk",
-        version: "0.0.0",
-      },
-      capabilities: {
-        experimentalApi: true,
-      },
-    });
+    let initializeResult;
+    try {
+      initializeResult = await withTimeout(
+        this.requestRaw("initialize", {
+          clientInfo: {
+            name: "conductor-ai-sdk",
+            version: "0.0.0",
+          },
+          capabilities: {
+            experimentalApi: true,
+          },
+        }),
+        this.bootTimeoutMs,
+        () => {
+          const error = new Error(
+            `Codex app-server did not respond to initialize within ${this.bootTimeoutMs}ms; check that the codex CLI can run app-server non-interactively`,
+          );
+          error.reason = "app_server_boot_timeout";
+          error.stderr = this.getRecentStderr();
+          return error;
+        },
+      );
+    } catch (error) {
+      if (error?.reason === "app_server_boot_timeout") {
+        this.failPendingRequests(error);
+        await this.close();
+      }
+      throw error;
+    }
     this.log(
       `[codex-app-server] initialized ua="${sanitizeForLog(initializeResult?.userAgent || "", 160)}" cwd=${this.cwd}`,
     );
@@ -148,12 +291,23 @@ export class CodexAppServerTransport extends EventEmitter {
     if (this.child) {
       return;
     }
-    this.log(`[codex-app-server] spawn ${[this.command, ...this.args].join(" ")} (cwd: ${this.cwd})`);
     const env = {
       ...process.env,
       PWD: this.cwd,
       ...this.env,
     };
+    const resolvedSpawn = resolveSpawnCommand(this.command, env);
+    if (resolvedSpawn.error) {
+      const error = new Error(resolvedSpawn.error);
+      error.reason = "process_error";
+      error.code = "EPERM";
+      this.closed = true;
+      this.log(`[codex-app-server] process error ${sanitizeForLog(error.message, 400)}`);
+      throw error;
+    }
+    this.command = resolvedSpawn.command;
+    this.spawnShell = resolvedSpawn.shell === true;
+    this.log(`[codex-app-server] spawn ${[this.command, ...this.args].join(" ")} (cwd: ${this.cwd})`);
     if (this.ignoreCodexApiKey) {
       delete env.CODEX_API_KEY;
     }
@@ -161,6 +315,7 @@ export class CodexAppServerTransport extends EventEmitter {
       cwd: this.cwd,
       env,
       stdio: ["pipe", "pipe", "pipe"],
+      shell: this.spawnShell,
     });
     this.child = child;
 
@@ -175,6 +330,10 @@ export class CodexAppServerTransport extends EventEmitter {
     });
 
     child.on("error", (error) => {
+      if (!error.reason) {
+        error.reason = "process_error";
+      }
+      this.log(`[codex-app-server] process error ${sanitizeForLog(error.message, 400)}`);
       this.failPendingRequests(error);
       this.emit("process_error", serializeError(error));
     });

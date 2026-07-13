@@ -36,6 +36,7 @@ import {
   normalizeRuntimeBackendAlias,
   normalizeRuntimeBackendName,
 } from "../src/runtime-backends.js";
+import { defaultConfigPath, resolveHomeDir } from "../src/platform-paths.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -111,8 +112,7 @@ export function shouldFireReportTaskStatus({ launchedByDaemon = false, phase } =
 
 // Load allow_cli_list from config file (no defaults - must be configured)
 function loadFireConfigYaml(configFilePath) {
-  const home = os.homedir();
-  const configPath = configFilePath || process.env.CONDUCTOR_CONFIG || path.join(home, ".conductor", "config.yaml");
+  const configPath = configFilePath || process.env.CONDUCTOR_CONFIG || defaultConfigPath(process.env);
   try {
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, "utf8");
@@ -320,7 +320,7 @@ export function resolveFreshSessionBootstrapLockPath(backendName, workingDirecto
   }
   const lockKey = `${normalizedBackend}:${resolveLockWorkingDirectory(workingDirectory)}`;
   const digest = createHash("sha1").update(lockKey).digest("hex");
-  return path.join(os.homedir(), ".conductor", "locks", `session-bootstrap-${digest}.lock`);
+  return path.join(resolveHomeDir(process.env), ".conductor", "locks", `session-bootstrap-${digest}.lock`);
 }
 
 function acquireFileLock(lockPath) {
@@ -1482,7 +1482,7 @@ function resolveFireStateDir(workingDirectory) {
   const baseDir =
     typeof workingDirectory === "string" && workingDirectory.trim()
       ? path.resolve(workingDirectory.trim())
-      : os.homedir();
+      : resolveHomeDir(process.env);
   return path.join(baseDir, ".conductor", "state");
 }
 

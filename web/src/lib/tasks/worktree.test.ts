@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildTaskWorktreeLaunchConfig,
   inheritTaskWorktreeLaunchConfig,
   resolveTaskWorktreeCwdFromLaunchConfig,
 } from "./worktree";
@@ -59,6 +60,26 @@ describe("resolveTaskWorktreeCwdFromLaunchConfig", () => {
         projectRelativePath: ".",
       }),
     ).toBe("C:\\repo\\.conductor\\worktrees\\feature_login");
+  });
+
+  it("builds launch config relative paths with win32 semantics", () => {
+    const launchConfig = buildTaskWorktreeLaunchConfig({
+      launchConfig: { backendType: "codex" },
+      worktreeId: "task-1",
+      projectRepoRoot: "C:\\repo",
+      projectWorkspacePath: "C:\\repo\\packages\\app",
+      projectWorktreeBranch: "main",
+    });
+
+    expect(launchConfig).toMatchObject({
+      backendType: "codex",
+      worktree: true,
+      worktreeId: "task-1",
+      worktreeBaseRef: "main",
+      projectRepoRoot: "C:\\repo",
+      projectWorkspacePath: "C:\\repo\\packages\\app",
+      projectRelativePath: "packages\\app",
+    });
   });
 
   it("inheritTaskWorktreeLaunchConfig returns null for non-worktree configs", () => {

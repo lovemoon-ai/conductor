@@ -1,27 +1,33 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import yaml from "js-yaml";
+import {
+  defaultConfigPath,
+  dirnameForPath,
+  joinForBasePath,
+  resolveUserPath,
+} from "../platform-paths.js";
 
 export const DEFAULT_CONDUCTOR_CONFIG_BASENAME = "config.yaml";
 export const DEFAULT_SERVE_AI_CONFIG_BASENAME = "config-ai-serve.yaml";
 
 function resolvePrimaryConfigPath(configFilePath) {
   if (typeof configFilePath === "string" && configFilePath.trim()) {
-    return path.resolve(configFilePath.trim());
+    return resolveUserPath(configFilePath.trim());
   }
   if (typeof process.env.CONDUCTOR_CONFIG === "string" && process.env.CONDUCTOR_CONFIG.trim()) {
-    return path.resolve(process.env.CONDUCTOR_CONFIG.trim());
+    return resolveUserPath(process.env.CONDUCTOR_CONFIG.trim());
   }
-  return path.join(os.homedir(), ".conductor", DEFAULT_CONDUCTOR_CONFIG_BASENAME);
+  return defaultConfigPath(process.env);
 }
 
 export function resolveServeAiConfigPaths(configFilePath) {
   const conductorConfigPath = resolvePrimaryConfigPath(configFilePath);
+  const configDir = dirnameForPath(conductorConfigPath);
   return {
     conductorConfigPath,
-    serveAiConfigPath: path.join(path.dirname(conductorConfigPath), DEFAULT_SERVE_AI_CONFIG_BASENAME),
+    serveAiConfigPath: joinForBasePath(configDir, DEFAULT_SERVE_AI_CONFIG_BASENAME),
   };
 }
 
@@ -123,11 +129,11 @@ export function buildServeAiConfigYaml({
 }
 
 export function writeServeAiConfigFile(targetPath, options = {}) {
-  const normalizedPath = path.resolve(String(targetPath || "").trim());
+  const normalizedPath = resolveUserPath(String(targetPath || "").trim());
   if (!normalizedPath) {
     throw new Error("targetPath is required");
   }
-  fs.mkdirSync(path.dirname(normalizedPath), { recursive: true });
+  fs.mkdirSync(dirnameForPath(normalizedPath), { recursive: true });
   fs.writeFileSync(normalizedPath, buildServeAiConfigYaml(options), "utf8");
   return normalizedPath;
 }

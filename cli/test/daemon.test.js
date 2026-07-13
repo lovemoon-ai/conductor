@@ -8,11 +8,14 @@ import { fileURLToPath } from "node:url";
 
 import { WebSocketServer } from "ws";
 
+import { resolvePackageManagerCommand } from "../src/native-deps.js";
+import { joinForBasePath } from "../src/platform-paths.js";
 import {
   ensureNodePtySpawnHelperExecutable,
   isSafeTaskWorktreeRoot,
   probePtyTaskCapability,
   resolveDefaultPtyShell,
+  resolvePtyInteractiveShellArgs,
   startDaemon,
 } from "../src/daemon.js";
 import { resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
@@ -266,6 +269,13 @@ describe("Daemon", () => {
     let restartAttempts = 0;
     let exitCode = null;
     let packageManagerOptions = null;
+    const npmCommand = resolvePackageManagerCommand("npm");
+    const globalPackageRoot = process.platform === "win32"
+      ? "C:\\mock\\global\\node_modules"
+      : "/mock/global/node_modules";
+    const packageDirectory = process.platform === "win32"
+      ? "C:\\mock\\global\\node_modules\\@love-moon\\conductor-cli"
+      : "/mock/global/node_modules/@love-moon/conductor-cli";
 
     const daemonInstance = startDaemon(
       {
@@ -282,7 +292,7 @@ describe("Daemon", () => {
       },
       {
         spawn: (cmd, args, opts) => {
-          if (cmd === "npm") {
+          if (cmd === npmCommand) {
             if (args[0] === "install") {
               installAttempts += 1;
               assert.deepStrictEqual(args, [
@@ -308,7 +318,7 @@ describe("Daemon", () => {
             child.kill = () => {};
             if (args[0] === "root") {
               setImmediate(() => {
-                child.stdout.emit("data", "/mock/global/node_modules\n");
+                child.stdout.emit("data", `${globalPackageRoot}\n`);
                 child.emit("close", 0);
               });
             } else {
@@ -331,7 +341,7 @@ describe("Daemon", () => {
           if (cmd === process.execPath && args[0] === "-e") {
             nodePtyVerificationAttempts += 1;
             assert.match(args[1], /node-pty/);
-            assert.strictEqual(args[2], "/mock/global/node_modules/@love-moon/conductor-cli");
+            assert.strictEqual(args[2], packageDirectory);
             const child = new EventEmitter();
             child.stdout = new EventEmitter();
             child.stderr = new EventEmitter();
@@ -409,7 +419,7 @@ describe("Daemon", () => {
     assert.strictEqual(versionChecks, 1);
     assert.strictEqual(restartAttempts, 1);
     assert.strictEqual(packageManagerOptions?.launcherPath, "/mock/bin/conductor");
-    assert.match(packageManagerOptions?.packageRoot || "", /\/cli$/);
+    assert.match((packageManagerOptions?.packageRoot || "").replace(/\\/g, "/"), /\/cli$/);
     assert.strictEqual(exitCode, 0);
   });
 
@@ -419,6 +429,7 @@ describe("Daemon", () => {
 
     let exitCode = null;
     let restartAttempts = 0;
+    const npmCommand = resolvePackageManagerCommand("npm");
 
     const daemonInstance = startDaemon(
       {
@@ -435,7 +446,7 @@ describe("Daemon", () => {
       },
       {
         spawn: (cmd, args) => {
-          if (cmd === "npm") {
+          if (cmd === npmCommand) {
             const child = new EventEmitter();
             child.stdout = new EventEmitter();
             child.stderr = new EventEmitter();
@@ -521,6 +532,13 @@ describe("Daemon", () => {
     let builtDependenciesJson = '"foo"';
     let exitCode = null;
     let restartAttempts = 0;
+    const pnpmCommand = resolvePackageManagerCommand("pnpm");
+    const pnpmGlobalRoot = process.platform === "win32"
+      ? "C:\\mock\\pnpm\\global\\node_modules"
+      : "/mock/pnpm/global/node_modules";
+    const pnpmPackageDirectory = process.platform === "win32"
+      ? "C:\\mock\\pnpm\\global\\node_modules\\@love-moon\\conductor-cli"
+      : "/mock/pnpm/global/node_modules/@love-moon/conductor-cli";
 
     const daemonInstance = startDaemon(
       {
@@ -538,7 +556,7 @@ describe("Daemon", () => {
       {
         spawn: (cmd, args, options = {}) => {
           calls.push([cmd, args, options]);
-          if (cmd === "pnpm" && args[0] === "config" && args[1] === "get") {
+          if (cmd === pnpmCommand && args[0] === "config" && args[1] === "get") {
             const child = new EventEmitter();
             child.stdout = new EventEmitter();
             child.stderr = new EventEmitter();
@@ -549,7 +567,7 @@ describe("Daemon", () => {
             });
             return child;
           }
-          if (cmd === "pnpm" && args[0] === "config" && args[1] === "set") {
+          if (cmd === pnpmCommand && args[0] === "config" && args[1] === "set") {
             builtDependenciesJson = args[4];
             const child = new EventEmitter();
             child.stdout = new EventEmitter();
@@ -558,7 +576,7 @@ describe("Daemon", () => {
             setImmediate(() => child.emit("close", 0));
             return child;
           }
-          if (cmd === "pnpm" && args[0] === "add") {
+          if (cmd === pnpmCommand && args[0] === "add") {
             const child = new EventEmitter();
             child.stdout = new EventEmitter();
             child.stderr = new EventEmitter();
@@ -566,7 +584,7 @@ describe("Daemon", () => {
             setImmediate(() => child.emit("close", 0));
             return child;
           }
-          if (cmd === "pnpm" && args[0] === "rebuild") {
+          if (cmd === pnpmCommand && args[0] === "rebuild") {
             const child = new EventEmitter();
             child.stdout = new EventEmitter();
             child.stderr = new EventEmitter();
@@ -574,7 +592,7 @@ describe("Daemon", () => {
             setImmediate(() => child.emit("close", 0));
             return child;
           }
-          if (cmd === "pnpm" && args[0] === "ignored-builds") {
+          if (cmd === pnpmCommand && args[0] === "ignored-builds") {
             const child = new EventEmitter();
             child.stdout = new EventEmitter();
             child.stderr = new EventEmitter();
@@ -585,13 +603,13 @@ describe("Daemon", () => {
             });
             return child;
           }
-          if (cmd === "pnpm" && args[0] === "root") {
+          if (cmd === pnpmCommand && args[0] === "root") {
             const child = new EventEmitter();
             child.stdout = new EventEmitter();
             child.stderr = new EventEmitter();
             child.kill = () => {};
             setImmediate(() => {
-              child.stdout.emit("data", "/mock/pnpm/global/node_modules\n");
+              child.stdout.emit("data", `${pnpmGlobalRoot}\n`);
               child.emit("close", 0);
             });
             return child;
@@ -664,25 +682,25 @@ describe("Daemon", () => {
     restoreEnv("CONDUCTOR_DAEMON_WATCHDOG_INTERVAL_MS", previousWatchdogInterval);
     assert.deepStrictEqual(
       calls
-        .filter(([cmd]) => cmd === "pnpm")
+        .filter(([cmd]) => cmd === pnpmCommand)
         .slice(0, 6)
         .map(([cmd, args]) => [cmd, args]),
       [
-        ["pnpm", ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
-        ["pnpm", ["config", "set", "--global", "onlyBuiltDependencies", '["foo","node-pty"]']],
-        ["pnpm", ["add", "-g", "--allow-build=node-pty", "@love-moon/conductor-cli@0.2.21"]],
-        ["pnpm", ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
-        ["pnpm", ["root", "-g"]],
-        ["pnpm", ["ignored-builds"]],
+        [pnpmCommand, ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
+        [pnpmCommand, ["config", "set", "--global", "onlyBuiltDependencies", '["foo","node-pty"]']],
+        [pnpmCommand, ["add", "-g", "--allow-build=node-pty", "@love-moon/conductor-cli@0.2.21"]],
+        [pnpmCommand, ["config", "get", "--global", "onlyBuiltDependencies", "--json"]],
+        [pnpmCommand, ["root", "-g"]],
+        [pnpmCommand, ["ignored-builds"]],
       ],
     );
     const rebuildCall = calls.find(
-      ([cmd, args]) => cmd === "pnpm" && Array.isArray(args) && args[0] === "rebuild",
+      ([cmd, args]) => cmd === pnpmCommand && Array.isArray(args) && args[0] === "rebuild",
     );
     assert.ok(rebuildCall);
-    assert.deepStrictEqual(rebuildCall[0], "pnpm");
+    assert.deepStrictEqual(rebuildCall[0], pnpmCommand);
     assert.deepStrictEqual(rebuildCall[1], ["rebuild", "node-pty"]);
-    assert.strictEqual(rebuildCall[2]?.cwd, "/mock/pnpm/global/node_modules/@love-moon/conductor-cli");
+    assert.strictEqual(rebuildCall[2]?.cwd, pnpmPackageDirectory);
     assert.strictEqual(restartAttempts, 1);
     assert.strictEqual(exitCode, 0);
   });
@@ -766,7 +784,7 @@ describe("Daemon", () => {
     const mockSpawn = (_cmd, args, opts) => {
       spawnedCwd = opts.cwd;
       assert.match(
-        opts.cwd,
+        opts.cwd.replace(/\\/g, "/"),
         /^\/tmp\/test-ws\/\d{4}-\d{2}-\d{2}\/\d{2}-\d{2}-\d{2}_pid_\d+$/,
       );
       assert.ok(args.includes("--backend"));
@@ -784,9 +802,9 @@ describe("Daemon", () => {
     };
 
     const mockMkdir = (dirPath) => {
-      if (dirPath === "/tmp/test-ws") return undefined;
+      if (dirPath.replace(/\\/g, "/") === "/tmp/test-ws") return undefined;
       assert.match(
-        dirPath,
+        dirPath.replace(/\\/g, "/"),
         /^\/tmp\/test-ws\/\d{4}-\d{2}-\d{2}\/\d{2}-\d{2}-\d{2}_pid_\d+$/,
       );
       mkdirCalled = true;
@@ -814,7 +832,7 @@ describe("Daemon", () => {
 
     const mockCreateWriteStream = (filePath) => {
       assert.match(
-        filePath,
+        filePath.replace(/\\/g, "/"),
         /^\/tmp\/test-ws\/\d{4}-\d{2}-\d{2}\/\d{2}-\d{2}-\d{2}_pid_24680\/conductor\.log$/,
       );
       return {
@@ -826,7 +844,7 @@ describe("Daemon", () => {
     const mockRename = (fromPath, toPath) => {
       assert.strictEqual(fromPath, spawnedCwd);
       assert.match(
-        toPath,
+        toPath.replace(/\\/g, "/"),
         /^\/tmp\/test-ws\/\d{4}-\d{2}-\d{2}\/\d{2}-\d{2}-\d{2}_pid_24680$/,
       );
       renameCalled = true;
@@ -2105,7 +2123,7 @@ describe("Daemon", () => {
         },
         mkdirSync: () => {},
         writeFileSync: () => {},
-        existsSync: (filePath) => filePath === path.join(worktreeRoot, ".gitmodules"),
+        existsSync: (filePath) => filePath === joinForBasePath(worktreeRoot, ".gitmodules"),
         readFileSync: () => "",
         unlinkSync: () => {},
         renameSync: () => {},
@@ -2213,7 +2231,7 @@ describe("Daemon", () => {
         writeFileSync: () => {},
         existsSync: (filePath) =>
           filePath === "/tmp/repo/.conductor/settings.yaml" ||
-          filePath === path.join(worktreeRoot, ".gitmodules"),
+          filePath === joinForBasePath(worktreeRoot, ".gitmodules"),
         readFileSync: (filePath) => {
           assert.strictEqual(filePath, "/tmp/repo/.conductor/settings.yaml");
           return [
@@ -4116,6 +4134,8 @@ describe("Daemon", () => {
     };
 
     const expectedRoot = path.join(process.env.HOME || "/tmp", "ws", "fires");
+    const expectedRootForMatch = expectedRoot.replace(/\\/g, "/");
+    const normalizeTaskPath = (value) => String(value || "").replace(/\\/g, "/");
     let rootDirCreated = false;
     let spawned = false;
     let renameCalled = false;
@@ -4123,9 +4143,10 @@ describe("Daemon", () => {
 
     const mockSpawn = (_cmd, _args, opts) => {
       spawnedCwd = opts.cwd;
-      assert.ok(opts.cwd.startsWith(`${expectedRoot}/`));
+      const normalizedCwd = normalizeTaskPath(opts.cwd);
+      assert.ok(normalizedCwd.startsWith(`${expectedRootForMatch}/`));
       assert.match(
-        opts.cwd.slice(expectedRoot.length + 1),
+        normalizedCwd.slice(expectedRootForMatch.length + 1),
         /^\d{4}-\d{2}-\d{2}\/\d{2}-\d{2}-\d{2}_pid_\d+$/,
       );
       spawned = true;
@@ -4142,18 +4163,20 @@ describe("Daemon", () => {
         rootDirCreated = true;
         return;
       }
-      assert.ok(dirPath.startsWith(`${expectedRoot}/`));
+      const normalizedDirPath = normalizeTaskPath(dirPath);
+      assert.ok(normalizedDirPath.startsWith(`${expectedRootForMatch}/`));
       assert.match(
-        dirPath.slice(expectedRoot.length + 1),
+        normalizedDirPath.slice(expectedRootForMatch.length + 1),
         /^\d{4}-\d{2}-\d{2}\/\d{2}-\d{2}-\d{2}_pid_\d+$/,
       );
     };
 
     const mockRename = (fromPath, toPath) => {
       assert.strictEqual(fromPath, spawnedCwd);
-      assert.ok(toPath.startsWith(`${expectedRoot}/`));
+      const normalizedToPath = normalizeTaskPath(toPath);
+      assert.ok(normalizedToPath.startsWith(`${expectedRootForMatch}/`));
       assert.match(
-        toPath.slice(expectedRoot.length + 1),
+        normalizedToPath.slice(expectedRootForMatch.length + 1),
         /^\d{4}-\d{2}-\d{2}\/\d{2}-\d{2}-\d{2}_pid_60123$/,
       );
       renameCalled = true;
@@ -4448,6 +4471,129 @@ describe("Daemon", () => {
     assert.strictEqual(lockWriteCalled, false);
     assert.strictEqual(lockUnlinkCalled, false);
     assert.strictEqual(killCheckCount, 0);
+  });
+
+  it("removes stale Windows daemon lock when process.kill reports EPERM but tasklist has no PID", () => {
+    let exitCode = null;
+    let writeCalled = false;
+    let unlinkCalled = false;
+    const spawnSyncCalls = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-lock-windows-stale-eperm",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "lock-windows-stale-eperm",
+      },
+      {
+        platform: "win32",
+        spawn: () => ({
+          on: () => {},
+          stdout: { on: () => {} },
+          stderr: { on: () => {} },
+        }),
+        spawnSync: (command, args) => {
+          spawnSyncCalls.push({ command, args });
+          return {
+            status: 0,
+            stdout: "INFO: No tasks are running which match the specified criteria.\r\n",
+            stderr: "",
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {
+          writeCalled = true;
+        },
+        existsSync: (filePath) => filePath.endsWith("daemon.pid"),
+        readFileSync: () => "16540",
+        unlinkSync: () => {
+          unlinkCalled = true;
+        },
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+        exit: (code) => {
+          exitCode = code;
+        },
+        kill: (_pid, signal) => {
+          if (signal === 0) {
+            const err = new Error("kill EPERM");
+            err.code = "EPERM";
+            throw err;
+          }
+        },
+      },
+    );
+    if (daemonInstance && typeof daemonInstance.close === "function") {
+      daemonInstance.close();
+    }
+
+    assert.strictEqual(exitCode, null);
+    assert.strictEqual(unlinkCalled, true);
+    assert.strictEqual(writeCalled, true);
+    assert.deepStrictEqual(spawnSyncCalls, [
+      { command: "tasklist", args: ["/FI", "PID eq 16540", "/NH"] },
+    ]);
+  });
+
+  it("keeps Windows daemon lock when process.kill reports EPERM and tasklist still has the PID", () => {
+    let exitCode = null;
+    let writeCalled = false;
+    let unlinkCalled = false;
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-lock-windows-running-eperm",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "lock-windows-running-eperm",
+      },
+      {
+        platform: "win32",
+        spawn: () => {
+          throw new Error("spawn should not be called");
+        },
+        spawnSync: () => ({
+          status: 0,
+          stdout: "node.exe                     16540 Console                    1     42,000 K\r\n",
+          stderr: "",
+        }),
+        mkdirSync: () => {},
+        writeFileSync: () => {
+          writeCalled = true;
+        },
+        existsSync: (filePath) => filePath.endsWith("daemon.pid"),
+        readFileSync: () => "16540",
+        unlinkSync: () => {
+          unlinkCalled = true;
+        },
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+        exit: (code) => {
+          exitCode = code;
+        },
+        kill: (_pid, signal) => {
+          if (signal === 0) {
+            const err = new Error("kill EPERM");
+            err.code = "EPERM";
+            throw err;
+          }
+        },
+      },
+    );
+    if (daemonInstance && typeof daemonInstance.close === "function") {
+      daemonInstance.close();
+    }
+
+    assert.strictEqual(exitCode, 1);
+    assert.strictEqual(unlinkCalled, false);
+    assert.strictEqual(writeCalled, false);
   });
 
   it("forces restart by stopping existing daemon when --force is set", () => {
@@ -6438,16 +6584,23 @@ describe("Daemon", () => {
             return { ok: true, json: async () => ({}) };
           },
           createPty: async (command, args, options) => {
+            const expectedShell = resolveDefaultPtyShell({
+              envShell: process.env.SHELL,
+              comspec: process.env.COMSPEC,
+              platform: process.platform,
+              existsSync: () => false,
+            });
             assert.strictEqual(
               command,
-              resolveDefaultPtyShell({
-                envShell: process.env.SHELL,
-                comspec: process.env.COMSPEC,
+              expectedShell,
+            );
+            assert.deepStrictEqual(
+              args,
+              resolvePtyInteractiveShellArgs({
+                shell: expectedShell,
                 platform: process.platform,
-                existsSync: () => false,
               }),
             );
-            assert.deepStrictEqual(args, ["-l"]);
             assert.strictEqual(options.cwd, "/tmp/test-ws-pty-bound");
             assert.strictEqual(options.cols, 120);
             assert.strictEqual(options.rows, 40);
@@ -8475,6 +8628,124 @@ describe("Daemon", () => {
     }
   });
 
+  it("validates git metadata with configured git command on Windows-style daemon installs", async () => {
+    let handler;
+    const events = [];
+    const spawnSyncCalls = [];
+    const gitPath = "C:\\Program Files\\Microsoft Visual Studio\\18\\Insiders\\Common7\\IDE\\CommonExtensions\\Microsoft\\TeamFoundation\\Team Explorer\\Git\\cmd\\git.exe";
+
+    const gitStdoutByCommand = new Map([
+      ["rev-parse --show-toplevel", "/tmp/project-real\n"],
+      ["rev-parse --abbrev-ref HEAD", "main\n"],
+      ["rev-parse HEAD", "abc123\n"],
+      ["show -s --format=%cI HEAD", "2026-05-12T14:30:00.000Z\n"],
+      ["config --get remote.origin.url", "git@github.com:Example/Project-Real.git\n"],
+      ["ls-files", "README.md\nsrc/index.ts\n"],
+    ]);
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-validate-project-git-path",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "validate-project-git-path-daemon",
+        GIT_PATH: gitPath,
+      },
+      {
+        spawn: () => ({
+          on: () => {},
+          stdout: { on: () => {} },
+          stderr: { on: () => {} },
+        }),
+        spawnSync: (command, args) => {
+          spawnSyncCalls.push({ command, args });
+          assert.equal(command, gitPath);
+          const filtered = args.filter((arg) => arg !== "-C" && arg !== "/tmp/project-real");
+          const stdout = gitStdoutByCommand.get(filtered.join(" "));
+          if (stdout === undefined) {
+            return { status: 1, stdout: "", stderr: `unexpected git args: ${args.join(" ")}` };
+          }
+          return { status: 0, stdout, stderr: "" };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (targetPath) => targetPath === "/tmp/project-link",
+        statSync: (targetPath) => {
+          assert.strictEqual(targetPath, "/tmp/project-link");
+          return { isDirectory: () => true };
+        },
+        realpathSync: (targetPath) => {
+          if (targetPath === "/tmp/project-link" || targetPath === "/tmp/project-real") {
+            return "/tmp/project-real";
+          }
+          return targetPath;
+        },
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (h) => {
+            handler = h;
+          },
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            events.push(payload);
+          },
+        }),
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+
+    handler({
+      type: "validate_project_path",
+      payload: {
+        request_id: "req-validate-git-path",
+        workspace_path: "/tmp/project-link",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.deepStrictEqual(events, [
+      {
+        type: "project_path_validated",
+        payload: {
+          request_id: "req-validate-git-path",
+          daemon_host: "validate-project-git-path-daemon",
+          workspace_path: "/tmp/project-real",
+          repo_root: "/tmp/project-real",
+          worktree_branch: "main",
+          last_commit: "abc123",
+          last_commit_at: "2026-05-12T14:30:00.000Z",
+          git_remote_url: "github.com/example/project-real",
+          file_count: 2,
+          icon: null,
+          error: null,
+          error_code: null,
+          validated_at: events[0]?.payload?.validated_at,
+        },
+      },
+    ]);
+    assert.ok(spawnSyncCalls.length >= 6);
+
+    if (daemonInstance && typeof daemonInstance.close === "function") {
+      daemonInstance.close();
+    }
+  });
+
   it("includes project icon from settings when validating workspace paths", async () => {
     let handler;
     const events = [];
@@ -9668,9 +9939,10 @@ describe("Daemon", () => {
       let exitCode = null;
       const spawnCalls = [];
       let installAttempts = 0;
+      const npmCommand = resolvePackageManagerCommand("npm");
 
       const defaultSpawn = (cmd, args) => {
-        if (cmd === "npm") {
+        if (cmd === npmCommand) {
           const child = new EventEmitter();
           child.stdout = new EventEmitter();
           child.stderr = new EventEmitter();
