@@ -706,6 +706,7 @@ function createProjectSnapshot(projectPath, {
 export function startDaemon(config = {}, deps = {}) {
   const exitFn = deps.exit || process.exit;
   const killFn = deps.kill || process.kill;
+  const platform = deps.platform || process.platform;
   let requestShutdown = async () => {};
   let shutdownSignalHandled = false;
   let forcedSignalExitHandled = false;
@@ -737,6 +738,14 @@ export function startDaemon(config = {}, deps = {}) {
     } catch (err) {
       if (err && err.code === "ESRCH") {
         return false;
+      }
+      if (err && err.code === "EPERM" && platform === "win32") {
+        const result = spawnSyncFn("tasklist", ["/FI", `PID eq ${pid}`, "/NH"], {
+          encoding: "utf8",
+          windowsHide: true,
+        });
+        const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+        return new RegExp(`\\b${pid}\\b`).test(output);
       }
       throw err;
     }

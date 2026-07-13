@@ -4473,6 +4473,129 @@ describe("Daemon", () => {
     assert.strictEqual(killCheckCount, 0);
   });
 
+  it("removes stale Windows daemon lock when process.kill reports EPERM but tasklist has no PID", () => {
+    let exitCode = null;
+    let writeCalled = false;
+    let unlinkCalled = false;
+    const spawnSyncCalls = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-lock-windows-stale-eperm",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "lock-windows-stale-eperm",
+      },
+      {
+        platform: "win32",
+        spawn: () => ({
+          on: () => {},
+          stdout: { on: () => {} },
+          stderr: { on: () => {} },
+        }),
+        spawnSync: (command, args) => {
+          spawnSyncCalls.push({ command, args });
+          return {
+            status: 0,
+            stdout: "INFO: No tasks are running which match the specified criteria.\r\n",
+            stderr: "",
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {
+          writeCalled = true;
+        },
+        existsSync: (filePath) => filePath.endsWith("daemon.pid"),
+        readFileSync: () => "16540",
+        unlinkSync: () => {
+          unlinkCalled = true;
+        },
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+        exit: (code) => {
+          exitCode = code;
+        },
+        kill: (_pid, signal) => {
+          if (signal === 0) {
+            const err = new Error("kill EPERM");
+            err.code = "EPERM";
+            throw err;
+          }
+        },
+      },
+    );
+    if (daemonInstance && typeof daemonInstance.close === "function") {
+      daemonInstance.close();
+    }
+
+    assert.strictEqual(exitCode, null);
+    assert.strictEqual(unlinkCalled, true);
+    assert.strictEqual(writeCalled, true);
+    assert.deepStrictEqual(spawnSyncCalls, [
+      { command: "tasklist", args: ["/FI", "PID eq 16540", "/NH"] },
+    ]);
+  });
+
+  it("keeps Windows daemon lock when process.kill reports EPERM and tasklist still has the PID", () => {
+    let exitCode = null;
+    let writeCalled = false;
+    let unlinkCalled = false;
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-lock-windows-running-eperm",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "lock-windows-running-eperm",
+      },
+      {
+        platform: "win32",
+        spawn: () => {
+          throw new Error("spawn should not be called");
+        },
+        spawnSync: () => ({
+          status: 0,
+          stdout: "node.exe                     16540 Console                    1     42,000 K\r\n",
+          stderr: "",
+        }),
+        mkdirSync: () => {},
+        writeFileSync: () => {
+          writeCalled = true;
+        },
+        existsSync: (filePath) => filePath.endsWith("daemon.pid"),
+        readFileSync: () => "16540",
+        unlinkSync: () => {
+          unlinkCalled = true;
+        },
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+        exit: (code) => {
+          exitCode = code;
+        },
+        kill: (_pid, signal) => {
+          if (signal === 0) {
+            const err = new Error("kill EPERM");
+            err.code = "EPERM";
+            throw err;
+          }
+        },
+      },
+    );
+    if (daemonInstance && typeof daemonInstance.close === "function") {
+      daemonInstance.close();
+    }
+
+    assert.strictEqual(exitCode, 1);
+    assert.strictEqual(unlinkCalled, false);
+    assert.strictEqual(writeCalled, false);
+  });
+
   it("forces restart by stopping existing daemon when --force is set", () => {
     let exitCode = null;
     let writeCalled = false;

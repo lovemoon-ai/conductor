@@ -67,6 +67,46 @@ function Invoke-Step {
   }
 }
 
+function ConvertTo-YamlSingleQuotedScalar {
+  param([string] $Value)
+
+  return "'$($Value.Replace("'", "''"))'"
+}
+
+function New-TemporaryPnpmWorkspaceFile {
+  param(
+    [string] $PackagePath,
+    [string[]] $AllowBuilds,
+    [hashtable] $Overrides = @{}
+  )
+
+  $workspaceFile = Join-Path $PackagePath "pnpm-workspace.yaml"
+  if (($AllowBuilds.Count -gt 0 -or $Overrides.Count -gt 0) -and -not (Test-Path -LiteralPath $workspaceFile -PathType Leaf)) {
+    $lines = @(
+      "fetchRetries: 5",
+      "fetchRetryMaxtimeout: 120000",
+      "fetchTimeout: 300000",
+      "verifyDepsBeforeRun: false"
+    )
+    if ($Overrides.Count -gt 0) {
+      $lines += "overrides:"
+      foreach ($dependency in ($Overrides.Keys | Sort-Object)) {
+        $lines += "  $(ConvertTo-YamlSingleQuotedScalar $dependency): $(ConvertTo-YamlSingleQuotedScalar $Overrides[$dependency])"
+      }
+    }
+    if ($AllowBuilds.Count -gt 0) {
+      $lines += "allowBuilds:"
+      foreach ($dependency in $AllowBuilds) {
+        $lines += "  $(ConvertTo-YamlSingleQuotedScalar $dependency): true"
+      }
+    }
+    Set-Content -LiteralPath $workspaceFile -Value $lines -Encoding ASCII
+    return $workspaceFile
+  }
+
+  return $null
+}
+
 function Add-UserPathEntry {
   param([string] $PathEntry)
 
@@ -117,21 +157,63 @@ $pnpmFallbacks = @(
 
 $node = Resolve-ExistingFile -ExplicitPath $NodePath -CommandName "node" -FallbackPaths $nodeFallbacks
 $pnpm = Resolve-ExistingFile -ExplicitPath $PnpmPath -CommandName "pnpm" -FallbackPaths $pnpmFallbacks
+$nodeBinDir = Split-Path -Parent $node
+
+if (-not (($env:Path -split ";") | Where-Object {
+  $_.TrimEnd("\").Equals($nodeBinDir.TrimEnd("\"), [System.StringComparison]::OrdinalIgnoreCase)
+})) {
+  $env:Path = "$nodeBinDir;$env:Path"
+}
 
 Write-Host "==> Repo: $rootDir"
 Write-Host "==> Node: $node"
 Write-Host "==> pnpm: $pnpm"
 
 if (-not $SkipBuild) {
-  foreach ($packageDir in @("modules\chat-web", "modules\ai-sdk", "modules\conductor-sdk")) {
-    Invoke-Step "Installing $packageDir dependencies" $pnpm @("--dir", (Join-Path $rootDir $packageDir), "install") $rootDir
-    Invoke-Step "Building $packageDir" $pnpm @("--dir", (Join-Path $rootDir $packageDir), "run", "build") $rootDir
+  $packageInstallAllowBuilds = @{
+    "modules\chat-web" = @("esbuild", "playwright")
+    "modules\ai-sdk" = @("esbuild", "playwright")
+    "modules\conductor-sdk" = @("esbuild")
+  }
+  $packageInstallOverrides = @{
+    "modules\chat-web" = @{}
+    "modules\ai-sdk" = @{
+      "@love-moon/chat-web" = "file:../chat-web"
+    }
+    "modules\conductor-sdk" = @{}
   }
 
-  Invoke-Step "Installing CLI dependencies" $pnpm @("--dir", (Join-Path $rootDir "cli"), "install") $rootDir
+  foreach ($packageDir in @("modules\chat-web", "modules\ai-sdk", "modules\conductor-sdk")) {
+    $packagePath = Join-Path $rootDir $packageDir
+    $temporaryWorkspaceFile = New-TemporaryPnpmWorkspaceFile $packagePath $packageInstallAllowBuilds[$packageDir] $packageInstallOverrides[$packageDir]
+    try {
+      Invoke-Step "Installing $packageDir dependencies" $pnpm @("install", "--no-lockfile") $packagePath
+      Invoke-Step "Building $packageDir" $pnpm @("run", "build") $packagePath
+    } finally {
+      if ($temporaryWorkspaceFile) {
+        Remove-Item -LiteralPath $temporaryWorkspaceFile -Force -ErrorAction SilentlyContinue
+      }
+    }
+  }
 
-  if (-not $NoNativeRebuild) {
-    Invoke-Step "Rebuilding node-pty native binding" $pnpm @("--dir", (Join-Path $rootDir "cli"), "rebuild", "node-pty") $rootDir
+  $cliPath = Join-Path $rootDir "cli"
+  $cliInstallAllowBuilds = @("esbuild", "node-pty", "@roamhq/wrtc", "playwright")
+  $cliInstallOverrides = @{
+    "@love-moon/ai-sdk" = "file:../modules/ai-sdk"
+    "@love-moon/conductor-sdk" = "file:../modules/conductor-sdk"
+    "@love-moon/chat-web" = "file:../modules/chat-web"
+  }
+  $temporaryCliWorkspaceFile = New-TemporaryPnpmWorkspaceFile $cliPath $cliInstallAllowBuilds $cliInstallOverrides
+  try {
+    Invoke-Step "Installing CLI dependencies" $pnpm @("install", "--no-lockfile") $cliPath
+
+    if (-not $NoNativeRebuild) {
+      Invoke-Step "Rebuilding node-pty native binding" $pnpm @("rebuild", "node-pty") $cliPath
+    }
+  } finally {
+    if ($temporaryCliWorkspaceFile) {
+      Remove-Item -LiteralPath $temporaryCliWorkspaceFile -Force -ErrorAction SilentlyContinue
+    }
   }
 }
 
