@@ -178,9 +178,9 @@ describe('fetchAccounts seeds codexQuotaByAccount from daemon cache', () => {
 
     const state = useAiManagerStore.getState().byHost['daemon-a'];
     expect(state.codexQuotaByAccount.alice?.plan).toBe('PLUS');
-    expect(state.codexQuotaByAccount.alice?.weekly.usedPercent).toBe(42);
+    expect(state.codexQuotaByAccount.alice?.weekly?.usedPercent).toBe(42);
     expect(state.codexQuotaByAccount.bob?.plan).toBe('PRO');
-    expect(state.codexQuotaByAccount.bob?.weekly.remainingPercent).toBe(80);
+    expect(state.codexQuotaByAccount.bob?.weekly?.remainingPercent).toBe(80);
   });
 
   it('does not overwrite a live-refreshed in-memory entry with a stale cache', async () => {
@@ -219,7 +219,7 @@ describe('fetchAccounts seeds codexQuotaByAccount from daemon cache', () => {
 
     const state = useAiManagerStore.getState().byHost['daemon-a'];
     expect(state.codexQuotaByAccount.alice?.plan).toBe('LIVE');
-    expect(state.codexQuotaByAccount.alice?.weekly.usedPercent).toBe(99);
+    expect(state.codexQuotaByAccount.alice?.weekly?.usedPercent).toBe(99);
   });
 });
 

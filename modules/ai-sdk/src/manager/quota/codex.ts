@@ -1,36 +1,45 @@
-import { readFile } from "node:fs/promises";
+import { basename, dirname } from "node:path";
 import { parseAuthFile } from "../auth-parser.js";
-import { DEFAULT_CODEX_AUTH, DEFAULT_CODEX_CONFIG } from "../paths.js";
+import { DEFAULT_CODEX_AUTH } from "../paths.js";
 import type { CodexQuota, QuotaWindow } from "../types.js";
-import { bool, headersToMap, num, str } from "./headers.js";
+import { CodexAppServerTransport } from "../../transports/codex-app-server-transport.js";
 import { cacheFile, fingerprintKey, isFresh, readCache, writeCache } from "./cache.js";
 
-/** Best-effort: read the configured model from ~/.codex/config.toml. */
-async function readConfiguredModel(path: string): Promise<string | undefined> {
-  try {
-    const raw = await readFile(path, "utf8");
-    // Minimal top-level key scan: `model = "..."` (skip lines inside [tables]).
-    let inRootTable = true;
-    for (const line of raw.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith("#") || trimmed === "") continue;
-      if (/^\[/.test(trimmed)) {
-        inRootTable = false;
-        continue;
-      }
-      if (!inRootTable) continue;
-      const m = /^model\s*=\s*"([^"]+)"/.exec(trimmed);
-      if (m) return m[1];
-    }
-  } catch {
-    // ignore
-  }
-  return undefined;
-}
-
-const RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 const DEFAULT_TTL = 60; // seconds
 const DEFAULT_TIMEOUT_MS = 15000;
+const WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;
+// The old cache was populated from /backend-api/codex/responses headers. Keep
+// the new app-server snapshots in a separate namespace so an upgrade cannot
+// surface a model-specific response limit as the account's weekly limit.
+const CACHE_TOOL = "codex-app-server";
+
+interface CodexRateLimitWindow {
+  usedPercent?: unknown;
+  resetsAt?: unknown;
+  windowDurationMins?: unknown;
+}
+
+interface CodexCreditsSnapshot {
+  hasCredits?: unknown;
+  balance?: unknown;
+  unlimited?: unknown;
+}
+
+interface CodexRateLimitSnapshot {
+  limitId?: unknown;
+  limitName?: unknown;
+  planType?: unknown;
+  primary?: CodexRateLimitWindow | null;
+  secondary?: CodexRateLimitWindow | null;
+  credits?: CodexCreditsSnapshot | null;
+  rateLimitReachedType?: unknown;
+}
+
+interface CodexRateLimitsResponse {
+  rateLimits?: CodexRateLimitSnapshot | null;
+  rateLimitsByLimitId?: Record<string, CodexRateLimitSnapshot> | null;
+  rateLimitResetCredits?: unknown;
+}
 
 export interface GetCodexQuotaOptions {
   codexAuthPath?: string;
@@ -40,64 +49,83 @@ export interface GetCodexQuotaOptions {
   forceRefresh?: boolean;
   /** Request timeout in ms. */
   timeoutMs?: number;
-  /** Model name; defaults to the one in ~/.codex/config.toml, then `gpt-5`. */
+  /** @deprecated Quota is account-scoped and no longer fetched through a model response. */
   model?: string;
-  /** Override path to codex config.toml (to detect model). */
+  /** @deprecated The Codex app-server reads its own config from CODEX_HOME. */
   codexConfigPath?: string;
   /** Override cache directory (mainly for tests). */
   cacheDir?: string;
+  /** Override the app-server reader (tests only). */
+  rateLimitsReader?: (options: {
+    codexAuthPath: string;
+    timeoutMs: number;
+  }) => Promise<unknown>;
 }
 
-function windowFromHeaders(
-  map: Record<string, string>,
-  prefix: "x-codex-primary" | "x-codex-secondary",
-): QuotaWindow | undefined {
-  const suffixes = [
-    "used-percent",
-    "reset-after-seconds",
-    "reset-at",
-    "window-minutes",
-  ];
-  if (!suffixes.some((suffix) => map[`${prefix}-${suffix}`] !== undefined)) {
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) {
     return undefined;
   }
-  const usedPercent = num(map, `${prefix}-used-percent`) ?? 0;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function quotaWindow(value: CodexRateLimitWindow | null | undefined): QuotaWindow | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const usedPercent = finiteNumber(value.usedPercent);
+  if (usedPercent === undefined) return undefined;
+  const resetAt = finiteNumber(value.resetsAt);
+  const now = Math.floor(Date.now() / 1000);
   return {
     usedPercent,
     remainingPercent: Math.max(0, 100 - usedPercent),
-    resetAfterSeconds: num(map, `${prefix}-reset-after-seconds`),
-    resetAt: num(map, `${prefix}-reset-at`),
-    windowMinutes: num(map, `${prefix}-window-minutes`),
+    resetAt,
+    resetAfterSeconds: resetAt === undefined ? undefined : Math.max(0, resetAt - now),
+    windowMinutes: finiteNumber(value.windowDurationMins),
   };
 }
 
-/** Exported for protocol compatibility tests. */
-export function parseCodexHeaders(
-  map: Record<string, string>,
-  extras: { email?: string; accountId?: string },
+/** Normalize Codex app-server `account/rateLimits/read` into the manager shape. */
+export function parseCodexRateLimitsResponse(
+  response: unknown,
+  extras: { email?: string; accountId?: string } = {},
 ): Omit<CodexQuota, "tool" | "fetchedAt" | "source"> {
-  const primary = windowFromHeaders(map, "x-codex-primary");
-  const secondary = windowFromHeaders(map, "x-codex-secondary");
-  // Codex CLI 0.144 removed the 5h limit. Its only Codex window is now the
-  // 10080-minute weekly window in `primary`, with `secondary` absent. Older
-  // responses used primary=5h and secondary=weekly, so prefer an explicitly
-  // weekly-sized window and then fall back to the legacy secondary position.
-  const weekly = [primary, secondary].find(
-    (window) => (window?.windowMinutes ?? 0) >= 7 * 24 * 60,
-  ) ?? secondary ?? primary ?? { usedPercent: 0, remainingPercent: 0 };
+  const payload = response && typeof response === "object"
+    ? response as CodexRateLimitsResponse
+    : {};
+  // `rateLimits` is the official backward-compatible account bucket. Do not
+  // pick a model-specific entry from rateLimitsByLimitId: e.g. Spark can have
+  // a different weekly percentage from the main Codex account limit.
+  const snapshot = payload.rateLimits && typeof payload.rateLimits === "object"
+    ? payload.rateLimits
+    : undefined;
+  const windows = [quotaWindow(snapshot?.primary), quotaWindow(snapshot?.secondary)];
+  const weekly = windows.find(
+    (window) => (window?.windowMinutes ?? 0) >= WEEKLY_WINDOW_MINUTES,
+  );
+  const credits = snapshot?.credits && typeof snapshot.credits === "object"
+    ? {
+        hasCredits: snapshot.credits.hasCredits === true,
+        balance: nonEmptyString(snapshot.credits.balance),
+        unlimited: snapshot.credits.unlimited === true,
+      }
+    : undefined;
+  const limitId = nonEmptyString(snapshot?.limitId);
+  const limitName = nonEmptyString(snapshot?.limitName);
 
   return {
-    plan: str(map, "x-codex-plan-type"),
-    activeLimit: str(map, "x-codex-active-limit"),
+    plan: nonEmptyString(snapshot?.planType),
+    activeLimit: limitName ?? limitId,
     weekly,
-    credits: {
-      hasCredits: bool(map, "x-codex-credits-has-credits") ?? false,
-      balance: str(map, "x-codex-credits-balance"),
-      unlimited: bool(map, "x-codex-credits-unlimited") ?? false,
-    },
+    credits,
     email: extras.email,
     accountId: extras.accountId,
-    raw: Object.fromEntries(Object.entries(map).filter(([k]) => k.startsWith("x-codex-"))),
+    raw: payload as Record<string, unknown>,
+    ...(!weekly ? { error: "Codex rate-limit response has no weekly window" } : {}),
   };
 }
 
@@ -111,83 +139,81 @@ export async function getCodexQuota(opts: GetCodexQuotaOptions = {}): Promise<Co
     return emptyQuota("unknown", "codex auth.json missing access_token");
   }
 
-  const fp = fingerprintKey(["codex", authInfo.identityFingerprint ?? "unknown"]);
-  const file = cacheFile("codex", fp, opts.cacheDir);
+  const fp = fingerprintKey([CACHE_TOOL, authInfo.identityFingerprint ?? "unknown"]);
+  const file = cacheFile(CACHE_TOOL, fp, opts.cacheDir);
 
   if (!opts.forceRefresh && ttl > 0) {
     const cached = await readCache<CodexQuota>(file);
     if (isFresh(cached, ttl) && cached) {
-      return { ...withoutLegacyFiveHour(cached.value), source: "cached" };
+      return { ...cached.value, source: "cached" };
     }
   }
 
-  const model =
-    opts.model ??
-    (await readConfiguredModel(opts.codexConfigPath ?? DEFAULT_CODEX_CONFIG)) ??
-    "gpt-5";
-
-  const body = JSON.stringify({
-    model,
-    instructions: "Reply with exactly one character.",
-    input: [
-      { type: "message", role: "user", content: [{ type: "input_text", text: "." }] },
-    ],
-    stream: true,
-    store: false,
-  });
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  let res: Response;
+  let response: unknown;
   try {
-    res = await fetch(RESPONSES_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${authInfo.accessToken}`,
-        "Content-Type": "application/json",
-        "OpenAI-Beta": "responses=experimental",
-        ...(authInfo.accountId ? { "chatgpt-account-id": authInfo.accountId } : {}),
-      },
-      body,
-      signal: controller.signal,
+    response = await (opts.rateLimitsReader ?? readCodexRateLimits)({
+      codexAuthPath,
+      timeoutMs,
     });
-  } catch (err: any) {
-    clearTimeout(timer);
-    return await fallbackFromCache(file, ttl, err?.message ?? String(err));
+  } catch (error: unknown) {
+    return fallbackFromCache(file, ttl, errorMessage(error));
   }
 
-  // Abort the body stream immediately once headers are in; they're all we need.
-  try {
-    await res.body?.cancel();
-  } catch {
-    // ignore
-  }
-  clearTimeout(timer);
-
-  const map = headersToMap(res.headers);
-  if (res.status === 401 || res.status === 403) {
-    return await fallbackFromCache(file, ttl, `auth failed: HTTP ${res.status}`);
-  }
-
-  const parsed = parseCodexHeaders(map, {
+  const parsed = parseCodexRateLimitsResponse(response, {
     email: authInfo.email,
     accountId: authInfo.accountId,
   });
-  const now = Math.floor(Date.now() / 1000);
+  if (!parsed.weekly) {
+    return fallbackFromCache(file, ttl, parsed.error ?? "Codex weekly quota unavailable");
+  }
+
   const fresh: CodexQuota = {
     tool: "codex",
-    fetchedAt: now,
+    fetchedAt: Math.floor(Date.now() / 1000),
     source: "fresh",
     ...parsed,
   };
+  await writeCache<CodexQuota>(file, fresh);
+  return fresh;
+}
 
-  // Only persist if we actually got rate-limit headers — otherwise the upstream was unhealthy.
-  if (Object.keys(fresh.raw ?? {}).length > 0) {
-    await writeCache<CodexQuota>(file, fresh);
-    return fresh;
+async function readCodexRateLimits(options: {
+  codexAuthPath: string;
+  timeoutMs: number;
+}): Promise<unknown> {
+  if (basename(options.codexAuthPath) !== "auth.json") {
+    throw new Error(
+      `Codex app-server quota requires an active auth.json path; got ${options.codexAuthPath}`,
+    );
   }
-  return await fallbackFromCache(file, ttl, `no x-codex-* headers on HTTP ${res.status}`);
+
+  const transport = new CodexAppServerTransport({
+    env: { CODEX_HOME: dirname(options.codexAuthPath) },
+    ignoreCodexApiKey: true,
+  });
+  try {
+    return await withTimeout(
+      transport.request("account/rateLimits/read"),
+      options.timeoutMs,
+      "Codex account/rateLimits/read timed out",
+    );
+  } finally {
+    await transport.close();
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function fallbackFromCache(
@@ -198,7 +224,7 @@ async function fallbackFromCache(
   const cached = await readCache<CodexQuota>(file);
   if (cached) {
     return {
-      ...withoutLegacyFiveHour(cached.value),
+      ...cached.value,
       source: isFresh(cached, ttl) ? "cached" : "stale",
       error,
     };
@@ -208,10 +234,8 @@ async function fallbackFromCache(
 
 /**
  * Read the on-disk quota cache for a given codex auth.json without triggering
- * any network call. Returns whatever snapshot was last written (regardless of
- * age) or `null` if nothing has been cached for this identity yet. Used by the
- * daemon's `list_accounts` handler to surface "last known" quota for inactive
- * accounts so the web UI can restore them across page refreshes.
+ * any network call. Only app-server snapshots are considered; legacy caches
+ * from response headers are intentionally ignored.
  */
 export async function readCachedCodexQuota(
   codexAuthPath: string,
@@ -220,12 +244,12 @@ export async function readCachedCodexQuota(
   try {
     const authInfo = await parseAuthFile(codexAuthPath);
     if (!authInfo.identityFingerprint) return null;
-    const fp = fingerprintKey(["codex", authInfo.identityFingerprint]);
-    const file = cacheFile("codex", fp, opts.cacheDir);
+    const fp = fingerprintKey([CACHE_TOOL, authInfo.identityFingerprint]);
+    const file = cacheFile(CACHE_TOOL, fp, opts.cacheDir);
     const entry = await readCache<CodexQuota>(file);
     if (!entry) return null;
     return {
-      ...withoutLegacyFiveHour(entry.value),
+      ...entry.value,
       source: "cached",
       fetchedAt: entry.fetchedAt,
     };
@@ -234,9 +258,8 @@ export async function readCachedCodexQuota(
   }
 }
 
-function withoutLegacyFiveHour(quota: CodexQuota): CodexQuota {
-  const { fiveHour: _legacyFiveHour, ...current } = quota;
-  return current;
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function emptyQuota(source: CodexQuota["source"], error?: string): CodexQuota {
@@ -245,6 +268,5 @@ function emptyQuota(source: CodexQuota["source"], error?: string): CodexQuota {
     source,
     error,
     fetchedAt: Math.floor(Date.now() / 1000),
-    weekly: { usedPercent: 0, remainingPercent: 0 },
   };
 }

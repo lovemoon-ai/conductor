@@ -41,9 +41,7 @@ export interface CodexQuota {
   tool: "codex";
   plan?: string;
   activeLimit?: string;
-  /** @deprecated Codex CLI 0.144+ no longer exposes a 5h limit. */
-  fiveHour?: QuotaWindow;
-  weekly: QuotaWindow;
+  weekly?: QuotaWindow;
   credits?: {
     hasCredits: boolean;
     balance?: string;
@@ -53,7 +51,7 @@ export interface CodexQuota {
   source: QuotaSource;
   email?: string;
   accountId?: string;
-  raw?: Record<string, string>;
+  raw?: Record<string, unknown>;
   error?: string;
 }
 

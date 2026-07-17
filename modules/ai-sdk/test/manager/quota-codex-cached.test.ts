@@ -34,8 +34,8 @@ test("readCachedCodexQuota returns the on-disk snapshot marked as cached", async
     assert.ok(info.identityFingerprint, "auth fixture must have an identity fingerprint");
 
     const file = cacheFile(
-      "codex",
-      fingerprintKey(["codex", info.identityFingerprint!]),
+      "codex-app-server",
+      fingerprintKey(["codex-app-server", info.identityFingerprint!]),
       cacheDir,
     );
     const stored: CodexQuota = {
@@ -45,7 +45,6 @@ test("readCachedCodexQuota returns the on-disk snapshot marked as cached", async
       plan: "PLUS",
       email: "alice@example.com",
       accountId: "acc-alice",
-      fiveHour: { usedPercent: 42, remainingPercent: 58 },
       weekly: { usedPercent: 10, remainingPercent: 90 },
     };
     await writeCache<CodexQuota>(file, stored);
@@ -58,11 +57,34 @@ test("readCachedCodexQuota returns the on-disk snapshot marked as cached", async
     assert.equal(result!.source, "cached");
     assert.equal(result!.plan, "PLUS");
     assert.equal(result!.email, "alice@example.com");
-    assert.equal("fiveHour" in result!, false);
-    assert.equal(result!.weekly.remainingPercent, 90);
+    assert.equal(result!.weekly?.remainingPercent, 90);
     // fetchedAt is taken from the cache entry envelope (writeCache stamps it
     // at write time), not from the value's own fetchedAt.
     assert.equal(typeof result!.fetchedAt, "number");
+  });
+});
+
+test("readCachedCodexQuota ignores legacy response-header caches", async () => {
+  await withTmp(async (dir) => {
+    const authPath = join(dir, "auth.json");
+    const cacheDir = join(dir, "cache");
+    writeAuth(authPath);
+
+    const info = await parseAuthFile(authPath);
+    assert.ok(info.identityFingerprint);
+    const legacyFile = cacheFile(
+      "codex",
+      fingerprintKey(["codex", info.identityFingerprint!]),
+      cacheDir,
+    );
+    await writeCache<CodexQuota>(legacyFile, {
+      tool: "codex",
+      source: "fresh",
+      fetchedAt: 1700000000,
+      weekly: { usedPercent: 99, remainingPercent: 1 },
+    });
+
+    assert.equal(await readCachedCodexQuota(authPath, { cacheDir }), null);
   });
 });
 
