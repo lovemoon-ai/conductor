@@ -1,5 +1,12 @@
 # @love-moon/ai-sdk
 
+## 0.7.4
+
+### Patch Changes
+
+- d5eca1c: Adapt Codex quota parsing to the 0.144 weekly-only limit while retaining compatibility with legacy header layouts and cached snapshots.
+- d5eca1c: Support Kimi Code CLI prompt sessions, current session storage, and credential locations while retaining legacy Kimi wire compatibility.
+
 ## 0.7.3
 
 ### Patch Changes
