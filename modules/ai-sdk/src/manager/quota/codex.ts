@@ -51,7 +51,16 @@ export interface GetCodexQuotaOptions {
 function windowFromHeaders(
   map: Record<string, string>,
   prefix: "x-codex-primary" | "x-codex-secondary",
-): QuotaWindow {
+): QuotaWindow | undefined {
+  const suffixes = [
+    "used-percent",
+    "reset-after-seconds",
+    "reset-at",
+    "window-minutes",
+  ];
+  if (!suffixes.some((suffix) => map[`${prefix}-${suffix}`] !== undefined)) {
+    return undefined;
+  }
   const usedPercent = num(map, `${prefix}-used-percent`) ?? 0;
   return {
     usedPercent,
@@ -62,15 +71,25 @@ function windowFromHeaders(
   };
 }
 
-function parseCodexHeaders(
+/** Exported for protocol compatibility tests. */
+export function parseCodexHeaders(
   map: Record<string, string>,
   extras: { email?: string; accountId?: string },
 ): Omit<CodexQuota, "tool" | "fetchedAt" | "source"> {
+  const primary = windowFromHeaders(map, "x-codex-primary");
+  const secondary = windowFromHeaders(map, "x-codex-secondary");
+  // Codex CLI 0.144 removed the 5h limit. Its only Codex window is now the
+  // 10080-minute weekly window in `primary`, with `secondary` absent. Older
+  // responses used primary=5h and secondary=weekly, so prefer an explicitly
+  // weekly-sized window and then fall back to the legacy secondary position.
+  const weekly = [primary, secondary].find(
+    (window) => (window?.windowMinutes ?? 0) >= 7 * 24 * 60,
+  ) ?? secondary ?? primary ?? { usedPercent: 0, remainingPercent: 0 };
+
   return {
     plan: str(map, "x-codex-plan-type"),
     activeLimit: str(map, "x-codex-active-limit"),
-    fiveHour: windowFromHeaders(map, "x-codex-primary"),
-    weekly: windowFromHeaders(map, "x-codex-secondary"),
+    weekly,
     credits: {
       hasCredits: bool(map, "x-codex-credits-has-credits") ?? false,
       balance: str(map, "x-codex-credits-balance"),
@@ -98,7 +117,7 @@ export async function getCodexQuota(opts: GetCodexQuotaOptions = {}): Promise<Co
   if (!opts.forceRefresh && ttl > 0) {
     const cached = await readCache<CodexQuota>(file);
     if (isFresh(cached, ttl) && cached) {
-      return { ...cached.value, source: "cached" };
+      return { ...withoutLegacyFiveHour(cached.value), source: "cached" };
     }
   }
 
@@ -179,7 +198,7 @@ async function fallbackFromCache(
   const cached = await readCache<CodexQuota>(file);
   if (cached) {
     return {
-      ...cached.value,
+      ...withoutLegacyFiveHour(cached.value),
       source: isFresh(cached, ttl) ? "cached" : "stale",
       error,
     };
@@ -205,10 +224,19 @@ export async function readCachedCodexQuota(
     const file = cacheFile("codex", fp, opts.cacheDir);
     const entry = await readCache<CodexQuota>(file);
     if (!entry) return null;
-    return { ...entry.value, source: "cached", fetchedAt: entry.fetchedAt };
+    return {
+      ...withoutLegacyFiveHour(entry.value),
+      source: "cached",
+      fetchedAt: entry.fetchedAt,
+    };
   } catch {
     return null;
   }
+}
+
+function withoutLegacyFiveHour(quota: CodexQuota): CodexQuota {
+  const { fiveHour: _legacyFiveHour, ...current } = quota;
+  return current;
 }
 
 function emptyQuota(source: CodexQuota["source"], error?: string): CodexQuota {
@@ -217,7 +245,6 @@ function emptyQuota(source: CodexQuota["source"], error?: string): CodexQuota {
     source,
     error,
     fetchedAt: Math.floor(Date.now() / 1000),
-    fiveHour: { usedPercent: 0, remainingPercent: 0 },
     weekly: { usedPercent: 0, remainingPercent: 0 },
   };
 }

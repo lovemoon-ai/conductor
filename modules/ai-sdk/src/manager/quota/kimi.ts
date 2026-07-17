@@ -1,5 +1,5 @@
 import { readFile, writeFile, rename } from "node:fs/promises";
-import { DEFAULT_KIMI_CREDENTIAL } from "../paths.js";
+import { DEFAULT_KIMI_CREDENTIAL, LEGACY_KIMI_CREDENTIAL } from "../paths.js";
 import type { KimiQuota, QuotaWindow } from "../types.js";
 import { cacheFile, fingerprintKey, isFresh, readCache, writeCache } from "./cache.js";
 
@@ -29,19 +29,32 @@ export interface GetKimiQuotaOptions {
 }
 
 export async function getKimiQuota(opts: GetKimiQuotaOptions = {}): Promise<KimiQuota> {
-  const credentialPath = opts.credentialPath ?? DEFAULT_KIMI_CREDENTIAL;
+  const credentialPaths = opts.credentialPath
+    ? [opts.credentialPath]
+    : [DEFAULT_KIMI_CREDENTIAL, LEGACY_KIMI_CREDENTIAL];
   const ttl = opts.ttlSeconds ?? DEFAULT_TTL;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const doFetch: typeof fetch = opts.fetcher ?? fetch;
 
-  let cred: KimiCredential;
-  try {
-    cred = JSON.parse(await readFile(credentialPath, "utf8")) as KimiCredential;
-  } catch (err: any) {
-    return emptyQuota("unknown", `kimi credential not readable: ${err?.message ?? err}`);
+  let credentialPath = credentialPaths[0];
+  let cred: KimiCredential | undefined;
+  let credentialError = "credential missing access_token";
+  for (const candidatePath of credentialPaths) {
+    try {
+      const candidate = JSON.parse(await readFile(candidatePath, "utf8")) as KimiCredential;
+      if (!candidate.access_token) {
+        credentialError = "credential missing access_token";
+        continue;
+      }
+      credentialPath = candidatePath;
+      cred = candidate;
+      break;
+    } catch (err: any) {
+      credentialError = `credential not readable: ${err?.message ?? err}`;
+    }
   }
-  if (!cred.access_token) {
-    return emptyQuota("unknown", "kimi credential missing access_token");
+  if (!cred) {
+    return emptyQuota("unknown", `kimi ${credentialError}`);
   }
 
   const fp = fingerprintKey(["kimi", cred.access_token.slice(-32)]);

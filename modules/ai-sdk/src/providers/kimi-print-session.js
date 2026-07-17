@@ -102,7 +102,7 @@ function statusLineForPhase(phase) {
   }
 }
 
-function filterKimiPrintBaseArgs(args) {
+function filterKimiPrintBaseArgs(args, cliMode = "legacy-print") {
   const filtered = [];
   let skipNext = false;
   for (const rawArg of Array.isArray(args) ? args : []) {
@@ -114,7 +114,20 @@ function filterKimiPrintBaseArgs(args) {
       skipNext = false;
       continue;
     }
-    if (arg === "--wire" || arg === "--print" || arg === "--final-message-only") {
+    if (
+      arg === "--wire" ||
+      arg === "--print" ||
+      arg === "--final-message-only" ||
+      arg === "--yolo" ||
+      arg === "--yes" ||
+      arg === "--auto-approve" ||
+      arg === "--auto" ||
+      arg === "--plan" ||
+      arg === "--continue" ||
+      arg === "-C" ||
+      arg === "-y" ||
+      (cliMode === "prompt" && arg === "-c")
+    ) {
       continue;
     }
     if (
@@ -123,8 +136,15 @@ function filterKimiPrintBaseArgs(args) {
       arg === "--prompt" ||
       arg === "--command" ||
       arg === "--session" ||
+      arg === "--resume" ||
       arg === "--work-dir" ||
-      arg === "--model"
+      arg === "--model" ||
+      arg === "-S" ||
+      arg === "-r" ||
+      arg === "-m" ||
+      arg === "-p" ||
+      arg === "-w" ||
+      (cliMode === "legacy-print" && arg === "-c")
     ) {
       skipNext = true;
       continue;
@@ -135,14 +155,29 @@ function filterKimiPrintBaseArgs(args) {
       arg.startsWith("--prompt=") ||
       arg.startsWith("--command=") ||
       arg.startsWith("--session=") ||
+      arg.startsWith("--resume=") ||
       arg.startsWith("--work-dir=") ||
-      arg.startsWith("--model=")
+      arg.startsWith("--model=") ||
+      ["-S", "-r", "-m", "-p", "-w", "-c"].some(
+        (prefix) => arg.startsWith(prefix) && arg.length > prefix.length,
+      )
     ) {
       continue;
     }
     filtered.push(arg);
   }
   return filtered;
+}
+
+function quoteShellArg(value) {
+  const normalized = String(value ?? "");
+  if (!normalized) {
+    return "''";
+  }
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(normalized)) {
+    return normalized;
+  }
+  return `'${normalized.replace(/'/g, `'\\''`)}'`;
 }
 
 function normalizeTextContent(content) {
@@ -195,11 +230,13 @@ export class KimiPrintSession extends EventEmitter {
       typeof options.cwd === "string" && options.cwd.trim()
         ? options.cwd.trim()
         : process.cwd();
+    this.cliMode = options.kimiCliMode === "prompt" ? "prompt" : "legacy-print";
     this.resumeSessionId = typeof options.resumeSessionId === "string" ? options.resumeSessionId.trim() : "";
-    this.sessionId = this.resumeSessionId || randomUUID();
+    this.sessionId = this.resumeSessionId || (this.cliMode === "prompt" ? "" : randomUUID());
     this.sessionInfo = {
       backend: this.backend,
-      sessionId: this.sessionId,
+      sessionId: this.sessionId || undefined,
+      sessionIdDeferred: this.cliMode === "prompt" && !this.sessionId,
       model:
         typeof options.model === "string" && options.model.trim()
           ? options.model.trim()
@@ -241,7 +278,7 @@ export class KimiPrintSession extends EventEmitter {
       throw new Error("Invalid kimi print command");
     }
     this.command = command;
-    this.baseArgs = filterKimiPrintBaseArgs(args);
+    this.baseArgs = filterKimiPrintBaseArgs(args, this.cliMode);
   }
 
   writeLog(message) {
@@ -267,7 +304,21 @@ export class KimiPrintSession extends EventEmitter {
   }
 
   buildManualResumeCommand() {
-    return `kimi --work-dir ${this.cwd} --session ${this.sessionId}`;
+    if (!this.sessionId) {
+      return "";
+    }
+    const parts = [...this.baseArgs];
+    if (this.cliMode === "legacy-print") {
+      parts.push("--work-dir", this.cwd);
+    }
+    parts.push("--session", this.sessionId);
+    if (typeof this.options.model === "string" && this.options.model.trim()) {
+      parts.push("--model", this.options.model.trim());
+    }
+    const command = [this.command, ...parts].map(quoteShellArg).join(" ");
+    return this.cliMode === "prompt"
+      ? `cd ${quoteShellArg(this.cwd)} && ${command}`
+      : command;
   }
 
   getSnapshot() {
@@ -299,7 +350,9 @@ export class KimiPrintSession extends EventEmitter {
   }
 
   async ensureSessionInfo() {
-    this.announceSession();
+    if (!this.sessionInfo?.sessionIdDeferred) {
+      this.announceSession();
+    }
     return this.getSessionInfo();
   }
 
@@ -345,11 +398,26 @@ export class KimiPrintSession extends EventEmitter {
   }
 
   announceSession() {
-    if (this.sessionAnnounced) {
+    if (this.sessionAnnounced || !this.sessionId) {
       return;
     }
     this.sessionAnnounced = true;
     this.emit("session", this.getSessionInfo());
+  }
+
+  adoptSessionId(sessionId) {
+    const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!normalizedSessionId || normalizedSessionId === this.sessionId) {
+      return;
+    }
+    this.sessionId = normalizedSessionId;
+    this.sessionInfo = {
+      ...this.sessionInfo,
+      sessionId: normalizedSessionId,
+      sessionIdDeferred: false,
+    };
+    this.trace(`session ready id=${sanitizeForLog(normalizedSessionId, 120)}`);
+    this.announceSession();
   }
 
   createSessionClosedError() {
@@ -414,8 +482,19 @@ export class KimiPrintSession extends EventEmitter {
     return buildHistoryPrompt(this.history, normalizedPrompt);
   }
 
-  buildPrintArgs() {
+  buildPrintArgs(promptText = "") {
     const args = [...this.baseArgs];
+    if (this.cliMode === "prompt") {
+      args.push("--output-format=stream-json");
+      if (this.sessionId) {
+        args.push(`--session=${this.sessionId}`);
+      }
+      if (typeof this.options.model === "string" && this.options.model.trim()) {
+        args.push(`--model=${this.options.model.trim()}`);
+      }
+      args.push("--prompt", promptText);
+      return args;
+    }
     args.push("--print");
     args.push("--input-format=stream-json");
     args.push("--output-format=stream-json");
@@ -475,6 +554,20 @@ export class KimiPrintSession extends EventEmitter {
     });
   }
 
+  async interruptCurrentTurn() {
+    const currentTurn = this.currentTurn;
+    if (!currentTurn?.child) {
+      return false;
+    }
+    currentTurn.interruptRequested = true;
+    try {
+      currentTurn.child.kill("SIGINT");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async runTurn(promptText, { useInitialImages = false, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested || this.closed) {
       throw this.createSessionClosedError();
@@ -495,6 +588,10 @@ export class KimiPrintSession extends EventEmitter {
         effectivePrompt = injectJsonSchemaPrompt(promptWithSchema, jsonSchema);
       }
     }
+    if (this.cliMode === "prompt" && imagePaths.length > 0) {
+      const imageContext = imagePaths.map((item, index) => `${index + 1}. ${item}`).join("\n");
+      effectivePrompt = `${effectivePrompt || "Analyze the attached images."}\n\nAttached image files:\n${imageContext}`;
+    }
     if (!effectivePrompt && imagePaths.length === 0) {
       return buildEmptyTurnResult();
     }
@@ -508,6 +605,7 @@ export class KimiPrintSession extends EventEmitter {
       items: [],
       stderrTail: [],
       settled: false,
+      interruptRequested: false,
     };
     this.currentTurn = currentTurn;
 
@@ -521,8 +619,11 @@ export class KimiPrintSession extends EventEmitter {
         onProgress,
       );
 
-      const args = this.buildPrintArgs();
-      this.trace(`spawn ${[this.command, ...args].join(" ")}`);
+      const args = this.buildPrintArgs(effectivePrompt);
+      const argsForLog = this.cliMode === "prompt"
+        ? [...args.slice(0, -2), "--prompt", `<redacted:${effectivePrompt.length} chars>`]
+        : args;
+      this.trace(`spawn ${[this.command, ...argsForLog].join(" ")}`);
 
       const result = await new Promise((resolve, reject) => {
         const child = spawn(this.command, args, {
@@ -583,6 +684,13 @@ export class KimiPrintSession extends EventEmitter {
           }
           currentTurn.items.push(payload);
           const role = String(payload?.role || "").trim().toLowerCase();
+          if (role === "meta") {
+            const type = String(payload?.type || "").trim().toLowerCase();
+            if (type === "session.resume_hint") {
+              this.adoptSessionId(payload?.session_id);
+            }
+            return;
+          }
           if (role === "assistant") {
             const assistantText = normalizeTextContent(payload.content);
             if (Array.isArray(payload?.tool_calls) && payload.tool_calls.length > 0) {
@@ -638,9 +746,19 @@ export class KimiPrintSession extends EventEmitter {
           settle(error);
         });
 
-        child.on("exit", (code, signal) => {
+        child.on("close", (code, signal) => {
           if (this.closeRequested) {
             settle(this.createSessionClosedError());
+            return;
+          }
+          if (currentTurn.interruptRequested) {
+            settle(
+              createTurnError("Kimi print turn interrupted", {
+                reason: "turn_interrupted",
+                code,
+                signal,
+              }),
+            );
             return;
           }
           if (code !== 0) {
@@ -663,8 +781,10 @@ export class KimiPrintSession extends EventEmitter {
           });
         });
 
-        const userMessage = this.buildUserMessage(effectivePrompt, { useInitialImages });
-        child.stdin.write(`${JSON.stringify(userMessage)}\n`);
+        if (this.cliMode === "legacy-print") {
+          const userMessage = this.buildUserMessage(effectivePrompt, { useInitialImages });
+          child.stdin.write(`${JSON.stringify(userMessage)}\n`);
+        }
         child.stdin.end();
       });
 

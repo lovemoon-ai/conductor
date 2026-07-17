@@ -133,7 +133,6 @@ export function CodexAccountSwitcher({
                   : 'Use'}
               </button>
             </div>
-            <QuotaBar label="5h" window={quota?.fiveHour} />
             <QuotaBar label="Weekly" window={quota?.weekly} />
             {quota?.error ? (
               <p className="text-xs text-[var(--error)]">{quota.error}</p>

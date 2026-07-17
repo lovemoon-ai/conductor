@@ -55,7 +55,8 @@ export interface CodexQuota {
   activeLimit?: string;
   email?: string;
   accountId?: string;
-  fiveHour: QuotaWindow;
+  /** Legacy daemons may still include this field; current Codex does not. */
+  fiveHour?: QuotaWindow;
   weekly: QuotaWindow;
   credits?: { hasCredits: boolean; balance?: string; unlimited: boolean };
   fetchedAt?: number;

@@ -87,7 +87,6 @@ function makeHostState(status: StatusResponse) {
       codex: {
         tool: 'codex',
         source: 'fresh',
-        fiveHour: { usedPercent: 10, remainingPercent: 90 },
         weekly: { usedPercent: 20, remainingPercent: 80 },
       },
       claude: {

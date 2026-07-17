@@ -2,8 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { getKimiQuota, refreshKimiToken, type KimiCredential } from "../../src/manager/quota/kimi.ts";
+import {
+  DEFAULT_KIMI_CREDENTIAL,
+  LEGACY_KIMI_CREDENTIAL,
+} from "../../src/manager/paths.ts";
 
 interface FetchCall {
   url: string;
@@ -39,6 +43,12 @@ function withTmp<T>(fn: (dir: string) => Promise<T> | T): Promise<T> {
 
 const FAR_FUTURE = Math.floor(Date.now() / 1000) + 86_400;
 const ALREADY_EXPIRED = Math.floor(Date.now() / 1000) - 60;
+
+test("Kimi quota prefers the current credential location and retains the legacy fallback", () => {
+  const currentHome = process.env.KIMI_CODE_HOME?.trim() || join(homedir(), ".kimi-code");
+  assert.equal(DEFAULT_KIMI_CREDENTIAL, join(currentHome, "credentials", "kimi-code.json"));
+  assert.equal(LEGACY_KIMI_CREDENTIAL, join(homedir(), ".kimi", "credentials", "kimi-code.json"));
+});
 
 test("refreshKimiToken throws when refresh_token is empty", async () => {
   const cred: KimiCredential = {

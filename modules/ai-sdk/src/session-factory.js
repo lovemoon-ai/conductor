@@ -19,6 +19,7 @@ import { CodexExecSession } from "./providers/codex-exec-session.js";
 import { ClaudeAgentSdkSession } from "./providers/claude-agent-sdk-session.js";
 import { CopilotSdkSession } from "./providers/copilot-sdk-session.js";
 import { KimiCliSession } from "./providers/kimi-cli-session.js";
+import { resolveKimiCliMode } from "./providers/kimi-cli-mode.js";
 import { KimiPrintSession } from "./providers/kimi-print-session.js";
 import { OpencodeSdkSession } from "./providers/opencode-sdk-session.js";
 import {
@@ -55,10 +56,13 @@ const SESSION_FACTORIES_BY_BACKEND = new Map([
   ["copilot", (backend, options) => new CopilotSdkSession(backend, options)],
   [
     "kimi",
-    (backend, options) =>
-      hasStructuredOutputPreference(options)
-        ? new KimiPrintSession(backend, options)
-        : new KimiCliSession(backend, options),
+    async (backend, options) => {
+      const kimiCliMode = await resolveKimiCliMode(options);
+      const resolvedOptions = { ...options, kimiCliMode };
+      return hasStructuredOutputPreference(options) || kimiCliMode === "prompt"
+        ? new KimiPrintSession(backend, resolvedOptions)
+        : new KimiCliSession(backend, resolvedOptions);
+    },
   ],
   ["opencode", (backend, options) => new OpencodeSdkSession(backend, options)],
   ["chat-web", (backend, options) => new ChatWebSession(backend, options)],
@@ -139,7 +143,7 @@ export async function createLocalAiSession(backend, options = {}) {
   const normalized = await assertSupportedBackend(backend, options);
   const factory = SESSION_FACTORIES_BY_BACKEND.get(normalized);
   if (factory) {
-    return factory(normalized, options);
+    return await factory(normalized, options);
   }
   const descriptor = await getExternalProviderDescriptor(normalized, options);
   if (!descriptor) {

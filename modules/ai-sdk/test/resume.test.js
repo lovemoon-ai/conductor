@@ -179,6 +179,38 @@ describe("ai-sdk resume API", () => {
     assert.equal(await findSessionPath("kimi", sessionId, { homeDir: tmpRoot }), sessionDir);
   });
 
+  it("finds and resolves Kimi Code sessions from the session index", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "ai-sdk-resume-"));
+    const workspaceDir = path.join(tmpRoot, "workspace-kimi-code");
+    const sessionId = "ses_kimi_code_026";
+    const kimiCodeHome = path.join(tmpRoot, ".kimi-code");
+    const sessionDir = path.join(kimiCodeHome, "sessions", "wd_workspace_123", sessionId);
+    await fsp.mkdir(workspaceDir, { recursive: true });
+    await fsp.mkdir(path.join(sessionDir, "agents", "main"), { recursive: true });
+    await fsp.writeFile(
+      path.join(sessionDir, "state.json"),
+      JSON.stringify({ workDir: workspaceDir }),
+      "utf8",
+    );
+    await fsp.writeFile(
+      path.join(kimiCodeHome, "session_index.jsonl"),
+      `${JSON.stringify({
+        sessionId,
+        sessionDir,
+        workDir: path.join(tmpRoot, "stale-workspace"),
+      })}\n`,
+      "utf8",
+    );
+
+    assert.equal(await findSessionPath("kimi", sessionId, { homeDir: tmpRoot }), sessionDir);
+
+    const resolved = await resolveResumeContext("kimi", sessionId, { homeDir: tmpRoot });
+    assert.equal(resolved.provider, "kimi");
+    assert.equal(resolved.sessionPath, sessionDir);
+    assert.equal(resolved.cwd, workspaceDir);
+    assert.equal(resolved.debugMetadata?.cwdSource, "session");
+  });
+
   it("resolves session run directory from file and directory paths", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-sdk-resume-"));
     const fileDir = path.join(tempDir, "nested");

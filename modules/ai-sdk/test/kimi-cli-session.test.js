@@ -4,11 +4,16 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { KimiCliSession } from "../src/session-factory.js";
+import {
+  KimiCliSession,
+  KimiPrintSession,
+  createLocalAiSession,
+} from "../src/session-factory.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FAKE_KIMI_WIRE = path.resolve(__dirname, "..", "fixtures", "fake-kimi-wire.js");
+const FAKE_KIMI_CODE = path.resolve(__dirname, "..", "fixtures", "fake-kimi-code.js");
 
 class IdleCloseTransport extends EventEmitter {
   constructor() {
@@ -116,6 +121,113 @@ class ChatteryTransport extends EventEmitter {
 }
 
 describe("kimi cli session", () => {
+  it("detects Kimi Code 0.26 prompt mode and resumes with its real session id", async () => {
+    const logs = [];
+    const messages = [];
+    const sessionEvents = [];
+    const session = await createLocalAiSession("kimi", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_KIMI_CODE}`,
+      logger: { log: (line) => logs.push(line) },
+    });
+
+    assert.ok(session instanceof KimiPrintSession);
+    assert.equal(session.getSnapshot().provider, "kimi-cli-print");
+    assert.equal(session.getSnapshot().sessionId, undefined);
+
+    session.on("session", (payload) => {
+      sessionEvents.push(payload);
+    });
+    session.setSessionMessageHandler(async (payload) => {
+      messages.push(payload);
+    });
+
+    const pendingSessionInfo = await session.ensureSessionInfo();
+    assert.equal(pendingSessionInfo.sessionId, undefined);
+    assert.equal(pendingSessionInfo.sessionIdDeferred, true);
+    assert.equal(sessionEvents.length, 0);
+
+    const firstTurn = await session.runTurn("Reply with exactly OK");
+    assert.equal(firstTurn.text, "OK from fake Kimi Code\n");
+    assert.ok(logs.some((line) => line.includes("--prompt <redacted:")));
+    assert.ok(logs.every((line) => !line.includes("Reply with exactly OK")));
+    assert.equal(session.getSnapshot().sessionId, "ses_kimi_code_026");
+    assert.equal(session.getSessionInfo().sessionIdDeferred, false);
+    assert.deepEqual(sessionEvents.map((payload) => payload.sessionId), ["ses_kimi_code_026"]);
+
+    const secondTurn = await session.runTurn("Reply again");
+    assert.equal(secondTurn.text, "turn 2 from fake Kimi Code\n");
+    assert.deepEqual(
+      messages.map((payload) => payload.text),
+      ["OK from fake Kimi Code\n", "turn 2 from fake Kimi Code\n"],
+    );
+
+    const manualResume = session.getSnapshot().manualResume?.command || "";
+    assert.match(manualResume, /^cd .* && /);
+    assert.match(manualResume, / --session ses_kimi_code_026$/);
+    assert.doesNotMatch(manualResume, /--work-dir|--wire|--print/);
+
+    const interruptedTurn = session.runTurn("Wait for interruption [slow]");
+    const interruptDeadline = Date.now() + 1_000;
+    while (!session.currentTurn?.child && Date.now() < interruptDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(session.currentTurn?.child);
+    assert.equal(await session.interruptCurrentTurn(), true);
+    await assert.rejects(interruptedTurn, (error) => {
+      assert.equal(error?.reason, "turn_interrupted");
+      return true;
+    });
+
+    await session.close();
+  });
+
+  it("strips managed short aliases from Kimi Code prompt command lines", async () => {
+    const session = await createLocalAiSession("kimi", {
+      cwd: process.cwd(),
+      commandLine: [
+        process.execPath,
+        FAKE_KIMI_CODE,
+        "-S", "stale-session",
+        "-rlegacy-session",
+        "-c",
+        "-m", "stale-model",
+        "-pold-prompt",
+        "-w", "/tmp/stale-workspace",
+        "-y",
+        "-C",
+      ].join(" "),
+      logger: { log: () => {} },
+    });
+
+    assert.ok(session instanceof KimiPrintSession);
+    assert.deepEqual(session.baseArgs, [FAKE_KIMI_CODE]);
+
+    const result = await session.runTurn("Reply with exactly OK");
+    assert.equal(result.text, "OK from fake Kimi Code\n");
+    assert.equal(session.threadId, "ses_kimi_code_026");
+
+    await session.close();
+  });
+
+  it("consumes the legacy -c prompt value while retaining unrelated base arguments", async () => {
+    const session = new KimiPrintSession("kimi", {
+      cwd: process.cwd(),
+      kimiCliMode: "wire",
+      commandLine: [
+        process.execPath,
+        FAKE_KIMI_CODE,
+        "-c", "stale-prompt",
+        "--debug",
+        "-w", "/tmp/stale-workspace",
+      ].join(" "),
+      logger: { log: () => {} },
+    });
+
+    assert.deepEqual(session.baseArgs, [FAKE_KIMI_CODE, "--debug"]);
+    await session.close();
+  });
+
   it("runs kimi turns through wire mode and preserves the same session across turns", async () => {
     const messages = [];
     const statuses = [];

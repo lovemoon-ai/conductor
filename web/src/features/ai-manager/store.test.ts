@@ -37,7 +37,6 @@ function makeQuota(overrides: Partial<CodexQuota> = {}): CodexQuota {
   return {
     tool: 'codex',
     source: 'fresh',
-    fiveHour: { usedPercent: 0, remainingPercent: 100 },
     weekly: { usedPercent: 0, remainingPercent: 100 },
     ...overrides,
   };
@@ -146,7 +145,7 @@ describe('fetchAccounts seeds codexQuotaByAccount from daemon cache', () => {
       email: 'alice@example.com',
       source: 'cached',
       plan: 'PLUS',
-      fiveHour: { usedPercent: 42, remainingPercent: 58 },
+      weekly: { usedPercent: 42, remainingPercent: 58 },
     });
     const bobCache = makeQuota({
       accountId: 'acc-bob',
@@ -179,7 +178,7 @@ describe('fetchAccounts seeds codexQuotaByAccount from daemon cache', () => {
 
     const state = useAiManagerStore.getState().byHost['daemon-a'];
     expect(state.codexQuotaByAccount.alice?.plan).toBe('PLUS');
-    expect(state.codexQuotaByAccount.alice?.fiveHour.usedPercent).toBe(42);
+    expect(state.codexQuotaByAccount.alice?.weekly.usedPercent).toBe(42);
     expect(state.codexQuotaByAccount.bob?.plan).toBe('PRO');
     expect(state.codexQuotaByAccount.bob?.weekly.remainingPercent).toBe(80);
   });
@@ -199,7 +198,7 @@ describe('fetchAccounts seeds codexQuotaByAccount from daemon cache', () => {
             alice: makeQuota({
               plan: 'LIVE',
               source: 'fresh',
-              fiveHour: { usedPercent: 99, remainingPercent: 1 },
+              weekly: { usedPercent: 99, remainingPercent: 1 },
             }),
           },
           loading: { status: false, quota: false, accounts: false, switching: false },
@@ -220,7 +219,7 @@ describe('fetchAccounts seeds codexQuotaByAccount from daemon cache', () => {
 
     const state = useAiManagerStore.getState().byHost['daemon-a'];
     expect(state.codexQuotaByAccount.alice?.plan).toBe('LIVE');
-    expect(state.codexQuotaByAccount.alice?.fiveHour.usedPercent).toBe(99);
+    expect(state.codexQuotaByAccount.alice?.weekly.usedPercent).toBe(99);
   });
 });
 

@@ -58,7 +58,7 @@ test("readCachedCodexQuota returns the on-disk snapshot marked as cached", async
     assert.equal(result!.source, "cached");
     assert.equal(result!.plan, "PLUS");
     assert.equal(result!.email, "alice@example.com");
-    assert.equal(result!.fiveHour.usedPercent, 42);
+    assert.equal("fiveHour" in result!, false);
     assert.equal(result!.weekly.remainingPercent, 90);
     // fetchedAt is taken from the cache entry envelope (writeCache stamps it
     // at write time), not from the value's own fetchedAt.

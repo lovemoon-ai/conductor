@@ -14,6 +14,7 @@ const __dirname = path.dirname(__filename);
 const FIXTURE_EXTERNAL_PROVIDER = path.resolve(__dirname, "..", "fixtures", "fake-external-provider.js");
 const INVALID_EXTERNAL_PROVIDER = path.resolve(__dirname, "..", "fixtures", "invalid-external-provider.js");
 const CONFLICTING_EXTERNAL_PROVIDER = path.resolve(__dirname, "..", "fixtures", "conflicting-external-provider.js");
+const FAKE_KIMI_CODE = path.resolve(__dirname, "..", "fixtures", "fake-kimi-code.js");
 const tempPaths = [];
 
 function makeTempDir(prefix = "ai-sdk-test-") {
@@ -158,6 +159,45 @@ describe("ai-sdk client boundary", () => {
     await session.readyPromise;
     assert.equal(session.getSnapshot().backend, "kimi");
     assert.equal(session.getSnapshot().provider, "kimi-cli-print");
+
+    await session.close();
+  });
+
+  it("runs current Kimi Code prompt sessions through the worker boundary", async () => {
+    const logs = [];
+    const session = createAiSession("kimi", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_KIMI_CODE}`,
+      logger: { log: (line) => logs.push(line) },
+    });
+
+    assert.ok(session instanceof RemoteAiSession);
+    await session.readyPromise;
+    assert.equal(session.getSnapshot().provider, "kimi-cli-print");
+
+    const pendingSessionInfo = await session.ensureSessionInfo();
+    assert.equal(pendingSessionInfo.sessionIdDeferred, true);
+
+    const result = await session.runTurn("Reply with exactly OK");
+    assert.equal(result.text, "OK from fake Kimi Code\n");
+    assert.equal(session.threadId, "ses_kimi_code_026");
+    assert.equal(session.getSnapshot().sessionInfo?.sessionIdDeferred, false);
+
+    const spawnLogCount = logs.filter((line) => line.includes("[kimi-print] spawn")).length;
+    const interruptedTurn = session.runTurn("Wait for interruption [slow]");
+    const interruptDeadline = Date.now() + 1_000;
+    while (
+      logs.filter((line) => line.includes("[kimi-print] spawn")).length <= spawnLogCount &&
+      Date.now() < interruptDeadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(logs.filter((line) => line.includes("[kimi-print] spawn")).length > spawnLogCount);
+    assert.equal(await session.interruptCurrentTurn(), true);
+    await assert.rejects(interruptedTurn, (error) => {
+      assert.equal(error?.reason, "turn_interrupted");
+      return true;
+    });
 
     await session.close();
   });
