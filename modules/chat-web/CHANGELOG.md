@@ -1,5 +1,11 @@
 # @love-moon/chat-web
 
+## 0.7.5
+
+### Patch Changes
+
+- f91a5df: Read Codex weekly quota from the official app-server account rate-limit RPC, ignore model-specific buckets, and invalidate legacy response-header caches.
+
 ## 0.7.4
 
 ## 0.7.3
