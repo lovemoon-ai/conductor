@@ -18,6 +18,31 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.7.6] - 2026-07-20
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.7.6`
+- `@love-moon/conductor-sdk` `0.7.6`
+- `@love-moon/ai-sdk` `0.7.6`
+- `@love-moon/app-sdk` `0.7.6`
+- `@love-moon/chat-web` `0.7.6`
+
+### Changes
+
+### Patch Changes
+
+- 7bbb412: Add `CONDUCTOR_HOME` support for relocating user-level configuration, logs,
+  Fire locks, sessions, update metadata, and AI manager caches while leaving
+  project-scoped `.conductor` directories and Fire task markers in place.
+
+  Migrate device authorization to `conductor.conductor-ai.top` while preserving
+  compatibility with the legacy official endpoint and self-hosted backends.
+
+- Updated dependencies [7bbb412]
+  - @love-moon/conductor-sdk@0.7.6
+  - @love-moon/ai-sdk@0.7.6
+
 ## [0.7.5] - 2026-07-17
 
 ### Released packages
