@@ -1,7 +1,7 @@
 ---
 "@love-moon/conductor-cli": patch
-"@love-moon/conductor-sdk": minor
-"@love-moon/ai-sdk": minor
+"@love-moon/conductor-sdk": patch
+"@love-moon/ai-sdk": patch
 ---
 
 Add `CONDUCTOR_HOME` support for relocating user-level configuration, logs,
