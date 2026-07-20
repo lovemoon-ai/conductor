@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
-import { DEFAULT_QUOTA_CACHE_DIR } from "../paths.js";
+import { resolveDefaultQuotaCacheDir } from "../paths.js";
 
 export interface CacheEntry<T> {
   fetchedAt: number;
@@ -30,7 +30,7 @@ export async function writeCache<T>(file: string, value: T): Promise<CacheEntry<
   return entry;
 }
 
-export function cacheFile(tool: string, fingerprint: string, dir = DEFAULT_QUOTA_CACHE_DIR): string {
+export function cacheFile(tool: string, fingerprint: string, dir = resolveDefaultQuotaCacheDir()): string {
   return join(dir, `quota-${tool}-${fingerprint}.json`);
 }
 

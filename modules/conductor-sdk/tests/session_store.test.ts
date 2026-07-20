@@ -25,4 +25,23 @@ describe('SessionDiskStore', () => {
 
     expect(fs.existsSync(sessionFile)).toBe(true);
   });
+
+  test('stores backend sessions under CONDUCTOR_HOME', () => {
+    const conductorHome = fs.mkdtempSync(path.join(os.tmpdir(), 'conductor-custom-home-'));
+    const store = SessionDiskStore.forBackendUrl('https://conductor-ai.top', {
+      CONDUCTOR_HOME: conductorHome,
+    });
+
+    store.upsert({
+      projectId: 'proj-custom',
+      taskId: 'task-custom',
+      projectPath: '/tmp/project-custom',
+      sessionId: 'session-custom',
+      backendType: 'codex',
+    });
+
+    expect(
+      fs.existsSync(path.join(conductorHome, 'sessions', 'conductor-ai.top.yaml')),
+    ).toBe(true);
+  });
 });

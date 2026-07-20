@@ -36,6 +36,18 @@ describe("serve-ai config", () => {
     assert.equal(resolved.serveAiConfigPath, `/tmp/custom/${DEFAULT_SERVE_AI_CONFIG_BASENAME}`);
   });
 
+  it("resolves both configs under CONDUCTOR_HOME", () => {
+    const resolved = resolveServeAiConfigPaths(undefined, {
+      HOME: "/tmp/ignored-home",
+      CONDUCTOR_HOME: "/tmp/custom-conductor-home",
+    });
+    assert.equal(resolved.conductorConfigPath, "/tmp/custom-conductor-home/config.yaml");
+    assert.equal(
+      resolved.serveAiConfigPath,
+      `/tmp/custom-conductor-home/${DEFAULT_SERVE_AI_CONFIG_BASENAME}`,
+    );
+  });
+
   it("falls back to config-ai-serve.yaml when config.yaml is missing", () => {
     const dir = makeTempDir();
     const conductorConfigPath = path.join(dir, "config.yaml");

@@ -140,6 +140,10 @@ Options:
   -h, --help     Show this help message
   -v, --version  Show version information
 
+Environment:
+  CONDUCTOR_HOME    User data directory (default: ~/.conductor)
+  CONDUCTOR_CONFIG  Config file override (takes precedence over CONDUCTOR_HOME)
+
 Examples:
   conductor fire -- "fix the bug"
   conductor fire --backend claude -- "add feature"

@@ -70,6 +70,35 @@ describe("conductor channel connect feishu", () => {
     assert.equal(result.config.appId, "app-1");
   });
 
+  it("reads config.yaml from CONDUCTOR_HOME", async () => {
+    const conductorHome = createTempDir();
+    const yaml = [
+      "agent_token: token-home",
+      "backend_url: https://backend.custom-home",
+      "channels:",
+      "  feishu:",
+      "    app_id: app-home",
+      "    app_secret: secret-home",
+      "    verification_token: verify-home",
+      "",
+    ].join("\n");
+    writeConfig(conductorHome, yaml);
+
+    const result = await connectFeishuChannel({
+      env: { HOME: "/tmp/ignored-home", CONDUCTOR_HOME: conductorHome },
+      fetchImpl: async (url) => {
+        assert.equal(url, "https://backend.custom-home/api/channel/feishu/config");
+        return new Response(JSON.stringify({ config: { appId: "app-home" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+
+    assert.equal(result.configPath, path.join(conductorHome, "config.yaml"));
+    assert.equal(result.config.appId, "app-home");
+  });
+
   it("supports --config-file override", async () => {
     const tempDir = createTempDir();
     const configPath = writeConfig(tempDir, [

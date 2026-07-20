@@ -7,6 +7,8 @@ import { randomUUID } from "node:crypto";
 
 import yaml from "js-yaml";
 
+import { resolveConductorConfigPath } from "./conductor-paths.js";
+
 const VALID_ACTIONS = new Set(["list", "run", "status"]);
 const MAX_TAIL_CHARS = 12_000;
 const MAX_RUNS = 200;
@@ -25,7 +27,7 @@ export const CUSTOM_COMMANDS_CAPABILITY = "custom_commands";
  * @param {typeof spawn} [opts.spawnFn]
  */
 export function createCustomCommandHandlers(opts = {}) {
-  const configPath = opts.configPath || path.join(os.homedir(), ".conductor", "config.yaml");
+  const configPath = resolveConductorConfigPath(opts.configPath);
   const spawnFn = opts.spawnFn || spawn;
   const runs = new Map();
   const runningByKey = new Map();
@@ -202,7 +204,7 @@ export async function loadCustomCommands(configPath) {
  * @param {string} configPath
  * @returns {CustomCommand[]}
  */
-export function parseCustomCommandsConfig(config, configPath = path.join(os.homedir(), ".conductor", "config.yaml")) {
+export function parseCustomCommandsConfig(config, configPath = resolveConductorConfigPath()) {
   const root = config && typeof config === "object" ? config : {};
   const rawCommands = root.custom_commands;
   if (rawCommands === undefined || rawCommands === null) {

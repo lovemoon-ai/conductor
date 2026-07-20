@@ -12,6 +12,7 @@ import {
   ensureNodePtySpawnHelperExecutable,
   isSafeTaskWorktreeRoot,
   probePtyTaskCapability,
+  resolveDaemonLogPaths,
   resolveDefaultPtyShell,
   startDaemon,
 } from "../src/daemon.js";
@@ -70,6 +71,17 @@ describe("Daemon", () => {
     if (testHomeDir) {
       fs.rmSync(testHomeDir, { recursive: true, force: true });
     }
+  });
+
+  it("stores daemon logs under CONDUCTOR_HOME", () => {
+    const conductorHome = path.resolve("/tmp/custom-conductor-home");
+    assert.deepStrictEqual(
+      resolveDaemonLogPaths({ CONDUCTOR_HOME: conductorHome }),
+      {
+        logDir: path.join(conductorHome, "logs"),
+        logPath: path.join(conductorHome, "logs", "conductor-daemon.log"),
+      },
+    );
   });
 
   it("marks node-pty spawn-helper executable before PTY spawn", () => {

@@ -23,7 +23,7 @@ describe("/api/auth/device/poll", () => {
     expect(data.error).toBe("device_code is required");
   });
 
-  it("returns approved payload with backend and websocket urls", async () => {
+  it("returns canonical official backend and websocket urls", async () => {
     mockPollDeviceAuthorization.mockResolvedValue({
       status: "approved",
       agentToken: "token-1",
@@ -42,7 +42,27 @@ describe("/api/auth/device/poll", () => {
     expect(response.status).toBe(200);
     expect(data.status).toBe("approved");
     expect(data.agent_token).toBe("token-1");
-    expect(data.backend_url).toBe("https://conductor-ai.top");
-    expect(data.websocket_url).toBe("wss://conductor-ai.top/ws/agent");
+    expect(data.backend_url).toBe("https://conductor.conductor-ai.top");
+    expect(data.websocket_url).toBe("wss://conductor.conductor-ai.top/ws/agent");
+  });
+
+  it("keeps self-hosted backend and websocket urls", async () => {
+    mockPollDeviceAuthorization.mockResolvedValue({
+      status: "approved",
+      agentToken: "token-1",
+    });
+
+    const { POST } = await import("./route");
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "https://conductor.example.com/api/auth/device/poll",
+        body: { device_code: "device-1" },
+      }),
+    );
+    const data = await extractJson(response);
+
+    expect(data.backend_url).toBe("https://conductor.example.com");
+    expect(data.websocket_url).toBe("wss://conductor.example.com/ws/agent");
   });
 });

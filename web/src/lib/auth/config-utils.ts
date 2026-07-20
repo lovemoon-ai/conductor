@@ -21,6 +21,9 @@ const normalizeConfiguredAgentWsUrl = (value: string | undefined): string | null
   }
 };
 
+const LEGACY_CONDUCTOR_PUBLIC_HOST = "conductor-ai.top";
+const CONDUCTOR_PUBLIC_ORIGIN = "https://conductor.conductor-ai.top";
+
 export const resolveAgentWebsocketUrl = (backendUrl: string): string => {
   const configured =
     normalizeConfiguredAgentWsUrl(process.env.PUBLIC_AGENT_WS_URL) ||
@@ -49,6 +52,24 @@ export const resolvePublicBackendUrl = (fallbackOrigin?: string): string => {
   }
 
   return fallbackOrigin || "http://localhost:6152";
+};
+
+export const resolveDeviceAuthorizationBaseUrl = (fallbackOrigin?: string): string => {
+  const resolved = resolvePublicBackendUrl(fallbackOrigin).replace(/\/+$/, "");
+
+  try {
+    const parsed = new URL(resolved);
+    if (parsed.hostname !== LEGACY_CONDUCTOR_PUBLIC_HOST) {
+      return resolved;
+    }
+
+    const canonicalOrigin = new URL(CONDUCTOR_PUBLIC_ORIGIN);
+    parsed.protocol = canonicalOrigin.protocol;
+    parsed.host = canonicalOrigin.host;
+    return parsed.toString().replace(/\/+$/, "");
+  } catch {
+    return resolved;
+  }
 };
 
 /**

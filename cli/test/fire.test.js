@@ -24,6 +24,7 @@ import {
   parseCliArgs,
   resolveDaemonHost,
   resolveAiSessionCommandLine,
+  resolveFireStateDir,
   resolveFreshSessionBootstrapLockPath,
   resolveProjectId,
   resolveRequestedTaskTitle,
@@ -823,6 +824,19 @@ describe("conductor-fire backends", () => {
     assert.ok(samePath);
     assert.equal(samePath, samePathAgain);
     assert.equal(otherBackendPath, null);
+  });
+
+  it("stores fire locks under CONDUCTOR_HOME while keeping task markers project-scoped", () => {
+    const conductorHome = path.resolve("/tmp/custom-conductor-home");
+    const env = { CONDUCTOR_HOME: conductorHome };
+
+    const lockPath = resolveFreshSessionBootstrapLockPath("codex", "/tmp/project", env);
+    assert.equal(path.dirname(lockPath), path.join(conductorHome, "locks"));
+    assert.equal(
+      resolveFireStateDir("/tmp/project", env),
+      path.resolve("/tmp/project/.conductor/state"),
+    );
+    assert.equal(resolveFireStateDir(undefined, env), path.join(conductorHome, "state"));
   });
 
   it("returns the resolved project id from daemon confirmation", async () => {

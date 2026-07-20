@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import { promises as fsp } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import yaml from "js-yaml";
@@ -19,6 +18,7 @@ import {
   normalizeRuntimeBackendAlias,
   resolveConfiguredRuntimeBackend,
 } from "../runtime-backends.js";
+import { resolveConductorConfigPath, resolveConductorHome } from "../conductor-paths.js";
 
 function normalizeBackend(backend) {
   return String(backend || "").trim().toLowerCase();
@@ -28,23 +28,23 @@ function normalizeSessionId(sessionId) {
   return typeof sessionId === "string" ? sessionId.trim() : "";
 }
 
-function resolveHomeDir(options) {
-  if (options?.homeDir) {
-    return options.homeDir;
+function resolveConductorStorageDir(options = {}) {
+  if (typeof options.conductorHome === "string" && options.conductorHome.trim()) {
+    return path.resolve(options.conductorHome.trim());
   }
-  return os.homedir();
+  const env = options.env || process.env;
+  if (typeof options.homeDir === "string" && options.homeDir.trim()) {
+    return resolveConductorHome(env, { userHome: options.homeDir.trim() });
+  }
+  return resolveConductorHome(env);
 }
 
 function resolveConfigFilePath(options = {}) {
-  const configuredPath =
-    typeof options?.configFilePath === "string" && options.configFilePath.trim()
-      ? options.configFilePath.trim()
-      : typeof process.env.CONDUCTOR_CONFIG === "string" && process.env.CONDUCTOR_CONFIG.trim()
-        ? process.env.CONDUCTOR_CONFIG.trim()
-        : "";
-  return configuredPath
-    ? path.resolve(configuredPath)
-    : path.join(resolveHomeDir(options), ".conductor", "config.yaml");
+  const env = options.env || process.env;
+  if (typeof options.homeDir === "string" && options.homeDir.trim() && !env.CONDUCTOR_HOME) {
+    return resolveConductorConfigPath(options.configFilePath, env, { userHome: options.homeDir.trim() });
+  }
+  return resolveConductorConfigPath(options.configFilePath, env);
 }
 
 function normalizeProjectPathCandidate(value) {
@@ -93,10 +93,10 @@ function md5Hex(value) {
 }
 
 async function loadConductorSessionRecords(options = {}) {
-  const homeDir = resolveHomeDir(options);
+  const conductorHome = resolveConductorStorageDir(options);
   const defaultPaths = [
-    path.join(homeDir, ".conductor", "session.yaml"),
-    path.join(homeDir, ".conductor", "sessions"),
+    path.join(conductorHome, "session.yaml"),
+    path.join(conductorHome, "sessions"),
   ];
   const recordFiles = [];
   const pushFile = (filePath) => {

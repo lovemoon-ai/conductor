@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { pollDeviceAuthorization } from "@/lib/auth/device-auth";
-import { resolveAgentWebsocketUrl, resolvePublicBackendUrl } from "@/lib/auth/config-utils";
+import {
+  resolveAgentWebsocketUrl,
+  resolveDeviceAuthorizationBaseUrl,
+} from "@/lib/auth/config-utils";
 
 export async function POST(request: NextRequest) {
   try {
@@ -15,7 +18,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(result);
     }
 
-    const backendUrl = resolvePublicBackendUrl(request.nextUrl.origin);
+    const backendUrl = resolveDeviceAuthorizationBaseUrl(request.nextUrl.origin);
     return NextResponse.json({
       status: "approved",
       agent_token: result.agentToken,

@@ -9,10 +9,16 @@ import { hideBin } from "yargs/helpers";
 import yaml from "js-yaml";
 
 import { startDaemon } from "../src/daemon.js";
+import {
+  materializeConductorPathEnv,
+  resolveConductorConfigPath,
+  resolveConductorHome,
+} from "../src/conductor-paths.js";
 
 const argv = hideBin(process.argv);
 
 const CLI_NAME = process.env.CONDUCTOR_CLI_NAME || "conductor-daemon";
+const CONDUCTOR_HOME = resolveConductorHome();
 
 function parseJsonArrayEnv(value) {
   if (typeof value !== "string" || !value.trim()) {
@@ -75,8 +81,7 @@ function formatBeijingTimestampForFile(date = new Date()) {
 
 function loadUserConfig(configFilePath) {
   try {
-    const home = os.homedir();
-    const configPath = configFilePath || path.join(home, ".conductor", "config.yaml");
+    const configPath = resolveConductorConfigPath(configFilePath);
     if (!fs.existsSync(configPath)) {
       return {};
     }
@@ -146,7 +151,7 @@ const args = yargs(argv)
   .option("nohup", {
     type: "boolean",
     default: false,
-    describe: "Run in background and write logs to ~/.conductor/logs/<timestamp>.log",
+    describe: `Run in background and write logs to ${path.join(CONDUCTOR_HOME, "logs", "<timestamp>.log")}`,
   })
   .option("force", {
     type: "boolean",
@@ -162,15 +167,21 @@ const args = yargs(argv)
     type: "string",
     describe: "Path to Conductor config file",
   })
-  .example("$0 --config-file ~/.conductor/config.yaml", "Run with daemon_name from config")
+  .example(`$0 --config-file ${resolveConductorConfigPath()}`, "Run with daemon_name from config")
   .example("$0 --nohup", "Run daemon in background with logfile")
   .example("$0 --nohup --force", "Restart daemon in background by stopping the existing one")
   .help()
   .strict()
   .parse();
 
+const materializedConductorPathEnv = materializeConductorPathEnv(args.configFile);
+Object.assign(process.env, materializedConductorPathEnv);
+const effectiveConfigFile = args.configFile
+  ? materializedConductorPathEnv.CONDUCTOR_CONFIG
+  : undefined;
+
 if (args.nohup) {
-  const workspaceRoot = resolveWorkspaceRoot(args.configFile);
+  const workspaceRoot = resolveWorkspaceRoot(effectiveConfigFile);
   const runningPid = findRunningDaemonPid(workspaceRoot);
   if (runningPid && !args.force) {
     process.stderr.write(
@@ -179,7 +190,7 @@ if (args.nohup) {
     process.exit(1);
   }
 
-  const logsDir = path.join(os.homedir(), ".conductor", "logs");
+  const logsDir = path.join(resolveConductorHome(), "logs");
   fs.mkdirSync(logsDir, { recursive: true });
   const timestamp = formatBeijingTimestampForFile(new Date());
   const logPath = path.join(logsDir, `${timestamp}.log`);
@@ -197,7 +208,7 @@ if (args.nohup) {
 
 startDaemon({
   CLEAN_ALL: args.cleanAll,
-  CONFIG_FILE: args.configFile,
+  CONFIG_FILE: effectiveConfigFile,
   FORCE: args.force,
   ...resolveLauncherConfig(),
 });

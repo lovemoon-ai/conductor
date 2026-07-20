@@ -133,6 +133,30 @@ describe("conductor-config", () => {
     assert.equal(allowCliList["chat-web"], undefined);
   });
 
+  it("writes config.yaml directly under CONDUCTOR_HOME", () => {
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-user-home-"));
+    const conductorHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-custom-home-"));
+    const fakeBinDir = createFakeCliBinDir();
+    const env = {
+      ...process.env,
+      HOME: tempHome,
+      CONDUCTOR_HOME: conductorHome,
+      CONDUCTOR_CONFIG: "",
+      PATH: `${fakeBinDir}:${process.env.PATH || ""}`,
+    };
+
+    execFileSync(process.execPath, [CONFIG_CLI_PATH, "--manual"], {
+      env,
+      input: "custom-home-token\n",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    const configPath = path.join(conductorHome, "config.yaml");
+    assert.equal(fs.existsSync(configPath), true);
+    assert.equal(fs.existsSync(path.join(tempHome, ".conductor", "config.yaml")), false);
+    assert.equal(yaml.load(fs.readFileSync(configPath, "utf8")).agent_token, "custom-home-token");
+  });
+
   it("treats builtin copilot as available even when no PATH CLI is installed", async () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-home-"));
     const env = {
@@ -153,7 +177,7 @@ describe("conductor-config", () => {
     assert.match(configContent, /copilot: copilot/);
   });
 
-  it("authorizes the device in the browser flow and writes backend/websocket config", async () => {
+  it("keeps a self-hosted authorization link and writes backend/websocket config", async () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-home-"));
     const fakeBinDir = createFakeCliBinDir();
     let pollCount = 0;
@@ -171,8 +195,8 @@ describe("conductor-config", () => {
             JSON.stringify({
               device_code: "device-code-1",
               user_code: "ABCD-EFGH",
-              verification_uri: `http://127.0.0.1:${server.address().port}/activate`,
-              verification_uri_complete: `http://127.0.0.1:${server.address().port}/activate?user_code=ABCD-EFGH`,
+              verification_uri: "https://conductor-ai.top/activate",
+              verification_uri_complete: "https://conductor-ai.top/activate?user_code=ABCD-EFGH",
               expires_in: 30,
               interval: 1,
             }),
@@ -224,6 +248,10 @@ describe("conductor-config", () => {
       assert.equal(parsed.backend_url, `http://127.0.0.1:${port}`);
       assert.equal(parsed.websocket_url, `ws://127.0.0.1:${port}/ws/agent`);
       assert.match(stdout, /Device code:\s+\x1b\[1mABCD-EFGH/);
+      assert.match(
+        stdout,
+        /Direct link: https:\/\/conductor-ai\.top\/activate\?user_code=ABCD-EFGH/,
+      );
       assert.match(stdout, /Only approve the request if the web page shows the same device code\./);
     } finally {
       await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));

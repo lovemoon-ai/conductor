@@ -35,8 +35,10 @@ describe("/api/auth/device/start", () => {
 
     expect(response.status).toBe(200);
     expect(data.user_code).toBe("ABCD-EFGH");
-    expect(data.verification_uri).toBe("https://conductor-ai.top/activate");
-    expect(data.verification_uri_complete).toContain("user_code=ABCD-EFGH");
+    expect(data.verification_uri).toBe("https://conductor.conductor-ai.top/activate");
+    expect(data.verification_uri_complete).toBe(
+      "https://conductor.conductor-ai.top/activate?user_code=ABCD-EFGH",
+    );
     expect(mockStartDeviceAuthorization).toHaveBeenCalledWith(
       expect.objectContaining({
         requestedByIp: "1.2.3.4",
@@ -44,6 +46,23 @@ describe("/api/auth/device/start", () => {
         hostname: "mac-studio",
         platform: "darwin",
       }),
+    );
+  });
+
+  it("keeps a self-hosted device authorization origin", async () => {
+    const { POST } = await import("./route");
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "https://conductor.example.com/api/auth/device/start",
+        body: {},
+      }),
+    );
+    const data = await extractJson(response);
+
+    expect(data.verification_uri).toBe("https://conductor.example.com/activate");
+    expect(data.verification_uri_complete).toBe(
+      "https://conductor.example.com/activate?user_code=ABCD-EFGH",
     );
   });
 });

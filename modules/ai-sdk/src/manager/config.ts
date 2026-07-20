@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
-import { DEFAULT_CONDUCTOR_CONFIG, expandHome } from "./paths.js";
+import { expandHome, resolveDefaultConductorConfig } from "./paths.js";
 import type { AiManagerConfig } from "./types.js";
 
 const EMPTY: AiManagerConfig = { codex: { authJson: [] } };
@@ -10,7 +10,7 @@ const EMPTY: AiManagerConfig = { codex: { authJson: [] } };
  * Returns an empty config if the file does not exist or the section is missing.
  */
 export async function loadAiManagerConfig(
-  configPath: string = DEFAULT_CONDUCTOR_CONFIG,
+  configPath: string = resolveDefaultConductorConfig(),
 ): Promise<AiManagerConfig> {
   let raw: string;
   try {

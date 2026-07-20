@@ -9,9 +9,10 @@ import { execFileSync, execSync } from "node:child_process";
 import yargs from "yargs/yargs";
 import { hideBin } from "yargs/helpers";
 import { RUNTIME_SUPPORTED_BACKENDS } from "../src/runtime-backends.js";
+import { resolveConductorConfigPath } from "../src/conductor-paths.js";
 
-const CONFIG_DIR = path.join(os.homedir(), ".conductor");
-const CONFIG_FILE = path.join(CONFIG_DIR, "config.yaml");
+const CONFIG_FILE = resolveConductorConfigPath();
+const CONFIG_DIR = path.dirname(CONFIG_FILE);
 const packageJson = JSON.parse(
   fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
 );
@@ -68,6 +69,9 @@ const defaultDaemonName = os.hostname() || "my-daemon";
 const cliVersion = packageJson.version || "unknown";
 const OPENCODE_INSTALL_URL = "https://opencode.ai/install";
 const OPENCODE_NPM_PACKAGE = "opencode-ai";
+const LEGACY_CONDUCTOR_PUBLIC_HOST = "conductor-ai.top";
+const CONDUCTOR_PUBLIC_HOST = "conductor.conductor-ai.top";
+const CONDUCTOR_PUBLIC_ORIGIN = "https://conductor.conductor-ai.top";
 
 const COLORS = {
   yellow: "\x1b[33m",
@@ -518,7 +522,9 @@ async function authorizeDeviceAndGetToken() {
   console.log(colorize("Open this link in your browser to authorize this device:", "cyan"));
   console.log("");
   console.log(`Device code: ${colorize(startData.user_code, "bold")}`);
-  console.log(`Direct link: ${startData.verification_uri_complete}`);
+  console.log(
+    `Direct link: ${normalizeOfficialConductorUrl(startData.verification_uri_complete, backendUrl)}`,
+  );
   console.log("");
   console.log("Only approve the request if the web page shows the same device code.");
   console.log("");
@@ -551,10 +557,17 @@ async function authorizeDeviceAndGetToken() {
       continue;
     }
     if (pollData.status === "approved") {
+      const resolvedBackendUrl = normalizeOfficialConductorUrl(
+        pollData.backend_url || backendUrl,
+        backendUrl,
+      );
       const result = {
         agentToken: pollData.agent_token,
-        backendUrl: pollData.backend_url || backendUrl,
-        websocketUrl: pollData.websocket_url || null,
+        backendUrl: resolvedBackendUrl,
+        websocketUrl: normalizeOfficialConductorUrl(
+          pollData.websocket_url || null,
+          backendUrl,
+        ),
       };
       lastDeviceAuthConfig = result;
       console.log(colorize("✓ Device authorized", "green"));
@@ -569,6 +582,43 @@ async function authorizeDeviceAndGetToken() {
   }
 
   throw new Error("Device authorization timed out");
+}
+
+function isOfficialConductorBackend(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return false;
+  }
+  try {
+    const hostname = new URL(value).hostname;
+    return hostname === LEGACY_CONDUCTOR_PUBLIC_HOST || hostname === CONDUCTOR_PUBLIC_HOST;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeOfficialConductorUrl(value, requestBackendUrl) {
+  if (typeof value !== "string" || !value.trim()) {
+    return value;
+  }
+  if (!isOfficialConductorBackend(requestBackendUrl)) {
+    return value;
+  }
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.hostname !== LEGACY_CONDUCTOR_PUBLIC_HOST) {
+      return value;
+    }
+
+    const canonicalOrigin = new URL(CONDUCTOR_PUBLIC_ORIGIN);
+    parsed.protocol = parsed.protocol === "ws:" || parsed.protocol === "wss:"
+      ? "wss:"
+      : canonicalOrigin.protocol;
+    parsed.host = canonicalOrigin.host;
+    return parsed.toString();
+  } catch {
+    return value;
+  }
 }
 
 async function parseJsonResponse(response) {

@@ -3,7 +3,7 @@ import {
   DEVICE_AUTH_POLL_INTERVAL_SECONDS,
   startDeviceAuthorization,
 } from "@/lib/auth/device-auth";
-import { resolvePublicBackendUrl } from "@/lib/auth/config-utils";
+import { resolveDeviceAuthorizationBaseUrl } from "@/lib/auth/config-utils";
 
 function getClientIp(request: NextRequest): string | null {
   const forwarded = request.headers.get("x-forwarded-for");
@@ -18,7 +18,7 @@ function getClientIp(request: NextRequest): string | null {
 
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
-  const publicBaseUrl = resolvePublicBackendUrl(request.nextUrl.origin).replace(/\/$/, "");
+  const publicBaseUrl = resolveDeviceAuthorizationBaseUrl(request.nextUrl.origin);
 
   const result = await startDeviceAuthorization({
     requestedByIp: getClientIp(request),

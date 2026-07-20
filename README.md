@@ -43,6 +43,30 @@ For a minimal self-hosted setup:
    - open the printed `Login URL` once in the browser
 4. On each machine that will run agents, run `conductor config`, then `conductor daemon`.
 
+## CLI data directory
+
+By default, the CLI stores user-level configuration and runtime data in
+`~/.conductor`. Set `CONDUCTOR_HOME` to use a different directory:
+
+```bash
+export CONDUCTOR_HOME=/data/conductor/profile-a
+conductor config
+conductor daemon
+```
+
+This relocates `config.yaml`, `config-ai-serve.yaml`, daemon logs, Fire locks,
+session records, version metadata, and AI manager caches. Config
+resolution uses this precedence:
+
+1. `--config-file <path>`
+2. `CONDUCTOR_CONFIG`
+3. `$CONDUCTOR_HOME/config.yaml`
+4. `~/.conductor/config.yaml`
+
+Project-scoped `.conductor/settings.yaml`, `.conductor/worktrees/`, Fire task
+markers, and durable project state remain inside each project and are not
+relocated.
+
 ## Packages
 
 - `web/` — Next.js app and API server

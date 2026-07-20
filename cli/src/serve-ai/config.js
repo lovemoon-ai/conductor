@@ -1,24 +1,18 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import yaml from "js-yaml";
+import { resolveConductorConfigPath } from "../conductor-paths.js";
 
 export const DEFAULT_CONDUCTOR_CONFIG_BASENAME = "config.yaml";
 export const DEFAULT_SERVE_AI_CONFIG_BASENAME = "config-ai-serve.yaml";
 
-function resolvePrimaryConfigPath(configFilePath) {
-  if (typeof configFilePath === "string" && configFilePath.trim()) {
-    return path.resolve(configFilePath.trim());
-  }
-  if (typeof process.env.CONDUCTOR_CONFIG === "string" && process.env.CONDUCTOR_CONFIG.trim()) {
-    return path.resolve(process.env.CONDUCTOR_CONFIG.trim());
-  }
-  return path.join(os.homedir(), ".conductor", DEFAULT_CONDUCTOR_CONFIG_BASENAME);
+function resolvePrimaryConfigPath(configFilePath, env = process.env) {
+  return resolveConductorConfigPath(configFilePath, env);
 }
 
-export function resolveServeAiConfigPaths(configFilePath) {
-  const conductorConfigPath = resolvePrimaryConfigPath(configFilePath);
+export function resolveServeAiConfigPaths(configFilePath, env = process.env) {
+  const conductorConfigPath = resolvePrimaryConfigPath(configFilePath, env);
   return {
     conductorConfigPath,
     serveAiConfigPath: path.join(path.dirname(conductorConfigPath), DEFAULT_SERVE_AI_CONFIG_BASENAME),
@@ -37,8 +31,8 @@ function parseYamlFile(filePath) {
   return parsed;
 }
 
-export function loadServeAiRuntimeConfig(configFilePath) {
-  const { conductorConfigPath, serveAiConfigPath } = resolveServeAiConfigPaths(configFilePath);
+export function loadServeAiRuntimeConfig(configFilePath, env = process.env) {
+  const { conductorConfigPath, serveAiConfigPath } = resolveServeAiConfigPaths(configFilePath, env);
   const conductorExists = fs.existsSync(conductorConfigPath);
   const serveAiExists = fs.existsSync(serveAiConfigPath);
 

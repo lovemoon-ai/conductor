@@ -9,7 +9,7 @@ const BASE_QUOTA_TOOLS = ["codex", "claude", "kimi", "copilot"];
 
 /**
  * @param {object} opts
- * @param {string} [opts.configPath] Path to ~/.conductor/config.yaml. Defaults to the manager facade default.
+ * @param {string} [opts.configPath] Path to config.yaml. Defaults to $CONDUCTOR_HOME/config.yaml.
  */
 export function createAiManagerHandlers(opts = {}) {
   const manager = new AiManager(opts.configPath ? { configPath: opts.configPath } : undefined);

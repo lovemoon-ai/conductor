@@ -1,3 +1,4 @@
+export * from './paths.js';
 export * from './config/index.js';
 export * from './backend/index.js';
 export * from './ws/index.js';

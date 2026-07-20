@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 
 import { buildUpgradeCommand, fetchLatestVersion, isNewerVersion } from "./version-check.js";
+import { resolveConductorHome } from "./conductor-paths.js";
 
 export const DEFAULT_VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 export const DEFAULT_VERSION_NOTIFY_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -44,8 +44,13 @@ function isTimestampOlderThan(value, ageMs, nowMs) {
 }
 
 export function resolveVersionCheckCachePath(options = {}) {
-  const homeDir = options.homeDir || process.env.HOME || os.homedir() || "/tmp";
-  return path.join(homeDir, ".conductor", DEFAULT_CACHE_FILE);
+  const env = options.env || process.env;
+  const conductorHome = options.conductorHome
+    ? path.resolve(options.conductorHome)
+    : options.homeDir
+      ? resolveConductorHome({}, { userHome: options.homeDir })
+      : resolveConductorHome(env);
+  return path.join(conductorHome, DEFAULT_CACHE_FILE);
 }
 
 export function normalizeVersionCheckCache(value) {
@@ -171,7 +176,9 @@ export async function maybeCheckForUpdates(options = {}) {
   const fetchLatestVersionFn = options.fetchLatestVersion || fetchLatestVersion;
   const cacheOptions = {
     cachePath: options.cachePath,
-    homeDir: options.homeDir || env.HOME,
+    conductorHome: options.conductorHome,
+    homeDir: options.homeDir,
+    env,
     readFile: options.readFile,
     writeFile: options.writeFile,
     mkdir: options.mkdir,

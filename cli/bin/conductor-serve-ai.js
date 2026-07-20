@@ -117,7 +117,7 @@ async function main() {
             default: false,
             describe: "Overwrite an existing config-ai-serve.yaml",
           })
-          .example("$0 init", "Create ~/.conductor/config-ai-serve.yaml")
+          .example("$0 init", "Create config-ai-serve.yaml under CONDUCTOR_HOME")
           .example("$0 init --config-file /tmp/custom/config.yaml", "Create /tmp/custom/config-ai-serve.yaml"),
       async (args) => {
         const { conductorConfigPath, serveAiConfigPath } = resolveServeAiConfigPaths(args.configFile);

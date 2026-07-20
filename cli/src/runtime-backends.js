@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 
 import yaml from "js-yaml";
 import { BUILT_IN_BACKENDS as AI_SDK_BUILT_IN_BACKENDS } from "@love-moon/ai-sdk";
+import { resolveConductorConfigPath } from "./conductor-paths.js";
 
 // CLI display order for built-in backends. ai-sdk owns the canonical set of
 // built-in backends; CLI just picks an ordering for "Supported Backends:" log
@@ -349,10 +350,7 @@ export function isCommandOptionalBuiltInRuntimeBackend(backend) {
 }
 
 function readConfigEnvValue(configFilePath, key) {
-  const targetPath =
-    typeof configFilePath === "string" && configFilePath.trim()
-      ? path.resolve(configFilePath.trim())
-      : path.join(process.env.HOME || "", ".conductor", "config.yaml");
+  const targetPath = resolveConductorConfigPath(configFilePath);
   try {
     if (!targetPath || !fs.existsSync(targetPath)) {
       return "";

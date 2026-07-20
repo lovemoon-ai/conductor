@@ -3,9 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import yaml from 'yaml';
+import { type ConductorPathEnv, resolveConductorHome } from '../paths.js';
 
-export const DEFAULT_SESSION_DIR = path.join(os.homedir(), '.conductor', 'sessions');
-export const DEFAULT_SESSION_PATH = path.join(os.homedir(), '.conductor', 'session.yaml');
+export const DEFAULT_SESSION_DIR = path.join(resolveConductorHome(), 'sessions');
+export const DEFAULT_SESSION_PATH = path.join(resolveConductorHome(), 'session.yaml');
 export const DEFAULT_SESSION_ENV = 'CODEX_SESSION_ID';
 export const DEFAULT_SESSION_FALLBACK_ENV = 'SESSION_ID';
 const SESSION_LOCK_TIMEOUT_MS = 10_000;
@@ -98,18 +99,19 @@ export class SessionDiskStore {
   private readonly filePath: string;
   private readonly lockPath: string;
 
-  constructor(filePath: string = DEFAULT_SESSION_PATH) {
+  constructor(filePath: string = path.join(resolveConductorHome(), 'session.yaml')) {
     this.filePath = path.resolve(filePath);
     this.lockPath = `${this.filePath}.lock`;
   }
 
   /**
    * Create a SessionDiskStore for a specific backend URL.
-   * Sessions are stored in ~/.conductor/sessions/<host>.yaml
+   * Sessions are stored in $CONDUCTOR_HOME/sessions/<host>.yaml.
+   * When CONDUCTOR_HOME is unset, it defaults to ~/.conductor.
    */
-  static forBackendUrl(backendUrl: string): SessionDiskStore {
+  static forBackendUrl(backendUrl: string, env: ConductorPathEnv = process.env): SessionDiskStore {
     const host = extractHostKey(backendUrl);
-    const filePath = path.join(DEFAULT_SESSION_DIR, `${host}.yaml`);
+    const filePath = path.join(resolveConductorHome(env), 'sessions', `${host}.yaml`);
     return new SessionDiskStore(filePath);
   }
 

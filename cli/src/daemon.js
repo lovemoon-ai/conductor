@@ -17,6 +17,11 @@ import {
 } from "@love-moon/conductor-sdk";
 import { DaemonLogCollector } from "./log-collector.js";
 import { envForExplicitConfigFile } from "./config-env.js";
+import {
+  materializeConductorPathEnv,
+  resolveConductorConfigPath,
+  resolveConductorHome,
+} from "./conductor-paths.js";
 import { createAiManagerHandlers, handleAiManagerRequest } from "./ai-manager-handlers.js";
 import {
   CUSTOM_COMMANDS_CAPABILITY,
@@ -62,8 +67,6 @@ const __dirname = path.dirname(__filename);
 const PACKAGE_ROOT = path.join(__dirname, "..");
 const moduleRequire = createRequire(import.meta.url);
 const CLI_PATH = path.resolve(PACKAGE_ROOT, "bin", "conductor-fire.js");
-const DAEMON_LOG_DIR = path.join(os.homedir(), ".conductor", "logs");
-const DAEMON_LOG_PATH = path.join(DAEMON_LOG_DIR, "conductor-daemon.log");
 const CLI_VERSION = (() => {
   try {
     return JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, "package.json"), "utf-8")).version;
@@ -71,6 +74,14 @@ const CLI_VERSION = (() => {
     return "unknown";
   }
 })();
+
+export function resolveDaemonLogPaths(env = process.env) {
+  const logDir = path.join(resolveConductorHome(env), "logs");
+  return {
+    logDir,
+    logPath: path.join(logDir, "conductor-daemon.log"),
+  };
+}
 const PLAN_LIMIT_MESSAGES = {
   manual_fire_active_task: "Free plan limit reached: only 1 active fire task is allowed.",
   app_active_task: "Free plan limit reached: only 1 active app task is allowed.",
@@ -119,8 +130,9 @@ export function probePtyTaskCapability({
 
 function appendDaemonLog(line) {
   try {
-    fs.mkdirSync(DAEMON_LOG_DIR, { recursive: true });
-    fs.appendFileSync(DAEMON_LOG_PATH, line);
+    const { logDir, logPath } = resolveDaemonLogPaths();
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.appendFileSync(logPath, line);
   } catch {
     // ignore file log errors
   }
@@ -156,8 +168,7 @@ function sleepSync(ms) {
 
 function getUserConfig(configFilePath) {
   try {
-    const home = os.homedir();
-    const configPath = configFilePath || path.join(home, ".conductor", "config.yaml");
+    const configPath = resolveConductorConfigPath(configFilePath);
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, "utf8");
       const parsed = yaml.load(content);
@@ -179,7 +190,7 @@ function getUserConfig(configFilePath) {
 //
 // Resolution order:
 //   1. CONDUCTOR_FIRE_TMUX_MODE env var ("1"/"true"/"on" enable, "0"/"false"/"off" disable)
-//   2. fire_tmux_mode boolean in ~/.conductor/config.yaml
+//   2. fire_tmux_mode boolean in the resolved Conductor config.yaml
 //   3. Default: false
 function getFireTmuxModeEnabled(userConfig) {
   const rawEnv = process.env.CONDUCTOR_FIRE_TMUX_MODE;
@@ -669,10 +680,15 @@ export function startDaemon(config = {}, deps = {}) {
   };
 
   let fileConfig;
+  const materializedConductorPathEnv = materializeConductorPathEnv(
+    config.CONFIG_FILE,
+    process.env,
+  );
+  const effectiveConfigPath = materializedConductorPathEnv.CONDUCTOR_CONFIG;
   const configFileEnv = envForExplicitConfigFile(config.CONFIG_FILE, process.env);
   try {
     fileConfig = loadConfig(config.CONFIG_FILE, { env: configFileEnv });
-    log(`Loaded config from ${config.CONFIG_FILE || "~/.conductor/config.yaml"}`);
+    log(`Loaded config from ${effectiveConfigPath}`);
   } catch (err) {
     if (!(err instanceof ConfigFileNotFound)) {
       log(`Failed to load config: ${err.message}`);
@@ -712,7 +728,7 @@ export function startDaemon(config = {}, deps = {}) {
     os.hostname()
   ).trim();
   if (!AGENT_NAME) {
-    logError("Daemon name is required. Set daemon_name in ~/.conductor/config.yaml or CONDUCTOR_DAEMON_NAME.");
+    logError(`Daemon name is required. Set daemon_name in ${effectiveConfigPath} or CONDUCTOR_DAEMON_NAME.`);
     return exitAndReturn(1);
   }
   const homeDir = process.env.HOME || os.homedir() || "/tmp";
@@ -2144,8 +2160,8 @@ export function startDaemon(config = {}, deps = {}) {
   if (advertisedCapabilities.length > 0) {
     extraHeaders["x-conductor-capabilities"] = advertisedCapabilities.join(",");
   }
-  const aiManagerHandlers = createAiManagerHandlers({ configPath: config.CONFIG_FILE });
-  const customCommandHandlers = createCustomCommandHandlers({ configPath: config.CONFIG_FILE });
+  const aiManagerHandlers = createAiManagerHandlers({ configPath: effectiveConfigPath });
+  const customCommandHandlers = createCustomCommandHandlers({ configPath: effectiveConfigPath });
 
   const client = createWebSocketClient(sdkConfig, {
     extraHeaders,
@@ -2690,15 +2706,16 @@ export function startDaemon(config = {}, deps = {}) {
 
     let logFd = null;
     if (shouldRespawn) {
+      const { logDir: daemonLogDir, logPath: daemonLogPath } = resolveDaemonLogPaths();
       try {
-        mkdirSyncFn(DAEMON_LOG_DIR, { recursive: true });
+        mkdirSyncFn(daemonLogDir, { recursive: true });
       } catch {
         /* ignore */
       }
-      logFd = fs.openSync(DAEMON_LOG_PATH, "a");
+      logFd = fs.openSync(daemonLogPath, "a");
       if (!isBackgroundProcess) {
         log(
-          `[${reason}] Foreground daemon will be respawned in background. Logs: ${DAEMON_LOG_PATH}`
+          `[${reason}] Foreground daemon will be respawned in background. Logs: ${daemonLogPath}`
         );
       }
     }
@@ -2719,6 +2736,7 @@ export function startDaemon(config = {}, deps = {}) {
           stdio: ["ignore", logFd, logFd],
           env: {
             ...process.env,
+            ...materializedConductorPathEnv,
             CONDUCTOR_LOCK_HANDOFF_TOKEN: handoffToken,
             CONDUCTOR_LOCK_HANDOFF_FROM_PID: String(process.pid),
             CONDUCTOR_LOCK_HANDOFF_EXPIRES_AT: String(handoffExpiresAt),
@@ -5272,15 +5290,13 @@ export function startDaemon(config = {}, deps = {}) {
 
       const env = {
         ...stripPtyTaskScopedEnv(process.env),
+        ...materializedConductorPathEnv,
         PWD: taskDir,
         CONDUCTOR_PROJECT_ID: projectId,
         CONDUCTOR_TASK_ID: taskId,
         CONDUCTOR_LAUNCHED_BY_DAEMON: "1",
         ...(cliCommand ? { CONDUCTOR_CLI_COMMAND: cliCommand } : {}),
       };
-      if (config.CONFIG_FILE) {
-        env.CONDUCTOR_CONFIG = config.CONFIG_FILE;
-      }
       if (AGENT_TOKEN) {
         env.CONDUCTOR_AGENT_TOKEN = AGENT_TOKEN;
       }
@@ -5915,6 +5931,7 @@ export function startDaemon(config = {}, deps = {}) {
 
     const env = {
       ...stripPtyTaskScopedEnv(process.env),
+      ...materializedConductorPathEnv,
       PWD: taskDir,
       CONDUCTOR_PROJECT_ID: normalizedProjectId,
       CONDUCTOR_TASK_ID: normalizedTargetTaskId,
@@ -5922,9 +5939,6 @@ export function startDaemon(config = {}, deps = {}) {
       ...(cliCommand ? { CONDUCTOR_CLI_COMMAND: cliCommand } : {}),
     };
     env.CONDUCTOR_RESUME_CWD = resolvedResumeCwd;
-    if (config.CONFIG_FILE) {
-      env.CONDUCTOR_CONFIG = config.CONFIG_FILE;
-    }
     if (AGENT_TOKEN) {
       env.CONDUCTOR_AGENT_TOKEN = AGENT_TOKEN;
     }

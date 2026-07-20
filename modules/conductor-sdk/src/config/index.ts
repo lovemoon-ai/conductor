@@ -1,8 +1,7 @@
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 
 import yaml from 'yaml';
+import { resolveConductorConfigPath } from '../paths.js';
 
 export const CONFIG_ENV_VAR = 'CONDUCTOR_CONFIG';
 export const AGENT_TOKEN_ENV_VAR = 'CONDUCTOR_AGENT_TOKEN';
@@ -10,7 +9,6 @@ export const BACKEND_URL_ENV_VAR = 'CONDUCTOR_BACKEND_URL';
 export const WS_URL_ENV_VAR = 'CONDUCTOR_WS_URL';
 export const LOG_LEVEL_ENV_VAR = 'CONDUCTOR_LOG_LEVEL';
 
-const DEFAULT_CONFIG_PATH = path.join(os.homedir(), '.conductor', 'config.yaml');
 const ALLOWED_LOG_LEVELS = new Set(['debug', 'info', 'warning', 'error', 'critical']);
 
 export class ConfigError extends Error {}
@@ -129,22 +127,11 @@ export function loadConfig(targetPath?: string, options: LoadConfigOptions = {})
 }
 
 function resolveConfigPath(explicitPath: string | undefined, env: Record<string, string | undefined>): string {
-  const candidate =
-    explicitPath ||
-    env[CONFIG_ENV_VAR] ||
-    DEFAULT_CONFIG_PATH;
-  const normalized = normalizePath(candidate);
+  const normalized = resolveConductorConfigPath(explicitPath, env);
   if (!fs.existsSync(normalized)) {
     throw new ConfigFileNotFound(normalized);
   }
   return normalized;
-}
-
-function normalizePath(value: string): string {
-  const expanded = value.startsWith('~')
-    ? path.join(os.homedir(), value.slice(1))
-    : value;
-  return path.resolve(expanded);
 }
 
 function readYaml(filePath: string): Record<string, any> {

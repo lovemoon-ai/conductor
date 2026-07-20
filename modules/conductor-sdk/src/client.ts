@@ -164,7 +164,7 @@ export class ConductorClient {
     const projectPath = options.projectPath ?? process.cwd();
     const backendApi = options.backendApi ?? new BackendApiClient(config);
     const sessions = options.sessionManager ?? new SessionManager();
-    const sessionStore = options.sessionStore ?? SessionDiskStore.forBackendUrl(config.backendUrl);
+    const sessionStore = options.sessionStore ?? SessionDiskStore.forBackendUrl(config.backendUrl, env);
     const messageRouter = options.messageRouter ?? new MessageRouter(sessions);
     const agentHost = resolveAgentHost(env, options.agentHost);
     const deliveryScopeId = normalizeDeliveryScopeId(options.deliveryScopeId ?? `agent:${agentHost}`);

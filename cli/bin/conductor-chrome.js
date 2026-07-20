@@ -9,6 +9,7 @@ import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { launch as launchChrome } from 'chrome-launcher';
 import CDP from 'chrome-remote-interface';
+import { resolveConductorConfigPath } from '../src/conductor-paths.js';
 
 
 const BACKEND_URLS = {
@@ -52,7 +53,7 @@ const PAGE_AUTOMATION_PATH = new URL('pageAutomation.js', AUTOMATION_SRC_ROOT);
 const PROVIDERS_DIR = new URL('providers/', AUTOMATION_SRC_ROOT);
 let automationScriptCache;
 
-const CONFIG_PATH = path.join(homedir(), '.conductor', 'config.yaml');
+const CONFIG_PATH = resolveConductorConfigPath();
 
 function expandHomeDir(maybePath) {
   if (!maybePath) {
@@ -80,7 +81,7 @@ async function loadUserConfig() {
     }
   } catch (error) {
     if (error.code !== 'ENOENT') {
-      console.warn('Failed to read ~/.conductor/config.yaml:', error);
+      console.warn(`Failed to read ${CONFIG_PATH}:`, error);
     }
     cachedUserConfig = {};
   }

@@ -13,7 +13,7 @@ import {
   type GetExternalQuotaListOptions,
   type GetExternalQuotaOptions,
 } from "./quota/external.js";
-import { DEFAULT_CODEX_AUTH, DEFAULT_CONDUCTOR_CONFIG } from "./paths.js";
+import { DEFAULT_CODEX_AUTH, resolveDefaultConductorConfig } from "./paths.js";
 import type {
   AiManagerConfig,
   CodexAccount,
@@ -30,7 +30,7 @@ import type {
 } from "./types.js";
 
 export interface AiManagerOptions {
-  /** Path to conductor config.yaml. Default: ~/.conductor/config.yaml */
+  /** Path to conductor config.yaml. Default: $CONDUCTOR_HOME/config.yaml. */
   configPath?: string;
   /** Path to the active codex auth.json. Default: ~/.codex/auth.json */
   codexAuthPath?: string;
@@ -45,14 +45,14 @@ export class AiManager {
   private cached?: { mtimeMs: number; value: AiManagerConfig };
 
   constructor(opts: AiManagerOptions = {}) {
-    this.configPath = opts.configPath ?? DEFAULT_CONDUCTOR_CONFIG;
+    this.configPath = opts.configPath ?? resolveDefaultConductorConfig();
     this.codexAuthPath = opts.codexAuthPath ?? DEFAULT_CODEX_AUTH;
     this.configOverride = opts.config;
   }
 
   /**
    * Read the latest ai_manager config. Cached against the config file's mtime,
-   * so edits to ~/.conductor/config.yaml are picked up immediately without
+   * so edits to the resolved Conductor config.yaml are picked up immediately without
    * restarting the daemon, while a 30s polling cycle does not re-parse YAML
    * on every action. Falls back to always-reload if stat() fails.
    * The `config` constructor option short-circuits disk reads (used by tests).

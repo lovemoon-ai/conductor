@@ -303,8 +303,30 @@ export function extractLongFlagFromCommandLine(commandLine, flag) {
 }
 
 export function resolveConductorConfigPath(configFilePath) {
-  const home = os.homedir();
-  return configFilePath || process.env.CONDUCTOR_CONFIG || path.join(home, ".conductor", "config.yaml");
+  if (configFilePath) {
+    return configFilePath;
+  }
+  const userHome = process.env.HOME || process.env.USERPROFILE || os.homedir();
+  if (typeof process.env.CONDUCTOR_CONFIG === "string" && process.env.CONDUCTOR_CONFIG.trim()) {
+    const configuredPath = process.env.CONDUCTOR_CONFIG.trim();
+    const expandedPath = configuredPath === "~"
+      ? userHome
+      : configuredPath.startsWith("~/") || configuredPath.startsWith("~\\")
+        ? path.join(userHome, configuredPath.slice(2))
+        : configuredPath;
+    return path.resolve(expandedPath);
+  }
+  const configuredHome =
+    typeof process.env.CONDUCTOR_HOME === "string" ? process.env.CONDUCTOR_HOME.trim() : "";
+  if (configuredHome) {
+    const expandedHome = configuredHome === "~"
+      ? userHome
+      : configuredHome.startsWith("~/") || configuredHome.startsWith("~\\")
+        ? path.join(userHome, configuredHome.slice(2))
+        : configuredHome;
+    return path.join(path.resolve(expandedHome), "config.yaml");
+  }
+  return path.join(userHome, ".conductor", "config.yaml");
 }
 
 export function loadYamlConfig(configFilePath) {

@@ -15,12 +15,12 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { envForExplicitConfigFile } from "./config-env.js";
+import { resolveConductorConfigPath } from "./conductor-paths.js";
 
 // RFC §4 exit codes
 export const EXIT = {
@@ -50,14 +50,8 @@ export function getCliVersion() {
   return cachedPkgVersion;
 }
 
-const DEFAULT_CONFIG_PATH = path.join(os.homedir(), ".conductor", "config.yaml");
-
 export function resolveConfigPath(configFile, env = process.env) {
-  if (configFile) {
-    return path.resolve(configFile);
-  }
-  const home = env.HOME || env.USERPROFILE || os.homedir();
-  return path.join(home, ".conductor", "config.yaml");
+  return resolveConductorConfigPath(configFile, env);
 }
 
 /**

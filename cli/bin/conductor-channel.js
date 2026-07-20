@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -10,6 +9,7 @@ import yargs from "yargs/yargs";
 import { hideBin } from "yargs/helpers";
 import { loadConfig } from "@love-moon/conductor-sdk";
 import { envForExplicitConfigFile } from "../src/config-env.js";
+import { resolveConductorConfigPath } from "../src/conductor-paths.js";
 
 const isMainModule = (() => {
   const currentFile = fileURLToPath(import.meta.url);
@@ -18,8 +18,7 @@ const isMainModule = (() => {
 })();
 
 function resolveDefaultConfigPath(env = process.env) {
-  const home = env.HOME || env.USERPROFILE || os.homedir();
-  return path.join(home, ".conductor", "config.yaml");
+  return resolveConductorConfigPath(undefined, env);
 }
 
 function readTextFile(filePath) {
@@ -55,7 +54,7 @@ export async function connectFeishuChannel(options = {}) {
     throw new Error("fetch is not available");
   }
 
-  const resolvedConfigPath = path.resolve(options.configFile || resolveDefaultConfigPath(env));
+  const resolvedConfigPath = resolveConductorConfigPath(options.configFile, env);
   const rawYaml = readTextFile(resolvedConfigPath);
   const config = loadConfig(resolvedConfigPath, {
     env: envForExplicitConfigFile(options.configFile, env),

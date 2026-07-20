@@ -36,6 +36,7 @@ import {
   normalizeRuntimeBackendAlias,
   normalizeRuntimeBackendName,
 } from "../src/runtime-backends.js";
+import { resolveConductorConfigPath, resolveConductorHome } from "../src/conductor-paths.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -111,8 +112,7 @@ export function shouldFireReportTaskStatus({ launchedByDaemon = false, phase } =
 
 // Load allow_cli_list from config file (no defaults - must be configured)
 function loadFireConfigYaml(configFilePath) {
-  const home = os.homedir();
-  const configPath = configFilePath || process.env.CONDUCTOR_CONFIG || path.join(home, ".conductor", "config.yaml");
+  const configPath = resolveConductorConfigPath(configFilePath);
   try {
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, "utf8");
@@ -313,14 +313,14 @@ function resolveLockWorkingDirectory(workingDirectory) {
   }
 }
 
-export function resolveFreshSessionBootstrapLockPath(backendName, workingDirectory) {
+export function resolveFreshSessionBootstrapLockPath(backendName, workingDirectory, env = process.env) {
   const normalizedBackend = String(backendName || "").trim().toLowerCase();
   if (normalizedBackend !== "codex") {
     return null;
   }
   const lockKey = `${normalizedBackend}:${resolveLockWorkingDirectory(workingDirectory)}`;
   const digest = createHash("sha1").update(lockKey).digest("hex");
-  return path.join(os.homedir(), ".conductor", "locks", `session-bootstrap-${digest}.lock`);
+  return path.join(resolveConductorHome(env), "locks", `session-bootstrap-${digest}.lock`);
 }
 
 function acquireFileLock(lockPath) {
@@ -605,7 +605,7 @@ async function main() {
       if (discoveryError) {
         throw discoveryError;
       }
-      process.stdout.write(`No supported backends configured.\n\nAdd allow_cli_list to your config file (~/.conductor/config.yaml):\n  allow_cli_list:\n    codex: codex --dangerously-bypass-approvals-and-sandbox\n    claude: claude --dangerously-skip-permissions\n    kimi: kimi\n    opencode: opencode\n`);
+      process.stdout.write(`No supported backends configured.\n\nAdd allow_cli_list to your config file (${resolveConductorConfigPath(cliArgs.configFile)}):\n  allow_cli_list:\n    codex: codex --dangerously-bypass-approvals-and-sandbox\n    claude: claude --dangerously-skip-permissions\n    kimi: kimi\n    opencode: opencode\n`);
     } else {
       if (supportedBackends.length > 0) {
         process.stdout.write(`Supported backends (from config):\n`);
@@ -1306,6 +1306,7 @@ export async function parseCliArgs(argvInput = process.argv) {
   // Handle help early
   if (helpWithoutSeparator) {
     const defaultBackend = supportedBackends[0] || externalBackends[0] || "none";
+    const defaultConfigPath = resolveConductorConfigPath(configFileFromArgs);
     process.stdout.write(`${CLI_NAME} - Conductor-aware AI coding agent runner
 
 Usage: ${CLI_NAME} [options] -- [backend options and prompt]
@@ -1320,7 +1321,7 @@ Options:
   -v, --version         Show Conductor CLI version and exit
   -h, --help            Show this help message
 
-Config file format (~/.conductor/config.yaml):
+Config file format (${defaultConfigPath}):
   allow_cli_list:
     codex: codex --dangerously-bypass-approvals-and-sandbox
     claude: claude --dangerously-skip-permissions
@@ -1335,9 +1336,11 @@ Examples:
   ${CLI_NAME} --backend codex --resume <id>       # Resume Codex session
   ${CLI_NAME} --backend kimi --resume <id>        # Resume Kimi session
   ${CLI_NAME} --list-backends                     # Show configured backends
-  ${CLI_NAME} --config-file ~/.conductor/config.yaml -- "fix the bug"
+  ${CLI_NAME} --config-file ${defaultConfigPath} -- "fix the bug"
 
 Environment:
+  CONDUCTOR_HOME        User data directory [default: ~/.conductor]
+  CONDUCTOR_CONFIG      Config file override (takes precedence over CONDUCTOR_HOME)
   CONDUCTOR_BACKEND     Default backend
   CONDUCTOR_PROJECT_ID  Project ID to attach to
   CONDUCTOR_TASK_ID     Attach to existing task instead of creating new one
@@ -1460,30 +1463,31 @@ function normalizeTaskId(value) {
   return value.trim();
 }
 
-function resolveFireStateDir(workingDirectory) {
+export function resolveFireStateDir(workingDirectory, env = process.env) {
   // Priority:
   //   1. CONDUCTOR_FIRE_STATE_DIR env override (used by tests to isolate the
   //      marker dir into a tmpdir; also handy for ops to relocate state).
-  //   2. Explicit `workingDirectory` argument (legacy callers).
-  //   3. ~/.conductor/state — matches the conductor convention used by the
-  //      session bootstrap locks (see line ~311).
+  //   2. Explicit `workingDirectory` argument. Production marker writes use
+  //      this project-scoped path so commands such as send-file can discover
+  //      the active task while walking up from the current directory.
+  //   3. $CONDUCTOR_HOME/state (defaults to ~/.conductor/state) only when no
+  //      project working directory is available.
   //
   // We deliberately do NOT default to process.cwd(), which would pollute
   // every project directory a user runs `conductor fire` from and cause tests
   // to leak marker files into the repo.
   const envOverride =
-    typeof process.env.CONDUCTOR_FIRE_STATE_DIR === "string" &&
-    process.env.CONDUCTOR_FIRE_STATE_DIR.trim()
-      ? process.env.CONDUCTOR_FIRE_STATE_DIR.trim()
+    typeof env.CONDUCTOR_FIRE_STATE_DIR === "string" &&
+    env.CONDUCTOR_FIRE_STATE_DIR.trim()
+      ? env.CONDUCTOR_FIRE_STATE_DIR.trim()
       : "";
   if (envOverride) {
     return path.resolve(envOverride);
   }
-  const baseDir =
-    typeof workingDirectory === "string" && workingDirectory.trim()
-      ? path.resolve(workingDirectory.trim())
-      : os.homedir();
-  return path.join(baseDir, ".conductor", "state");
+  if (typeof workingDirectory === "string" && workingDirectory.trim()) {
+    return path.join(path.resolve(workingDirectory.trim()), ".conductor", "state");
+  }
+  return path.join(resolveConductorHome(env), "state");
 }
 
 /**

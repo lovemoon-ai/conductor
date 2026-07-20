@@ -13,6 +13,7 @@ import {
   WS_URL_ENV_VAR,
   LOG_LEVEL_ENV_VAR,
 } from '../src/config/index.js';
+import { CONDUCTOR_HOME_ENV_VAR } from '../src/paths.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'conductor-config-'));
@@ -61,6 +62,41 @@ describe('loadConfig', () => {
     expect(new URL(config.backendUrl).host).toBe('override.local');
     expect(config.resolvedWebsocketUrl).toBe('wss://override/ws/agent');
     expect(config.logLevel).toBe('error');
+  });
+
+  test('loads config.yaml from CONDUCTOR_HOME', () => {
+    const conductorHome = createTempDir();
+    writeConfig(
+      conductorHome,
+      'agent_token: custom-home-token\nbackend_url: https://custom-home.local\n',
+    );
+
+    const config = loadConfig(undefined, {
+      env: { [CONDUCTOR_HOME_ENV_VAR]: conductorHome },
+    });
+
+    expect(config.agentToken).toBe('custom-home-token');
+    expect(new URL(config.backendUrl).host).toBe('custom-home.local');
+  });
+
+  test('gives CONDUCTOR_CONFIG precedence over CONDUCTOR_HOME', () => {
+    const conductorHome = createTempDir();
+    writeConfig(conductorHome, 'agent_token: home-token\nbackend_url: https://home.local\n');
+    const explicitDir = createTempDir();
+    const configuredPath = writeConfig(
+      explicitDir,
+      'agent_token: configured-token\nbackend_url: https://configured.local\n',
+    );
+
+    const config = loadConfig(undefined, {
+      env: {
+        [CONDUCTOR_HOME_ENV_VAR]: conductorHome,
+        [CONFIG_ENV_VAR]: configuredPath,
+      },
+    });
+
+    expect(config.agentToken).toBe('configured-token');
+    expect(new URL(config.backendUrl).host).toBe('configured.local');
   });
 
   test('invalid log level is reported', () => {

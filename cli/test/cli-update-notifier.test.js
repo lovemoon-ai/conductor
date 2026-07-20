@@ -79,6 +79,20 @@ describe("shouldSkipVersionCheck", () => {
   });
 });
 
+describe("resolveVersionCheckCachePath", () => {
+  it("stores the version cache under CONDUCTOR_HOME", () => {
+    assert.strictEqual(
+      resolveVersionCheckCachePath({
+        env: {
+          HOME: "/tmp/ignored-home",
+          CONDUCTOR_HOME: "/tmp/custom-conductor-home",
+        },
+      }),
+      path.resolve("/tmp/custom-conductor-home/version-check.json"),
+    );
+  });
+});
+
 describe("buildUpdateNotice", () => {
   it("formats a single-line upgrade hint", () => {
     assert.strictEqual(
