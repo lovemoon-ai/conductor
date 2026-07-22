@@ -49,6 +49,8 @@ interface TaskItemProps {
   onFilterByProject?: (projectId: string) => void;
   onFilterByDaemonHost?: (daemonHost: string) => void;
   onFilterByBackend?: (backend: string) => void;
+  /** Parent merge drag owns the gesture; suspend this card's swipe actions. */
+  isMergeDragging?: boolean;
 }
 
 interface ShareDialogState {
@@ -327,6 +329,7 @@ export function TaskItem({
   onFilterByProject,
   onFilterByDaemonHost,
   onFilterByBackend,
+  isMergeDragging = false,
 }: TaskItemProps) {
   const { push } = useRouter();
   const [isEditing, setIsEditing] = useState(false);
@@ -531,6 +534,15 @@ export function TaskItem({
       longPressTimerRef.current = null;
     }
   }, []);
+
+  useEffect(() => {
+    if (!isMergeDragging) return;
+    draggingRef.current = false;
+    pointerIdRef.current = null;
+    setIsSwiping(false);
+    closeSwipeActions();
+    clearLongPress();
+  }, [clearLongPress, closeSwipeActions, isMergeDragging]);
 
   const clearPendingOpenTask = useCallback(() => {
     clearPendingTaskOpenState();

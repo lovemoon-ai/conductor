@@ -474,6 +474,92 @@ describe('TaskList', () => {
       expect(onOpenTask).toHaveBeenCalledWith('task-2');
     });
 
+    it('enters drag state after a touch hold and merges without a separate handle', () => {
+      vi.useFakeTimers();
+      try {
+        render(<TaskList viewMode="list" projectFilter={null} />);
+        primeRowRects();
+
+        const wrapper = document.querySelector('[data-task-item-wrapper="task-1"]') as HTMLElement;
+        expect(screen.queryByRole('button', { name: /drag task to merge/i })).toBeNull();
+        expect(wrapper).toHaveClass('touch-pan-y');
+
+        fireEvent.touchStart(wrapper, {
+          touches: [{ identifier: 7, clientX: 20, clientY: 10 }],
+        });
+        act(() => {
+          vi.advanceTimersByTime(450);
+        });
+
+        expect(wrapper).toHaveClass('opacity-40');
+        expect(screen.getByText('Drop onto a card to merge')).toBeInTheDocument();
+        expect(fireEvent.contextMenu(wrapper)).toBe(false);
+
+        const moveWasNotCancelled = fireEvent.touchMove(window, {
+          touches: [{ identifier: 7, clientX: 20, clientY: 110 }],
+        });
+        expect(moveWasNotCancelled).toBe(false);
+        fireEvent.touchEnd(wrapper, {
+          changedTouches: [{ identifier: 7, clientX: 20, clientY: 110 }],
+          touches: [],
+        });
+
+        expect(document.querySelector('[data-task-tab-card]')).not.toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('keeps scrolling when touch moves before the long-press threshold', () => {
+      vi.useFakeTimers();
+      try {
+        render(<TaskList viewMode="list" projectFilter={null} />);
+        primeRowRects();
+
+        const wrapper = document.querySelector('[data-task-item-wrapper="task-1"]') as HTMLElement;
+        fireEvent.touchStart(wrapper, {
+          touches: [{ identifier: 8, clientX: 20, clientY: 10 }],
+        });
+        const moveWasNotCancelled = fireEvent.touchMove(window, {
+          touches: [{ identifier: 8, clientX: 20, clientY: 30 }],
+        });
+        expect(moveWasNotCancelled).toBe(true);
+        act(() => {
+          vi.advanceTimersByTime(500);
+        });
+
+        expect(wrapper).not.toHaveClass('opacity-40');
+        expect(document.querySelector('[data-task-tab-card]')).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not merge when a long-press drag receives touchcancel', () => {
+      vi.useFakeTimers();
+      try {
+        render(<TaskList viewMode="list" projectFilter={null} />);
+        primeRowRects();
+
+        const wrapper = document.querySelector('[data-task-item-wrapper="task-1"]') as HTMLElement;
+        fireEvent.touchStart(wrapper, {
+          touches: [{ identifier: 9, clientX: 20, clientY: 10 }],
+        });
+        act(() => {
+          vi.advanceTimersByTime(450);
+        });
+        fireEvent.touchMove(window, {
+          touches: [{ identifier: 9, clientX: 20, clientY: 110 }],
+        });
+        fireEvent.touchCancel(wrapper, { touches: [] });
+
+        expect(document.querySelector('[data-task-tab-card]')).toBeNull();
+        expect(wrapper).not.toHaveClass('opacity-40');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('renames a tab via long-press and unmerges via double-click', () => {
       vi.useFakeTimers();
       try {

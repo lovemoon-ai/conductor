@@ -9,6 +9,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type TouchEvent as ReactTouchEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
 import type { TaskType } from '@/lib/tasks/task-config';
@@ -39,10 +40,14 @@ import {
 
 export type TaskListViewMode = 'list' | 'graph';
 
-// A whole-card drag is claimed only once the pointer travels this far and the
-// motion is vertically dominant — small moves stay clicks, horizontal moves stay
-// TaskItem swipes, so merge-drag coexists with the card's existing gestures.
+// Mouse/pen whole-card drag is claimed only after vertically dominant movement;
+// touch uses the delayed activation below so normal tap, scroll, and swipe win
+// unless the user deliberately holds the card first.
 const DRAG_ACTIVATE_THRESHOLD = 6;
+// Touch starts as an ordinary scroll/tap. Holding still for this duration
+// promotes the same touch sequence into a merge drag.
+const TOUCH_DRAG_ACTIVATE_MS = 450;
+const TOUCH_DRAG_MOVE_TOLERANCE = 8;
 // Press-and-hold duration that turns a tab press into an inline rename.
 const TAB_LONG_PRESS_MS = 450;
 
@@ -55,6 +60,7 @@ type RowDragState = {
   offsetX: number;
   offsetY: number;
   active: boolean;
+  input: 'pointer' | 'touch';
 };
 
 const EmptyIcon = () => (
@@ -135,6 +141,8 @@ export function TaskList({
   const itemWrapperRefs = useRef(new Map<string, HTMLDivElement>());
   const rowRefs = useRef(new Map<string, HTMLElement>());
   const dragRef = useRef<RowDragState | null>(null);
+  const touchDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nativeTouchMoveHandlerRef = useRef<(event: TouchEvent) => void>(() => {});
   const justDraggedRef = useRef(false);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressFiredRef = useRef(false);
@@ -319,8 +327,19 @@ export function TaskList({
       if (longPressTimerRef.current !== null) {
         clearTimeout(longPressTimerRef.current);
       }
+      if (touchDragTimerRef.current !== null) {
+        clearTimeout(touchDragTimerRef.current);
+      }
     }
   ), []);
+
+  // Match dnd-kit's TouchSensor setup: the non-passive listener must exist
+  // before the gesture begins so a post-long-press move remains cancelable.
+  useEffect(() => {
+    const handleTouchMove = (event: TouchEvent) => nativeTouchMoveHandlerRef.current(event);
+    window.addEventListener('touchmove', handleTouchMove, { passive: false });
+    return () => window.removeEventListener('touchmove', handleTouchMove);
+  }, []);
 
   useEffect(() => {
     if (viewMode === 'graph' && selectedTaskIds.size > 0) {
@@ -498,14 +517,66 @@ export function TaskList({
     return found;
   };
 
-  // Pressing a plain card area (not a button/link/input) arms a potential drag.
+  // Interactive descendants keep their own click/swipe behavior and never arm
+  // a whole-card merge drag.
   const isInteractiveDragTarget = (target: EventTarget | null): boolean =>
     target instanceof Element
     && Boolean(target.closest('button, a, input, textarea, select, label, [contenteditable="true"]'));
 
+  const clearTouchDragTimer = () => {
+    if (touchDragTimerRef.current !== null) {
+      clearTimeout(touchDragTimerRef.current);
+      touchDragTimerRef.current = null;
+    }
+  };
+
+  const activateRowDrag = (drag: RowDragState, clientX: number, clientY: number) => {
+    if (dragRef.current !== drag || drag.active) return;
+    drag.active = true;
+    setDraggingTaskId(drag.taskId);
+    const width = rowRefs.current.get(drag.taskId)?.getBoundingClientRect().width ?? 280;
+    const title = visibleTaskById.get(drag.taskId)?.title ?? '';
+    setDragGhost({
+      taskId: drag.taskId,
+      title,
+      x: clientX - drag.offsetX,
+      y: clientY - drag.offsetY,
+      width,
+    });
+  };
+
+  const updateActiveRowDrag = (drag: RowDragState, clientX: number, clientY: number) => {
+    setDragGhost((current) => (current
+      ? { ...current, x: clientX - drag.offsetX, y: clientY - drag.offsetY }
+      : current));
+    setDropTargetId(findRowIdAtPoint(clientX, clientY, drag.taskId));
+  };
+
+  const resetRowDrag = () => {
+    clearTouchDragTimer();
+    dragRef.current = null;
+    setDraggingTaskId(null);
+    setDropTargetId(null);
+    setDragGhost(null);
+  };
+
+  const completeActiveRowDrag = (drag: RowDragState, clientX: number, clientY: number) => {
+    justDraggedRef.current = true;
+    const targetId = findRowIdAtPoint(clientX, clientY, drag.taskId);
+    if (!targetId || targetId === drag.taskId) return;
+    if (groupIdSet.has(targetId)) {
+      setGroups((current) => addTaskToGroup(current, targetId, drag.taskId));
+    } else {
+      setGroups((current) => createTaskCardGroup(current, nextGroupId(), targetId, drag.taskId));
+    }
+  };
+
   const handleRowPointerDown = (event: ReactPointerEvent<HTMLDivElement>, taskId: string) => {
     justDraggedRef.current = false;
     if (event.button !== 0 || selectionMode) return;
+    // Touch uses the delayed TouchEvent path below. Ignoring its companion
+    // PointerEvent avoids competing state machines for the same finger.
+    if (event.pointerType === 'touch') return;
     if (isInteractiveDragTarget(event.target)) return;
     const rect = rowRefs.current.get(taskId)?.getBoundingClientRect();
     dragRef.current = {
@@ -516,59 +587,107 @@ export function TaskList({
       offsetX: rect ? event.clientX - rect.left : 0,
       offsetY: rect ? event.clientY - rect.top : 0,
       active: false,
+      input: 'pointer',
     };
   };
 
   const handleRowPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag || drag.input !== 'pointer' || drag.pointerId !== event.pointerId) return;
     const deltaX = event.clientX - drag.startX;
     const deltaY = event.clientY - drag.startY;
     if (!drag.active) {
-      // Horizontal-dominant motion belongs to TaskItem's swipe — bow out.
+      // Horizontal-dominant card motion belongs to TaskItem's swipe — bow out.
       if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > DRAG_ACTIVATE_THRESHOLD) {
         dragRef.current = null;
         return;
       }
       if (Math.abs(deltaY) < DRAG_ACTIVATE_THRESHOLD) return;
-      drag.active = true;
-      setDraggingTaskId(drag.taskId);
-      const width = rowRefs.current.get(drag.taskId)?.getBoundingClientRect().width ?? 280;
-      const title = visibleTaskById.get(drag.taskId)?.title ?? '';
-      setDragGhost({
-        taskId: drag.taskId,
-        title,
-        x: event.clientX - drag.offsetX,
-        y: event.clientY - drag.offsetY,
-        width,
-      });
+      activateRowDrag(drag, event.clientX, event.clientY);
     }
     event.preventDefault();
-    setDragGhost((current) => (current
-      ? { ...current, x: event.clientX - drag.offsetX, y: event.clientY - drag.offsetY }
-      : current));
-    setDropTargetId(findRowIdAtPoint(event.clientX, event.clientY, drag.taskId));
+    updateActiveRowDrag(drag, event.clientX, event.clientY);
   };
 
   const handleRowPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag || drag.input !== 'pointer' || drag.pointerId !== event.pointerId) return;
     const wasActive = drag.active;
-    dragRef.current = null;
-    setDraggingTaskId(null);
-    setDropTargetId(null);
-    setDragGhost(null);
+    resetRowDrag();
     if (!wasActive) return;
-    // Swallow the click that the browser fires after a drag so the card under
-    // the pointer isn't opened.
-    justDraggedRef.current = true;
-    const targetId = findRowIdAtPoint(event.clientX, event.clientY, drag.taskId);
-    if (!targetId || targetId === drag.taskId) return;
-    if (groupIdSet.has(targetId)) {
-      setGroups((current) => addTaskToGroup(current, targetId, drag.taskId));
-    } else {
-      setGroups((current) => createTaskCardGroup(current, nextGroupId(), targetId, drag.taskId));
+    completeActiveRowDrag(drag, event.clientX, event.clientY);
+  };
+
+  const handleRowPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.input !== 'pointer' || drag.pointerId !== event.pointerId) return;
+    resetRowDrag();
+  };
+
+  const handleRowTouchStart = (event: ReactTouchEvent<HTMLDivElement>, taskId: string) => {
+    justDraggedRef.current = false;
+    clearTouchDragTimer();
+    if (selectionMode || event.touches.length !== 1 || isInteractiveDragTarget(event.target)) return;
+    const touch = event.touches[0];
+    const rect = rowRefs.current.get(taskId)?.getBoundingClientRect();
+    const drag: RowDragState = {
+      taskId,
+      pointerId: touch.identifier,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      offsetX: rect ? touch.clientX - rect.left : 0,
+      offsetY: rect ? touch.clientY - rect.top : 0,
+      active: false,
+      input: 'touch',
+    };
+    dragRef.current = drag;
+    touchDragTimerRef.current = setTimeout(() => {
+      touchDragTimerRef.current = null;
+      activateRowDrag(drag, drag.startX, drag.startY);
+    }, TOUCH_DRAG_ACTIVATE_MS);
+  };
+
+  nativeTouchMoveHandlerRef.current = (event: TouchEvent) => {
+    const drag = dragRef.current;
+    if (!drag || drag.input !== 'touch') return;
+    const touch = Array.from(event.touches).find((candidate) => candidate.identifier === drag.pointerId);
+    if (!touch || event.touches.length !== 1) {
+      resetRowDrag();
+      return;
     }
+    const deltaX = touch.clientX - drag.startX;
+    const deltaY = touch.clientY - drag.startY;
+    if (!drag.active) {
+      if (Math.hypot(deltaX, deltaY) <= TOUCH_DRAG_MOVE_TOLERANCE) return;
+      // Movement before the hold threshold is ordinary scroll/swipe. Do not
+      // preventDefault: native scrolling and TaskItem gestures keep ownership.
+      resetRowDrag();
+      return;
+    }
+    if (event.cancelable) event.preventDefault();
+    updateActiveRowDrag(drag, touch.clientX, touch.clientY);
+  };
+
+  const handleRowTouchEnd = (event: ReactTouchEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.input !== 'touch') return;
+    const touch = Array.from(event.changedTouches).find(
+      (candidate) => candidate.identifier === drag.pointerId,
+    );
+    if (!touch) return;
+    const wasActive = drag.active;
+    resetRowDrag();
+    if (!wasActive) return;
+    event.preventDefault();
+    completeActiveRowDrag(drag, touch.clientX, touch.clientY);
+  };
+
+  const handleRowTouchCancel = () => {
+    if (dragRef.current?.input === 'touch') resetRowDrag();
+  };
+
+  const handleRowContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (dragRef.current?.input === 'touch') event.preventDefault();
   };
 
   const handleRowClickCapture = (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -676,6 +795,7 @@ export function TaskList({
         onFilterByProject={onFilterByProject}
         onFilterByDaemonHost={onFilterByDaemonHost}
         onFilterByBackend={onFilterByBackend}
+        isMergeDragging={draggingTaskId === task.id}
       />
     );
   };
@@ -875,7 +995,11 @@ export function TaskList({
                 onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => handleRowPointerDown(event, task.id),
                 onPointerMove: handleRowPointerMove,
                 onPointerUp: handleRowPointerUp,
-                onPointerCancel: handleRowPointerUp,
+                onPointerCancel: handleRowPointerCancel,
+                onTouchStart: (event: ReactTouchEvent<HTMLDivElement>) => handleRowTouchStart(event, task.id),
+                onTouchEnd: handleRowTouchEnd,
+                onTouchCancel: handleRowTouchCancel,
+                onContextMenu: handleRowContextMenu,
                 onClickCapture: handleRowClickCapture,
               };
               return (
@@ -884,7 +1008,7 @@ export function TaskList({
                   ref={setRowRef(task.id, true)}
                   data-task-item-wrapper={task.id}
                   {...dragProps}
-                  className={`relative cursor-grab touch-pan-y transition-opacity ${
+                  className={`relative cursor-grab touch-pan-y transition-all [-webkit-touch-callout:none] ${
                     isDragging ? 'cursor-grabbing opacity-40' : ''
                   }`}
                 >

@@ -647,6 +647,45 @@ describe('TaskItem', () => {
     expect(screen.getByTestId('restart-controls')).toBeInTheDocument();
   });
 
+  it('closes an in-progress swipe when a parent merge drag activates', () => {
+    const task = {
+      id: 'task-merge-drag',
+      title: 'Merge Drag Task',
+      status: 'running',
+      projectId: null,
+      agentHost: 'daemon-a',
+      createdAt: FIXED_DATE.toISOString(),
+      updatedAt: null,
+    } as const;
+    const { rerender } = render(
+      <TaskItem
+        task={task}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />,
+    );
+
+    const card = screen.getByRole('button', { name: /merge drag task/i });
+    fireEvent.pointerDown(card, { pointerId: 3, clientX: 240, pointerType: 'touch' });
+    fireEvent.pointerMove(card, { pointerId: 3, clientX: 120, pointerType: 'touch' });
+    expect(card).not.toHaveStyle({ transform: 'translateX(0px)' });
+
+    rerender(
+      <TaskItem
+        task={task}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+        isMergeDragging
+      />,
+    );
+
+    expect(card).toHaveStyle({ transform: 'translateX(0px)' });
+  });
+
   it('pins a task from the swipe-left action menu', async () => {
     updateTaskMock.mockResolvedValue({
       id: 'task-pin-1',
