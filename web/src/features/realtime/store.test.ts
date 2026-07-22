@@ -8,6 +8,7 @@ import { clearAllTerminalOutputSnapshots, getTerminalOutputSnapshot, useTerminal
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
 import { useCatchphrasesStore } from '@/features/catchphrases/store';
 import { useDailyReportsStore } from '@/features/daily-reports/store';
+import { useTaskCardGroupsSyncStore } from '@/features/tasks/task-card-groups-sync-store';
 
 const dailyReportActions = {
   hydrateSetting: useDailyReportsStore.getState().hydrateSetting,
@@ -208,6 +209,7 @@ describe('websocket runtime status handling', () => {
       taskListPreferencesLoading: false,
       taskListPreferencesError: null,
     });
+    useTaskCardGroupsSyncStore.getState().reset();
     useDailyReportsStore.setState({
       setting: null,
       currentReport: null,
@@ -262,6 +264,32 @@ describe('websocket runtime status handling', () => {
 
     expect(useUserPreferencesStore.getState().taskListRunningOnly).toBe(true);
     expect(useUserPreferencesStore.getState().taskListPreferencesHydrated).toBe(true);
+  });
+
+  it('applies task card groups pushed from another device', () => {
+    handleWSMessage({
+      type: 'task_card_groups_update',
+      payload: {
+        user_id: 'user-1',
+        snapshot: {
+          version: 1,
+          revision: 7,
+          scopes: {
+            'projects:p1': [{ id: 'g1', taskIds: ['a', 'b'], labels: {} }],
+          },
+        },
+      },
+    });
+
+    expect(useTaskCardGroupsSyncStore.getState()).toMatchObject({
+      hydrated: true,
+      snapshot: {
+        revision: 7,
+        scopes: {
+          'projects:p1': [{ id: 'g1', taskIds: ['a', 'b'], labels: {} }],
+        },
+      },
+    });
   });
 
   it('applies the full catchphrase snapshot from user_catchphrase_update events (RFC 0032)', () => {

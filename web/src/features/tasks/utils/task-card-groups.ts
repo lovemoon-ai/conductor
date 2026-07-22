@@ -17,6 +17,15 @@ export type TaskCardGroup = {
   labels: Record<string, string>;
 };
 
+/** The cross-device shape deliberately excludes activeIndex: opening a tab is device-local UI state. */
+export type SyncedTaskCardGroup = Omit<TaskCardGroup, 'activeIndex'>;
+
+export type TaskCardGroupsSyncSnapshot = {
+  version: 1;
+  revision: number;
+  scopes: Record<string, SyncedTaskCardGroup[]>;
+};
+
 /** A group projected onto the currently-visible tasks, ready to render. */
 export type RenderTaskCardGroup = {
   id: string;
@@ -32,6 +41,11 @@ export type TaskCardRow<T> =
   | { type: 'group'; group: RenderTaskCardGroup };
 
 const STORAGE_PREFIX = 'conductor:task-list-groups:v1:';
+const USER_STORAGE_PREFIX = 'conductor:task-list-groups:v2:';
+export const MAX_SYNCED_TASK_CARD_SCOPES = 100;
+export const MAX_SYNCED_TASK_CARD_GROUPS_PER_SCOPE = 200;
+export const MAX_SYNCED_TASKS_PER_CARD = 50;
+export const MAX_SYNCED_TASK_CARD_LABEL_LENGTH = 120;
 
 const clampInt = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, Math.floor(value)));
@@ -39,8 +53,16 @@ const clampInt = (value: number, min: number, max: number): number =>
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-export const buildTaskCardGroupsStorageKey = (stateKey?: string | null): string =>
-  `${STORAGE_PREFIX}${encodeURIComponent(stateKey?.trim() || 'default')}`;
+export const buildTaskCardGroupsStorageKey = (
+  stateKey?: string | null,
+  userId?: string | null,
+): string => {
+  const encodedState = encodeURIComponent(stateKey?.trim() || 'default');
+  const normalizedUserId = userId?.trim();
+  return normalizedUserId
+    ? `${USER_STORAGE_PREFIX}${encodeURIComponent(normalizedUserId)}:${encodedState}`
+    : `${STORAGE_PREFIX}${encodedState}`;
+};
 
 /** Validate persisted JSON into groups, enforcing single-group membership per task. */
 export const readTaskCardGroups = (value: unknown): TaskCardGroup[] => {
@@ -82,6 +104,65 @@ export const readTaskCardGroups = (value: unknown): TaskCardGroup[] => {
     groups.push({ id, taskIds: ids, activeIndex: resolvedActiveIndex, labels: labelMap });
   }
   return groups;
+};
+
+/** Normalize untrusted API/storage input into the bounded server-synced shape. */
+export const readSyncedTaskCardGroups = (value: unknown): SyncedTaskCardGroup[] =>
+  readTaskCardGroups(value)
+    .filter((group) => group.id.length <= 200)
+    .slice(0, MAX_SYNCED_TASK_CARD_GROUPS_PER_SCOPE)
+    .flatMap((group) => {
+      const taskIds = group.taskIds.slice(0, MAX_SYNCED_TASKS_PER_CARD);
+      if (taskIds.length < 2) return [];
+      const labels: Record<string, string> = {};
+      for (const taskId of taskIds) {
+        const label = group.labels[taskId]?.trim();
+        if (label) labels[taskId] = label.slice(0, MAX_SYNCED_TASK_CARD_LABEL_LENGTH);
+      }
+      return [{ id: group.id, taskIds, labels }];
+    });
+
+export const toSyncedTaskCardGroups = (groups: TaskCardGroup[]): SyncedTaskCardGroup[] =>
+  readSyncedTaskCardGroups(groups);
+
+export const taskCardGroupsSyncKey = (groups: TaskCardGroup[] | SyncedTaskCardGroup[]): string =>
+  JSON.stringify(readSyncedTaskCardGroups(groups));
+
+/**
+ * Apply server-owned structure while preserving the active tab from this
+ * device whenever that tab still belongs to the synchronized group.
+ */
+export const mergeSyncedTaskCardGroups = (
+  localGroups: TaskCardGroup[],
+  syncedGroups: SyncedTaskCardGroup[],
+): TaskCardGroup[] => {
+  const localById = new Map(localGroups.map((group) => [group.id, group]));
+  return readSyncedTaskCardGroups(syncedGroups).map((group) => {
+    const local = localById.get(group.id);
+    const localActiveTaskId = local?.taskIds[local.activeIndex];
+    const activeIndex = localActiveTaskId ? group.taskIds.indexOf(localActiveTaskId) : -1;
+    return {
+      ...group,
+      activeIndex: activeIndex >= 0 ? activeIndex : 0,
+    };
+  });
+};
+
+export const readTaskCardGroupsSyncSnapshot = (value: unknown): TaskCardGroupsSyncSnapshot => {
+  const record = isObject(value) ? value : {};
+  const rawRevision = record.revision;
+  const revision = typeof rawRevision === 'number' && Number.isFinite(rawRevision)
+    ? Math.max(0, Math.floor(rawRevision))
+    : 0;
+  const rawScopes = isObject(record.scopes) ? record.scopes : {};
+  const scopes: Record<string, SyncedTaskCardGroup[]> = {};
+
+  for (const [scope, groups] of Object.entries(rawScopes).slice(0, MAX_SYNCED_TASK_CARD_SCOPES)) {
+    if (!scope.startsWith('projects:') || scope.length > 512 || !Array.isArray(groups)) continue;
+    scopes[scope] = readSyncedTaskCardGroups(groups);
+  }
+
+  return { version: 1, revision, scopes };
 };
 
 export const loadTaskCardGroups = (storageKey: string): TaskCardGroup[] => {

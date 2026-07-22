@@ -6,6 +6,7 @@ import { clearStoredJwtToken, getStoredJwtToken, storeJwtToken } from '@/lib/aut
 import { useProjectsStore } from '@/features/projects/store';
 import { useSettingsNavStore } from '@/features/settings/nav-store';
 import { useCatchphrasesStore } from '@/features/catchphrases/store';
+import { useTaskCardGroupsSyncStore } from '@/features/tasks/task-card-groups-sync-store';
 
 export const AUTH_SESSION_STORAGE_KEY = 'conductor-auth';
 export const AUTH_USER_TOKEN_STORAGE_KEY = 'conductor.userToken';
@@ -223,6 +224,9 @@ export const useAuthStore = create<AuthState>()(
         // this, user A's phrases stay visible in B's popover until the next
         // realtime push.
         useCatchphrasesStore.getState().reset();
+        // Server-synchronized task-card layouts are user-scoped. Clear the
+        // in-memory snapshot before another account can enter the task page.
+        useTaskCardGroupsSyncStore.getState().reset();
         clearStoredJwtToken();
         if (typeof window !== 'undefined') {
           localStorage.removeItem(AUTH_USER_TOKEN_STORAGE_KEY);

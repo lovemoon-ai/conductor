@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   addTaskToGroup,
+  buildTaskCardGroupsStorageKey,
   buildTaskCardRows,
   createTaskCardGroup,
   ejectTaskFromGroup,
   maxTaskCardGroupIdCounter,
+  mergeSyncedTaskCardGroups,
   projectTaskCardGroups,
   readTaskCardGroups,
+  readTaskCardGroupsSyncSnapshot,
   setActiveTaskCardTab,
   setTaskCardTabLabel,
   taskCardTabLabel,
@@ -121,5 +124,40 @@ describe('task-card-groups', () => {
       group({ id: 'tabcard-7', taskIds: ['c', 'd'] }),
       group({ id: 'legacy', taskIds: ['e', 'f'] }),
     ])).toBe(7);
+  });
+
+  it('separates local caches by user while retaining the legacy migration key', () => {
+    expect(buildTaskCardGroupsStorageKey('projects:p1'))
+      .toBe('conductor:task-list-groups:v1:projects%3Ap1');
+    expect(buildTaskCardGroupsStorageKey('projects:p1', 'user-1'))
+      .toBe('conductor:task-list-groups:v2:user-1:projects%3Ap1');
+  });
+
+  it('applies synchronized structure without changing this device active tab', () => {
+    const local = [group({ id: 'g1', taskIds: ['a', 'b'], activeIndex: 1 })];
+    const next = mergeSyncedTaskCardGroups(local, [{
+      id: 'g1',
+      taskIds: ['a', 'b', 'c'],
+      labels: { a: 'Design' },
+    }]);
+
+    expect(next).toEqual([{
+      id: 'g1',
+      taskIds: ['a', 'b', 'c'],
+      activeIndex: 1,
+      labels: { a: 'Design' },
+    }]);
+  });
+
+  it('retains empty scope tombstones in synchronized snapshots', () => {
+    expect(readTaskCardGroupsSyncSnapshot({
+      version: 1,
+      revision: 3,
+      scopes: { 'projects:p1': [], invalid: [] },
+    })).toEqual({
+      version: 1,
+      revision: 3,
+      scopes: { 'projects:p1': [] },
+    });
   });
 });

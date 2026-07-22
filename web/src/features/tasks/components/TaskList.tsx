@@ -15,6 +15,7 @@ import { createPortal } from 'react-dom';
 import type { TaskType } from '@/lib/tasks/task-config';
 import { orderTasksWithPinnedFirst, useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
+import { useAuthStore } from '@/features/auth/store';
 import { filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } from '../utils/task-filter';
 import { TaskItem } from './TaskItem';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
@@ -30,13 +31,16 @@ import {
   ejectTaskFromGroup,
   loadTaskCardGroups,
   maxTaskCardGroupIdCounter,
+  mergeSyncedTaskCardGroups,
   projectTaskCardGroups,
   saveTaskCardGroups,
   setActiveTaskCardTab,
   setTaskCardTabLabel,
+  taskCardGroupsSyncKey,
   taskCardTabLabel,
   type TaskCardGroup,
 } from '../utils/task-card-groups';
+import { useTaskCardGroupsSyncStore } from '../task-card-groups-sync-store';
 
 export type TaskListViewMode = 'list' | 'graph';
 
@@ -126,8 +130,13 @@ export function TaskList({
   onFilterByBackend,
 }: TaskListProps) {
   const { tasks, isLoading, unreadTaskIds, currentProjectFilter, deleteTask } = useTasksStore();
+  const userId = useAuthStore((state) => state.session?.user.id ?? null);
   const projects = useProjectsStore((state) => state.projects);
   const hiddenProjectIds = useProjectsStore((state) => state.hiddenProjectIds);
+  const syncedGroupsSnapshot = useTaskCardGroupsSyncStore((state) => state.snapshot);
+  const taskCardGroupsHydrated = useTaskCardGroupsSyncStore((state) => state.hydrated);
+  const hydrateTaskCardGroups = useTaskCardGroupsSyncStore((state) => state.hydrate);
+  const saveTaskCardGroupsScope = useTaskCardGroupsSyncStore((state) => state.saveScope);
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
@@ -148,6 +157,8 @@ export function TaskList({
   const longPressFiredRef = useRef(false);
   const groupIdCounterRef = useRef(0);
   const skipGroupSaveRef = useRef(false);
+  const lastSyncedGroupsKeyRef = useRef<string | null>(null);
+  const attemptedLegacySyncScopesRef = useRef(new Set<string>());
   const previousRectsRef = useRef(new Map<string, DOMRect>());
   const previousOrderRef = useRef<string[]>([]);
   const animationFrameRef = useRef<number | null>(null);
@@ -193,6 +204,10 @@ export function TaskList({
     return `projects:${projectScope}`;
   }, [effectiveProjectFilterIds]);
   const groupsStorageKey = useMemo(
+    () => buildTaskCardGroupsStorageKey(graphStateKey, userId),
+    [graphStateKey, userId],
+  );
+  const legacyGroupsStorageKey = useMemo(
     () => buildTaskCardGroupsStorageKey(graphStateKey),
     [graphStateKey],
   );
@@ -412,12 +427,76 @@ export function TaskList({
   // Load persisted tab cards for the active project scope; seed the id counter
   // above every stored id so a fresh id can never collide with an existing one.
   useEffect(() => {
-    const loaded = loadTaskCardGroups(groupsStorageKey);
+    let loaded = loadTaskCardGroups(groupsStorageKey);
+    // One-time migration from the pre-sync, non-user-scoped cache. Moving the
+    // entry prevents a second account on the same browser from importing it.
+    if (
+      userId
+      && typeof window !== 'undefined'
+      && window.localStorage.getItem(groupsStorageKey) === null
+      && window.localStorage.getItem(legacyGroupsStorageKey) !== null
+    ) {
+      loaded = loadTaskCardGroups(legacyGroupsStorageKey);
+      saveTaskCardGroups(groupsStorageKey, loaded);
+      window.localStorage.removeItem(legacyGroupsStorageKey);
+    }
     skipGroupSaveRef.current = true;
+    lastSyncedGroupsKeyRef.current = null;
     groupIdCounterRef.current = maxTaskCardGroupIdCounter(loaded);
     setGroups(loaded);
     setEditingTab(null);
-  }, [groupsStorageKey]);
+  }, [groupsStorageKey, legacyGroupsStorageKey, userId]);
+
+  useEffect(() => {
+    if (userId) void hydrateTaskCardGroups(userId);
+  }, [hydrateTaskCardGroups, userId]);
+
+  // A server scope is authoritative, including an empty-array tombstone. If
+  // the scope has never existed server-side, upload this device's legacy cache
+  // once so existing users keep their tab cards after the feature rolls out.
+  useEffect(() => {
+    if (!userId || !taskCardGroupsHydrated) return;
+    const migrationKey = `${userId}:${graphStateKey}`;
+    const hasServerScope = Object.prototype.hasOwnProperty.call(
+      syncedGroupsSnapshot.scopes,
+      graphStateKey,
+    );
+
+    if (!hasServerScope) {
+      if (attemptedLegacySyncScopesRef.current.has(migrationKey)) return;
+      attemptedLegacySyncScopesRef.current.add(migrationKey);
+      const localGroups = loadTaskCardGroups(groupsStorageKey);
+      if (localGroups.length === 0) return;
+      const syncKey = taskCardGroupsSyncKey(localGroups);
+      lastSyncedGroupsKeyRef.current = syncKey;
+      void saveTaskCardGroupsScope(userId, graphStateKey, localGroups).then((saved) => {
+        if (!saved && lastSyncedGroupsKeyRef.current === syncKey) {
+          lastSyncedGroupsKeyRef.current = null;
+          attemptedLegacySyncScopesRef.current.delete(migrationKey);
+        }
+      });
+      return;
+    }
+
+    attemptedLegacySyncScopesRef.current.add(migrationKey);
+    const serverGroups = syncedGroupsSnapshot.scopes[graphStateKey] ?? [];
+    lastSyncedGroupsKeyRef.current = taskCardGroupsSyncKey(serverGroups);
+    setGroups((current) => {
+      const next = mergeSyncedTaskCardGroups(current, serverGroups);
+      if (JSON.stringify(next) === JSON.stringify(current)) return current;
+      skipGroupSaveRef.current = true;
+      groupIdCounterRef.current = maxTaskCardGroupIdCounter(next);
+      saveTaskCardGroups(groupsStorageKey, next);
+      return next;
+    });
+  }, [
+    graphStateKey,
+    groupsStorageKey,
+    saveTaskCardGroupsScope,
+    syncedGroupsSnapshot,
+    taskCardGroupsHydrated,
+    userId,
+  ]);
 
   useEffect(() => {
     if (skipGroupSaveRef.current) {
@@ -425,7 +504,16 @@ export function TaskList({
       return;
     }
     saveTaskCardGroups(groupsStorageKey, groups);
-  }, [groups, groupsStorageKey]);
+    if (!userId) return;
+    const syncKey = taskCardGroupsSyncKey(groups);
+    if (lastSyncedGroupsKeyRef.current === syncKey) return;
+    lastSyncedGroupsKeyRef.current = syncKey;
+    void saveTaskCardGroupsScope(userId, graphStateKey, groups).then((saved) => {
+      if (!saved && lastSyncedGroupsKeyRef.current === syncKey) {
+        lastSyncedGroupsKeyRef.current = null;
+      }
+    });
+  }, [graphStateKey, groups, groupsStorageKey, saveTaskCardGroupsScope, userId]);
 
   // Drop an in-progress rename once its tab stops being an editable rendered tab
   // (group dissolved, or its task filtered out) so the edit box can't linger.
@@ -496,8 +584,11 @@ export function TaskList({
   };
 
   const nextGroupId = (): string => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return `tabcard-${crypto.randomUUID()}`;
+    }
     groupIdCounterRef.current += 1;
-    return `tabcard-${groupIdCounterRef.current}`;
+    return `tabcard-${Date.now()}-${groupIdCounterRef.current}`;
   };
 
   // Hit-test the pointer against every row except the dragged card. The list can

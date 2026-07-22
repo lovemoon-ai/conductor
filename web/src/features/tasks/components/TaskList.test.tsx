@@ -28,6 +28,16 @@ const dragCardOnto = (fromTaskId: string, fromTop: number, toTop: number) => {
 const deleteTaskMock = vi.fn();
 const taskItemMock = vi.fn();
 const taskGraphViewMock = vi.fn();
+const hydrateTaskCardGroupsMock = vi.fn();
+const saveTaskCardGroupsScopeMock = vi.fn();
+
+let authState: { session: { user: { id: string } } | null };
+let taskCardGroupsSyncState: {
+  snapshot: { version: 1; revision: number; scopes: Record<string, unknown[]> };
+  hydrated: boolean;
+  hydrate: typeof hydrateTaskCardGroupsMock;
+  saveScope: typeof saveTaskCardGroupsScopeMock;
+};
 
 type FakeTask = {
   id: string;
@@ -79,6 +89,15 @@ vi.mock('@/features/projects', () => ({
   useProjectsStore: (selector: (state: typeof projectsState) => unknown) => selector(projectsState),
 }));
 
+vi.mock('@/features/auth/store', () => ({
+  useAuthStore: (selector: (state: typeof authState) => unknown) => selector(authState),
+}));
+
+vi.mock('../task-card-groups-sync-store', () => ({
+  useTaskCardGroupsSyncStore: (selector: (state: typeof taskCardGroupsSyncState) => unknown) =>
+    selector(taskCardGroupsSyncState),
+}));
+
 vi.mock('./TaskItem', () => ({
   TaskItem: (props: {
     task: { id: string; title: string; projectId: string | null; status: string };
@@ -124,6 +143,17 @@ describe('TaskList', () => {
     deleteTaskMock.mockReset();
     taskItemMock.mockReset();
     taskGraphViewMock.mockReset();
+    hydrateTaskCardGroupsMock.mockReset();
+    hydrateTaskCardGroupsMock.mockResolvedValue(undefined);
+    saveTaskCardGroupsScopeMock.mockReset();
+    saveTaskCardGroupsScopeMock.mockResolvedValue(true);
+    authState = { session: null };
+    taskCardGroupsSyncState = {
+      snapshot: { version: 1, revision: 0, scopes: {} },
+      hydrated: false,
+      hydrate: hydrateTaskCardGroupsMock,
+      saveScope: saveTaskCardGroupsScopeMock,
+    };
 
     tasksState = {
       tasks: [
@@ -607,6 +637,65 @@ describe('TaskList', () => {
         expect(document.querySelector('[data-task-tab-card]')).not.toBeNull();
       });
       expect(document.querySelector('[data-task-item-wrapper="task-1"]')).toBeNull();
+    });
+
+    it('applies a task-card group synchronized from another device without echoing it', async () => {
+      authState = { session: { user: { id: 'user-1' } } };
+      taskCardGroupsSyncState = {
+        ...taskCardGroupsSyncState,
+        hydrated: true,
+        snapshot: {
+          version: 1,
+          revision: 4,
+          scopes: {
+            'projects:all': [{
+              id: 'remote-group',
+              taskIds: ['task-1', 'task-2'],
+              labels: { 'task-1': 'Remote' },
+            }],
+          },
+        },
+      };
+
+      render(<TaskList viewMode="list" projectFilter={null} />);
+
+      await waitFor(() => {
+        expect(document.querySelector('[data-task-tab-card="remote-group"]')).not.toBeNull();
+      });
+      expect(document.querySelector('[data-task-tab="task-1"]')?.textContent).toContain('Remote');
+      expect(saveTaskCardGroupsScopeMock).not.toHaveBeenCalled();
+      expect(window.localStorage.getItem(
+        'conductor:task-list-groups:v2:user-1:projects%3Aall',
+      )).toContain('remote-group');
+    });
+
+    it('migrates the legacy browser cache into the signed-in user sync scope', async () => {
+      authState = { session: { user: { id: 'user-1' } } };
+      taskCardGroupsSyncState = {
+        ...taskCardGroupsSyncState,
+        hydrated: true,
+      };
+      const legacyKey = 'conductor:task-list-groups:v1:projects%3Aall';
+      window.localStorage.setItem(legacyKey, JSON.stringify([{
+        id: 'legacy-group',
+        taskIds: ['task-1', 'task-2'],
+        activeIndex: 1,
+        labels: {},
+      }]));
+
+      render(<TaskList viewMode="list" projectFilter={null} />);
+
+      await waitFor(() => {
+        expect(saveTaskCardGroupsScopeMock).toHaveBeenCalledWith(
+          'user-1',
+          'projects:all',
+          [expect.objectContaining({ id: 'legacy-group' })],
+        );
+      });
+      expect(window.localStorage.getItem(legacyKey)).toBeNull();
+      expect(window.localStorage.getItem(
+        'conductor:task-list-groups:v2:user-1:projects%3Aall',
+      )).toContain('legacy-group');
     });
   });
 });

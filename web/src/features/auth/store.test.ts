@@ -9,6 +9,7 @@ const {
   mockStoreJwtToken,
   mockResetProjectsState,
   mockResetSettingsNav,
+  mockResetTaskCardGroups,
 } = vi.hoisted(() => ({
   mockApiGet: vi.fn(),
   mockApiPost: vi.fn(),
@@ -22,6 +23,7 @@ const {
   }),
   mockResetProjectsState: vi.fn(),
   mockResetSettingsNav: vi.fn(),
+  mockResetTaskCardGroups: vi.fn(),
 }));
 
 vi.mock('@/shared/api/client', () => ({
@@ -58,6 +60,12 @@ vi.mock("@/features/settings/nav-store", () => ({
   },
 }));
 
+vi.mock("@/features/tasks/task-card-groups-sync-store", () => ({
+  useTaskCardGroupsSyncStore: {
+    getState: () => ({ reset: mockResetTaskCardGroups }),
+  },
+}));
+
 import { AUTH_SESSION_STORAGE_KEY, AUTH_USER_TOKEN_STORAGE_KEY, useAuthStore } from "./store";
 
 describe("useAuthStore", () => {
@@ -70,6 +78,7 @@ describe("useAuthStore", () => {
     mockStoreJwtToken.mockReset();
     mockResetProjectsState.mockReset();
     mockResetSettingsNav.mockReset();
+    mockResetTaskCardGroups.mockReset();
     localStorage.clear();
     mockClearStoredJwtToken.mockImplementation(() => {
       localStorage.removeItem("conductor.jwt");
@@ -318,5 +327,6 @@ describe("useAuthStore", () => {
     // Clears the remembered Settings-area URL so the previous user's daemon
     // sub-path doesn't leak into the next session on the same device.
     expect(mockResetSettingsNav).toHaveBeenCalledTimes(1);
+    expect(mockResetTaskCardGroups).toHaveBeenCalledTimes(1);
   });
 });
