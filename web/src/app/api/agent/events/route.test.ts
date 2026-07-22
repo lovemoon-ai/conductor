@@ -40,6 +40,7 @@ vi.mock("@/lib/realtime/hub", () => ({
 
 vi.mock("@/lib/realtime/agent-outbox", () => ({
   deliverAgentOutboxForHost: vi.fn().mockResolvedValue({ attempted: 0, delivered: 0 }),
+  enqueueAndAttemptAgentCommand: vi.fn().mockResolvedValue({ requestId: "stop-1", delivered: true }),
   acknowledgeAgentCommand: vi.fn().mockResolvedValue({ count: 1 }),
   acknowledgeAgentCommandsThroughCursor: vi.fn().mockResolvedValue({ count: 0 }),
   isMissingAgentOutboxTableError: vi.fn().mockReturnValue(false),
@@ -47,7 +48,7 @@ vi.mock("@/lib/realtime/agent-outbox", () => ({
 
 const { db } = await import("@/lib/db");
 const { realtimeHub } = await import("@/lib/realtime/hub");
-const { acknowledgeAgentCommand, deliverAgentOutboxForHost } = await import("@/lib/realtime/agent-outbox");
+const { acknowledgeAgentCommand, deliverAgentOutboxForHost, enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
 
 describe("/api/agent/events", () => {
   beforeEach(() => {
@@ -217,6 +218,61 @@ describe("/api/agent/events", () => {
     expect(db.message.create).toHaveBeenCalledTimes(1);
     expect(db.taskStatusEvent.create).toHaveBeenCalledTimes(1);
     expect(realtimeHub.broadcast).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops sdk_message for an already-killed task and durably stops the zombie backend", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "proj-1",
+      status: "killed",
+      taskType: "ai_task",
+      agentHost: "conductor-fire-zombie-1",
+      executionHost: null,
+    } as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:6152/api/agent/events",
+        token,
+        body: {
+          agent_host: "conductor-fire-zombie-1",
+          events: [
+            {
+              event_type: "sdk_message",
+              task_id: "task-1",
+              content: "zombie reply after kill",
+              message_id: "msg-zombie-1",
+            },
+          ],
+        },
+      }),
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.results).toEqual([
+      expect.objectContaining({
+        event_type: "sdk_message",
+        task_id: "task-1",
+        message_id: "msg-zombie-1",
+        duplicate: true,
+      }),
+    ]);
+    // The dead task is not resurrected: no message write, no re-bind / executionHost rewrite.
+    expect(db.message.create).not.toHaveBeenCalled();
+    expect(realtimeHub.bindTaskToAgent).not.toHaveBeenCalled();
+    expect(db.task.updateMany).not.toHaveBeenCalled();
+    // The zombie backend is durably stopped over the outbox with a matching requestId.
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledTimes(1);
+    const [enqueueInput] = vi.mocked(enqueueAndAttemptAgentCommand).mock.calls[0];
+    expect(enqueueInput).toMatchObject({
+      agentHost: "conductor-fire-zombie-1",
+      taskId: "task-1",
+      eventType: "stop_task",
+    });
+    expect(enqueueInput.requestId).toBe(enqueueInput.envelope.payload.request_id);
   });
 
   it("bumps task activity time when committing a fresh sdk_message", async () => {

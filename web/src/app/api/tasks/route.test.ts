@@ -22,6 +22,8 @@ vi.mock("@/lib/realtime/hub", () => ({
 
 vi.mock("@/lib/realtime/agent-outbox", () => ({
   enqueueAndAttemptAgentCommand: vi.fn(),
+  enqueueAgentCommand: vi.fn(),
+  isMissingAgentOutboxTableError: () => false,
 }));
 
 vi.mock("@/lib/tasks/scheduled-messages", () => ({

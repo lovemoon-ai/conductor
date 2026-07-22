@@ -39,6 +39,7 @@ vi.mock("@/lib/realtime/hub", () => ({
 
 vi.mock("@/lib/realtime/agent-outbox", () => ({
   enqueueAndAttemptAgentCommand: vi.fn(),
+  enqueueAgentCommand: vi.fn(),
   deliverAgentOutboxRow: vi.fn(),
   isMissingAgentOutboxTableError: (error: unknown) =>
     (error as any)?.code === "P2021" && String((error as any)?.message || "").includes("agent_outbox"),

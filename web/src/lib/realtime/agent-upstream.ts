@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { normalizeMessageMetadata } from "@/shared/utils/message-attachments";
@@ -8,6 +9,7 @@ import {
 import {
   acknowledgeAgentCommand,
   deliverAgentOutboxForHost,
+  enqueueAndAttemptAgentCommand,
   isMissingAgentOutboxTableError,
 } from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
@@ -73,6 +75,67 @@ export async function drainAgentOutboxForHost(
   } catch (error) {
     console.error(
       `[agent-upstream] failed to drain outbox for ${agentHost}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+// Durably interrupt a still-streaming backend that belongs to an
+// already-killed task. Uses a single requestId for both the outbox row and the
+// envelope `request_id` so the fire's `task_stop_ack` can clear the row (a
+// mismatch would leave it re-sending forever). Persist + attempt-now via the
+// outbox so both transports are covered: an active ws is delivered immediately,
+// while a fire on the stateless HTTP events path is stopped when its socket
+// next drains. Never throws — dropping the zombie message must not depend on
+// the stop succeeding.
+async function stopKilledTaskBackend(args: {
+  userId: string;
+  agentHost: string;
+  taskId: string;
+  projectId: string;
+}): Promise<void> {
+  const requestId = randomUUID();
+  try {
+    await enqueueAndAttemptAgentCommand(
+      {
+        userId: args.userId,
+        agentHost: args.agentHost,
+        taskId: args.taskId,
+        eventType: "stop_task",
+        requestId,
+        envelope: {
+          type: "stop_task",
+          payload: {
+            task_id: args.taskId,
+            project_id: args.projectId,
+            request_id: requestId,
+            reason: "task_already_killed",
+          },
+        },
+      },
+      {
+        agentHost: args.agentHost,
+        sendToAgentHost: sendEnvelopeToAgentHost,
+        resolveTaskHost: (taskId) => realtimeHub.getTaskAgentHost(taskId),
+      },
+    );
+  } catch (error) {
+    if (isMissingAgentOutboxTableError(error)) {
+      // No durable outbox available — fall back to a best-effort direct send.
+      realtimeHub.sendToAgentHost(args.userId, args.agentHost, {
+        type: "stop_task",
+        payload: {
+          task_id: args.taskId,
+          project_id: args.projectId,
+          request_id: requestId,
+          reason: "task_already_killed",
+        },
+      });
+      return;
+    }
+    console.error(
+      `[agent-upstream] failed to stop killed task ${args.taskId} on ${args.agentHost}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
     );
   }
 }
@@ -186,7 +249,12 @@ async function ensureAgentOwnsTask(
   await ensureAgentOwnsTaskRecord(userId, task, agentHost, options);
 }
 
-async function getOwnedTask(userId: string, taskId: string, agentHost: string) {
+// Fetch the task row (with the legacy-schema fallback) WITHOUT enforcing
+// ownership. Ownership enforcement (ensureAgentOwnsTaskRecord) mutates routing
+// state — it re-binds the task to the calling host and rewrites executionHost —
+// so callers that must inspect the row before deciding whether that mutation is
+// appropriate (e.g. the killed-task guard) fetch first and validate later.
+async function fetchOwnedTaskRecord(userId: string, taskId: string) {
   let task;
   try {
     task = await db.task.findFirst({
@@ -203,6 +271,11 @@ async function getOwnedTask(userId: string, taskId: string, agentHost: string) {
   if (!task) {
     throw new Error(`Task ${taskId} not found`);
   }
+  return task;
+}
+
+async function getOwnedTask(userId: string, taskId: string, agentHost: string) {
+  const task = await fetchOwnedTaskRecord(userId, taskId);
   await ensureAgentOwnsTaskRecord(userId, task, agentHost);
   return task;
 }
@@ -266,9 +339,44 @@ export async function commitSdkMessage(input: {
   content: string;
   metadata?: Record<string, unknown>;
   messageId?: string | null;
-}): Promise<{ taskId: string; projectId: string; messageId: string | null; duplicate: boolean }> {
-  const task = await getOwnedTask(input.userId, input.taskId, input.agentHost);
+}): Promise<{
+  taskId: string;
+  projectId: string;
+  messageId: string | null;
+  duplicate: boolean;
+  dropped?: boolean;
+}> {
+  // Fetch the row WITHOUT enforcing ownership yet: ensureAgentOwnsTaskRecord
+  // re-binds the task and rewrites executionHost, which must not happen for an
+  // already-dead task.
+  const task = await fetchOwnedTaskRecord(input.userId, input.taskId);
+
+  // Split-brain guard: the task is already terminal (`killed`) yet this host is
+  // still streaming SDK output — the backend session was never actually stopped
+  // (a defensive `daemon_disconnected` kill only touches the DB, or a
+  // `stop_task` never reached a since-reconnected fire). Do NOT resurrect a dead
+  // task by appending messages or re-binding it. Drop the message and durably
+  // stop the zombie backend (covers both the ws and the stateless HTTP ingest
+  // path). Failures never block the drop.
+  if (normalizeTaskStatus(task.status) === "killed") {
+    await stopKilledTaskBackend({
+      userId: input.userId,
+      agentHost: input.agentHost,
+      taskId: task.id,
+      projectId: task.projectId,
+    });
+    return {
+      taskId: task.id,
+      projectId: task.projectId,
+      messageId: normalizeOptionalString(input.messageId),
+      duplicate: true,
+      dropped: true,
+    };
+  }
+
+  await ensureAgentOwnsTaskRecord(input.userId, task, input.agentHost);
   await drainAgentOutboxForHost(input.userId, input.agentHost);
+
   const normalizedAgentHost = normalizeOptionalString(input.agentHost);
   const shouldPromoteInitTask = normalizeTaskStatus(task.status) === "init";
 

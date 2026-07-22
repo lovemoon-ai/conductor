@@ -21,6 +21,10 @@ vi.mock("@/lib/db", () => ({
       update: vi.fn(),
       updateMany: vi.fn(),
     },
+    message: {
+      create: vi.fn(),
+      findUnique: vi.fn(),
+    },
     agentOutbox: {
       findFirst: vi.fn(),
     },
@@ -39,6 +43,8 @@ vi.mock("@/lib/channel/task-event-projector", () => ({
 vi.mock("@/lib/realtime/agent-outbox", () => ({
   acknowledgeAgentCommand: vi.fn(),
   deliverAgentOutboxForHost: vi.fn(),
+  enqueueAndAttemptAgentCommand: vi.fn(),
+  isMissingAgentOutboxTableError: () => false,
 }));
 
 vi.mock("@/lib/realtime/hub", () => ({
@@ -53,9 +59,97 @@ vi.mock("@/lib/realtime/hub", () => ({
 
 const { db } = await import("@/lib/db");
 const { projectTaskStatusUpdate } = await import("@/lib/channel/task-event-projector");
-const { acknowledgeAgentCommand, deliverAgentOutboxForHost } = await import("@/lib/realtime/agent-outbox");
+const { acknowledgeAgentCommand, deliverAgentOutboxForHost, enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
 const { realtimeHub } = await import("@/lib/realtime/hub");
-const { commitAgentCommandAck, commitTaskStatusUpdate } = await import("./agent-upstream");
+const { commitAgentCommandAck, commitSdkMessage, commitTaskStatusUpdate } = await import("./agent-upstream");
+
+describe("commitSdkMessage split-brain guard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(deliverAgentOutboxForHost).mockResolvedValue({ attempted: 0, delivered: 0 });
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(null);
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+    vi.mocked(realtimeHub.sendToAgentHost).mockReturnValue(true);
+    vi.mocked(db.task.updateMany).mockResolvedValue({ count: 1 } as any);
+  });
+
+  it("drops SDK output for an already-killed task and re-stops the streaming host", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "killed",
+      agentHost: "conductor-fire-a",
+      executionHost: "conductor-fire-a",
+      taskType: "ai_task",
+    } as any);
+
+    const result = await commitSdkMessage({
+      userId: "user-1",
+      agentHost: "conductor-fire-a",
+      taskId: "task-1",
+      content: "zombie reply",
+      messageId: "msg-1",
+    });
+
+    expect(result).toEqual({
+      taskId: "task-1",
+      projectId: "project-1",
+      messageId: "msg-1",
+      duplicate: true,
+      dropped: true,
+    });
+    // The dead task must NOT be resurrected: no message write.
+    expect(db.$transaction).not.toHaveBeenCalled();
+    // The zombie backend is durably stopped via the outbox (covers both the ws
+    // and the stateless HTTP ingest path), with the outbox requestId matching
+    // the envelope request_id so the fire's ack can clear the row.
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledTimes(1);
+    const [enqueueInput] = vi.mocked(enqueueAndAttemptAgentCommand).mock.calls[0];
+    expect(enqueueInput).toMatchObject({
+      userId: "user-1",
+      agentHost: "conductor-fire-a",
+      taskId: "task-1",
+      eventType: "stop_task",
+      envelope: {
+        type: "stop_task",
+        payload: expect.objectContaining({
+          task_id: "task-1",
+          project_id: "project-1",
+          reason: "task_already_killed",
+        }),
+      },
+    });
+    expect(enqueueInput.requestId).toBe(enqueueInput.envelope.payload.request_id);
+  });
+
+  it("commits SDK output normally for a running task", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "running",
+      agentHost: "conductor-fire-a",
+      executionHost: "conductor-fire-a",
+      taskType: "ai_task",
+    } as any);
+    vi.mocked(db.$transaction).mockResolvedValue([
+      { id: "message-1", createdAt: new Date("2026-07-22T00:00:00Z") },
+      {},
+    ] as any);
+
+    const result = await commitSdkMessage({
+      userId: "user-1",
+      agentHost: "conductor-fire-a",
+      taskId: "task-1",
+      content: "live reply",
+    });
+
+    expect(result.dropped).toBeUndefined();
+    expect(result.duplicate).toBe(false);
+    expect(db.$transaction).toHaveBeenCalled();
+    expect(realtimeHub.sendToAgentHost).not.toHaveBeenCalled();
+    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+  });
+});
 
 describe("commitTaskStatusUpdate", () => {
   beforeEach(() => {

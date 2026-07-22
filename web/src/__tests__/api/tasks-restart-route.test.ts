@@ -17,6 +17,7 @@ vi.mock("@/lib/realtime/hub", () => ({
 vi.mock("@/lib/realtime/agent-outbox", () => ({
   deliverAgentOutboxForHost: vi.fn().mockResolvedValue({ attempted: 1, delivered: 1 }),
   deliverAgentOutboxRow: vi.fn().mockResolvedValue({ delivered: true }),
+  enqueueAgentCommand: vi.fn(),
   isMissingAgentOutboxTableError: vi.fn().mockReturnValue(false),
 }));
 

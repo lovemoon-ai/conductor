@@ -1,4 +1,9 @@
+import { randomUUID } from "crypto";
 import { db } from "@/lib/db";
+import {
+  enqueueAgentCommand,
+  isMissingAgentOutboxTableError,
+} from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { isConductorFireHost } from "@/lib/subscription/plan-limits";
 import {
@@ -59,6 +64,61 @@ const STALE_DAEMON_TASK_RECOVERY_TIMEOUT_MS = parsePositiveInt(
 // as `killed` even though it keeps generating messages — the "split-brain"
 // stale-recovery bug. See claw/lessons/stable_recover_stale_split_brain_kill_20260425.md
 const WEB_INSTANCE_STARTED_AT = Date.now();
+
+// The defensive kill path only flips the DB row to `killed`; it never delivers
+// a `stop_task` to the agent. If the agent's backend (Codex / `conductor fire`)
+// is actually still alive — its websocket merely flapped, or it was launched in
+// a detached tmux and its socket dropped without the process dying — nothing
+// tells it to stop, so it keeps streaming replies against the now-killed task
+// (the "split-brain zombie"). Enqueue a durable `stop_task` into the agent
+// outbox so that whenever that host's socket reconnects, the pending command is
+// drained to it and the backend session is actually interrupted. We enqueue
+// (persist) but do not require immediate delivery: the whole reason we are here
+// is that the host is currently believed offline.
+// See claw/lessons/stable_recover_stale_split_brain_kill_20260425.md
+async function enqueueRecoveryStopTask(args: {
+  userId: string;
+  taskId: string;
+  projectId: string;
+  agentHost: string;
+}): Promise<void> {
+  try {
+    // The outbox row id and the envelope's `request_id` MUST be the same value:
+    // the fire echoes `request_id` in its `task_stop_ack`, and
+    // acknowledgeAgentCommand clears the row by `requestId`. Two different UUIDs
+    // would leave the row un-acked forever — re-sent on every drain and, if the
+    // task is later reclaimed/restarted in-place under the same taskId, capable
+    // of stopping the fresh run. Mirror the single-id invariant used by the
+    // normal stop path in web/src/app/api/tasks/[taskId]/route.ts.
+    const requestId = randomUUID();
+    await enqueueAgentCommand({
+      userId: args.userId,
+      agentHost: args.agentHost,
+      taskId: args.taskId,
+      eventType: "stop_task",
+      requestId,
+      envelope: {
+        type: "stop_task",
+        payload: {
+          task_id: args.taskId,
+          project_id: args.projectId,
+          request_id: requestId,
+          reason: "recovered_stale_disconnect",
+        },
+      },
+    });
+  } catch (error) {
+    if (isMissingAgentOutboxTableError(error)) return;
+    // Never let outbox bookkeeping fail the recovery itself — the DB row is
+    // already killed; a missing stop_task only means the (possibly-dead) host
+    // will not be re-stopped on reconnect.
+    console.error(
+      `[stale-recovery] failed to enqueue stop_task for task ${args.taskId} on ${args.agentHost}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
 
 export async function recoverStaleDisconnectedAgentTasks(
   userId: string,
@@ -138,6 +198,14 @@ export async function recoverStaleDisconnectedAgentTasks(
       );
       task.status = "killed";
       task.executionHost = null;
+      // Durable stop so the (possibly still-alive) backend converges on
+      // reconnect instead of streaming into a killed task.
+      await enqueueRecoveryStopTask({
+        userId,
+        taskId: task.id,
+        projectId: task.projectId,
+        agentHost: recoveryHost,
+      });
       if (typeof (realtimeHub as any).unbindTask === "function") {
         (realtimeHub as any).unbindTask(task.id);
       }
