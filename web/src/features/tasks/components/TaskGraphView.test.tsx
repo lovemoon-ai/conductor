@@ -183,6 +183,197 @@ describe('TaskGraphView', () => {
     });
   });
 
+  const dragNodeOnto = (draggedTestId: string, target: HTMLElement) => {
+    const dragged = screen.getByTestId(draggedTestId);
+    const draggedLeft = Number.parseFloat((dragged as HTMLElement).style.left || '0');
+    const draggedTop = Number.parseFloat((dragged as HTMLElement).style.top || '0');
+    const targetLeft = Number.parseFloat((target as HTMLElement).style.left || '0');
+    const targetTop = Number.parseFloat((target as HTMLElement).style.top || '0');
+    // At scale 1 the client delta equals the world delta, so moving by
+    // (targetLeft - draggedLeft, targetTop - draggedTop) parks the dragged card
+    // directly on top of the target and its centre lands inside the target rect.
+    const deltaX = targetLeft - draggedLeft;
+    const deltaY = targetTop - draggedTop;
+    fireEvent.pointerDown(dragged, { pointerId: 1, button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(dragged, { pointerId: 1, clientX: deltaX, clientY: deltaY });
+    fireEvent.pointerUp(dragged, { pointerId: 1, clientX: deltaX, clientY: deltaY });
+  };
+
+  const mergeTaskOnto = (draggedTestId: string, targetTestId: string) =>
+    dragNodeOnto(draggedTestId, screen.getByTestId(targetTestId));
+
+  it('merges two cards into a tab card and switches the active tab', async () => {
+    const onOpenTask = vi.fn();
+    render(
+      <TaskGraphView
+        tasks={[
+          createTask({ id: 'task-1', title: 'First task' }),
+          createTask({ id: 'task-2', title: 'Second task' }),
+        ]}
+        onOpenTask={onOpenTask}
+      />,
+    );
+
+    mergeTaskOnto('task-graph-node-task-2', 'task-graph-node-task-1');
+
+    // A tab card appears and the individual nodes are gone.
+    const group = await screen.findByTestId(/task-graph-group-group-/);
+    expect(screen.queryByTestId('task-graph-node-task-1')).toBeNull();
+    expect(screen.queryByTestId('task-graph-node-task-2')).toBeNull();
+
+    // Default ordinal tab labels 0/1 are shown; the dropped card is on top.
+    const tabs = group.querySelectorAll('[data-group-tab="true"]');
+    expect(tabs).toHaveLength(2);
+    expect(screen.getByText('Second task')).toBeInTheDocument();
+    expect(screen.queryByText('First task')).toBeNull();
+
+    // Clicking the first tab brings task-1 to the front.
+    const firstTab = group.querySelector('[data-task-id="task-1"]') as HTMLElement;
+    fireEvent.pointerDown(firstTab, { pointerId: 2, button: 0, clientX: 5, clientY: 5 });
+    fireEvent.pointerUp(firstTab, { pointerId: 2, clientX: 5, clientY: 5 });
+
+    await waitFor(() => {
+      expect(screen.getByText('First task')).toBeInTheDocument();
+    });
+    expect(onOpenTask).not.toHaveBeenCalled();
+  });
+
+  it('renames a tab title in place via double-click', async () => {
+    render(
+      <TaskGraphView
+        tasks={[
+          createTask({ id: 'task-1', title: 'First task' }),
+          createTask({ id: 'task-2', title: 'Second task' }),
+        ]}
+      />,
+    );
+
+    mergeTaskOnto('task-graph-node-task-2', 'task-graph-node-task-1');
+    const group = await screen.findByTestId(/task-graph-group-group-/);
+
+    const firstTab = group.querySelector('[data-task-id="task-1"]') as HTMLElement;
+    fireEvent.doubleClick(firstTab);
+
+    const input = group.querySelector('input') as HTMLInputElement;
+    expect(input).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'Design' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(group.querySelector('[data-task-id="task-1"]')?.textContent).toContain('Design');
+    });
+  });
+
+  it('ejects a tab and dissolves the tab card back into nodes', async () => {
+    render(
+      <TaskGraphView
+        tasks={[
+          createTask({ id: 'task-1', title: 'First task' }),
+          createTask({ id: 'task-2', title: 'Second task' }),
+        ]}
+      />,
+    );
+
+    mergeTaskOnto('task-graph-node-task-2', 'task-graph-node-task-1');
+    const group = await screen.findByTestId(/task-graph-group-group-/);
+
+    const removeButton = group.querySelector(
+      '[data-task-id="task-2"] button[data-group-no-drag="true"]',
+    ) as HTMLElement;
+    fireEvent.click(removeButton);
+
+    // With only one tab left the tab card dissolves; both cards are nodes again.
+    await waitFor(() => {
+      expect(screen.getByTestId('task-graph-node-task-1')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('task-graph-node-task-2')).toBeInTheDocument();
+    expect(screen.queryByTestId(/task-graph-group-group-/)).toBeNull();
+  });
+
+  it('persists a merged tab card for the same graph state key', async () => {
+    const tasks = [
+      createTask({ id: 'task-1', title: 'First task' }),
+      createTask({ id: 'task-2', title: 'Second task' }),
+    ];
+    const { unmount } = render(
+      <TaskGraphView tasks={tasks} stateKey="projects:project-1" />,
+    );
+
+    mergeTaskOnto('task-graph-node-task-2', 'task-graph-node-task-1');
+    await screen.findByTestId(/task-graph-group-group-/);
+
+    await waitFor(() => {
+      expect(
+        window.localStorage.getItem('conductor:task-graph-state:v1:projects%3Aproject-1'),
+      ).toContain('"taskIds":["task-1","task-2"]');
+    });
+
+    unmount();
+    render(<TaskGraphView tasks={tasks} stateKey="projects:project-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId(/task-graph-group-group-/)).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('task-graph-node-task-1')).toBeNull();
+  });
+
+  it('keeps default tab ordinals fixed when a middle tab is filtered out', async () => {
+    const tasks = [
+      createTask({ id: 'task-1', title: 'First task' }),
+      createTask({ id: 'task-2', title: 'Second task' }),
+      createTask({ id: 'task-3', title: 'Third task' }),
+    ];
+    const { rerender } = render(<TaskGraphView tasks={tasks} />);
+
+    mergeTaskOnto('task-graph-node-task-2', 'task-graph-node-task-1');
+    const group = await screen.findByTestId(/task-graph-group-group-/);
+    dragNodeOnto('task-graph-node-task-3', group);
+
+    await waitFor(() => {
+      expect(group.querySelectorAll('[data-group-tab="true"]')).toHaveLength(3);
+    });
+    expect(group.querySelector('[data-task-id="task-1"]')?.textContent).toContain('0');
+    expect(group.querySelector('[data-task-id="task-3"]')?.textContent).toContain('2');
+
+    // Filter out the middle tab: the surviving tabs keep their original numbers
+    // (0 and 2) rather than renumbering to 0/1.
+    rerender(<TaskGraphView tasks={[tasks[0], tasks[2]]} />);
+
+    await waitFor(() => {
+      expect(group.querySelectorAll('[data-group-tab="true"]')).toHaveLength(2);
+    });
+    expect(group.querySelector('[data-task-id="task-1"]')?.textContent).toContain('0');
+    expect(group.querySelector('[data-task-id="task-3"]')?.textContent).toContain('2');
+  });
+
+  it('clears an in-progress tab rename when the tab card dissolves', async () => {
+    render(
+      <TaskGraphView
+        tasks={[
+          createTask({ id: 'task-1', title: 'First task' }),
+          createTask({ id: 'task-2', title: 'Second task' }),
+        ]}
+      />,
+    );
+
+    mergeTaskOnto('task-graph-node-task-2', 'task-graph-node-task-1');
+    const group = await screen.findByTestId(/task-graph-group-group-/);
+
+    fireEvent.doubleClick(group.querySelector('[data-task-id="task-1"]') as HTMLElement);
+    expect(group.querySelector('input')).toBeInTheDocument();
+
+    // Ejecting the other tab dissolves the card; the dangling edit box must go.
+    const removeButton = group.querySelector(
+      '[data-task-id="task-2"] button[data-group-no-drag="true"]',
+    ) as HTMLElement;
+    fireEvent.click(removeButton);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('task-graph-node-task-1')).toBeInTheDocument();
+    });
+    expect(document.querySelector('input')).toBeNull();
+  });
+
   it('zooms with the toolbar controls', async () => {
     render(<TaskGraphView tasks={[createTask({ id: 'task-1', title: 'Zoomable task' })]} />);
 

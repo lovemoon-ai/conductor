@@ -1,6 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { TaskList } from './TaskList';
+
+const stubRect = (el: HTMLElement, top: number, bottom: number) => {
+  el.getBoundingClientRect = () => ({
+    top,
+    bottom,
+    left: 0,
+    right: 300,
+    x: 0,
+    y: top,
+    width: 300,
+    height: bottom - top,
+    toJSON: () => ({}),
+  }) as DOMRect;
+};
+
+// Drag a card by a blank area, vertically (dominant axis) onto the target row so
+// the merge gesture activates past its threshold.
+const dragCardOnto = (fromTaskId: string, fromTop: number, toTop: number) => {
+  const wrapper = document.querySelector(`[data-task-item-wrapper="${fromTaskId}"]`) as HTMLElement;
+  fireEvent.pointerDown(wrapper, { pointerId: 1, button: 0, clientX: 20, clientY: fromTop + 10 });
+  fireEvent.pointerMove(wrapper, { pointerId: 1, clientX: 20, clientY: toTop + 10 });
+  fireEvent.pointerUp(wrapper, { pointerId: 1, clientX: 20, clientY: toTop + 10 });
+};
 
 const deleteTaskMock = vi.fn();
 const taskItemMock = vi.fn();
@@ -399,6 +422,105 @@ describe('TaskList', () => {
       expect(taskOneProps?.projectDaemonHost).toBe('debug');
       expect(taskTwoProps?.showDaemonHost).toBe(true);
       expect(taskTwoProps?.projectDaemonHost).toBe('qa-daemon-2');
+    });
+  });
+
+  describe('tab-card merging (list view)', () => {
+    beforeEach(() => {
+      window.localStorage.clear();
+      tasksState = {
+        ...tasksState,
+        tasks: [
+          { id: 'task-1', title: 'Task One', projectId: 'project-1', status: 'running' },
+          { id: 'task-2', title: 'Task Two', projectId: 'project-1', status: 'running' },
+        ],
+        currentProjectFilter: null,
+      };
+    });
+
+    const primeRowRects = () => {
+      stubRect(document.querySelector('[data-task-item-wrapper="task-1"]') as HTMLElement, 0, 100);
+      stubRect(document.querySelector('[data-task-item-wrapper="task-2"]') as HTMLElement, 100, 200);
+    };
+
+    it('merges two cards into a tab card and switches the active tab', async () => {
+      const onOpenTask = vi.fn();
+      render(<TaskList viewMode="list" projectFilter={null} onOpenTask={onOpenTask} />);
+      primeRowRects();
+
+      // Drag task-1 down onto task-2 → new tab card, dragged tab on top.
+      dragCardOnto('task-1', 0, 100);
+
+      const tabCard = await waitFor(() => {
+        const el = document.querySelector('[data-task-tab-card]');
+        expect(el).not.toBeNull();
+        return el as HTMLElement;
+      });
+      const tabs = tabCard.querySelectorAll('[data-task-tab]');
+      expect(tabs).toHaveLength(2);
+      // Default ordinal labels follow stored order [task-2, task-1] → 0, 1.
+      expect(tabCard.querySelector('[data-task-tab="task-2"]')?.textContent).toContain('0');
+      expect(tabCard.querySelector('[data-task-tab="task-1"]')?.textContent).toContain('1');
+      // Dropped card (task-1) is the only one rendered in the body.
+      expect(screen.getByTestId('task-item-task-1')).toBeInTheDocument();
+      expect(screen.queryByTestId('task-item-task-2')).toBeNull();
+
+      // Clicking the other tab brings task-2 to the front AND selects it.
+      fireEvent.click(tabCard.querySelector('[data-task-tab="task-2"]') as HTMLElement);
+      await waitFor(() => {
+        expect(screen.getByTestId('task-item-task-2')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('task-item-task-1')).toBeNull();
+      expect(onOpenTask).toHaveBeenCalledWith('task-2');
+    });
+
+    it('renames a tab via long-press and unmerges via double-click', () => {
+      vi.useFakeTimers();
+      try {
+        render(<TaskList viewMode="list" projectFilter={null} />);
+        primeRowRects();
+        dragCardOnto('task-1', 0, 100);
+
+        const tabCard = document.querySelector('[data-task-tab-card]') as HTMLElement;
+        expect(tabCard).not.toBeNull();
+
+        // Press-and-hold task-2's tab → inline rename box.
+        const tab2 = tabCard.querySelector('[data-task-tab="task-2"]') as HTMLElement;
+        fireEvent.pointerDown(tab2, { button: 0, pointerId: 5, clientX: 5, clientY: 5 });
+        act(() => {
+          vi.advanceTimersByTime(500);
+        });
+        const input = tabCard.querySelector('[data-task-tab-input="task-2"]') as HTMLInputElement;
+        expect(input).toBeInTheDocument();
+        fireEvent.change(input, { target: { value: 'Design' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        expect(tabCard.querySelector('[data-task-tab="task-2"]')?.textContent).toContain('Design');
+
+        // Double-click a tab → unmerge; only one tab remains → the card dissolves.
+        fireEvent.doubleClick(tabCard.querySelector('[data-task-tab="task-1"]') as HTMLElement);
+        expect(document.querySelector('[data-task-tab-card]')).toBeNull();
+        expect(document.querySelector('[data-task-item-wrapper="task-1"]')).not.toBeNull();
+        expect(document.querySelector('[data-task-item-wrapper="task-2"]')).not.toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('persists a merged tab card across remounts for the same scope', async () => {
+      const { unmount } = render(<TaskList viewMode="list" projectFilter={null} />);
+      primeRowRects();
+      dragCardOnto('task-1', 0, 100);
+
+      await waitFor(() => {
+        expect(document.querySelector('[data-task-tab-card]')).not.toBeNull();
+      });
+
+      unmount();
+      render(<TaskList viewMode="list" projectFilter={null} />);
+      await waitFor(() => {
+        expect(document.querySelector('[data-task-tab-card]')).not.toBeNull();
+      });
+      expect(document.querySelector('[data-task-item-wrapper="task-1"]')).toBeNull();
     });
   });
 });

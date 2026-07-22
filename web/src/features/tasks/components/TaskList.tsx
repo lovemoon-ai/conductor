@@ -1,6 +1,16 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react';
+import { createPortal } from 'react-dom';
 import type { TaskType } from '@/lib/tasks/task-config';
 import { orderTasksWithPinnedFirst, useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
@@ -10,8 +20,42 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { EmptyState } from '@/components/common/EmptyState';
 import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 import { TaskGraphView } from './TaskGraphView';
+import type { Task } from '@/shared/types';
+import {
+  addTaskToGroup,
+  buildTaskCardGroupsStorageKey,
+  buildTaskCardRows,
+  createTaskCardGroup,
+  ejectTaskFromGroup,
+  loadTaskCardGroups,
+  maxTaskCardGroupIdCounter,
+  projectTaskCardGroups,
+  saveTaskCardGroups,
+  setActiveTaskCardTab,
+  setTaskCardTabLabel,
+  taskCardTabLabel,
+  type TaskCardGroup,
+} from '../utils/task-card-groups';
 
 export type TaskListViewMode = 'list' | 'graph';
+
+// A whole-card drag is claimed only once the pointer travels this far and the
+// motion is vertically dominant — small moves stay clicks, horizontal moves stay
+// TaskItem swipes, so merge-drag coexists with the card's existing gestures.
+const DRAG_ACTIVATE_THRESHOLD = 6;
+// Press-and-hold duration that turns a tab press into an inline rename.
+const TAB_LONG_PRESS_MS = 450;
+
+type DragGhost = { taskId: string; title: string; x: number; y: number; width: number };
+type RowDragState = {
+  taskId: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  offsetX: number;
+  offsetY: number;
+  active: boolean;
+};
 
 const EmptyIcon = () => (
   <svg className="size-16 text-muted/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -82,7 +126,20 @@ export function TaskList({
   const { pushToast } = useToast();
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
   const [isDeletingSelected, setIsDeletingSelected] = useState(false);
+  const [groups, setGroups] = useState<TaskCardGroup[]>([]);
+  const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [dragGhost, setDragGhost] = useState<DragGhost | null>(null);
+  const [editingTab, setEditingTab] = useState<{ groupId: string; taskId: string } | null>(null);
+  const [editingValue, setEditingValue] = useState('');
   const itemWrapperRefs = useRef(new Map<string, HTMLDivElement>());
+  const rowRefs = useRef(new Map<string, HTMLElement>());
+  const dragRef = useRef<RowDragState | null>(null);
+  const justDraggedRef = useRef(false);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressFiredRef = useRef(false);
+  const groupIdCounterRef = useRef(0);
+  const skipGroupSaveRef = useRef(false);
   const previousRectsRef = useRef(new Map<string, DOMRect>());
   const previousOrderRef = useRef<string[]>([]);
   const animationFrameRef = useRef<number | null>(null);
@@ -127,6 +184,10 @@ export function TaskList({
       : 'all';
     return `projects:${projectScope}`;
   }, [effectiveProjectFilterIds]);
+  const groupsStorageKey = useMemo(
+    () => buildTaskCardGroupsStorageKey(graphStateKey),
+    [graphStateKey],
+  );
   const isMergedScope = effectiveProjectFilterIds.length > 1;
   const runningFilteredTasks = useMemo(
     () => runningOnly
@@ -224,6 +285,24 @@ export function TaskList({
     : null;
   const allTaskIds = useMemo(() => visibleTasks.map((task) => task.id), [visibleTasks]);
   const visibleTaskIdSet = useMemo(() => new Set(allTaskIds), [allTaskIds]);
+  const visibleTaskById = useMemo(
+    () => new Map(visibleTasks.map((task) => [task.id, task] as const)),
+    [visibleTasks],
+  );
+  // Tab-card grouping only applies to the list view; the graph view has its own
+  // free-canvas merge model. Groups are projected onto the visible tasks so
+  // filtered-out tabs disappear without mutating the stored membership.
+  const renderGroups = useMemo(
+    () => (viewMode === 'list'
+      ? projectTaskCardGroups(groups, (taskId) => visibleTaskIdSet.has(taskId))
+      : []),
+    [groups, viewMode, visibleTaskIdSet],
+  );
+  const groupIdSet = useMemo(() => new Set(renderGroups.map((group) => group.id)), [renderGroups]);
+  const taskCardRows = useMemo(
+    () => buildTaskCardRows(visibleTasks, renderGroups),
+    [visibleTasks, renderGroups],
+  );
   const selectedTaskIdSet = useMemo(() => new Set(
     [...selectedTaskIds].filter((taskId) => visibleTaskIdSet.has(taskId)),
   ), [selectedTaskIds, visibleTaskIdSet]);
@@ -236,6 +315,9 @@ export function TaskList({
     () => {
       if (animationFrameRef.current !== null && typeof window !== 'undefined') {
         window.cancelAnimationFrame(animationFrameRef.current);
+      }
+      if (longPressTimerRef.current !== null) {
+        clearTimeout(longPressTimerRef.current);
       }
     }
   ), []);
@@ -308,12 +390,42 @@ export function TaskList({
     previousOrderRef.current = [...allTaskIds];
   }, [allTaskIds, desktopListPaneMode, viewMode]);
 
-  const setItemWrapperRef = (taskId: string) => (node: HTMLDivElement | null) => {
-    if (node) {
-      itemWrapperRefs.current.set(taskId, node);
+  // Load persisted tab cards for the active project scope; seed the id counter
+  // above every stored id so a fresh id can never collide with an existing one.
+  useEffect(() => {
+    const loaded = loadTaskCardGroups(groupsStorageKey);
+    skipGroupSaveRef.current = true;
+    groupIdCounterRef.current = maxTaskCardGroupIdCounter(loaded);
+    setGroups(loaded);
+    setEditingTab(null);
+  }, [groupsStorageKey]);
+
+  useEffect(() => {
+    if (skipGroupSaveRef.current) {
+      skipGroupSaveRef.current = false;
       return;
     }
-    itemWrapperRefs.current.delete(taskId);
+    saveTaskCardGroups(groupsStorageKey, groups);
+  }, [groups, groupsStorageKey]);
+
+  // Drop an in-progress rename once its tab stops being an editable rendered tab
+  // (group dissolved, or its task filtered out) so the edit box can't linger.
+  useEffect(() => {
+    setEditingTab((current) => {
+      if (!current) return current;
+      const group = renderGroups.find((candidate) => candidate.id === current.groupId);
+      return group && group.taskIds.includes(current.taskId) ? current : null;
+    });
+  }, [renderGroups]);
+
+  const setRowRef = (rowId: string, isTaskRow: boolean) => (node: HTMLElement | null) => {
+    if (node) {
+      rowRefs.current.set(rowId, node);
+      if (isTaskRow) itemWrapperRefs.current.set(rowId, node as HTMLDivElement);
+      return;
+    }
+    rowRefs.current.delete(rowId);
+    if (isTaskRow) itemWrapperRefs.current.delete(rowId);
   };
 
   const toggleTaskSelection = (taskId: string) => {
@@ -362,6 +474,210 @@ export function TaskList({
     } finally {
       setIsDeletingSelected(false);
     }
+  };
+
+  const nextGroupId = (): string => {
+    groupIdCounterRef.current += 1;
+    return `tabcard-${groupIdCounterRef.current}`;
+  };
+
+  // Hit-test the pointer against every row except the dragged card. The list can
+  // scroll, so we read live rects rather than caching them.
+  const findRowIdAtPoint = (clientX: number, clientY: number, exceptId: string): string | null => {
+    let found: string | null = null;
+    rowRefs.current.forEach((node, rowId) => {
+      if (rowId === exceptId) return;
+      const rect = node.getBoundingClientRect();
+      if (
+        clientY >= rect.top && clientY <= rect.bottom
+        && clientX >= rect.left && clientX <= rect.right
+      ) {
+        found = rowId;
+      }
+    });
+    return found;
+  };
+
+  // Pressing a plain card area (not a button/link/input) arms a potential drag.
+  const isInteractiveDragTarget = (target: EventTarget | null): boolean =>
+    target instanceof Element
+    && Boolean(target.closest('button, a, input, textarea, select, label, [contenteditable="true"]'));
+
+  const handleRowPointerDown = (event: ReactPointerEvent<HTMLDivElement>, taskId: string) => {
+    justDraggedRef.current = false;
+    if (event.button !== 0 || selectionMode) return;
+    if (isInteractiveDragTarget(event.target)) return;
+    const rect = rowRefs.current.get(taskId)?.getBoundingClientRect();
+    dragRef.current = {
+      taskId,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: rect ? event.clientX - rect.left : 0,
+      offsetY: rect ? event.clientY - rect.top : 0,
+      active: false,
+    };
+  };
+
+  const handleRowPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - drag.startX;
+    const deltaY = event.clientY - drag.startY;
+    if (!drag.active) {
+      // Horizontal-dominant motion belongs to TaskItem's swipe — bow out.
+      if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > DRAG_ACTIVATE_THRESHOLD) {
+        dragRef.current = null;
+        return;
+      }
+      if (Math.abs(deltaY) < DRAG_ACTIVATE_THRESHOLD) return;
+      drag.active = true;
+      setDraggingTaskId(drag.taskId);
+      const width = rowRefs.current.get(drag.taskId)?.getBoundingClientRect().width ?? 280;
+      const title = visibleTaskById.get(drag.taskId)?.title ?? '';
+      setDragGhost({
+        taskId: drag.taskId,
+        title,
+        x: event.clientX - drag.offsetX,
+        y: event.clientY - drag.offsetY,
+        width,
+      });
+    }
+    event.preventDefault();
+    setDragGhost((current) => (current
+      ? { ...current, x: event.clientX - drag.offsetX, y: event.clientY - drag.offsetY }
+      : current));
+    setDropTargetId(findRowIdAtPoint(event.clientX, event.clientY, drag.taskId));
+  };
+
+  const handleRowPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const wasActive = drag.active;
+    dragRef.current = null;
+    setDraggingTaskId(null);
+    setDropTargetId(null);
+    setDragGhost(null);
+    if (!wasActive) return;
+    // Swallow the click that the browser fires after a drag so the card under
+    // the pointer isn't opened.
+    justDraggedRef.current = true;
+    const targetId = findRowIdAtPoint(event.clientX, event.clientY, drag.taskId);
+    if (!targetId || targetId === drag.taskId) return;
+    if (groupIdSet.has(targetId)) {
+      setGroups((current) => addTaskToGroup(current, targetId, drag.taskId));
+    } else {
+      setGroups((current) => createTaskCardGroup(current, nextGroupId(), targetId, drag.taskId));
+    }
+  };
+
+  const handleRowClickCapture = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (justDraggedRef.current) {
+      justDraggedRef.current = false;
+      event.stopPropagation();
+      event.preventDefault();
+    }
+  };
+
+  const handleSelectTab = (groupId: string, taskId: string) => {
+    // Bring the tab's task to the top of the stack AND make it the selected task
+    // so the active highlight and (desktop) detail pane follow the tab.
+    setGroups((current) => setActiveTaskCardTab(current, groupId, taskId));
+    onOpenTask?.(taskId);
+  };
+
+  const clearTabLongPress = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  // Tab gestures: click = select, press-and-hold = rename, double-click = un-merge.
+  const handleTabPointerDown = (
+    event: ReactPointerEvent<HTMLDivElement>,
+    groupId: string,
+    taskId: string,
+    label: string,
+  ) => {
+    if (event.button !== 0) return;
+    longPressFiredRef.current = false;
+    clearTabLongPress();
+    longPressTimerRef.current = setTimeout(() => {
+      longPressFiredRef.current = true;
+      beginTabEdit(groupId, taskId, label);
+    }, TAB_LONG_PRESS_MS);
+  };
+
+  const handleTabClick = (groupId: string, taskId: string) => {
+    // A press-and-hold already opened the rename box; swallow its trailing click.
+    if (longPressFiredRef.current) {
+      longPressFiredRef.current = false;
+      return;
+    }
+    handleSelectTab(groupId, taskId);
+  };
+
+  const handleTabDoubleClick = (groupId: string, taskId: string) => {
+    clearTabLongPress();
+    longPressFiredRef.current = false;
+    handleEjectTab(groupId, taskId);
+  };
+
+  const beginTabEdit = (groupId: string, taskId: string, currentLabel: string) => {
+    setEditingTab({ groupId, taskId });
+    setEditingValue(currentLabel);
+  };
+
+  const commitTabEdit = () => {
+    if (!editingTab) return;
+    const { groupId, taskId } = editingTab;
+    setGroups((current) => setTaskCardTabLabel(current, groupId, taskId, editingValue));
+    setEditingTab(null);
+    setEditingValue('');
+  };
+
+  const cancelTabEdit = () => {
+    setEditingTab(null);
+    setEditingValue('');
+  };
+
+  const handleEjectTab = (groupId: string, taskId: string) => {
+    setGroups((current) => ejectTaskFromGroup(current, groupId, taskId));
+    setEditingTab((current) => (current && current.taskId === taskId ? null : current));
+  };
+
+  const renderTaskItem = (task: Task) => {
+    const projectEntry = projectMap.get(task.projectId ?? '');
+    // Resolve the per-card daemon via the same fallback chain used by the filter
+    // helpers so, e.g., Default-Project tasks still render their daemon chip.
+    const taskDaemonHost = showDaemonHost
+      ? resolveTaskDaemonHost(task, projectDaemonHostMap)
+      : null;
+    return (
+      <TaskItem
+        task={task}
+        isUnread={unreadTaskIds.has(task.id)}
+        isSelected={selectedTaskIds.has(task.id)}
+        isActive={activeTaskId === task.id}
+        selectionMode={selectionMode}
+        onToggleSelect={toggleTaskSelection}
+        onOpenTask={onOpenTask}
+        desktopListPaneMode={desktopListPaneMode}
+        showProjectName={showProjectName}
+        showDaemonHost={showDaemonHost}
+        projectName={showProjectName ? projectEntry?.name ?? null : null}
+        projectDaemonHost={taskDaemonHost}
+        activeTaskTypeFilter={taskTypeFilter}
+        activeProjectFilter={isMergedScope ? null : (effectiveProjectFilterIds[0] ?? null)}
+        activeDaemonHostFilter={daemonHostFilter}
+        activeBackendFilter={backendFilter}
+        onFilterByTaskType={onFilterByTaskType}
+        onFilterByProject={onFilterByProject}
+        onFilterByDaemonHost={onFilterByDaemonHost}
+        onFilterByBackend={onFilterByBackend}
+      />
+    );
   };
 
   const taskTypeFilterLabel = taskTypeFilter === 'pty_task'
@@ -549,56 +865,135 @@ export function TaskList({
       ) : null}
 
       {viewMode === 'graph' ? renderGraphCanvas() : (
-        <div className="space-y-3">
-          {visibleTasks.map((task) => {
-            const projectEntry = projectMap.get(task.projectId ?? '');
-            // Resolve the per-card daemon via the same fallback chain used by
-            // the filter / detection helpers above so that, e.g., tasks on the
-            // server-side Default Project (project.daemonHost is null) still
-            // render their daemon chip from `task.metadata.daemonName`.
-            const taskDaemonHost = showDaemonHost
-              ? resolveTaskDaemonHost(task, projectDaemonHostMap)
-              : null;
+        <div className={`space-y-3 ${draggingTaskId ? 'select-none' : ''}`}>
+          {taskCardRows.map((row) => {
+            if (row.type === 'task') {
+              const task = row.task;
+              const isDropTarget = dropTargetId === task.id;
+              const isDragging = draggingTaskId === task.id;
+              const dragProps = selectionMode ? {} : {
+                onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => handleRowPointerDown(event, task.id),
+                onPointerMove: handleRowPointerMove,
+                onPointerUp: handleRowPointerUp,
+                onPointerCancel: handleRowPointerUp,
+                onClickCapture: handleRowClickCapture,
+              };
+              return (
+                <div
+                  key={task.id}
+                  ref={setRowRef(task.id, true)}
+                  data-task-item-wrapper={task.id}
+                  {...dragProps}
+                  className={`relative cursor-grab touch-pan-y transition-opacity ${
+                    isDragging ? 'cursor-grabbing opacity-40' : ''
+                  }`}
+                >
+                  {renderTaskItem(task)}
+                  {isDropTarget ? <DropHighlight /> : null}
+                </div>
+              );
+            }
+
+            const group = row.group;
+            const activeTask = visibleTaskById.get(group.activeTaskId);
+            if (!activeTask) return null;
+            const isDropTarget = dropTargetId === group.id;
             return (
-            <div
-              key={task.id}
-              ref={setItemWrapperRef(task.id)}
-              data-task-item-wrapper={task.id}
-            >
-              <TaskItem
-                task={task}
-                isUnread={unreadTaskIds.has(task.id)}
-                isSelected={selectedTaskIds.has(task.id)}
-                isActive={activeTaskId === task.id}
-                selectionMode={selectionMode}
-                onToggleSelect={toggleTaskSelection}
-                onOpenTask={onOpenTask}
-                desktopListPaneMode={desktopListPaneMode}
-                showProjectName={showProjectName}
-                showDaemonHost={showDaemonHost}
-                projectName={showProjectName ? projectEntry?.name ?? null : null}
-                projectDaemonHost={taskDaemonHost}
-                activeTaskTypeFilter={taskTypeFilter}
-                activeProjectFilter={
-                  // In merged cross-daemon scope no single id is "the" filter,
-                  // so the per-card chip is rendered without the active state
-                  // (still clickable to drill into a specific member).
-                  isMergedScope
-                    ? null
-                    : (effectiveProjectFilterIds[0] ?? null)
-                }
-                activeDaemonHostFilter={daemonHostFilter}
-                activeBackendFilter={backendFilter}
-                onFilterByTaskType={onFilterByTaskType}
-                onFilterByProject={onFilterByProject}
-                onFilterByDaemonHost={onFilterByDaemonHost}
-                onFilterByBackend={onFilterByBackend}
-              />
-            </div>
+              <div
+                key={group.id}
+                ref={setRowRef(group.id, false)}
+                data-task-tab-card={group.id}
+                className="relative"
+              >
+                {/* Tabs sit flush on the card's top edge (-mb-px overlaps the
+                    border) and are nudged left so they clear the card's rounded
+                    corner, reading as one attached unit. */}
+                <div
+                  role="tablist"
+                  aria-label="Merged task tabs"
+                  title="Click to open · hold to rename · double-click to unmerge"
+                  className="relative z-[1] -mb-px ml-2 flex flex-wrap items-end gap-0.5 pl-1"
+                >
+                  {group.taskIds.map((taskId) => {
+                    const tabTask = visibleTaskById.get(taskId);
+                    if (!tabTask) return null;
+                    const isActiveTab = taskId === group.activeTaskId;
+                    const label = taskCardTabLabel(group, taskId);
+                    const isEditing = editingTab?.groupId === group.id && editingTab.taskId === taskId;
+                    return (
+                      <div
+                        key={taskId}
+                        role="tab"
+                        aria-selected={isActiveTab}
+                        data-task-tab={taskId}
+                        title={tabTask.title}
+                        onPointerDown={(event) => handleTabPointerDown(event, group.id, taskId, label)}
+                        onPointerUp={clearTabLongPress}
+                        onPointerLeave={clearTabLongPress}
+                        onPointerCancel={clearTabLongPress}
+                        onClick={() => handleTabClick(group.id, taskId)}
+                        onDoubleClick={() => handleTabDoubleClick(group.id, taskId)}
+                        className={`flex shrink-0 cursor-pointer select-none items-center rounded-t-[10px] border px-3 py-1.5 text-xs font-medium transition-colors ${
+                          isActiveTab
+                            ? 'border-[var(--border-default)] border-b-transparent bg-[var(--surface-panel)] text-ink'
+                            : 'border-transparent bg-[var(--surface-subtle)]/70 text-muted hover:bg-[var(--surface-subtle)] hover:text-ink'
+                        }`}
+                      >
+                        {isEditing ? (
+                          <input
+                            data-task-tab-input={taskId}
+                            autoFocus
+                            value={editingValue}
+                            onChange={(event) => setEditingValue(event.target.value)}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => event.stopPropagation()}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                commitTabEdit();
+                              } else if (event.key === 'Escape') {
+                                event.preventDefault();
+                                cancelTabEdit();
+                              }
+                            }}
+                            onBlur={commitTabEdit}
+                            className="w-20 rounded bg-transparent text-xs text-current placeholder:text-current/60 focus:outline-none"
+                          />
+                        ) : (
+                          <span className="max-w-[8rem] truncate">{label}</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="relative">
+                  {renderTaskItem(activeTask)}
+                  {isDropTarget ? <DropHighlight /> : null}
+                </div>
+              </div>
             );
           })}
         </div>
       )}
+
+      {dragGhost
+        ? createPortal(
+            <div
+              style={{ left: dragGhost.x, top: dragGhost.y, width: dragGhost.width }}
+              className="pointer-events-none fixed z-[60] rotate-1 rounded-2xl border border-[var(--accent)]/50 bg-panel px-4 py-3 opacity-95 shadow-2xl"
+            >
+              <div className="truncate text-sm font-semibold text-ink">{dragGhost.title}</div>
+              <div className="mt-0.5 text-xs text-muted">Drop onto a card to merge</div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
+
+// Drop-target affordance drawn as an overlay above the (opaque) card, using an
+// inset ring + tint so the card's rounded corners never clip or break.
+const DropHighlight = () => (
+  <div className="pointer-events-none absolute inset-0 z-20 rounded-[16px] bg-[var(--accent)]/10 shadow-[inset_0_0_0_2px_var(--accent)]" />
+);

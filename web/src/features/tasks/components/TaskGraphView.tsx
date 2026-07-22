@@ -12,6 +12,9 @@ const NODE_Y_GAP = 40;
 const CANVAS_PADDING = 72;
 const MIN_SCALE = 0.35;
 const MAX_SCALE = 1.8;
+const TAB_BAR_HEIGHT = 30;
+const GROUP_WIDTH = NODE_WIDTH;
+const GROUP_HEIGHT = NODE_HEIGHT + TAB_BAR_HEIGHT;
 
 interface TaskGraphViewProps {
   tasks: Task[];
@@ -54,10 +57,23 @@ type Point = {
   y: number;
 };
 
+// A "tab card" formed by merging several task cards on the canvas. The cards
+// stack at a single position and are surfaced through a tab bar; `activeIndex`
+// points at the tab currently rendered on top, `labels` holds per-tab custom
+// titles (missing entries fall back to the ordinal 0/1/2… numbering).
+type TaskCardGroup = {
+  id: string;
+  taskIds: string[];
+  activeIndex: number;
+  labels: Record<string, string>;
+  position: Point;
+};
+
 type TaskGraphState = {
   viewport: Viewport;
   nodePositions: Record<string, Point>;
   manualEdges: GraphEdge[];
+  groups: TaskCardGroup[];
 };
 
 type CanvasDragState = {
@@ -71,10 +87,33 @@ type CanvasDragState = {
 type NodeDragState = CanvasDragState & {
   taskId: string;
   moved: boolean;
+  lastX: number;
+  lastY: number;
 };
+
+type GroupDragState = CanvasDragState & {
+  groupId: string;
+  moved: boolean;
+  startTaskId: string | null;
+};
+
+type Rect = { x: number; y: number; width: number; height: number };
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
+
+const rectContainsPoint = (rect: Rect, point: Point): boolean =>
+  point.x >= rect.x
+  && point.x <= rect.x + rect.width
+  && point.y >= rect.y
+  && point.y <= rect.y + rect.height;
+
+const emptyGraphState = (): TaskGraphState => ({
+  viewport: DEFAULT_VIEWPORT,
+  nodePositions: {},
+  manualEdges: [],
+  groups: [],
+});
 
 const DEFAULT_VIEWPORT: Viewport = { x: 32, y: 32, scale: 1 };
 const TASK_GRAPH_STATE_STORAGE_PREFIX = 'conductor:task-graph-state:v1:';
@@ -146,43 +185,84 @@ const readManualEdges = (value: unknown): GraphEdge[] => {
   return edges;
 };
 
+const readGroups = (value: unknown): TaskCardGroup[] => {
+  if (!Array.isArray(value)) return [];
+  const groups: TaskCardGroup[] = [];
+  const seenIds = new Set<string>();
+  const claimedTaskIds = new Set<string>();
+  for (const groupValue of value) {
+    if (!isObject(groupValue)) continue;
+    const { id, taskIds, activeIndex, labels, position } = groupValue;
+    if (typeof id !== 'string' || !id || seenIds.has(id)) continue;
+    if (!Array.isArray(taskIds)) continue;
+
+    const ids: string[] = [];
+    for (const taskId of taskIds) {
+      // A task can live in at most one group; drop duplicates and cross-group
+      // collisions so the merge state can never fork a single card into two tabs.
+      if (typeof taskId === 'string' && taskId && !claimedTaskIds.has(taskId) && !ids.includes(taskId)) {
+        ids.push(taskId);
+      }
+    }
+    if (ids.length < 2) continue;
+
+    const point = readPoint(position) ?? { x: CANVAS_PADDING, y: CANVAS_PADDING };
+    const labelMap: Record<string, string> = {};
+    if (isObject(labels)) {
+      for (const [taskId, labelValue] of Object.entries(labels)) {
+        if (ids.includes(taskId) && typeof labelValue === 'string' && labelValue.trim()) {
+          labelMap[taskId] = labelValue;
+        }
+      }
+    }
+    const resolvedActiveIndex = typeof activeIndex === 'number' && Number.isFinite(activeIndex)
+      ? clamp(Math.floor(activeIndex), 0, ids.length - 1)
+      : 0;
+
+    ids.forEach((taskId) => claimedTaskIds.add(taskId));
+    seenIds.add(id);
+    groups.push({ id, taskIds: ids, activeIndex: resolvedActiveIndex, labels: labelMap, position: point });
+  }
+  return groups;
+};
+
+// Highest numeric suffix among existing group ids. Seeding the id counter from
+// this (rather than from the group *count*) guarantees a freshly-minted id can
+// never collide with a persisted one after create/dissolve churn has left
+// high-numbered ids behind while the count is low.
+const maxGroupIdCounter = (groups: TaskCardGroup[]): number => {
+  let max = 0;
+  for (const group of groups) {
+    const match = /^group-(\d+)/.exec(group.id);
+    if (match) {
+      max = Math.max(max, Number(match[1]));
+    }
+  }
+  return max;
+};
+
 const loadTaskGraphState = (storageKey: string): TaskGraphState => {
   if (typeof window === 'undefined') {
-    return {
-      viewport: DEFAULT_VIEWPORT,
-      nodePositions: {},
-      manualEdges: [],
-    };
+    return emptyGraphState();
   }
 
   try {
     const raw = window.localStorage.getItem(storageKey);
     if (!raw) {
-      return {
-        viewport: DEFAULT_VIEWPORT,
-        nodePositions: {},
-        manualEdges: [],
-      };
+      return emptyGraphState();
     }
     const parsed: unknown = JSON.parse(raw);
     if (!isObject(parsed)) {
-      return {
-        viewport: DEFAULT_VIEWPORT,
-        nodePositions: {},
-        manualEdges: [],
-      };
+      return emptyGraphState();
     }
     return {
       viewport: readViewport(parsed.viewport),
       nodePositions: readNodePositions(parsed.nodePositions),
       manualEdges: readManualEdges(parsed.manualEdges),
+      groups: readGroups(parsed.groups),
     };
   } catch {
-    return {
-      viewport: DEFAULT_VIEWPORT,
-      nodePositions: {},
-      manualEdges: [],
-    };
+    return emptyGraphState();
   }
 };
 
@@ -360,17 +440,28 @@ export function TaskGraphView({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const canvasDragRef = useRef<CanvasDragState | null>(null);
   const nodeDragRef = useRef<NodeDragState | null>(null);
+  const groupDragRef = useRef<GroupDragState | null>(null);
+  const groupIdCounterRef = useRef(maxGroupIdCounter(initialGraphState.groups));
   const skipSaveRef = useRef(false);
   const [viewport, setViewport] = useState<Viewport>(() => initialGraphState.viewport);
   const [isPanning, setIsPanning] = useState(false);
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
+  const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null);
   const [nodePositions, setNodePositions] = useState<Record<string, Point>>(
     () => initialGraphState.nodePositions,
   );
   const [manualEdges, setManualEdges] = useState<GraphEdge[]>(
     () => initialGraphState.manualEdges,
   );
+  const [groups, setGroups] = useState<TaskCardGroup[]>(() => initialGraphState.groups);
+  const [editingTab, setEditingTab] = useState<{ groupId: string; taskId: string } | null>(null);
+  const [editingValue, setEditingValue] = useState('');
   const [connectingFromTaskId, setConnectingFromTaskId] = useState<string | null>(null);
+
+  const nextGroupId = (): string => {
+    groupIdCounterRef.current += 1;
+    return `group-${groupIdCounterRef.current}`;
+  };
   const layoutTemplate = useMemo(() => buildGraphLayout(tasks), [tasks]);
   const taskIds = useMemo(() => new Set(tasks.map((task) => task.id)), [tasks]);
   const taskIdsKey = useMemo(() => tasks.map((task) => task.id).join('|'), [tasks]);
@@ -378,9 +469,12 @@ export function TaskGraphView({
   useEffect(() => {
     const storedState = loadTaskGraphState(storageKey);
     skipSaveRef.current = true;
+    groupIdCounterRef.current = maxGroupIdCounter(storedState.groups);
     setViewport(storedState.viewport);
     setNodePositions(storedState.nodePositions);
     setManualEdges(storedState.manualEdges);
+    setGroups(storedState.groups);
+    setEditingTab(null);
     setConnectingFromTaskId(null);
   }, [storageKey]);
 
@@ -412,8 +506,9 @@ export function TaskGraphView({
       viewport,
       nodePositions,
       manualEdges,
+      groups,
     });
-  }, [manualEdges, nodePositions, storageKey, viewport]);
+  }, [groups, manualEdges, nodePositions, storageKey, viewport]);
 
   const nodes = useMemo(
     () =>
@@ -423,23 +518,92 @@ export function TaskGraphView({
       }),
     [layoutTemplate.nodes, nodePositions],
   );
+  const taskById = useMemo(
+    () => new Map(tasks.map((task) => [task.id, task] as const)),
+    [tasks],
+  );
+  // Project the stored groups onto the currently-visible tasks. Tabs whose task
+  // is filtered out are dropped for rendering (but never mutated in storage, so
+  // they reappear when the filter clears — mirroring how manual edges behave).
+  // A group needs at least two live tabs to stay a tab card; otherwise the lone
+  // survivor falls back to a normal node.
+  const renderGroups = useMemo(
+    () =>
+      groups.flatMap((group) => {
+        const liveTaskIds = group.taskIds.filter((taskId) => taskById.has(taskId));
+        if (liveTaskIds.length < 2) return [];
+        const storedActiveId = group.taskIds[group.activeIndex];
+        const activeTaskId = storedActiveId && liveTaskIds.includes(storedActiveId)
+          ? storedActiveId
+          : liveTaskIds[0];
+        // Default tab numbers key off each tab's original position, so a tab's
+        // ordinal stays fixed even when a sibling tab is filtered out and the
+        // rendered list shrinks.
+        const ordinals: Record<string, number> = {};
+        group.taskIds.forEach((taskId, index) => {
+          ordinals[taskId] = index;
+        });
+        return [{ ...group, taskIds: liveTaskIds, activeTaskId, ordinals }];
+      }),
+    [groups, taskById],
+  );
+  const groupedTaskIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const group of renderGroups) {
+      for (const taskId of group.taskIds) ids.add(taskId);
+    }
+    return ids;
+  }, [renderGroups]);
+  const individualNodes = useMemo(
+    () => nodes.filter((node) => !groupedTaskIds.has(node.task.id)),
+    [nodes, groupedTaskIds],
+  );
   const canvasSize = useMemo(() => {
     let width = layoutTemplate.width;
     let height = layoutTemplate.height;
-    for (const node of nodes) {
+    for (const node of individualNodes) {
       width = Math.max(width, node.x + node.width + CANVAS_PADDING);
       height = Math.max(height, node.y + node.height + CANVAS_PADDING);
     }
+    for (const group of renderGroups) {
+      width = Math.max(width, group.position.x + GROUP_WIDTH + CANVAS_PADDING);
+      height = Math.max(height, group.position.y + GROUP_HEIGHT + CANVAS_PADDING);
+    }
     return { width, height };
-  }, [layoutTemplate.width, layoutTemplate.height, nodes]);
+  }, [layoutTemplate.width, layoutTemplate.height, individualNodes, renderGroups]);
   const edges = useMemo(
     () => [...layoutTemplate.edges, ...manualEdges],
     [layoutTemplate.edges, manualEdges],
   );
-  const nodesById = useMemo(
-    () => new Map(nodes.map((node) => [node.task.id, node] as const)),
-    [nodes],
-  );
+  // Edge endpoints resolve to either a free node or the tab card that now hosts
+  // the task, so relationships stay drawn after cards are merged into a stack.
+  const endpointById = useMemo(() => {
+    const map = new Map<string, Rect>();
+    for (const node of individualNodes) {
+      map.set(node.task.id, { x: node.x, y: node.y, width: node.width, height: node.height });
+    }
+    for (const group of renderGroups) {
+      const rect: Rect = {
+        x: group.position.x,
+        y: group.position.y,
+        width: GROUP_WIDTH,
+        height: GROUP_HEIGHT,
+      };
+      for (const taskId of group.taskIds) map.set(taskId, rect);
+    }
+    return map;
+  }, [individualNodes, renderGroups]);
+
+  // Drop an in-progress tab rename once its tab stops being an editable rendered
+  // tab — because the group dissolved (e.g. another tab was ejected) or its task
+  // was filtered out — so the edit box can never linger or reappear detached.
+  useEffect(() => {
+    setEditingTab((current) => {
+      if (!current) return current;
+      const group = renderGroups.find((candidate) => candidate.id === current.groupId);
+      return group && group.taskIds.includes(current.taskId) ? current : null;
+    });
+  }, [renderGroups]);
 
   const openTask = (taskId: string) => {
     if (onOpenTask) {
@@ -558,6 +722,204 @@ export function TaskGraphView({
     setConnectingFromTaskId((current) => (current === taskId ? null : taskId));
   };
 
+  const addTaskToGroup = (groupId: string, taskId: string) => {
+    setGroups((current) =>
+      current.map((group) => {
+        if (group.id !== groupId || group.taskIds.includes(taskId)) return group;
+        const taskIds = [...group.taskIds, taskId];
+        // The freshly dropped tab becomes the one shown on top.
+        return { ...group, taskIds, activeIndex: taskIds.length - 1 };
+      }),
+    );
+  };
+
+  const createGroupFromTasks = (targetTaskId: string, draggedTaskId: string, position: Point) => {
+    setGroups((current) => [
+      ...current,
+      {
+        id: nextGroupId(),
+        taskIds: [targetTaskId, draggedTaskId],
+        activeIndex: 1,
+        labels: {},
+        position,
+      },
+    ]);
+  };
+
+  // Called when an individual card is released; if its centre lands over another
+  // card it forms a new tab card, and if it lands over an existing tab card it is
+  // appended as a new tab. Returns whether a merge happened.
+  const mergeDraggedTask = (draggedTaskId: string, center: Point): boolean => {
+    for (const group of renderGroups) {
+      if (group.taskIds.includes(draggedTaskId)) continue;
+      const rect: Rect = {
+        x: group.position.x,
+        y: group.position.y,
+        width: GROUP_WIDTH,
+        height: GROUP_HEIGHT,
+      };
+      if (rectContainsPoint(rect, center)) {
+        addTaskToGroup(group.id, draggedTaskId);
+        return true;
+      }
+    }
+    for (const node of individualNodes) {
+      if (node.task.id === draggedTaskId) continue;
+      const rect: Rect = { x: node.x, y: node.y, width: node.width, height: node.height };
+      if (rectContainsPoint(rect, center)) {
+        createGroupFromTasks(node.task.id, draggedTaskId, { x: node.x, y: node.y });
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const selectGroupTab = (groupId: string, taskId: string) => {
+    setGroups((current) =>
+      current.map((group) => {
+        if (group.id !== groupId) return group;
+        const index = group.taskIds.indexOf(taskId);
+        if (index < 0 || index === group.activeIndex) return group;
+        return { ...group, activeIndex: index };
+      }),
+    );
+  };
+
+  const beginTabEdit = (groupId: string, taskId: string, currentLabel: string) => {
+    setEditingTab({ groupId, taskId });
+    setEditingValue(currentLabel);
+  };
+
+  const commitTabEdit = () => {
+    if (!editingTab) return;
+    const { groupId, taskId } = editingTab;
+    const trimmed = editingValue.trim();
+    setGroups((current) =>
+      current.map((group) => {
+        if (group.id !== groupId) return group;
+        const labels = { ...group.labels };
+        // An empty title clears the override so the tab returns to its ordinal.
+        if (trimmed) {
+          labels[taskId] = trimmed;
+        } else {
+          delete labels[taskId];
+        }
+        return { ...group, labels };
+      }),
+    );
+    setEditingTab(null);
+    setEditingValue('');
+  };
+
+  const cancelTabEdit = () => {
+    setEditingTab(null);
+    setEditingValue('');
+  };
+
+  // Pull a tab back out onto the canvas as a standalone card. When only one tab
+  // would remain, the tab card dissolves entirely and both cards become nodes.
+  const ejectTaskFromGroup = (groupId: string, taskId: string) => {
+    const group = groups.find((candidate) => candidate.id === groupId);
+    if (!group) return;
+    const remaining = group.taskIds.filter((id) => id !== taskId);
+    setNodePositions((current) => {
+      const next = { ...current };
+      next[taskId] = { x: group.position.x + 28, y: group.position.y + GROUP_HEIGHT + 16 };
+      if (remaining.length < 2 && remaining[0]) {
+        next[remaining[0]] = { x: group.position.x, y: group.position.y };
+      }
+      return next;
+    });
+    setGroups((current) =>
+      current.flatMap((candidate) => {
+        if (candidate.id !== groupId) return [candidate];
+        if (remaining.length < 2) return [];
+        const previousActiveId = candidate.taskIds[candidate.activeIndex];
+        const activeIndex = previousActiveId === taskId
+          ? 0
+          : Math.max(0, remaining.indexOf(previousActiveId));
+        const labels = { ...candidate.labels };
+        delete labels[taskId];
+        return [{ ...candidate, taskIds: remaining, activeIndex, labels }];
+      }),
+    );
+    setEditingTab((current) => (current && current.taskId === taskId ? null : current));
+  };
+
+  const handleGroupPointerDown = (
+    event: PointerEvent<HTMLDivElement>,
+    group: { id: string; position: Point },
+  ) => {
+    if (event.button !== 0) return;
+    const target = event.target;
+    if (
+      target instanceof Element
+      && target.closest('[data-group-no-drag="true"], [data-task-graph-connector="true"]')
+    ) {
+      return;
+    }
+    event.stopPropagation();
+    const startTab = target instanceof Element ? target.closest('[data-group-tab="true"]') : null;
+    groupDragRef.current = {
+      groupId: group.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: group.position.x,
+      originY: group.position.y,
+      moved: false,
+      // The pointer id is recaptured onto the container, so remember which tab
+      // the gesture began on to distinguish a tab tap from a card drag.
+      startTaskId: startTab?.getAttribute('data-task-id') ?? null,
+    };
+    setDraggingGroupId(group.id);
+    if (typeof event.currentTarget.setPointerCapture === 'function') {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+  };
+
+  const handleGroupPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = groupDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    const clientDeltaX = event.clientX - drag.startX;
+    const clientDeltaY = event.clientY - drag.startY;
+    if (Math.abs(clientDeltaX) > 3 || Math.abs(clientDeltaY) > 3) {
+      drag.moved = true;
+    }
+    const nextPosition = {
+      x: drag.originX + clientDeltaX / viewport.scale,
+      y: drag.originY + clientDeltaY / viewport.scale,
+    };
+    setGroups((current) =>
+      current.map((group) => (group.id === drag.groupId ? { ...group, position: nextPosition } : group)),
+    );
+  };
+
+  const endGroupDrag = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = groupDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    groupDragRef.current = null;
+    setDraggingGroupId(null);
+    if (typeof event.currentTarget.releasePointerCapture === 'function') {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (drag.moved) {
+      // Dragging the tab card supersedes a pending connect gesture.
+      setConnectingFromTaskId(null);
+      return;
+    }
+    if (drag.startTaskId) {
+      selectGroupTab(drag.groupId, drag.startTaskId);
+      return;
+    }
+    const group = renderGroups.find((candidate) => candidate.id === drag.groupId);
+    if (group) {
+      handleNodeActivate(group.activeTaskId);
+    }
+  };
+
   const handleNodePointerDown = (
     event: PointerEvent<HTMLDivElement>,
     node: GraphNodeLayout,
@@ -575,6 +937,8 @@ export function TaskGraphView({
       originX: node.x,
       originY: node.y,
       moved: false,
+      lastX: node.x,
+      lastY: node.y,
     };
     if (typeof event.currentTarget.setPointerCapture === 'function') {
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -596,6 +960,8 @@ export function TaskGraphView({
       x: drag.originX + clientDeltaX / viewport.scale,
       y: drag.originY + clientDeltaY / viewport.scale,
     };
+    drag.lastX = nextPosition.x;
+    drag.lastY = nextPosition.y;
     setNodePositions((current) => ({
       ...current,
       [drag.taskId]: nextPosition,
@@ -612,9 +978,16 @@ export function TaskGraphView({
     if (typeof event.currentTarget.releasePointerCapture === 'function') {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    if (!drag.moved) {
-      handleNodeActivate(drag.taskId);
+    if (drag.moved) {
+      // A drag supersedes any pending "connect from" gesture, so clear it to
+      // avoid leaving a source node highlighted after the merge/move.
+      setConnectingFromTaskId(null);
+      // Merge only when the card's centre is released over another card/tab card.
+      const center = { x: drag.lastX + NODE_WIDTH / 2, y: drag.lastY + NODE_HEIGHT / 2 };
+      mergeDraggedTask(drag.taskId, center);
+      return;
     }
+    handleNodeActivate(drag.taskId);
   };
 
   return (
@@ -684,9 +1057,10 @@ export function TaskGraphView({
             </marker>
           </defs>
           {edges.map((edge) => {
-            const source = nodesById.get(edge.sourceId);
-            const target = nodesById.get(edge.targetId);
+            const source = endpointById.get(edge.sourceId);
+            const target = endpointById.get(edge.targetId);
             if (!source || !target) return null;
+            if (source === target) return null;
             const x1 = source.x + source.width;
             const y1 = source.y + source.height / 2;
             const x2 = target.x;
@@ -709,7 +1083,7 @@ export function TaskGraphView({
           })}
         </svg>
 
-        {nodes.map((node) => {
+        {individualNodes.map((node) => {
           const task = node.task;
           const isActive = activeTaskId === task.id;
           const isConnectingSource = connectingFromTaskId === task.id;
@@ -769,6 +1143,137 @@ export function TaskGraphView({
                     : 'border-panel bg-[var(--accent)]/70 hover:bg-[var(--accent)]'
                 }`}
               />
+            </div>
+          );
+        })}
+
+        {renderGroups.map((group) => {
+          const activeTask = taskById.get(group.activeTaskId);
+          if (!activeTask) return null;
+          const isActive = activeTaskId === group.activeTaskId;
+          const isConnectingSource = connectingFromTaskId === group.activeTaskId;
+          const isDragging = draggingGroupId === group.id;
+
+          return (
+            <div
+              key={group.id}
+              data-task-graph-node="true"
+              data-task-graph-group="true"
+              data-task-graph-group-id={group.id}
+              data-testid={`task-graph-group-${group.id}`}
+              onPointerDown={(event) => handleGroupPointerDown(event, group)}
+              onPointerMove={handleGroupPointerMove}
+              onPointerUp={endGroupDrag}
+              onPointerCancel={endGroupDrag}
+              className={`absolute flex flex-col overflow-hidden rounded-lg border bg-panel text-left shadow-sm transition-[border-color,box-shadow] hover:shadow-md ${
+                isDragging ? 'cursor-grabbing' : 'cursor-grab'
+              } ${
+                isActive || isConnectingSource
+                  ? 'border-[var(--accent)] shadow-[0_0_0_3px_rgba(228,87,46,0.12)]'
+                  : 'border-border'
+              }`}
+              style={{
+                left: group.position.x,
+                top: group.position.y,
+                width: GROUP_WIDTH,
+                height: GROUP_HEIGHT,
+              }}
+            >
+              <div
+                className="flex items-stretch gap-0.5 overflow-x-auto border-b border-border bg-[var(--surface-subtle)] px-1 webapp-scrollbar"
+                style={{ height: TAB_BAR_HEIGHT }}
+              >
+                {group.taskIds.map((taskId, index) => {
+                  const tabTask = taskById.get(taskId);
+                  if (!tabTask) return null;
+                  const isActiveTab = taskId === group.activeTaskId;
+                  const label = group.labels[taskId] ?? String(group.ordinals[taskId] ?? index);
+                  const isEditing = editingTab?.groupId === group.id && editingTab.taskId === taskId;
+
+                  return (
+                    <div
+                      key={taskId}
+                      data-group-tab="true"
+                      data-task-id={taskId}
+                      data-testid={`task-graph-group-tab-${group.id}-${taskId}`}
+                      title={tabTask.title}
+                      onDoubleClick={(event) => {
+                        event.stopPropagation();
+                        beginTabEdit(group.id, taskId, label);
+                      }}
+                      className={`group/tab relative flex shrink-0 items-center gap-1 rounded-t-md px-2 text-xs font-medium transition-colors ${
+                        isActiveTab
+                          ? 'bg-panel text-ink shadow-[inset_0_-2px_0_var(--accent)]'
+                          : 'text-muted hover:bg-panel/70 hover:text-ink'
+                      }`}
+                    >
+                      {isEditing ? (
+                        <input
+                          data-group-no-drag="true"
+                          data-testid={`task-graph-group-tab-input-${group.id}-${taskId}`}
+                          autoFocus
+                          value={editingValue}
+                          onChange={(event) => setEditingValue(event.target.value)}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault();
+                              commitTabEdit();
+                            } else if (event.key === 'Escape') {
+                              event.preventDefault();
+                              cancelTabEdit();
+                            }
+                          }}
+                          onBlur={commitTabEdit}
+                          className="w-14 rounded border border-[var(--accent)]/60 bg-panel px-1 text-xs text-ink focus:outline-none"
+                        />
+                      ) : (
+                        <>
+                          <span className="max-w-[6rem] truncate">{label}</span>
+                          <button
+                            type="button"
+                            data-group-no-drag="true"
+                            aria-label={`Remove ${tabTask.title} from tab card`}
+                            title="Remove from tab card"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              ejectTaskFromGroup(group.id, taskId);
+                            }}
+                            className="flex size-3.5 items-center justify-center rounded-full text-muted opacity-0 transition-opacity hover:bg-[var(--accent)]/15 hover:text-ink group-hover/tab:opacity-100"
+                          >
+                            <svg className="size-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 6l12 12M6 18L18 6" />
+                            </svg>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="relative flex flex-1 items-center px-3 py-2">
+                <div className="line-clamp-2 pr-5 text-sm font-semibold leading-5 text-ink">
+                  {activeTask.title}
+                </div>
+                <button
+                  type="button"
+                  data-task-graph-connector="true"
+                  aria-label={`Start connection from ${activeTask.title}`}
+                  title="Create connection"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    handleConnectorClick(group.activeTaskId);
+                  }}
+                  className={`absolute -right-2 top-1/2 size-4 -translate-y-1/2 rounded-full border-2 shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/45 ${
+                    isConnectingSource
+                      ? 'border-[var(--accent)] bg-[var(--accent)]'
+                      : 'border-panel bg-[var(--accent)]/70 hover:bg-[var(--accent)]'
+                  }`}
+                />
+              </div>
             </div>
           );
         })}
