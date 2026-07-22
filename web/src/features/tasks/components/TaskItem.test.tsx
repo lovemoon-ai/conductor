@@ -86,6 +86,7 @@ describe('TaskItem', () => {
   beforeEach(() => {
     runtimeByTask = {};
     window.sessionStorage.clear();
+    window.history.replaceState({}, '', '/');
     pushMock.mockReset();
     updateTaskMock.mockReset();
     restartTaskMock.mockReset();
@@ -479,6 +480,42 @@ describe('TaskItem', () => {
     });
 
     expect(pushMock).toHaveBeenCalledWith('/app/tasks/task-8');
+  });
+
+  it('preserves the current task-list scope when opening a mobile task page', async () => {
+    vi.useFakeTimers();
+    window.history.replaceState(
+      {},
+      '',
+      '/app/tasks?projectId=project-1&taskType=ai_task&backend=codex',
+    );
+
+    render(
+      <TaskItem
+        task={{
+          id: 'task-scoped',
+          title: 'Scoped Task',
+          status: 'running',
+          projectId: 'project-1',
+          agentHost: 'daemon-a',
+          createdAt: FIXED_DATE.toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /scoped task/i }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(501);
+    });
+
+    expect(pushMock).toHaveBeenCalledWith(
+      '/app/tasks/task-scoped?from=%2Fapp%2Ftasks%3FprojectId%3Dproject-1%26taskType%3Dai_task%26backend%3Dcodex',
+    );
   });
 
   it('cancels a pending route open when another task card is clicked', async () => {

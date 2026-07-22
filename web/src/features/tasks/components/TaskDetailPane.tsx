@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { Header } from '@/components/layout/Header';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { Header, type TitleSwipeProgress } from '@/components/layout/Header';
 import { ChatView } from '@/features/chat';
 import { TerminalView } from '@/features/terminal';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
@@ -17,7 +17,17 @@ interface TaskDetailPaneProps {
   compactHeader?: boolean;
   showConnectionStatus?: boolean;
   hideHeader?: boolean;
+  onTitleSwipeLeft?: () => void;
+  onTitleSwipeRight?: () => void;
+  onTitleSwipeProgress?: (state: TitleSwipeProgress) => void;
+  titleSwipePreviewLeft?: string | null;
+  titleSwipePreviewRight?: string | null;
+  titleTransitionDirection?: 'forward' | 'backward' | null;
+  titleSwipeState?: Pick<TitleSwipeProgress, 'progress' | 'isDragging'>;
 }
+
+const TASK_SWIPE_CONTENT_OFFSET_PX = 14;
+const TASK_SWIPE_CONTENT_MAX_OPACITY_DROP = 0.16;
 
 export function TaskDetailPane({
   taskId,
@@ -26,6 +36,13 @@ export function TaskDetailPane({
   compactHeader = false,
   showConnectionStatus = false,
   hideHeader = false,
+  onTitleSwipeLeft,
+  onTitleSwipeRight,
+  onTitleSwipeProgress,
+  titleSwipePreviewLeft,
+  titleSwipePreviewRight,
+  titleTransitionDirection,
+  titleSwipeState,
 }: TaskDetailPaneProps) {
   const { tasks, fetchTask, markTaskRead } = useTasksStore();
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
@@ -160,6 +177,24 @@ export function TaskDetailPane({
   // looking at a green PTY chip and expecting a terminal.
   const showAttachedTerminalMissing =
     isAiTask && ptyActive && attachedPtyTaskId && attachedPtyFetchState === 'missing';
+  const titleSwipeProgress = titleSwipeState?.progress ?? 0;
+  const contentTransitionClassName = titleTransitionDirection
+    ? `webapp-task-detail-switch-${titleTransitionDirection}`
+    : '';
+  const contentSwipeClassName = titleSwipeState
+    ? `webapp-task-detail-swipe-follow ${
+        titleSwipeState.isDragging ? 'webapp-task-detail-swipe-follow-dragging' : ''
+      }`
+    : '';
+  const contentSwipeStyle: CSSProperties | undefined = titleSwipeProgress !== 0
+    ? {
+        opacity: 1 - Math.min(
+          Math.abs(titleSwipeProgress) * TASK_SWIPE_CONTENT_MAX_OPACITY_DROP,
+          TASK_SWIPE_CONTENT_MAX_OPACITY_DROP,
+        ),
+        transform: `translateX(${titleSwipeProgress * TASK_SWIPE_CONTENT_OFFSET_PX}px)`,
+      }
+    : undefined;
 
   return (
     <>
@@ -171,9 +206,18 @@ export function TaskDetailPane({
           showConnectionStatus={showConnectionStatus}
           compact={compactHeader}
           connectionTaskId={taskId}
+          onTitleSwipeLeft={onTitleSwipeLeft}
+          onTitleSwipeRight={onTitleSwipeRight}
+          onTitleSwipeProgress={onTitleSwipeProgress}
+          titleSwipePreviewLeft={titleSwipePreviewLeft}
+          titleSwipePreviewRight={titleSwipePreviewRight}
+          titleTransitionDirection={titleTransitionDirection}
         />
       ) : null}
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div
+        className={`min-h-0 flex-1 overflow-hidden ${contentTransitionClassName} ${contentSwipeClassName}`}
+        style={contentSwipeStyle}
+      >
         {task.taskType === 'pty_task' ? (
           <TerminalView task={task} />
         ) : showAttachedTerminal ? (

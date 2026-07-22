@@ -303,19 +303,22 @@ body {
 }
 
 .webapp-title-switch-forward,
-.webapp-task-list-switch-forward {
+.webapp-task-list-switch-forward,
+.webapp-task-detail-switch-forward {
   animation: projectSwitchForward 220ms cubic-bezier(0.22, 1, 0.36, 1);
   will-change: opacity, transform;
 }
 
 .webapp-title-switch-backward,
-.webapp-task-list-switch-backward {
+.webapp-task-list-switch-backward,
+.webapp-task-detail-switch-backward {
   animation: projectSwitchBackward 220ms cubic-bezier(0.22, 1, 0.36, 1);
   will-change: opacity, transform;
 }
 
 .webapp-title-swipe-layer,
-.webapp-task-list-swipe-follow {
+.webapp-task-list-swipe-follow,
+.webapp-task-detail-swipe-follow {
   transition:
     opacity 160ms cubic-bezier(0.22, 1, 0.36, 1),
     transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -323,7 +326,8 @@ body {
 }
 
 .webapp-title-swipe-layer-dragging,
-.webapp-task-list-swipe-follow-dragging {
+.webapp-task-list-swipe-follow-dragging,
+.webapp-task-detail-swipe-follow-dragging {
   transition: none;
 }
 
@@ -332,8 +336,11 @@ body {
   .webapp-title-switch-backward,
   .webapp-task-list-switch-forward,
   .webapp-task-list-switch-backward,
+  .webapp-task-detail-switch-forward,
+  .webapp-task-detail-switch-backward,
   .webapp-title-swipe-layer,
-  .webapp-task-list-swipe-follow {
+  .webapp-task-list-swipe-follow,
+  .webapp-task-detail-swipe-follow {
     animation: none;
     opacity: 1 !important;
     transform: none;

@@ -20,6 +20,7 @@ import { useRuntimeStore } from '@/features/realtime';
 import { getApiClient } from '@/shared/api/client';
 import { Dialog } from '@/components/common/Dialog';
 import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
+import { buildTaskDetailHref, normalizeTaskListReturnHref } from '../utils/task-navigation';
 
 interface TaskItemProps {
   task: Task;
@@ -657,7 +658,10 @@ export function TaskItem({
   const openTaskPage = useCallback(() => {
     clearPendingOpenTask();
     markTaskRead(task.id);
-    push(`/app/tasks/${task.id}`);
+    const currentTaskListHref = typeof window !== 'undefined'
+      ? normalizeTaskListReturnHref(`${window.location.pathname}${window.location.search}`)
+      : null;
+    push(buildTaskDetailHref(task.id, currentTaskListHref));
   }, [clearPendingOpenTask, markTaskRead, push, task.id]);
 
   const openTaskDetail = useCallback(() => {
