@@ -933,10 +933,10 @@ export function TaskList({
                         onPointerCancel={clearTabLongPress}
                         onClick={() => handleTabClick(group.id, taskId)}
                         onDoubleClick={() => handleTabDoubleClick(group.id, taskId)}
-                        className={`flex shrink-0 cursor-pointer select-none items-center rounded-t-[10px] border px-3 py-1.5 text-xs font-medium transition-colors ${
+                        className={`flex shrink-0 cursor-pointer select-none items-center rounded-t-[10px] border px-3 py-1.5 text-xs transition-colors ${
                           isActiveTab
-                            ? 'border-[var(--border-default)] border-b-transparent bg-[var(--surface-panel)] text-ink'
-                            : 'border-transparent bg-[var(--surface-subtle)]/70 text-muted hover:bg-[var(--surface-subtle)] hover:text-ink'
+                            ? 'border-[var(--border-default)] border-b-transparent bg-[var(--surface-panel)] font-semibold text-[var(--accent)]'
+                            : 'border-transparent bg-[var(--surface-subtle)] font-medium text-muted hover:bg-[var(--surface-panel)] hover:text-ink'
                         }`}
                       >
                         {isEditing ? (
