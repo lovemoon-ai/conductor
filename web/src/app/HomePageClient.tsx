@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ConductorLogo } from "@/components/ui/ConductorLogo";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { useTranslation } from "@/lib/i18n";
+import { copyToClipboard } from "@/lib/clipboard";
 import { useAuthStore } from "@/features/auth";
 import { useAuthStorageSync } from "@/features/auth";
 
@@ -168,30 +169,10 @@ export default function Home() {
   };
 
   const copyCommand = async (command: string) => {
-    try {
-      let copied = false;
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(command);
-        copied = true;
-      }
-      if (!copied) {
-        const textarea = document.createElement("textarea");
-        textarea.value = command;
-        textarea.setAttribute("readonly", "");
-        textarea.style.position = "fixed";
-        textarea.style.top = "-1000px";
-        textarea.style.left = "-1000px";
-        document.body.appendChild(textarea);
-        textarea.select();
-        copied = document.execCommand("copy");
-        document.body.removeChild(textarea);
-      }
-      if (copied) {
-        setCopiedCommand(command);
-        window.setTimeout(() => setCopiedCommand(null), 2000);
-      }
-    } catch {
-      // Silent fail
+    const copied = await copyToClipboard(command);
+    if (copied) {
+      setCopiedCommand(command);
+      window.setTimeout(() => setCopiedCommand(null), 2000);
     }
   };
 

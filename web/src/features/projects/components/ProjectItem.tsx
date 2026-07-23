@@ -12,6 +12,7 @@ import type {
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Project } from '@/shared/types';
+import { copyToClipboard } from '@/lib/clipboard';
 import { useProjectsStore } from '../store';
 import { useAgentsStore } from '@/features/agents';
 import { useSwipeActions } from '@/shared/hooks/useSwipeActions';
@@ -500,16 +501,18 @@ export function ProjectItem({
     }
   };
 
-  const copyInviteLink = async (target: { inviteUrl?: string; inviteToken: string }) => {
+  const copyInviteLink = async (
+    target: { inviteUrl?: string; inviteToken: string },
+  ): Promise<{ inviteUrl: string | null; copied: boolean }> => {
     if (typeof window === 'undefined') {
-      return;
+      return { inviteUrl: null, copied: false };
     }
     // Prefer the URL the server constructed from the request origin so reverse
     // proxies / different API hosts stay consistent; fall back to building it
     // locally from window.location.origin if the API didn't include one.
     const inviteUrl = target.inviteUrl?.trim()
       || `${window.location.origin}/app/invite/${encodeURIComponent(target.inviteToken)}`;
-    await navigator.clipboard.writeText(inviteUrl);
+    return { inviteUrl, copied: await copyToClipboard(inviteUrl) };
   };
 
   const handleInvite = async (event: SyntheticEvent) => {
@@ -520,12 +523,19 @@ export function ProjectItem({
     setIsCollaborationBusy(true);
     try {
       const nextCollaboration = collaboration ?? await startProjectCollaboration(project.id);
-      await copyInviteLink(nextCollaboration);
-      pushToast({
-        title: 'Invite link copied',
-        description: `${nextCollaboration.memberCount}/${nextCollaboration.maxMembers} members joined.`,
-        variant: 'success',
-      });
+      const { inviteUrl, copied } = await copyInviteLink(nextCollaboration);
+      pushToast(copied
+        ? {
+          title: 'Invite link copied',
+          description: `${nextCollaboration.memberCount}/${nextCollaboration.maxMembers} members joined.`,
+          variant: 'success',
+        }
+        : {
+          // The link exists either way; surface it so the user can copy manually.
+          title: 'Invite link created',
+          description: inviteUrl ?? 'Open the project to copy the invite link.',
+          variant: 'success',
+        });
     } catch (error) {
       pushToast({
         title: 'Failed to create invite link',

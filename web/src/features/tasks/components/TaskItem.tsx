@@ -10,6 +10,7 @@ import type {
 import { useRouter } from 'next/navigation';
 import type { Task } from '@/shared/types';
 import type { TaskType } from '@/lib/tasks/task-config';
+import { copyToClipboard } from '@/lib/clipboard';
 import { TaskStatusBadge } from './TaskStatusBadge';
 import { RestartTaskControls } from './RestartTaskControls';
 import { PtyToggleButton } from './PtyToggleButton';
@@ -173,24 +174,6 @@ const isShareDialogStateValid = (share: ShareDialogState): boolean => {
   return Number.isFinite(expiresAt) && expiresAt > Date.now();
 };
 
-const copyToClipboard = async (value: string): Promise<boolean> => {
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(value);
-    return true;
-  }
-
-  const textarea = document.createElement('textarea');
-  textarea.value = value;
-  textarea.setAttribute('readonly', '');
-  textarea.style.position = 'fixed';
-  textarea.style.top = '-1000px';
-  textarea.style.left = '-1000px';
-  document.body.appendChild(textarea);
-  textarea.select();
-  const copied = document.execCommand('copy');
-  document.body.removeChild(textarea);
-  return copied;
-};
 const isInteractiveTarget = (target: EventTarget | null): boolean =>
   target instanceof Element && Boolean(target.closest('button, input, textarea, select, a, summary'));
 const normalizeOptionalString = (value: unknown): string | null => {
@@ -897,7 +880,7 @@ export function TaskItem({
   };
 
   const handleCopyShareDialogLink = useCallback(async (value: string) => {
-    const copied = await copyToClipboard(value).catch(() => false);
+    const copied = await copyToClipboard(value);
     pushToast({
       title: copied ? 'Link copied' : 'Copy failed',
       description: copied ? value : undefined,

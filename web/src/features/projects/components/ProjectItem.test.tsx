@@ -129,6 +129,9 @@ describe('ProjectItem', () => {
         writeText: writeTextMock,
       },
     });
+    // The async clipboard api is only reachable in a secure context; without this
+    // the shared helper correctly falls back to execCommand and never calls the mock.
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true });
     sortableListeners.onPointerDown.mockReset();
     sortableListeners.onMouseDown.mockReset();
     sortableListeners.onTouchStart.mockReset();
