@@ -10,8 +10,8 @@
  * - WebKit rejects clipboard writes issued outside a synchronous user gesture
  *   (e.g. from a long-press timer), so a rejected `writeText` must fall through
  *   to the fallback rather than be reported as failure.
- * - `textarea.select()` alone is a no-op on iOS Safari; the fallback has to
- *   select an explicit range.
+ * - iOS Safari ignores programmatic selection on a `readonly` control, which is
+ *   what makes the usual `textarea.select()` recipe silently copy nothing there.
  *
  * Never throws — returns whether the value actually made it to the clipboard so
  * callers can decide what feedback to show.
@@ -20,8 +20,12 @@
 const copyWithExecCommand = (value: string): boolean => {
   const textarea = document.createElement('textarea');
   textarea.value = value;
-  textarea.setAttribute('readonly', '');
+  // iOS only honours programmatic selection on an editable control, so the
+  // element must stay editable. `readonly` would suppress the on-screen
+  // keyboard but also blocks the selection, and the element is removed within
+  // the same tick anyway, so the keyboard never gets a chance to appear.
   textarea.contentEditable = 'true';
+  textarea.readOnly = false;
   // Kept on-screen but invisible: a negative offset makes iOS scroll the page
   // when focus moves to the textarea.
   textarea.style.position = 'fixed';
@@ -31,15 +35,11 @@ const copyWithExecCommand = (value: string): boolean => {
   document.body.appendChild(textarea);
 
   try {
-    const selection = window.getSelection();
-    if (selection) {
-      const range = document.createRange();
-      range.selectNodeContents(textarea);
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
-    textarea.setSelectionRange?.(0, value.length);
-    textarea.select?.();
+    // Note: selecting a Range over the textarea's *contents* does nothing —
+    // assigning `.value` does not create child nodes, so the range comes back
+    // collapsed. The control's own selection is what execCommand copies.
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(0, value.length);
     return document.execCommand('copy');
   } finally {
     document.body.removeChild(textarea);

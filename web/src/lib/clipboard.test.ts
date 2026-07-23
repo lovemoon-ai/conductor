@@ -48,18 +48,32 @@ describe('copyToClipboard', () => {
     expect(document.execCommand).toHaveBeenCalledWith('copy');
   });
 
-  it('selects an explicit range so the fallback works on iOS', async () => {
+  it('hands execCommand a focused, fully selected, editable control', async () => {
+    // iOS ignores programmatic selection on a readonly control, so assert the
+    // actual state execCommand sees rather than that some helper was called.
     setSecureContext(false);
-    const addRange = vi.fn();
-    vi.spyOn(window, 'getSelection').mockReturnValue({
-      removeAllRanges: vi.fn(),
-      addRange,
-    } as unknown as Selection);
+    let observed: Record<string, unknown> | null = null;
+    document.execCommand = vi.fn().mockImplementation(() => {
+      const active = document.activeElement as HTMLTextAreaElement | null;
+      observed = {
+        tag: active?.tagName,
+        value: active?.value,
+        selectionStart: active?.selectionStart,
+        selectionEnd: active?.selectionEnd,
+        readOnly: active?.readOnly,
+      };
+      return true;
+    });
 
     await copyToClipboard('task-123');
 
-    expect(addRange).toHaveBeenCalledTimes(1);
-    vi.mocked(window.getSelection).mockRestore();
+    expect(observed).toEqual({
+      tag: 'TEXTAREA',
+      value: 'task-123',
+      selectionStart: 0,
+      selectionEnd: 'task-123'.length,
+      readOnly: false,
+    });
   });
 
   it('reports failure instead of throwing when every path fails', async () => {
