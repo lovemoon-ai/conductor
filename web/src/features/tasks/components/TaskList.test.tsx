@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { TaskList } from './TaskList';
+import { taskCardSurfaceColor } from '../utils/task-card-surface';
 
 const stubRect = (el: HTMLElement, top: number, bottom: number) => {
   el.getBoundingClientRect = () => ({
@@ -502,6 +503,54 @@ describe('TaskList', () => {
       });
       expect(screen.queryByTestId('task-item-task-1')).toBeNull();
       expect(onOpenTask).toHaveBeenCalledWith('task-2');
+    });
+
+    // The tabs sit flush on the card's top edge, so they must paint the card's
+    // own background or the seam shows as a color band. TaskItem is mocked
+    // here, so this covers the wiring (wrapper publishes the var, tabs consume
+    // it); task-card-surface.test.ts covers class -> color against globals.css.
+    it('publishes the card surface to the tabs and tracks the selection state', async () => {
+      const { rerender } = render(<TaskList viewMode="list" projectFilter={null} />);
+      primeRowRects();
+      dragCardOnto('task-1', 0, 100);
+
+      const tabCard = await waitFor(() => {
+        const el = document.querySelector('[data-task-tab-card]');
+        expect(el).not.toBeNull();
+        return el as HTMLElement;
+      });
+
+      const tabs = Array.from(tabCard.querySelectorAll('[data-task-tab]'));
+      expect(tabs).toHaveLength(2);
+      for (const tab of tabs) {
+        expect(tab).toHaveClass('bg-[var(--task-card-surface,var(--surface-panel))]');
+        // Tabs stay outlined: an idle pane card shares the page background,
+        // so a fill-only tab would be invisible.
+        expect(tab).toHaveClass('border-[var(--border-default)]');
+      }
+
+      // Unselected, non-pane card -> the plain card surface.
+      expect(tabCard.style.getPropertyValue('--task-card-surface')).toBe(
+        taskCardSurfaceColor({}),
+      );
+      expect(tabCard.style.getPropertyValue('--task-card-surface')).toBe('var(--surface-panel)');
+
+      // In pane mode with a different task open, the card drops to the idle
+      // pane surface and the tabs must follow it.
+      rerender(
+        <TaskList viewMode="list" projectFilter={null} desktopListPaneMode activeTaskId="task-3" />,
+      );
+      await waitFor(() => {
+        const el = document.querySelector('[data-task-tab-card]') as HTMLElement;
+        expect(el.style.getPropertyValue('--task-card-surface')).toBe(
+          taskCardSurfaceColor({ desktopListPaneMode: true }),
+        );
+      });
+      expect(
+        (document.querySelector('[data-task-tab-card]') as HTMLElement).style.getPropertyValue(
+          '--task-card-surface',
+        ),
+      ).toBe('var(--surface-default)');
     });
 
     it('enters drag state after a touch hold and merges without a separate handle', () => {

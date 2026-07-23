@@ -22,6 +22,7 @@ import { getApiClient } from '@/shared/api/client';
 import { Dialog } from '@/components/common/Dialog';
 import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 import { buildTaskDetailHref, normalizeTaskListReturnHref } from '../utils/task-navigation';
+import { taskCardSurfaceClassName } from '../utils/task-card-surface';
 
 interface TaskItemProps {
   task: Task;
@@ -451,17 +452,12 @@ export function TaskItem({
   const isKillingTask = isTaskRunning && statusAction === 'killing';
   const isRestartConfirming = canQuickRestart && statusAction === 'confirm-restart';
   const isRestartingTask = canQuickRestart && statusAction === 'restarting';
-  const useDesktopListPaneSurface = desktopListPaneMode && !selectionMode;
-  const isHighlighted = isSelected || (!selectionMode && isActive);
-  const highlightedCardClassName = useDesktopListPaneSurface
-    ? isActive
-      ? 'webapp-card-list-pane-active'
-      : 'webapp-card-list-pane-idle'
-    : isSelected
-      ? 'webapp-card-active-strong'
-      : isActive
-        ? 'webapp-card-active'
-        : '';
+  const cardSurfaceClassName = taskCardSurfaceClassName({
+    desktopListPaneMode,
+    selectionMode,
+    isSelected,
+    isActive,
+  });
 
   const setSwipeOffsetValue = useCallback((value: number) => {
     swipeOffsetRef.current = value;
@@ -1326,9 +1322,7 @@ export function TaskItem({
         onPointerUp={finalizeSwipe}
         onPointerCancel={finalizeSwipe}
         style={cardStyle}
-        className={`webapp-card relative z-10 cursor-pointer p-4 transition-colors hover:border-[var(--accent)] ${
-          useDesktopListPaneSurface || isHighlighted ? highlightedCardClassName : ''
-        }`}
+        className={`webapp-card relative z-10 cursor-pointer p-4 transition-colors hover:border-[var(--accent)] ${cardSurfaceClassName}`}
         role="button"
         tabIndex={0}
         onKeyDown={(e) => {
