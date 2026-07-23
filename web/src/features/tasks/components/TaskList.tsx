@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -17,6 +18,7 @@ import { orderTasksWithPinnedFirst, useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
 import { useAuthStore } from '@/features/auth/store';
 import { filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } from '../utils/task-filter';
+import { taskCardSurfaceColor } from '../utils/task-card-surface';
 import { TaskItem } from './TaskItem';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { EmptyState } from '@/components/common/EmptyState';
@@ -1113,11 +1115,22 @@ export function TaskList({
             const activeTask = visibleTaskById.get(group.activeTaskId);
             if (!activeTask) return null;
             const isDropTarget = dropTargetId === group.id;
+            // Tabs paint the card's own background so the strip and the card
+            // read as one surface. That background can equal the page
+            // background (an idle card in pane mode is `--surface-default`),
+            // so tabs keep a border to stay legible where they overhang it.
+            const cardSurfaceColor = taskCardSurfaceColor({
+              desktopListPaneMode,
+              selectionMode,
+              isSelected: selectedTaskIds.has(activeTask.id),
+              isActive: activeTaskId === activeTask.id,
+            });
             return (
               <div
                 key={group.id}
                 ref={setRowRef(group.id, false)}
                 data-task-tab-card={group.id}
+                style={{ '--task-card-surface': cardSurfaceColor } as CSSProperties}
                 className="relative"
               >
                 {/* Tabs sit flush on the card's top edge (-mb-px overlaps the
@@ -1148,10 +1161,10 @@ export function TaskList({
                         onPointerCancel={clearTabLongPress}
                         onClick={() => handleTabClick(group.id, taskId)}
                         onDoubleClick={() => handleTabDoubleClick(group.id, taskId)}
-                        className={`flex shrink-0 cursor-pointer select-none items-center rounded-t-[10px] border px-3 py-1.5 text-xs transition-colors ${
+                        className={`flex shrink-0 cursor-pointer select-none items-center rounded-t-[10px] border border-[var(--border-default)] bg-[var(--task-card-surface,var(--surface-panel))] px-3 py-1.5 text-xs transition-colors ${
                           isActiveTab
-                            ? 'border-[var(--border-default)] border-b-transparent bg-[var(--surface-panel)] font-semibold text-[var(--accent)]'
-                            : 'border-transparent bg-[var(--surface-subtle)] font-medium text-muted hover:bg-[var(--surface-panel)] hover:text-ink'
+                            ? 'border-b-transparent font-semibold text-[var(--accent)]'
+                            : 'font-medium text-muted hover:border-[var(--accent)] hover:text-ink'
                         }`}
                       >
                         {isEditing ? (
