@@ -90,6 +90,55 @@ handleRestartTask → resolveRestartCwd → ensureTaskWorktree → ensureTaskWor
 也不 `lstat`，且 worktree 准备仍然完成）；并把三个旧用例的 `existsSync` mock
 补上源路径 —— 它们此前把源当作不存在，正好会被新逻辑跳过。
 
+## 补充修复 E：指向已失效的链接改为自愈重建
+
+修复 A 只解决了"链接指向**正确**"的情形；链接**指向别处**时仍然硬抛
+`already points elsewhere`，任务照样永久起不来。
+
+现实触发路径很具体：**项目在磁盘上被移动，或 `workspace_path` 绑定被改过**。
+此后所有既存 worktree 里的链接都指向旧的绝对路径，而旧路径通常已不存在 ——
+于是 `existsSync(linkPath)` 跟随失效链接返回 false，`symlinkSync` 再抛 EEXIST，
+和本文根因是同一个坑的另一个入口。
+
+`ensureTaskWorktreeSymlinks` 现在改为 `unlink` + 重建，并打一行
+`[worktree] repointing stale symlink …`。
+
+这么做安全的前提有两条，缺一不可，代码里都写了注释：
+
+1. 该条目**是 symlink**，本身不承载任何数据，删掉不丢东西。上面
+   "目标位置是真实文件/目录"的分支**仍然硬抛** —— 那里可能是
+   `node_modules` 之类的真实产物，绝不能替用户删。
+2. 走到这里时**源已知存在**（由修复 D 的守卫保证），所以重建出来的是一条
+   真正能解析的链接，而不是又造一条悬空链接。
+
+范围提示：restart / branch new task / 带 worktree 的 create_task 三条路径
+共用这段逻辑。特别是 branch new task —— `inheritTaskWorktreeLaunchConfig`
+**原样保留 `worktreeBranch`**，successor 复用的是同一个 worktree 目录，
+所以它和 restart 踩的是同一批既存链接，不存在"新任务就没事"的侥幸。
+
+测试：`cli/test/daemon.test.js` 把目标态探测的三种情形收敛到一个共享 harness
+（`runWorktreeSymlinkCase`），新增 "leaves an already-correct worktree symlink
+untouched" 与 "repoints a stale worktree symlink instead of failing the task"。
+后者断言 `unlinkSync` + `symlinkSync` 都被调用且任务照常启动 —— 如果自愈逻辑
+抛了异常，`spawnedCwd` 会是 null，用例即失败，不会假通过。
+
+顺带修正：原来那个 "treats a dangling symlink that already points at the source
+as up to date" 用例，在修复 D 落地后其 mock 里源是不存在的，实际走的是 D 的
+skip 分支，已经测不到目标态探测了 —— 这类"看着还在跑、其实测的是别的分支"的
+用例比没有用例更危险。
+
+## 尚未处理（已知残留）
+
+| 形态 | 现状 |
+|---|---|
+| 目标位置是真实文件/目录 | 仍硬失败。**扫描发现本机 3 个项目共 9 个 worktree 已处于该状态**（`operator`、`spatial-ai`），最常见成因是 worktree 已存在之后才往 `worktree.symlink` 加新条目，而那个位置早被构建产物占成真实目录 |
+| 父目录本身是悬空 symlink | `mkdirSync(recursive)` 抛 `ENOENT`，发生在探测之前，完全未覆盖 |
+| 父路径中间是普通文件 | `mkdirSync` 抛 `EEXIST`，同上 |
+
+三者都会让 restart / branch new task 硬失败。区别在于：修复 B/C 之后它们**不再是哑的**，
+daemon 日志、`taskStatusEvent.summary`、`conductor diagnose` 与 UI 都能指出
+是哪条链接、什么原因。
+
 ## 下次如何避免
 
 0. **别只治"悬空 link 存在时不要报错"，还要治"不要制造悬空 link"。**

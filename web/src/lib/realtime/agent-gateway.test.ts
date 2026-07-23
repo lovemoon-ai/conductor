@@ -412,6 +412,64 @@ describe("agent-gateway ownership handling", () => {
     });
   });
 
+  it("forwards the agent's status_event_id so redelivery can be deduped", async () => {
+    // Regression: this handler used to drop `status_event_id`, which made the
+    // field dead weight on the wire. The server then synthesized a fresh id
+    // per delivery, so a redelivered transition became a second event row and
+    // a second broadcast instead of being recognised as a duplicate.
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+
+    const socket = new FakeSocket();
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-evt-1",
+      projectId: "proj-1",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "debug",
+      executionHost: "debug",
+    } as any);
+    vi.mocked(commitTaskStatusUpdate).mockResolvedValue({
+      taskId: "task-evt-1",
+      projectId: "proj-1",
+      status: "killed",
+      duplicate: false,
+    } as any);
+
+    const wss = setupAgentGateway();
+    wss.emit("connection", socket as any, {
+      headers: {
+        authorization: "Bearer test-token",
+        "x-conductor-host": "debug",
+      },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as any);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    socket.emit("message", Buffer.from(JSON.stringify({
+      type: "task_status_update",
+      payload: {
+        task_id: "task-evt-1",
+        status: "killed",
+        summary: "new task failed: EEXIST",
+        status_event_id: "evt-from-daemon-1",
+      },
+    })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(commitTaskStatusUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "task-evt-1",
+        status: "killed",
+        summary: "new task failed: EEXIST",
+        statusEventId: "evt-from-daemon-1",
+      }),
+    );
+  });
+
   it("promotes init tasks to running when runtime status arrives from a fire host", async () => {
     class FakeSocket extends EventEmitter {
       readyState = 1;

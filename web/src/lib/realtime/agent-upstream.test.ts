@@ -248,6 +248,153 @@ describe("commitTaskStatusUpdate", () => {
     });
   });
 
+  it("persists the summary as a status event even when the daemon sends no status_event_id", async () => {
+    // Regression: `taskStatusEvent` is the only place `summary` is stored, and
+    // it used to be written solely on the statusEventId branch. The daemon
+    // reports restart/spawn failures via task_status_update WITHOUT an id, so
+    // the precise reason ("restart failed: EEXIST …") was dropped on the
+    // floor — the task just flipped back to killed with no explanation in the
+    // DB, in `conductor diagnose`, or in the UI.
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      taskType: "ai_task",
+    } as any);
+
+    await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      taskId: "task-1",
+      status: "killed",
+      summary: "restart failed: EEXIST: file already exists, symlink",
+    });
+
+    expect(db.taskStatusEvent.findUnique).not.toHaveBeenCalled();
+    expect(db.taskStatusEvent.create).toHaveBeenCalledWith({
+      data: {
+        taskId: "task-1",
+        statusEventId: expect.any(String),
+        status: "killed",
+        summary: "restart failed: EEXIST: file already exists, symlink",
+      },
+    });
+  });
+
+  it("skips the synthesized status event when there is no summary to preserve", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      taskType: "ai_task",
+    } as any);
+
+    await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      taskId: "task-1",
+      status: "completed",
+    });
+
+    expect(db.taskStatusEvent.create).not.toHaveBeenCalled();
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-1" },
+      data: { status: "completed" },
+    });
+  });
+
+  it("does not synthesize an event for a summary that merely restates the status", async () => {
+    // The daemon sends summary:"completed" on every normal exit. Persisting
+    // that would make `latest_status_summary` read "completed" for most tasks,
+    // shadowing the SDK's informative summary and adding noise to daily
+    // reports — all while carrying zero diagnostic value.
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      taskType: "ai_task",
+    } as any);
+
+    await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      taskId: "task-1",
+      status: "completed",
+      summary: "completed",
+    });
+
+    expect(db.taskStatusEvent.create).not.toHaveBeenCalled();
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-1" },
+      data: { status: "completed" },
+    });
+  });
+
+  it("still applies the status when the status-event write fails", async () => {
+    // The event and the task update share a transaction. Without a fallback a
+    // failing event write (DB predating the task_status_events migration,
+    // SQLite write contention) would roll the status back and rethrow,
+    // stranding a dead task at `running`.
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      taskType: "ai_task",
+    } as any);
+    vi.mocked(db.$transaction).mockRejectedValueOnce(
+      new Error("no such table: task_status_events"),
+    );
+
+    await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      taskId: "task-1",
+      status: "killed",
+      summary: "new task failed: EEXIST",
+    });
+
+    // Terminal state still lands, with the killed discriminator intact.
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-1" },
+      data: expect.objectContaining({
+        status: "killed",
+        killedReason: "fire_exit",
+      }),
+    });
+  });
+
+  it("dedupes on a client-supplied status_event_id", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      taskType: "ai_task",
+    } as any);
+    vi.mocked(db.taskStatusEvent.findUnique).mockResolvedValue({ id: "evt-1" } as any);
+
+    const result = await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      taskId: "task-1",
+      status: "killed",
+      summary: "new task failed: EEXIST",
+      statusEventId: "evt-supplied-1",
+    });
+
+    expect(result.duplicate).toBe(true);
+    expect(db.taskStatusEvent.create).not.toHaveBeenCalled();
+  });
+
   it("rejects stale fire interrupt acknowledgements for another execution host", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue({
       id: "task-1",

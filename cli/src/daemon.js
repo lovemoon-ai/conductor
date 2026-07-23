@@ -59,7 +59,9 @@ import {
 import {
   maskHandoffUrlForLogs,
   maskErrorForLogs,
+  redactSecretsForLogs,
 } from "./handoff-log-mask.js";
+import { StringDecoder } from "node:string_decoder";
 
 dotenv.config();
 
@@ -448,7 +450,7 @@ function normalizeOptionalString(value) {
 // Re-export the handoff-URL masking helpers so existing external imports
 // keep working. Implementation lives in a dependency-free module so unit
 // tests can import it without pulling in conductor-sdk and friends.
-export { maskHandoffUrlForLogs, maskErrorForLogs };
+export { maskHandoffUrlForLogs, maskErrorForLogs, redactSecretsForLogs };
 
 function normalizeTerminalResumeStrategy(value) {
   const normalized = normalizeOptionalString(value);
@@ -828,6 +830,11 @@ export function startDaemon(config = {}, deps = {}) {
   const symlinkSyncFn = deps.symlinkSync || fs.symlinkSync;
   const unlinkSyncFn = deps.unlinkSync || fs.unlinkSync;
   const renameSyncFn = deps.renameSync || fs.renameSync;
+  // Used to recover a crashed fire's output from its log file when the daemon
+  // could not observe the process directly (tmux mode).
+  const openSyncFn = deps.openSync || fs.openSync;
+  const readSyncFn = deps.readSync || fs.readSync;
+  const closeSyncFn = deps.closeSync || fs.closeSync;
   const createWriteStreamFn = deps.createWriteStream || fs.createWriteStream;
   const fetchFn = deps.fetch || fetch;
   const createRtcPeerConnection = deps.createRtcPeerConnection || null;
@@ -928,10 +935,15 @@ export function startDaemon(config = {}, deps = {}) {
   const CHILD_OUTPUT_CAPTURE_LIMIT = 4000;
   const CHILD_OUTPUT_SUMMARY_LIMIT = 400;
 
-  function createChildOutputCapture() {
+  function createChildOutputCapture({ logPath = "" } = {}) {
     let buffer = "";
+    // Decode across chunk boundaries: a raw per-chunk toString("utf8") splits
+    // multi-byte characters whenever a chunk ends mid-sequence, which would
+    // put mojibake into the persisted status summary.
+    const decoder = new StringDecoder("utf8");
     const append = (chunk) => {
-      const text = chunk?.toString?.("utf8") ?? String(chunk ?? "");
+      const text =
+        typeof chunk === "string" ? chunk : decoder.write(Buffer.from(chunk));
       if (!text) return;
       buffer += text;
       if (buffer.length > CHILD_OUTPUT_CAPTURE_LIMIT) {
@@ -946,10 +958,42 @@ export function startDaemon(config = {}, deps = {}) {
         stream.on("data", append);
       }
     };
+
+    // In tmux mode the daemon's child is the `tmux new-session` client, and
+    // the fire's own output is redirected to `logPath` *inside* the session
+    // (`… 2>&1 | tee -a <logPath>`). The in-memory buffer therefore only ever
+    // holds tmux's own errors. When it is empty, fall back to the tail of the
+    // log file so the backend's actual crash output is still reported.
+    const readLogTail = () => {
+      if (!logPath) return "";
+      try {
+        const stat = statSyncFn(logPath);
+        const size = Number(stat?.size) || 0;
+        if (size <= 0) return "";
+        const start = Math.max(0, size - CHILD_OUTPUT_CAPTURE_LIMIT);
+        const fd = openSyncFn(logPath, "r");
+        try {
+          const length = size - start;
+          const buf = Buffer.alloc(length);
+          readSyncFn(fd, buf, 0, length, start);
+          return buf.toString("utf8");
+        } finally {
+          closeSyncFn(fd);
+        }
+      } catch {
+        return "";
+      }
+    };
+
     const tail = (limit = CHILD_OUTPUT_SUMMARY_LIMIT) => {
-      const collapsed = maskHandoffUrlForLogs(buffer).replace(/\s+/g, " ").trim();
-      if (!collapsed) return "";
-      return collapsed.length > limit ? `…${collapsed.slice(-limit)}` : collapsed;
+      const raw = buffer.trim() ? buffer : readLogTail();
+      // Collapse first, then redact: the mask patterns stop at whitespace, so
+      // a secret split across a newline would otherwise only be half-matched.
+      const collapsed = raw.replace(/\s+/g, " ").trim();
+      const safe = redactSecretsForLogs(collapsed, [AGENT_TOKEN]).trim();
+      if (!safe) return "";
+      // slice(-(limit - 1)) keeps the ellipsis inside the documented budget.
+      return safe.length > limit ? `…${safe.slice(-(limit - 1))}` : safe;
     };
     return { attach, append, tail };
   }
@@ -1485,6 +1529,10 @@ export function startDaemon(config = {}, deps = {}) {
     }
   }
 
+  // Monotonic suffix so two symlink swaps inside one daemon process can never
+  // collide on the same temp path.
+  let symlinkSequence = 0;
+
   async function ensureTaskWorktreeSymlinks({ projectRepoRoot, projectWorkspacePath, finalCwd }) {
     const { symlinkPaths } = readProjectWorktreeSettings(projectWorkspacePath);
     for (const configuredPath of symlinkPaths) {
@@ -1542,7 +1590,11 @@ export function startDaemon(config = {}, deps = {}) {
 
       if (linkStat) {
         if (!linkStat.isSymbolicLink()) {
-          throw new Error(`worktree symlink destination already exists: ${linkPath}`);
+          throw new Error(
+            `worktree symlink destination already exists and is not a symlink: ${linkPath}. ` +
+              `Refusing to replace it because it may hold real data — remove it manually, ` +
+              `or drop "${configuredPath}" from worktree.symlink in .conductor/settings.yaml.`,
+          );
         }
         // Compare the link's TARGET, not whether that target resolves. A link
         // that already points at the right place is correct even when the
@@ -1552,7 +1604,40 @@ export function startDaemon(config = {}, deps = {}) {
         if (currentResolvedTarget === sourcePath) {
           continue;
         }
-        throw new Error(`worktree symlink destination already points elsewhere: ${linkPath}`);
+        // Self-heal instead of aborting. A stale link happens whenever the
+        // project moves on disk or its workspace_path binding is edited: every
+        // pre-existing worktree then holds links to the OLD absolute path, and
+        // throwing here made every task in them permanently un-restartable.
+        //
+        // Replacing is safe precisely because this entry is a SYMLINK: it
+        // carries no data of its own, so unlinking destroys nothing. (The
+        // non-symlink case above still throws — a real file or directory here
+        // may hold user data and must never be clobbered.) The source is also
+        // known to exist at this point, thanks to the guard further up, so we
+        // are converging on a link that actually resolves.
+        log(
+          `[worktree] repointing stale symlink ${linkPath}: ${currentResolvedTarget} -> ${sourcePath}`,
+        );
+        // Atomic replace. branch/fork tasks deliberately SHARE one worktree
+        // (identity is keyed on worktreeBranch), so two preparations can run
+        // against this directory concurrently. A plain unlink+symlink leaves a
+        // window where the peer's symlinkSync hits EEXIST — reintroducing the
+        // very failure this function was fixed for. symlink-to-temp + rename
+        // has no such window: rename(2) atomically replaces the entry.
+        const tempLinkPath = `${linkPath}.conductor-tmp-${process.pid}-${symlinkSequence++}`;
+        const relativeTargetForSwap = path.relative(path.dirname(linkPath), sourcePath) || ".";
+        symlinkSyncFn(relativeTargetForSwap, tempLinkPath);
+        try {
+          renameSyncFn(tempLinkPath, linkPath);
+        } catch (error) {
+          try {
+            unlinkSyncFn(tempLinkPath);
+          } catch {
+            // best effort: never mask the original failure
+          }
+          throw error instanceof Error ? error : new Error(String(error));
+        }
+        continue;
       }
 
       const relativeTarget = path.relative(path.dirname(linkPath), sourcePath) || ".";
@@ -5072,10 +5157,13 @@ export function startDaemon(config = {}, deps = {}) {
     // task …" line is ever logged, so without this a failed branch/fork left
     // the daemon log completely silent and only a generic `fire_exit` in the
     // backend DB.
-    logError(
-      `[restart-spawn] failure task=${taskId} mode=${mode || "unknown"}: ${
-        scrubbedError?.message || scrubbedError
-      }`,
+    // Benign, self-explanatory outcomes (orderly shutdown, a refresh that is
+    // already in flight) are logged at normal level so they don't show up as
+    // errors in monitoring; genuine failures still go to stderr.
+    const failureText = `${scrubbedError?.message || scrubbedError}`;
+    const isBenign = /daemon shut(ting)? down|already in progress/i.test(failureText);
+    (isBenign ? log : logError)(
+      `[restart-spawn] failure task=${taskId} mode=${mode || "unknown"}: ${failureText}`,
     );
     if (mode === "refresh_session_inplace") {
       rememberCommandRequestAckResult(requestId, false);
@@ -5099,12 +5187,12 @@ export function startDaemon(config = {}, deps = {}) {
           project_id: projectId,
           status: "KILLED",
           summary,
-          // Without a status_event_id the backend applies the status but
-          // DISCARDS the summary (see commitTaskStatusUpdate: the
-          // taskStatusEvent row — the only place `summary` is persisted — is
-          // written solely on the statusEventId branch). That is why restart
-          // failures were invisible in the DB, in `conductor diagnose`, and
-          // in the UI even though the daemon reported a precise reason.
+          // Idempotency key for this transition. The backend persists
+          // `summary` only as a `taskStatusEvent` row, and it keys duplicate
+          // suppression off this id — without one it has to synthesize an id,
+          // which makes a redelivered report indistinguishable from a new
+          // event. Supplying it keeps failure reports both persisted AND
+          // deduplicated.
           status_event_id: randomUUID(),
         },
       })
@@ -5116,8 +5204,14 @@ export function startDaemon(config = {}, deps = {}) {
   function reportCreateTaskFailure({ taskId, projectId, requestId, error, sendAck = true }) {
     const normalizedTaskId = taskId ? String(taskId) : "";
     const normalizedProjectId = projectId ? String(projectId) : "";
-    const message = error instanceof Error ? error.message : String(error);
-    logError(`Failed to create task ${normalizedTaskId || "unknown"}: ${message}`);
+    // Mirror reportRestartFailure: scrub before the message reaches the log
+    // AND the persisted status summary. An un-scrubbed create failure could
+    // carry the handoff URL or an inherited provider key.
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const message = redactSecretsForLogs(rawMessage, [AGENT_TOKEN]);
+    logError(
+      `[create-spawn] failure task=${normalizedTaskId || "unknown"}: ${message}`,
+    );
     if (sendAck) {
       sendAgentCommandAck({
         requestId,
@@ -5139,6 +5233,7 @@ export function startDaemon(config = {}, deps = {}) {
           project_id: normalizedProjectId,
           status: "KILLED",
           summary: message,
+          status_event_id: randomUUID(),
         },
       })
       .catch((err) => {
@@ -5455,6 +5550,11 @@ export function startDaemon(config = {}, deps = {}) {
       log(`New task workspace: ${taskDir}`);
       log(`Logs: ${logPath}`);
 
+      // Same diagnostics contract as the restart/fork path: without this a
+      // create_task whose backend dies at startup is a black box too.
+      const outputCapture = createChildOutputCapture({ logPath });
+      const spawnedAtMs = Date.now();
+
       activeTaskProcesses.set(taskId, {
         child,
         projectId,
@@ -5492,13 +5592,20 @@ export function startDaemon(config = {}, deps = {}) {
         } else if (child.stderr && typeof child.stderr.on === "function" && logStream) {
           child.stderr.on("data", (chunk) => logStream.write(chunk));
         }
+        outputCapture.attach(child.stdout);
+        outputCapture.attach(child.stderr);
       } else if (child.stderr && typeof child.stderr.on === "function") {
+        outputCapture.attach(child.stderr);
         // Capture any error output emitted by the tmux client itself so
         // problems during session creation surface in daemon logs.
         child.stderr.on("data", (chunk) => {
           const text = chunk?.toString?.("utf8") ?? String(chunk ?? "");
           if (text.trim()) {
-            logError(`tmux(${tmuxSession}) stderr: ${text.trim()}`);
+            logError(
+              // Redact: this is the fire's raw stderr, which can carry the
+              // handoff share token (argv echo) and provider/agent keys.
+              `tmux(${tmuxSession}) stderr: ${redactSecretsForLogs(text.trim(), [AGENT_TOKEN])}`,
+            );
           }
         });
       }
@@ -5577,6 +5684,18 @@ export function startDaemon(config = {}, deps = {}) {
             ? "completed"
             : `exited with code ${code}`;
 
+        const lifetimeMs = Date.now() - spawnedAtMs;
+        const outputTail = status === "KILLED" ? outputCapture.tail() : "";
+        if (status === "KILLED") {
+          logError(
+            `[create-spawn] abnormal exit task=${taskId} backend=${selectedBackend} ` +
+              `cwd=${taskDir} tmux=${tmuxSession || "none"} exit=${code ?? "null"} ` +
+              `signal=${signal || "null"} lifetime_ms=${lifetimeMs} log=${logPath} ` +
+              `output_tail=${outputTail ? JSON.stringify(outputTail) : "<empty>"}`,
+          );
+        }
+        const reportedSummary = outputTail ? `${summary}: ${outputTail}` : summary;
+
         if (!suppressExitStatusReport && shouldDaemonReportFireChildTerminalStatus(active)) {
           client
             .sendJson({
@@ -5585,7 +5704,8 @@ export function startDaemon(config = {}, deps = {}) {
                 task_id: taskId,
                 project_id: projectId,
                 status,
-                summary,
+                summary: reportedSummary,
+                status_event_id: randomUUID(),
               },
             })
             .catch((err) => {
@@ -6047,8 +6167,10 @@ export function startDaemon(config = {}, deps = {}) {
       logPath,
     });
     // Bounded tail of the child's output + a spawn timestamp, so an abnormal
-    // exit can report *why* it died and how long it survived.
-    const outputCapture = createChildOutputCapture();
+    // exit can report *why* it died and how long it survived. `logPath` lets
+    // the capture recover the fire's own output in tmux mode, where the
+    // daemon's child is only the `tmux new-session` client.
+    const outputCapture = createChildOutputCapture({ logPath });
     const spawnedAtMs = Date.now();
 
     let logStream;
@@ -6111,7 +6233,11 @@ export function startDaemon(config = {}, deps = {}) {
       child.stderr.on("data", (chunk) => {
         const text = chunk?.toString?.("utf8") ?? String(chunk ?? "");
         if (text.trim()) {
-          logError(`tmux(${tmuxSession}) stderr: ${text.trim()}`);
+          logError(
+              // Redact: this is the fire's raw stderr, which can carry the
+              // handoff share token (argv echo) and provider/agent keys.
+              `tmux(${tmuxSession}) stderr: ${redactSecretsForLogs(text.trim(), [AGENT_TOKEN])}`,
+            );
         }
       });
     }
@@ -6219,8 +6345,7 @@ export function startDaemon(config = {}, deps = {}) {
               project_id: normalizedProjectId,
               status,
               summary: reportedSummary,
-              // Required for the summary to be persisted at all — see the
-              // note in reportRestartFailure.
+              // Idempotency key — see the note in reportRestartFailure.
               status_event_id: randomUUID(),
             },
           })

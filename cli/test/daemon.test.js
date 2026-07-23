@@ -3092,39 +3092,46 @@ describe("Daemon", () => {
   // reported "missing". The daemon then called symlinkSync on a path that
   // already existed, got EEXIST, and aborted worktree prep — permanently
   // breaking restart for that task with no daemon log and no status summary.
-  it("treats a dangling symlink that already points at the source as up to date", (t, done) => {
-    const taskPayload = {
-      task_id: "task-worktree-dangling",
-      project_id: "proj-git",
-      backend_type: "codex",
-      launch_config: {
-        worktree: true,
-        worktreeId: "task-worktree-dangling",
-        worktreeBranch: "task-worktree-dangling",
-        worktreeBaseRef: "main",
-        projectRepoRoot: "/tmp/repo",
-        projectWorkspacePath: "/tmp/repo",
-        projectRelativePath: ".",
-      },
-    };
-
-    const worktreeRoot = "/tmp/repo/.conductor/worktrees/task-worktree-dangling";
+  // Shared harness for the worktree-symlink destination probe. `linkState`
+  // decides what the destination currently looks like on disk.
+  const runWorktreeSymlinkCase = ({ name, linkState, onSettled }) => {
+    const worktreeRoot = `/tmp/repo/.conductor/worktrees/${name}`;
     const linkPath = `${worktreeRoot}/xr/local.properties`;
-    const danglingTarget = "../../../../xr/local.properties";
+    const sourcePath = "/tmp/repo/xr/local.properties";
     const symlinkCalls = [];
+    const unlinkCalls = [];
+    const renameCalls = [];
     let spawnedCwd = null;
     let daemonInstance = null;
 
     wss.once("connection", (ws) => {
-      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+      ws.send(
+        JSON.stringify({
+          type: "create_task",
+          payload: {
+            task_id: name,
+            project_id: "proj-git",
+            backend_type: "codex",
+            launch_config: {
+              worktree: true,
+              worktreeId: name,
+              worktreeBranch: name,
+              worktreeBaseRef: "main",
+              projectRepoRoot: "/tmp/repo",
+              projectWorkspacePath: "/tmp/repo",
+              projectRelativePath: ".",
+            },
+          },
+        }),
+      );
     });
 
     daemonInstance = startDaemon(
       {
         BACKEND_URL: `ws://localhost:${port}`,
-        WORKSPACE_ROOT: "/tmp/test-ws-worktree-dangling",
+        WORKSPACE_ROOT: `/tmp/test-ws-${name}`,
         CLI_PATH: "/tmp/cli.js",
-        DAEMON_NAME: "daemon-worktree-dangling",
+        DAEMON_NAME: `daemon-${name}`,
       },
       {
         spawn: (cmd, args, opts) => {
@@ -3147,9 +3154,11 @@ describe("Daemon", () => {
         },
         mkdirSync: () => {},
         writeFileSync: () => {},
-        // existsSync follows symlinks, so the dangling link reads as absent —
-        // exactly the real-fs behavior that used to mislead the daemon.
-        existsSync: (filePath) => filePath === "/tmp/repo/.conductor/settings.yaml",
+        // The SOURCE exists in every case here — that is what makes the
+        // destination probe reachable at all (a missing source is skipped
+        // earlier, covered by its own test below).
+        existsSync: (filePath) =>
+          filePath === "/tmp/repo/.conductor/settings.yaml" || filePath === sourcePath,
         lstatSync: (filePath) => {
           if (filePath === linkPath) {
             return { isSymbolicLink: () => true };
@@ -3158,31 +3167,77 @@ describe("Daemon", () => {
         },
         readlinkSync: (filePath) => {
           assert.strictEqual(filePath, linkPath);
-          return danglingTarget;
+          return linkState;
         },
         symlinkSync: (targetPath, target) => {
           symlinkCalls.push([targetPath, target]);
         },
         readFileSync: () =>
           ["worktree:", "  symlink:", "    - xr/local.properties", ""].join("\n"),
-        unlinkSync: () => {},
-        renameSync: () => {},
+        unlinkSync: (filePath) => {
+          unlinkCalls.push(filePath);
+        },
+        renameSync: (from, to) => {
+          renameCalls.push([from, to]);
+        },
         createWriteStream: () => ({ write: () => {}, end: () => {} }),
         fetch: async () => ({ ok: false, json: async () => ({}) }),
       },
     );
 
     setTimeout(() => {
-      // Link already points at the right place: leave it alone rather than
-      // re-creating it (which throws EEXIST) …
-      assert.deepStrictEqual(symlinkCalls, []);
-      // … and worktree prep must still complete so the fire actually launches.
-      assert.strictEqual(spawnedCwd, worktreeRoot);
+      onSettled({ symlinkCalls, unlinkCalls, renameCalls, spawnedCwd, linkPath, worktreeRoot });
       if (daemonInstance && typeof daemonInstance.close === "function") {
         daemonInstance.close();
       }
-      done();
     }, 500);
+  };
+
+  it("leaves an already-correct worktree symlink untouched", (t, done) => {
+    runWorktreeSymlinkCase({
+      name: "task-worktree-uptodate",
+      linkState: "../../../../xr/local.properties",
+      onSettled: ({ symlinkCalls, unlinkCalls, spawnedCwd, worktreeRoot }) => {
+        assert.deepStrictEqual(symlinkCalls, []);
+        assert.deepStrictEqual(unlinkCalls, []);
+        assert.strictEqual(spawnedCwd, worktreeRoot);
+        done();
+      },
+    });
+  });
+
+  // Regression: a symlink pointing at a path that no longer exists (the
+  // project was moved, or its workspace_path binding was edited, so every
+  // pre-existing worktree still links to the OLD absolute location) used to
+  // be fatal. existsSync followed the stale link, reported "missing", and
+  // symlinkSync then threw EEXIST — permanently bricking restart AND branch
+  // new task for every task in that worktree (the successor inherits the same
+  // worktreeBranch, so it re-prepares the very same directory).
+  it("repoints a stale worktree symlink instead of failing the task", (t, done) => {
+    runWorktreeSymlinkCase({
+      name: "task-worktree-stale",
+      linkState: "../../../../../old-repo/xr/local.properties",
+      onSettled: ({ symlinkCalls, unlinkCalls, renameCalls, spawnedCwd, linkPath, worktreeRoot }) => {
+        // The replacement is built under a temp name and swapped in with
+        // rename(2). branch/fork tasks share one worktree, so a plain
+        // unlink+symlink would leave a window where a concurrent preparation
+        // hits EEXIST — the exact failure this function was fixed for.
+        assert.strictEqual(symlinkCalls.length, 1);
+        const [target, tempPath] = symlinkCalls[0];
+        assert.strictEqual(target, "../../../../xr/local.properties");
+        assert.notStrictEqual(tempPath, linkPath, "must not symlink onto the live path");
+        assert.ok(
+          tempPath.startsWith(`${linkPath}.conductor-tmp-`),
+          `temp link should be adjacent to the destination; got ${tempPath}`,
+        );
+        assert.deepStrictEqual(renameCalls, [[tempPath, linkPath]]);
+        // No unlink of the live path at any point — rename replaces it.
+        assert.deepStrictEqual(unlinkCalls, []);
+        // Self-heal means the task still launches.
+        assert.strictEqual(spawnedCwd, worktreeRoot);
+        done();
+      },
+    });
   });
 
   // `symlinkSync` does not require its target to exist, so a stale
@@ -6403,11 +6458,15 @@ describe("Daemon", () => {
     daemonInstance.close();
   });
 
-  it("surfaces the fork child's output tail (handoff token masked) when it exits abnormally", async (t) => {
-    // Production runs fires inside tmux; that is also the mode where the
-    // daemon force-reports a terminal status for a fire that died at startup
-    // (in plain bridge mode the report is suppressed and only the daemon log
-    // carries the diagnostic).
+
+  // Shared harness for the fork-spawn diagnostics. Production runs fires
+  // inside tmux, and that is the only mode where the daemon force-reports a
+  // terminal status for a fire that never came up — so these cases model tmux
+  // faithfully: the daemon's child is the `tmux new-session` CLIENT, whose
+  // stderr carries tmux's own errors. The fire's own output never reaches the
+  // daemon; it goes to `logPath` via `… | tee -a`, which is why the capture
+  // falls back to reading that file.
+  const runForkDiagnosticsCase = async ({ t, name, clientStderr, logFileContents, onSettled }) => {
     const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
     process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
     t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
@@ -6417,14 +6476,16 @@ describe("Daemon", () => {
     const spawnCalls = [];
     const sentEvents = [];
     let forkChild = null;
+    const logBuffer = Buffer.from(logFileContents ?? "", "utf8");
 
     const daemonInstance = startDaemon(
       {
         BACKEND_URL: "ws://localhost:0",
         BACKEND_HTTP: "http://localhost:6152",
-        WORKSPACE_ROOT: "/tmp/test-ws-fork-diag",
+        WORKSPACE_ROOT: `/tmp/test-ws-${name}`,
         CLI_PATH: "/tmp/cli.js",
-        NAME: "fork-diag-daemon",
+        NAME: `${name}-daemon`,
+        AGENT_TOKEN: "agent-token-abcdefgh12345678",
       },
       {
         spawn: (cmd, args, opts) => {
@@ -6447,6 +6508,15 @@ describe("Daemon", () => {
         mkdirSync: () => {},
         writeFileSync: () => {},
         existsSync: () => false,
+        // Model the fire's log file so the capture's fallback path is real.
+        statSync: () => ({ size: logBuffer.length }),
+        openSync: () => 7,
+        readSync: (_fd, buf, offset, length, position) =>
+          logBuffer.copy(buf, offset, position, position + length),
+        closeSync: () => {},
+        lstatSync: () => {
+          throw enoent();
+        },
         readFileSync: () => "",
         unlinkSync: () => {},
         renameSync: () => {},
@@ -6456,7 +6526,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return {
               ok: true,
-              json: async () => ({ metadata: { localPaths: { default: "/tmp/fork-diag-cwd" } } }),
+              json: async () => ({ metadata: { localPaths: { default: `/tmp/${name}-cwd` } } }),
             };
           }
           if (String(url).endsWith("/api/tasks")) {
@@ -6479,33 +6549,31 @@ describe("Daemon", () => {
       },
     );
 
-    await waitUntil(() => connected, { message: "fork-diag daemon to connect" });
+    await waitUntil(() => connected, { message: `${name} daemon to connect` });
 
     handler({
       type: "restart_task",
       payload: {
         mode: "fork_to_new_task",
-        source_task_id: "task-diag-source",
-        target_task_id: "task-diag-successor",
+        source_task_id: `${name}-source`,
+        target_task_id: `${name}-successor`,
         project_id: "proj-diag",
         title: "Refactor [claude]",
         source_backend_type: "codex",
         source_session_id: "sess-codex-diag",
         target_backend_type: "claude",
         resume_context_url: "http://localhost:6152/share/supersecrettoken/plain",
-        request_id: "req-diag-1",
+        request_id: `${name}-req`,
       },
     });
 
     await waitUntil(() => spawnCalls.length === 1 && forkChild, { message: "fork spawn" });
     assert.strictEqual(spawnCalls[0].cmd, "tmux");
 
-    // The backend dies at startup and explains why on stderr, echoing its
-    // argv (which embeds the handoff share token).
-    const stderrChunk =
-      "Error: not logged in. Run `claude login`.\n" +
-      "argv: --backend claude -- http://localhost:6152/share/supersecrettoken/plain\n";
-    forkChild.stderr.emit("data", Buffer.from(stderrChunk));
+    if (clientStderr) {
+      forkChild.stderr.emit("data", Buffer.from(clientStderr));
+    }
+    // Non-zero exit of the tmux client = the session never launched.
     forkChild.emit("exit", 1, null);
 
     await waitUntil(
@@ -6519,35 +6587,67 @@ describe("Daemon", () => {
     const killed = sentEvents.find(
       (e) => e.type === "task_status_update" && e.payload?.status === "KILLED",
     );
-    assert.strictEqual(killed.payload.task_id, "task-diag-successor");
-    // The bare classification is preserved...
-    assert.ok(
-      killed.payload.summary.startsWith("exited with code 1"),
-      `summary should keep the exit classification; got: ${killed.payload.summary}`,
-    );
-    // ...and now actually explains itself.
-    assert.ok(
-      /not logged in/.test(killed.payload.summary),
-      `summary should carry the child's output tail; got: ${killed.payload.summary}`,
-    );
-    // The share token must never reach a persisted summary.
-    assert.ok(
-      !killed.payload.summary.includes("supersecrettoken"),
-      `summary must mask the handoff share token; got: ${killed.payload.summary}`,
-    );
-    assert.ok(
-      killed.payload.summary.includes("/share/<masked:"),
-      `summary should show the masked share marker; got: ${killed.payload.summary}`,
-    );
-    // Without status_event_id the backend applies the status but throws the
-    // summary away (commitTaskStatusUpdate only persists a taskStatusEvent on
-    // the statusEventId branch) — the diagnostic would never reach the DB/UI.
-    assert.ok(
-      killed.payload.status_event_id,
-      "terminal status report must carry status_event_id so the summary is persisted",
-    );
-
+    onSettled({ killed, name });
     daemonInstance.close();
+  };
+
+  it("reports why a fork died when tmux itself refused to launch it", async (t) => {
+    await runForkDiagnosticsCase({
+      t,
+      name: "task-diag-tmux",
+      clientStderr: "duplicate session: conductor-fire-task-diag-tmux\n",
+      onSettled: ({ killed, name }) => {
+        assert.strictEqual(killed.payload.task_id, `${name}-successor`);
+        // The bare classification is preserved …
+        assert.ok(
+          killed.payload.summary.startsWith("exited with code 1"),
+          `got: ${killed.payload.summary}`,
+        );
+        // … and now names the actual cause.
+        assert.ok(
+          /duplicate session/.test(killed.payload.summary),
+          `summary should carry tmux's error; got: ${killed.payload.summary}`,
+        );
+        assert.ok(killed.payload.status_event_id, "must carry an idempotency key");
+      },
+    });
+  });
+
+  it("recovers the fire's own crash output from its log file, with secrets redacted", async (t) => {
+    // The realistic tmux case: the tmux client says nothing, and everything
+    // the backend printed went to the log file. That file is also where
+    // secrets show up — a backend echoing its argv/env prints the handoff
+    // share token and the daemon's own agent token.
+    await runForkDiagnosticsCase({
+      t,
+      name: "task-diag-log",
+      clientStderr: "",
+      logFileContents:
+        "Error: not logged in. Run `claude login`.\n" +
+        "argv: --backend claude -- http://localhost:6152/share/supersecrettoken/plain\n" +
+        "env: CONDUCTOR_AGENT_TOKEN=agent-token-abcdefgh12345678 ANTHROPIC_API_KEY=sk-ant-abcdefghijklmn\n",
+      onSettled: ({ killed }) => {
+        assert.ok(
+          /not logged in/.test(killed.payload.summary),
+          `summary should carry the fire's log tail; got: ${killed.payload.summary}`,
+        );
+        // No secret of any class may reach a persisted summary.
+        assert.ok(
+          !killed.payload.summary.includes("supersecrettoken"),
+          `handoff token leaked: ${killed.payload.summary}`,
+        );
+        assert.ok(
+          !killed.payload.summary.includes("agent-token-abcdefgh12345678"),
+          `agent token leaked: ${killed.payload.summary}`,
+        );
+        assert.ok(
+          !killed.payload.summary.includes("sk-ant-abcdefghijklmn"),
+          `provider key leaked: ${killed.payload.summary}`,
+        );
+        assert.ok(killed.payload.summary.includes("/share/<masked:"));
+        assert.ok(killed.payload.summary.includes("<redacted>"));
+      },
+    });
   });
 
   it("hands off same-backend successor tasks via the handoff URL (no --resume)", async () => {

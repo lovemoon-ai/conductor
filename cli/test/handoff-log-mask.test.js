@@ -4,7 +4,11 @@ import assert from "node:assert";
 // Import directly from the extracted module so this test file doesn't
 // transitively load daemon.js (which needs @love-moon/conductor-sdk
 // build artifacts that are not available in every test environment).
-import { maskErrorForLogs, maskHandoffUrlForLogs } from "../src/handoff-log-mask.js";
+import {
+  maskErrorForLogs,
+  maskHandoffUrlForLogs,
+  redactSecretsForLogs,
+} from "../src/handoff-log-mask.js";
 
 describe("maskHandoffUrlForLogs", () => {
   it("masks the token in a bare handoff URL", () => {
@@ -122,5 +126,51 @@ describe("maskErrorForLogs", () => {
   it("passes through nullish inputs", () => {
     assert.strictEqual(maskErrorForLogs(undefined), undefined);
     assert.strictEqual(maskErrorForLogs(null), null);
+  });
+});
+
+describe("redactSecretsForLogs", () => {
+  it("redacts an exact known secret (the daemon's own agent token)", () => {
+    const out = redactSecretsForLogs(
+      "spawn env CONDUCTOR_AGENT_TOKEN=abcdefgh12345678 failed",
+      ["abcdefgh12345678"],
+    );
+    assert.ok(!out.includes("abcdefgh12345678"), "raw token must not leak");
+    assert.ok(out.includes("<redacted>"));
+  });
+
+  it("redacts secret-shaped assignments even without a known value", () => {
+    const out = redactSecretsForLogs(
+      "env: ANTHROPIC_API_KEY=sk-ant-abcdefghijklmn MY_PASSWORD=hunter2222",
+    );
+    assert.ok(!out.includes("sk-ant-abcdefghijklmn"));
+    assert.ok(!out.includes("hunter2222"));
+    // The key NAME is kept — it is the useful diagnostic signal.
+    assert.ok(out.includes("ANTHROPIC_API_KEY=<redacted>"));
+  });
+
+  it("redacts Authorization headers and bare provider keys", () => {
+    const out = redactSecretsForLogs(
+      "Authorization: Bearer abc123def456ghi invalid key sk-proj-ABCDEFGHIJKLMNOP",
+    );
+    assert.ok(!out.includes("abc123def456ghi"));
+    assert.ok(!out.includes("sk-proj-ABCDEFGHIJKLMNOP"));
+    assert.ok(out.includes("Bearer <redacted>"));
+  });
+
+  it("still masks the handoff share token", () => {
+    const out = redactSecretsForLogs("see http://h/share/TOKEN9999/plain");
+    assert.ok(!out.includes("TOKEN9999"));
+    assert.ok(out.includes("/share/<masked:…9999>/plain"));
+  });
+
+  it("ignores short known secrets so a stray value cannot blank the message", () => {
+    const out = redactSecretsForLogs("boom at line 42", ["42"]);
+    assert.strictEqual(out, "boom at line 42");
+  });
+
+  it("passes through nullish and empty inputs", () => {
+    assert.strictEqual(redactSecretsForLogs(""), "");
+    assert.strictEqual(redactSecretsForLogs(undefined), undefined);
   });
 });

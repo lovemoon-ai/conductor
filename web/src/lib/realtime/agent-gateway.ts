@@ -57,6 +57,13 @@ type AgentEvent =
         project_id?: string;
         metadata?: Record<string, unknown> | null;
         updated_at?: string;
+        /**
+         * Optional idempotency key. When the agent supplies one, redelivery of
+         * the same logical transition is deduped against `taskStatusEvent`.
+         * Without it the server has to synthesize an id to persist `summary`,
+         * which makes redelivery indistinguishable from a new event.
+         */
+        status_event_id?: string;
       };
     }
   | { type: "task_stop_ack"; payload: { task_id: string; request_id: string; accepted?: boolean } }
@@ -1463,6 +1470,12 @@ export const setupAgentGateway = (): WebSocketServer => {
                 taskId,
                 status,
                 summary: event.payload.summary,
+                // Forward the agent's idempotency key. Dropping it (as this
+                // call used to) made every daemon-reported transition
+                // undedupable end to end: the server synthesized a fresh id
+                // per delivery, so a retry became a second event row and a
+                // second broadcast instead of `duplicate: true`.
+                statusEventId: event.payload.status_event_id,
               });
               sendEnvelope(socket, {
                 type: "status_recorded",

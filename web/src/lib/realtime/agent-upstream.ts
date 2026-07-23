@@ -533,12 +533,56 @@ export async function commitTaskStatusUpdate(input: {
       ? { ...baseUpdateData, ...buildKilledPatch(killedReason) }
       : baseUpdateData;
 
-  let duplicate = false;
-  if (statusEventId) {
-    const existing = await db.taskStatusEvent.findUnique({
-      where: { statusEventId },
-      select: { id: true },
+  // `taskStatusEvent` is the ONLY place `summary` is persisted, and until now
+  // it was written solely on the statusEventId branch. A daemon that reported
+  // a precise reason without an id (restart failures, spawn failures) had that
+  // reason silently dropped: absent from the DB, from `conductor diagnose`,
+  // and from the UI, leaving only a bare status flip. Synthesize an id so a
+  // summary-bearing report always lands as a real status event.
+  // Trivial summaries are just the status restated ("completed", "killed").
+  // Synthesizing an event for those buries the SDK's informative summary in
+  // `latest_status_summary` (task-diagnostics) and adds a meaningless
+  // "Status changed to completed — completed" line to daily reports. They
+  // carry no diagnostic value, so don't manufacture an event to hold them.
+  const isTrivialSummary =
+    !!summary && summary.trim().toLowerCase() === status.trim().toLowerCase();
+  const effectiveStatusEventId =
+    statusEventId ?? (summary && !isTrivialSummary ? randomUUID() : null);
+
+  // Applying the status WITHOUT a status event. Used both by the no-id path
+  // and as the fallback when the status-event write fails: recording the
+  // transition matters more than recording its diagnostic breadcrumb.
+  const applyTaskStatusWithoutEvent = async () => {
+    if (transitioningToKilled) {
+      await withKilledReasonFallback(
+        () =>
+          db.task.update({
+            where: { id: task.id },
+            data: buildKilledUpdateData(),
+          }),
+        () =>
+          db.task.update({
+            where: { id: task.id },
+            data: baseUpdateData,
+          }),
+      );
+      return;
+    }
+    await db.task.update({
+      where: { id: task.id },
+      data: baseUpdateData,
     });
+  };
+
+  let duplicate = false;
+  if (effectiveStatusEventId) {
+    // Only a client-supplied id can collide; a synthesized one never does.
+    const existing = statusEventId
+      ? await db.taskStatusEvent.findUnique({
+          where: { statusEventId },
+          select: { id: true },
+        })
+      : null;
     if (existing) {
       duplicate = true;
     } else {
@@ -547,7 +591,7 @@ export async function commitTaskStatusUpdate(input: {
           db.taskStatusEvent.create({
             data: {
               taskId: task.id,
-              statusEventId,
+              statusEventId: effectiveStatusEventId,
               status,
               summary,
             },
@@ -573,28 +617,25 @@ export async function commitTaskStatusUpdate(input: {
         ) {
           duplicate = true;
         } else {
-          throw error;
+          // The status event and the task update share one transaction, so a
+          // failing event write would otherwise roll the status back too and
+          // rethrow — leaving a dead task stuck at `running` forever. That is
+          // a real risk on instances predating the task_status_events
+          // migration, and under SQLite write contention. Degrade to applying
+          // the status alone: losing the breadcrumb is acceptable, losing the
+          // terminal state is not.
+          console.error(
+            `[agent-upstream] failed to persist status event for task ${task.id}; ` +
+              `applying status without it: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+          );
+          await applyTaskStatusWithoutEvent();
         }
       }
     }
-  } else if (transitioningToKilled) {
-    await withKilledReasonFallback(
-      () =>
-        db.task.update({
-          where: { id: task.id },
-          data: buildKilledUpdateData(),
-        }),
-      () =>
-        db.task.update({
-          where: { id: task.id },
-          data: baseUpdateData,
-        }),
-    );
   } else {
-    await db.task.update({
-      where: { id: task.id },
-      data: baseUpdateData,
-    });
+    await applyTaskStatusWithoutEvent();
   }
 
   if (!duplicate) {
