@@ -141,8 +141,11 @@ symlink EEXIST**，而不是 claude 后端本身的问题——只是当时没�
   确定是 `ensureTaskWorktreeSymlinks` 抛的 EEXIST（同一 worktree、同样 ~300ms、
   同样无日志无 statusEvent）。该根因已单独修复；本补丁保证下次同类失败会自证。
 - **"fire 在 tmux 会话内死亡"仍不上报**：`tmux new-session` 成功后以 0 退出，
-  exit handler 早返回，daemon 不知道 fire 后来死了，任务会一直挂在 `running`
-  （由对账兜底）。要覆盖需让 tmux 死会话回收器上报终态，属于行为变更，未做。
+  exit handler 早返回，daemon 不知道 fire 后来死了，任务会一直挂在 `running`，
+  最终被对账收割并把死因写成 `user_stopped`（假死因）。要覆盖需让 tmux 死会话
+  回收器上报终态，属于行为变更且存在"误杀成功任务"的风险，未做。
+  **已单独立档：`claw/issues/stable_tmux_fire_death_unreported_20260723.md`**
+  （含进程结构、兜底链路、以及建议的修复方向）。
 - 环境层混淆项：普通 create_task 实际由**手动 fire**（`conductor-fire-unknown-host-*`）
   执行且正常，而 branch/fork 由 **daemon 直接 spawn** 执行；本机同时存在
   `m1 / debug / qa-daemon-2` 三个 daemon 身份，路由归属混乱。
