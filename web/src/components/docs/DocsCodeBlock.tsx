@@ -3,6 +3,7 @@
 import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HTMLAttributes, ReactNode } from "react";
 import { useTheme } from "next-themes";
+import { copyToClipboard } from "@/lib/clipboard";
 
 const extractText = (node: ReactNode): string => {
   if (typeof node === "string" || typeof node === "number") return String(node);
@@ -29,32 +30,14 @@ export function DocsCodeBlock({ children, className, ...props }: HTMLAttributes<
 
   const handleCopy = async () => {
     if (!codeText) return;
-    try {
-      let didCopy = false;
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(codeText);
-        didCopy = true;
-      }
-      if (!didCopy) {
-        const textarea = document.createElement("textarea");
-        textarea.value = codeText;
-        textarea.setAttribute("readonly", "");
-        textarea.style.position = "fixed";
-        textarea.style.top = "-1000px";
-        textarea.style.left = "-1000px";
-        document.body.appendChild(textarea);
-        textarea.select();
-        didCopy = document.execCommand("copy");
-        document.body.removeChild(textarea);
-      }
-      if (didCopy) {
-        setCopied(true);
-        clearCopyTimeout();
-        timeoutRef.current = window.setTimeout(() => setCopied(false), 1500);
-      }
-    } catch {
+    const didCopy = await copyToClipboard(codeText);
+    if (!didCopy) {
       setCopied(false);
+      return;
     }
+    setCopied(true);
+    clearCopyTimeout();
+    timeoutRef.current = window.setTimeout(() => setCopied(false), 1500);
   };
 
   return (

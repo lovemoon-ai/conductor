@@ -3,6 +3,7 @@
 import Image from 'next/image';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Message } from '@/shared/types';
+import { copyToClipboard } from '@/lib/clipboard';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface MessageBubbleProps {
@@ -68,34 +69,14 @@ export function MessageBubble({
   };
 
   const copyMessage = async () => {
-    try {
-      let copied = false;
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(message.content);
-        copied = true;
-      }
-
-      if (!copied) {
-        const textarea = document.createElement('textarea');
-        textarea.value = message.content;
-        textarea.setAttribute('readonly', '');
-        textarea.style.position = 'fixed';
-        textarea.style.top = '-1000px';
-        textarea.style.left = '-1000px';
-        document.body.appendChild(textarea);
-        textarea.select();
-        copied = document.execCommand('copy');
-        document.body.removeChild(textarea);
-      }
-
-      if (copied) {
-        setCopyState('copied');
-        setIsToolbarOpen(false);
-        window.setTimeout(() => setCopyState('idle'), 1500);
-      }
-    } catch {
-      setCopyState('idle');
+    const copied = await copyToClipboard(message.content);
+    if (copied) {
+      setCopyState('copied');
+      setIsToolbarOpen(false);
+      window.setTimeout(() => setCopyState('idle'), 1500);
+      return;
     }
+    setCopyState('idle');
   };
 
   const resendMessage = () => {

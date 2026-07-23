@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { MessageBubble } from '@/features/chat';
 import { QuestionNav } from '@/components/common/QuestionNav';
+import { copyToClipboard } from '@/lib/clipboard';
 import type { MessageRole } from '@/shared/types';
 
 interface SharedMessage {
@@ -124,30 +125,8 @@ export default function SharedTaskPage() {
   const handleShareForAi = useCallback(async () => {
     const aiUrl = `${window.location.origin}/share/${token}/plain`;
 
-    try {
-      let copied = false;
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(aiUrl);
-        copied = true;
-      }
-
-      if (!copied) {
-        const textarea = document.createElement('textarea');
-        textarea.value = aiUrl;
-        textarea.setAttribute('readonly', '');
-        textarea.style.position = 'fixed';
-        textarea.style.top = '-1000px';
-        textarea.style.left = '-1000px';
-        document.body.appendChild(textarea);
-        textarea.select();
-        copied = document.execCommand('copy');
-        document.body.removeChild(textarea);
-      }
-
-      setCopyState(copied ? 'copied' : 'error');
-    } catch {
-      setCopyState('error');
-    }
+    const copied = await copyToClipboard(aiUrl);
+    setCopyState(copied ? 'copied' : 'error');
 
     window.setTimeout(() => {
       setCopyState('idle');

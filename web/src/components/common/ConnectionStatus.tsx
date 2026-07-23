@@ -13,6 +13,7 @@ import { useParams } from 'next/navigation';
 import { useWebSocketStore } from '@/features/realtime';
 import { useRuntimeStore } from '@/features/realtime';
 import { useTasksStore } from '@/features/tasks';
+import { copyToClipboard } from '@/lib/clipboard';
 import { formatPercent, normalizeTaskId } from './ConnectionStatus.utils';
 
 const formatActiveScheduleCount = (count: number) => `${Math.max(0, count)} active`;
@@ -38,55 +39,6 @@ const clampBubblePosition = (x: number, y: number) => {
     x: Math.max(BUBBLE_VIEWPORT_MARGIN, Math.min(x, Math.max(BUBBLE_VIEWPORT_MARGIN, maxX))),
     y: Math.max(minY, Math.min(y, window.innerHeight - BUBBLE_VIEWPORT_MARGIN)),
   };
-};
-
-// `textarea.select()` alone is a no-op on iOS Safari, so the fallback selects an
-// explicit range. Kept off-screen via opacity rather than a negative offset so the
-// page does not jump when focus moves to it.
-const copyWithExecCommand = (value: string): boolean => {
-  const textarea = document.createElement('textarea');
-  textarea.value = value;
-  textarea.setAttribute('readonly', '');
-  textarea.contentEditable = 'true';
-  textarea.style.position = 'fixed';
-  textarea.style.top = '0';
-  textarea.style.left = '0';
-  textarea.style.opacity = '0';
-  document.body.appendChild(textarea);
-
-  try {
-    const selection = window.getSelection();
-    if (selection) {
-      const range = document.createRange();
-      range.selectNodeContents(textarea);
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
-    textarea.setSelectionRange?.(0, value.length);
-    textarea.select?.();
-    return document.execCommand('copy');
-  } finally {
-    document.body.removeChild(textarea);
-  }
-};
-
-const copyToClipboard = async (value: string): Promise<boolean> => {
-  if (navigator.clipboard && window.isSecureContext) {
-    try {
-      await navigator.clipboard.writeText(value);
-      return true;
-    } catch {
-      // WebKit can reject clipboard writes made outside a synchronous user
-      // gesture (our long-press fires from a timer), so fall through instead
-      // of reporting failure straight away.
-    }
-  }
-
-  try {
-    return copyWithExecCommand(value);
-  } catch {
-    return false;
-  }
 };
 
 export function ConnectionStatus({
