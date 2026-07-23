@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { createRequire } from "node:module";
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import dotenv from "dotenv";
@@ -911,6 +912,48 @@ export function startDaemon(config = {}, deps = {}) {
     return `${buildFireTmuxSessionPrefix(taskId)}${uniq}`;
   }
 
+  // Observability for spawned fires (RFC: fork-spawn black box).
+  //
+  // When a forked/branched task's backend dies during startup, the daemon
+  // previously reported a bare `exited with code N` and wrote nothing to the
+  // daemon log, so the real cause (backend auth failure, missing CLI, tmux
+  // launch error, …) was unrecoverable after the fact — even with DB access
+  // the only artifact was a generic `fire_exit`. We keep a bounded tail of the
+  // child's output so an abnormal exit can name its own cause.
+  //
+  // The tail is masked with `maskHandoffUrlForLogs` before it reaches any log
+  // or status summary: the handoff prompt embeds a share token, and a backend
+  // that echoes its argv on failure would otherwise leak a read-grant for the
+  // entire transcript into the daemon log and the task status summary.
+  const CHILD_OUTPUT_CAPTURE_LIMIT = 4000;
+  const CHILD_OUTPUT_SUMMARY_LIMIT = 400;
+
+  function createChildOutputCapture() {
+    let buffer = "";
+    const append = (chunk) => {
+      const text = chunk?.toString?.("utf8") ?? String(chunk ?? "");
+      if (!text) return;
+      buffer += text;
+      if (buffer.length > CHILD_OUTPUT_CAPTURE_LIMIT) {
+        buffer = buffer.slice(-CHILD_OUTPUT_CAPTURE_LIMIT);
+      }
+    };
+    // Attaching an extra `data` listener is safe alongside `.pipe()`: pipe
+    // keeps the stream in flowing mode and additional listeners observe the
+    // same chunks without consuming them.
+    const attach = (stream) => {
+      if (stream && typeof stream.on === "function") {
+        stream.on("data", append);
+      }
+    };
+    const tail = (limit = CHILD_OUTPUT_SUMMARY_LIMIT) => {
+      const collapsed = maskHandoffUrlForLogs(buffer).replace(/\s+/g, " ").trim();
+      if (!collapsed) return "";
+      return collapsed.length > limit ? `…${collapsed.slice(-limit)}` : collapsed;
+    };
+    return { attach, append, tail };
+  }
+
   // Spawn the Fire CLI either directly (default) or inside a detached tmux
   // session (when FIRE_TMUX_MODE_ACTIVE). In tmux mode the returned `child`
   // is the short-lived `tmux new-session` client; once it exits with code 0
@@ -1455,6 +1498,7 @@ export function startDaemon(config = {}, deps = {}) {
       if (await isGitTrackedWorktreePath({ projectRepoRoot, sourcePath })) {
         continue;
       }
+
       // Never link to a source that isn't there. `symlinkSync` does NOT
       // require its target to exist (POSIX), so a stale `worktree.symlink`
       // entry — e.g. `xr/android/build/local.properties`, generated locally by
@@ -5023,6 +5067,16 @@ export function startDaemon(config = {}, deps = {}) {
         : "restart failed";
     const scrubbedError = maskErrorForLogs(error);
     const summary = `${prefix}: ${scrubbedError?.message || scrubbedError}`;
+    // Always leave a daemon-log trace. Several early rejects (unsupported
+    // backend, cwd resolution, worktree prep) return before the "Restarting
+    // task …" line is ever logged, so without this a failed branch/fork left
+    // the daemon log completely silent and only a generic `fire_exit` in the
+    // backend DB.
+    logError(
+      `[restart-spawn] failure task=${taskId} mode=${mode || "unknown"}: ${
+        scrubbedError?.message || scrubbedError
+      }`,
+    );
     if (mode === "refresh_session_inplace") {
       rememberCommandRequestAckResult(requestId, false);
     }
@@ -5045,6 +5099,13 @@ export function startDaemon(config = {}, deps = {}) {
           project_id: projectId,
           status: "KILLED",
           summary,
+          // Without a status_event_id the backend applies the status but
+          // DISCARDS the summary (see commitTaskStatusUpdate: the
+          // taskStatusEvent row — the only place `summary` is persisted — is
+          // written solely on the statusEventId branch). That is why restart
+          // failures were invisible in the DB, in `conductor diagnose`, and
+          // in the UI even though the daemon reported a precise reason.
+          status_event_id: randomUUID(),
         },
       })
       .catch((err) => {
@@ -5985,6 +6046,10 @@ export function startDaemon(config = {}, deps = {}) {
       cwd: taskDir,
       logPath,
     });
+    // Bounded tail of the child's output + a spawn timestamp, so an abnormal
+    // exit can report *why* it died and how long it survived.
+    const outputCapture = createChildOutputCapture();
+    const spawnedAtMs = Date.now();
 
     let logStream;
     try {
@@ -6036,7 +6101,13 @@ export function startDaemon(config = {}, deps = {}) {
       } else if (child.stderr && typeof child.stderr.on === "function" && logStream) {
         child.stderr.on("data", (chunk) => logStream.write(chunk));
       }
+      // Capture independently of logStream: when the log file cannot be
+      // opened (createWriteStream threw) the piping above is skipped
+      // entirely, which is exactly when we most need the tail.
+      outputCapture.attach(child.stdout);
+      outputCapture.attach(child.stderr);
     } else if (child.stderr && typeof child.stderr.on === "function") {
+      outputCapture.attach(child.stderr);
       child.stderr.on("data", (chunk) => {
         const text = chunk?.toString?.("utf8") ?? String(chunk ?? "");
         if (text.trim()) {
@@ -6046,7 +6117,12 @@ export function startDaemon(config = {}, deps = {}) {
     }
 
     child.on("error", (err) => {
-      logError(`Failed to spawn restart CLI for ${normalizedTargetTaskId}: ${err.message}`);
+      logError(
+        `[fork-spawn] spawn error task=${normalizedTargetTaskId} mode=${normalizedMode} ` +
+          `backend=${selectedBackend} cwd=${taskDir} tmux=${tmuxSession || "none"}: ${
+            maskErrorForLogs(err)?.message || err
+          }`,
+      );
       if (logStream) {
         const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).replace(" ", "T");
         logStream.write(`[daemon ${ts}] spawn error: ${err.message}\n`);
@@ -6108,6 +6184,26 @@ export function startDaemon(config = {}, deps = {}) {
           ? "completed"
           : `exited with code ${code}`;
 
+      // Diagnostics for an abnormal exit. This is the line that makes a
+      // "branch task died instantly" incident debuggable: it names the mode,
+      // backend, cwd, tmux session, exit code/signal, how long the child
+      // survived, where its log is, and the tail of what it actually printed.
+      const lifetimeMs = Date.now() - spawnedAtMs;
+      const outputTail = outputCapture.tail();
+      if (status === "KILLED") {
+        logError(
+          `[fork-spawn] abnormal exit task=${normalizedTargetTaskId} mode=${normalizedMode} ` +
+            `backend=${selectedBackend} cwd=${taskDir} tmux=${tmuxSession || "none"} ` +
+            `exit=${code ?? "null"} signal=${signal || "null"} lifetime_ms=${lifetimeMs} ` +
+            `log=${logPath} output_tail=${outputTail ? JSON.stringify(outputTail) : "<empty>"}`,
+        );
+      }
+      // Surface the same tail in the status summary so it reaches the backend
+      // (task_status_events.summary) and the UI, instead of a bare
+      // "exited with code 1" that explains nothing.
+      const reportedSummary =
+        status === "KILLED" && outputTail ? `${summary}: ${outputTail}` : summary;
+
       const shouldReportTerminalStatus =
         !suppressExitStatusReport &&
         (!acceptedRestartAckSent || shouldDaemonReportFireChildTerminalStatus(active));
@@ -6122,7 +6218,10 @@ export function startDaemon(config = {}, deps = {}) {
               task_id: normalizedTargetTaskId,
               project_id: normalizedProjectId,
               status,
-              summary,
+              summary: reportedSummary,
+              // Required for the summary to be persisted at all — see the
+              // note in reportRestartFailure.
+              status_event_id: randomUUID(),
             },
           })
           .catch((err) => {

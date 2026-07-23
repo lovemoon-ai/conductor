@@ -6403,6 +6403,153 @@ describe("Daemon", () => {
     daemonInstance.close();
   });
 
+  it("surfaces the fork child's output tail (handoff token masked) when it exits abnormally", async (t) => {
+    // Production runs fires inside tmux; that is also the mode where the
+    // daemon force-reports a terminal status for a fire that died at startup
+    // (in plain bridge mode the report is suppressed and only the daemon log
+    // carries the diagnostic).
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    let handler;
+    let connected = false;
+    const spawnCalls = [];
+    const sentEvents = [];
+    let forkChild = null;
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-fork-diag",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "fork-diag-daemon",
+      },
+      {
+        spawn: (cmd, args, opts) => {
+          spawnCalls.push({ cmd, args, opts });
+          const child = new EventEmitter();
+          child.pid = 4242;
+          child.unref = () => {};
+          child.kill = () => {};
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          forkChild = child;
+          return child;
+        },
+        spawnSync: (cmd, args) => {
+          if (cmd === "tmux" && args && args[0] === "-V") {
+            return { status: 0, error: null, pid: 12345 };
+          }
+          return { status: 1, error: new Error("ENOENT"), pid: undefined };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ on: () => {}, write: () => {}, end: () => {} }),
+        resolveResumeContext: async () => ({ cwd: "" }),
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return {
+              ok: true,
+              json: async () => ({ metadata: { localPaths: { default: "/tmp/fork-diag-cwd" } } }),
+            };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {
+            connected = true;
+          },
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
+        }),
+      },
+    );
+
+    await waitUntil(() => connected, { message: "fork-diag daemon to connect" });
+
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "fork_to_new_task",
+        source_task_id: "task-diag-source",
+        target_task_id: "task-diag-successor",
+        project_id: "proj-diag",
+        title: "Refactor [claude]",
+        source_backend_type: "codex",
+        source_session_id: "sess-codex-diag",
+        target_backend_type: "claude",
+        resume_context_url: "http://localhost:6152/share/supersecrettoken/plain",
+        request_id: "req-diag-1",
+      },
+    });
+
+    await waitUntil(() => spawnCalls.length === 1 && forkChild, { message: "fork spawn" });
+    assert.strictEqual(spawnCalls[0].cmd, "tmux");
+
+    // The backend dies at startup and explains why on stderr, echoing its
+    // argv (which embeds the handoff share token).
+    const stderrChunk =
+      "Error: not logged in. Run `claude login`.\n" +
+      "argv: --backend claude -- http://localhost:6152/share/supersecrettoken/plain\n";
+    forkChild.stderr.emit("data", Buffer.from(stderrChunk));
+    forkChild.emit("exit", 1, null);
+
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (e) => e.type === "task_status_update" && e.payload?.status === "KILLED",
+        ),
+      { message: "KILLED status report" },
+    );
+
+    const killed = sentEvents.find(
+      (e) => e.type === "task_status_update" && e.payload?.status === "KILLED",
+    );
+    assert.strictEqual(killed.payload.task_id, "task-diag-successor");
+    // The bare classification is preserved...
+    assert.ok(
+      killed.payload.summary.startsWith("exited with code 1"),
+      `summary should keep the exit classification; got: ${killed.payload.summary}`,
+    );
+    // ...and now actually explains itself.
+    assert.ok(
+      /not logged in/.test(killed.payload.summary),
+      `summary should carry the child's output tail; got: ${killed.payload.summary}`,
+    );
+    // The share token must never reach a persisted summary.
+    assert.ok(
+      !killed.payload.summary.includes("supersecrettoken"),
+      `summary must mask the handoff share token; got: ${killed.payload.summary}`,
+    );
+    assert.ok(
+      killed.payload.summary.includes("/share/<masked:"),
+      `summary should show the masked share marker; got: ${killed.payload.summary}`,
+    );
+    // Without status_event_id the backend applies the status but throws the
+    // summary away (commitTaskStatusUpdate only persists a taskStatusEvent on
+    // the statusEventId branch) — the diagnostic would never reach the DB/UI.
+    assert.ok(
+      killed.payload.status_event_id,
+      "terminal status report must carry status_event_id so the summary is persisted",
+    );
+
+    daemonInstance.close();
+  });
+
   it("hands off same-backend successor tasks via the handoff URL (no --resume)", async () => {
     let handler;
     let connected = false;
