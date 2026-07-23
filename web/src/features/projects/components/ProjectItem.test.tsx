@@ -234,6 +234,43 @@ describe('ProjectItem', () => {
     });
   });
 
+  it('surfaces the invite link instead of an error when only the copy fails', async () => {
+    // The link was created either way, so reporting "failed to create" would be a lie.
+    writeTextMock.mockRejectedValue(new Error('NotAllowedError'));
+    document.execCommand = vi.fn().mockReturnValue(false);
+    startProjectCollaborationMock.mockResolvedValue({
+      id: 'collab-invite',
+      inviteToken: 'invite-token',
+      inviteUrl: 'http://localhost:6152/app/invite/invite-token',
+      memberCount: 1,
+      maxMembers: 5,
+      members: [],
+    });
+
+    const { container } = render(
+      <ProjectItem
+        project={{
+          id: 'project-invite',
+          name: 'Invite Project',
+          daemonHost: 'daemon-online',
+        } as any}
+      />,
+    );
+
+    fireEvent.click(container.querySelector('button[aria-label="Invite project"]')!);
+
+    await waitFor(() => {
+      expect(pushToastMock).toHaveBeenCalledWith({
+        title: 'Invite link created',
+        description: 'http://localhost:6152/app/invite/invite-token',
+        variant: 'success',
+      });
+    });
+    expect(pushToastMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Failed to create invite link' }),
+    );
+  });
+
   it('copies an existing invite from the same Invite swipe action', async () => {
     const { container } = render(
       <ProjectItem
