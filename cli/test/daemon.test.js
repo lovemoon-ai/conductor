@@ -23,6 +23,15 @@ const __dirname = path.dirname(__filename);
 const FIXTURE_EXTERNAL_PROVIDER = path.resolve(__dirname, "..", "..", "modules", "ai-sdk", "fixtures", "fake-external-provider.js");
 const INVALID_EXTERNAL_PROVIDER = path.resolve(__dirname, "..", "..", "modules", "ai-sdk", "fixtures", "invalid-external-provider.js");
 
+// fs.lstatSync throws ENOENT (not `false`) when the path is absent; stubs must
+// model that so the worktree-symlink probe is exercised the way the real fs
+// behaves.
+function enoent() {
+  const error = new Error("ENOENT: no such file or directory");
+  error.code = "ENOENT";
+  return error;
+}
+
 function restoreEnv(key, value) {
   if (typeof value === "undefined") {
     delete process.env[key];
@@ -2726,12 +2735,16 @@ describe("Daemon", () => {
         },
         mkdirSync: () => {},
         writeFileSync: () => {},
+        // Sources must exist: a symlink whose source is absent is skipped
+        // rather than created (it would only produce a dangling link).
         existsSync: (filePath) =>
-          filePath === "/tmp/repo/.conductor/settings.yaml"
-            ? true
-            : false,
+          [
+            "/tmp/repo/.conductor/settings.yaml",
+            "/tmp/repo/node_modules",
+            "/tmp/repo/packages/shared/.env.local",
+          ].includes(filePath),
         lstatSync: () => {
-          throw new Error("unexpected lstat");
+          throw enoent();
         },
         readlinkSync: () => {
           throw new Error("unexpected readlink");
@@ -2855,12 +2868,18 @@ describe("Daemon", () => {
         },
         mkdirSync: () => {},
         writeFileSync: () => {},
+        // Sources must exist: a symlink whose source is absent is skipped
+        // rather than created (it would only produce a dangling link).
         existsSync: (filePath) =>
-          filePath === "/tmp/repo/.conductor/setttings.yaml"
-            ? true
-            : false,
+          [
+            "/tmp/repo/.conductor/setttings.yaml",
+            "/tmp/repo/web/node_modules",
+            "/tmp/repo/cli/node_modules",
+            "/tmp/repo/web/.env",
+            "/tmp/repo/Makefile",
+          ].includes(filePath),
         lstatSync: () => {
-          throw new Error("unexpected lstat");
+          throw enoent();
         },
         readlinkSync: () => {
           throw new Error("unexpected readlink");
@@ -3009,11 +3028,16 @@ describe("Daemon", () => {
           if (filePath === "/tmp/repo/.conductor/worktrees/task-worktree-tracked-links/data") {
             return true;
           }
+          // Source of the untracked entry — must exist or it would be skipped
+          // as a would-be dangling link.
+          if (filePath === "/tmp/repo/user_data") {
+            return true;
+          }
           return false;
         },
         lstatSync: (filePath) => {
           lstatCalls.push(filePath);
-          throw new Error(`unexpected lstat for ${filePath}`);
+          throw enoent();
         },
         readlinkSync: () => {
           throw new Error("unexpected readlink");
@@ -3043,13 +3067,211 @@ describe("Daemon", () => {
 
     setTimeout(() => {
       assert.deepStrictEqual(gitLsFilesPaths, ["data", "user_data"]);
-      assert.deepStrictEqual(lstatCalls, []);
+      // Git-tracked entries are skipped before any fs probe; only the
+      // untracked one is lstat'ed (lstat, not existsSync — see the
+      // dangling-symlink test below).
+      assert.deepStrictEqual(lstatCalls, [
+        "/tmp/repo/.conductor/worktrees/task-worktree-tracked-links/user_data",
+      ]);
       assert.deepStrictEqual(symlinkCalls, [
         [
           "../../../user_data",
           "/tmp/repo/.conductor/worktrees/task-worktree-tracked-links/user_data",
         ],
       ]);
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+      done();
+    }, 500);
+  });
+
+  // Regression: a DANGLING symlink (target deleted after the worktree was
+  // created — .venv / node_modules / local.properties are all gitignored
+  // churn) used to be probed with existsSync, which FOLLOWS symlinks and so
+  // reported "missing". The daemon then called symlinkSync on a path that
+  // already existed, got EEXIST, and aborted worktree prep — permanently
+  // breaking restart for that task with no daemon log and no status summary.
+  it("treats a dangling symlink that already points at the source as up to date", (t, done) => {
+    const taskPayload = {
+      task_id: "task-worktree-dangling",
+      project_id: "proj-git",
+      backend_type: "codex",
+      launch_config: {
+        worktree: true,
+        worktreeId: "task-worktree-dangling",
+        worktreeBranch: "task-worktree-dangling",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/tmp/repo",
+        projectWorkspacePath: "/tmp/repo",
+        projectRelativePath: ".",
+      },
+    };
+
+    const worktreeRoot = "/tmp/repo/.conductor/worktrees/task-worktree-dangling";
+    const linkPath = `${worktreeRoot}/xr/local.properties`;
+    const danglingTarget = "../../../../xr/local.properties";
+    const symlinkCalls = [];
+    let spawnedCwd = null;
+    let daemonInstance = null;
+
+    wss.once("connection", (ws) => {
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+    });
+
+    daemonInstance = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree-dangling",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree-dangling",
+      },
+      {
+        spawn: (cmd, args, opts) => {
+          if (cmd === "git") {
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            // untracked => the symlink entry is not skipped
+            setImmediate(() => child.emit("close", 0));
+            return child;
+          }
+          spawnedCwd = opts.cwd;
+          return {
+            pid: 24686,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        // existsSync follows symlinks, so the dangling link reads as absent —
+        // exactly the real-fs behavior that used to mislead the daemon.
+        existsSync: (filePath) => filePath === "/tmp/repo/.conductor/settings.yaml",
+        lstatSync: (filePath) => {
+          if (filePath === linkPath) {
+            return { isSymbolicLink: () => true };
+          }
+          throw enoent();
+        },
+        readlinkSync: (filePath) => {
+          assert.strictEqual(filePath, linkPath);
+          return danglingTarget;
+        },
+        symlinkSync: (targetPath, target) => {
+          symlinkCalls.push([targetPath, target]);
+        },
+        readFileSync: () =>
+          ["worktree:", "  symlink:", "    - xr/local.properties", ""].join("\n"),
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {} }),
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+      },
+    );
+
+    setTimeout(() => {
+      // Link already points at the right place: leave it alone rather than
+      // re-creating it (which throws EEXIST) …
+      assert.deepStrictEqual(symlinkCalls, []);
+      // … and worktree prep must still complete so the fire actually launches.
+      assert.strictEqual(spawnedCwd, worktreeRoot);
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+      done();
+    }, 500);
+  });
+
+  // `symlinkSync` does not require its target to exist, so a stale
+  // `worktree.symlink` entry (e.g. an IDE-generated local.properties that was
+  // never created on this machine) would otherwise make the daemon manufacture
+  // a dangling link on the very first worktree prep — the same dangling link
+  // that later broke re-preparation with EEXIST.
+  it("skips a configured symlink whose source does not exist", (t, done) => {
+    const taskPayload = {
+      task_id: "task-worktree-missing-src",
+      project_id: "proj-git",
+      backend_type: "codex",
+      launch_config: {
+        worktree: true,
+        worktreeId: "task-worktree-missing-src",
+        worktreeBranch: "task-worktree-missing-src",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/tmp/repo",
+        projectWorkspacePath: "/tmp/repo",
+        projectRelativePath: ".",
+      },
+    };
+
+    const worktreeRoot = "/tmp/repo/.conductor/worktrees/task-worktree-missing-src";
+    const symlinkCalls = [];
+    const lstatCalls = [];
+    let spawnedCwd = null;
+    let daemonInstance = null;
+
+    wss.once("connection", (ws) => {
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+    });
+
+    daemonInstance = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree-missing-src",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree-missing-src",
+      },
+      {
+        spawn: (cmd, args, opts) => {
+          if (cmd === "git") {
+            const child = new EventEmitter();
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            child.kill = () => {};
+            // untracked => the symlink entry is not skipped by the git check
+            setImmediate(() => child.emit("close", 0));
+            return child;
+          }
+          spawnedCwd = opts.cwd;
+          return {
+            pid: 24687,
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        // Only the settings file exists; the configured source does not.
+        existsSync: (filePath) => filePath === "/tmp/repo/.conductor/settings.yaml",
+        lstatSync: (filePath) => {
+          lstatCalls.push(filePath);
+          throw enoent();
+        },
+        readlinkSync: () => {
+          throw new Error("unexpected readlink");
+        },
+        symlinkSync: (targetPath, linkPath) => {
+          symlinkCalls.push([targetPath, linkPath]);
+        },
+        readFileSync: () =>
+          ["worktree:", "  symlink:", "    - xr/local.properties", ""].join("\n"),
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {} }),
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+      },
+    );
+
+    setTimeout(() => {
+      // No link is manufactured for a source that isn't there …
+      assert.deepStrictEqual(symlinkCalls, []);
+      // … and we bail before even probing the destination.
+      assert.deepStrictEqual(lstatCalls, []);
+      // Worktree prep still completes so the fire actually launches.
+      assert.strictEqual(spawnedCwd, worktreeRoot);
       if (daemonInstance && typeof daemonInstance.close === "function") {
         daemonInstance.close();
       }

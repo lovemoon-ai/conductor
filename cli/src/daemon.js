@@ -1455,6 +1455,26 @@ export function startDaemon(config = {}, deps = {}) {
       if (await isGitTrackedWorktreePath({ projectRepoRoot, sourcePath })) {
         continue;
       }
+      // Never link to a source that isn't there. `symlinkSync` does NOT
+      // require its target to exist (POSIX), so a stale `worktree.symlink`
+      // entry — e.g. `xr/android/build/local.properties`, generated locally by
+      // the IDE and never present on this machine — would otherwise make the
+      // daemon *manufacture* a dangling link on the very first worktree prep.
+      // Those links are pure liability: they break tooling that follows them,
+      // and they are what the EEXIST-on-reprepare bug below fed on.
+      //
+      // Note this is the one place where `existsSync` is the RIGHT probe:
+      // here we genuinely care whether the target resolves to something real
+      // (a source that is itself a dangling link is equally useless). The
+      // destination probe further down must use `lstat` instead, for exactly
+      // the opposite reason — see the note there.
+      if (!existsSyncFn(sourcePath)) {
+        logError(
+          `[worktree] skipping symlink for missing source: ${configuredPath} (expected at ${sourcePath})`,
+        );
+        continue;
+      }
+
       const linkPath = resolveProjectScopedPath(
         finalCwd,
         configuredPath,
@@ -1462,21 +1482,33 @@ export function startDaemon(config = {}, deps = {}) {
       );
       mkdirSyncFn(path.dirname(linkPath), { recursive: true });
 
-      if (existsSyncFn(linkPath)) {
-        try {
-          const stat = lstatSyncFn(linkPath);
-          if (!stat.isSymbolicLink()) {
-            throw new Error(`worktree symlink destination already exists: ${linkPath}`);
-          }
-          const currentTarget = readlinkSyncFn(linkPath);
-          const currentResolvedTarget = path.resolve(path.dirname(linkPath), currentTarget);
-          if (currentResolvedTarget === sourcePath) {
-            continue;
-          }
-          throw new Error(`worktree symlink destination already points elsewhere: ${linkPath}`);
-        } catch (error) {
+      // NOTE: probe with lstat, never existsSync. existsSync FOLLOWS symlinks,
+      // so a dangling link (source deleted after the worktree was created —
+      // .venv / node_modules / local.properties are all gitignored churn)
+      // reads as "missing", and the symlinkSyncFn below then throws EEXIST.
+      // That made the task permanently un-restartable.
+      let linkStat = null;
+      try {
+        linkStat = lstatSyncFn(linkPath);
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
           throw error instanceof Error ? error : new Error(String(error));
         }
+      }
+
+      if (linkStat) {
+        if (!linkStat.isSymbolicLink()) {
+          throw new Error(`worktree symlink destination already exists: ${linkPath}`);
+        }
+        // Compare the link's TARGET, not whether that target resolves. A link
+        // that already points at the right place is correct even when the
+        // source is currently absent.
+        const currentTarget = readlinkSyncFn(linkPath);
+        const currentResolvedTarget = path.resolve(path.dirname(linkPath), currentTarget);
+        if (currentResolvedTarget === sourcePath) {
+          continue;
+        }
+        throw new Error(`worktree symlink destination already points elsewhere: ${linkPath}`);
       }
 
       const relativeTarget = path.relative(path.dirname(linkPath), sourcePath) || ".";
