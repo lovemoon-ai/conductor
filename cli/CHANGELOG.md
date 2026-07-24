@@ -1,5 +1,28 @@
 # @love-moon/conductor-cli
 
+## 0.7.7
+
+### Patch Changes
+
+- 400f3a7: Report a terminal task status when a stop request finds no active process, so a
+  task whose Fire already died converges instead of sitting in `killing` forever.
+
+  Drop queued terminal status events before an in-place restart reuses a working
+  directory. The durable upstream outbox lives inside that directory, so an
+  undelivered `KILLED` from the previous run was flushed on startup and killed the
+  task that had just finished resuming.
+
+- 67498dc: Report a Fire that dies inside its tmux session instead of leaving the task
+  hanging. In tmux mode the daemon's child is the short-lived `tmux new-session`
+  client, not the Fire, so an abnormal death (crash, OOM, SIGKILL) went unreported
+  and the task sat at `running` until reconcile relabelled it as a user stop. The
+  Fire now records its own exit code into its log under a per-launch nonce, and the
+  liveness reaper classifies the death from that marker and publishes a terminal
+  status with the real cause.
+- Updated dependencies [400f3a7]
+  - @love-moon/conductor-sdk@0.7.7
+  - @love-moon/ai-sdk@0.7.7
+
 ## 0.7.6
 
 ### Patch Changes
