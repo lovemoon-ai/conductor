@@ -1,6 +1,6 @@
 {
   "name": "@love-moon/chat-web",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "description": "Dedicated chat-web automation runtime for ChatGPT / DeepSeek and similar web chat products.",
   "repository": {
     "type": "git",
