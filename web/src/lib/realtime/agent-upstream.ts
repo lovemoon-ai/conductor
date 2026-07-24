@@ -21,6 +21,7 @@ import {
 import {
   buildKilledPatch,
   withKilledReasonFallback,
+  RECLAIMABLE_KILLED_REASON,
   type KilledReason,
 } from "@/lib/tasks/killed-reason";
 
@@ -160,6 +161,16 @@ async function persistTaskExecutionHost(
   });
 }
 
+// States a task does not move out of on its own. Deliberately excludes
+// `killing`, which is a transition *into* one of these.
+const TERMINAL_TASK_STATUSES = new Set(["completed", "killed"]);
+
+// How long a fire's websocket must have been gone before its supervising
+// daemon may speak for it. Comfortably longer than the SDK's ~10s reconnect
+// backoff, and well under the tmux reaper's ~30s detection latency, so it
+// filters flaps without delaying a real death report.
+const FIRE_DISCONNECT_SETTLE_MS = 15_000;
+
 const getAssignedTaskHost = (task: TaskOwnershipRecord): string | null =>
   normalizeOptionalString(task.executionHost) || normalizeOptionalString(task.agentHost);
 
@@ -184,13 +195,64 @@ async function ensureAgentOwnsTaskRecord(
   userId: string,
   task: TaskOwnershipRecord,
   agentHost: string,
-  options: { allowFireHostClaim?: boolean } = {},
+  options: { allowFireHostClaim?: boolean; allowOwningDaemonTerminalReport?: boolean } = {},
 ): Promise<void> {
   const assignedHost = getAssignedTaskHost(task);
   if (!assignedHost) {
     throw new Error(`Task ${task.id} has no assigned agent host`);
   }
   const allowFireHostClaim = assignedHost !== agentHost && canFireHostClaimTask(task, agentHost, options);
+
+  // A fire announces itself with its own host id and takes over
+  // `executionHost`, so for the whole life of a healthy task the assigned
+  // host is the *fire*, not the daemon that spawned it. When that fire dies
+  // without reporting (crash, OOM, SIGKILL), the only witness left is its
+  // supervising daemon — and the check below would reject it for not being
+  // the fire, which is precisely the host that no longer exists. The task
+  // then sits at `running` until reconcile relabels it `user_stopped`: the
+  // exact bug the daemon-side death detection exists to fix.
+  //
+  // So: let the *owning* daemon (`task.agentHost`) publish a terminal status
+  // on behalf of a fire host that is no longer connected. Deliberately
+  // narrow — it does not apply while the fire is live (a live fire reports
+  // for itself), it does not apply to non-terminal statuses (no resurrecting
+  // or stealing a running task), and it does not rebind execution: we are
+  // recording a death, not claiming the work.
+  //
+  // `hasAgentHost` is a point-in-time check, and a fire's websocket can drop
+  // without the fire dying (reconnect backoff is ~10s, and a duplicate-host
+  // takeover force-closes the old socket). Inside that window a live,
+  // mid-turn fire is invisible, and a terminal report landing then would not
+  // just mislabel the task: `commitSdkMessage` subsequently drops the live
+  // fire's output and sends it `stop_task`, and `fire_exit` is not a
+  // reclaimable reason, so the session is lost rather than recovered.
+  //
+  // So require the disconnect to be more than a flap old, mirroring how
+  // `stale-recovery` gates the same signal. A null timestamp means this
+  // instance never saw the socket (fresh boot, or another instance holds it)
+  // — treat that as "no evidence of a recent flap" and allow, because the
+  // daemon reports a death exactly once and refusing here would lose it
+  // permanently, reinstating the very hang this exists to fix.
+  const fireDisconnectAt =
+    typeof realtimeHub.getAgentDisconnectAt === "function"
+      ? realtimeHub.getAgentDisconnectAt(assignedHost, userId)
+      : null;
+  const fireGoneLongerThanAFlap =
+    typeof fireDisconnectAt !== "number" ||
+    Date.now() - fireDisconnectAt >= FIRE_DISCONNECT_SETTLE_MS;
+
+  const owningDaemonMayReportDeath =
+    options.allowOwningDaemonTerminalReport === true &&
+    assignedHost !== agentHost &&
+    normalizeOptionalString(task.agentHost) === agentHost &&
+    isConductorFireHost(assignedHost) &&
+    !isConductorFireHost(agentHost) &&
+    !realtimeHub.hasAgentHost(assignedHost, userId) &&
+    fireGoneLongerThanAFlap;
+  if (owningDaemonMayReportDeath) {
+    return;
+  }
+
   if (!allowFireHostClaim && assignedHost !== agentHost) {
     throw new Error(`Task ${task.id} is assigned to ${assignedHost}, not ${agentHost}`);
   }
@@ -274,9 +336,14 @@ async function fetchOwnedTaskRecord(userId: string, taskId: string) {
   return task;
 }
 
-async function getOwnedTask(userId: string, taskId: string, agentHost: string) {
+async function getOwnedTask(
+  userId: string,
+  taskId: string,
+  agentHost: string,
+  options: { allowOwningDaemonTerminalReport?: boolean } = {},
+) {
   const task = await fetchOwnedTaskRecord(userId, taskId);
-  await ensureAgentOwnsTaskRecord(userId, task, agentHost);
+  await ensureAgentOwnsTaskRecord(userId, task, agentHost, options);
   return task;
 }
 
@@ -498,14 +565,68 @@ export async function commitTaskStatusUpdate(input: {
   summary?: string | null;
   statusEventId?: string | null;
 }): Promise<{ taskId: string; projectId: string; status: string; duplicate: boolean }> {
-  const task = await getOwnedTask(input.userId, input.taskId, input.agentHost);
+  // Normalize before the ownership check: whether a daemon may speak for a
+  // dead fire depends on the status being terminal.
+  const incomingStatus = normalizeTaskStatus(input.status);
+  const task = await getOwnedTask(input.userId, input.taskId, input.agentHost, {
+    allowOwningDaemonTerminalReport:
+      incomingStatus === "killed" || incomingStatus === "completed",
+  });
   await drainAgentOutboxForHost(input.userId, input.agentHost);
 
-  const status = normalizeTaskStatus(input.status);
+  const status = incomingStatus;
   const summary = normalizeOptionalString(input.summary);
   const statusEventId = normalizeOptionalString(input.statusEventId);
   const currentStatus = normalizeTaskStatus(task.status);
   if (currentStatus === "killing" && status !== "completed" && status !== "killed") {
+    return {
+      taskId: task.id,
+      projectId: task.projectId,
+      status: currentStatus,
+      duplicate: false,
+    };
+  }
+
+  // A task that already finished successfully cannot later be killed. Two
+  // producers race to report the end of one task: the fire reports its own
+  // terminal status over its websocket, and the daemon reports what it
+  // observed of the process. The daemon's observation always arrives second
+  // (it has to notice an absence — a child exit, or a vanished tmux session)
+  // and it is the less informed of the two: from the outside, "finished and
+  // exited" and "crashed" can look identical. Letting it win rewrites a green
+  // task as `killed` with `killedReason: "fire_exit"` minutes after the user
+  // watched it succeed. Reporters that pre-check the backend status still
+  // need this guard — their check is inherently TOCTOU.
+  //
+  // The rule is symmetric: once a task has settled into one terminal state it
+  // does not move to the *other* one. `killed → completed` matters as much as
+  // `killed`-over-`completed`: a user presses Stop (settling the task at
+  // `killed` / `user_stopped`), the fire exits 0 in response, and ~30s later
+  // the tmux reaper reads that clean exit marker and reports COMPLETED. The
+  // task would then read `completed` while still carrying `killedReason:
+  // "user_stopped"` and `killedAt` — a self-contradictory row, since only the
+  // reclaim path ever clears those. Consumers that branch on `killedReason`
+  // (e.g. the restart reclaim gate) would be reading a state that never
+  // happened.
+  //
+  // Exception: `daemon_disconnected` is the one *defensive* kill the system
+  // treats as revocable — it means "we assumed the fire died". A later report
+  // from that very fire is proof we were wrong, so it must still be able to
+  // correct the record rather than being frozen by our own guess.
+  const isTerminalOverwrite =
+    TERMINAL_TASK_STATUSES.has(currentStatus) &&
+    TERMINAL_TASK_STATUSES.has(status) &&
+    status !== currentStatus;
+  const correctsDefensiveKill =
+    currentStatus === "killed" && task.killedReason === RECLAIMABLE_KILLED_REASON;
+  if (isTerminalOverwrite && !correctsDefensiveKill) {
+    // Log rather than drop silently. Refusing the write also discards the
+    // reporter's `summary`, which is the only account of what it saw — and a
+    // guard that fires when it shouldn't would otherwise be undebuggable.
+    console.warn(
+      `[agent-upstream] ignoring ${status} report for already-${currentStatus} task ${task.id}` +
+        (summary ? `: ${summary}` : ""),
+    );
     return {
       taskId: task.id,
       projectId: task.projectId,

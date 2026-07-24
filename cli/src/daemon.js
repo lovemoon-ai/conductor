@@ -965,7 +965,180 @@ export function startDaemon(config = {}, deps = {}) {
   const CHILD_OUTPUT_CAPTURE_LIMIT = 4000;
   const CHILD_OUTPUT_SUMMARY_LIMIT = 400;
 
-  function createChildOutputCapture({ logPath = "" } = {}) {
+  // Sentinel appended to a tmux-hosted fire's log by the wrapper shell (see
+  // `spawnFireProcess`). It is the *only* channel through which the daemon
+  // can learn the exit code of a process it does not own. The full marker is
+  // `[conductor-fire-exit:<per-spawn nonce>] code=<n>`.
+  const FIRE_EXIT_MARKER_PREFIX = "[conductor-fire-exit:";
+
+  const escapeForRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  // Per-spawn nonce embedded in the marker. Without it the marker is a fixed
+  // string that anything writing to the log can forge — and the log is a
+  // verbatim copy of the fire's stdout. A fire that merely *prints* the
+  // literal (an agent task reading a conductor.log, or editing this file)
+  // would plant `[conductor-fire-exit] code=0` in its own log; if that fire
+  // were then SIGKILLed, leaving no genuine marker, the reaper would read the
+  // forged one and report COMPLETED for a task that was killed. Dogfooding
+  // this repo makes that near-certain rather than theoretical.
+  //
+  // The nonce also means a previous run's marker can never be mistaken for
+  // this run's, independently of the `logStartOffset` watermark.
+  function buildFireExitMarkerToken() {
+    return randomUUID().replace(/-/g, "").slice(0, 12);
+  }
+
+  // Last exit code recorded by *this run's* wrapper shell in `raw`, or null
+  // when the marker is absent (fire was SIGKILLed / the tmux server died
+  // before the wrapper could run). Anchored at line start so it cannot match
+  // mid-line inside quoted output, and scoped by the run's nonce.
+  function parseFireExitCode(raw, markerToken) {
+    if (!raw || !markerToken) return null;
+    const pattern = new RegExp(
+      `^${escapeForRegExp(FIRE_EXIT_MARKER_PREFIX)}${escapeForRegExp(markerToken)}\\] code=(\\d+)`,
+      "gm",
+    );
+    let match = null;
+    let candidate;
+    // Scan for the *last* match rather than the first: a fresh RegExp per
+    // call, because a shared /g instance carries `lastIndex` between calls.
+    while ((candidate = pattern.exec(raw)) !== null) {
+      match = candidate;
+    }
+    if (!match) return null;
+    const code = Number(match[1]);
+    return Number.isFinite(code) ? code : null;
+  }
+
+  // Read the last `limit` bytes of a log file, never crossing below
+  // `minOffset`. The floor matters because a task's log file is opened with
+  // flags "a" and is therefore *reused* across in-place restarts: without it,
+  // a previous run's trailing bytes (including its exit marker) would be
+  // attributed to the current run. Callers that don't care pass minOffset 0.
+  function readLogTailRaw(logPath, { limit = CHILD_OUTPUT_CAPTURE_LIMIT, minOffset = 0 } = {}) {
+    if (!logPath) return "";
+    try {
+      const stat = statSyncFn(logPath);
+      const size = Number(stat?.size) || 0;
+      // A file smaller than the watermark was truncated or rotated out from
+      // under us, so the watermark no longer refers to anything. Honouring it
+      // would return "" for this record forever — which the reaper reads as
+      // "no exit marker", i.e. a fabricated hard death for a task that may
+      // have finished cleanly. Fall back to reading whatever is there.
+      const floor = size < minOffset ? 0 : Math.max(0, Number(minOffset) || 0);
+      const start = Math.max(floor, size - limit);
+      if (size <= start) return "";
+      const fd = openSyncFn(logPath, "r");
+      try {
+        const length = size - start;
+        const buf = Buffer.alloc(length);
+        readSyncFn(fd, buf, 0, length, start);
+        return buf.toString("utf8");
+      } finally {
+        closeSyncFn(fd);
+      }
+    } catch {
+      return "";
+    }
+  }
+
+  // Size of a log file, or null when it does not exist / cannot be read.
+  // The null case is load-bearing for the reaper: `tee -a` creates the file
+  // the moment it opens it, so a *missing* file means the wrapper never had
+  // a writable log at all (bad cwd, unwritable project dir) — as opposed to
+  // an empty-but-present file, which means the fire really did die before
+  // writing anything.
+  function readLogFileSize(logPath) {
+    if (!logPath) return null;
+    try {
+      return Number(statSyncFn(logPath)?.size) || 0;
+    } catch {
+      return null;
+    }
+  }
+
+  // Current size of a log file, or 0 when it doesn't exist / can't be read.
+  // Sampled just before a spawn so later tail reads can be floored at "what
+  // this run wrote".
+  function readLogSize(logPath) {
+    return readLogFileSize(logPath) ?? 0;
+  }
+
+  // How far back to hunt for this run's exit marker, and in what stride.
+  // Bounded so a huge log can never turn one sweep into an unbounded read.
+  const FIRE_EXIT_MARKER_SEARCH_LIMIT = 8 * 1024 * 1024;
+  const FIRE_EXIT_MARKER_SEARCH_CHUNK = 64 * 1024;
+
+  // Find this run's exit code by scanning *backwards* from EOF for its nonce.
+  //
+  // Reading only the last few KB would be wrong: a task's log is not private.
+  // Branch/fork tasks deliberately share a worktree — and therefore a single
+  // `conductor.log` — and a task with no worktree config falls back to the
+  // project directory, so every task in the project appends to the same file.
+  // A neighbouring fire that prints a few KB between our exit and the next
+  // reaper sweep would push our marker out of a fixed tail window. The reaper
+  // would then see "no marker", conclude the fire died hard, and report
+  // KILLED for a task that finished cleanly — quoting the *neighbour's*
+  // output as the cause of death. The marker is this run's identity, not a
+  // property of where it happens to sit in a shared stream, so search for it.
+  function findFireExitCode(logPath, { minOffset = 0, markerToken = "" } = {}) {
+    if (!logPath || !markerToken) return null;
+    let size;
+    try {
+      size = Number(statSyncFn(logPath)?.size) || 0;
+    } catch {
+      return null;
+    }
+    // A file shorter than the watermark was truncated/rotated; the offset no
+    // longer refers to anything, so search the whole file rather than nothing.
+    const floor = size < minOffset ? 0 : Math.max(0, Number(minOffset) || 0);
+    const searchFloor = Math.max(floor, size - FIRE_EXIT_MARKER_SEARCH_LIMIT);
+    let fd;
+    try {
+      fd = openSyncFn(logPath, "r");
+    } catch {
+      return null;
+    }
+    try {
+      let end = size;
+      // Overlap successive chunks by enough to cover a marker split across a
+      // boundary, so a line straddling two reads is still found.
+      const overlap = FIRE_EXIT_MARKER_PREFIX.length + markerToken.length + 32;
+      while (end > searchFloor) {
+        const start = Math.max(searchFloor, end - FIRE_EXIT_MARKER_SEARCH_CHUNK);
+        const length = end - start;
+        const buf = Buffer.alloc(length);
+        readSyncFn(fd, buf, 0, length, start);
+        const code = parseFireExitCode(buf.toString("utf8"), markerToken);
+        if (code !== null) return code;
+        if (start <= searchFloor) break;
+        end = start + overlap;
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      try {
+        closeSyncFn(fd);
+      } catch {
+        // best effort
+      }
+    }
+  }
+
+  // Collapse, redact and clamp a raw output tail so it is safe to put in a
+  // daemon log line or a persisted task status summary.
+  function sanitizeOutputTail(raw, limit = CHILD_OUTPUT_SUMMARY_LIMIT) {
+    // Collapse first, then redact: the mask patterns stop at whitespace, so
+    // a secret split across a newline would otherwise only be half-matched.
+    const collapsed = String(raw || "").replace(/\s+/g, " ").trim();
+    const safe = redactSecretsForLogs(collapsed, [AGENT_TOKEN]).trim();
+    if (!safe) return "";
+    // slice(-(limit - 1)) keeps the ellipsis inside the documented budget.
+    return safe.length > limit ? `…${safe.slice(-(limit - 1))}` : safe;
+  }
+
+  function createChildOutputCapture({ logPath = "", logStartOffset = 0 } = {}) {
     let buffer = "";
     // Decode across chunk boundaries: a raw per-chunk toString("utf8") splits
     // multi-byte characters whenever a chunk ends mid-sequence, which would
@@ -994,37 +1167,10 @@ export function startDaemon(config = {}, deps = {}) {
     // (`… 2>&1 | tee -a <logPath>`). The in-memory buffer therefore only ever
     // holds tmux's own errors. When it is empty, fall back to the tail of the
     // log file so the backend's actual crash output is still reported.
-    const readLogTail = () => {
-      if (!logPath) return "";
-      try {
-        const stat = statSyncFn(logPath);
-        const size = Number(stat?.size) || 0;
-        if (size <= 0) return "";
-        const start = Math.max(0, size - CHILD_OUTPUT_CAPTURE_LIMIT);
-        const fd = openSyncFn(logPath, "r");
-        try {
-          const length = size - start;
-          const buf = Buffer.alloc(length);
-          readSyncFn(fd, buf, 0, length, start);
-          return buf.toString("utf8");
-        } finally {
-          closeSyncFn(fd);
-        }
-      } catch {
-        return "";
-      }
-    };
+    const readLogTail = () => readLogTailRaw(logPath, { minOffset: logStartOffset });
 
-    const tail = (limit = CHILD_OUTPUT_SUMMARY_LIMIT) => {
-      const raw = buffer.trim() ? buffer : readLogTail();
-      // Collapse first, then redact: the mask patterns stop at whitespace, so
-      // a secret split across a newline would otherwise only be half-matched.
-      const collapsed = raw.replace(/\s+/g, " ").trim();
-      const safe = redactSecretsForLogs(collapsed, [AGENT_TOKEN]).trim();
-      if (!safe) return "";
-      // slice(-(limit - 1)) keeps the ellipsis inside the documented budget.
-      return safe.length > limit ? `…${safe.slice(-(limit - 1))}` : safe;
-    };
+    const tail = (limit = CHILD_OUTPUT_SUMMARY_LIMIT) =>
+      sanitizeOutputTail(buffer.trim() ? buffer : readLogTail(), limit);
     return { attach, append, tail };
   }
 
@@ -1041,7 +1187,7 @@ export function startDaemon(config = {}, deps = {}) {
         env,
         stdio: ["inherit", "pipe", "pipe"],
       });
-      return { child, tmuxSession: null };
+      return { child, tmuxSession: null, exitMarkerToken: "" };
     }
 
     const sessionName = buildFireTmuxSessionName(taskId);
@@ -1052,9 +1198,37 @@ export function startDaemon(config = {}, deps = {}) {
     // via `tmux a -t <session>` for live observation is useless. With
     // `tee` the same bytes go to both the pane (visible to whoever
     // attaches) and the log file (preserved for offline inspection).
-    const redirectedCommand = logPath
-      ? `${innerCommandParts.join(" ")} 2>&1 | tee -a ${shellQuoteForBash(logPath)}`
-      : innerCommandParts.join(" ");
+    //
+    // The trailing exit-marker is what makes a death *inside* the session
+    // observable. The daemon's child is only the `tmux new-session` client,
+    // so once the session exists the daemon has no handle on Fire and never
+    // sees its exit code. `${PIPESTATUS[0]}` recovers Fire's own status from
+    // the pipeline (plain `$?` would be tee's), and appending it to the log
+    // lets the liveness reaper tell "finished normally" from "crashed" —
+    // without which it could only ever guess, and guessing KILLED would
+    // mis-report successful tasks as failures.
+    //
+    // No `exec` in this branch: the wrapper bash must outlive Fire to write
+    // the marker. When Fire is SIGKILLed (or the tmux server dies) the
+    // marker is simply absent, which the reaper reads as "died hard" — the
+    // correct conclusion.
+    //
+    // Each branch owns its own `exec` (or absence of one) and the result is
+    // passed to `bash -c` verbatim. Do NOT re-wrap it in `exec` at the call
+    // site: `exec exec …` is a bash error ("exec: exec: not found", 127),
+    // which in tmux mode means Fire never starts while the tmux client still
+    // exits 0 — a task that hangs at `running` with nothing in the log.
+    const quotedLogPath = logPath ? shellQuoteForBash(logPath) : "";
+    // `\n` before the marker guarantees it starts its own line even when the
+    // fire's last write had no trailing newline — the reader anchors on `^`.
+    const exitMarkerToken = logPath ? buildFireExitMarkerToken() : "";
+    const shellCommand = logPath
+      ? `${innerCommandParts.join(" ")} 2>&1 | tee -a ${quotedLogPath}; ` +
+        `__conductor_fire_code=\${PIPESTATUS[0]}; ` +
+        `printf '\\n${FIRE_EXIT_MARKER_PREFIX}${exitMarkerToken}] code=%s\\n' ` +
+        `"$__conductor_fire_code" >> ${quotedLogPath}; ` +
+        `exit $__conductor_fire_code`
+      : `exec ${innerCommandParts.join(" ")}`;
 
     // Build `-e KEY=VALUE` flags for the new session.
     //
@@ -1102,7 +1276,7 @@ export function startDaemon(config = {}, deps = {}) {
       cwd,
       "bash",
       "-c",
-      `exec ${redirectedCommand}`,
+      shellCommand,
     ];
     log(`Spawning Fire via tmux: session=${sessionName} cwd=${cwd}`);
     const child = spawnFn("tmux", tmuxArgs, {
@@ -1114,7 +1288,7 @@ export function startDaemon(config = {}, deps = {}) {
     if (typeof child.unref === "function") {
       child.unref();
     }
-    return { child, tmuxSession: sessionName };
+    return { child, tmuxSession: sessionName, exitMarkerToken };
   }
 
   // Async probe: does the named tmux session still exist? Resolves to a
@@ -1133,34 +1307,45 @@ export function startDaemon(config = {}, deps = {}) {
     }
     return 5000;
   })();
-  function tmuxSessionExists(sessionName) {
+  // Detailed probe: resolves `{ alive, conclusive }`.
+  //
+  // `conclusive` distinguishes "tmux answered, and the session is gone"
+  // (has-session exited non-zero) from "we never got an answer" (spawn error,
+  // tmux binary missing, wedged server hitting the timeout). Both used to
+  // collapse into a bare `false`, which was fine when the only consequence
+  // was dropping a bookkeeping entry. It is NOT fine now that the reaper
+  // turns "not alive" into an authoritative KILLED with a cause of death: one
+  // transient tmux hiccup would otherwise declare every live tmux task dead,
+  // each with a confidently wrong "disappeared without an exit marker".
+  function probeTmuxSession(sessionName) {
     return new Promise((resolve) => {
       if (!sessionName) {
-        resolve(false);
+        resolve({ alive: false, conclusive: false });
         return;
       }
       let settled = false;
       let probe = null;
       let timer = null;
-      const settle = (alive) => {
+      const settle = (alive, conclusive) => {
         if (settled) return;
         settled = true;
         if (timer) {
           clearTimeout(timer);
           timer = null;
         }
-        resolve(alive);
+        resolve({ alive, conclusive });
       };
       try {
         probe = spawnFn("tmux", ["has-session", "-t", sessionName], {
           stdio: "ignore",
         });
-        probe.on("exit", (code) => settle(code === 0));
-        probe.on("error", () => settle(false));
+        // tmux answered: exit 0 = alive, non-zero = genuinely no such session.
+        probe.on("exit", (code) => settle(code === 0, true));
+        // Could not run tmux at all — says nothing about the session.
+        probe.on("error", () => settle(false, false));
         timer = setTimeout(() => {
-          // Probe took too long — assume the session state is unknown,
-          // treat as "not alive" (so the reaper falls back to safe cleanup),
-          // and best-effort kill the stuck child so it doesn't pile up.
+          // Probe took too long — the session state is unknown. Best-effort
+          // kill the stuck child so it doesn't pile up.
           try {
             if (probe && typeof probe.kill === "function") {
               probe.kill("SIGKILL");
@@ -1171,45 +1356,289 @@ export function startDaemon(config = {}, deps = {}) {
           logError(
             `tmux has-session probe timed out after ${TMUX_PROBE_TIMEOUT_MS}ms for session ${sessionName}`,
           );
-          settle(false);
+          settle(false, false);
         }, TMUX_PROBE_TIMEOUT_MS);
         if (typeof timer.unref === "function") {
           timer.unref();
         }
       } catch {
-        settle(false);
+        settle(false, false);
       }
     });
   }
 
-  // Walk every tmux-mode entry in `activeTaskProcesses` and remove the ones
-  // whose tmux session no longer exists. We don't (and can't reliably)
-  // observe the inner Fire process exit when we never owned it as a child,
-  // so this best-effort sweep is what keeps the active map from leaking
-  // across long daemon lifetimes.
+  // Boolean form, for the callers that only gate local bookkeeping or a
+  // best-effort kill and are happy to treat "unknown" as "not alive".
+  async function tmuxSessionExists(sessionName) {
+    return (await probeTmuxSession(sessionName)).alive;
+  }
+
+  const BACKEND_STATUS_PROBE_TIMEOUT_MS = (() => {
+    const explicit = Number(config.BACKEND_STATUS_PROBE_TIMEOUT_MS);
+    if (Number.isFinite(explicit) && explicit > 0) {
+      return explicit;
+    }
+    return 10_000;
+  })();
+
+  // Current backend-side status of a task, lowercased, or null when it can't
+  // be determined (HTTP error, unreachable backend, malformed payload).
   //
-  // Theoretical startup race (intentionally not guarded against):
-  //   `spawnFireProcess` returns synchronously, and we set the active
-  //   record before the spawned `tmux new-session -d` client has actually
-  //   exited. There is therefore a microsecond-scale window in which an
-  //   active record exists but `tmux has-session` may return false because
-  //   the session has not finished registering with the tmux server. With
-  //   the default 30s poll interval the chance of hitting this window is
-  //   ~negligible, and even when hit Fire's own websocket connection
-  //   subsequently overwrites any stale terminal status the daemon
-  //   reports. If this ever shows up in production, add a `createdAt`
-  //   timestamp to the record and a grace period here.
+  // Hard timeout, for the same reason `tmuxSessionExists` has one: this call
+  // is awaited inside the reaper sweep, and the sweep's re-entrancy latch is
+  // only released in a `finally`. A backend that black-holes the connection
+  // would otherwise leave the latch stuck forever — permanently disabling the
+  // only observer of in-session deaths, which is the exact failure this whole
+  // change exists to prevent.
+  async function fetchBackendTaskStatus(taskId) {
+    if (!BACKEND_HTTP || !AGENT_TOKEN || !taskId) return null;
+    // The timeout must cover reading the BODY, not just the headers. `fetch`
+    // resolves as soon as headers arrive, so wrapping only that call leaves
+    // `response.json()` unbounded: a backend that answers 200 and then stalls
+    // the body (half-open proxy, hung route) parks this await forever, the
+    // sweep's re-entrancy latch never clears, and the only observer of
+    // in-session deaths is permanently disabled. `markBackendHttpSuccess` is
+    // likewise deferred until the body actually parsed — crediting the
+    // watchdog for a response we could not read would be a lie.
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    try {
+      const status = await withTimeout(
+        (async () => {
+          const response = await fetchFn(`${BACKEND_HTTP}/api/tasks/${taskId}`, {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${AGENT_TOKEN}`,
+              Accept: "application/json",
+            },
+            signal: controller?.signal,
+          });
+          if (!response?.ok) return null;
+          const task = await response.json();
+          markBackendHttpSuccess();
+          return String(task?.status || "").trim().toLowerCase() || null;
+        })(),
+        BACKEND_STATUS_PROBE_TIMEOUT_MS,
+        `task status probe for ${taskId}`,
+      );
+      return status;
+    } catch (error) {
+      // Release the socket; withTimeout only stops us waiting, it cannot
+      // cancel the request on its own.
+      try {
+        controller?.abort();
+      } catch {
+        // best effort
+      }
+      logError(`Failed to query backend status for task ${taskId}: ${error?.message || error}`);
+      return null;
+    }
+  }
+
+  const TERMINAL_BACKEND_TASK_STATUSES = new Set(["completed", "killed"]);
+
+  // A tmux session vanished. Decide what — if anything — to tell the backend.
+  //
+  // This is the fix for "fire dies inside its tmux session and nobody
+  // notices". The daemon's child was only the `tmux new-session` client,
+  // which exited 0 long ago, so there is no exit event to observe. Without a
+  // report here the task sits at `running` until the next reconcile sweep
+  // collects it, and reconcile's `PATCH {status:"killed"}` is rewritten by
+  // the task route into `killing` → `killed`, which the upstream commit path
+  // reads as `killedReason = "user_stopped"`. The user never pressed stop,
+  // and the real cause is lost.
+  //
+  // Two hazards make a naive "session gone → report KILLED" wrong, and both
+  // are handled below:
+  //   1. A session also disappears when fire finished *successfully*.
+  //      Reporting KILLED unconditionally would rewrite completed tasks as
+  //      failures. We therefore classify from the exit marker the wrapper
+  //      shell appends to the log, not from the disappearance itself.
+  //   2. Fire usually reports its own terminal status over its own
+  //      websocket. `commitTaskStatusUpdate` has no terminal→terminal guard,
+  //      so a late KILLED from us would clobber a COMPLETED from fire. We
+  //      ask the backend first and stay silent when the task already reached
+  //      a terminal state.
+  //
+  // Note on `suppressedExitStatusReports`: it is deliberately NOT consulted
+  // here. Every path that sets it (refresh_session_inplace via
+  // `stopActiveTaskProcess`) removes the active record synchronously, so the
+  // reaper can never see a record it applies to — but the flag itself is
+  // never cleared in tmux mode, because the tmux client's exit handler
+  // returns early and only the non-early path consumes it. Honouring a flag
+  // that outlives its task would silence a later, unrelated death. The
+  // backend status pre-check below is the guard that actually matters.
+  async function reportDeadTmuxSessionStatus(taskId, record) {
+    if (!record?.projectId) {
+      logError(`Cannot report terminal status for task ${taskId}: no project id on the active record`);
+      return;
+    }
+    // The exit marker only exists because the wrapper shell writes it to
+    // `logPath`. Without one there is no evidence at all, and "no marker"
+    // would be misread as "died hard" — reporting every clean finish as
+    // KILLED. Staying silent restores the old blind spot for this task only,
+    // which is strictly better than manufacturing a wrong cause of death.
+    if (!record.logPath) {
+      logError(
+        `Cannot classify the end of task ${taskId}: no log path on the active record, so no exit marker exists`,
+      );
+      return;
+    }
+    // Same reasoning, one level down. `tee -a` creates the log the instant it
+    // opens it, so a missing file means the wrapper could never write there
+    // (unwritable or vanished cwd) — and `tee` failing does NOT stop the fire,
+    // which runs to completion while the tmux client still exits 0. Treating
+    // that absence as "no exit marker" would report a green task as KILLED
+    // with an invented "killed or OOM" cause. An empty-but-present file is
+    // different: the fire really did die before writing anything.
+    if (readLogFileSize(record.logPath) === null) {
+      logError(
+        `Cannot classify the end of task ${taskId}: log file ${record.logPath} is missing, ` +
+          `so the absence of an exit marker proves nothing`,
+      );
+      return;
+    }
+
+    const rawTail = readLogTailRaw(record.logPath, { minOffset: record.logStartOffset || 0 });
+    // Search the file for the marker rather than hoping it is still inside
+    // the tail window — see `findFireExitCode` for why a shared log makes the
+    // tail unreliable. The tail is still what feeds the human-readable
+    // summary; only the *verdict* needs the exhaustive lookup.
+    const exitCode = findFireExitCode(record.logPath, {
+      minOffset: record.logStartOffset || 0,
+      markerToken: record.exitMarkerToken,
+    });
+    const lifetimeMs = record.spawnedAtMs ? Date.now() - record.spawnedAtMs : null;
+
+    // Classification. `null` exit code means the wrapper shell never got to
+    // write the marker — SIGKILL, OOM kill, or a tmux server crash.
+    const isKilled = exitCode === null || exitCode !== 0;
+    const status = isKilled ? "KILLED" : "COMPLETED";
+    //
+    // The success summary deliberately is NOT the bare word "completed".
+    // The web side treats a summary that merely restates the status as
+    // trivial and drops it — but only when it has to synthesize the event
+    // id. We send our own id (for idempotency), which bypasses that filter,
+    // so a bare "completed" would be persisted and would overwrite
+    // `latest_status_summary` with a word that says nothing. Naming *how* we
+    // found out keeps the event worth its row: it tells the next reader that
+    // fire never published its own status.
+    const baseSummary =
+      exitCode === null
+        ? "fire tmux session disappeared without an exit marker (killed or OOM)"
+        : exitCode === 0
+          ? "completed; detected by the daemon after the tmux session ended (fire never reported it)"
+          : exitCode === 130 || exitCode === 143
+            ? `terminated (exit code ${exitCode})`
+            : `exited with code ${exitCode}`;
+
+    // Ask the backend before overwriting anything: fire normally reports its
+    // own terminal status and we must not downgrade a success.
+    const backendStatus = await fetchBackendTaskStatus(taskId);
+    if (backendStatus && TERMINAL_BACKEND_TASK_STATUSES.has(backendStatus)) {
+      log(
+        `Tmux session ${record.tmuxSession} for task ${taskId} ended; backend already ${backendStatus}, no report needed`,
+      );
+      return;
+    }
+
+    // The await above yields the event loop, and "this task looks dead" is
+    // precisely the trigger for an in-place restart. A `restart_task` landing
+    // in that window finds no active record (we deleted it), spawns a fresh
+    // fire and reports RUNNING — and our stale report would then mark the
+    // *live* replacement as killed, using the previous run's log tail. Worse,
+    // the daemon's own map would say running, so reconcile would never repair
+    // it. Re-check that the task is still absent before speaking.
+    if (activeTaskProcesses.has(taskId)) {
+      log(
+        `Task ${taskId} was restarted while its dead tmux session was being reported; dropping the stale terminal status`,
+      );
+      return;
+    }
+
+    // Strip the marker before it reaches a user-visible summary: its content
+    // is already stated by the classification above, so leaving it in just
+    // appends "[conductor-fire-exit] code=1" to "exited with code 1".
+    const outputTail = isKilled
+      ? sanitizeOutputTail(
+          rawTail.replace(
+            new RegExp(`${escapeForRegExp(FIRE_EXIT_MARKER_PREFIX)}[^\\]]*\\] code=\\d+`, "g"),
+            "",
+          ),
+        )
+      : "";
+    if (isKilled) {
+      logError(
+        `[tmux-reap] fire died inside its session task=${taskId} ` +
+          `tmux=${record.tmuxSession || "none"} exit=${exitCode === null ? "unknown" : exitCode} ` +
+          `lifetime_ms=${lifetimeMs === null ? "unknown" : lifetimeMs} log=${record.logPath || "none"} ` +
+          `backend_status=${backendStatus || "unknown"} ` +
+          `output_tail=${outputTail ? JSON.stringify(outputTail) : "<empty>"}`,
+      );
+    }
+    const summary = outputTail ? `${baseSummary}: ${outputTail}` : baseSummary;
+
+    client
+      .sendJson({
+        type: "task_status_update",
+        payload: {
+          task_id: taskId,
+          project_id: record.projectId,
+          status,
+          summary,
+          // Idempotency key. Generated per call, so it only dedupes
+          // transport-level redelivery of *this* message — not a second,
+          // independent reaper report (the record deletion above is what
+          // prevents those). It is also what makes the backend persist
+          // `summary` at all: without a client-supplied id the server
+          // synthesizes a fresh one per delivery.
+          status_event_id: randomUUID(),
+        },
+      })
+      .catch((err) => {
+        logError(
+          `Failed to report task status (${status}) for reaped tmux task ${taskId}: ${err?.message || err}`,
+        );
+      });
+  }
+
+  // Walk every tmux-mode entry in `activeTaskProcesses`, remove the ones
+  // whose tmux session no longer exists, and report a terminal status for
+  // them. We don't (and can't reliably) observe the inner Fire process exit
+  // when we never owned it as a child, so this sweep is both what keeps the
+  // active map from leaking across long daemon lifetimes *and* the only
+  // place a death inside the session can be noticed at all.
+  //
+  // Startup race (now guarded — it used to be merely theoretical):
+  //   `spawnFireProcess` returns synchronously and we set the active record
+  //   before the spawned `tmux new-session -d` client has actually exited,
+  //   so there is a window in which an active record exists but
+  //   `tmux has-session` returns false because the session has not finished
+  //   registering with the tmux server. That window was harmless while the
+  //   reaper only cleaned up local bookkeeping; now that it reports terminal
+  //   statuses, hitting it would kill a task that started fine. Records are
+  //   therefore ignored until they are `TMUX_REAP_GRACE_MS` old.
   async function reapDeadTmuxSessionsOnce() {
     const candidates = [];
+    const now = Date.now();
     for (const [taskId, record] of activeTaskProcesses.entries()) {
-      if (record?.tmuxMode && record.tmuxSession) {
-        candidates.push([taskId, record]);
-      }
+      if (!record?.tmuxMode || !record.tmuxSession) continue;
+      const spawnedAtMs = Number(record.spawnedAtMs) || 0;
+      if (spawnedAtMs && now - spawnedAtMs < TMUX_REAP_GRACE_MS) continue;
+      candidates.push([taskId, record]);
     }
     for (const [taskId, record] of candidates) {
-      const alive = await tmuxSessionExists(record.tmuxSession);
-      // Only remove the entry if it still points to the same record; a
-      // concurrent restart_task may have replaced it while we were probing.
+      const { alive, conclusive } = await probeTmuxSession(record.tmuxSession);
+      // An inconclusive probe (tmux missing, wedged server, timeout) is not
+      // evidence of death. Leave the record alone and retry next sweep rather
+      // than cleaning up — and reporting a cause of death — on a guess.
+      if (!alive && !conclusive) {
+        logError(
+          `Could not determine whether tmux session ${record.tmuxSession} for task ${taskId} is alive; leaving it untouched`,
+        );
+        continue;
+      }
+      // Only act if the entry still points to the same record; a concurrent
+      // restart_task may have replaced it while we were probing.
       if (!alive && activeTaskProcesses.get(taskId) === record) {
         log(
           `Tmux session ${record.tmuxSession} for task ${taskId} no longer exists; cleaning up activeTaskProcesses entry`,
@@ -1219,6 +1648,9 @@ export function startDaemon(config = {}, deps = {}) {
           record.stopForceKillTimer = null;
         }
         activeTaskProcesses.delete(taskId);
+        // Report *after* dropping the local entry so a slow backend round
+        // trip can't make a concurrent stop_task wait on us.
+        await reportDeadTmuxSessionStatus(taskId, record);
       }
     }
   }
@@ -2297,6 +2729,20 @@ export function startDaemon(config = {}, deps = {}) {
       return explicit;
     }
     return 30 * 1000;
+  })();
+
+  // How long a freshly spawned tmux-mode task is exempt from the reaper.
+  // Covers the window between "we recorded the active task" and "the tmux
+  // server finished registering the session", during which `has-session`
+  // can legitimately answer false for a task that started fine. Since the
+  // reaper now reports terminal statuses, a false positive here would kill a
+  // healthy task, so the exemption is no longer optional. Tests set 0.
+  const TMUX_REAP_GRACE_MS = (() => {
+    const explicit = Number(config.TMUX_REAP_GRACE_MS);
+    if (Number.isFinite(explicit) && explicit >= 0) {
+      return explicit;
+    }
+    return 15 * 1000;
   })();
 
   // --- Auto-update state ---
@@ -4977,8 +5423,18 @@ export function startDaemon(config = {}, deps = {}) {
 
     let entry = activeTaskProcesses.get(taskId);
     if (entry?.tmuxMode && entry.tmuxSession) {
-      const alive = await tmuxSessionExists(entry.tmuxSession);
-      if (!alive) {
+      // Only a conclusive "no such session" counts as death. A wedged or
+      // missing tmux answers `false` too, and acting on that would ack the
+      // reclaim as `stale` for a fire that is still running — the backend
+      // then spawns a replacement and two fires share one worktree. It would
+      // also drop the record, so the reaper could never classify the real
+      // death later. When we cannot tell, keep the record and say "alive".
+      const { alive, conclusive } = await probeTmuxSession(entry.tmuxSession);
+      if (!alive && !conclusive) {
+        logError(
+          `Could not determine whether tmux session ${entry.tmuxSession} for task ${taskId} is alive; treating reclaim as still-alive`,
+        );
+      } else if (!alive) {
         if (activeTaskProcesses.get(taskId) === entry) {
           if (entry.stopForceKillTimer) {
             clearTimeout(entry.stopForceKillTimer);
@@ -5556,7 +6012,10 @@ export function startDaemon(config = {}, deps = {}) {
         env.CONDUCTOR_BACKEND_URL = BACKEND_HTTP;
       }
 
-      const { child, tmuxSession } = spawnFireProcess({
+      // Sampled before the spawn so it is a true "everything after this is
+      // ours" watermark.
+      const logStartOffset = readLogSize(logPath);
+      const { child, tmuxSession, exitMarkerToken } = spawnFireProcess({
         taskId,
         args,
         env,
@@ -5616,13 +6075,23 @@ export function startDaemon(config = {}, deps = {}) {
 
       // Same diagnostics contract as the restart/fork path: without this a
       // create_task whose backend dies at startup is a black box too.
-      const outputCapture = createChildOutputCapture({ logPath });
+      const outputCapture = createChildOutputCapture({ logPath, logStartOffset });
       const spawnedAtMs = Date.now();
 
       activeTaskProcesses.set(taskId, {
         child,
         projectId,
         logPath,
+        // Floor for later tail reads and the reaper's exit-marker scan: the
+        // log file is opened with flags "a" and survives in-place restarts,
+        // so bytes written before this run must not be attributed to it.
+        logStartOffset,
+        // Nonce this run's exit marker is tagged with, so the reaper only
+        // trusts a marker written by *this* wrapper shell.
+        exitMarkerToken,
+        // Consumed by the tmux liveness reaper as both a grace-period anchor
+        // and a lifetime figure for diagnostics.
+        spawnedAtMs,
         stopForceKillTimer: null,
         managedByFireBridge: true,
         tmuxSession: tmuxSession || null,
@@ -5684,6 +6153,20 @@ export function startDaemon(config = {}, deps = {}) {
 
       child.on("exit", (code, signal) => {
         const active = activeTaskProcesses.get(taskId);
+
+        // This spawn was a tmux client but the record is gone: the reaper
+        // (or a stop) already retired this task and, in the reaper's case,
+        // already published its terminal status. Falling through would
+        // delete whatever record a restart has since installed and report a
+        // second, contradictory status — `shouldDaemonReportFireChildTerminal
+        // Status(undefined)` is true, so an `exit(0)` arriving late would
+        // announce COMPLETED over the reaper's verdict. Nothing left to do.
+        if (tmuxSession && !active) {
+          log(
+            `tmux client for task ${taskId} exited after its record was retired (code=${code}, signal=${signal || "null"}); nothing to report`,
+          );
+          return;
+        }
 
         // In tmux mode the `tmux new-session -d` client always exits
         // shortly after launching the Fire session. A clean exit (code 0,
@@ -5887,8 +6370,17 @@ export function startDaemon(config = {}, deps = {}) {
     // Probe the actual session and clean up stale entries on demand so
     // the restart gating below reflects reality, not the stale record.
     if (activeTarget?.tmuxMode && activeTarget.tmuxSession) {
-      const sessionAlive = await tmuxSessionExists(activeTarget.tmuxSession);
-      if (
+      // As in reclaim: only a conclusive answer may clear the record. This
+      // gate is what stops a double spawn, so trusting an inconclusive probe
+      // would start a second fire alongside a live one in the same worktree.
+      const { alive: sessionAlive, conclusive } = await probeTmuxSession(
+        activeTarget.tmuxSession,
+      );
+      if (!sessionAlive && !conclusive) {
+        logError(
+          `Could not determine whether tmux session ${activeTarget.tmuxSession} for task ${normalizedTargetTaskId} is alive; keeping the existing record before restart`,
+        );
+      } else if (
         !sessionAlive &&
         activeTaskProcesses.get(normalizedTargetTaskId) === activeTarget
       ) {
@@ -6223,17 +6715,26 @@ export function startDaemon(config = {}, deps = {}) {
       env.CONDUCTOR_BACKEND_URL = BACKEND_HTTP;
     }
 
-    // An in-place restart re-uses the previous run's working directory, and the
-    // fire's durable upstream outbox lives inside that directory. If the prior
-    // run was stopped while its websocket was down, its undelivered terminal
-    // `task_status_update` (KILLED/COMPLETED) is still on disk — and the run we
-    // are about to spawn would flush it during startup, marking the task killed
-    // seconds after resuming and then getting shot down by the server's
-    // `stop_task(task_already_killed)` reply. Purge those superseded events
-    // before the new fire can pick them up.
+    // Two hazards below, one root cause: an in-place restart deliberately
+    // re-uses the previous run's working directory, so ANY artifact the last
+    // run left there can be mistaken for this run's own state. Both guards
+    // must run before the spawn.
+    //
+    // (1) The fire's durable upstream outbox lives in that directory. If the
+    // prior run was stopped while its websocket was down, its undelivered
+    // terminal `task_status_update` (KILLED/COMPLETED) is still on disk — and
+    // the run we are about to spawn would flush it during startup, marking the
+    // task killed seconds after resuming and then getting shot down by the
+    // server's `stop_task(task_already_killed)` reply. Purge those superseded
+    // events before the new fire can pick them up.
     dropSupersededTerminalStatusEvents(taskDir, normalizedTargetTaskId);
 
-    const { child, tmuxSession } = spawnFireProcess({
+    // (2) The log file is opened with `flags:"a"` and re-used as well. Sample
+    // its size first so it is a true "everything after this is ours"
+    // watermark; without it the reaper reads the PREVIOUS run's exit marker.
+    const logStartOffset = readLogSize(logPath);
+
+    const { child, tmuxSession, exitMarkerToken } = spawnFireProcess({
       taskId: normalizedTargetTaskId,
       args,
       env,
@@ -6244,7 +6745,7 @@ export function startDaemon(config = {}, deps = {}) {
     // exit can report *why* it died and how long it survived. `logPath` lets
     // the capture recover the fire's own output in tmux mode, where the
     // daemon's child is only the `tmux new-session` client.
-    const outputCapture = createChildOutputCapture({ logPath });
+    const outputCapture = createChildOutputCapture({ logPath, logStartOffset });
     const spawnedAtMs = Date.now();
 
     let logStream;
@@ -6276,6 +6777,11 @@ export function startDaemon(config = {}, deps = {}) {
       child,
       projectId: normalizedProjectId,
       logPath,
+      // See the create_task path: watermark for tail reads / exit-marker
+      // scans, the marker nonce, and the reaper's grace-period anchor.
+      logStartOffset,
+      exitMarkerToken,
+      spawnedAtMs,
       stopForceKillTimer: null,
       managedByFireBridge: true,
       tmuxSession: tmuxSession || null,
@@ -6331,6 +6837,16 @@ export function startDaemon(config = {}, deps = {}) {
 
     child.on("exit", (code, signal) => {
       const active = activeTaskProcesses.get(normalizedTargetTaskId);
+
+      // See the create path: a tmux client exiting after its record was
+      // retired must stay silent, or it would both clobber a replacement
+      // record and publish a status contradicting the reaper's verdict.
+      if (tmuxSession && !active) {
+        log(
+          `tmux client for restarted task ${normalizedTargetTaskId} exited after its record was retired (code=${code}, signal=${signal || "null"}); nothing to report`,
+        );
+        return;
+      }
 
       // In tmux mode the `tmux new-session -d` client always exits soon
       // after launching the session. A clean exit (code 0, no signal) means
