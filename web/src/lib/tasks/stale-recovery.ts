@@ -10,6 +10,7 @@ import {
   buildKilledPatch,
   withKilledReasonFallback,
 } from "@/lib/tasks/killed-reason";
+import { resolveKillingElapsedMs } from "@/lib/tasks/task-config";
 
 export type RecoverableTaskRecord = {
   id: string;
@@ -19,6 +20,8 @@ export type RecoverableTaskRecord = {
   executionHost: string | null;
   createdAt: Date;
   updatedAt?: Date | null;
+  /** Raw JSON string; read for `killingStartedAt` when converging a stuck stop. */
+  metadata?: string | null;
 };
 
 const normalizeHost = (value: unknown): string => {
@@ -55,6 +58,28 @@ const STALE_DAEMON_TASK_RECOVERY_TIMEOUT_MS = parsePositiveInt(
   process.env.CONDUCTOR_STALE_DAEMON_TASK_RECOVERY_TIMEOUT_MS,
   120_000,
 );
+
+// How long a task may sit in `killing` before the server stops waiting for the
+// agent and converges it itself.
+//
+// `killing` is a promise that some agent will report a terminal status back.
+// When that promise is broken the row is stranded forever: the status is not
+// terminal (so the recovery sweep below used to skip it), the agent host is
+// typically still connected (so the offline path never triggers), and the
+// PATCH API refuses to move it (see the `killing` branch in
+// web/src/app/api/tasks/[taskId]/route.ts). The observed break is a daemon
+// that receives `stop_task`, finds no live fire, and answers only with a
+// command ack — it has nothing to report a status *about*.
+//
+// Deliberately much longer than the 60s countdown the UI renders: that value
+// is a progress hint for humans, whereas this one force-ends a stop that may
+// still be legitimately draining on a slow or busy machine. Overshooting costs
+// a few stale minutes in the list; undershooting kills healthy sessions.
+const KILLING_CONVERGENCE_TIMEOUT_MS = parsePositiveInt(
+  process.env.CONDUCTOR_KILLING_CONVERGENCE_TIMEOUT_MS,
+  300_000,
+);
+
 
 // Captured at module load so the recovery path can refuse to kill tasks just
 // because the in-memory realtimeHub registry is empty after a fresh Web boot,
@@ -142,6 +167,58 @@ export async function recoverStaleDisconnectedAgentTasks(
     // to be delivered via agentOutbox (e.g. branch/fork creates a successor
     // task with status "init" that the daemon hasn't started yet).
     if (normalizedStatus === "init") continue;
+
+    // A `killing` task whose host is STILL CONNECTED is invisible to every
+    // other branch here — the offline clock below never starts, so it would
+    // stay mid-stop forever. Converge it on its own timeout instead.
+    //
+    // Unlike the defensive kill below this is NOT a disconnect: the user asked
+    // for the stop and the agent simply never confirmed it, so tag
+    // `user_stopped` (not reclaim-eligible — there is no healthy fire to
+    // reattach to) and do NOT enqueue another `stop_task`. Entering `killing`
+    // already persisted one durable stop command; adding a second would leave
+    // an extra un-acked row that a later in-place restart could pick up and
+    // use to shoot down the fresh run.
+    if (normalizedStatus === "killing" && realtimeHub.hasAgentHost(recoveryHost, userId)) {
+      const killingElapsedMs = resolveKillingElapsedMs(task.metadata, task.updatedAt, now);
+      if (killingElapsedMs === null) continue;
+      if (killingElapsedMs < KILLING_CONVERGENCE_TIMEOUT_MS) continue;
+
+      recoveries.push((async () => {
+        const killedPatch = buildKilledPatch("user_stopped");
+        await withKilledReasonFallback(
+          () =>
+            db.task.update({
+              where: { id: task.id },
+              data: { ...killedPatch, executionHost: null },
+            }),
+          () =>
+            db.task.update({
+              where: { id: task.id },
+              data: { status: "killed", executionHost: null },
+            }),
+        );
+        task.status = "killed";
+        task.executionHost = null;
+        if (typeof (realtimeHub as any).unbindTask === "function") {
+          (realtimeHub as any).unbindTask(task.id);
+        }
+        if (typeof (realtimeHub as any).notifyTaskStatus === "function") {
+          (realtimeHub as any).notifyTaskStatus(task.id, "killed");
+        }
+        realtimeHub.broadcast(userId, task.projectId, {
+          type: "task_status_update",
+          payload: {
+            task_id: task.id,
+            project_id: task.projectId,
+            status: "killed",
+            summary: "Stop timed out; agent never confirmed",
+          },
+        });
+      })());
+      continue;
+    }
+
     if (realtimeHub.hasAgentHost(recoveryHost, userId)) continue;
 
     const recoveryTimeoutMs = isConductorFireHost(recoveryHost)

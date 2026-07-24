@@ -405,7 +405,11 @@ export function TaskItem({
   // field instead of the standalone Task row in `useTasksStore`. WebSocket
   // status broadcasts refresh the AI task → fresh status flows through.
   const attachedPtyTaskStatus = task.attachedTerminal?.ptyTaskStatus ?? null;
-  const showRestartAction = taskType === 'ai_task';
+  // `killing` is excluded on purpose: the restart route only accepts
+  // RESTARTABLE_SOURCE_STATUSES (running / completed / killed / unknown), so a
+  // task mid-stop would render a button whose every click 409s. Hide it until
+  // the stop resolves one way or the other.
+  const showRestartAction = taskType === 'ai_task' && task.status !== 'killing';
   const showShareAction = taskType === 'ai_task';
   // Only offer the "attach a terminal" swipe action on AI tasks that don't
   // already have one — 1:1 is enforced by the DB, but the UI surfaces the

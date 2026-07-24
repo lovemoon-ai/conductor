@@ -18,8 +18,10 @@ import {
   normalizeTaskType,
   parseJsonObject,
   parseTaskType,
+  resolveKillingElapsedMs,
   type JsonObject,
 } from "@/lib/tasks/task-config";
+import { tagKilledReason } from "@/lib/tasks/killed-reason";
 import {
   applyLegacyTaskShape,
   isMissingAnyNewSchemaError,
@@ -512,11 +514,34 @@ export async function PATCH(
       normalizedExistingStatus === "running" ||
       normalizedExistingStatus === "unknown"
     );
+  // How long the row has already been in `killing`, so a repeat stop can tell
+  // "the daemon is still working on it" from "the daemon is never answering".
+  const existingKillingElapsedMs = resolveKillingElapsedMs(
+    existing.metadata,
+    existing.updatedAt,
+  );
+  // Escape hatch for a stop that will never converge.
+  //
+  // A second kill request normally just re-affirms the in-flight one
+  // (`shouldKeepKilling` below) so impatient double-clicks don't spam the
+  // daemon with `stop_task`. But that made `killing` an ABSORBING state: if the
+  // agent never reports a terminal status, `status: "killed"` is answered with
+  // `killing` forever and there is no way back out through the API at all.
+  // Once the killing timeout has elapsed, honour the request literally and
+  // finish the transition server-side.
+  const shouldForceKilled =
+    !shouldDispatchPtyTask &&
+    nextTaskType === "ai_task" &&
+    isKillStatusRequest &&
+    normalizedExistingStatus === "killing" &&
+    existingKillingElapsedMs !== null &&
+    existingKillingElapsedMs >= KILLING_TIMEOUT_MS;
   const shouldKeepKilling =
     !shouldDispatchPtyTask &&
     nextTaskType === "ai_task" &&
     isKillStatusRequest &&
-    normalizedExistingStatus === "killing";
+    normalizedExistingStatus === "killing" &&
+    !shouldForceKilled;
   const nextStatus = shouldDispatchPtyTask
     ? "unknown"
     : shouldEnterKilling || shouldKeepKilling
@@ -932,6 +957,34 @@ export async function PATCH(
         task_id: task.id,
         project_id: task.projectId,
         status: "killing",
+        metadata: parseJsonObject(task.metadata),
+        updated_at: task.updatedAt.toISOString(),
+      },
+    });
+  }
+  if (shouldForceKilled) {
+    // The row is already `killed` above; layer on the discriminator separately
+    // so the (possibly un-migrated) killed_reason columns can never fail the
+    // PATCH itself. `user_stopped` is deliberately NOT reclaim-eligible: the
+    // stop was requested by a human and the agent proved unresponsive, so a
+    // restart must relaunch rather than try to reattach to a phantom fire.
+    try {
+      await tagKilledReason(db, taskId, "user_stopped");
+    } catch (error) {
+      console.warn(
+        `[tasks] failed to tag killed_reason for force-killed task ${taskId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    realtimeHub.unbindTask(taskId);
+    realtimeHub.broadcast(user.id, task.projectId, {
+      type: "task_status_update",
+      payload: {
+        task_id: task.id,
+        project_id: task.projectId,
+        status: "killed",
+        summary: "Stop forced after the agent failed to confirm",
         metadata: parseJsonObject(task.metadata),
         updated_at: task.updatedAt.toISOString(),
       },

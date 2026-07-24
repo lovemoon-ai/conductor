@@ -1514,8 +1514,12 @@ describe("/api/tasks/[taskId]", () => {
 
   it("keeps an already killing task in killing without queuing a duplicate stop_task", async () => {
     const token = createTestToken("user-1");
+    // Must be RECENT: a repeat stop only re-affirms the in-flight kill while it
+    // is still inside the killing timeout. Past that the request is honoured
+    // literally instead (see the force-kill test below), so a hardcoded past
+    // date here would silently exercise the wrong branch.
     const existingMetadata = {
-      killingStartedAt: "2024-01-01T00:01:00.000Z",
+      killingStartedAt: new Date(Date.now() - 5_000).toISOString(),
       killingTimeoutMs: 60_000,
       killRequestId: "req-existing",
     };
@@ -1533,7 +1537,7 @@ describe("/api/tasks/[taskId]", () => {
       launchConfig: null,
       metadata: JSON.stringify(existingMetadata),
       createdAt: new Date("2024-01-01T00:00:00.000Z"),
-      updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+      updatedAt: new Date(Date.now() - 5_000),
       ptySession: null,
     };
     vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
@@ -1568,6 +1572,67 @@ describe("/api/tasks/[taskId]", () => {
     expect(deliverAgentOutboxRow).not.toHaveBeenCalled();
     expect(data.status).toBe("killing");
     expect(data.metadata).toEqual(existingMetadata);
+  });
+
+  // Regression guard: `killing` used to be an ABSORBING state. If the agent
+  // never reported a terminal status, every `status: "killed"` PATCH was
+  // answered with `killing`, so a stranded task could not be finished OR
+  // restarted (`killing` is not in RESTARTABLE_SOURCE_STATUSES) through the
+  // API at all — the only way out was editing the database by hand.
+  it("forces a stranded killing task to killed once the killing timeout has elapsed", async () => {
+    const token = createTestToken("user-1");
+    const existingMetadata = {
+      killingStartedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      killingTimeoutMs: 60_000,
+      killRequestId: "req-stranded",
+    };
+    const existingTask = {
+      id: "task-stop-stranded",
+      projectId: "proj-1",
+      title: "Stranded",
+      taskType: "ai_task",
+      status: "killing",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: "session-stranded",
+      sessionFilePath: "/tmp/session-stranded.jsonl",
+      launchConfig: null,
+      metadata: JSON.stringify(existingMetadata),
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date(Date.now() - 10 * 60_000),
+      ptySession: null,
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
+    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+      ...existingTask,
+      ...data,
+      updatedAt: new Date(),
+    }) as any);
+
+    const request = createMockRequest({
+      method: "PATCH",
+      token,
+      body: { status: "killed" },
+    });
+    const response = await PATCH(request, {
+      params: Promise.resolve({ taskId: "task-stop-stranded" }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.status).toBe("killed");
+    // Terminal, so it stops claiming to occupy a host.
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "killed", executionHost: null }),
+      }),
+    );
+    // Forcing the terminal state must NOT re-send stop_task: the command queued
+    // when the task first entered `killing` is still pending delivery, and a
+    // duplicate could later be drained against a fresh in-place restart.
+    expect(db.agentOutbox.create).not.toHaveBeenCalled();
+    expect(deliverAgentOutboxRow).not.toHaveBeenCalled();
   });
 
   it("falls back to direct stop delivery when agent_outbox table is missing", async () => {

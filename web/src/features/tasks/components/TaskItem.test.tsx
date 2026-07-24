@@ -260,6 +260,78 @@ describe('TaskItem', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
+  // The restart API only accepts RESTARTABLE_SOURCE_STATUSES (running /
+  // completed / killed / unknown). Offering the action mid-stop produced a
+  // button whose every click came back 409 — which is exactly what a user hits
+  // when they try to rescue a task stranded in `killing`.
+  it('does not offer the restart action while the task is killing', async () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-killing-restart',
+          title: 'Killing Task',
+          taskType: 'ai_task',
+          status: 'killing',
+          projectId: null,
+          agentHost: 'daemon-a',
+          backendType: 'codex',
+          sessionId: 'sess-killing',
+          createdAt: FIXED_DATE.toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    // Open the swipe menu, otherwise "New task" is unreachable for EVERY status
+    // and this assertion would pass without testing anything.
+    const card = screen.getByText('Killing Task').closest('[role="button"]');
+    fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
+    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+
+    // The menu is open (a sibling action is reachable) but restart is not in it.
+    expect(await screen.findByRole('button', { name: 'Share task' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'New task' })).not.toBeInTheDocument();
+    expect(restartTaskMock).not.toHaveBeenCalled();
+  });
+
+  // Positive control for the test above: the action must still be there once
+  // the stop actually resolves, otherwise hiding it during `killing` would just
+  // be hiding restart everywhere.
+  it('still offers the restart action once the task reaches a terminal status', async () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-killed-restart',
+          title: 'Killed Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          projectId: null,
+          agentHost: 'daemon-a',
+          backendType: 'codex',
+          sessionId: 'sess-killed',
+          createdAt: FIXED_DATE.toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    const card = screen.getByText('Killed Task').closest('[role="button"]');
+    fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
+    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+
+    expect(await screen.findByRole('button', { name: 'New task' })).toBeInTheDocument();
+  });
+
   it('requires a second click on the completed badge before restarting the task in place', async () => {
     restartTaskMock.mockResolvedValue({
       mode: 'inplace_restart',

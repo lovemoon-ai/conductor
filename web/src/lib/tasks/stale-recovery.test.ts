@@ -93,4 +93,90 @@ describe("recoverStaleDisconnectedAgentTasks", () => {
     expect(db.task.update).not.toHaveBeenCalled();
     expect(enqueueAgentCommand).not.toHaveBeenCalled();
   });
+
+  // A task stuck mid-stop is invisible to the offline recovery path above: the
+  // daemon is connected, so the disconnect clock never starts. Without its own
+  // timeout it stays `killing` forever and cannot even be restarted, because
+  // `killing` is not in RESTARTABLE_SOURCE_STATUSES.
+  describe("killing convergence while the agent host is still connected", () => {
+    const buildKillingTask = (killingStartedAt: string) => ({
+      ...buildStaleTask(),
+      status: "killing",
+      metadata: JSON.stringify({ killingStartedAt, killingTimeoutMs: 60_000 }),
+      updatedAt: new Date(killingStartedAt),
+    });
+
+    beforeEach(() => {
+      vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(true);
+    });
+
+    it("forces killed with user_stopped once the convergence timeout elapses", async () => {
+      const longAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+
+      await recoverStaleDisconnectedAgentTasks("user-1", [buildKillingTask(longAgo)] as any);
+
+      expect(db.task.update).toHaveBeenCalledTimes(1);
+      const [updateArgs] = vi.mocked(db.task.update).mock.calls[0];
+      expect(updateArgs).toMatchObject({
+        where: { id: "task-1" },
+        data: expect.objectContaining({
+          status: "killed",
+          killedReason: "user_stopped",
+          executionHost: null,
+        }),
+      });
+      expect(realtimeHub.broadcast).toHaveBeenCalledWith(
+        "user-1",
+        "project-1",
+        expect.objectContaining({
+          type: "task_status_update",
+          payload: expect.objectContaining({ task_id: "task-1", status: "killed" }),
+        }),
+      );
+    });
+
+    it("does NOT enqueue a second stop_task (entering killing already queued one)", async () => {
+      const longAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+
+      await recoverStaleDisconnectedAgentTasks("user-1", [buildKillingTask(longAgo)] as any);
+
+      // A duplicate un-acked stop row could later be drained against a fresh
+      // in-place restart and kill the new run.
+      expect(enqueueAgentCommand).not.toHaveBeenCalled();
+    });
+
+    it("leaves a recently-requested stop alone so a slow daemon can still finish", async () => {
+      const justNow = new Date(Date.now() - 5_000).toISOString();
+
+      await recoverStaleDisconnectedAgentTasks("user-1", [buildKillingTask(justNow)] as any);
+
+      expect(db.task.update).not.toHaveBeenCalled();
+    });
+
+    it("falls back to updatedAt when metadata carries no killingStartedAt", async () => {
+      const task = {
+        ...buildStaleTask(),
+        status: "killing",
+        metadata: null,
+        updatedAt: new Date(Date.now() - 10 * 60_000),
+      };
+
+      await recoverStaleDisconnectedAgentTasks("user-1", [task] as any);
+
+      expect(db.task.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves the task alone when the kill age cannot be determined at all", async () => {
+      const task = {
+        ...buildStaleTask(),
+        status: "killing",
+        metadata: null,
+        updatedAt: null,
+      };
+
+      await recoverStaleDisconnectedAgentTasks("user-1", [task] as any);
+
+      expect(db.task.update).not.toHaveBeenCalled();
+    });
+  });
 });

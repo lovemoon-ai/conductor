@@ -105,7 +105,7 @@ export async function withKilledReasonFallback<T>(
  * update before this RFC and want to layer the reason in without rewriting
  * the original transaction. Logs and swallows schema-missing errors.
  */
-async function tagKilledReason(
+export async function tagKilledReason(
   db: PrismaClient,
   taskId: string,
   reason: KilledReason,

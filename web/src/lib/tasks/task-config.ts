@@ -49,6 +49,35 @@ export const parseJsonObject = (value: unknown): JsonObject | null => {
   }
 };
 
+/**
+ * How long a task has been sitting in `killing`, or null when unknowable.
+ *
+ * Shared by every site that has to decide whether a stop is still in flight or
+ * has been abandoned, so they cannot drift apart on the definition of "how old
+ * is this kill". Prefers `metadata.killingStartedAt` — stamped at the exact
+ * moment of the transition — and falls back to the row's `updatedAt`, which is
+ * a sound proxy because a row in `killing` is not written again: the upstream
+ * status handler early-returns on every non-terminal report in that state.
+ */
+export const resolveKillingElapsedMs = (
+  metadata: unknown,
+  updatedAt: Date | string | null | undefined,
+  now: number = Date.now(),
+): number | null => {
+  const rawKillingStartedAt = parseJsonObject(metadata)?.killingStartedAt;
+  if (typeof rawKillingStartedAt === "string") {
+    const startedAtMs = Date.parse(rawKillingStartedAt);
+    if (Number.isFinite(startedAtMs)) return now - startedAtMs;
+  }
+  const fallbackMs =
+    updatedAt instanceof Date
+      ? updatedAt.getTime()
+      : typeof updatedAt === "string"
+        ? Date.parse(updatedAt)
+        : NaN;
+  return Number.isFinite(fallbackMs) ? now - fallbackMs : null;
+};
+
 export const normalizeTaskStatus = (value: unknown): string => {
   if (typeof value !== "string") return "unknown";
   const normalized = value.trim().toLowerCase();

@@ -40,6 +40,17 @@ const sleepSync = (ms: number): void => {
   }
 };
 
+// Terminal statuses as published by `conductor daemon` (see cli/src/daemon.js,
+// which sends the upper-case wire form). Compared case-insensitively so a
+// future lower-case producer does not silently bypass the check.
+const TERMINAL_TASK_STATUSES = new Set(['killed', 'completed']);
+
+const isTerminalStatusEvent = (entry: DurableUpstreamEvent): boolean => {
+  if (entry.eventType !== 'task_status_update') return false;
+  const status = entry.payload?.status;
+  return typeof status === 'string' && TERMINAL_TASK_STATUSES.has(status.trim().toLowerCase());
+};
+
 const sanitizeScopeId = (scopeId: string): string =>
   scopeId
     .trim()
@@ -103,6 +114,41 @@ export class DurableUpstreamOutboxStore {
     this.withLock(() => {
       const entries = this.loadUnlocked().filter((candidate) => candidate.stableId !== stableId);
       this.saveUnlocked(entries);
+    });
+  }
+
+  /**
+   * Discard queued terminal `task_status_update` events (KILLED / COMPLETED).
+   *
+   * This outbox lives INSIDE the fire's working directory, and an in-place
+   * restart deliberately re-uses that same directory (the daemon sets
+   * `CONDUCTOR_RESUME_CWD` so `--resume` finds the original project). That
+   * means a terminal status the PREVIOUS run failed to deliver — e.g. its
+   * websocket dropped while it was being stopped — is still sitting on disk
+   * when the NEXT run starts, and the startup flush delivers it against the
+   * task that was just brought back to life. The server marks the task
+   * `killed`, then answers the newly-attached fire with
+   * `stop_task(task_already_killed)` and shoots it down seconds after it
+   * finished resuming.
+   *
+   * A terminal status from a superseded run is definitionally obsolete: the
+   * task has since been restarted, so "that run ended" is no longer news the
+   * server can act on correctly. Drop those and keep everything else —
+   * `sdk_message` entries are real conversation content that must still be
+   * delivered, and `task_stop_ack` / `agent_command_ack` are idempotent
+   * bookkeeping whose delivery actually clears stale server-side outbox rows.
+   *
+   * Returns the dropped entries so callers can log exactly what was discarded.
+   */
+  dropPendingTerminalStatusEvents(): DurableUpstreamEvent[] {
+    return this.withLock(() => {
+      const entries = this.loadUnlocked();
+      const dropped = entries.filter(isTerminalStatusEvent);
+      if (dropped.length === 0) {
+        return [];
+      }
+      this.saveUnlocked(entries.filter((entry) => !isTerminalStatusEvent(entry)));
+      return dropped;
     });
   }
 

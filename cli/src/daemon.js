@@ -15,6 +15,7 @@ import {
   loadConfig,
   ConfigFileNotFound,
   ProjectContext,
+  DurableUpstreamOutboxStore,
 } from "@love-moon/conductor-sdk";
 import { DaemonLogCollector } from "./log-collector.js";
 import { envForExplicitConfigFile } from "./config-env.js";
@@ -629,6 +630,35 @@ function stripPtyTaskScopedEnv(source) {
     delete env[key];
   }
   return env;
+}
+
+/**
+ * Purge terminal `task_status_update` events left undelivered by a previous run
+ * of `taskId` in `taskDir`, before a restart re-uses that same directory.
+ *
+ * The fire's durable upstream outbox is stored under the fire's cwd, keyed by
+ * the `task:<id>` delivery scope. An in-place restart intentionally re-uses the
+ * cwd, so without this purge the new run flushes the old run's KILLED/COMPLETED
+ * event on startup and kills the task it just resumed. Best-effort: a restart
+ * must never fail because of outbox bookkeeping.
+ */
+function dropSupersededTerminalStatusEvents(taskDir, taskId) {
+  if (!taskDir || !taskId) return;
+  try {
+    const store = DurableUpstreamOutboxStore.forProjectPath(taskDir, `task:${taskId}`);
+    const dropped = store.dropPendingTerminalStatusEvents();
+    if (dropped.length > 0) {
+      log(
+        `Dropped ${dropped.length} superseded terminal status event(s) for task ${taskId} before restart: ${dropped
+          .map((entry) => `${entry.payload?.status ?? "?"}@${entry.createdAt}`)
+          .join(", ")}`,
+      );
+    }
+  } catch (error) {
+    logError(
+      `Failed to purge superseded terminal status events for task ${taskId}: ${error?.message || error}`,
+    );
+  }
 }
 
 function buildPtyTaskEnv(baseEnv = process.env, launchEnv = {}) {
@@ -5015,6 +5045,40 @@ export function startDaemon(config = {}, deps = {}) {
     if ((!processRecord || !processRecord.child) && !ptyRecord) {
       log(`Stop requested for task ${taskId}, but no active process found`);
       sendStopAck(false);
+      // "Nothing to stop" IS the terminal answer, and the server cannot infer
+      // it: after the app flips the row to `killing` it waits for us to report
+      // a terminal status, and a bare `stop_ack(accepted=false)` is only
+      // command bookkeeping — it never converges the task. Staying silent here
+      // is what strands a task in `killing` forever once its fire has already
+      // died (e.g. the tmux session was reaped before the user pressed Stop).
+      // Mirror the tmux stop path and publish KILLED so the row reaches a
+      // terminal state that the user can then restart from.
+      const terminalProjectId =
+        normalizeOptionalString(payload?.project_id) ||
+        normalizeOptionalString(processRecord?.projectId);
+      if (terminalProjectId) {
+        client
+          .sendJson({
+            type: "task_status_update",
+            payload: {
+              task_id: taskId,
+              project_id: terminalProjectId,
+              status: "KILLED",
+              summary: payload?.reason
+                ? `stopped (${payload.reason}); no active process`
+                : "stopped; no active process",
+            },
+          })
+          .catch((err) => {
+            logError(
+              `Failed to report task_status_update(KILLED) for inactive task ${taskId}: ${err?.message || err}`,
+            );
+          });
+      } else {
+        logError(
+          `Cannot report terminal status for inactive task ${taskId}: no project_id in stop_task payload`,
+        );
+      }
       // Even when we have no in-memory record, the task may still own a
       // tmux session (e.g. the daemon was restarted between spawn and
       // stop, or the liveness reaper removed our entry but the session
@@ -6158,6 +6222,16 @@ export function startDaemon(config = {}, deps = {}) {
     if (BACKEND_HTTP) {
       env.CONDUCTOR_BACKEND_URL = BACKEND_HTTP;
     }
+
+    // An in-place restart re-uses the previous run's working directory, and the
+    // fire's durable upstream outbox lives inside that directory. If the prior
+    // run was stopped while its websocket was down, its undelivered terminal
+    // `task_status_update` (KILLED/COMPLETED) is still on disk — and the run we
+    // are about to spawn would flush it during startup, marking the task killed
+    // seconds after resuming and then getting shot down by the server's
+    // `stop_task(task_already_killed)` reply. Purge those superseded events
+    // before the new fire can pick them up.
+    dropSupersededTerminalStatusEvents(taskDir, normalizedTargetTaskId);
 
     const { child, tmuxSession } = spawnFireProcess({
       taskId: normalizedTargetTaskId,
