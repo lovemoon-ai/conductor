@@ -646,6 +646,23 @@ function dropSupersededTerminalStatusEvents(taskDir, taskId) {
   if (!taskDir || !taskId) return;
   try {
     const store = DurableUpstreamOutboxStore.forProjectPath(taskDir, `task:${taskId}`);
+    // Distinguish "the purge failed" from "the purge does not exist here".
+    // The CLI loads the INSTALLED copy of conductor-sdk, not this repo's
+    // source, so an un-rebuilt or mismatched package silently lacks this
+    // method — and a bare try/catch would swallow the resulting TypeError
+    // exactly like a benign fs error, leaving every restart unprotected with
+    // no way to tell from the log. Say so explicitly instead. We still do not
+    // throw: an unprotected restart usually succeeds, whereas refusing to
+    // spawn would break restart outright.
+    if (typeof store?.dropPendingTerminalStatusEvents !== "function") {
+      logError(
+        `Cannot purge superseded terminal status events for task ${taskId}: the installed ` +
+          `@love-moon/conductor-sdk has no DurableUpstreamOutboxStore.dropPendingTerminalStatusEvents. ` +
+          `This restart is unprotected — a terminal status left by the previous run may kill it. ` +
+          `Rebuild and reinstall the SDK (make install-cli).`,
+      );
+      return;
+    }
     const dropped = store.dropPendingTerminalStatusEvents();
     if (dropped.length > 0) {
       log(
