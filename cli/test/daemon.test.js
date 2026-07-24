@@ -1,5 +1,6 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert";
+import { spawn as realSpawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -1188,6 +1189,8 @@ describe("Daemon", () => {
         CLI_PATH: "/tmp/cli.js",
         DAEMON_NAME: "daemon-tmux-reap-test",
         TMUX_LIVENESS_POLL_MS: 60,
+        // Disable the startup grace period so the sweep runs immediately.
+        TMUX_REAP_GRACE_MS: 0,
       },
       {
         spawn: mockSpawn,
@@ -1307,7 +1310,7 @@ describe("Daemon", () => {
     }, 400);
   });
 
-  it("treats stuck tmux has-session probes as dead via the timeout fallback", (t, done) => {
+  it("does not treat a stuck tmux has-session probe as proof of death", (t, done) => {
     const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
     process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
     t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
@@ -1377,6 +1380,8 @@ describe("Daemon", () => {
         TMUX_LIVENESS_POLL_MS: 80,
         // Compress the 5s probe timeout so the test runs in well under 1s.
         TMUX_PROBE_TIMEOUT_MS: 50,
+        // Disable the startup grace period so the sweep runs immediately.
+        TMUX_REAP_GRACE_MS: 0,
       },
       {
         spawn: mockSpawn,
@@ -1399,10 +1404,14 @@ describe("Daemon", () => {
 
     setTimeout(() => {
       assert.strictEqual(probeKilled, true, "wedged has-session probe must be SIGKILLed by the timeout");
+      // A probe that never answered says nothing about the session. Since the
+      // reaper now converts "not alive" into an authoritative terminal status,
+      // it must keep the record instead of guessing — so a later stop_task
+      // still has a session to kill.
       assert.strictEqual(
         killSessionCalls,
-        0,
-        "after the timeout reaper removes the entry, stop_task should have nothing to kill",
+        1,
+        "an inconclusive probe must not retire the record; stop_task must still kill the session",
       );
       if (daemon && typeof daemon.close === "function") {
         daemon.close();
@@ -6476,6 +6485,7 @@ describe("Daemon", () => {
     const spawnCalls = [];
     const sentEvents = [];
     let forkChild = null;
+    let logWritten = false;
     const logBuffer = Buffer.from(logFileContents ?? "", "utf8");
 
     const daemonInstance = startDaemon(
@@ -6490,6 +6500,12 @@ describe("Daemon", () => {
       {
         spawn: (cmd, args, opts) => {
           spawnCalls.push({ cmd, args, opts });
+          // The fire only writes its log *after* being spawned. Modelling
+          // that matters: the daemon watermarks the log size at spawn time
+          // and ignores anything below it, so a log that already had its
+          // full contents beforehand is (correctly) attributed to a previous
+          // run and would not be reported.
+          logWritten = true;
           const child = new EventEmitter();
           child.pid = 4242;
           child.unref = () => {};
@@ -6509,7 +6525,7 @@ describe("Daemon", () => {
         writeFileSync: () => {},
         existsSync: () => false,
         // Model the fire's log file so the capture's fallback path is real.
-        statSync: () => ({ size: logBuffer.length }),
+        statSync: () => ({ size: logWritten ? logBuffer.length : 0 }),
         openSync: () => 7,
         readSync: (_fd, buf, offset, length, position) =>
           logBuffer.copy(buf, offset, position, position + length),
@@ -6648,6 +6664,659 @@ describe("Daemon", () => {
         assert.ok(killed.payload.summary.includes("<redacted>"));
       },
     });
+  });
+
+  it("makes a tmux-hosted fire record its own exit code, readable by real bash", async (t) => {
+    // The reaper can only classify a vanished session because the wrapper
+    // shell writes the fire's exit code into the log. That wrapper is a
+    // string the daemon assembles and hands to `bash -c` inside tmux, so a
+    // quoting or `PIPESTATUS` mistake would be invisible to any test that
+    // merely pattern-matches the string — and would silently degrade every
+    // tmux fire in production to "no marker → assume killed". This test runs
+    // the daemon's *actual* generated command through a *real* bash.
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    let handler;
+    let connected = false;
+    let innerCmd = null;
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-tmux-marker",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "tmux-marker-daemon",
+        TMUX_LIVENESS_POLL_MS: 0,
+      },
+      {
+        spawn: (cmd, args) => {
+          if (cmd === "tmux" && args?.[0] === "new-session") {
+            innerCmd = args[args.length - 1];
+          }
+          const child = new EventEmitter();
+          child.pid = 5152;
+          child.unref = () => {};
+          child.kill = () => {};
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          setImmediate(() => child.emit("exit", 0, null));
+          return child;
+        },
+        spawnSync: (cmd, args) => {
+          if (cmd === "tmux" && args && args[0] === "-V") {
+            return { status: 0, error: null, pid: 12345 };
+          }
+          return { status: 1, error: new Error("ENOENT"), pid: undefined };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ on: () => {}, write: () => {}, end: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => [] }),
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {
+            connected = true;
+          },
+          disconnect: async () => {},
+          sendJson: async () => {},
+        }),
+      },
+    );
+
+    await waitUntil(() => connected, { message: "marker daemon to connect" });
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "tmux-marker-task",
+        project_id: "tmux-marker-proj",
+        backend_type: "codex",
+        initial_content: "work",
+      },
+    });
+    await waitUntil(() => innerCmd, { message: "tmux new-session spawn" });
+    daemonInstance.close();
+
+    // Retarget the command at a real, writable log and a stand-in "fire"
+    // that exits with a known non-zero code. Everything else — the pipeline,
+    // the PIPESTATUS capture, the quoting, the marker printf — is the
+    // daemon's own string, executed verbatim.
+    const realLog = path.join(os.tmpdir(), `conductor-marker-test-${process.pid}.log`);
+    fs.rmSync(realLog, { force: true });
+    t.after(() => fs.rmSync(realLog, { force: true }));
+    // `bash -c "exec exec …"` fails with "exec: exec: not found" (127), and
+    // in tmux mode that means fire never starts while the tmux client still
+    // exits 0 — a task hung at `running` with an empty log. Cheap guard
+    // against a branch re-wrapping an already-`exec`ed command.
+    assert.ok(
+      !/\bexec\s+exec\b/.test(innerCmd),
+      `nested exec would stop fire from ever starting; got: ${innerCmd}`,
+    );
+
+    const logPathMatch = innerCmd.match(/tee -a '([^']+)'/);
+    assert.ok(logPathMatch, `expected a quoted tee target in: ${innerCmd}`);
+    const pipelineIdx = innerCmd.indexOf(" 2>&1 | tee -a ");
+    assert.ok(pipelineIdx > 0, `expected a tee pipeline in: ${innerCmd}`);
+    // Swap ONLY the node+argv portion for a stand-in fire. Any `exec ` prefix
+    // the daemon emitted must be preserved: `exec` inside a pipeline is
+    // exactly the interaction that could break `${PIPESTATUS[0]}` or stop the
+    // wrapper from surviving to write the marker, so a substitution that
+    // quietly dropped it would make this test assert nothing about the real
+    // command. (It did, before review caught it.)
+    const head = innerCmd.slice(0, pipelineIdx);
+    const execPrefix = head.startsWith("exec ") ? "exec " : "";
+    const runnable =
+      execPrefix +
+      "/bin/sh -c 'echo backend blew up >&2; exit 42'" +
+      innerCmd.slice(pipelineIdx).split(logPathMatch[1]).join(realLog);
+
+    const { status } = await new Promise((resolve) => {
+      const proc = realSpawn("bash", ["-c", runnable], { stdio: "ignore" });
+      proc.on("exit", (code) => resolve({ status: code }));
+    });
+
+    // 1. The wrapper propagates the fire's exit status, not tee's.
+    assert.strictEqual(status, 42, "wrapper must exit with the fire's own code, not tee's");
+    // 2. Both the fire's output and a parseable marker reach the log.
+    const written = fs.readFileSync(realLog, "utf8");
+    assert.ok(
+      /backend blew up/.test(written),
+      `fire output must be teed into the log; got: ${written}`,
+    );
+    assert.ok(
+      /^\[conductor-fire-exit:[0-9a-f]{6,}\] code=42$/m.test(written),
+      `log must carry the fire's exit marker; got: ${written}`,
+    );
+  });
+
+  // Shared harness for "the fire died inside its tmux session".
+  //
+  // This is the blind spot the exit handler cannot cover: the daemon's child
+  // is the `tmux new-session` client, which exits 0 as soon as the session
+  // exists. Whatever happens to the fire afterwards produces no exit event,
+  // so the liveness reaper — which only sees that a session disappeared — is
+  // the sole observer. The harness therefore drives the reaper, not a child
+  // exit: `has-session` reports the session gone and the log file carries
+  // whatever the wrapper shell left behind.
+  const runTmuxReapCase = async ({
+    t,
+    name,
+    logFileContents,
+    backendStatus,
+    // Bytes already in the log when the fire is spawned, i.e. what a previous
+    // run of this same task left behind (the log is opened with flags "a" and
+    // survives in-place restarts).
+    preexistingLogContents,
+    // When set, the backend status pre-check fails instead of answering.
+    backendStatusProbeFails,
+    // When set, the log file does not exist at all (statSync throws ENOENT),
+    // modelling an unwritable/vanished task dir where `tee` could never
+    // create it.
+    logFileMissing,
+    // Bytes appended AFTER this run's marker, i.e. what a co-tenant fire
+    // sharing the same conductor.log writes before the reaper looks.
+    trailingLogContents,
+  }) => {
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    let handler;
+    let connected = false;
+    let logWritten = false;
+    let hasSessionCalls = 0;
+    let backendStatusQueries = 0;
+    const sentEvents = [];
+    const priorBuffer = Buffer.from(preexistingLogContents ?? "", "utf8");
+    // Built at spawn time, because the marker carries a per-spawn nonce we
+    // can only learn from the command the daemon actually generated. Tests
+    // write `{{MARKER}}` and get this run's real marker substituted in — so
+    // they exercise the real writer/reader contract rather than a guess.
+    let logBuffer = priorBuffer;
+    const taskId = `${name}-task`;
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: `/tmp/test-ws-${name}`,
+        CLI_PATH: "/tmp/cli.js",
+        NAME: `${name}-daemon`,
+        AGENT_TOKEN: "agent-token-abcdefgh12345678",
+        TMUX_LIVENESS_POLL_MS: 25,
+        // No startup grace: the record is reap-eligible immediately.
+        TMUX_REAP_GRACE_MS: 0,
+      },
+      {
+        spawn: (cmd, args) => {
+          const child = new EventEmitter();
+          child.pid = 5150;
+          child.unref = () => {};
+          child.kill = () => {};
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          if (cmd === "tmux" && args?.[0] === "new-session") {
+            // Recover this run's marker from the generated wrapper command,
+            // then materialize the log the fire "wrote".
+            const inner = args[args.length - 1];
+            const markerMatch = inner.match(/printf '\\n(\[conductor-fire-exit:[^\]]+\]) code=/);
+            assert.ok(markerMatch, `expected a nonce-tagged exit marker in: ${inner}`);
+            logBuffer = Buffer.concat([
+              priorBuffer,
+              Buffer.from(
+                String(logFileContents ?? "").split("{{MARKER}}").join(markerMatch[1]),
+                "utf8",
+              ),
+              // A co-tenant's output, appended after our marker.
+              Buffer.from(String(trailingLogContents ?? ""), "utf8"),
+            ]);
+            // The fire's output lands in the log only once it is running.
+            logWritten = true;
+            // The tmux client exits 0 the moment the session exists — this
+            // is precisely why the daemon loses track of the fire.
+            setImmediate(() => child.emit("exit", 0, null));
+            return child;
+          }
+          if (cmd === "tmux" && args?.[0] === "has-session") {
+            hasSessionCalls += 1;
+            // The session is gone: the fire inside it is no longer running.
+            setImmediate(() => child.emit("exit", 1, null));
+            return child;
+          }
+          assert.fail(`unexpected spawn ${cmd} ${JSON.stringify(args)}`);
+        },
+        spawnSync: (cmd, args) => {
+          if (cmd === "tmux" && args && args[0] === "-V") {
+            return { status: 0, error: null, pid: 12345 };
+          }
+          return { status: 1, error: new Error("ENOENT"), pid: undefined };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        // Before the spawn the file holds only the previous run's bytes; the
+        // fire appends its own afterwards. This is what makes the watermark
+        // meaningful — sample it at spawn time and everything below it
+        // belongs to someone else.
+        statSync: () => {
+          if (logFileMissing) throw enoent();
+          return { size: logWritten ? logBuffer.length : priorBuffer.length };
+        },
+        openSync: () => 7,
+        readSync: (_fd, buf, offset, length, position) =>
+          logBuffer.copy(buf, offset, position, position + length),
+        closeSync: () => {},
+        lstatSync: () => {
+          throw enoent();
+        },
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ on: () => {}, write: () => {}, end: () => {} }),
+        fetch: async (url) => {
+          const target = String(url);
+          // Single-task GET: how the reaper learns whether the fire already
+          // published its own terminal status.
+          if (target.includes(`/api/tasks/${taskId}`)) {
+            backendStatusQueries += 1;
+            if (backendStatusProbeFails) {
+              throw new Error("ECONNREFUSED");
+            }
+            return { ok: true, json: async () => ({ id: taskId, status: backendStatus }) };
+          }
+          if (target.endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {
+            connected = true;
+          },
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
+        }),
+      },
+    );
+
+    await waitUntil(() => connected, { message: `${name} daemon to connect` });
+
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: taskId,
+        project_id: `${name}-proj`,
+        backend_type: "codex",
+        initial_content: "work",
+      },
+    });
+
+    await waitUntil(() => hasSessionCalls >= 1, { message: "liveness probe" });
+    // Let the reaper's backend round trip and status report settle. A case
+    // that bails before the pre-check (no log file at all) never issues the
+    // query, so only wait for it when one is expected.
+    if (!logFileMissing) {
+      await waitUntil(() => backendStatusQueries >= 1, { message: "backend status query" });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const terminal = sentEvents.find(
+      (e) =>
+        e.type === "task_status_update" &&
+        (e.payload?.status === "KILLED" || e.payload?.status === "COMPLETED"),
+    );
+    daemonInstance.close();
+    return { terminal, sentEvents, taskId };
+  };
+
+  it("reports KILLED with the real cause when a fire dies inside its tmux session", async (t) => {
+    // The exact incident this whole path exists for: the fire crashed, the
+    // daemon never saw an exit, and until now the task sat at `running` until
+    // reconcile relabelled it `user_stopped` — a death with no cause and the
+    // wrong culprit.
+    const { terminal, taskId } = await runTmuxReapCase({
+      t,
+      name: "tmux-reap-crash",
+      backendStatus: "running",
+      logFileContents:
+        "Error: backend crashed while streaming\n" +
+        "{{MARKER}} code=1\n",
+    });
+
+    assert.ok(terminal, "a dead tmux session must produce a terminal status report");
+    assert.strictEqual(terminal.payload.status, "KILLED");
+    assert.strictEqual(terminal.payload.task_id, taskId);
+    assert.ok(
+      /exited with code 1/.test(terminal.payload.summary),
+      `summary must classify from the exit marker; got: ${terminal.payload.summary}`,
+    );
+    assert.ok(
+      /backend crashed while streaming/.test(terminal.payload.summary),
+      `summary must carry the fire's own output; got: ${terminal.payload.summary}`,
+    );
+    // The marker is daemon plumbing; the classification already says "code 1".
+    assert.ok(
+      !terminal.payload.summary.includes("conductor-fire-exit"),
+      `internal exit marker must not leak into a user-visible summary; got: ${terminal.payload.summary}`,
+    );
+    assert.ok(terminal.payload.status_event_id, "must carry an idempotency key");
+  });
+
+  it("reports COMPLETED, not KILLED, when a fire finished before its tmux session ended", async (t) => {
+    // The hazard that kept this fix on the shelf: a session disappears on
+    // success too. Classifying by disappearance alone would rewrite finished
+    // tasks as failures, which is worse than the bug being fixed.
+    const { terminal } = await runTmuxReapCase({
+      t,
+      name: "tmux-reap-ok",
+      backendStatus: "running",
+      logFileContents: "all done\n{{MARKER}} code=0\n",
+    });
+
+    assert.ok(terminal, "expected a terminal status report");
+    assert.strictEqual(
+      terminal.payload.status,
+      "COMPLETED",
+      `a clean exit marker must not be reported as KILLED; got: ${JSON.stringify(terminal.payload)}`,
+    );
+  });
+
+  it("reports KILLED when a tmux session vanishes without an exit marker", async (t) => {
+    // SIGKILL / OOM / tmux server death: the wrapper shell never ran, so
+    // there is no marker. That absence is itself the evidence.
+    const { terminal } = await runTmuxReapCase({
+      t,
+      name: "tmux-reap-sigkill",
+      backendStatus: "running",
+      logFileContents: "streaming response…\n",
+    });
+
+    assert.ok(terminal, "expected a terminal status report");
+    assert.strictEqual(terminal.payload.status, "KILLED");
+    assert.ok(
+      /without an exit marker/.test(terminal.payload.summary),
+      `summary must name the missing marker; got: ${terminal.payload.summary}`,
+    );
+  });
+
+  it("ignores a previous run's exit marker when classifying an in-place restart", async (t) => {
+    // The log file is opened with flags "a" and is reused across in-place
+    // restarts, so a successful earlier run leaves its `code=0` marker in the
+    // same file. Without the spawn-time watermark the reaper reads that stale
+    // marker and reports the *current* run — which crashed hard enough to
+    // leave no marker of its own — as COMPLETED. The failure is silent and
+    // inverts the verdict, which is the worst possible direction.
+    const { terminal } = await runTmuxReapCase({
+      t,
+      name: "tmux-reap-stale-marker",
+      backendStatus: "running",
+      preexistingLogContents:
+        // A *different* nonce: this is another run's marker. It must be
+        // rejected on identity alone, independently of the byte watermark.
+        "previous run finished fine\n[conductor-fire-exit:0000deadbeef] code=0\n",
+      logFileContents: "second run: connecting to backend…\n",
+    });
+
+    assert.ok(terminal, "expected a terminal status report");
+    assert.strictEqual(
+      terminal.payload.status,
+      "KILLED",
+      `a previous run's exit marker must not mark this run COMPLETED; got: ${JSON.stringify(
+        terminal.payload,
+      )}`,
+    );
+    assert.ok(
+      /without an exit marker/.test(terminal.payload.summary),
+      `summary must reflect THIS run having no marker; got: ${terminal.payload.summary}`,
+    );
+    assert.ok(
+      !terminal.payload.summary.includes("previous run finished fine"),
+      `summary must not quote the previous run's output; got: ${terminal.payload.summary}`,
+    );
+  });
+
+  it("does not trust an exit marker the fire merely printed itself", async (t) => {
+    // The log is a verbatim copy of the fire's stdout, so anything the fire
+    // prints lands there looking exactly like a marker. An agent task that
+    // reads a conductor.log — or edits daemon.js — emits the literal, which
+    // makes this near-certain when dogfooding this repo. If such a fire is
+    // then SIGKILLed (no genuine marker), a fixed sentinel would be forged
+    // into "COMPLETED" for a task that was killed. The per-spawn nonce is
+    // what makes the marker unforgeable by the process being observed.
+    const { terminal } = await runTmuxReapCase({
+      t,
+      name: "tmux-reap-forged",
+      backendStatus: "running",
+      logFileContents:
+        "agent: inspecting the log format…\n" +
+        "[conductor-fire-exit:ffffffffffff] code=0\n" +
+        "agent: still streaming when the OOM killer arrived\n",
+    });
+
+    assert.ok(terminal, "expected a terminal status report");
+    assert.strictEqual(
+      terminal.payload.status,
+      "KILLED",
+      `a marker the fire printed itself must not be trusted; got: ${JSON.stringify(
+        terminal.payload,
+      )}`,
+    );
+    assert.ok(
+      /without an exit marker/.test(terminal.payload.summary),
+      `summary must report no genuine marker; got: ${terminal.payload.summary}`,
+    );
+  });
+
+  it("still reports the death when the backend status pre-check fails", async (t) => {
+    // The pre-check is an optimization that avoids clobbering a status the
+    // fire already published; it is not a precondition for reporting. If it
+    // were, an unreachable backend would silently restore the original bug
+    // (task hangs at running, reconcile relabels it user_stopped). The
+    // marker-derived verdict is correct regardless, and the web-side
+    // completed→killed guard is the real protection against clobbering.
+    const { terminal } = await runTmuxReapCase({
+      t,
+      name: "tmux-reap-probe-fail",
+      backendStatusProbeFails: true,
+      logFileContents: "boom: unhandled rejection\n{{MARKER}} code=1\n",
+    });
+
+    assert.ok(terminal, "a failed pre-check must not suppress the report");
+    assert.strictEqual(terminal.payload.status, "KILLED");
+    assert.ok(
+      /exited with code 1/.test(terminal.payload.summary),
+      `got: ${terminal.payload.summary}`,
+    );
+  });
+
+  it("finds the exit marker even when a co-tenant buried it past the tail window", async (t) => {
+    // A task's log is not private: branch/fork tasks deliberately share a
+    // worktree (and so one conductor.log), and a task with no worktree
+    // config falls back to the project directory, where every task appends
+    // to the same file. A neighbouring fire only has to print a few KB
+    // between our exit and the next reaper sweep to push our marker out of a
+    // fixed-size tail read. The verdict would then be "no marker" → KILLED
+    // for a task that finished cleanly, quoting the NEIGHBOUR's output as
+    // the cause of death — the exact inversion this path exists to prevent.
+    const { terminal } = await runTmuxReapCase({
+      t,
+      name: "tmux-reap-shared-log",
+      backendStatus: "running",
+      logFileContents: "work finished\n{{MARKER}} code=0\n",
+      // Comfortably larger than CHILD_OUTPUT_CAPTURE_LIMIT (4000).
+      trailingLogContents: "neighbour task chatter line\n".repeat(400),
+    });
+
+    assert.ok(terminal, "expected a terminal status report");
+    assert.strictEqual(
+      terminal.payload.status,
+      "COMPLETED",
+      `a buried marker must still be found; got: ${JSON.stringify(terminal.payload)}`,
+    );
+  });
+
+  it("stays silent when the log file never existed, instead of inventing a death", async (t) => {
+    // `tee -a` failing does NOT stop the fire: tee prints its error and keeps
+    // relaying stdin to stdout, so the fire runs to completion and the tmux
+    // client still exits 0. With an unwritable or vanished task dir there is
+    // then no log and no marker — and "no marker" would otherwise be read as
+    // a hard death, reporting a task that finished green as KILLED with an
+    // invented "killed or OOM" cause. Absence of the file proves nothing,
+    // unlike an empty-but-present file, which `tee` always creates on open.
+    const { terminal, sentEvents } = await runTmuxReapCase({
+      t,
+      name: "tmux-reap-nolog",
+      backendStatus: "running",
+      logFileMissing: true,
+    });
+
+    assert.strictEqual(
+      terminal,
+      undefined,
+      `a missing log file must not manufacture a cause of death; got: ${JSON.stringify(
+        sentEvents.map((e) => ({ type: e?.type, status: e?.payload?.status })),
+      )}`,
+    );
+  });
+
+  it("stays silent when the fire already published its own terminal status", async (t) => {
+    // The fire has its own websocket and normally reports first. A second
+    // report from the reaper would overwrite a success with a failure.
+    const { terminal, sentEvents } = await runTmuxReapCase({
+      t,
+      name: "tmux-reap-selfreported",
+      backendStatus: "completed",
+      logFileContents: "all done\n{{MARKER}} code=0\n",
+    });
+
+    assert.strictEqual(
+      terminal,
+      undefined,
+      `reaper must not report over a task the backend already settled; got: ${JSON.stringify(
+        sentEvents.map((e) => ({ type: e?.type, status: e?.payload?.status })),
+      )}`,
+    );
+  });
+
+  it("exempts freshly spawned tmux tasks from the reaper", async (t) => {
+    // The startup race: `has-session` can answer false in the window between
+    // recording the task and the tmux server registering the session. That
+    // was harmless when the reaper only cleaned bookkeeping; now it would
+    // kill a task that started fine.
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    let handler;
+    let connected = false;
+    let hasSessionCalls = 0;
+    const sentEvents = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-tmux-grace",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "tmux-grace-daemon",
+        AGENT_TOKEN: "agent-token-abcdefgh12345678",
+        TMUX_LIVENESS_POLL_MS: 25,
+        // Long grace: nothing spawned during this test may be reaped.
+        TMUX_REAP_GRACE_MS: 60_000,
+      },
+      {
+        spawn: (cmd, args) => {
+          const child = new EventEmitter();
+          child.pid = 5151;
+          child.unref = () => {};
+          child.kill = () => {};
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          if (cmd === "tmux" && args?.[0] === "has-session") {
+            hasSessionCalls += 1;
+            setImmediate(() => child.emit("exit", 1, null));
+            return child;
+          }
+          setImmediate(() => child.emit("exit", 0, null));
+          return child;
+        },
+        spawnSync: (cmd, args) => {
+          if (cmd === "tmux" && args && args[0] === "-V") {
+            return { status: 0, error: null, pid: 12345 };
+          }
+          return { status: 1, error: new Error("ENOENT"), pid: undefined };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        statSync: () => ({ size: 0 }),
+        lstatSync: () => {
+          throw enoent();
+        },
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ on: () => {}, write: () => {}, end: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => [] }),
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {
+            connected = true;
+          },
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
+        }),
+      },
+    );
+
+    await waitUntil(() => connected, { message: "grace daemon to connect" });
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "tmux-grace-task",
+        project_id: "tmux-grace-proj",
+        backend_type: "codex",
+        initial_content: "work",
+      },
+    });
+    await waitUntil(
+      () => sentEvents.some((e) => e.payload?.status === "RUNNING"),
+      { message: "RUNNING report" },
+    );
+    // Several poll intervals worth of opportunity to misbehave.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    assert.strictEqual(
+      hasSessionCalls,
+      0,
+      "a task inside its grace window must not even be probed",
+    );
+    assert.ok(
+      !sentEvents.some(
+        (e) => e.payload?.status === "KILLED" || e.payload?.status === "COMPLETED",
+      ),
+      `no terminal status may be reported during the grace window; got: ${JSON.stringify(
+        sentEvents.map((e) => ({ type: e?.type, status: e?.payload?.status })),
+      )}`,
+    );
+    daemonInstance.close();
   });
 
   it("hands off same-backend successor tasks via the handoff URL (no --resume)", async () => {

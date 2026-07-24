@@ -53,6 +53,7 @@ vi.mock("@/lib/realtime/hub", () => ({
     bindTaskToAgent: vi.fn(),
     getTaskAgentHost: vi.fn(),
     hasAgentHost: vi.fn(),
+    getAgentDisconnectAt: vi.fn(),
     sendToAgentHost: vi.fn(),
   },
 }));
@@ -186,6 +187,276 @@ describe("commitTaskStatusUpdate", () => {
     });
     expect(db.task.update).not.toHaveBeenCalled();
     expect(projectTaskStatusUpdate).not.toHaveBeenCalled();
+  });
+
+  // A fire announces itself with its own host id and takes over
+  // `executionHost`, so for a healthy tmux task the assigned host is the
+  // FIRE, not the daemon that spawned it. These three cases pin the rule for
+  // what happens when that fire dies. Local E2E is what surfaced them: every
+  // unit test here mocked the accept path, so the daemon's death report was
+  // silently rejected by the real ownership check and the task stayed
+  // `running` — the exact bug the reporting was added to fix.
+  const fireOwnedTask = {
+    id: "task-1",
+    projectId: "project-1",
+    status: "running",
+    agentHost: "daemon-a",
+    executionHost: "conductor-fire-unknown-host-4242",
+    taskType: "ai_task",
+  };
+
+  it("lets the owning daemon report a terminal status for a fire that is gone", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(fireOwnedTask as any);
+    // The fire's socket is gone — nobody is left to report for it.
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+
+    await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      taskId: "task-1",
+      status: "killed",
+      summary: "exited with code 137",
+    });
+
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-1" },
+      data: expect.objectContaining({ status: "killed", killedReason: "fire_exit" }),
+    });
+  });
+
+  it("does not let a daemon speak for a fire that only just dropped", async () => {
+    // A fire's socket can drop without the fire dying (~10s reconnect
+    // backoff; a duplicate-host takeover force-closes the old socket). A
+    // terminal report inside that window does not merely mislabel the task:
+    // commitSdkMessage then drops the live fire's output and sends it
+    // stop_task, and `fire_exit` is not a reclaimable reason — so the running
+    // session is destroyed rather than recovered.
+    vi.mocked(db.task.findFirst).mockResolvedValue(fireOwnedTask as any);
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+    vi.mocked(realtimeHub.getAgentDisconnectAt).mockReturnValue(Date.now() - 2_000);
+
+    await expect(
+      commitTaskStatusUpdate({
+        userId: "user-1",
+        agentHost: "daemon-a",
+        taskId: "task-1",
+        status: "killed",
+      }),
+    ).rejects.toThrow(/assigned to conductor-fire-unknown-host-4242/);
+    expect(db.task.update).not.toHaveBeenCalled();
+  });
+
+  it("lets the owning daemon speak once the fire has been gone longer than a flap", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(fireOwnedTask as any);
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+    vi.mocked(realtimeHub.getAgentDisconnectAt).mockReturnValue(Date.now() - 60_000);
+
+    await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      taskId: "task-1",
+      status: "killed",
+      summary: "exited with code 137",
+    });
+
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-1" },
+      data: expect.objectContaining({ status: "killed", killedReason: "fire_exit" }),
+    });
+  });
+
+  it("lets the owning daemon report COMPLETED for a fire that is gone", async () => {
+    // The reaper classifies from the exit marker, so a clean `code=0` for a
+    // fire that never got to publish its own status arrives as COMPLETED.
+    // Covering only the killed path would leave the success path — the one
+    // that must never be downgraded to a failure — unguarded.
+    vi.mocked(db.task.findFirst).mockResolvedValue(fireOwnedTask as any);
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+
+    await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      taskId: "task-1",
+      status: "completed",
+      summary: "completed; detected by the daemon after the tmux session ended",
+    });
+
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-1" },
+      data: expect.objectContaining({ status: "completed" }),
+    });
+    // Recording a death is not claiming the work: the dead fire's execution
+    // binding must not be rewritten to the daemon.
+    expect(realtimeHub.bindTaskToAgent).not.toHaveBeenCalled();
+    expect(db.task.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("does not let a daemon report over a fire that is still connected", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(fireOwnedTask as any);
+    // The fire is alive and reports for itself; the daemon must not speak.
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(true);
+
+    await expect(
+      commitTaskStatusUpdate({
+        userId: "user-1",
+        agentHost: "daemon-a",
+        taskId: "task-1",
+        status: "killed",
+      }),
+    ).rejects.toThrow(/assigned to conductor-fire-unknown-host-4242/);
+    expect(db.task.update).not.toHaveBeenCalled();
+  });
+
+  it("does not let a daemon claim a fire-owned task with a non-terminal status", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(fireOwnedTask as any);
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+
+    // The exemption exists to record a death, not to take over live work.
+    await expect(
+      commitTaskStatusUpdate({
+        userId: "user-1",
+        agentHost: "daemon-a",
+        taskId: "task-1",
+        status: "running",
+      }),
+    ).rejects.toThrow(/assigned to conductor-fire-unknown-host-4242/);
+    expect(db.task.update).not.toHaveBeenCalled();
+  });
+
+  it("does not let an unrelated daemon report for another daemon's dead fire", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(fireOwnedTask as any);
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(false);
+
+    // Only the daemon named by `task.agentHost` supervises this fire.
+    await expect(
+      commitTaskStatusUpdate({
+        userId: "user-1",
+        agentHost: "daemon-b",
+        taskId: "task-1",
+        status: "killed",
+      }),
+    ).rejects.toThrow(/assigned to conductor-fire-unknown-host-4242/);
+    expect(db.task.update).not.toHaveBeenCalled();
+  });
+
+  it("does not let a late killed update overwrite a completed task", async () => {
+    // Two producers race to report the end of one task: the fire reports its
+    // own terminal status, and the daemon reports what it observed of the
+    // process. The daemon's observation necessarily arrives second — it has
+    // to notice an absence — and from the outside "finished and exited" and
+    // "crashed" look alike. Without this guard a task the user watched
+    // succeed is rewritten to `killed` / `fire_exit` minutes later.
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "completed",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      taskType: "ai_task",
+    } as any);
+
+    const result = await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      taskId: "task-1",
+      status: "killed",
+      summary: "fire tmux session disappeared without an exit marker",
+    });
+
+    expect(result).toEqual({
+      taskId: "task-1",
+      projectId: "project-1",
+      status: "completed",
+      duplicate: false,
+    });
+    expect(db.task.update).not.toHaveBeenCalled();
+    expect(projectTaskStatusUpdate).not.toHaveBeenCalled();
+  });
+
+  it("does not let a late completed report overwrite a killed task", async () => {
+    // The mirror image, and the one that actually bites: the user presses
+    // Stop, the task settles at killed/user_stopped, the fire exits 0 in
+    // response, and ~30s later the tmux reaper reads that clean exit marker
+    // and reports COMPLETED. Without this the row reads `completed` while
+    // still carrying killedReason=user_stopped and killedAt — a state that
+    // never happened, which anything branching on killedReason then trusts.
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "killed",
+      killedReason: "user_stopped",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      taskType: "ai_task",
+    } as any);
+
+    const result = await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      taskId: "task-1",
+      status: "completed",
+      summary: "completed; detected by the daemon after the tmux session ended",
+    });
+
+    expect(result.status).toBe("killed");
+    expect(db.task.update).not.toHaveBeenCalled();
+    expect(projectTaskStatusUpdate).not.toHaveBeenCalled();
+  });
+
+  it("still lets a fire correct a defensive daemon_disconnected kill", async () => {
+    // `daemon_disconnected` means "we assumed the fire died". A later report
+    // from that very fire is proof the assumption was wrong, so the guard
+    // above must not freeze the task in a state we merely guessed at.
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "killed",
+      killedReason: "daemon_disconnected",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      taskType: "ai_task",
+    } as any);
+
+    await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      taskId: "task-1",
+      status: "completed",
+    });
+
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-1" },
+      data: expect.objectContaining({ status: "completed" }),
+    });
+  });
+
+  it("still lets a user-requested stop of a completed task through killing", async () => {
+    // The guard above must not block the legitimate route into `killed`: the
+    // PATCH stop path moves a task to `killing` first, and that transition
+    // still has to settle.
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "killing",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      taskType: "ai_task",
+    } as any);
+
+    await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "daemon-a",
+      taskId: "task-1",
+      status: "killed",
+    });
+
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-1" },
+      data: expect.objectContaining({
+        status: "killed",
+        killedReason: "user_stopped",
+      }),
+    });
   });
 
   it("allows a terminal update to finish killing and tags killed_reason=user_stopped", async () => {

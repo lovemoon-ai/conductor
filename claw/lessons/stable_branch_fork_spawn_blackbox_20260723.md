@@ -146,6 +146,8 @@ symlink EEXIST**，而不是 claude 后端本身的问题——只是当时没�
   回收器上报终态，属于行为变更且存在"误杀成功任务"的风险，未做。
   **已单独立档：`claw/issues/stable_tmux_fire_death_unreported_20260723.md`**
   （含进程结构、兜底链路、以及建议的修复方向）。
+  **→ 已于同日修复**，见 `claw/lessons/stable_tmux_fire_death_unreported_20260723.md`：
+  让会话内的 fire 自己把退出码写进日志，reaper 据此分类并在后端仍非终态时补报终态。
 - 环境层混淆项：普通 create_task 实际由**手动 fire**（`conductor-fire-unknown-host-*`）
   执行且正常，而 branch/fork 由 **daemon 直接 spawn** 执行；本机同时存在
   `m1 / debug / qa-daemon-2` 三个 daemon 身份，路由归属混乱。
