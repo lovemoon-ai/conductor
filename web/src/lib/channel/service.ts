@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'crypto';
+import { randomInt, randomUUID } from 'crypto';
 import { db } from '@/lib/db';
 import { ensureDefaultProject } from '@/lib/auth/service';
 import { enqueueAndAttemptAgentCommand } from '@/lib/realtime/agent-outbox';
@@ -16,6 +16,8 @@ export { enqueueChannelMessage } from './channel-message-queue';
 
 const BIND_CODE_TYPE = 'CHANNEL_BIND';
 const BIND_CODE_EXPIRES_IN_SECONDS = 600;
+const BIND_CODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const BIND_CODE_LENGTH = 6;
 const DEFAULT_TASK_LIST_LIMIT = 10;
 
 type InboundResult = {
@@ -23,7 +25,12 @@ type InboundResult = {
   duplicate?: boolean;
 };
 
-const makeCode = (): string => randomBytes(6).toString('base64url').replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 6);
+export const makeBindCode = (
+  randomIndex: (maxExclusive: number) => number = randomInt,
+): string => Array.from(
+  { length: BIND_CODE_LENGTH },
+  () => BIND_CODE_ALPHABET[randomIndex(BIND_CODE_ALPHABET.length)],
+).join('');
 
 type ConnectedDaemon = {
   id: string;
@@ -96,7 +103,7 @@ async function upsertConversation(input: {
 }
 
 export async function issueBindCode(userId: string): Promise<{ code: string; expiresIn: number }> {
-  const code = makeCode();
+  const code = makeBindCode();
   const expiresAt = new Date(Date.now() + BIND_CODE_EXPIRES_IN_SECONDS * 1000);
   await db.verification.create({
     data: {

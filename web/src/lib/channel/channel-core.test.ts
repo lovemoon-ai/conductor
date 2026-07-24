@@ -115,6 +115,7 @@ vi.mock('./provider-config', () => ({
 }));
 
 const {
+  makeBindCode,
   issueBindCode,
   handleNormalizedInboundEvent,
   enqueueChannelMessage,
@@ -181,6 +182,8 @@ describe('channel core service', () => {
     const result = await issueBindCode('user-1');
 
     expect(result.code).toHaveLength(6);
+    expect(result.code).toMatch(/^[A-Z0-9]{6}$/);
+    expect(makeBindCode(() => 0)).toBe('AAAAAA');
     expect(mockVerificationCreate).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         userId: 'user-1',
