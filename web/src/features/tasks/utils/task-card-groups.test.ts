@@ -8,6 +8,7 @@ import {
   ejectTaskFromGroup,
   maxTaskCardGroupIdCounter,
   mergeSyncedTaskCardGroups,
+  mergeTaskIntoSourceCardGroup,
   projectTaskCardGroups,
   readTaskCardGroups,
   readTaskCardGroupsSyncSnapshot,
@@ -96,6 +97,37 @@ describe('task-card-groups', () => {
       const next = addTaskToGroup(groups, 'g1', 'c');
       expect(next[0].taskIds).toEqual(['a', 'b', 'c']);
       expect(next[0].activeIndex).toBe(2);
+    });
+
+    it('groups a related task with its source task', () => {
+      expect(mergeTaskIntoSourceCardGroup([], 'branch-group', 'source', 'successor')).toEqual([
+        {
+          id: 'branch-group',
+          taskIds: ['source', 'successor'],
+          activeIndex: 1,
+          labels: {},
+        },
+      ]);
+    });
+
+    it('appends a related task when its source is already grouped', () => {
+      const groups = [group({
+        id: 'existing-group',
+        taskIds: ['source', 'sibling'],
+        activeIndex: 1,
+        labels: { sibling: 'Sibling' },
+      })];
+
+      expect(
+        mergeTaskIntoSourceCardGroup(groups, 'unused-group', 'source', 'successor'),
+      ).toEqual([
+        {
+          id: 'existing-group',
+          taskIds: ['source', 'sibling', 'successor'],
+          activeIndex: 2,
+          labels: { sibling: 'Sibling' },
+        },
+      ]);
     });
 
     it('switches and renames tabs', () => {

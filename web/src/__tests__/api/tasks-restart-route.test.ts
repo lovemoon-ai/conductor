@@ -11,6 +11,7 @@ vi.mock("@/lib/realtime/hub", () => ({
     sendToAgentHost: vi.fn().mockReturnValue(true),
     waitForAgentCommandAck: vi.fn().mockResolvedValue(true),
     cancelAgentCommandAck: vi.fn(),
+    broadcastToUser: vi.fn(),
   },
 }));
 
@@ -24,6 +25,8 @@ vi.mock("@/lib/realtime/agent-outbox", () => ({
 vi.mock("@/lib/db", () => ({
   db: {
     $transaction: vi.fn(),
+    $queryRaw: vi.fn(),
+    $executeRaw: vi.fn(),
     task: {
       findFirst: vi.fn(),
       findMany: vi.fn(),
@@ -61,6 +64,12 @@ const { deliverAgentOutboxForHost, deliverAgentOutboxRow } = await import("@/lib
 const prismaError = (code: string, message: string) =>
   Object.assign(new Error(message), { code });
 
+const missingUserPreferencesTableError = {
+  code: "P2010",
+  meta: { code: "42P01", message: 'relation "user_preferences" does not exist' },
+  message: 'Raw query failed. relation "user_preferences" does not exist',
+};
+
 const buildTask = (overrides: Record<string, unknown> = {}) => ({
   id: "task-1",
   projectId: "proj-1",
@@ -90,6 +99,8 @@ describe("/api/tasks/[taskId]/restart", () => {
     });
     vi.mocked(db.task.findFirst).mockResolvedValue(buildTask() as any);
     vi.mocked(db.task.findMany).mockResolvedValue([] as any);
+    vi.mocked(db.$queryRaw).mockResolvedValue([]);
+    vi.mocked(db.$executeRaw).mockResolvedValue(1);
     vi.mocked(db.project.findFirst).mockResolvedValue({
       id: "proj-1",
       userId: "user-1",
@@ -1132,6 +1143,25 @@ describe("/api/tasks/[taskId]/restart", () => {
       restartSourceBackendType: "codex",
       restartStrategy: "new_task",
     });
+    expect(data.task_card_groups_snapshot).toEqual({
+      version: 1,
+      revision: 1,
+      scopes: {
+        "projects:all": [{
+          id: expect.stringMatching(/^tabcard-branch-/),
+          taskIds: ["task-1", data.task.id],
+          labels: {},
+        }],
+      },
+    });
+    expect(realtimeHub.broadcastToUser).toHaveBeenCalledWith("user-1", {
+      type: "task_card_groups_update",
+      payload: {
+        user_id: "user-1",
+        snapshot: data.task_card_groups_snapshot,
+        updated_at: expect.any(String),
+      },
+    });
     expect(db.task.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -1636,6 +1666,144 @@ describe("/api/tasks/[taskId]/restart", () => {
       }),
     );
     expect(deliverAgentOutboxForHost).not.toHaveBeenCalled();
+  });
+
+  it("appends a successor to the source task's existing task-card group", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ status: "running" }) as any);
+    vi.mocked(db.$queryRaw).mockResolvedValueOnce([{
+      value: JSON.stringify({
+        version: 1,
+        revision: 7,
+        scopes: {
+          "projects:all": [{
+            id: "existing-group",
+            taskIds: ["task-1", "task-sibling"],
+            labels: { "task-sibling": "Sibling" },
+          }],
+        },
+      }),
+    }]);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: {
+          backend_type: "codex",
+          strategy: "new_task",
+        },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.task_card_groups_snapshot).toEqual({
+      version: 1,
+      revision: 8,
+      scopes: {
+        "projects:all": [{
+          id: "existing-group",
+          taskIds: ["task-1", "task-sibling", data.task.id],
+          labels: { "task-sibling": "Sibling" },
+        }],
+      },
+    });
+  });
+
+  it("retries task-card grouping after a concurrent preference write", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ status: "running" }) as any);
+    const first = JSON.stringify({
+      version: 1,
+      revision: 3,
+      scopes: {
+        "projects:all": [{
+          id: "existing-group",
+          taskIds: ["task-1", "task-sibling"],
+          labels: {},
+        }],
+      },
+    });
+    const concurrent = JSON.stringify({
+      version: 1,
+      revision: 4,
+      scopes: {
+        "projects:all": [
+          {
+            id: "existing-group",
+            taskIds: ["task-1", "task-sibling"],
+            labels: {},
+          },
+          {
+            id: "concurrent-group",
+            taskIds: ["task-a", "task-b"],
+            labels: {},
+          },
+        ],
+      },
+    });
+    vi.mocked(db.$queryRaw)
+      .mockResolvedValueOnce([{ value: first }])
+      .mockResolvedValueOnce([{ value: concurrent }]);
+    vi.mocked(db.$executeRaw).mockResolvedValueOnce(0).mockResolvedValueOnce(1);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: {
+          backend_type: "codex",
+          strategy: "new_task",
+        },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.task_card_groups_snapshot.revision).toBe(5);
+    expect(data.task_card_groups_snapshot.scopes["projects:all"]).toEqual([
+      {
+        id: "existing-group",
+        taskIds: ["task-1", "task-sibling", data.task.id],
+        labels: {},
+      },
+      {
+        id: "concurrent-group",
+        taskIds: ["task-a", "task-b"],
+        labels: {},
+      },
+    ]);
+    expect(db.$executeRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a created successor successful when old self-host schema cannot save grouping", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ status: "running" }) as any);
+    vi.mocked(db.$queryRaw).mockRejectedValueOnce(missingUserPreferencesTableError);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: {
+          backend_type: "codex",
+          strategy: "new_task",
+        },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.task.id).not.toBe("task-1");
+    expect(data.task_card_groups_snapshot).toBeUndefined();
+    expect(realtimeHub.broadcastToUser).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("could not be grouped"),
+      expect.any(Error),
+    );
+    warnSpy.mockRestore();
   });
 
   it("preserves issue linkage for successor restart tasks", async () => {

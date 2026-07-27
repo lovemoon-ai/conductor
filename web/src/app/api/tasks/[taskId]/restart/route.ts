@@ -54,6 +54,7 @@ import {
   RECLAIMABLE_KILLED_REASON,
 } from "@/lib/tasks/killed-reason";
 import { isTaskReclaimEnabled } from "@/lib/tasks/reclaim-config";
+import { mergeSuccessorTaskCardGroup } from "@/lib/user-preferences";
 
 const appendBackendSuffix = (title: string, backend: string): string => `${title} [${backend}]`;
 const REFRESH_SESSION_ACK_TIMEOUT_MS = 60_000;
@@ -930,9 +931,38 @@ export async function POST(
     resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),
   }).catch(() => {});
 
+  let taskCardGroupsSnapshot: Awaited<ReturnType<typeof mergeSuccessorTaskCardGroup>> | null = null;
+  try {
+    taskCardGroupsSnapshot = await mergeSuccessorTaskCardGroup(
+      user.id,
+      sourceTask.id,
+      successorTaskId,
+    );
+    realtimeHub.broadcastToUser(user.id, {
+      type: "task_card_groups_update",
+      payload: {
+        user_id: user.id,
+        snapshot: taskCardGroupsSnapshot,
+        updated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    // Grouping is presentation state. A mixed-version self-host may not have
+    // user_preferences yet, and a transient preference-write failure must not
+    // turn an already-created and dispatched successor into an HTTP 500 that
+    // invites the user to create a duplicate task.
+    console.warn(
+      `[restart] successor ${successorTaskId} was created but could not be grouped with ${sourceTask.id}`,
+      error,
+    );
+  }
+
   return NextResponse.json({
     mode: isBackendSwitch ? "backend_switch_new_task" : "successor_new_task",
     source_task_id: sourceTask.id,
     task: serializeTaskResponse(createdTask),
+    ...(taskCardGroupsSnapshot
+      ? { task_card_groups_snapshot: taskCardGroupsSnapshot }
+      : {}),
   });
 }

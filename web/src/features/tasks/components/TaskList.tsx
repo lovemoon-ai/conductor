@@ -329,6 +329,12 @@ export function TaskList({
       : []),
     [groups, viewMode, visibleTaskIdSet],
   );
+  const activeTaskStoredGroup = useMemo(
+    () => activeTaskId
+      ? groups.find((group) => group.taskIds.includes(activeTaskId)) ?? null
+      : null,
+    [activeTaskId, groups],
+  );
   const groupIdSet = useMemo(() => new Set(renderGroups.map((group) => group.id)), [renderGroups]);
   const taskCardRows = useMemo(
     () => buildTaskCardRows(visibleTasks, renderGroups),
@@ -369,6 +375,22 @@ export function TaskList({
       setSelectedTaskIds(new Set());
     }
   }, [selectedTaskIds.size, viewMode]);
+
+  // A deep link or freshly-created branch can select a task before its
+  // synchronized tab card reaches this component. Once the group arrives,
+  // bring that task's tab to the front so the list and detail pane agree.
+  useEffect(() => {
+    if (
+      !activeTaskId
+      || !activeTaskStoredGroup
+      || activeTaskStoredGroup.taskIds[activeTaskStoredGroup.activeIndex] === activeTaskId
+    ) {
+      return;
+    }
+    setGroups((current) =>
+      setActiveTaskCardTab(current, activeTaskStoredGroup.id, activeTaskId),
+    );
+  }, [activeTaskId, activeTaskStoredGroup]);
 
   useLayoutEffect(() => {
     const currentRects = new Map<string, DOMRect>();

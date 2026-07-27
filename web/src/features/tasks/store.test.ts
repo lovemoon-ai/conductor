@@ -13,10 +13,12 @@ vi.mock('@/shared/api/client', () => ({
 }));
 
 import { useTasksStore } from './store';
+import { useTaskCardGroupsSyncStore } from './task-card-groups-sync-store';
 
 describe('tasks store', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useTaskCardGroupsSyncStore.getState().reset();
     useTasksStore.setState({
       tasks: [],
       isLoading: false,
@@ -60,6 +62,17 @@ describe('tasks store', () => {
         created_at: '2024-01-01T00:02:00.000Z',
         updated_at: '2024-01-01T00:02:00.000Z',
       },
+      task_card_groups_snapshot: {
+        version: 1,
+        revision: 1,
+        scopes: {
+          'projects:all': [{
+            id: 'branch-group',
+            taskIds: ['task-1', 'task-3'],
+            labels: {},
+          }],
+        },
+      },
     });
 
     const result = await useTasksStore.getState().restartTask('task-1', {
@@ -81,6 +94,17 @@ describe('tasks store', () => {
       },
     });
     expect(useTasksStore.getState().tasks.map((task) => task.id)).toEqual(['task-3', 'task-1', 'task-2']);
+    expect(useTaskCardGroupsSyncStore.getState().snapshot).toEqual({
+      version: 1,
+      revision: 1,
+      scopes: {
+        'projects:all': [{
+          id: 'branch-group',
+          taskIds: ['task-1', 'task-3'],
+          labels: {},
+        }],
+      },
+    });
   });
 
   it('does not downgrade a newer running task back to init when restart response arrives late', async () => {
