@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth/middleware";
 import { realtimeHub } from "@/lib/realtime/hub";
 import {
-  getTaskCardGroupsPreferences,
+  consolidateTaskCardGroupsScopes,
   setTaskCardGroupsScope,
   TaskCardGroupsPreferencesConflictError,
   TaskCardGroupsPreferencesLimitError,
@@ -70,7 +70,11 @@ export async function GET(request: NextRequest) {
   const user = await getAuthUser(request);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  return NextResponse.json(await getTaskCardGroupsPreferences(user.id));
+  // Lazily collapse legacy per-project scopes into the single global scope on
+  // read; it's idempotent (a no-op once collapsed) and keeps the stored payload
+  // bounded to one scope. A conflict just means another writer won the race —
+  // the returned snapshot is still coherent.
+  return NextResponse.json(await consolidateTaskCardGroupsScopes(user.id));
 }
 
 export async function PATCH(request: NextRequest) {

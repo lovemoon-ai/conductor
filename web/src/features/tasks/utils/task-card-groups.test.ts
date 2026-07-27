@@ -3,6 +3,7 @@ import {
   addTaskToGroup,
   buildTaskCardGroupsStorageKey,
   buildTaskCardRows,
+  consolidateSyncedTaskCardGroups,
   createTaskCardGroup,
   ejectTaskFromGroup,
   maxTaskCardGroupIdCounter,
@@ -147,6 +148,42 @@ describe('task-card-groups', () => {
       activeIndex: 1,
       labels: { a: 'Design' },
     }]);
+  });
+
+  describe('consolidateSyncedTaskCardGroups', () => {
+    it('folds groups from every project scope into one global set', () => {
+      const consolidated = consolidateSyncedTaskCardGroups([
+        [], // global scope empty
+        [{ id: 'g-p1', taskIds: ['a', 'b'], labels: { a: 'A' } }],
+        [{ id: 'g-p2', taskIds: ['c', 'd'], labels: {} }],
+      ]);
+      expect(consolidated).toEqual([
+        { id: 'g-p1', taskIds: ['a', 'b'], labels: { a: 'A' } },
+        { id: 'g-p2', taskIds: ['c', 'd'], labels: {} },
+      ]);
+    });
+
+    it('re-ids colliding group ids across scopes instead of dropping them', () => {
+      const consolidated = consolidateSyncedTaskCardGroups([
+        [{ id: 'tabcard-1', taskIds: ['a', 'b'], labels: {} }],
+        [{ id: 'tabcard-1', taskIds: ['c', 'd'], labels: {} }],
+      ]);
+      expect(consolidated).toHaveLength(2);
+      expect(consolidated[0]).toEqual({ id: 'tabcard-1', taskIds: ['a', 'b'], labels: {} });
+      expect(consolidated[1].id).not.toBe('tabcard-1');
+      expect(consolidated[1].taskIds).toEqual(['c', 'd']);
+    });
+
+    it('keeps a task in the first scope that claims it', () => {
+      const consolidated = consolidateSyncedTaskCardGroups([
+        [{ id: 'g1', taskIds: ['a', 'b'], labels: {} }],
+        // 'a' already claimed → this group is left with only 'c' → dropped
+        [{ id: 'g2', taskIds: ['a', 'c'], labels: {} }],
+      ]);
+      expect(consolidated).toEqual([
+        { id: 'g1', taskIds: ['a', 'b'], labels: {} },
+      ]);
+    });
   });
 
   it('retains empty scope tombstones in synchronized snapshots', () => {

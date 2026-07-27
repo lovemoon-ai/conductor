@@ -20,9 +20,13 @@ import { computeProjectGroups } from '@/features/projects/utils/project-groups';
 import { parseTaskType } from '@/lib/tasks/task-config';
 import {
   buildTaskCardGroupsStorageKey,
+  consolidateSyncedTaskCardGroups,
+  LIST_CARD_GROUPS_SCOPE,
   loadTaskCardGroups,
+  mergeSyncedTaskCardGroups,
   type TaskCardGroup,
 } from '@/features/tasks/utils/task-card-groups';
+import { useTaskCardGroupsSyncStore } from '@/features/tasks/task-card-groups-sync-store';
 import { buildTaskListNavigation } from '@/features/tasks/utils/task-list-navigation';
 import {
   buildTaskDetailHref,
@@ -69,6 +73,9 @@ export default function TaskDetailPage() {
   const selectedProjectId = useProjectsStore((state) => state.selectedProjectId);
   const userId = useAuthStore((state) => state.session?.user.id ?? null);
   const runningOnly = useUserPreferencesStore((state) => state.taskListRunningOnly);
+  const syncedGroupsSnapshot = useTaskCardGroupsSyncStore((state) => state.snapshot);
+  const taskCardGroupsHydrated = useTaskCardGroupsSyncStore((state) => state.hydrated);
+  const hydrateTaskCardGroups = useTaskCardGroupsSyncStore((state) => state.hydrate);
   const isDesktop = useSyncExternalStore(
     subscribeToDesktopViewport,
     getDesktopViewportSnapshot,
@@ -100,15 +107,12 @@ export default function TaskDetailPage() {
     }
     return projectId ? [projectId] : [];
   }, [currentProjectGroup, projectId]);
-  const graphStateKey = useMemo(() => {
-    const projectScopeKey = projectScope.length > 0
-      ? projectScope.slice().sort().join(',')
-      : 'all';
-    return `projects:${projectScopeKey}`;
-  }, [projectScope]);
+  // Tab cards are a single global set (see LIST_CARD_GROUPS_SCOPE), so the
+  // detail-page navigation must read the same scope TaskList writes to —
+  // keying by the active project filter would miss merges made elsewhere.
   const groupsStorageKey = useMemo(
-    () => buildTaskCardGroupsStorageKey(graphStateKey, userId),
-    [graphStateKey, userId],
+    () => buildTaskCardGroupsStorageKey(LIST_CARD_GROUPS_SCOPE, userId),
+    [userId],
   );
   const projectDaemonHostMap = useMemo(() => new Map(
     projects.map((project) => [project.id, project.daemonHost ?? null] as const),
@@ -119,8 +123,28 @@ export default function TaskDetailPage() {
   const returnsToListView = returnSearchParams.get('view') !== 'graph';
 
   useEffect(() => {
-    setTaskCardGroups(loadTaskCardGroups(groupsStorageKey));
-  }, [groupsStorageKey]);
+    if (userId) void hydrateTaskCardGroups(userId);
+  }, [hydrateTaskCardGroups, userId]);
+
+  // Navigation must see the same global tab-card set the list edits. Prefer the
+  // synced snapshot (so a cold deep-link to a task detail still gets merged-tab
+  // navigation without visiting the list first) and fall back to this device's
+  // local cache when nothing has synced yet. The snapshot's scopes are folded
+  // into one set for the same reason the list folds them.
+  useEffect(() => {
+    const local = loadTaskCardGroups(groupsStorageKey);
+    if (!userId || !taskCardGroupsHydrated || Object.keys(syncedGroupsSnapshot.scopes).length === 0) {
+      setTaskCardGroups(local);
+      return;
+    }
+    const consolidated = consolidateSyncedTaskCardGroups([
+      syncedGroupsSnapshot.scopes[LIST_CARD_GROUPS_SCOPE] ?? [],
+      ...Object.entries(syncedGroupsSnapshot.scopes)
+        .filter(([scope]) => scope !== LIST_CARD_GROUPS_SCOPE)
+        .map(([, groups]) => groups),
+    ]);
+    setTaskCardGroups(mergeSyncedTaskCardGroups(local, consolidated));
+  }, [groupsStorageKey, syncedGroupsSnapshot, taskCardGroupsHydrated, userId]);
 
   useEffect(() => () => {
     if (taskSwitchAnimationTimeoutRef.current !== null) {

@@ -718,6 +718,70 @@ describe('TaskList', () => {
       )).toContain('remote-group');
     });
 
+    it('surfaces a card merged under a specific project in the all-tasks view', async () => {
+      authState = { session: { user: { id: 'user-1' } } };
+      taskCardGroupsSyncState = {
+        ...taskCardGroupsSyncState,
+        hydrated: true,
+        snapshot: {
+          version: 1,
+          revision: 6,
+          // The group was created while "Project One" was selected, so it only
+          // ever lived under that per-project scope — never `projects:all`.
+          scopes: {
+            'projects:project-1': [{
+              id: 'p1-group',
+              taskIds: ['task-1', 'task-2'],
+              labels: {},
+            }],
+          },
+        },
+      };
+
+      // No project filter → the "all tasks" view.
+      render(<TaskList viewMode="list" projectFilter={null} />);
+
+      await waitFor(() => {
+        expect(document.querySelector('[data-task-tab-card="p1-group"]')).not.toBeNull();
+      });
+      expect(document.querySelector('[data-task-tab="task-1"]')).not.toBeNull();
+      expect(document.querySelector('[data-task-tab="task-2"]')).not.toBeNull();
+    });
+
+    it('keeps and uploads a local-only card when the server has no global scope yet', async () => {
+      authState = { session: { user: { id: 'user-1' } } };
+      // The server holds only a legacy per-project scope; the global scope has
+      // never materialized. This device has an unsynced local merge that must
+      // survive hydration and get uploaded to the global scope.
+      taskCardGroupsSyncState = {
+        ...taskCardGroupsSyncState,
+        hydrated: true,
+        snapshot: { version: 1, revision: 2, scopes: { 'projects:project-1': [] } },
+      };
+      window.localStorage.setItem(
+        'conductor:task-list-groups:v2:user-1:projects%3Aall',
+        JSON.stringify([{
+          id: 'local-group',
+          taskIds: ['task-1', 'task-2'],
+          activeIndex: 1,
+          labels: {},
+        }]),
+      );
+
+      render(<TaskList viewMode="list" projectFilter={null} />);
+
+      await waitFor(() => {
+        expect(document.querySelector('[data-task-tab-card="local-group"]')).not.toBeNull();
+      });
+      await waitFor(() => {
+        expect(saveTaskCardGroupsScopeMock).toHaveBeenCalledWith(
+          'user-1',
+          'projects:all',
+          [expect.objectContaining({ id: 'local-group' })],
+        );
+      });
+    });
+
     it('migrates the legacy browser cache into the signed-in user sync scope', async () => {
       authState = { session: { user: { id: 'user-1' } } };
       taskCardGroupsSyncState = {

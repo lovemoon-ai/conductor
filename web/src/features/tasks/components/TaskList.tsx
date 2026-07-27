@@ -29,8 +29,10 @@ import {
   addTaskToGroup,
   buildTaskCardGroupsStorageKey,
   buildTaskCardRows,
+  consolidateSyncedTaskCardGroups,
   createTaskCardGroup,
   ejectTaskFromGroup,
+  LIST_CARD_GROUPS_SCOPE,
   loadTaskCardGroups,
   maxTaskCardGroupIdCounter,
   mergeSyncedTaskCardGroups,
@@ -40,6 +42,7 @@ import {
   setTaskCardTabLabel,
   taskCardGroupsSyncKey,
   taskCardTabLabel,
+  toSyncedTaskCardGroups,
   type TaskCardGroup,
 } from '../utils/task-card-groups';
 import { useTaskCardGroupsSyncStore } from '../task-card-groups-sync-store';
@@ -205,13 +208,16 @@ export function TaskList({
       : 'all';
     return `projects:${projectScope}`;
   }, [effectiveProjectFilterIds]);
+  // Tab-cards are global, not per project filter (see LIST_CARD_GROUPS_SCOPE),
+  // so their storage key is independent of `graphStateKey` (which stays
+  // per-project for the graph canvas layout).
   const groupsStorageKey = useMemo(
-    () => buildTaskCardGroupsStorageKey(graphStateKey, userId),
-    [graphStateKey, userId],
+    () => buildTaskCardGroupsStorageKey(LIST_CARD_GROUPS_SCOPE, userId),
+    [userId],
   );
   const legacyGroupsStorageKey = useMemo(
-    () => buildTaskCardGroupsStorageKey(graphStateKey),
-    [graphStateKey],
+    () => buildTaskCardGroupsStorageKey(LIST_CARD_GROUPS_SCOPE),
+    [],
   );
   const isMergedScope = effectiveProjectFilterIds.length > 1;
   const runningFilteredTasks = useMemo(
@@ -453,25 +459,27 @@ export function TaskList({
     if (userId) void hydrateTaskCardGroups(userId);
   }, [hydrateTaskCardGroups, userId]);
 
-  // A server scope is authoritative, including an empty-array tombstone. If
-  // the scope has never existed server-side, upload this device's legacy cache
-  // once so existing users keep their tab cards after the feature rolls out.
+  // Server scopes are authoritative, including an empty-array tombstone. Tab
+  // cards are global, so fold *every* project scope into one working set — a
+  // card merged under a specific project (an older per-project scope) then
+  // stays visible in every view, not just the project it was created in. The
+  // global scope is folded first so, on id collision, its device-active tab
+  // wins and the union is stable across reloads. If nothing has ever synced,
+  // upload this device's legacy cache once so existing users keep their cards.
   useEffect(() => {
     if (!userId || !taskCardGroupsHydrated) return;
-    const migrationKey = `${userId}:${graphStateKey}`;
-    const hasServerScope = Object.prototype.hasOwnProperty.call(
-      syncedGroupsSnapshot.scopes,
-      graphStateKey,
-    );
+    const scopes = syncedGroupsSnapshot.scopes;
+    const migrationKey = `${userId}:${LIST_CARD_GROUPS_SCOPE}`;
+    const hasServerScopes = Object.keys(scopes).length > 0;
 
-    if (!hasServerScope) {
+    if (!hasServerScopes) {
       if (attemptedLegacySyncScopesRef.current.has(migrationKey)) return;
       attemptedLegacySyncScopesRef.current.add(migrationKey);
       const localGroups = loadTaskCardGroups(groupsStorageKey);
       if (localGroups.length === 0) return;
       const syncKey = taskCardGroupsSyncKey(localGroups);
       lastSyncedGroupsKeyRef.current = syncKey;
-      void saveTaskCardGroupsScope(userId, graphStateKey, localGroups).then((saved) => {
+      void saveTaskCardGroupsScope(userId, LIST_CARD_GROUPS_SCOPE, localGroups).then((saved) => {
         if (!saved && lastSyncedGroupsKeyRef.current === syncKey) {
           lastSyncedGroupsKeyRef.current = null;
           attemptedLegacySyncScopesRef.current.delete(migrationKey);
@@ -481,18 +489,38 @@ export function TaskList({
     }
 
     attemptedLegacySyncScopesRef.current.add(migrationKey);
-    const serverGroups = syncedGroupsSnapshot.scopes[graphStateKey] ?? [];
-    lastSyncedGroupsKeyRef.current = taskCardGroupsSyncKey(serverGroups);
+    const hasGlobalScope = Object.prototype.hasOwnProperty.call(
+      scopes,
+      LIST_CARD_GROUPS_SCOPE,
+    );
+    const consolidated = consolidateSyncedTaskCardGroups([
+      // When the server has no global scope yet (an older server, or before its
+      // lazy collapse of legacy scopes runs), fold this device's local cache in
+      // first so merges made offline / before sign-in survive. Once the server
+      // holds an (even empty) global scope it is authoritative and local-only
+      // cards must not resurrect ones dissolved on another device.
+      ...(hasGlobalScope ? [] : [toSyncedTaskCardGroups(loadTaskCardGroups(groupsStorageKey))]),
+      scopes[LIST_CARD_GROUPS_SCOPE] ?? [],
+      ...Object.entries(scopes)
+        .filter(([scope]) => scope !== LIST_CARD_GROUPS_SCOPE)
+        .map(([, groups]) => groups),
+    ]);
+    // A server global scope is authoritative → mark it synced to suppress the
+    // echo upload. When it is still absent, the folded union carries local-only
+    // / legacy cards not yet under the global scope, so leave the sync marker
+    // clear and let the save effect upload the merged result.
+    if (hasGlobalScope) {
+      lastSyncedGroupsKeyRef.current = taskCardGroupsSyncKey(consolidated);
+    }
     setGroups((current) => {
-      const next = mergeSyncedTaskCardGroups(current, serverGroups);
+      const next = mergeSyncedTaskCardGroups(current, consolidated);
       if (JSON.stringify(next) === JSON.stringify(current)) return current;
-      skipGroupSaveRef.current = true;
+      if (hasGlobalScope) skipGroupSaveRef.current = true;
       groupIdCounterRef.current = maxTaskCardGroupIdCounter(next);
       saveTaskCardGroups(groupsStorageKey, next);
       return next;
     });
   }, [
-    graphStateKey,
     groupsStorageKey,
     saveTaskCardGroupsScope,
     syncedGroupsSnapshot,
@@ -510,12 +538,12 @@ export function TaskList({
     const syncKey = taskCardGroupsSyncKey(groups);
     if (lastSyncedGroupsKeyRef.current === syncKey) return;
     lastSyncedGroupsKeyRef.current = syncKey;
-    void saveTaskCardGroupsScope(userId, graphStateKey, groups).then((saved) => {
+    void saveTaskCardGroupsScope(userId, LIST_CARD_GROUPS_SCOPE, groups).then((saved) => {
       if (!saved && lastSyncedGroupsKeyRef.current === syncKey) {
         lastSyncedGroupsKeyRef.current = null;
       }
     });
-  }, [graphStateKey, groups, groupsStorageKey, saveTaskCardGroupsScope, userId]);
+  }, [groups, groupsStorageKey, saveTaskCardGroupsScope, userId]);
 
   // Drop an in-progress rename once its tab stops being an editable rendered tab
   // (group dissolved, or its task filtered out) so the edit box can't linger.

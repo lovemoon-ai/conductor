@@ -20,6 +20,12 @@ const replaceMock = vi.fn();
 const fetchTaskMock = vi.fn();
 const markTaskReadMock = vi.fn();
 const headerMock = vi.fn();
+const hydrateTaskCardGroupsMock = vi.fn();
+let taskCardGroupsSyncState: {
+  snapshot: { version: 1; revision: number; scopes: Record<string, unknown[]> };
+  hydrated: boolean;
+  hydrate: typeof hydrateTaskCardGroupsMock;
+};
 let searchParamsState = new URLSearchParams();
 let taskIdState = 'task-pty-1';
 let isDesktopState = false;
@@ -154,6 +160,11 @@ vi.mock('@/features/user-preferences/store', () => ({
     selector({ taskListRunningOnly: false }),
 }));
 
+vi.mock('@/features/tasks/task-card-groups-sync-store', () => ({
+  useTaskCardGroupsSyncStore: (selector: (state: typeof taskCardGroupsSyncState) => unknown) =>
+    selector(taskCardGroupsSyncState),
+}));
+
 describe('TaskDetailPage', () => {
   beforeEach(() => {
     fetchTaskMock.mockReset();
@@ -161,6 +172,13 @@ describe('TaskDetailPage', () => {
     pushMock.mockReset();
     replaceMock.mockReset();
     headerMock.mockReset();
+    hydrateTaskCardGroupsMock.mockReset();
+    hydrateTaskCardGroupsMock.mockResolvedValue(undefined);
+    taskCardGroupsSyncState = {
+      snapshot: { version: 1, revision: 0, scopes: {} },
+      hydrated: false,
+      hydrate: hydrateTaskCardGroupsMock,
+    };
     searchParamsState = new URLSearchParams();
     taskIdState = 'task-pty-1';
     isDesktopState = false;
@@ -236,8 +254,11 @@ describe('TaskDetailPage', () => {
       makeTask('task-4', 'Fourth'),
     ];
     searchParamsState.set('from', '/app/tasks?projectId=project-1');
+    // Tab cards are global: even though the task was opened from a specific
+    // project, the merged group lives under the shared scope and must still
+    // drive prev/next navigation here.
     window.localStorage.setItem(
-      'conductor:task-list-groups:v2:user-1:projects%3Aproject-1',
+      'conductor:task-list-groups:v2:user-1:projects%3Aall',
       JSON.stringify([{
         id: 'group-1',
         taskIds: ['task-2', 'task-3'],
@@ -260,6 +281,49 @@ describe('TaskDetailPage', () => {
       '/app/tasks/task-4?from=%2Fapp%2Ftasks%3FprojectId%3Dproject-1',
       { scroll: false },
     );
+
+    fireEvent.click(screen.getByRole('button', { name: 'swipe right' }));
+    expect(replaceMock).toHaveBeenCalledWith(
+      '/app/tasks/task-1?from=%2Fapp%2Ftasks%3FprojectId%3Dproject-1',
+      { scroll: false },
+    );
+    expect(replaceMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('task-2'),
+      expect.anything(),
+    );
+  });
+
+  it('drives merged-tab navigation from the synced snapshot on a cold deep-link', async () => {
+    taskIdState = 'task-3';
+    tasksState = [
+      makeTask('task-1', 'First'),
+      makeTask('task-2', 'Hidden merged tab'),
+      makeTask('task-3', 'Selected merged tab'),
+      makeTask('task-4', 'Fourth'),
+    ];
+    searchParamsState.set('from', '/app/tasks?projectId=project-1');
+    // No localStorage seed — the group is only known via the synced snapshot,
+    // as it would be when opening a task detail URL directly.
+    taskCardGroupsSyncState = {
+      snapshot: {
+        version: 1,
+        revision: 3,
+        scopes: {
+          'projects:all': [{ id: 'group-1', taskIds: ['task-2', 'task-3'], labels: {} }],
+        },
+      },
+      hydrated: true,
+      hydrate: hydrateTaskCardGroupsMock,
+    };
+
+    render(<TaskDetailPage />);
+
+    await waitFor(() => {
+      expect(headerMock).toHaveBeenLastCalledWith(expect.objectContaining({
+        titleSwipePreviewLeft: 'First',
+        titleSwipePreviewRight: 'Fourth',
+      }));
+    });
 
     fireEvent.click(screen.getByRole('button', { name: 'swipe right' }));
     expect(replaceMock).toHaveBeenCalledWith(

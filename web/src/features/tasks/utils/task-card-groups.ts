@@ -42,6 +42,15 @@ export type TaskCardRow<T> =
 
 const STORAGE_PREFIX = 'conductor:task-list-groups:v1:';
 const USER_STORAGE_PREFIX = 'conductor:task-list-groups:v2:';
+
+/**
+ * List tab-cards are a single global set, independent of the active project
+ * filter. Persisting/loading them under one fixed scope (rather than one scope
+ * per selected project) means a card merged inside a specific project stays
+ * visible in the "all tasks" view, and vice versa. `projects:all` is reused so
+ * existing "all view" data — and the server scope validation — keep working.
+ */
+export const LIST_CARD_GROUPS_SCOPE = 'projects:all';
 export const MAX_SYNCED_TASK_CARD_SCOPES = 100;
 export const MAX_SYNCED_TASK_CARD_GROUPS_PER_SCOPE = 200;
 export const MAX_SYNCED_TASKS_PER_CARD = 50;
@@ -124,6 +133,51 @@ export const readSyncedTaskCardGroups = (value: unknown): SyncedTaskCardGroup[] 
 
 export const toSyncedTaskCardGroups = (groups: TaskCardGroup[]): SyncedTaskCardGroup[] =>
   readSyncedTaskCardGroups(groups);
+
+/**
+ * Fold groups from several scopes into one global set. Historically each
+ * project filter kept its own scope, so a card merged under a specific project
+ * was invisible in the "all tasks" view; folding every scope surfaces them all.
+ *
+ * A task belongs to exactly one project, so per-scope groups are normally
+ * disjoint — only group ids can clash across scopes, so collisions are re-ided
+ * rather than dropped (which would silently lose a whole card). Any task that
+ * still appears twice (e.g. a stale overlapping scope) is claimed by the first
+ * group that lists it, preserving the single-group-per-task invariant. Pass the
+ * authoritative scope first so, on collision, its ids win and the union stays
+ * stable across reloads.
+ */
+export const consolidateSyncedTaskCardGroups = (
+  scopeGroupLists: SyncedTaskCardGroup[][],
+): SyncedTaskCardGroup[] => {
+  const seenIds = new Set<string>();
+  const claimedTaskIds = new Set<string>();
+  const consolidated: SyncedTaskCardGroup[] = [];
+  let idCounter = 0;
+
+  for (const list of scopeGroupLists) {
+    for (const group of readSyncedTaskCardGroups(list)) {
+      const taskIds = group.taskIds.filter((taskId) => !claimedTaskIds.has(taskId));
+      if (taskIds.length < 2) continue;
+
+      let id = group.id;
+      while (seenIds.has(id)) {
+        idCounter += 1;
+        id = `tabcard-merged-${idCounter}`;
+      }
+      seenIds.add(id);
+      taskIds.forEach((taskId) => claimedTaskIds.add(taskId));
+
+      const labels: Record<string, string> = {};
+      for (const taskId of taskIds) {
+        if (group.labels[taskId]) labels[taskId] = group.labels[taskId];
+      }
+      consolidated.push({ id, taskIds, labels });
+      if (consolidated.length >= MAX_SYNCED_TASK_CARD_GROUPS_PER_SCOPE) return consolidated;
+    }
+  }
+  return consolidated;
+};
 
 export const taskCardGroupsSyncKey = (groups: TaskCardGroup[] | SyncedTaskCardGroup[]): string =>
   JSON.stringify(readSyncedTaskCardGroups(groups));

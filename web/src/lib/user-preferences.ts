@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 import {
+  consolidateSyncedTaskCardGroups,
+  LIST_CARD_GROUPS_SCOPE,
   MAX_SYNCED_TASK_CARD_SCOPES,
   readSyncedTaskCardGroups,
   readTaskCardGroupsSyncSnapshot,
@@ -215,6 +217,78 @@ export async function getTaskCardGroupsPreferences(
   }
 
   return parseStoredTaskCardGroupsSnapshot(rows[0]?.value);
+}
+
+/**
+ * Collapse every legacy per-project scope into the single global list-card
+ * scope, in one atomic rewrite. Tab cards are global (see LIST_CARD_GROUPS_SCOPE)
+ * so the per-project scopes are dead weight after the client migration: they
+ * count toward MAX_SYNCED_TASK_CARD_SCOPES and get re-folded on every load.
+ * Folding them into the global scope and dropping the old keys bounds the
+ * stored payload to one scope and removes the cruft.
+ *
+ * Idempotent: when only the global scope (or nothing) is present there is
+ * nothing to collapse and the stored value is left untouched. Runs lazily on
+ * read so it needs no separate migration endpoint; the union it produces is the
+ * same one the client renders, so read and storage always agree.
+ */
+export async function consolidateTaskCardGroupsScopes(
+  userId: string,
+): Promise<TaskCardGroupsSyncSnapshot> {
+  for (let attempt = 0; attempt < TASK_CARD_GROUPS_WRITE_RETRIES; attempt += 1) {
+    let rows: RawPreferenceRow[];
+    try {
+      rows = await db.$queryRaw<RawPreferenceRow[]>`
+        SELECT "value"
+        FROM "user_preferences"
+        WHERE "user_id" = ${userId} AND "key" = ${TASK_CARD_GROUPS_PREFERENCES_KEY}
+        LIMIT 1
+      `;
+    } catch (error) {
+      if (!isMissingUserPreferencesTableError(error)) throw error;
+      warnMissingUserPreferencesSchema("task-card-groups.consolidate", error);
+      return readTaskCardGroupsSyncSnapshot(null);
+    }
+
+    const previousRaw = rows[0]?.value;
+    const current = parseStoredTaskCardGroupsSnapshot(previousRaw);
+    const legacyScopes = Object.keys(current.scopes).filter(
+      (scope) => scope !== LIST_CARD_GROUPS_SCOPE,
+    );
+    // Nothing stored, or already a single global scope → no rewrite needed.
+    if (previousRaw === undefined || legacyScopes.length === 0) return current;
+
+    const union = consolidateSyncedTaskCardGroups([
+      current.scopes[LIST_CARD_GROUPS_SCOPE] ?? [],
+      ...legacyScopes.map((scope) => current.scopes[scope]),
+    ]);
+    const next = readTaskCardGroupsSyncSnapshot({
+      version: 1,
+      revision: current.revision + 1,
+      scopes: union.length > 0 ? { [LIST_CARD_GROUPS_SCOPE]: union } : {},
+    });
+    const nextRaw = JSON.stringify(next);
+
+    try {
+      const changed = await db.$executeRaw`
+        UPDATE "user_preferences"
+        SET "value" = ${nextRaw}, "updated_at" = CURRENT_TIMESTAMP
+        WHERE "user_id" = ${userId}
+          AND "key" = ${TASK_CARD_GROUPS_PREFERENCES_KEY}
+          AND "value" = ${previousRaw}
+      `;
+      if (Number(changed) > 0) return next;
+    } catch (error) {
+      if (!isMissingUserPreferencesTableError(error)) throw error;
+      warnMissingUserPreferencesSchema("task-card-groups.consolidate", error);
+      return current;
+    }
+    // Lost the compare-and-set race; re-read and retry.
+  }
+
+  // Persisting the collapse kept losing the race — return the freshest read so
+  // the caller still gets a coherent (un-collapsed) snapshot rather than erroring.
+  return getTaskCardGroupsPreferences(userId);
 }
 
 /**

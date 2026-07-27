@@ -48,6 +48,50 @@ describe("/api/user-preferences/task-card-groups", () => {
     expect(await extractJson(response)).toEqual({ version: 1, revision: 0, scopes: {} });
   });
 
+  it("collapses legacy per-project scopes into the global scope on read", async () => {
+    const stored = JSON.stringify({
+      version: 1,
+      revision: 2,
+      scopes: {
+        "projects:project-1": [{ id: "g1", taskIds: ["task-1", "task-2"], labels: {} }],
+        "projects:project-2": [{ id: "g2", taskIds: ["task-3", "task-4"], labels: {} }],
+      },
+    });
+    vi.mocked(db.$queryRaw).mockResolvedValueOnce([{ value: stored }]);
+    vi.mocked(db.$executeRaw).mockResolvedValueOnce(1);
+
+    const response = await GET(request());
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.revision).toBe(3);
+    expect(Object.keys(data.scopes)).toEqual(["projects:all"]);
+    expect(data.scopes["projects:all"]).toEqual([
+      { id: "g1", taskIds: ["task-1", "task-2"], labels: {} },
+      { id: "g2", taskIds: ["task-3", "task-4"], labels: {} },
+    ]);
+    expect(db.$executeRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves an already-collapsed global scope untouched on read", async () => {
+    const stored = JSON.stringify({
+      version: 1,
+      revision: 5,
+      scopes: { "projects:all": [{ id: "g1", taskIds: ["task-1", "task-2"], labels: {} }] },
+    });
+    vi.mocked(db.$queryRaw).mockResolvedValueOnce([{ value: stored }]);
+
+    const response = await GET(request());
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.revision).toBe(5);
+    expect(data.scopes).toEqual({
+      "projects:all": [{ id: "g1", taskIds: ["task-1", "task-2"], labels: {} }],
+    });
+    expect(db.$executeRaw).not.toHaveBeenCalled();
+  });
+
   it("persists one scope and broadcasts the full normalized snapshot", async () => {
     const response = await PATCH(request("PATCH", {
       scope: "projects:project-1",
