@@ -81,6 +81,7 @@ vi.mock("@/lib/db", () => ({
     },
     taskDiagnosticsSnapshot: {
       create: vi.fn(),
+      deleteMany: vi.fn(),
     },
     project: {
       findFirst: vi.fn(),
@@ -154,6 +155,8 @@ describe("/api/tasks/[taskId]", () => {
         ? callback({
             task: db.task,
             ptySession: db.ptySession,
+            message: db.message,
+            taskDiagnosticsSnapshot: db.taskDiagnosticsSnapshot,
           })
         : callback,
     );
@@ -210,6 +213,7 @@ describe("/api/tasks/[taskId]", () => {
             ptySession: db.ptySession,
             message: db.message,
             agentOutbox: db.agentOutbox,
+            taskDiagnosticsSnapshot: db.taskDiagnosticsSnapshot,
           })
         : callback,
     );
@@ -519,6 +523,174 @@ describe("/api/tasks/[taskId]", () => {
     });
     expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-1");
     expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-1");
+  });
+
+  it("permanently deletes an archived task without preserving a diagnostics snapshot", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-archived-1",
+      projectId: "proj-1",
+      taskType: "ai_task",
+      agentHost: "daemon-a",
+      executionHost: null,
+      status: "killed",
+      launchConfig: null,
+      metadata: null,
+      achievedAt: new Date("2026-07-27T00:00:00.000Z"),
+      project: { daemonHost: "daemon-a" },
+    } as any);
+    vi.mocked(db.taskDiagnosticsSnapshot.deleteMany).mockResolvedValue({ count: 2 } as any);
+    vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 8 } as any);
+    vi.mocked(db.task.delete).mockResolvedValue({ id: "task-archived-1" } as any);
+
+    const request = createMockRequest({
+      method: "DELETE",
+      token,
+      url: "http://localhost:6152/api/tasks/task-archived-1?permanent=1",
+    });
+    const response = await DELETE(request, {
+      params: Promise.resolve({ taskId: "task-archived-1" }),
+    });
+
+    expect(response.status).toBe(204);
+    expect(db.taskDiagnosticsSnapshot.deleteMany).toHaveBeenCalledWith({
+      where: { userId: "user-1", taskId: "task-archived-1" },
+    });
+    expect(db.taskDiagnosticsSnapshot.create).not.toHaveBeenCalled();
+    expect(db.message.deleteMany).toHaveBeenCalledWith({
+      where: { taskId: "task-archived-1" },
+    });
+    expect(db.task.delete).toHaveBeenCalledWith({
+      where: { id: "task-archived-1" },
+    });
+    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+    expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-archived-1");
+    expect(realtimeHub.broadcast).toHaveBeenCalledWith("user-1", "proj-1", {
+      type: "task_deleted",
+      payload: {
+        task_id: "task-archived-1",
+        project_id: "proj-1",
+      },
+    });
+    expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-archived-1");
+  });
+
+  it("deletes archived diagnostics and core task rows in one transaction", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-archived-atomic",
+      projectId: "proj-1",
+      taskType: "ai_task",
+      agentHost: "daemon-a",
+      executionHost: null,
+      status: "killed",
+      launchConfig: null,
+      metadata: null,
+      achievedAt: new Date("2026-07-27T00:00:00.000Z"),
+      project: { daemonHost: "daemon-a" },
+    } as any);
+    const snapshotDelete = vi.fn().mockResolvedValue({ count: 1 });
+    const messageDelete = vi.fn().mockResolvedValue({ count: 4 });
+    const ptyDelete = vi.fn().mockResolvedValue({ count: 0 });
+    const taskDelete = vi.fn().mockRejectedValue(new Error("task-delete-failed"));
+    vi.mocked(db.$transaction).mockImplementationOnce(async (callback: any) =>
+      callback({
+        taskDiagnosticsSnapshot: { deleteMany: snapshotDelete },
+        message: { deleteMany: messageDelete },
+        ptySession: { deleteMany: ptyDelete },
+        task: { delete: taskDelete },
+      }),
+    );
+
+    await expect(
+      DELETE(
+        createMockRequest({
+          method: "DELETE",
+          token: createTestToken("user-1"),
+          url: "http://localhost:6152/api/tasks/task-archived-atomic?permanent=1",
+        }),
+        { params: Promise.resolve({ taskId: "task-archived-atomic" }) },
+      ),
+    ).rejects.toThrow("task-delete-failed");
+
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    expect(snapshotDelete).toHaveBeenCalledBefore(messageDelete);
+    expect(messageDelete).toHaveBeenCalledBefore(taskDelete);
+    expect(deleteTaskAttachmentDirectory).not.toHaveBeenCalled();
+    expect(realtimeHub.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("still permanently deletes when the diagnostics snapshot table is missing", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-archived-legacy",
+      projectId: "proj-1",
+      taskType: "ai_task",
+      agentHost: "daemon-a",
+      executionHost: null,
+      status: "killed",
+      launchConfig: null,
+      metadata: null,
+      achievedAt: new Date("2026-07-27T00:00:00.000Z"),
+      project: { daemonHost: "daemon-a" },
+    } as any);
+    vi.mocked(db.taskDiagnosticsSnapshot.deleteMany).mockRejectedValue(
+      prismaError(
+        "P2021",
+        "The table `main.task_diagnostics_snapshots` does not exist",
+      ),
+    );
+    vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(db.task.delete).mockResolvedValue({
+      id: "task-archived-legacy",
+    } as any);
+
+    const response = await DELETE(
+      createMockRequest({
+        method: "DELETE",
+        token: createTestToken("user-1"),
+        url: "http://localhost:6152/api/tasks/task-archived-legacy?permanent=1",
+      }),
+      { params: Promise.resolve({ taskId: "task-archived-legacy" }) },
+    );
+
+    expect(response.status).toBe(204);
+    expect(db.$transaction).toHaveBeenCalledTimes(2);
+    expect(db.message.deleteMany).toHaveBeenCalledWith({
+      where: { taskId: "task-archived-legacy" },
+    });
+    expect(db.task.delete).toHaveBeenCalledWith({
+      where: { id: "task-archived-legacy" },
+    });
+  });
+
+  it("refuses permanent archived-task deletion for an active task", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-active-1",
+      projectId: "proj-1",
+      taskType: "ai_task",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      status: "running",
+      launchConfig: null,
+      metadata: null,
+      achievedAt: null,
+      project: { daemonHost: "daemon-a" },
+    } as any);
+
+    const request = createMockRequest({
+      method: "DELETE",
+      token,
+      url: "http://localhost:6152/api/tasks/task-active-1?permanent=1",
+    });
+    const response = await DELETE(request, {
+      params: Promise.resolve({ taskId: "task-active-1" }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toContain("Only archived tasks");
+    expect(db.message.deleteMany).not.toHaveBeenCalled();
+    expect(db.task.delete).not.toHaveBeenCalled();
   });
 
   it("should not collect remote fire logs while persisting delete diagnostics snapshot", async () => {

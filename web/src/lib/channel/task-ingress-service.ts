@@ -284,6 +284,17 @@ export async function appendUserMessageToTask(input: {
       error: "Not found",
     });
   }
+  if ((task as { achievedAt?: Date | null }).achievedAt) {
+    throw new TaskIngressError(
+      "TASK_ARCHIVED",
+      409,
+      "Archived tasks are read-only",
+      {
+        error: "Task archived",
+        message: "Recover the archived task before sending new messages.",
+      },
+    );
+  }
   const normalizedInputRole = String(input.role ?? "sdk").trim().toLowerCase();
   const userMessageTargetHost =
     normalizedInputRole === "user"

@@ -19,6 +19,9 @@ vi.mock("../db", () => ({
     taskStatusEvent: {
       create: vi.fn(),
     },
+    taskRuntimeState: {
+      upsert: vi.fn(),
+    },
     ptySession: {
       update: vi.fn(),
     },
@@ -93,6 +96,7 @@ describe("agent-gateway ownership handling", () => {
     vi.mocked(db.message.create).mockResolvedValue({} as any);
     vi.mocked(db.user.findUnique).mockResolvedValue({ subscriptionTier: "PLUS" } as any);
     vi.mocked(db.taskStatusEvent.create).mockResolvedValue({} as any);
+    vi.mocked(db.taskRuntimeState.upsert).mockResolvedValue({} as any);
     vi.mocked(db.ptySession.update).mockResolvedValue({} as any);
     vi.mocked(db.$transaction).mockImplementation(async (operations: any) => {
       if (Array.isArray(operations)) {
@@ -223,6 +227,13 @@ describe("agent-gateway ownership handling", () => {
       { id: "task-pending-owned", agentHost: "daemon-a", executionHost: null, status: "unknown" },
       { id: "task-other-host", agentHost: "daemon-b", executionHost: "daemon-b", status: "running" },
       { id: "task-completed", agentHost: "daemon-a", executionHost: "daemon-a", status: "completed" },
+      {
+        id: "task-achieved",
+        agentHost: "daemon-a",
+        executionHost: "daemon-a",
+        status: "running",
+        achievedAt: new Date("2026-07-27T00:00:00Z"),
+      },
     ] as any);
 
     const boundCount = await bindActiveTasksFromResume("user-1", "daemon-a", [
@@ -230,6 +241,7 @@ describe("agent-gateway ownership handling", () => {
       "task-pending-owned",
       "task-other-host",
       "task-completed",
+      "task-achieved",
     ]);
 
     expect(boundCount).toBe(2);
@@ -239,6 +251,7 @@ describe("agent-gateway ownership handling", () => {
       where: {
         id: { in: ["task-daemon-owned", "task-pending-owned"] },
         project: { userId: "user-1" },
+        achievedAt: null,
         OR: [
           { executionHost: null },
           { executionHost: { not: "daemon-a" } },
@@ -295,6 +308,11 @@ describe("agent-gateway ownership handling", () => {
       }),
     );
     expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-legacy-1", "daemon-a");
+    expect(db.task.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.not.objectContaining({ achievedAt: expect.anything() }),
+      }),
+    );
   });
 
   it("allows conductor-fire hosts to rebind daemon-owned ai tasks on resume", async () => {
@@ -327,6 +345,7 @@ describe("agent-gateway ownership handling", () => {
       where: {
         id: { in: ["task-ai-1"] },
         project: { userId: "user-1" },
+        achievedAt: null,
         OR: [
           { executionHost: null },
           { executionHost: { not: "conductor-fire-mac-1" } },
@@ -527,6 +546,54 @@ describe("agent-gateway ownership handling", () => {
           session_id: "session-1",
         }),
       }),
+    );
+  });
+
+  it("drops late runtime status for an achieved task without recreating runtime state", async () => {
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+
+    const socket = new FakeSocket();
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-achieved-1",
+      projectId: "proj-1",
+      taskType: "ai_task",
+      status: "killed",
+      achievedAt: new Date("2026-07-27T00:00:00Z"),
+      agentHost: "debug",
+      executionHost: "conductor-fire-debug-123",
+    } as any);
+
+    const wss = setupAgentGateway();
+    wss.emit("connection", socket as any, {
+      headers: {
+        authorization: "Bearer test-token",
+        "x-conductor-host": "conductor-fire-debug-123",
+      },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as any);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    socket.emit("message", Buffer.from(JSON.stringify({
+      type: "task_runtime_status",
+      payload: {
+        task_id: "task-achieved-1",
+        phase: "session_started",
+        session_id: "late-session",
+      },
+    })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(realtimeHub.bindTaskToAgent).not.toHaveBeenCalled();
+    expect(commitTaskStatusUpdate).not.toHaveBeenCalled();
+    expect(db.taskRuntimeState.upsert).not.toHaveBeenCalled();
+    expect(realtimeHub.broadcast).not.toHaveBeenCalledWith(
+      "user-1",
+      "proj-1",
+      expect.objectContaining({ type: "task_runtime_status" }),
     );
   });
 
@@ -1094,6 +1161,7 @@ describe("processAgentAliveTasks", () => {
         id: "task-d1",
         status: "killed",
         killedReason: "daemon_disconnected",
+        achievedAt: null,
       },
       data: {
         status: "running",
@@ -1103,6 +1171,11 @@ describe("processAgentAliveTasks", () => {
       },
     });
     expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-d1", "daemon-Y");
+    expect(db.task.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ achievedAt: null }),
+      }),
+    );
   });
 
   it("does NOT rebind the realtime hub for manual-fire tasks (agentHost != calling daemon)", async () => {
@@ -1153,9 +1226,13 @@ describe("processAgentAliveTasks", () => {
   });
 
   it("returns gracefully when the killedReason column is missing (pre-migration DB)", async () => {
-    vi.mocked(db.task.findMany).mockRejectedValue(
-      prismaError("P2022", "Column `tasks.killed_reason` does not exist"),
-    );
+    vi.mocked(db.task.findMany)
+      .mockRejectedValueOnce(
+        prismaError("P2022", "Column `tasks.killed_reason` does not exist"),
+      )
+      .mockRejectedValueOnce(
+        prismaError("P2022", "Column `tasks.killed_reason` does not exist"),
+      );
     const { processAgentAliveTasks } = await import("./agent-gateway");
     const result = await processAgentAliveTasks({
       userId: "user-1",
@@ -1165,5 +1242,36 @@ describe("processAgentAliveTasks", () => {
     expect(result.revokedTaskIds).toEqual([]);
     expect(result.consideredCount).toBe(1);
     expect(db.task.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("retries alive-task reconciliation when only achieved_at is missing", async () => {
+    vi.mocked(db.task.findMany)
+      .mockRejectedValueOnce(
+        prismaError("P2022", "Column `tasks.achieved_at` does not exist"),
+      )
+      .mockResolvedValueOnce([
+        { id: "task-old-schema", projectId: "proj-1", agentHost: "daemon-Y" },
+      ] as any);
+    vi.mocked(db.task.updateMany).mockResolvedValue({ count: 1 } as any);
+
+    const { processAgentAliveTasks } = await import("./agent-gateway");
+    const result = await processAgentAliveTasks({
+      userId: "user-1",
+      agentHost: "daemon-Y",
+      payload: { agent_host: "daemon-Y", alive_task_ids: ["task-old-schema"] },
+    });
+
+    expect(result.revokedTaskIds).toEqual(["task-old-schema"]);
+    expect(db.task.findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.not.objectContaining({ achievedAt: expect.anything() }),
+      }),
+    );
+    expect(db.task.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.not.objectContaining({ achievedAt: expect.anything() }),
+      }),
+    );
   });
 });

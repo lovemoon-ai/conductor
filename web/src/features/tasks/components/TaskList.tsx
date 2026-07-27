@@ -89,6 +89,60 @@ export const RefreshIcon = ({ spinning = false }: { spinning?: boolean }) => (
   </svg>
 );
 
+const SelectionIcon = ({ allSelected }: { allSelected: boolean }) => (
+  <svg
+    aria-hidden="true"
+    className="size-4"
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <rect x="4" y="4" width="16" height="16" rx="3" strokeWidth={2} />
+    {allSelected ? (
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m8 12 2.5 2.5L16 9" />
+    ) : (
+      <path strokeLinecap="round" strokeWidth={2} d="M8 12h8" />
+    )}
+  </svg>
+);
+
+const ArchiveIcon = () => (
+  <svg
+    aria-hidden="true"
+    className="size-4"
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7h18M4 7l1 12a2 2 0 002 2h10a2 2 0 002-2l1-12M9 11h6" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7l2-3h12l2 3" />
+  </svg>
+);
+
+const TrashIcon = () => (
+  <svg
+    aria-hidden="true"
+    className="size-4"
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+  </svg>
+);
+
+const BusyIcon = () => (
+  <svg
+    aria-hidden="true"
+    className="size-4 animate-spin"
+    fill="none"
+    viewBox="0 0 24 24"
+  >
+    <circle className="opacity-25" cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" />
+    <path className="opacity-75" fill="currentColor" d="M12 3a9 9 0 0 1 9 9h-3a6 6 0 0 0-6-6V3Z" />
+  </svg>
+);
+
 const TASK_REORDER_ANIMATION_MS = 260;
 
 const prefersReducedMotion = (): boolean => {
@@ -134,7 +188,14 @@ export function TaskList({
   onFilterByDaemonHost,
   onFilterByBackend,
 }: TaskListProps) {
-  const { tasks, isLoading, unreadTaskIds, currentProjectFilter, deleteTask } = useTasksStore();
+  const {
+    tasks,
+    isLoading,
+    unreadTaskIds,
+    currentProjectFilter,
+    deleteTask,
+    achieveTask,
+  } = useTasksStore();
   const userId = useAuthStore((state) => state.session?.user.id ?? null);
   const projects = useProjectsStore((state) => state.projects);
   const hiddenProjectIds = useProjectsStore((state) => state.hiddenProjectIds);
@@ -145,6 +206,7 @@ export function TaskList({
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
+  const [isArchivingSelected, setIsArchivingSelected] = useState(false);
   const [isDeletingSelected, setIsDeletingSelected] = useState(false);
   const [groups, setGroups] = useState<TaskCardGroup[]>([]);
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
@@ -347,6 +409,13 @@ export function TaskList({
   const selectionMode = selectedCount > 0;
   const hasToolbarContent = viewMode === 'list' && selectionMode;
   const allSelected = allTaskIds.length > 0 && selectedCount === allTaskIds.length;
+  const selectedTasksAreArchivable = useMemo(
+    () => [...selectedTaskIdSet].every(
+      (taskId) => (visibleTaskById.get(taskId)?.taskType ?? 'ai_task') === 'ai_task',
+    ),
+    [selectedTaskIdSet, visibleTaskById],
+  );
+  const selectionActionBusy = isArchivingSelected || isDeletingSelected;
 
   useEffect(() => (
     () => {
@@ -607,8 +676,65 @@ export function TaskList({
     setSelectedTaskIds(new Set(allTaskIds));
   };
 
+  const handleBatchArchive = async () => {
+    if (
+      selectedTaskIdSet.size === 0
+      || !selectedTasksAreArchivable
+      || selectionActionBusy
+    ) {
+      return;
+    }
+    const taskIds = [...selectedTaskIdSet];
+    const taskNoun = taskIds.length === 1 ? 'task' : 'tasks';
+    const accepted = await confirm({
+      title: `Archive ${taskIds.length} selected ${taskNoun}?`,
+      description:
+        'Their live sessions will be closed, but their chat histories will remain searchable in Settings → Achieved tasks.',
+      confirmLabel: 'Archive',
+    });
+    if (!accepted) {
+      return;
+    }
+
+    setIsArchivingSelected(true);
+    try {
+      const results = await Promise.allSettled(
+        taskIds.map((taskId) => achieveTask(taskId)),
+      );
+      const failedTaskIds = taskIds.filter(
+        (_, index) => results[index]?.status === 'rejected',
+      );
+      const archivedCount = taskIds.length - failedTaskIds.length;
+      setSelectedTaskIds(new Set(failedTaskIds));
+
+      if (failedTaskIds.length > 0) {
+        const firstFailure = results.find((result) => result.status === 'rejected');
+        const description = firstFailure?.status === 'rejected'
+          && firstFailure.reason instanceof Error
+          ? firstFailure.reason.message
+          : 'Some selected tasks could not be archived.';
+        pushToast({
+          title: archivedCount > 0
+            ? `${archivedCount} archived, ${failedTaskIds.length} failed`
+            : 'Failed to archive selected tasks',
+          description,
+          variant: 'error',
+        });
+        return;
+      }
+
+      pushToast({
+        title: `${taskIds.length} ${taskNoun} archived`,
+        description: 'Their chat histories are available in Settings → Achieved tasks.',
+        variant: 'success',
+      });
+    } finally {
+      setIsArchivingSelected(false);
+    }
+  };
+
   const handleBatchDelete = async () => {
-    if (selectedTaskIdSet.size === 0 || isDeletingSelected) {
+    if (selectedTaskIdSet.size === 0 || selectionActionBusy) {
       return;
     }
     const accepted = await confirm({
@@ -1105,21 +1231,46 @@ export function TaskList({
             ) : null}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div
+            role="toolbar"
+            aria-label="Selected task actions"
+            className="flex flex-wrap items-center gap-2"
+          >
             {selectionMode ? (
               <>
-                <button type="button"
+                <button
+                  type="button"
                   onClick={toggleSelectAll}
-                  className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted transition-colors hover:bg-[var(--paper)] hover:text-ink"
+                  disabled={selectionActionBusy}
+                  aria-label={allSelected ? 'Clear task selection' : 'Select all tasks'}
+                  title={allSelected ? 'Clear selection' : 'Select all'}
+                  className="inline-flex size-9 items-center justify-center rounded-lg border border-border text-muted transition-colors hover:bg-[var(--paper)] hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {allSelected ? 'Clear All' : 'Select All'}
+                  <SelectionIcon allSelected={allSelected} />
                 </button>
-                <button type="button"
-                  onClick={handleBatchDelete}
-                  disabled={isDeletingSelected}
-                  className="rounded-lg border border-[var(--error)]/30 px-2.5 py-1.5 text-xs font-medium text-[var(--error)] transition-colors hover:bg-[var(--error)]/10 disabled:opacity-50"
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleBatchArchive();
+                  }}
+                  disabled={selectionActionBusy || !selectedTasksAreArchivable}
+                  aria-label={`Archive ${selectedCount} selected task${selectedCount === 1 ? '' : 's'}`}
+                  title={selectedTasksAreArchivable
+                    ? 'Archive selected tasks'
+                    : 'Only AI tasks can be archived'}
+                  className="inline-flex size-9 items-center justify-center rounded-lg border border-border text-muted transition-colors hover:bg-[var(--accent)]/10 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {isDeletingSelected ? 'Deleting...' : `Delete (${selectedCount})`}
+                  {isArchivingSelected ? <BusyIcon /> : <ArchiveIcon />}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleBatchDelete}
+                  disabled={selectionActionBusy}
+                  aria-label={`Delete ${selectedCount} selected task${selectedCount === 1 ? '' : 's'}`}
+                  title="Delete selected tasks"
+                  className="inline-flex size-9 items-center justify-center rounded-lg border border-[var(--error)]/30 text-[var(--error)] transition-colors hover:bg-[var(--error)]/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isDeletingSelected ? <BusyIcon /> : <TrashIcon />}
                 </button>
               </>
             ) : null}

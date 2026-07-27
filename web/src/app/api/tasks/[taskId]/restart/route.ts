@@ -93,7 +93,7 @@ const findRestartSourceTask = async (userId: string, taskId: string) =>
             where: { id: taskId, project: { userId } },
             select: taskSelectWithoutIssueId,
           });
-          return task ? { ...task, issueId: null } : null;
+          return task ? { ...task, issueId: null, achievedAt: null } : null;
         },
         async () => {
           const task = await db.task.findFirst({
@@ -329,8 +329,24 @@ export async function POST(
     return NextResponse.json({ error: "invalid strategy" }, { status: 400 });
   }
 
-  // Fire tasks can create new tasks from running state; in-place restart requires stopped state
-  const canDoInplaceRestart = STOPPED_TASK_STATUSES.has(sourceStatus as any);
+  // Explicit daemon override. Lets the caller run the restart on a specific
+  // online daemon instead of the auto-resolved one — used when the original
+  // daemon is offline (e.g. un-packing an achieved task, or "open new session")
+  // and the user picks another connected daemon. Only meaningful for the
+  // new_task / successor path; refresh_session always reuses the live host.
+  const requestedAgentHost = normalizeOptionalString(
+    normalizedBody.agent_host ??
+      normalizedBody.agentHost ??
+      normalizedBody.target_daemon_host ??
+      normalizedBody.targetDaemonHost,
+  );
+
+  // Fire tasks can create new tasks from running state; in-place restart
+  // normally requires a stopped row. An achieved task is also safe to resume:
+  // packing already tore down its runtime, even if a late pre-fix daemon event
+  // left the persisted status incorrectly reading `running`.
+  const canDoInplaceRestart =
+    Boolean(sourceTask.achievedAt) || STOPPED_TASK_STATUSES.has(sourceStatus as any);
   const isExplicitInplaceRequest = requestedStrategy === "inplace" ||
     (!requestedStrategy && canDoInplaceRestart && targetBackend === sourceBackend);
   if (isManualFireTask && isExplicitInplaceRequest && !canDoInplaceRestart) {
@@ -341,7 +357,12 @@ export async function POST(
   }
 
   const isRefreshSessionRequest = requestedRestartMode === "refresh_session";
-  let restartAgentHost = isRefreshSessionRequest
+  // An explicit override wins over auto-resolution (except for refresh_session,
+  // which must reuse the live fire host).
+  const useAgentHostOverride = Boolean(requestedAgentHost) && !isRefreshSessionRequest;
+  let restartAgentHost = useAgentHostOverride
+    ? requestedAgentHost
+    : isRefreshSessionRequest
     ? (
       refreshSessionFireHostCandidates.find((host) =>
         connectedAgents.some((agent) => agent.host === host),
@@ -356,6 +377,7 @@ export async function POST(
       : sourceAgentHost;
   const shouldUseProjectDaemonBinding = Boolean(
     projectDaemonHost &&
+    !useAgentHostOverride &&
     !isRefreshSessionRequest &&
     !(requestedRestartMode === "refresh_session" && isManualFireTask),
   );
@@ -388,7 +410,9 @@ export async function POST(
   if (!restartAgent) {
     return NextResponse.json(
       {
-        error: isRefreshSessionRequest
+        error: useAgentHostOverride
+          ? `Selected daemon ${restartAgentHost} is offline`
+          : isRefreshSessionRequest
           ? `Fire host ${restartAgentHost} is offline`
           : shouldUseProjectDaemonBinding
           ? `Project daemon ${restartAgentHost} is offline`
@@ -520,13 +544,16 @@ export async function POST(
     });
   }
 
+  const canResumeInPlace =
+    (Boolean(sourceTask.achievedAt) && targetBackend === sourceBackend) ||
+    canInplaceRestart(sourceStatus, sourceBackend, targetBackend);
   const strategy =
     requestedStrategy ??
-    (canInplaceRestart(sourceStatus, sourceBackend, targetBackend) ? "inplace" : "new_task");
+    (canResumeInPlace ? "inplace" : "new_task");
   const isBackendSwitch = targetBackend !== sourceBackend;
   const isInplaceRestart = strategy === "inplace";
 
-  if (isInplaceRestart && !canInplaceRestart(sourceStatus, sourceBackend, targetBackend)) {
+  if (isInplaceRestart && !canResumeInPlace) {
     return NextResponse.json(
       { error: "In-place restart requires a stopped task on the current backend" },
       { status: 409 },
@@ -729,15 +756,34 @@ export async function POST(
         {
           where: { id: sourceTask.id },
           data: {
-            status: "running",
+            // Packing may have converted a live task to killed/user_stopped.
+            // Recovering it must clear that tombstone as well as changing the
+            // visible status, otherwise the restored row is self-contradictory.
+            ...(sourceTask.achievedAt
+              ? buildKilledRevokePatch()
+              : { status: "running" }),
             executionHost: restartAgentHost,
             agentHost: restartAgentHost,
+            // A resumed task is no longer "achieved" (packed): reviving it in
+            // place un-packs it. Only touch the column when the source was
+            // actually achieved — a row can't be achieved unless the column
+            // exists, so normal restarts stay valid on pre-migration schemas.
+            ...(sourceTask.achievedAt ? { achievedAt: null } : {}),
             updatedAt: now,
           },
         },
         sourceTask.issueId ?? null,
       );
     });
+
+    // If this in-place restart un-packed an achieved task, tell the app clients
+    // so it returns to the active list.
+    if (sourceTask.achievedAt) {
+      realtimeHub.broadcast(user.id, sourceTask.projectId, {
+        type: "task_restored",
+        payload: { task_id: sourceTask.id, project_id: sourceTask.projectId },
+      });
+    }
 
     realtimeHub.bindTaskToAgent(sourceTask.id, restartAgentHost);
     await deliverAgentOutboxForHost({

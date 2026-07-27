@@ -150,6 +150,45 @@ describe("commitSdkMessage split-brain guard", () => {
     expect(realtimeHub.sendToAgentHost).not.toHaveBeenCalled();
     expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
   });
+
+  it("freezes an achieved transcript and re-stops late SDK output", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "running",
+      achievedAt: new Date("2026-07-27T00:00:00Z"),
+      agentHost: "daemon-a",
+      executionHost: "conductor-fire-a",
+      taskType: "ai_task",
+    } as any);
+
+    const result = await commitSdkMessage({
+      userId: "user-1",
+      agentHost: "conductor-fire-a",
+      taskId: "task-1",
+      content: "late reply after packing",
+      messageId: "msg-late-1",
+    });
+
+    expect(result).toEqual({
+      taskId: "task-1",
+      projectId: "project-1",
+      messageId: "msg-late-1",
+      duplicate: true,
+      dropped: true,
+    });
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(realtimeHub.bindTaskToAgent).not.toHaveBeenCalled();
+    expect(db.task.updateMany).not.toHaveBeenCalled();
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "task-1",
+        agentHost: "conductor-fire-a",
+        eventType: "stop_task",
+      }),
+      expect.any(Object),
+    );
+  });
 });
 
 describe("commitTaskStatusUpdate", () => {
@@ -187,6 +226,60 @@ describe("commitTaskStatusUpdate", () => {
     });
     expect(db.task.update).not.toHaveBeenCalled();
     expect(projectTaskStatusUpdate).not.toHaveBeenCalled();
+  });
+
+  it("ignores a late running update for an achieved task and re-stops its backend", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "killed",
+      achievedAt: new Date("2026-07-27T00:00:00Z"),
+      agentHost: "daemon-a",
+      executionHost: "conductor-fire-a",
+      taskType: "ai_task",
+    } as any);
+
+    const result = await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "conductor-fire-a",
+      taskId: "task-1",
+      status: "running",
+    });
+
+    expect(result).toEqual({
+      taskId: "task-1",
+      projectId: "project-1",
+      status: "killed",
+      duplicate: false,
+    });
+    expect(realtimeHub.bindTaskToAgent).not.toHaveBeenCalled();
+    expect(db.task.updateMany).not.toHaveBeenCalled();
+    expect(db.task.update).not.toHaveBeenCalled();
+    expect(projectTaskStatusUpdate).not.toHaveBeenCalled();
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a terminal confirmation for an achieved task without another stop", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "killed",
+      achievedAt: new Date("2026-07-27T00:00:00Z"),
+      agentHost: "daemon-a",
+      executionHost: "conductor-fire-a",
+      taskType: "ai_task",
+    } as any);
+
+    const result = await commitTaskStatusUpdate({
+      userId: "user-1",
+      agentHost: "conductor-fire-a",
+      taskId: "task-1",
+      status: "killed",
+    });
+
+    expect(result.status).toBe("killed");
+    expect(db.task.update).not.toHaveBeenCalled();
+    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
   });
 
   // A fire announces itself with its own host id and takes over

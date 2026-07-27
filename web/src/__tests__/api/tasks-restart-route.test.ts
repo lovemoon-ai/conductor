@@ -12,6 +12,8 @@ vi.mock("@/lib/realtime/hub", () => ({
     waitForAgentCommandAck: vi.fn().mockResolvedValue(true),
     cancelAgentCommandAck: vi.fn(),
     broadcastToUser: vi.fn(),
+    broadcast: vi.fn(),
+    unbindTask: vi.fn(),
   },
 }));
 
@@ -200,6 +202,114 @@ describe("/api/tasks/[taskId]/restart", () => {
         agentHost: "daemon-1",
       }),
     );
+  });
+
+  it("clears achievedAt and broadcasts task_restored when in-place restarting an achieved task", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({ achievedAt: new Date("2026-03-01T00:00:00.000Z") }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: {},
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    expect(response.status).toBe(200);
+
+    // The revived task is un-packed in place.
+    const updateArgs = vi.mocked(db.task.update).mock.calls[0][0] as any;
+    expect(updateArgs.data.achievedAt).toBeNull();
+    expect(updateArgs.data.killedReason).toBeNull();
+    expect(updateArgs.data.killedAt).toBeNull();
+    expect(updateArgs.data.status).toBe("running");
+
+    // Clients told the packed task is back in the active list.
+    expect(realtimeHub.broadcast).toHaveBeenCalledWith(
+      "user-1",
+      "proj-1",
+      expect.objectContaining({ type: "task_restored" }),
+    );
+  });
+
+  it("can in-place restore an achieved task whose status was corrupted to running", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        status: "running",
+        achievedAt: new Date("2026-03-01T00:00:00.000Z"),
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "inplace" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("inplace_restart");
+    const updateArgs = vi.mocked(db.task.update).mock.calls[0][0] as any;
+    expect(updateArgs.data).toEqual(
+      expect.objectContaining({ status: "running", achievedAt: null }),
+    );
+  });
+
+  it("does not use achieved recovery to allow an in-place backend switch", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        status: "running",
+        achievedAt: new Date("2026-03-01T00:00:00.000Z"),
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "inplace", backend_type: "claude" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toContain("current backend");
+    expect(db.agentOutbox.create).not.toHaveBeenCalled();
+  });
+
+  it("routes the restart to an explicitly selected daemon via agent_host", async () => {
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      { id: "agent-2", host: "daemon-2", supportedBackends: ["codex"], capabilities: [] },
+    ] as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task", agent_host: "daemon-2" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+    // The successor's restart_task command is enqueued for the chosen daemon,
+    // not the project-bound daemon-1.
+    const restartOutbox = vi
+      .mocked(db.agentOutbox.create)
+      .mock.calls.find(
+        (call) => (call[0] as any)?.data?.eventType === "restart_task",
+      );
+    expect(restartOutbox).toBeTruthy();
+    expect((restartOutbox![0] as any).data.agentHost).toBe("daemon-2");
   });
 
   it("refreshes a running task session in place without mutating task ownership or status", async () => {

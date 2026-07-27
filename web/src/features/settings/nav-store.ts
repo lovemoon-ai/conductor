@@ -2,8 +2,9 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 
 /**
- * The Settings "area" in the UI logically spans two physical routes:
+ * The Settings "area" in the UI logically spans several physical routes:
  *   - /app/settings              (settings root: daemon list, build info, session)
+ *   - /app/settings/achieved-tasks (archived task browser)
  *   - /app/ai-manager?agentHost= (per-daemon management subpage)
  *
  * We remember the most recent Settings-area URL in localStorage so the

@@ -19,6 +19,7 @@ type TaskWithLegacyFallback = {
   ptySession?: unknown;
   killedReason?: string | null;
   killedAt?: Date | null;
+  achievedAt?: Date | null;
 };
 
 export const legacyTaskSelect = {
@@ -86,6 +87,10 @@ const isMissingKilledStateColumnError = (error: unknown): boolean =>
   hasErrorCode(error, "P2022") &&
   includesAny(errorMessage(error), ["killed_reason", "killedReason", "killed_at", "killedAt"]);
 
+const isMissingAchievedAtColumnError = (error: unknown): boolean =>
+  hasErrorCode(error, "P2022") &&
+  includesAny(errorMessage(error), ["achieved_at", "achievedAt"]);
+
 /**
  * Returns true when task fields required by the current runtime are missing.
  * This historically handled PTY fields; killed-state fields join the same
@@ -96,7 +101,8 @@ export const isMissingPtySchemaError = (error: unknown): boolean =>
   isMissingPtySessionTableError(error) ||
   isMissingTaskTypeColumnError(error) ||
   isMissingLaunchConfigColumnError(error) ||
-  isMissingKilledStateColumnError(error);
+  isMissingKilledStateColumnError(error) ||
+  isMissingAchievedAtColumnError(error);
 
 /**
  * Returns true when the error is caused by a missing issue_id column only.
@@ -165,11 +171,11 @@ export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
   task: T,
 ): T extends null
   ? null
-  : T & { taskType: string; launchConfig: null; ptySession: null; killedReason: null; killedAt: null } => {
+  : T & { taskType: string; launchConfig: null; ptySession: null; killedReason: null; killedAt: null; achievedAt: null } => {
   if (!task) {
     return null as T extends null
       ? null
-      : T & { taskType: string; launchConfig: null; ptySession: null; killedReason: null; killedAt: null };
+      : T & { taskType: string; launchConfig: null; ptySession: null; killedReason: null; killedAt: null; achievedAt: null };
   }
   return {
     ...task,
@@ -179,9 +185,10 @@ export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
     ptySession: null,
     killedReason: null,
     killedAt: null,
+    achievedAt: null,
   } as T extends null
     ? null
-    : T & { taskType: string; launchConfig: null; ptySession: null; killedReason: null; killedAt: null };
+    : T & { taskType: string; launchConfig: null; ptySession: null; killedReason: null; killedAt: null; achievedAt: null };
 };
 
 export const PTY_SCHEMA_UNAVAILABLE_MESSAGE =

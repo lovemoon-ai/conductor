@@ -43,6 +43,7 @@ type TaskOwnershipRecord = {
   executionHost: string | null;
   status?: string | null;
   taskType?: string | null;
+  achievedAt?: Date | null;
 };
 
 type AgentEvent =
@@ -321,6 +322,7 @@ export const bindActiveTasksFromResume = async (
   if (ids.length === 0) {
     return 0;
   }
+  let includeAchievedFilter = true;
   const tasks = await withPtySchemaFallback(
     "agent-gateway.bindActiveTasksFromResume",
     () =>
@@ -328,6 +330,7 @@ export const bindActiveTasksFromResume = async (
         where: {
           id: { in: Array.from(new Set(ids)) },
           project: { userId },
+          achievedAt: null,
         },
         select: {
           id: true,
@@ -335,32 +338,37 @@ export const bindActiveTasksFromResume = async (
           executionHost: true,
           status: true,
           taskType: true,
+          achievedAt: true,
         },
       }),
     async () =>
-      (await db.task.findMany({
-        where: {
-          id: { in: Array.from(new Set(ids)) },
-          project: { userId },
-        },
-        select: {
-          id: true,
-          agentHost: true,
-          executionHost: true,
-          status: true,
-        },
-      })).map((task) => ({
-        ...task,
-        taskType: "ai_task",
-      })),
+      {
+        includeAchievedFilter = false;
+        return (await db.task.findMany({
+          where: {
+            id: { in: Array.from(new Set(ids)) },
+            project: { userId },
+          },
+          select: {
+            id: true,
+            agentHost: true,
+            executionHost: true,
+            status: true,
+          },
+        })).map((task) => ({
+          ...task,
+          taskType: "ai_task",
+          achievedAt: null,
+        }));
+      },
   );
   const tasksToBind = tasks.filter((task) => {
     const assignedHost = normalizeOptionalString(task.executionHost) || normalizeOptionalString(task.agentHost);
     const status = normalizeTaskStatus(task.status);
     const allowFireHostClaim = assignedHost !== agentHost && canFireHostClaimTask(task, agentHost);
     return (
-      assignedHost === agentHost ||
-      allowFireHostClaim
+      !task.achievedAt &&
+      (assignedHost === agentHost || allowFireHostClaim)
     ) && (
       status === "init" ||
       status === "running" ||
@@ -377,6 +385,7 @@ export const bindActiveTasksFromResume = async (
       where: {
         id: { in: taskIds },
         project: { userId },
+        ...(includeAchievedFilter ? { achievedAt: null } : {}),
         OR: [
           { executionHost: null },
           { executionHost: { not: agentHost } },
@@ -460,12 +469,14 @@ export const processAgentAliveTasks = async (args: {
     projectId: string;
     agentHost: string | null;
   }>;
-  try {
-    revocableTasks = await db.task.findMany({
+  let includeAchievedFilter = true;
+  const findRevocableTasks = (includeAchievedFilter: boolean) =>
+    db.task.findMany({
       where: {
         id: { in: candidates },
         project: { userId: args.userId },
         status: "killed",
+        ...(includeAchievedFilter ? { achievedAt: null } : {}),
         // The killed_reason column is gated by the 20260523120000 migration.
         // Pre-migration installs simply skip this push (and continue using
         // the user-initiated restart path), so we don't shim a fallback.
@@ -477,13 +488,32 @@ export const processAgentAliveTasks = async (args: {
       },
       select: { id: true, projectId: true, agentHost: true },
     });
+
+  try {
+    revocableTasks = await findRevocableTasks(true);
   } catch (error) {
-    console.warn(
-      `[agent-gateway] agent_alive_tasks lookup failed for ${args.agentHost}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-    return { revokedTaskIds: [], consideredCount: candidates.length, reason };
+    if (isMissingPtySchemaError(error)) {
+      try {
+        // A schema without `achieved_at` cannot contain achieved tasks, so
+        // omitting this one predicate preserves the older reconnect behavior.
+        includeAchievedFilter = false;
+        revocableTasks = await findRevocableTasks(false);
+      } catch (fallbackError) {
+        console.warn(
+          `[agent-gateway] agent_alive_tasks lookup failed for ${args.agentHost}: ${
+            fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+          }`,
+        );
+        return { revokedTaskIds: [], consideredCount: candidates.length, reason };
+      }
+    } else {
+      console.warn(
+        `[agent-gateway] agent_alive_tasks lookup failed for ${args.agentHost}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return { revokedTaskIds: [], consideredCount: candidates.length, reason };
+    }
   }
 
   if (revocableTasks.length === 0) {
@@ -500,6 +530,7 @@ export const processAgentAliveTasks = async (args: {
           id: task.id,
           status: "killed",
           killedReason: "daemon_disconnected",
+          ...(includeAchievedFilter ? { achievedAt: null } : {}),
         },
         data: {
           status: "running",
@@ -1698,6 +1729,7 @@ export const setupAgentGateway = (): WebSocketServer => {
                 select: {
                   id: true, projectId: true, status: true,
                   agentHost: true, executionHost: true, taskType: true,
+                  achievedAt: true,
                 },
               });
             } catch (error) {
@@ -1711,10 +1743,19 @@ export const setupAgentGateway = (): WebSocketServer => {
               });
               // taskType: null means fire host cannot claim this task on old schema —
               // this is intentional: old schema = old behavior (daemon-only).
-              task = partial ? { ...partial, taskType: null } : null;
+              task = partial ? { ...partial, taskType: null, achievedAt: null } : null;
             }
             if (!task) {
               sendEnvelope(socket, { type: "error", payload: { message: `Task ${taskId} not found` } });
+              break;
+            }
+            // Packing deletes TaskRuntimeState. Ignore late runtime snapshots so
+            // a zombie fire cannot recreate that row or rebind the archived
+            // task after teardown.
+            if (task.achievedAt) {
+              console.warn(
+                `[agent-gateway] dropped task_runtime_status from ${agentHost} for achieved task ${task.id}`,
+              );
               break;
             }
             try {

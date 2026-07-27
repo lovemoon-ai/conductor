@@ -900,6 +900,54 @@ describe('websocket runtime status handling', () => {
     expect(useTerminalStore.getState().byTask['task-delete-1']).toBeUndefined();
   });
 
+  it('removes a task from the active list on task_achieved (like delete, keeps server transcript)', () => {
+    useTasksStore.setState({
+      tasks: [
+        {
+          id: 'task-pack-1',
+          title: 'Pack Me',
+          taskType: 'ai_task',
+          status: 'killed',
+          createdAt: '2024-01-01T00:00:00.000Z',
+        },
+      ],
+      isLoading: false,
+      error: null,
+      currentProjectFilter: null,
+      unreadTaskIds: new Set(['task-pack-1']),
+    });
+
+    handleWSMessage({
+      type: 'task_achieved',
+      payload: { task_id: 'task-pack-1', project_id: 'proj-1' },
+    });
+
+    expect(useTasksStore.getState().tasks).toEqual([]);
+    expect(useTasksStore.getState().unreadTaskIds.size).toBe(0);
+  });
+
+  it('refetches within the current project scope on task_restored', () => {
+    const fetchTasksSpy = vi
+      .spyOn(useTasksStore.getState(), 'fetchTasks')
+      .mockResolvedValue(undefined);
+    const fetchGroupSpy = vi
+      .spyOn(useTasksStore.getState(), 'fetchTasksForProjects')
+      .mockResolvedValue(undefined);
+
+    // Single-project scope.
+    useTasksStore.setState({ currentProjectFilter: 'proj-9', currentProjectIds: [] });
+    handleWSMessage({ type: 'task_restored', payload: { task_id: 't', project_id: 'proj-9' } });
+    expect(fetchTasksSpy).toHaveBeenCalledWith('proj-9');
+    expect(fetchGroupSpy).not.toHaveBeenCalled();
+
+    // Merged-group scope.
+    fetchTasksSpy.mockClear();
+    useTasksStore.setState({ currentProjectFilter: null, currentProjectIds: ['a', 'b'] });
+    handleWSMessage({ type: 'task_restored', payload: { task_id: 't', project_id: 'a' } });
+    expect(fetchGroupSpy).toHaveBeenCalledWith(['a', 'b']);
+    expect(fetchTasksSpy).not.toHaveBeenCalled();
+  });
+
   it('refreshes projects when a projects_reordered event arrives', () => {
     const fetchProjectsSpy = vi.spyOn(useProjectsStore.getState(), 'fetchProjects').mockResolvedValue(undefined);
 

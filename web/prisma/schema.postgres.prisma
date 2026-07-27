@@ -223,6 +223,7 @@ model Task {
   sessionFilePath String? @map("session_file_path")
   launchConfig String? @map("launch_config")
   metadata  String?
+  achievedAt DateTime? @map("achieved_at")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -240,6 +241,7 @@ model Task {
   @@index([projectId])
   @@index([issueId])
   @@index([executionHost])
+  @@index([achievedAt])
   @@map("tasks")
 }
 

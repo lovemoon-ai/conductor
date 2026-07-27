@@ -242,6 +242,13 @@ const TrashIcon = () => (
   </svg>
 );
 
+const PackIcon = () => (
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7h18M4 7l1 12a2 2 0 002 2h10a2 2 0 002-2l1-12M9 11h6" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7l2-3h12l2 3" />
+  </svg>
+);
+
 const NewTaskIcon = () => (
   <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <circle cx="7" cy="6" r="2.5" strokeWidth={2} />
@@ -382,7 +389,7 @@ export function TaskItem({
   const dismissedStatusConfirmationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusBadgeRef = useRef<HTMLDivElement | null>(null);
 
-  const { updateTask, restartTask, deleteTask, markTaskRead, fetchTask } = useTasksStore();
+  const { updateTask, restartTask, deleteTask, achieveTask, markTaskRead, fetchTask } = useTasksStore();
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
 
@@ -418,6 +425,9 @@ export function TaskItem({
   // toggling / deleting that terminal.
   const showAttachedTerminalAction =
     taskType === 'ai_task' && !task.attachedTerminal;
+  // Packing preserves the chat transcript; only AI tasks have one. Terminal
+  // (PTY) tasks keep no chat, so packing them would preserve nothing useful.
+  const showAchieveAction = taskType === 'ai_task';
   const useMobileRenameBehavior = !desktopListPaneMode;
   const pinnedAt = normalizePinnedAt(taskMetadata?.pinnedAt);
   const isPinned = pinnedAt !== null;
@@ -434,6 +444,7 @@ export function TaskItem({
   const showSwipePinAction = !isPinned;
   const rightActionButtonCount =
     1 + // delete (always)
+    (showAchieveAction ? 1 : 0) + // pack / achieve (ai_task only)
     (showSwipePinAction ? 1 : 0) +
     (showRestartAction ? 1 : 0) +
     (showShareAction ? 1 : 0) +
@@ -777,6 +788,36 @@ export function TaskItem({
       const message = error instanceof Error ? error.message : 'Failed to delete task';
       pushToast({
         title: 'Failed to delete task',
+        description: message,
+        variant: 'error',
+      });
+    } finally {
+      closeSwipeActions();
+    }
+  };
+
+  const handleAchieve = async () => {
+    const accepted = await confirm({
+      title: 'Pack this task?',
+      description:
+        'The live session will be closed (like deleting), but the chat history is kept so you can search and revisit it later.',
+      confirmLabel: 'Pack',
+    });
+    if (!accepted) {
+      return;
+    }
+
+    try {
+      await achieveTask(task.id);
+      pushToast({
+        title: 'Task packed',
+        description: 'Its chat history is searchable in Settings → Achieved tasks.',
+        variant: 'success',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to pack task';
+      pushToast({
+        title: 'Failed to pack task',
         description: message,
         variant: 'error',
       });
@@ -1285,6 +1326,26 @@ export function TaskItem({
             className={swipeActionButtonClassName('default')}
           >
             <ShareIcon />
+          </button>
+        ) : null}
+        {showAchieveAction ? (
+          <button
+            type="button"
+            tabIndex={isRightActionsOpen ? 0 : -1}
+            aria-label="Pack task"
+            title="Pack (keep chat history)"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              void handleAchieve();
+            }}
+            onMouseEnter={showSwipeActionPopup('Pack')}
+            onMouseLeave={hideSwipeActionPopup}
+            onFocus={showSwipeActionPopup('Pack')}
+            onBlur={hideSwipeActionPopup}
+            className={swipeActionButtonClassName('default')}
+          >
+            <PackIcon />
           </button>
         ) : null}
         <button
