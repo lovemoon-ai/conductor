@@ -24,6 +24,7 @@ vi.mock("@/lib/db", () => ({
     task: {
       findMany: vi.fn(),
       deleteMany: vi.fn(),
+      updateMany: vi.fn(),
     },
     message: {
       deleteMany: vi.fn(),
@@ -418,6 +419,7 @@ describe("/api/projects/[projectId]", () => {
       ] as any);
       vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 2 } as any);
       vi.mocked(db.task.deleteMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.task.updateMany).mockResolvedValue({ count: 0 } as any);
       vi.mocked(db.project.delete).mockResolvedValue({ id: "proj-1" } as any);
 
       const request = createMockRequest({
@@ -427,6 +429,12 @@ describe("/api/projects/[projectId]", () => {
       const response = await DELETE(request, { params: Promise.resolve({ projectId: "proj-1" }) });
 
       expect(response.status).toBe(204);
+      // Tasks displayed under this project via `secondProjectId` are reverted
+      // to the inbox rather than orphaned when the project is hard-deleted.
+      expect(db.task.updateMany).toHaveBeenCalledWith({
+        where: { secondProjectId: "proj-1" },
+        data: { secondProjectId: null },
+      });
       expect(db.task.findMany).toHaveBeenCalledWith({
         where: { projectId: "proj-1" },
         select: {

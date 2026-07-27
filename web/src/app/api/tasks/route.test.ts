@@ -306,10 +306,15 @@ describe("/api/tasks", () => {
       });
       await GET(request);
 
+      // The filter honours the display-only `secondProjectId` override: tasks
+      // natively in `proj-1` (not moved out) OR moved into it are included.
       expect(db.task.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
-            projectId: "proj-1",
+            OR: [
+              { projectId: "proj-1", secondProjectId: null },
+              { secondProjectId: "proj-1" },
+            ],
           }),
         })
       );
@@ -332,7 +337,10 @@ describe("/api/tasks", () => {
       expect(db.task.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
-            projectId: { in: ["proj-a", "proj-b"] },
+            OR: [
+              { projectId: { in: ["proj-a", "proj-b"] }, secondProjectId: null },
+              { secondProjectId: { in: ["proj-a", "proj-b"] } },
+            ],
           }),
         }),
       );
@@ -411,6 +419,63 @@ describe("/api/tasks", () => {
           launch_config: null,
           pty_session: null,
         }),
+      ]);
+    });
+
+    it("degrades a filtered list to a plain projectId filter when second_project_id is missing", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+
+      // Simulate a DB that predates the second_project_id migration: any query
+      // that references the column (OR filter WHERE, or the default column
+      // SELECT) throws; only the plain projectId filter with a legacy select
+      // succeeds.
+      vi.mocked(db.task.findMany).mockImplementation(async (args: any) => {
+        const where = args?.where ?? {};
+        const referencesSecondProjectInWhere = Array.isArray(where.OR);
+        const selectsAllColumns = !args?.select; // include path selects second_project_id
+        if (referencesSecondProjectInWhere || selectsAllColumns) {
+          throw prismaError(
+            "P2022",
+            "The column `tasks.second_project_id` does not exist in the current database.",
+          );
+        }
+        return [
+          {
+            id: "task-degraded-1",
+            projectId: "proj-1",
+            title: "Degraded Task",
+            status: "running",
+            agentHost: "daemon-a",
+            executionHost: "daemon-a",
+            backendType: "codex",
+            sessionId: null,
+            sessionFilePath: null,
+            metadata: null,
+            createdAt: new Date("2024-01-01T00:00:00.000Z"),
+            updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+          },
+        ] as any;
+      });
+
+      const token = createTestToken("user-1");
+      const response = await GET(
+        createMockRequest({
+          token,
+          url: "http://localhost:6152/api/tasks?project_id=proj-1",
+        }),
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      // The degraded retry uses a plain projectId filter (no OR / secondProjectId).
+      expect(db.task.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ projectId: "proj-1" }),
+        }),
+      );
+      expect(data).toEqual([
+        expect.objectContaining({ id: "task-degraded-1", second_project_id: null }),
       ]);
     });
 

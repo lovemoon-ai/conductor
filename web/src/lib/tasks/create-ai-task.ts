@@ -58,6 +58,7 @@ type CreateAiTaskArgs = {
 type CreatedAiTask = {
   id: string;
   projectId: string;
+  secondProjectId?: string | null;
   issueId: string | null;
   title: string;
   taskType?: string | null;
@@ -229,7 +230,7 @@ const createAiTaskRecord = async (
         },
         select: taskSelectWithoutIssueId,
       });
-      return { ...created, issueId: null };
+      return { ...created, issueId: null, secondProjectId: null };
     }
     // Tier 2 fallback: genuinely missing PTY schema columns
     if (!isMissingPtySchemaError(error)) {

@@ -22,6 +22,7 @@ import {
   applyLegacyTaskShape,
   isMissingAnyNewSchemaError,
   isMissingPtySchemaError,
+  isMissingSecondProjectIdColumnError,
   legacyTaskSelect,
   PTY_SCHEMA_UNAVAILABLE_MESSAGE,
   taskSelectWithoutIssueId,
@@ -143,18 +144,43 @@ const buildTaskMessagePreviews = async (
   return previews;
 };
 
-// `projectIds` may be `null` (no filter), `[id]` (single project — kept as
-// `projectId = id` for query-plan parity with the historical path) or
-// `[a, b, …]` (cross-daemon merged group — uses `projectId IN (…)`).
+// `projectIds` may be `null` (no filter), `[id]` (single project) or
+// `[a, b, …]` (cross-daemon merged group). Display grouping honours the
+// display-only `secondProjectId` override so a moved default-project task
+// appears under its target project and NOT under the default one:
+//   - a task whose real `projectId` is in the set but which has been moved
+//     out (`secondProjectId` set) is EXCLUDED (mutual exclusion), and
+//   - a task moved INTO one of these projects (`secondProjectId` in the set)
+//     is INCLUDED even though its real `projectId` is the default project.
+// `secondProjectId` is only ever set on default-project tasks, so for regular
+// projects the second clause is a no-op and behaviour is unchanged.
 const buildProjectIdFilter = (projectIds: string[] | null): Record<string, unknown> => {
+  if (projectIds === null) return {};
+  const idClause = projectIds.length === 1 ? projectIds[0] : { in: projectIds };
+  return {
+    OR: [
+      { projectId: idClause, secondProjectId: null },
+      { secondProjectId: idClause },
+    ],
+  };
+};
+
+// Pre-`second_project_id` fallback filter: plain projectId match, no reference
+// to the display-only column. Used only when the DB predates the
+// `second_project_id` migration, so the OR-based filter above would throw.
+const buildLegacyProjectIdFilter = (
+  projectIds: string[] | null,
+): Record<string, unknown> => {
   if (projectIds === null) return {};
   if (projectIds.length === 1) return { projectId: projectIds[0] };
   return { projectId: { in: projectIds } };
 };
 
-const findTasksForList = async (userId: string, projectIds: string[] | null) => {
-  const projectFilter = buildProjectIdFilter(projectIds);
-  return withPtySchemaFallback(
+const runTaskListQuery = (
+  userId: string,
+  projectFilter: Record<string, unknown>,
+) =>
+  withPtySchemaFallback(
     "tasks.GET.list",
     () =>
       db.task.findMany({
@@ -184,8 +210,24 @@ const findTasksForList = async (userId: string, projectIds: string[] | null) => 
           ...taskSelectWithoutIssueId,
           ptySession: true,
         },
-      })).map((task) => ({ ...task, issueId: null })),
+      })).map((task) => ({ ...task, issueId: null, secondProjectId: null })),
   );
+
+const findTasksForList = async (userId: string, projectIds: string[] | null) => {
+  try {
+    return await runTaskListQuery(userId, buildProjectIdFilter(projectIds));
+  } catch (error) {
+    // The DB predates the `second_project_id` migration: the OR filter (and the
+    // column SELECT) reference a column that does not exist. Degrade to a plain
+    // projectId filter so the task list stays available until `db:push` runs.
+    // Mutual-exclusion display for moved tasks is inert in this window because
+    // no row can carry `secondProjectId` yet.
+    if (!isMissingSecondProjectIdColumnError(error)) throw error;
+    console.warn(
+      "[tasks.GET.list] second_project_id column missing; falling back to plain projectId filter. Run 'pnpm -C web db:push'.",
+    );
+    return runTaskListQuery(userId, buildLegacyProjectIdFilter(projectIds));
+  }
 };
 
 const getTaskListSortTime = (task: { updatedAt?: Date | null; createdAt: Date }) =>

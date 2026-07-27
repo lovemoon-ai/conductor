@@ -132,7 +132,7 @@ const findTaskDetail = async (userId: string, taskId: string) =>
           ptySession: true,
         },
       });
-      return task ? { ...task, issueId: null } : null;
+      return task ? { ...task, issueId: null, secondProjectId: null } : null;
     },
   );
 
@@ -161,7 +161,7 @@ const findTaskForPatch = async (userId: string, taskId: string) =>
           ptySession: true,
         },
       });
-      return task ? { ...task, issueId: null } : null;
+      return task ? { ...task, issueId: null, secondProjectId: null } : null;
     },
   );
 

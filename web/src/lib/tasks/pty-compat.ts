@@ -3,6 +3,7 @@ import { DEFAULT_TASK_TYPE } from "./task-config";
 type TaskWithLegacyFallback = {
   id: string;
   projectId: string;
+  secondProjectId?: string | null;
   issueId?: string | null;
   title: string;
   status: string;
@@ -87,6 +88,17 @@ const isMissingKilledStateColumnError = (error: unknown): boolean =>
   includesAny(errorMessage(error), ["killed_reason", "killedReason", "killed_at", "killedAt"]);
 
 /**
+ * True when the error is caused by a missing `second_project_id` column (a
+ * display-only field added after earlier migrations). Reads that only SELECT
+ * the column recover through the legacy-shape fallback; the task-list query,
+ * which also references it in its WHERE clause, degrades to a plain projectId
+ * filter (see `findTasksForList`).
+ */
+export const isMissingSecondProjectIdColumnError = (error: unknown): boolean =>
+  hasErrorCode(error, "P2022") &&
+  includesAny(errorMessage(error), ["second_project_id", "secondProjectId"]);
+
+/**
  * Returns true when task fields required by the current runtime are missing.
  * This historically handled PTY fields; killed-state fields join the same
  * legacy-shape fallback so rolling deployment can read pre-migration rows.
@@ -96,7 +108,8 @@ export const isMissingPtySchemaError = (error: unknown): boolean =>
   isMissingPtySessionTableError(error) ||
   isMissingTaskTypeColumnError(error) ||
   isMissingLaunchConfigColumnError(error) ||
-  isMissingKilledStateColumnError(error);
+  isMissingKilledStateColumnError(error) ||
+  isMissingSecondProjectIdColumnError(error);
 
 /**
  * Returns true when the error is caused by a missing issue_id column only.
@@ -165,14 +178,32 @@ export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
   task: T,
 ): T extends null
   ? null
-  : T & { taskType: string; launchConfig: null; ptySession: null; killedReason: null; killedAt: null } => {
+  : T & {
+      secondProjectId: null;
+      taskType: string;
+      launchConfig: null;
+      ptySession: null;
+      killedReason: null;
+      killedAt: null;
+    } => {
   if (!task) {
     return null as T extends null
       ? null
-      : T & { taskType: string; launchConfig: null; ptySession: null; killedReason: null; killedAt: null };
+      : T & {
+          secondProjectId: null;
+          taskType: string;
+          launchConfig: null;
+          ptySession: null;
+          killedReason: null;
+          killedAt: null;
+        };
   }
   return {
     ...task,
+    // `second_project_id` is a display-only column added after the legacy
+    // fallback selects; degraded schemas never carry it, so force null (same
+    // strategy as `issueId`) rather than SELECTing a possibly-missing column.
+    secondProjectId: null,
     issueId: task.issueId ?? null,
     taskType: DEFAULT_TASK_TYPE,
     launchConfig: null,
@@ -181,7 +212,14 @@ export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
     killedAt: null,
   } as T extends null
     ? null
-    : T & { taskType: string; launchConfig: null; ptySession: null; killedReason: null; killedAt: null };
+    : T & {
+        secondProjectId: null;
+        taskType: string;
+        launchConfig: null;
+        ptySession: null;
+        killedReason: null;
+        killedAt: null;
+      };
 };
 
 export const PTY_SCHEMA_UNAVAILABLE_MESSAGE =

@@ -93,7 +93,7 @@ const findRestartSourceTask = async (userId: string, taskId: string) =>
             where: { id: taskId, project: { userId } },
             select: taskSelectWithoutIssueId,
           });
-          return task ? { ...task, issueId: null } : null;
+          return task ? { ...task, issueId: null, secondProjectId: null } : null;
         },
         async () => {
           const task = await db.task.findFirst({
@@ -122,7 +122,7 @@ const updateTaskWithRestartFallback = async (
         ...args,
         select: taskSelectWithoutIssueId,
       });
-      return { ...task, issueId };
+      return { ...task, issueId, secondProjectId: null };
     } catch (fallbackError) {
       if (!isMissingPtySchemaError(fallbackError)) {
         throw fallbackError;
@@ -156,7 +156,7 @@ const createSuccessorTaskWithRestartFallback = async (
           data: dataWithoutIssueId,
           select: taskSelectWithoutIssueId,
         });
-        return { ...task, issueId: null };
+        return { ...task, issueId: null, secondProjectId: null };
       } catch (fallbackError) {
         if (!isMissingPtySchemaError(fallbackError)) {
           throw fallbackError;

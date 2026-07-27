@@ -90,6 +90,12 @@ interface TasksState {
   fetchTask: (taskId: string) => Promise<Task | null>;
   createTask: (input: CreateTaskInput) => Promise<Task>;
   updateTask: (taskId: string, input: UpdateTaskInput) => Promise<Task>;
+  /**
+   * Display-only "move task to project". Sets `secondProjectId` (or clears it
+   * with `null` to move the task back to the default project). Only valid for
+   * default-project tasks; never changes the task's real project or daemon.
+   */
+  setTaskSecondProject: (taskId: string, projectId: string | null) => Promise<Task>;
   restartTask: (taskId: string, input?: RestartTaskInput) => Promise<RestartTaskResponse>;
   cleanupTaskWorktree: (taskId: string) => Promise<CleanupTaskWorktreeResponse>;
   deleteTask: (taskId: string) => Promise<void>;
@@ -143,6 +149,7 @@ const normalizeAttachedTerminal = (raw: any): Task['attachedTerminal'] => {
 export const normalizeTask = (task: any): Task => ({
   id: task.id,
   projectId: task.projectId ?? task.project_id ?? null,
+  secondProjectId: task.secondProjectId ?? task.second_project_id ?? null,
   issueId: task.issueId ?? task.issue_id ?? null,
   title: task.title,
   taskType: task.taskType ?? task.task_type ?? 'ai_task',
@@ -429,6 +436,26 @@ export const useTasksStore = create<TasksState>()((set, get) => {
       } catch (error) {
         set({
           error: error instanceof Error ? error.message : 'Failed to update task',
+        });
+        throw error;
+      }
+    },
+
+    setTaskSecondProject: async (taskId, projectId) => {
+      try {
+        const api = getApiClient();
+        const task = normalizeTask(
+          await api.put<Task>(`/tasks/${taskId}/second-project`, {
+            second_project_id: projectId,
+          }),
+        );
+        set((state) => ({
+          tasks: upsertTask(state.tasks, task),
+        }));
+        return task;
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : 'Failed to move task',
         });
         throw error;
       }

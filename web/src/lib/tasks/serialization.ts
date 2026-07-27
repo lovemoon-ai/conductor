@@ -33,6 +33,7 @@ type SerializableAttachedTerminalSummary = {
 type SerializableTask = {
   id: string;
   projectId: string;
+  secondProjectId?: string | null;
   issueId?: string | null;
   title: string;
   taskType?: string | null;
@@ -79,6 +80,7 @@ const serializePtySession = (ptySession: SerializablePtySession | null) =>
 export const serializeTaskResponse = (task: SerializableTask) => ({
   id: task.id,
   project_id: task.projectId,
+  second_project_id: task.secondProjectId ?? null,
   issue_id: task.issueId ?? null,
   title: task.title,
   task_type: normalizeTaskType(task.taskType),
