@@ -706,12 +706,14 @@ describe('TaskList', () => {
         },
       };
 
-      render(<TaskList viewMode="list" projectFilter={null} />);
+      render(<TaskList viewMode="list" projectFilter={null} activeTaskId="task-2" />);
 
       await waitFor(() => {
         expect(document.querySelector('[data-task-tab-card="remote-group"]')).not.toBeNull();
       });
       expect(document.querySelector('[data-task-tab="task-1"]')?.textContent).toContain('Remote');
+      expect(document.querySelector('[data-task-tab="task-2"]')).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByText('Task Two:active')).toBeInTheDocument();
       expect(saveTaskCardGroupsScopeMock).not.toHaveBeenCalled();
       expect(window.localStorage.getItem(
         'conductor:task-list-groups:v2:user-1:projects%3Aall',

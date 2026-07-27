@@ -9,6 +9,7 @@ import type {
 } from '@/shared/types';
 import { getApiClient } from '@/shared/api/client';
 import { usePtyToggleStore } from './pty-toggle-store';
+import { useTaskCardGroupsSyncStore } from './task-card-groups-sync-store';
 
 let fetchTasksRequestSequence = 0;
 
@@ -450,6 +451,7 @@ export const useTasksStore = create<TasksState>()((set, get) => {
           mode: RestartTaskResponse['mode'];
           source_task_id: string;
           task: Task;
+          task_card_groups_snapshot?: unknown;
         }>(`/tasks/${taskId}/restart`, body);
         const incomingTask = normalizeTask(response.task);
         const task = mergeMutationTask(get().tasks.find((current) => current.id === incomingTask.id), incomingTask);
@@ -458,6 +460,11 @@ export const useTasksStore = create<TasksState>()((set, get) => {
         }));
         if (incomingTask.status === 'init') {
           void get().fetchTask(incomingTask.id);
+        }
+        if (response.task_card_groups_snapshot) {
+          useTaskCardGroupsSyncStore.getState().applySnapshot(
+            response.task_card_groups_snapshot,
+          );
         }
         return {
           mode: response.mode,

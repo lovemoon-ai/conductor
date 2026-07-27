@@ -351,6 +351,27 @@ export const addTaskToGroup = (
   });
 };
 
+/**
+ * Put a newly-created related task beside its source task using the same
+ * semantics as dragging task cards together. If the source already belongs to
+ * a tab card, keep that card intact and append the related task; otherwise
+ * create a new two-tab card.
+ */
+export const mergeTaskIntoSourceCardGroup = (
+  groups: TaskCardGroup[],
+  newGroupId: string,
+  sourceTaskId: string,
+  relatedTaskId: string,
+): TaskCardGroup[] => {
+  if (sourceTaskId === relatedTaskId) return groups;
+  const sourceGroup = groups.find((group) => group.taskIds.includes(sourceTaskId));
+  if (sourceGroup?.taskIds.includes(relatedTaskId)) return groups;
+  if (sourceGroup && sourceGroup.taskIds.length < MAX_SYNCED_TASKS_PER_CARD) {
+    return addTaskToGroup(groups, sourceGroup.id, relatedTaskId);
+  }
+  return createTaskCardGroup(groups, newGroupId, sourceTaskId, relatedTaskId);
+};
+
 /** Switch which tab is shown on top. */
 export const setActiveTaskCardTab = (
   groups: TaskCardGroup[],

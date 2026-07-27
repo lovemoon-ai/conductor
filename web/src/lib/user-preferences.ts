@@ -4,8 +4,10 @@ import {
   consolidateSyncedTaskCardGroups,
   LIST_CARD_GROUPS_SCOPE,
   MAX_SYNCED_TASK_CARD_SCOPES,
+  mergeTaskIntoSourceCardGroup,
   readSyncedTaskCardGroups,
   readTaskCardGroupsSyncSnapshot,
+  toSyncedTaskCardGroups,
   type SyncedTaskCardGroup,
   type TaskCardGroupsSyncSnapshot,
 } from "@/features/tasks/utils/task-card-groups";
@@ -358,6 +360,113 @@ export async function setTaskCardGroupsScope(
     } catch (error) {
       if (!isMissingUserPreferencesTableError(error)) throw error;
       warnMissingUserPreferencesSchema("task-card-groups.set", error);
+      throw new TaskCardGroupsPreferencesUnavailableError();
+    }
+  }
+
+  throw new TaskCardGroupsPreferencesConflictError();
+}
+
+/**
+ * Atomically group a newly-created successor beside its source task.
+ *
+ * The task list now has one global grouping scope, but older installations can
+ * still hold per-project scopes. Fold those scopes before applying the merge so
+ * a source task keeps its existing tab-card membership during the lazy
+ * migration. Compare-and-set retries prevent a concurrent drag/drop edit from
+ * being overwritten by branch creation.
+ */
+export async function mergeSuccessorTaskCardGroup(
+  userId: string,
+  sourceTaskId: string,
+  successorTaskId: string,
+): Promise<TaskCardGroupsSyncSnapshot> {
+  const normalizedSourceTaskId = sourceTaskId.trim();
+  const normalizedSuccessorTaskId = successorTaskId.trim();
+  if (!normalizedSourceTaskId || !normalizedSuccessorTaskId) {
+    throw new Error("Task card grouping requires source and successor task ids.");
+  }
+
+  for (let attempt = 0; attempt < TASK_CARD_GROUPS_WRITE_RETRIES; attempt += 1) {
+    let rows: RawPreferenceRow[];
+    try {
+      rows = await db.$queryRaw<RawPreferenceRow[]>`
+        SELECT "value"
+        FROM "user_preferences"
+        WHERE "user_id" = ${userId} AND "key" = ${TASK_CARD_GROUPS_PREFERENCES_KEY}
+        LIMIT 1
+      `;
+    } catch (error) {
+      if (!isMissingUserPreferencesTableError(error)) throw error;
+      warnMissingUserPreferencesSchema("task-card-groups.merge-successor", error);
+      throw new TaskCardGroupsPreferencesUnavailableError();
+    }
+
+    const previousRaw = rows[0]?.value;
+    const current = parseStoredTaskCardGroupsSnapshot(previousRaw);
+    const legacyScopes = Object.keys(current.scopes).filter(
+      (scope) => scope !== LIST_CARD_GROUPS_SCOPE,
+    );
+    const consolidated = consolidateSyncedTaskCardGroups([
+      current.scopes[LIST_CARD_GROUPS_SCOPE] ?? [],
+      ...legacyScopes.map((scope) => current.scopes[scope]),
+    ]);
+    const localGroups = consolidated.map((group) => ({
+      ...group,
+      activeIndex: 0,
+    }));
+    const mergedGroups = toSyncedTaskCardGroups(
+      mergeTaskIntoSourceCardGroup(
+        localGroups,
+        `tabcard-branch-${randomUUID()}`,
+        normalizedSourceTaskId,
+        normalizedSuccessorTaskId,
+      ),
+    );
+    if (!mergedGroups.some((group) =>
+      group.taskIds.includes(normalizedSourceTaskId)
+      && group.taskIds.includes(normalizedSuccessorTaskId)
+    )) {
+      throw new Error("Task card group limits prevent grouping the successor task.");
+    }
+
+    // Another writer may have completed the same idempotent merge while this
+    // request was retrying. Avoid an unnecessary revision bump in that case.
+    if (
+      legacyScopes.length === 0
+      && JSON.stringify(mergedGroups)
+        === JSON.stringify(current.scopes[LIST_CARD_GROUPS_SCOPE] ?? [])
+    ) {
+      return current;
+    }
+
+    const next = readTaskCardGroupsSyncSnapshot({
+      version: 1,
+      revision: current.revision + 1,
+      scopes: {
+        [LIST_CARD_GROUPS_SCOPE]: mergedGroups,
+      },
+    });
+    const nextRaw = JSON.stringify(next);
+
+    try {
+      const changed = previousRaw === undefined
+        ? await db.$executeRaw`
+            INSERT INTO "user_preferences" ("id", "user_id", "key", "value", "updated_at")
+            VALUES (${randomUUID()}, ${userId}, ${TASK_CARD_GROUPS_PREFERENCES_KEY}, ${nextRaw}, CURRENT_TIMESTAMP)
+            ON CONFLICT ("user_id", "key") DO NOTHING
+          `
+        : await db.$executeRaw`
+            UPDATE "user_preferences"
+            SET "value" = ${nextRaw}, "updated_at" = CURRENT_TIMESTAMP
+            WHERE "user_id" = ${userId}
+              AND "key" = ${TASK_CARD_GROUPS_PREFERENCES_KEY}
+              AND "value" = ${previousRaw}
+          `;
+      if (Number(changed) > 0) return next;
+    } catch (error) {
+      if (!isMissingUserPreferencesTableError(error)) throw error;
+      warnMissingUserPreferencesSchema("task-card-groups.merge-successor", error);
       throw new TaskCardGroupsPreferencesUnavailableError();
     }
   }
