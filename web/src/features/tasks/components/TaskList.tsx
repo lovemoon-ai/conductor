@@ -1165,22 +1165,29 @@ export function TaskList({
             const activeTask = visibleTaskById.get(group.activeTaskId);
             if (!activeTask) return null;
             const isDropTarget = dropTargetId === group.id;
-            // Tabs paint the card's own background so the strip and the card
-            // read as one surface. That background can equal the page
-            // background (an idle card in pane mode is `--surface-default`),
-            // so tabs keep a border to stay legible where they overhang it.
+            // The active tab paints the card's current background so the strip
+            // and card read as one selected surface. Inactive tabs keep the
+            // card's resting background so selecting a task only highlights
+            // the tab that owns the visible card.
             const cardSurfaceColor = taskCardSurfaceColor({
               desktopListPaneMode,
               selectionMode,
               isSelected: selectedTaskIds.has(activeTask.id),
               isActive: activeTaskId === activeTask.id,
             });
+            const restingCardSurfaceColor = taskCardSurfaceColor({
+              desktopListPaneMode,
+              selectionMode,
+            });
             return (
               <div
                 key={group.id}
                 ref={setRowRef(group.id, false)}
                 data-task-tab-card={group.id}
-                style={{ '--task-card-surface': cardSurfaceColor } as CSSProperties}
+                style={{
+                  '--task-card-surface': cardSurfaceColor,
+                  '--task-card-resting-surface': restingCardSurfaceColor,
+                } as CSSProperties}
                 className="relative"
               >
                 {/* Tabs sit flush on the card's top edge (-mb-px overlaps the
@@ -1211,10 +1218,10 @@ export function TaskList({
                         onPointerCancel={clearTabLongPress}
                         onClick={() => handleTabClick(group.id, taskId)}
                         onDoubleClick={() => handleTabDoubleClick(group.id, taskId)}
-                        className={`flex shrink-0 cursor-pointer select-none items-center rounded-t-[10px] border border-[var(--border-default)] bg-[var(--task-card-surface,var(--surface-panel))] px-3 py-1.5 text-xs transition-colors ${
+                        className={`flex shrink-0 cursor-pointer select-none items-center rounded-t-[10px] border border-[var(--border-default)] px-3 py-1.5 text-xs transition-colors ${
                           isActiveTab
-                            ? 'border-b-transparent font-semibold text-[var(--accent)]'
-                            : 'font-medium text-muted hover:border-[var(--accent)] hover:text-ink'
+                            ? 'border-b-transparent bg-[var(--task-card-surface,var(--surface-panel))] font-semibold text-[var(--accent)]'
+                            : 'bg-[var(--task-card-resting-surface,var(--surface-panel))] font-medium text-muted hover:border-[var(--accent)] hover:text-ink'
                         }`}
                       >
                         {isEditing ? (
