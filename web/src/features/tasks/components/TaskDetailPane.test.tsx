@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { TaskDetailPane } from './TaskDetailPane';
 import { usePtyToggleStore } from '../pty-toggle-store';
 
@@ -43,7 +43,9 @@ vi.mock('@/features/chat', () => ({
 }));
 
 vi.mock('@/features/terminal', () => ({
-  TerminalView: ({ task }: { task: { id: string } }) => <div data-testid="terminal-view">terminal:{task.id}</div>,
+  TerminalView: ({ task }: { task: { id: string; status?: string } }) => (
+    <div data-testid="terminal-view">terminal:{task.id}:{task.status}</div>
+  ),
 }));
 
 vi.mock('@/components/common/LoadingSpinner', () => ({
@@ -218,5 +220,79 @@ describe('TaskDetailPane', () => {
     );
     expect(screen.queryByTestId('chat-view')).not.toBeInTheDocument();
     expect(apiGetMock).toHaveBeenCalledWith('/tasks/task-attached-pty');
+  });
+
+  it('propagates a PTY init->running status into the locally-hydrated terminal without re-navigation', async () => {
+    // The attached PTY task is hydrated once via api.get and kept out of the
+    // shared store, so it never sees realtime updates on its own. A PTY is
+    // created in `init` and only later flips to `running`. Regression: the
+    // stale `init` left TerminalView's refresh disabled and auto-attach
+    // suppressed until the user navigated away and back. The fix mirrors the
+    // owning AI task's denormalized `attachedTerminal.ptyTaskStatus` into the
+    // local snapshot; this test pins that in-place propagation.
+    fetchTaskMock.mockResolvedValue(null);
+    apiGetMock.mockResolvedValue({
+      id: 'task-attached-init',
+      title: 'Attached terminal',
+      task_type: 'pty_task',
+      status: 'init',
+      agent_host: 'daemon-a',
+      execution_host: 'daemon-a',
+      pty_session: { cols: 80, rows: 24 },
+      created_at: '2026-03-23T00:00:00.000Z',
+      updated_at: null,
+    });
+    usePtyToggleStore.setState({
+      byAiTaskId: { 'task-ai-pty': true },
+      hasHydrated: true,
+    });
+
+    const aiTaskInit = {
+      id: 'task-ai-pty',
+      title: 'AI with fresh terminal',
+      taskType: 'ai_task',
+      status: 'running',
+      attachedTerminal: {
+        id: 'attached-1',
+        ptyTaskId: 'task-attached-init',
+        ptyTaskStatus: 'init',
+      },
+      createdAt: '2026-03-23T00:00:00.000Z',
+    };
+    useTasksStoreMock.mockReturnValue({
+      tasks: [aiTaskInit],
+      fetchTask: fetchTaskMock,
+      markTaskRead: markTaskReadMock,
+    });
+
+    const view = render(<TaskDetailPane taskId="task-ai-pty" />);
+
+    // Initial hydration: the PTY snapshot carries the stale `init` status.
+    expect(await screen.findByTestId('terminal-view')).toHaveTextContent(
+      'terminal:task-attached-init:init',
+    );
+
+    // Realtime `task_status_update` for the PTY refreshes the owning AI task's
+    // denormalized status; re-render the store with the fresh value.
+    useTasksStoreMock.mockReturnValue({
+      tasks: [
+        {
+          ...aiTaskInit,
+          attachedTerminal: {
+            ...aiTaskInit.attachedTerminal,
+            ptyTaskStatus: 'running',
+          },
+        },
+      ],
+      fetchTask: fetchTaskMock,
+      markTaskRead: markTaskReadMock,
+    });
+    view.rerender(<TaskDetailPane taskId="task-ai-pty" />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('terminal-view')).toHaveTextContent(
+        'terminal:task-attached-init:running',
+      ),
+    );
   });
 });

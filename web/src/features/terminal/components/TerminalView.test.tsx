@@ -13,46 +13,51 @@ const deleteTaskMock = vi.fn();
 const confirmMock = vi.fn();
 const pushToastMock = vi.fn();
 
-const { terminalWriteMock, terminalClearMock, MockTerminal, MockFitAddon } = vi.hoisted(() => {
-  const terminalWriteMock = vi.fn();
-  const terminalClearMock = vi.fn();
+const { terminalWriteMock, terminalClearMock, terminalFocusMock, MockTerminal, MockFitAddon } =
+  vi.hoisted(() => {
+    const terminalWriteMock = vi.fn();
+    const terminalClearMock = vi.fn();
+    const terminalFocusMock = vi.fn();
 
-  class HoistedMockTerminal {
-    cols = 80;
-    rows = 24;
+    class HoistedMockTerminal {
+      cols = 80;
+      rows = 24;
 
-    open() {}
+      open() {}
 
-    write(data: string) {
-      terminalWriteMock(data);
+      write(data: string) {
+        terminalWriteMock(data);
+      }
+
+      clear() {
+        terminalClearMock();
+      }
+
+      focus() {
+        terminalFocusMock();
+      }
+
+      dispose() {}
+
+      loadAddon() {}
+
+      onData() {
+        return { dispose() {} };
+      }
     }
 
-    clear() {
-      terminalClearMock();
+    class HoistedMockFitAddon {
+      fit() {}
     }
 
-    focus() {}
-
-    dispose() {}
-
-    loadAddon() {}
-
-    onData() {
-      return { dispose() {} };
-    }
-  }
-
-  class HoistedMockFitAddon {
-    fit() {}
-  }
-
-  return {
-    terminalWriteMock,
-    terminalClearMock,
-    MockTerminal: HoistedMockTerminal,
-    MockFitAddon: HoistedMockFitAddon,
-  };
-});
+    return {
+      terminalWriteMock,
+      terminalClearMock,
+      terminalFocusMock,
+      MockTerminal: HoistedMockTerminal,
+      MockFitAddon: HoistedMockFitAddon,
+    };
+  });
 
 vi.mock('./xterm-loader', () => ({
   loadXtermModules: vi.fn().mockResolvedValue({
@@ -108,6 +113,7 @@ describe('TerminalView', () => {
     pushToastMock.mockReset();
     terminalWriteMock.mockReset();
     terminalClearMock.mockReset();
+    terminalFocusMock.mockReset();
     useWebSocketStore.setState({
       status: 'connected',
       ws: null,
@@ -1383,5 +1389,62 @@ describe('TerminalView', () => {
     await flushMicrotasks();
 
     expect(screen.getByText('Latency 120ms')).toBeInTheDocument();
+  });
+
+  it('re-focuses the terminal when the session transitions to open (regression: cursor missing on first attach)', async () => {
+    // The only initial focus() runs synchronously during async setup, while
+    // the session is still `connecting` and the detail pane may still be mid
+    // panel-switch transition — so the blinking cursor did not appear on first
+    // attach until the user manually clicked refresh. The fix re-focuses on the
+    // transition to `open`; this test pins that behavior. rAF is stubbed to run
+    // synchronously so the focus fires within the act() below.
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', () => {});
+
+    const task = {
+      id: 'task-pty-focus-on-open',
+      title: 'PTY Focus On Open',
+      taskType: 'pty_task',
+      status: 'running',
+      agentHost: 'debug',
+      executionHost: 'debug',
+      launchConfig: null,
+      ptySession: {
+        cols: 80,
+        rows: 24,
+      },
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: null,
+    } as any;
+
+    render(<TerminalView task={task} />);
+    await flushMicrotasks();
+
+    // Ignore the initial setup focus; we only assert the open-transition focus.
+    terminalFocusMock.mockClear();
+
+    act(() => {
+      useTerminalStore.setState((state) => ({
+        byTask: {
+          ...state.byTask,
+          [task.id]: {
+            ...(state.byTask[task.id] as any),
+            taskId: task.id,
+            connectionState: 'open',
+            isAttached: true,
+            hasWriteAccess: true,
+            viewerCount: 1,
+            preferredMode: 'write',
+            transportState: 'relay',
+            banner: null,
+          },
+        },
+      }));
+    });
+
+    expect(terminalFocusMock).toHaveBeenCalled();
   });
 });

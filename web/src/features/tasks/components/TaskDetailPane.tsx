@@ -132,6 +132,30 @@ export function TaskDetailPane({
     };
   }, [attachedPtyTaskId, ptyActive]);
 
+  // Keep the locally-hydrated PTY task's status fresh.
+  //
+  // The attached PTY row is fetched once via `api.get` above and is NOT part
+  // of the shared task store, so it never sees realtime updates. A PTY is
+  // created in status `init` (POST /api/tasks/[taskId]/terminal) and only
+  // flips to `running` once the daemon reports back — but that later
+  // `task_status_update` never reaches this local snapshot. The stale `init`
+  // makes TerminalView treat the task as non-attachable: its refresh button
+  // stays disabled and auto-attach is suppressed until the user navigates away
+  // and back (which forces a re-fetch). The owning AI task DOES carry the live
+  // PTY status via the server-denormalized `attachedTerminal.ptyTaskStatus`
+  // field (refreshed when the PTY's `task_status_update` arrives), so mirror
+  // that into the local snapshot to propagate `init → running` in place.
+  const livePtyTaskStatus =
+    isAiTask && attachedPtyTaskId ? task?.attachedTerminal?.ptyTaskStatus ?? null : null;
+  useEffect(() => {
+    if (!livePtyTaskStatus) return;
+    setAttachedPtyTask((current) =>
+      current && current.status !== livePtyTaskStatus
+        ? { ...current, status: livePtyTaskStatus }
+        : current,
+    );
+  }, [livePtyTaskStatus]);
+
   if (!task && pendingTaskId === taskId) {
     return (
       <div className="flex h-full items-center justify-center">

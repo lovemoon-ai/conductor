@@ -652,6 +652,30 @@ export function TerminalView({ task }: TerminalViewProps) {
     sendAttach(connectionState === 'connecting' ? 'reconnect' : 'initial');
   }, [connectionState, isTerminalReady, sendAttach, shouldAutoAttach, task.id, websocketStatus]);
 
+  // Re-focus the terminal once the session actually opens.
+  //
+  // The initial `terminal.focus()` in the setup effect fires synchronously
+  // right after `terminal.open()`, while `connectionState` is still
+  // `connecting` and the detail pane may still be mid panel-switch transition
+  // (the element can be non-visible, making `.focus()` a browser no-op). As a
+  // result the blinking input cursor did not appear on first attach until the
+  // user manually clicked the refresh button. Re-focusing on the transition to
+  // `open` — after a frame so layout/animation has settled — makes the cursor
+  // show up automatically. `requestAnimationFrame` also lets the fit run
+  // against the final size.
+  useEffect(() => {
+    if (!isTerminalReady || connectionState !== 'open' || typeof window === 'undefined') {
+      return;
+    }
+    const raf = window.requestAnimationFrame(() => {
+      syncSizeRef.current();
+      terminalRef.current?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(raf);
+    };
+  }, [connectionState, isTerminalReady]);
+
   useEffect(() => {
     if (transportState === 'direct' || transportState === 'fallback_relay' || transportState === 'relay') {
       if (directNegotiationTimerRef.current) {
