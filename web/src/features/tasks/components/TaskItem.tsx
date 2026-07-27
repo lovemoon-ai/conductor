@@ -17,6 +17,7 @@ import { PtyToggleButton } from './PtyToggleButton';
 import { useTasksStore } from '../store';
 import { usePtyToggleStore } from '../pty-toggle-store';
 import { getStableTaskBackend } from '../utils/task-filter';
+import { useProjectsStore } from '@/features/projects/store';
 import { useRuntimeStore } from '@/features/realtime';
 import { getApiClient } from '@/shared/api/client';
 import { Dialog } from '@/components/common/Dialog';
@@ -124,6 +125,105 @@ const SwipeActionPopup = ({ state }: { state: SwipeActionPopupState }) => {
       className="pointer-events-none whitespace-nowrap rounded bg-[var(--ink)]/95 px-2 py-1 text-[11px] leading-none text-[var(--paper)] shadow-lg"
     >
       {label}
+    </div>,
+    document.body,
+  );
+};
+
+// Display-only "move to project" picker. Rendered into document.body via a
+// portal (fixed positioning) so it escapes the task card wrapper's
+// `overflow-hidden` clip box. Lists the caller's own projects; selecting one
+// sets the task's `secondProjectId` (display override only). A moved task also
+// gets a "move back to inbox" entry that clears the override.
+const MoveToProjectMenu = ({
+  anchor,
+  projects,
+  movedToProjectId,
+  disabled,
+  onSelect,
+  onDismiss,
+}: {
+  anchor: { top: number; left: number; bottom: number };
+  projects: { id: string; name: string; daemonHost?: string | null }[];
+  movedToProjectId: string | null;
+  disabled: boolean;
+  onSelect: (projectId: string | null) => void;
+  onDismiss: () => void;
+}) => {
+  useEffect(() => {
+    const handlePointerDown = () => onDismiss();
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onDismiss();
+    };
+    // Defer binding so the opening click doesn't immediately dismiss.
+    const timer = setTimeout(() => {
+      document.addEventListener('pointerdown', handlePointerDown);
+      document.addEventListener('keydown', handleKey);
+    }, 0);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [onDismiss]);
+
+  if (typeof document === 'undefined') return null;
+  return createPortal(
+    <div
+      role="menu"
+      style={{
+        position: 'fixed',
+        top: anchor.bottom + 4,
+        left: anchor.left,
+        zIndex: 9999,
+      }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      className="max-h-64 w-56 overflow-y-auto rounded-lg border border-border bg-[var(--paper)] py-1 shadow-lg"
+    >
+      {movedToProjectId ? (
+        <button
+          type="button"
+          role="menuitem"
+          disabled={disabled}
+          onClick={() => onSelect(null)}
+          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink hover:bg-[var(--accent)]/10 disabled:opacity-50"
+        >
+          ← 移回收件箱
+        </button>
+      ) : null}
+      {movedToProjectId && projects.length > 0 ? (
+        <div className="my-1 border-t border-border" />
+      ) : null}
+      {projects.map((project) => {
+        const isCurrentTarget = project.id === movedToProjectId;
+        const daemonHost =
+          typeof project.daemonHost === 'string' && project.daemonHost.trim()
+            ? project.daemonHost.trim()
+            : null;
+        return (
+          <button
+            key={project.id}
+            type="button"
+            role="menuitem"
+            disabled={disabled || isCurrentTarget}
+            onClick={() => onSelect(project.id)}
+            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--accent)]/10 disabled:opacity-50 ${
+              isCurrentTarget ? 'text-[var(--accent)]' : 'text-ink'
+            }`}
+            title={daemonHost ? `${project.name} (${daemonHost})` : project.name}
+          >
+            <span className="truncate">{project.name}</span>
+            {daemonHost ? (
+              <span className="shrink-0 text-xs text-muted">({daemonHost})</span>
+            ) : null}
+            {isCurrentTarget ? <span className="ml-auto text-xs">✓</span> : null}
+          </button>
+        );
+      })}
+      {projects.length === 0 && !movedToProjectId ? (
+        <div className="px-3 py-2 text-sm text-muted">暂无可用项目</div>
+      ) : null}
     </div>,
     document.body,
   );
@@ -292,6 +392,18 @@ const SelectIcon = ({ selected }: { selected: boolean }) => (
   </svg>
 );
 
+const MoveToProjectIcon = () => (
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={2}
+      d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"
+    />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 13h6m0 0l-2-2m2 2l-2 2" />
+  </svg>
+);
+
 const TerminalIcon = () => (
   <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <rect x="3" y="5" width="18" height="14" rx="2" strokeWidth={2} />
@@ -333,6 +445,16 @@ export function TaskItem({
   const [shareDialog, setShareDialog] = useState<ShareDialogState | null>(null);
   const [lastShareDialog, setLastShareDialog] = useState<ShareDialogState | null>(null);
   const [swipeActionPopup, setSwipeActionPopup] = useState<SwipeActionPopupState | null>(null);
+  // Display-only "move to project" dropdown (left-swipe action). Open state is
+  // local; the actual move is a `secondProjectId` write that never touches the
+  // task's real project or daemon. The menu is rendered through a portal (see
+  // below) so it escapes the card wrapper's `overflow-hidden` clip box, hence
+  // we stash the anchor button's viewport rect when opening.
+  const [moveMenuAnchor, setMoveMenuAnchor] = useState<
+    { top: number; left: number; bottom: number } | null
+  >(null);
+  const isMoveMenuOpen = moveMenuAnchor !== null;
+  const [isMovingProject, setIsMovingProject] = useState(false);
   // Two-click in-place unpin confirmation. First click on the trailing pin
   // icon arms the confirmation; a second click within the timeout actually
   // unpins. Any other interaction (or the timeout) silently disarms it.
@@ -389,7 +511,16 @@ export function TaskItem({
   const dismissedStatusConfirmationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusBadgeRef = useRef<HTMLDivElement | null>(null);
 
-  const { updateTask, restartTask, deleteTask, achieveTask, markTaskRead, fetchTask } = useTasksStore();
+  const {
+    updateTask,
+    restartTask,
+    deleteTask,
+    achieveTask,
+    markTaskRead,
+    fetchTask,
+    setTaskSecondProject,
+  } = useTasksStore();
+  const projects = useProjectsStore((state) => state.projects);
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
 
@@ -451,6 +582,38 @@ export function TaskItem({
     (showAttachedTerminalAction ? 1 : 0);
   const rightActionColumns = Math.max(1, Math.ceil(rightActionButtonCount / 2));
   const rightActionWidth = RIGHT_ACTION_BUTTON_WIDTH * rightActionColumns;
+  // Display-only "move to project" availability. Only tasks whose REAL project
+  // is the default project may be moved; a moved task keeps `projectId ===
+  // default`, so it stays eligible and can always be moved back (clear
+  // `secondProjectId`). Collaboration projects are excluded per the feature
+  // spec (only the caller's own projects are valid targets).
+  const defaultProjectId = useMemo(
+    () => projects.find((project) => project.isDefault)?.id ?? null,
+    [projects],
+  );
+  const moveTargetProjects = useMemo(
+    () =>
+      projects.filter(
+        (project) => !project.isDefault && !project.hidden && !project.collaborationId,
+      ),
+    [projects],
+  );
+  const isDefaultProjectTask =
+    !!defaultProjectId && (task.projectId ?? null) === defaultProjectId;
+  const movedToProjectId =
+    typeof task.secondProjectId === 'string' && task.secondProjectId.trim()
+      ? task.secondProjectId.trim()
+      : null;
+  // Re-targeting (picking a project) is only offered for default-project tasks.
+  // The picker lists the caller's own non-default projects.
+  const moveMenuProjects = isDefaultProjectTask ? moveTargetProjects : [];
+  // The move action is available when the task can be moved out (default-project
+  // task with somewhere to go) OR moved back (already carries an override). The
+  // latter keeps "move back to inbox" reachable even if the user later switched
+  // their default project, which would otherwise strand the task.
+  const canMoveToProject =
+    (isDefaultProjectTask && moveTargetProjects.length > 0) || movedToProjectId !== null;
+  const leftActionWidth = LEFT_ACTION_WIDTH * (canMoveToProject ? 2 : 1);
   // When the button count is odd, the bottom-right cell would otherwise be
   // a void. We render a small decorative slot there so the row stays
   // visually balanced (and gives the user a tiny moment of delight).
@@ -482,7 +645,29 @@ export function TaskItem({
   const closeSwipeActions = useCallback(() => {
     setSwipeOffsetValue(0);
     didSwipeRef.current = false;
+    setMoveMenuAnchor(null);
   }, [setSwipeOffsetValue]);
+
+  const handleMoveToProject = useCallback(
+    async (targetProjectId: string | null) => {
+      if (isMovingProject) return;
+      setIsMovingProject(true);
+      try {
+        await setTaskSecondProject(task.id, targetProjectId);
+        setMoveMenuAnchor(null);
+        closeSwipeActions();
+      } catch (error) {
+        pushToast({
+          title: 'Failed to move task',
+          description: error instanceof Error ? error.message : 'Please try again.',
+          variant: 'error',
+        });
+      } finally {
+        setIsMovingProject(false);
+      }
+    },
+    [closeSwipeActions, isMovingProject, pushToast, setTaskSecondProject, task.id],
+  );
 
   useEffect(() => {
     if ((!isKillConfirming && !isRestartConfirming) || typeof document === 'undefined') {
@@ -573,12 +758,12 @@ export function TaskItem({
       return;
     }
     const delta = event.clientX - startXRef.current;
-    const nextOffset = clamp(startOffsetRef.current + delta, -rightActionWidth, LEFT_ACTION_WIDTH);
+    const nextOffset = clamp(startOffsetRef.current + delta, -rightActionWidth, leftActionWidth);
     if (Math.abs(nextOffset - startOffsetRef.current) > SWIPE_START_THRESHOLD) {
       didSwipeRef.current = true;
     }
     setSwipeOffsetValue(nextOffset);
-  }, [rightActionWidth, setSwipeOffsetValue]);
+  }, [leftActionWidth, rightActionWidth, setSwipeOffsetValue]);
 
   const finalizeSwipe = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current || pointerIdRef.current !== event.pointerId) {
@@ -589,8 +774,8 @@ export function TaskItem({
 
     const currentOffset = swipeOffsetRef.current;
     let targetOffset = 0;
-    if (currentOffset >= LEFT_ACTION_WIDTH * SWIPE_OPEN_THRESHOLD) {
-      targetOffset = LEFT_ACTION_WIDTH;
+    if (currentOffset >= leftActionWidth * SWIPE_OPEN_THRESHOLD) {
+      targetOffset = leftActionWidth;
     } else if (currentOffset <= -rightActionWidth * SWIPE_OPEN_THRESHOLD) {
       targetOffset = -rightActionWidth;
     }
@@ -601,7 +786,7 @@ export function TaskItem({
     if (typeof target.hasPointerCapture === 'function' && target.hasPointerCapture(event.pointerId)) {
       target.releasePointerCapture(event.pointerId);
     }
-  }, [rightActionWidth, setSwipeOffsetValue]);
+  }, [leftActionWidth, rightActionWidth, setSwipeOffsetValue]);
 
   const consumeTap = useCallback(() => {
     if (dismissedStatusConfirmationRef.current) {
@@ -1211,7 +1396,11 @@ export function TaskItem({
 
   return (
     <div className="relative overflow-hidden rounded-2xl">
-      <div className="absolute inset-y-0 left-0 z-0 flex w-[52px] items-center justify-center" aria-hidden={!isLeftActionsOpen}>
+      <div
+        className="absolute inset-y-0 left-0 z-0 flex items-center justify-center gap-1 bg-[var(--paper)]"
+        style={{ width: `${leftActionWidth}px` }}
+        aria-hidden={!isLeftActionsOpen}
+      >
         <button
           type="button"
           tabIndex={isLeftActionsOpen ? 0 : -1}
@@ -1234,7 +1423,42 @@ export function TaskItem({
         >
           <SelectIcon selected={isSelected} />
         </button>
+        {canMoveToProject ? (
+          <button
+            type="button"
+            tabIndex={isLeftActionsOpen ? 0 : -1}
+            aria-label={movedToProjectId ? 'Move task back to inbox' : 'Move task to project'}
+            title={movedToProjectId ? 'Move back to inbox' : 'Move to project'}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (isMoveMenuOpen) {
+                setMoveMenuAnchor(null);
+                return;
+              }
+              const rect = e.currentTarget.getBoundingClientRect();
+              setMoveMenuAnchor({ top: rect.top, left: rect.left, bottom: rect.bottom });
+            }}
+            className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${
+              movedToProjectId
+                ? 'border-[var(--accent)] text-[var(--accent)] hover:bg-[var(--accent)]/10'
+                : 'border-border bg-[var(--paper)] text-muted hover:border-[var(--accent)] hover:text-[var(--accent)]'
+            }`}
+          >
+            <MoveToProjectIcon />
+          </button>
+        ) : null}
       </div>
+      {canMoveToProject && moveMenuAnchor ? (
+        <MoveToProjectMenu
+          anchor={moveMenuAnchor}
+          projects={moveMenuProjects}
+          movedToProjectId={movedToProjectId}
+          disabled={isMovingProject}
+          onSelect={(projectId) => void handleMoveToProject(projectId)}
+          onDismiss={() => setMoveMenuAnchor(null)}
+        />
+      ) : null}
 
       {/*
         2-row, column-flow grid. With `grid-auto-flow: column` the items fill

@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import type { Task } from '@/shared/types';
-import { filterTasksByProject, resolveTaskDaemonHost } from './task-filter';
+import {
+  filterTasksByProject,
+  resolveTaskDaemonHost,
+  resolveTaskDisplayProjectId,
+} from './task-filter';
 
-const makeTask = (id: string, projectId: string | null): Task => ({
+const makeTask = (
+  id: string,
+  projectId: string | null,
+  secondProjectId: string | null = null,
+): Task => ({
   id,
   projectId,
+  secondProjectId,
   issueId: null,
   title: id,
   taskType: 'ai_task',
@@ -70,6 +79,46 @@ describe('filterTasksByProject', () => {
     expect(
       filterTasksByProject(tasks, ['proj-a'], ['proj-a']),
     ).toEqual([]);
+  });
+});
+
+describe('resolveTaskDisplayProjectId', () => {
+  it('falls back to the real projectId when no secondProjectId is set', () => {
+    expect(resolveTaskDisplayProjectId(makeTask('t', 'proj-a'))).toBe('proj-a');
+  });
+
+  it('prefers secondProjectId when present', () => {
+    expect(resolveTaskDisplayProjectId(makeTask('t', 'default', 'proj-b'))).toBe('proj-b');
+  });
+
+  it('ignores blank secondProjectId', () => {
+    expect(resolveTaskDisplayProjectId(makeTask('t', 'proj-a', '   '))).toBe('proj-a');
+  });
+});
+
+describe('filterTasksByProject with display-only secondProjectId', () => {
+  // A task whose real project is `default` but which was "moved" to `proj-b`.
+  const movedTask = makeTask('moved', 'default', 'proj-b');
+  const defaultTask = makeTask('stays', 'default');
+  const tasks: Task[] = [movedTask, defaultTask, makeTask('native', 'proj-b')];
+
+  it('shows a moved task under its target project, not its real one', () => {
+    expect(filterTasksByProject(tasks, 'proj-b').map((t) => t.id)).toEqual([
+      'moved',
+      'native',
+    ]);
+  });
+
+  it('excludes a moved task from its real (default) project view (mutual exclusion)', () => {
+    expect(filterTasksByProject(tasks, 'default').map((t) => t.id)).toEqual(['stays']);
+  });
+
+  it('buckets a moved task under the target when hiding by display id', () => {
+    // Hiding the target project hides the moved task even though its real
+    // projectId is not hidden.
+    expect(filterTasksByProject(tasks, null, ['proj-b']).map((t) => t.id)).toEqual([
+      'stays',
+    ]);
   });
 });
 

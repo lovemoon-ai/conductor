@@ -197,6 +197,13 @@ export interface AttachedTerminalSummary {
 export interface Task {
   id: string;
   projectId?: string | null;
+  /**
+   * Display-only secondary project. When set (only ever on a task whose real
+   * `projectId` is the user's default project), the task is rendered under this
+   * project instead of the default one. It never affects the daemon, session,
+   * or any behaviour beyond which project bucket the card appears in.
+   */
+  secondProjectId?: string | null;
   issueId?: string | null;
   title: string;
   taskType?: TaskType;

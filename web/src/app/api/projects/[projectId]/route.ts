@@ -416,6 +416,15 @@ export async function DELETE(
     await tx.task.deleteMany({
       where: { projectId },
     });
+    // Tasks that were *displayed* under this project via the display-only
+    // `secondProjectId` override still live in their real (default) project.
+    // Clearing the override reverts them to the inbox instead of leaving them
+    // orphaned — pointing at a project that no longer exists would hide them
+    // from every task-list view (excluded from default, target gone).
+    await tx.task.updateMany({
+      where: { secondProjectId: projectId },
+      data: { secondProjectId: null },
+    });
     await tx.project.delete({
       where: { id: projectId },
     });

@@ -17,7 +17,12 @@ import type { TaskType } from '@/lib/tasks/task-config';
 import { orderTasksWithPinnedFirst, useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
 import { useAuthStore } from '@/features/auth/store';
-import { filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } from '../utils/task-filter';
+import {
+  filterTasksByProject,
+  getStableTaskBackend,
+  resolveTaskDaemonHost,
+  resolveTaskDisplayProjectId,
+} from '../utils/task-filter';
 import { taskCardSurfaceColor } from '../utils/task-card-surface';
 import { TaskItem } from './TaskItem';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
@@ -1036,7 +1041,7 @@ export function TaskList({
   };
 
   const renderTaskItem = (task: Task) => {
-    const projectEntry = projectMap.get(task.projectId ?? '');
+    const projectEntry = projectMap.get(resolveTaskDisplayProjectId(task) ?? '');
     // Resolve the per-card daemon via the same fallback chain used by the filter
     // helpers so, e.g., Default-Project tasks still render their daemon chip.
     const taskDaemonHost = showDaemonHost
