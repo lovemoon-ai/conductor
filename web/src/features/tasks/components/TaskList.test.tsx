@@ -505,11 +505,10 @@ describe('TaskList', () => {
       expect(onOpenTask).toHaveBeenCalledWith('task-2');
     });
 
-    // The tabs sit flush on the card's top edge, so they must paint the card's
-    // own background or the seam shows as a color band. TaskItem is mocked
-    // here, so this covers the wiring (wrapper publishes the var, tabs consume
-    // it); task-card-surface.test.ts covers class -> color against globals.css.
-    it('publishes the card surface to the tabs and tracks the selection state', async () => {
+    // The active tab sits flush on the card's top edge, so it must paint the
+    // card's current background or the seam shows as a color band. Inactive
+    // tabs keep the resting background when the card becomes selected.
+    it('highlights only the active tab when its task card is selected', async () => {
       const { rerender } = render(<TaskList viewMode="list" projectFilter={null} />);
       primeRowRects();
       dragCardOnto('task-1', 0, 100);
@@ -520,35 +519,67 @@ describe('TaskList', () => {
         return el as HTMLElement;
       });
 
-      const tabs = Array.from(tabCard.querySelectorAll('[data-task-tab]'));
-      expect(tabs).toHaveLength(2);
-      for (const tab of tabs) {
-        expect(tab).toHaveClass('bg-[var(--task-card-surface,var(--surface-panel))]');
+      const activeTab = tabCard.querySelector('[data-task-tab="task-1"]') as HTMLElement;
+      const inactiveTab = tabCard.querySelector('[data-task-tab="task-2"]') as HTMLElement;
+      expect(activeTab).toHaveAttribute('aria-selected', 'true');
+      expect(inactiveTab).toHaveAttribute('aria-selected', 'false');
+      for (const tab of [activeTab, inactiveTab]) {
         // Tabs stay outlined: an idle pane card shares the page background,
         // so a fill-only tab would be invisible.
         expect(tab).toHaveClass('border-[var(--border-default)]');
       }
+      expect(activeTab).toHaveClass('bg-[var(--task-card-surface,var(--surface-panel))]');
+      expect(inactiveTab).toHaveClass(
+        'bg-[var(--task-card-resting-surface,var(--surface-panel))]',
+      );
 
-      // Unselected, non-pane card -> the plain card surface.
+      // With no task selected/open, both variables resolve to the card's plain
+      // surface, so the whole tab strip still matches the card.
       expect(tabCard.style.getPropertyValue('--task-card-surface')).toBe(
         taskCardSurfaceColor({}),
       );
       expect(tabCard.style.getPropertyValue('--task-card-surface')).toBe('var(--surface-panel)');
+      expect(tabCard.style.getPropertyValue('--task-card-resting-surface')).toBe(
+        'var(--surface-panel)',
+      );
 
-      // In pane mode with a different task open, the card drops to the idle
-      // pane surface and the tabs must follow it.
+      // Once this task is selected, only its active tab consumes the selected
+      // card color; the other tab keeps the previous resting color.
       rerender(
-        <TaskList viewMode="list" projectFilter={null} desktopListPaneMode activeTaskId="task-3" />,
+        <TaskList viewMode="list" projectFilter={null} activeTaskId="task-1" />,
       );
       await waitFor(() => {
         const el = document.querySelector('[data-task-tab-card]') as HTMLElement;
         expect(el.style.getPropertyValue('--task-card-surface')).toBe(
-          taskCardSurfaceColor({ desktopListPaneMode: true }),
+          taskCardSurfaceColor({ isActive: true }),
+        );
+      });
+      expect(tabCard.style.getPropertyValue('--task-card-surface')).toBe(
+        'var(--surface-task-active)',
+      );
+      expect(tabCard.style.getPropertyValue('--task-card-resting-surface')).toBe(
+        'var(--surface-panel)',
+      );
+
+      // Pane mode uses a different selected/resting pair, but preserves the
+      // same active-tab-only distinction.
+      rerender(
+        <TaskList viewMode="list" projectFilter={null} desktopListPaneMode activeTaskId="task-1" />,
+      );
+      await waitFor(() => {
+        const el = document.querySelector('[data-task-tab-card]') as HTMLElement;
+        expect(el.style.getPropertyValue('--task-card-surface')).toBe(
+          taskCardSurfaceColor({ desktopListPaneMode: true, isActive: true }),
         );
       });
       expect(
         (document.querySelector('[data-task-tab-card]') as HTMLElement).style.getPropertyValue(
           '--task-card-surface',
+        ),
+      ).toBe('var(--surface-panel)');
+      expect(
+        (document.querySelector('[data-task-tab-card]') as HTMLElement).style.getPropertyValue(
+          '--task-card-resting-surface',
         ),
       ).toBe('var(--surface-default)');
     });
