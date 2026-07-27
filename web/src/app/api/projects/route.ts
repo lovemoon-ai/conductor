@@ -16,6 +16,7 @@ import {
   resolveTaskWorktreeCleanupHost,
 } from "@/lib/tasks/worktree";
 import { stopTaskBeforeRelaunch } from "@/lib/tasks/task-stop";
+import { isMissingPtySchemaError } from "@/lib/tasks/pty-compat";
 import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 import { countActiveScheduledMessagesForProjects } from "@/lib/tasks/scheduled-messages";
 import {
@@ -310,6 +311,26 @@ const getNextProjectSortOrder = async (userId: string): Promise<number | null> =
   }
 };
 
+// Per-project status counts, excluding achieved (packed) tasks. On a
+// pre-migration schema that lacks `achieved_at`, retry without the filter so
+// the projects list keeps working (such rows can't be achieved anyway).
+const groupTaskStatusCounts = async (userId: string) => {
+  try {
+    return await db.task.groupBy({
+      by: ["projectId", "status"],
+      where: { project: { userId }, achievedAt: null },
+      _count: { _all: true },
+    });
+  } catch (error) {
+    if (!isMissingPtySchemaError(error)) throw error;
+    return db.task.groupBy({
+      by: ["projectId", "status"],
+      where: { project: { userId } },
+      _count: { _all: true },
+    });
+  }
+};
+
 export const GET = requireActiveSubscription(async (_request: NextRequest, user) => {
   const [projects, defaultProjects, taskStatusGroups, activeScheduledMessageCounts] = await Promise.all([
     listProjectsForDisplay(user.id),
@@ -317,11 +338,7 @@ export const GET = requireActiveSubscription(async (_request: NextRequest, user)
       where: { userId: user.id },
       select: { projectId: true },
     }),
-    db.task.groupBy({
-      by: ["projectId", "status"],
-      where: { project: { userId: user.id } },
-      _count: { _all: true },
-    }),
+    groupTaskStatusCounts(user.id),
     countActiveScheduledMessagesForProjects({ userId: user.id }),
   ]);
   const defaultProjectIds = new Set(defaultProjects.map((entry) => entry.projectId));

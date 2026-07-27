@@ -46,6 +46,7 @@ type SerializableTask = {
   metadata: unknown;
   lastUserMessage?: string | null;
   lastAssistantMessage?: string | null;
+  achievedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
   ptySession?: SerializablePtySession | null;
@@ -92,6 +93,8 @@ export const serializeTaskResponse = (task: SerializableTask) => ({
   metadata: parseJsonObject(task.metadata),
   last_user_message: task.lastUserMessage ?? null,
   last_assistant_message: task.lastAssistantMessage ?? null,
+  achieved_at: task.achievedAt?.toISOString() ?? null,
+  achievedAt: task.achievedAt?.toISOString() ?? null,
   created_at: task.createdAt.toISOString(),
   updated_at: task.updatedAt.toISOString(),
   active_scheduled_message_count: Math.max(0, task.activeScheduledMessageCount ?? 0),

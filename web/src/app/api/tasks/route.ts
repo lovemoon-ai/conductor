@@ -154,6 +154,9 @@ const buildProjectIdFilter = (projectIds: string[] | null): Record<string, unkno
 
 const findTasksForList = async (userId: string, projectIds: string[] | null) => {
   const projectFilter = buildProjectIdFilter(projectIds);
+  // Achieved (packed) tasks are excluded from the active list and all counts.
+  // Their transcripts live on for search via the Achieved-task manager.
+  const activeFilter = { achievedAt: null };
   return withPtySchemaFallback(
     "tasks.GET.list",
     () =>
@@ -161,11 +164,15 @@ const findTasksForList = async (userId: string, projectIds: string[] | null) => 
         where: {
           project: { userId },
           ...projectFilter,
+          ...activeFilter,
         },
         include: {
           ptySession: true,
         },
       }),
+    // Fallback tiers run only on pre-migration schemas that lack newer
+    // columns. Such rows cannot be achieved (no `achieved_at` column), so the
+    // active filter is intentionally omitted here to keep the query valid.
     async () =>
       (await db.task.findMany({
         where: {
@@ -184,7 +191,7 @@ const findTasksForList = async (userId: string, projectIds: string[] | null) => 
           ...taskSelectWithoutIssueId,
           ptySession: true,
         },
-      })).map((task) => ({ ...task, issueId: null })),
+      })).map((task) => ({ ...task, issueId: null, achievedAt: null })),
   );
 };
 

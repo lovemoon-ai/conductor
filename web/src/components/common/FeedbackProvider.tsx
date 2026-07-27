@@ -51,6 +51,10 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const confirm = useCallback((options: ConfirmOptions) => new Promise<boolean>((resolve) => {
+    // Only one confirm dialog can be rendered. Resolve an older pending caller
+    // as canceled before replacing it; otherwise a rapid second action
+    // overwrites the resolver and leaves the first Promise pending forever.
+    confirmResolverRef.current?.(false);
     confirmResolverRef.current = resolve;
     setConfirmState({ ...options, open: true });
   }), []);

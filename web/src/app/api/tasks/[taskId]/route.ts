@@ -65,6 +65,16 @@ import { countActiveScheduledMessagesForTasks } from "@/lib/tasks/scheduled-mess
 const DELETE_SNAPSHOT_TRIGGER = "task_delete";
 const KILLING_TIMEOUT_MS = 60_000;
 
+const isMissingTaskDiagnosticsSnapshotSchemaError = (error: unknown): boolean => {
+  const code = (error as { code?: unknown })?.code;
+  const message = String((error as { message?: unknown })?.message || "").toLowerCase();
+  return (
+    code === "P2021" &&
+    (message.includes("task_diagnostics_snapshots") ||
+      message.includes("taskdiagnosticssnapshot"))
+  );
+};
+
 const normalizeHost = (value: unknown): string => {
   if (typeof value !== "string") return "";
   return value.trim();
@@ -132,7 +142,7 @@ const findTaskDetail = async (userId: string, taskId: string) =>
           ptySession: true,
         },
       });
-      return task ? { ...task, issueId: null } : null;
+      return task ? { ...task, issueId: null, achievedAt: null } : null;
     },
   );
 
@@ -161,7 +171,7 @@ const findTaskForPatch = async (userId: string, taskId: string) =>
           ptySession: true,
         },
       });
-      return task ? { ...task, issueId: null } : null;
+      return task ? { ...task, issueId: null, achievedAt: null } : null;
     },
   );
 
@@ -1036,25 +1046,39 @@ export async function DELETE(
   const user = userResult;
 
   const { taskId } = await params;
-  const existing = await db.task.findFirst({
-    where: { id: taskId, project: { userId: user.id } },
-    select: {
-      id: true,
-      projectId: true,
-      taskType: true,
-      agentHost: true,
-      executionHost: true,
-      status: true,
-      launchConfig: true,
-      metadata: true,
-      project: {
-        select: {
-          daemonHost: true,
-        },
+  const permanentArchivedDelete =
+    request.nextUrl.searchParams.get("permanent") === "1";
+  const deleteTaskSelect = {
+    id: true,
+    projectId: true,
+    taskType: true,
+    agentHost: true,
+    executionHost: true,
+    status: true,
+    launchConfig: true,
+    metadata: true,
+    project: {
+      select: {
+        daemonHost: true,
       },
     },
+  } as const;
+  const existing = await db.task.findFirst({
+    where: { id: taskId, project: { userId: user.id } },
+    select: permanentArchivedDelete
+      ? { ...deleteTaskSelect, achievedAt: true }
+      : deleteTaskSelect,
   });
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (
+    permanentArchivedDelete
+    && !(existing as typeof existing & { achievedAt?: Date | null }).achievedAt
+  ) {
+    return NextResponse.json(
+      { error: "Only archived tasks can be permanently deleted through this action" },
+      { status: 409 },
+    );
+  }
 
   // If an AI task has an attached terminal, kill that PTY task FIRST so the
   // agent receives the kill signal. Doing it before deleting the AI task
@@ -1108,6 +1132,65 @@ export async function DELETE(
         }
       }
     }
+  }
+
+  // Archived tasks have already gone through teardownTaskRuntime. Permanent
+  // deletion therefore removes their retained transcript/task data directly,
+  // without creating the diagnostics snapshot that ordinary live-task delete
+  // deliberately keeps. Existing snapshots are purged as well so the archived
+  // task cannot be reconstructed from Conductor's task database.
+  if (permanentArchivedDelete) {
+    const deleteArchivedTaskData = async (includeDiagnosticsSnapshots: boolean) =>
+      db.$transaction(async (tx) => {
+        if (includeDiagnosticsSnapshots) {
+          await tx.taskDiagnosticsSnapshot.deleteMany({
+            where: { userId: user.id, taskId },
+          });
+        }
+        await tx.message.deleteMany({
+          where: { taskId },
+        });
+        try {
+          await tx.ptySession.deleteMany({
+            where: { taskId },
+          });
+        } catch (error) {
+          if (!isMissingPtySchemaError(error)) {
+            throw error;
+          }
+        }
+        await tx.task.delete({ where: { id: taskId } });
+      });
+
+    try {
+      await deleteArchivedTaskData(true);
+    } catch (error) {
+      // Very old/self-hosted schemas may predate diagnostics snapshots. Their
+      // absence must not make a permanent archived-task delete impossible.
+      if (!isMissingTaskDiagnosticsSnapshotSchemaError(error)) {
+        throw error;
+      }
+      await deleteArchivedTaskData(false);
+    }
+
+    try {
+      await deleteTaskAttachmentDirectory(taskId);
+    } catch (error) {
+      console.error(
+        `[tasks] failed to delete attachment directory after permanent archived-task delete: taskId=${taskId}, error=${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    realtimeHub.broadcast(user.id, existing.projectId, {
+      type: "task_deleted",
+      payload: {
+        task_id: taskId,
+        project_id: existing.projectId,
+      },
+    });
+    realtimeHub.unbindTask(taskId);
+    return new NextResponse(null, { status: 204 });
   }
 
   try {

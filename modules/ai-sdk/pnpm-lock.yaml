@@ -38,8 +38,8 @@ importers:
         version: 5.9.3
     optionalDependencies:
       '@love-moon/chat-web':
-        specifier: ^0.7.6
-        version: 0.7.6
+        specifier: ^0.7.7
+        version: 0.7.7
 
 packages:
 
@@ -322,8 +322,8 @@ packages:
     peerDependencies:
       hono: ^4
 
-  '@love-moon/chat-web@0.7.6':
-    resolution: {integrity: sha512-YLSWF52ddPoUwnltQIoUw+NXHGOfYEfOHqwPiWd9U5w51249FJZtg/lFRSCgsi6+r6qhAPTdMIM5lPxm65kAyg==}
+  '@love-moon/chat-web@0.7.7':
+    resolution: {integrity: sha512-qmlICaQvcfL/JKdzNUC1kUFiVxWbAxcwK5JZ3xPPiQ+mZoWl6bXz9aE/iA2SGAUeTRLuwtOcSsGWOBkmcyiXLA==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -946,7 +946,7 @@ snapshots:
     dependencies:
       hono: 4.12.31
 
-  '@love-moon/chat-web@0.7.6':
+  '@love-moon/chat-web@0.7.7':
     dependencies:
       playwright: 1.60.0
     optional: true

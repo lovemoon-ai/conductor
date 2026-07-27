@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { TaskList } from './TaskList';
 import { taskCardSurfaceColor } from '../utils/task-card-surface';
 
@@ -27,6 +27,7 @@ const dragCardOnto = (fromTaskId: string, fromTop: number, toTop: number) => {
 };
 
 const deleteTaskMock = vi.fn();
+const achieveTaskMock = vi.fn();
 const taskItemMock = vi.fn();
 const taskGraphViewMock = vi.fn();
 const hydrateTaskCardGroupsMock = vi.fn();
@@ -48,6 +49,7 @@ type FakeTask = {
   metadata?: Record<string, unknown> | null;
   agentHost?: string | null;
   executionHost?: string | null;
+  taskType?: 'ai_task' | 'pty_task';
 };
 
 let tasksState: {
@@ -56,6 +58,7 @@ let tasksState: {
   unreadTaskIds: Set<string>;
   currentProjectFilter: string | null;
   deleteTask: typeof deleteTaskMock;
+  achieveTask: typeof achieveTaskMock;
 };
 let projectsState: {
   projects: Array<{ id: string; name: string; daemonHost?: string | null }>;
@@ -107,11 +110,17 @@ vi.mock('./TaskItem', () => ({
     showDaemonHost?: boolean;
     projectName?: string | null;
     projectDaemonHost?: string | null;
+    onToggleSelect?: (taskId: string) => void;
   }) => {
     taskItemMock(props);
     return (
       <div data-testid={`task-item-${props.task.id}`}>
         {props.task.title}:{props.isActive ? 'active' : 'idle'}
+        <button
+          type="button"
+          aria-label={`Select ${props.task.title}`}
+          onClick={() => props.onToggleSelect?.(props.task.id)}
+        />
       </div>
     );
   },
@@ -142,6 +151,9 @@ describe('TaskList', () => {
 
   beforeEach(() => {
     deleteTaskMock.mockReset();
+    achieveTaskMock.mockReset();
+    deleteTaskMock.mockResolvedValue(undefined);
+    achieveTaskMock.mockResolvedValue(undefined);
     taskItemMock.mockReset();
     taskGraphViewMock.mockReset();
     hydrateTaskCardGroupsMock.mockReset();
@@ -165,6 +177,7 @@ describe('TaskList', () => {
       unreadTaskIds: new Set(['task-2']),
       currentProjectFilter: 'project-1',
       deleteTask: deleteTaskMock,
+      achieveTask: achieveTaskMock,
     };
     projectsState = {
       projects: [
@@ -184,6 +197,108 @@ describe('TaskList', () => {
     expect(screen.queryByRole('button', { name: 'List view' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Grid view' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Refresh tasks' })).toBeNull();
+  });
+
+  it('shows icon-only selection actions and archives all selected tasks', async () => {
+    tasksState = {
+      ...tasksState,
+      currentProjectFilter: null,
+    };
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+
+    try {
+      render(<TaskList viewMode="list" projectFilter={null} />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Select Task One' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Select Task Two' }));
+
+      const toolbar = screen.getByRole('toolbar', { name: 'Selected task actions' });
+      const toolbarButtons = within(toolbar).getAllByRole('button');
+      expect(toolbarButtons).toHaveLength(3);
+      expect(within(toolbar).getByRole('button', { name: 'Clear task selection' })).toHaveTextContent('');
+      const archiveButton = within(toolbar).getByRole('button', {
+        name: 'Archive 2 selected tasks',
+      });
+      expect(archiveButton).toHaveTextContent('');
+      expect(archiveButton).toHaveClass('text-muted', 'hover:text-ink');
+      expect(archiveButton.querySelector('svg')).toHaveClass('size-4');
+      const deleteButton = within(toolbar).getByRole('button', {
+        name: 'Delete 2 selected tasks',
+      });
+      expect(deleteButton).toHaveTextContent('');
+      expect(deleteButton).toHaveClass('text-[var(--error)]');
+      expect(deleteButton.querySelector('svg')).toHaveClass('size-4');
+
+      fireEvent.click(archiveButton);
+
+      await waitFor(() => {
+        expect(achieveTaskMock).toHaveBeenCalledTimes(2);
+      });
+      expect(achieveTaskMock).toHaveBeenCalledWith('task-1');
+      expect(achieveTaskMock).toHaveBeenCalledWith('task-2');
+      expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining(
+        'Archive 2 selected tasks?',
+      ));
+      expect(screen.queryByRole('toolbar', { name: 'Selected task actions' })).toBeNull();
+    } finally {
+      confirmSpy.mockRestore();
+      alertSpy.mockRestore();
+    }
+  });
+
+  it('keeps only failed tasks selected after a partial batch archive', async () => {
+    tasksState = {
+      ...tasksState,
+      currentProjectFilter: null,
+    };
+    achieveTaskMock
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('daemon unavailable'));
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+
+    try {
+      render(<TaskList viewMode="list" projectFilter={null} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Select Task One' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Select Task Two' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Archive 2 selected tasks' }));
+
+      await waitFor(() => {
+        expect(screen.getByText('1 selected')).toBeInTheDocument();
+      });
+      expect(screen.getByRole('button', {
+        name: 'Archive 1 selected task',
+      })).toBeEnabled();
+    } finally {
+      confirmSpy.mockRestore();
+      alertSpy.mockRestore();
+    }
+  });
+
+  it('disables batch archive when the selection includes a PTY task', () => {
+    tasksState = {
+      ...tasksState,
+      currentProjectFilter: null,
+      tasks: [
+        { id: 'task-1', title: 'Task One', projectId: 'project-1', status: 'running' },
+        {
+          id: 'task-2',
+          title: 'Task Two',
+          projectId: 'project-2',
+          status: 'completed',
+          taskType: 'pty_task',
+        },
+      ],
+    };
+
+    render(<TaskList viewMode="list" projectFilter={null} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Select Task One' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Select Task Two' }));
+
+    expect(screen.getByRole('button', {
+      name: 'Archive 2 selected tasks',
+    })).toBeDisabled();
   });
 
   it('shows loading spinner when loading the initial task set', () => {

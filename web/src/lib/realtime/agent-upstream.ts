@@ -418,6 +418,26 @@ export async function commitSdkMessage(input: {
   // already-dead task.
   const task = await fetchOwnedTaskRecord(input.userId, input.taskId);
 
+  // Achieved (packed) guard: the task was packed — its runtime is torn down and
+  // its transcript is frozen at pack time. A late SDK stream (e.g. a fire that
+  // was mid-resume when the task was packed) must NOT append to the frozen
+  // transcript or resurrect the task. Drop it and stop the zombie backend.
+  if ((task as { achievedAt?: Date | null }).achievedAt) {
+    await stopKilledTaskBackend({
+      userId: input.userId,
+      agentHost: input.agentHost,
+      taskId: task.id,
+      projectId: task.projectId,
+    });
+    return {
+      taskId: task.id,
+      projectId: task.projectId,
+      messageId: normalizeOptionalString(input.messageId),
+      duplicate: true,
+      dropped: true,
+    };
+  }
+
   // Split-brain guard: the task is already terminal (`killed`) yet this host is
   // still streaming SDK output — the backend session was never actually stopped
   // (a defensive `daemon_disconnected` kill only touches the DB, or a
@@ -568,7 +588,32 @@ export async function commitTaskStatusUpdate(input: {
   // Normalize before the ownership check: whether a daemon may speak for a
   // dead fire depends on the status being terminal.
   const incomingStatus = normalizeTaskStatus(input.status);
-  const task = await getOwnedTask(input.userId, input.taskId, input.agentHost, {
+  // Achieved (packed) guard: fetch WITHOUT enforcing ownership first, so a late
+  // daemon status report can't rebind or resurrect a packed task. A packed task
+  // is torn down and hidden; its status must stay frozen (otherwise a stray
+  // "running" report re-breaks the terminal invariant and blocks in-place
+  // un-pack). Drop the report and stop the zombie backend.
+  const task = await fetchOwnedTaskRecord(input.userId, input.taskId);
+  if ((task as { achievedAt?: Date | null }).achievedAt) {
+    // A non-terminal report means the supposedly torn-down backend is still
+    // alive. Re-stop it. Terminal reports are harmless late confirmations;
+    // sending another stop for those can create a stop/report loop.
+    if (!TERMINAL_TASK_STATUSES.has(incomingStatus)) {
+      await stopKilledTaskBackend({
+        userId: input.userId,
+        agentHost: input.agentHost,
+        taskId: task.id,
+        projectId: task.projectId,
+      });
+    }
+    return {
+      taskId: task.id,
+      projectId: task.projectId,
+      status: normalizeTaskStatus(task.status),
+      duplicate: false,
+    };
+  }
+  await ensureAgentOwnsTaskRecord(input.userId, task, input.agentHost, {
     allowOwningDaemonTerminalReport:
       incomingStatus === "killed" || incomingStatus === "completed",
   });

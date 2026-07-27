@@ -213,8 +213,40 @@ export interface Task {
   ptySession?: PtySession | null;
   attachedTerminal?: AttachedTerminalSummary | null;
   activeScheduledMessageCount?: number;
+  /** Non-null once the task has been achieved (packed). Achieved tasks are
+   * excluded from the active list; their transcript is kept for search. */
+  achievedAt?: string | null;
   createdAt: string;
   updatedAt?: string | null;
+}
+
+/**
+ * A row in the Achieved-task manager: a packed task surfaced for search and
+ * retrieval. Carries a matched transcript snippet and its origin project.
+ */
+export interface AchievedTaskSummary {
+  id: string;
+  title: string;
+  projectId?: string | null;
+  projectName?: string | null;
+  backendType?: string | null;
+  agentHost?: string | null;
+  /** Durable daemon association; differs from agentHost for manual-fire tasks. */
+  daemonHost?: string | null;
+  status: TaskStatus;
+  achievedAt: string;
+  createdAt: string;
+  /** Best matching snippet from the transcript for the current query, if any. */
+  snippet?: string | null;
+  messageCount?: number;
+}
+
+export interface AchievedTasksPage {
+  tasks: AchievedTaskSummary[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
 }
 
 // Message Types

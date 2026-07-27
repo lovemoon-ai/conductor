@@ -414,6 +414,45 @@ describe("/api/tasks", () => {
       ]);
     });
 
+    it("falls back to legacy task reads when the achieved_at column is missing", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.task.findMany)
+        .mockRejectedValueOnce(
+          prismaError("P2022", 'The column `tasks.achieved_at` does not exist in the current database.'),
+        )
+        .mockResolvedValueOnce([
+          {
+            id: "task-preachieve-1",
+            projectId: "proj-1",
+            title: "Pre-migration Task",
+            status: "running",
+            agentHost: "daemon-a",
+            executionHost: "daemon-a",
+            backendType: "codex",
+            sessionId: null,
+            sessionFilePath: null,
+            metadata: null,
+            createdAt: new Date("2024-01-01T00:00:00.000Z"),
+            updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+          },
+        ] as any);
+
+      const token = createTestToken("user-1");
+      const response = await GET(createMockRequest({ token }));
+      const data = await extractJson(response);
+
+      // The endpoint must degrade gracefully instead of 500-ing on a
+      // pre-migration DB, and the fallback query must NOT reference achieved_at.
+      expect(response.status).toBe(200);
+      const fallbackArgs = vi.mocked(db.task.findMany).mock.calls[1][0] as any;
+      expect(fallbackArgs.where.achievedAt).toBeUndefined();
+      expect(data).toEqual([
+        expect.objectContaining({ id: "task-preachieve-1", achievedAt: null }),
+      ]);
+    });
+
     it("falls back to legacy task reads when issue relation columns are missing", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
 

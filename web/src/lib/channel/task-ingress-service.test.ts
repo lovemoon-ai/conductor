@@ -245,6 +245,35 @@ describe('task-ingress-service', () => {
     );
   });
 
+  it('keeps archived transcripts read-only even when a stale fire owner remains persisted', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1',
+      projectId: 'proj-1',
+      agentHost: 'daemon-a',
+      executionHost: 'conductor-fire-runtime',
+      achievedAt: new Date('2026-07-27T00:00:00.000Z'),
+    } as any);
+
+    await expect(
+      appendUserMessageToTask({
+        userId: 'user-1',
+        taskId: 'task-1',
+        content: 'late message',
+        role: 'user',
+      }),
+    ).rejects.toMatchObject({
+      code: 'TASK_ARCHIVED',
+      status: 409,
+      details: {
+        error: 'Task archived',
+      },
+    });
+
+    expect(db.message.create).not.toHaveBeenCalled();
+    expect(db.task.update).not.toHaveBeenCalled();
+    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+  });
+
   it('reuses an existing client message id and still enqueues the user message command', async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue({
       id: 'task-1',

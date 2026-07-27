@@ -476,6 +476,32 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
       break;
     }
 
+    case 'task_achieved': {
+      // A packed (achieved) task leaves the active list and all counts, exactly
+      // like a delete on the client side. Its transcript stays on the server
+      // and is reachable via the Achieved-task manager.
+      const taskId = normalizeTaskId(payload);
+      if (!taskId) break;
+      useTasksStore.getState().removeTask(taskId);
+      useChatStore.getState().clearMessages(taskId);
+      useRuntimeStore.getState().clearTask(taskId);
+      useTerminalStore.getState().clearTask(taskId);
+      break;
+    }
+
+    case 'task_restored': {
+      // An un-packed (unachieved) task returns to the active list. Refetch
+      // using the CURRENT project scope so the store's project-scope guard
+      // doesn't drop an unscoped refetch (which would no-op under a filter).
+      const tasksStore = useTasksStore.getState();
+      if (tasksStore.currentProjectIds.length > 0) {
+        void tasksStore.fetchTasksForProjects(tasksStore.currentProjectIds);
+      } else {
+        void tasksStore.fetchTasks(tasksStore.currentProjectFilter ?? undefined);
+      }
+      break;
+    }
+
     case 'projects_reordered': {
       void useProjectsStore.getState().fetchProjects();
       break;

@@ -92,6 +92,12 @@ interface TasksState {
   restartTask: (taskId: string, input?: RestartTaskInput) => Promise<RestartTaskResponse>;
   cleanupTaskWorktree: (taskId: string) => Promise<CleanupTaskWorktreeResponse>;
   deleteTask: (taskId: string) => Promise<void>;
+  /**
+   * Achieve (pack) a task: kills its live session/runtime like a delete but
+   * keeps the transcript on the server for later search. Removes it from the
+   * active list on success.
+   */
+  achieveTask: (taskId: string) => Promise<void>;
   setProjectFilter: (projectId: string | null) => void;
   /**
    * Set the active project filter to a merged cross-daemon group and fetch
@@ -512,6 +518,21 @@ export const useTasksStore = create<TasksState>()((set, get) => {
       } catch (error) {
         set({
           error: error instanceof Error ? error.message : 'Failed to delete task',
+        });
+        throw error;
+      }
+    },
+
+    achieveTask: async (taskId) => {
+      try {
+        const api = getApiClient();
+        await api.post(`/tasks/${taskId}/achieve`, {});
+        // Same client-side cleanup as delete: the packed task leaves the active
+        // list and all counts; its transcript stays searchable server-side.
+        get().removeTask(taskId);
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : 'Failed to pack task',
         });
         throw error;
       }
