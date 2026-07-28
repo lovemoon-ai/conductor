@@ -400,16 +400,110 @@ describe("kimi cli session", () => {
     const terminalStatus = statuses.at(-1);
 
     assert.equal(turnStartedStatuses.length, 1);
-    assert.equal(reasoningStatuses.length, 1);
+    assert.equal(reasoningStatuses.length, 2);
     assert.ok(messageAggregationStatuses.length >= 1);
     assert.ok(messageAggregationStatuses.length <= 2);
     assert.equal(commandStatuses.length, 2);
     assert.equal(turnStartedStatuses[0]?.status_line, "Kimi is working on it");
     assert.equal(reasoningStatuses[0]?.status_line, "Kimi is thinking");
+    assert.equal(reasoningStatuses[1]?.status_line, "thought-0");
     assert.equal(messageAggregationStatuses[0]?.status_line, "Kimi is writing the reply");
     assert.equal(commandStatuses[0]?.status_line, "Kimi is running Shell");
     assert.equal(commandStatuses[1]?.status_done_line, "command finished");
     assert.equal(terminalStatus?.status_done_line, "Kimi finished");
+
+    await session.close();
+  });
+
+  it("streams think snippets into the reasoning status line with throttling", async () => {
+    let fakeNow = 0;
+    const statuses = [];
+    const transport = new (class extends EventEmitter {
+      async boot() {}
+      async request(method) {
+        if (method === "prompt") {
+          this.emit("event", { type: "TurnBegin", payload: {} });
+          this.emit("event", {
+            type: "ContentPart",
+            payload: { type: "think", think: "Design the module. " },
+          });
+          this.emit("event", {
+            type: "ContentPart",
+            payload: { type: "think", think: "Suppressed within throttle. " },
+          });
+          fakeNow += 3000;
+          this.emit("event", {
+            type: "ContentPart",
+            payload: { type: "think", think: "Now write the tests." },
+          });
+          this.emit("event", { type: "TurnEnd", payload: {} });
+          return { status: "finished" };
+        }
+        return {};
+      }
+      async close() {}
+    })();
+    const session = new KimiCliSession("kimi", {
+      cwd: process.cwd(),
+      transport,
+      logger: { log: () => {} },
+      now: () => fakeNow,
+    });
+
+    session.setWorkingStatusHandler(async (payload) => {
+      statuses.push(payload);
+    });
+
+    await session.runTurn("go");
+
+    const reasoningLines = statuses
+      .filter((payload) => payload.phase === "reasoning")
+      .map((payload) => payload.status_line);
+    assert.deepEqual(reasoningLines, [
+      "Design the module.",
+      "Design the module. Suppressed within throttle. Now write the tests.",
+    ]);
+
+    await session.close();
+  });
+
+  it("streams buffered assistant text at step boundaries", async () => {
+    const messages = [];
+    const transport = new (class extends EventEmitter {
+      async boot() {}
+      async request(method) {
+        if (method === "prompt") {
+          this.emit("event", { type: "TurnBegin", payload: {} });
+          this.emit("event", { type: "StepBegin", payload: { n: 1 } });
+          this.emit("event", {
+            type: "ContentPart",
+            payload: { type: "text", text: "Step one done. " },
+          });
+          this.emit("event", { type: "StepBegin", payload: { n: 2 } });
+          this.emit("event", {
+            type: "ContentPart",
+            payload: { type: "text", text: "Final answer." },
+          });
+          this.emit("event", { type: "TurnEnd", payload: {} });
+          return { status: "finished" };
+        }
+        return {};
+      }
+      async close() {}
+    })();
+    const session = new KimiCliSession("kimi", {
+      cwd: process.cwd(),
+      transport,
+      logger: { log: () => {} },
+    });
+
+    session.setSessionMessageHandler(async (payload) => {
+      messages.push(payload.text);
+    });
+
+    const result = await session.runTurn("go");
+    assert.equal(result.text, "Step one done. Final answer.");
+    assert.deepEqual(messages, ["Step one done. ", "Final answer."]);
 
     await session.close();
   });
