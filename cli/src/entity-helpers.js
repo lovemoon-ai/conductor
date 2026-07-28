@@ -192,8 +192,14 @@ export async function resolveProject(apis, options = {}) {
   if (!apis.projects || typeof apis.projects.resolveProject !== "function") {
     throw new Error("ProjectsApi.resolveProject is not available in conductor-sdk");
   }
+  const explicitProject = String(options.project ?? "").trim();
+  if (explicitProject) {
+    if (typeof apis.projects.getProject !== "function") {
+      throw new Error("ProjectsApi.getProject is not available in conductor-sdk");
+    }
+    return apis.projects.getProject(explicitProject);
+  }
   return apis.projects.resolveProject({
-    project: options.project,
     env: options.env || process.env,
     cwd: options.cwd || process.cwd(),
   });
@@ -333,10 +339,29 @@ export function emitDryRun(stream, json, payload) {
 }
 
 /**
+ * Pull a human-readable reason out of a backend error payload. Backend routes
+ * respond with `{ error }` (occasionally `{ message }`), which the SDK attaches
+ * to BackendApiError.details. Surfacing it turns an opaque "Backend responded
+ * with 409" into the actual cause (e.g. "Project daemon X is offline").
+ */
+function backendErrorDetail(error) {
+  const details = error && typeof error === "object" ? error.details : null;
+  if (!details) return null;
+  if (typeof details === "string") return details.trim() || null;
+  if (typeof details === "object") {
+    const reason = details.error ?? details.message;
+    if (typeof reason === "string" && reason.trim()) return reason.trim();
+  }
+  return null;
+}
+
+/**
  * Translate an unknown error into a printable + exit-coded form.
  */
 export function reportError(consoleErr, error) {
   const message = error instanceof Error ? error.message : String(error);
-  consoleErr.error(`Error: ${message}`);
+  const detail = backendErrorDetail(error);
+  const line = detail && detail !== message ? `${message}: ${detail}` : message;
+  consoleErr.error(`Error: ${line}`);
   return exitCodeForError(error);
 }

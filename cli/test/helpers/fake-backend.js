@@ -25,6 +25,7 @@ export class FakeBackendApi {
     this.messages = (initial.messages ?? []).map((message) => ({ ...message }));
     this.scheduledMessages = (initial.scheduledMessages ?? []).map((schedule) => ({ ...schedule }));
     this.createTaskGrouping = initial.createTaskGrouping ?? null;
+    this.createAppTaskError = initial.createAppTaskError ?? null;
     this.calls = [];
     this.matchProjectByPathResult = initial.matchProjectByPathResult ?? {
       project: null,
@@ -244,8 +245,11 @@ export class FakeBackendApi {
     return this.asTaskSummary(task);
   }
 
-  async createTask(params) {
-    this.calls.push({ method: "createTask", body: params });
+  async createAppTask(params) {
+    this.calls.push({ method: "createAppTask", body: params });
+    if (this.createAppTaskError) {
+      throw this.createAppTaskError;
+    }
     const task = {
       id: `task-${this.tasks.length + 1}`,
       projectId: params.projectId,

@@ -329,7 +329,7 @@ export class TasksApi {
       throw new Error('title is required');
     }
 
-    const params: Parameters<ApiClient['createTask']>[0] = {
+    const params: Parameters<ApiClient['createAppTask']>[0] = {
       projectId,
       title,
       taskType: 'ai_task',
@@ -345,7 +345,7 @@ export class TasksApi {
       params.parentTaskId = input.parentTaskId;
     }
 
-    const payload = await this.client.createTask(params);
+    const payload = await this.client.createAppTask(params);
     return normalizeTask(
       typeof (payload as any).asObject === 'function'
         ? (payload as any).asObject()

@@ -13,7 +13,7 @@ interface TaskRecord {
 
 class FakeApiClient {
   tasks: TaskRecord[] = [];
-  createTaskCalls: Array<Record<string, unknown>> = [];
+  createAppTaskCalls: Array<Record<string, unknown>> = [];
   postTaskMessageCalls: Array<{ id: string; body: any }> = [];
   listTaskMessagesCalls: Array<{ id: string; params: any }> = [];
   createScheduledMessageCalls: Array<{ id: string; body: any }> = [];
@@ -72,8 +72,8 @@ class FakeApiClient {
     });
   }
 
-  async createTask(params: Record<string, any>) {
-    this.createTaskCalls.push(params);
+  async createAppTask(params: Record<string, any>) {
+    this.createAppTaskCalls.push(params);
     const task = {
       id: `t${this.tasks.length + 1}`,
       projectId: params.projectId,
@@ -260,7 +260,7 @@ describe('TasksApi', () => {
         grouped: true,
       },
     });
-    expect(client.createTaskCalls[0]).toMatchObject({
+    expect(client.createAppTaskCalls[0]).toMatchObject({
       projectId: 'p1',
       title: 'Implement parser',
       taskType: 'ai_task',

@@ -7,6 +7,7 @@ import { Writable } from "node:stream";
 
 import { main } from "../bin/conductor-task.js";
 import { FakeBackendApi, makeCliDeps } from "./helpers/fake-backend.js";
+import { BackendApiError } from "../../modules/conductor-sdk/dist/index.js";
 
 function makeStream() {
   const chunks = [];
@@ -51,7 +52,7 @@ describe("conductor task create", () => {
       grouped: true,
       warning: null,
     });
-    const created = backend.calls.find((call) => call.method === "createTask");
+    const created = backend.calls.find((call) => call.method === "createAppTask");
     assert.ok(created);
     assert.equal(created.body.projectId, "proj-1");
     assert.equal(created.body.taskType, "ai_task");
@@ -60,6 +61,32 @@ describe("conductor task create", () => {
     assert.equal(created.body.parentTaskId, "parent-1");
     assert.equal(created.body.agentHost, undefined);
     assert.equal(created.body.metadata.audit.actor, "cli");
+  });
+
+  it("lets an explicit project name override the cwd project match", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [
+        seedProject,
+        {
+          id: "proj-cwd",
+          name: "cwd-project",
+          workspacePath: "/tmp/cli-test",
+          isDefault: false,
+        },
+      ],
+    });
+
+    const code = await main(
+      ["create", "--project", "alpha", "--title", "Explicit project", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+
+    assert.equal(code, 0, stderr.collect());
+    const created = backend.calls.find((call) => call.method === "createAppTask");
+    assert.ok(created);
+    assert.equal(created.body.projectId, "proj-1");
   });
 
   it("warns when the task was created but parent grouping failed", async () => {
@@ -86,6 +113,27 @@ describe("conductor task create", () => {
     assert.match(stderr.collect(), /task itself was created successfully/i);
   });
 
+  it("surfaces the backend error detail instead of a bare status code", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      createAppTaskError: new BackendApiError(
+        "Backend responded with 409",
+        409,
+        { error: "Project daemon qa-daemon-2 is offline" },
+      ),
+    });
+
+    const code = await main(
+      ["create", "--title", "Blocked", "--backend", "codex"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+
+    assert.notEqual(code, 0);
+    assert.match(stderr.collect(), /Project daemon qa-daemon-2 is offline/);
+  });
+
   it("dry-runs the frontend task endpoint without creating a task", async () => {
     const stdout = makeStream();
     const stderr = makeStream();
@@ -101,7 +149,7 @@ describe("conductor task create", () => {
     assert.equal(data.request.url, "https://backend.example/api/tasks");
     assert.equal(data.request.body.taskType, "ai_task");
     assert.equal(data.request.body.title, "Plan release");
-    assert.equal(backend.calls.find((call) => call.method === "createTask"), undefined);
+    assert.equal(backend.calls.find((call) => call.method === "createAppTask"), undefined);
   });
 });
 

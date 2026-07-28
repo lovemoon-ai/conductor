@@ -7,6 +7,21 @@ export interface BackendClientOptions {
   timeoutMs?: number;
 }
 
+export interface BackendCreateTaskParams {
+  id?: string;
+  projectId: string;
+  title: string;
+  taskType?: string;
+  status?: string;
+  backendType?: string;
+  sessionId?: string | null;
+  sessionFilePath?: string | null;
+  initialContent?: string;
+  agentHost?: string;
+  parentTaskId?: string;
+  metadata?: Record<string, unknown>;
+}
+
 export type AgentCommitEvent =
   | {
       eventType: 'sdk_message';
@@ -240,21 +255,21 @@ export class BackendApiClient {
     return tasks;
   }
 
-  async createTask(params: {
-    id?: string;
-    projectId: string;
-    title: string;
-    taskType?: string;
-    status?: string;
-    backendType?: string;
-    sessionId?: string | null;
-    sessionFilePath?: string | null;
-    initialContent?: string;
-    agentHost?: string;
-    parentTaskId?: string;
-    metadata?: Record<string, unknown>;
-  }): Promise<TaskSummary> {
+  async createTask(params: BackendCreateTaskParams): Promise<TaskSummary> {
     const response = await this.request('POST', '/tasks', {
+      body: JSON.stringify(params),
+    });
+    const payload = await this.parseJson(response);
+    return TaskSummary.fromJSON(payload);
+  }
+
+  /**
+   * Create an app-managed task through the frontend pipeline. This route
+   * assigns daemon ownership and delivers initialContent; it is intentionally
+   * separate from the legacy agent/fire POST /tasks endpoint.
+   */
+  async createAppTask(params: BackendCreateTaskParams): Promise<TaskSummary> {
+    const response = await this.request('POST', '/api/tasks', {
       body: JSON.stringify(params),
     });
     const payload = await this.parseJson(response);

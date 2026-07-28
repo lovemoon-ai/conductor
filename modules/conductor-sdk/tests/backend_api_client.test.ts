@@ -68,6 +68,43 @@ describe('BackendApiClient', () => {
     ]);
   });
 
+  test('createAppTask posts directly to the frontend task pipeline', async () => {
+    const urls: string[] = [];
+    const fetchImpl: FetchFn = async (url, init) => {
+      urls.push(String(url));
+      expect(init?.method).toBe('POST');
+      expect(init?.body ? JSON.parse(String(init.body)) : {}).toMatchObject({
+        projectId: 'proj-1',
+        title: 'Task 1',
+        taskType: 'ai_task',
+        initialContent: 'Start now',
+        backendType: 'codex',
+      });
+      return new Response(
+        JSON.stringify({
+          id: 'task-1',
+          project_id: 'proj-1',
+          title: 'Task 1',
+          task_type: 'ai_task',
+          status: 'init',
+          backend_type: 'codex',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+    const client = new BackendApiClient(makeConfig(), { fetchImpl });
+    const task = await client.createAppTask({
+      projectId: 'proj-1',
+      title: 'Task 1',
+      taskType: 'ai_task',
+      initialContent: 'Start now',
+      backendType: 'codex',
+    });
+
+    expect(task.id).toBe('task-1');
+    expect(urls).toEqual(['https://backend.local/api/tasks']);
+  });
+
   test('updateTask sends PATCH payload and parses task summary', async () => {
     const fetchImpl: FetchFn = async (url, init) => {
       expect(String(url)).toBe('https://backend.local/tasks/task-1');
