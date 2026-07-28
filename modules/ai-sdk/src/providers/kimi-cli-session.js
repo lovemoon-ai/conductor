@@ -20,6 +20,8 @@ const DEFAULT_STATUS_THROTTLE_MS = 450;
 const DEFAULT_REASONING_STATUS_THROTTLE_MS = 2500;
 const DEFAULT_STATUS_PREVIEW_DELTA_CHARS = 24;
 const MAX_STATUS_TIMING_MS = 10 * 1000;
+const THINK_STATUS_LINE_MAX_CHARS = 120;
+const THINK_TAIL_BUFFER_CHARS = 400;
 
 function waitForever() {
   return new Promise(() => {});
@@ -706,6 +708,34 @@ export class KimiCliSession extends EventEmitter {
     currentTurn.bufferedAssistantText += normalized;
   }
 
+  appendThinkText(currentTurn, text) {
+    const normalized = normalizeText(text);
+    if (!normalized) {
+      return;
+    }
+    currentTurn.thinkText = `${currentTurn.thinkText}${normalized}`.slice(-THINK_TAIL_BUFFER_CHARS);
+  }
+
+  thinkStatusLine(currentTurn) {
+    const now = this.now();
+    if (
+      currentTurn.thinkStatusLine &&
+      now - currentTurn.thinkStatusLineAt < this.reasoningStatusThrottleMs
+    ) {
+      return currentTurn.thinkStatusLine;
+    }
+    const sanitized = sanitizeSummary(currentTurn.thinkText, THINK_TAIL_BUFFER_CHARS);
+    const snippet =
+      sanitized.length > THINK_STATUS_LINE_MAX_CHARS
+        ? `…${sanitized.slice(-THINK_STATUS_LINE_MAX_CHARS)}`
+        : sanitized;
+    if (snippet && snippet !== currentTurn.thinkStatusLine) {
+      currentTurn.thinkStatusLine = snippet;
+      currentTurn.thinkStatusLineAt = now;
+    }
+    return currentTurn.thinkStatusLine || statusLineForPhase("reasoning");
+  }
+
   async finalizeAssistantMessage(currentTurn) {
     if (!currentTurn) {
       return false;
@@ -832,6 +862,9 @@ export class KimiCliSession extends EventEmitter {
         currentTurn.seenTurnEnd = true;
         return;
       case "StepBegin":
+        if (currentTurn.bufferedAssistantText) {
+          await this.finalizeAssistantMessage(currentTurn);
+        }
         await this.emitWorkingStatus(
           {
             phase: "reasoning",
@@ -866,11 +899,12 @@ export class KimiCliSession extends EventEmitter {
         return;
       case "ContentPart":
         if (normalizedPayload.type === "think") {
+          this.appendThinkText(currentTurn, normalizedPayload.think);
           await this.emitWorkingStatus(
             {
               phase: "reasoning",
               reply_in_progress: true,
-              status_line: statusLineForPhase("reasoning"),
+              status_line: this.thinkStatusLine(currentTurn),
             },
             currentTurn.onProgress,
           );
@@ -1015,6 +1049,9 @@ export class KimiCliSession extends EventEmitter {
     const currentTurn = {
       fullText: "",
       bufferedAssistantText: "",
+      thinkText: "",
+      thinkStatusLine: "",
+      thinkStatusLineAt: 0,
       items: [],
       toolCalls: new Map(),
       onProgress,
