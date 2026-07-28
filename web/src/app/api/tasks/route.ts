@@ -21,6 +21,7 @@ import {
 import {
   applyLegacyTaskShape,
   isMissingAnyNewSchemaError,
+  isMissingGroupIdColumnError,
   isMissingPtySchemaError,
   isMissingSecondProjectIdColumnError,
   legacyTaskSelect,
@@ -47,6 +48,13 @@ import {
 } from "@/lib/tasks/attached-terminal";
 import { countActiveScheduledMessagesForTasks } from "@/lib/tasks/scheduled-messages";
 import { mergeRelatedTaskCardGroup } from "@/lib/user-preferences";
+import {
+  buildAgentBootstrap,
+  buildGroupMemberMetadata,
+  parseAgentsInput,
+  TASK_GROUP_SCHEMA_UNAVAILABLE_MESSAGE,
+} from "@/lib/tasks/agent-group";
+import { resolveProjectAgentsRegistry } from "@/lib/projects/daemon-binding";
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
@@ -223,6 +231,7 @@ const runTaskListQuery = (
         issueId: null,
         achievedAt: null,
         secondProjectId: null,
+        groupId: null,
       })),
   );
 };
@@ -505,6 +514,40 @@ export async function POST(request: NextRequest) {
   const initialContent = normalizeOptionalString(
     readBodyField(normalizedBody, "initial_content", "initialContent")
   );
+  const agentsParse = parseAgentsInput(readBodyField(normalizedBody, "agents", "agents"));
+  if (agentsParse && "error" in agentsParse) {
+    return NextResponse.json({ error: agentsParse.error }, { status: 400 });
+  }
+  const agentGroup = agentsParse && "agents" in agentsParse ? agentsParse.agents : null;
+  if (agentGroup && taskType !== "ai_task") {
+    return NextResponse.json(
+      { error: "agents is only supported for ai_task" },
+      { status: 400 },
+    );
+  }
+  // RFC 0033: agent doc paths are NOT hard-coded — they come from the project's
+  // `agents` registry in `.conductor/settings.yaml`. Resolve it and require
+  // every requested agent to be registered.
+  const agentRegistry = agentGroup
+    ? await resolveProjectAgentsRegistry({
+        userId: user.id,
+        daemonHost: projectDaemonHost,
+        workspacePath: projectWorkspacePath,
+      })
+    : [];
+  const agentRegistryMap = new Map(agentRegistry.map((entry) => [entry.name, entry]));
+  if (agentGroup) {
+    for (const spec of agentGroup) {
+      if (!agentRegistryMap.has(spec.name)) {
+        return NextResponse.json(
+          {
+            error: `unknown agent "${spec.name}" — register it in .conductor/settings.yaml (agents:)`,
+          },
+          { status: 400 },
+        );
+      }
+    }
+  }
   const launchConfigField = parseJsonField(normalizedBody, "launch_config", "launchConfig");
   if (
     launchConfigField.hasField &&
@@ -521,9 +564,51 @@ export async function POST(request: NextRequest) {
   const requestedId =
     typeof normalizedBody.id === "string" && normalizedBody.id.trim()
       ? normalizedBody.id
-      : worktreeRequested
+      : worktreeRequested || agentGroup
         ? randomUUID()
         : undefined;
+
+  // Multi-agent group wiring (RFC 0033): agents[0] executes the task (worker);
+  // agents[1..] are spawned as sibling reviewer tasks. Every task in the group
+  // shares a `groupId` so members can discover each other via
+  // `conductor task group` — we do NOT hard-pass sibling ids through the prompt.
+  // All review behavior lives in the agent docs, run via the existing conductor
+  // CLI — no orchestration here.
+  const groupId: string | null = agentGroup ? randomUUID() : null;
+  const workerEntry = agentGroup ? agentRegistryMap.get(agentGroup[0].name)! : null;
+  // The worker's backend: its own agent-entry override, else the explicit
+  // top-level backend_type, else the registry's per-agent default. Reviewers cascade the
+  // same way, falling back to the worker's backend.
+  const workerBackendType =
+    agentGroup?.[0]?.backend ?? requestedBackendType ?? workerEntry?.backend ?? null;
+  const reviewerSpecs: Array<{
+    agent: string;
+    backend: string | null;
+    doc: string;
+    taskId: string;
+  }> =
+    agentGroup && agentGroup.length > 1
+      ? agentGroup.slice(1).map((spec) => {
+          const entry = agentRegistryMap.get(spec.name)!;
+          return {
+            agent: spec.name,
+            backend: spec.backend ?? entry.backend,
+            doc: entry.doc,
+            taskId: randomUUID(),
+          };
+        })
+      : [];
+  const groupWorkerInitialContent: string | null = agentGroup
+    ? buildAgentBootstrap({
+        agent: agentGroup[0].name,
+        role: "worker",
+        docPath: workerEntry!.doc,
+        taskPrompt: initialContent,
+      })
+    : null;
+  // For a worker in a group, the bootstrap (which already embeds the user's
+  // original prompt) becomes the effective initial content.
+  const effectiveInitialContent = groupWorkerInitialContent ?? initialContent;
   if (worktreeRequested && (!projectDaemonHost || !projectWorkspacePath || !projectRepoRoot)) {
     return NextResponse.json(
       { error: "Worktree requires a git-backed bound project" },
@@ -533,11 +618,11 @@ export async function POST(request: NextRequest) {
   if (taskType === "ai_task") {
     const aiLaunchConfig: JsonObject = {
       ...(launchConfig ?? {}),
-      ...(requestedBackendType && launchConfig?.backendType === undefined
-        ? { backendType: requestedBackendType }
+      ...(workerBackendType && launchConfig?.backendType === undefined
+        ? { backendType: workerBackendType }
         : {}),
-      ...(initialContent && launchConfig?.initialContent === undefined
-        ? { initialContent }
+      ...(effectiveInitialContent && launchConfig?.initialContent === undefined
+        ? { initialContent: effectiveInitialContent }
         : {}),
       ...(requestedSessionId && launchConfig?.resumeSessionId === undefined
         ? { resumeSessionId: requestedSessionId }
@@ -611,7 +696,7 @@ export async function POST(request: NextRequest) {
     }
     agentHost = resolvedPtyAgent.agentHost;
   } else if (!agentHost) {
-    const pickedAgentHost = pickDefaultAgentHost(connectedAgents, requestedBackendType);
+    const pickedAgentHost = pickDefaultAgentHost(connectedAgents, workerBackendType);
     if (!pickedAgentHost) {
       const connectedDaemonCount = connectedAgents.filter(
         (agent) => !isConductorFireHost(agent.host),
@@ -619,8 +704,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            requestedBackendType && connectedDaemonCount > 0
-              ? `No connected daemon supports backend ${requestedBackendType}`
+            workerBackendType && connectedDaemonCount > 0
+              ? `No connected daemon supports backend ${workerBackendType}`
               : "No app-task daemon is online",
         },
         { status: 409 },
@@ -638,6 +723,7 @@ export async function POST(request: NextRequest) {
       );
     }
     if (
+      !agentGroup &&
       requestedBackendType &&
       !selectedAgent.supportedBackends.includes(requestedBackendType)
     ) {
@@ -650,26 +736,70 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Registry defaults are project-owned configuration, but execution still
+  // has to match the selected daemon's live capabilities. Reject the whole
+  // group before creating its worker when any member names a backend that the
+  // daemon does not advertise; otherwise the API would return a task that can
+  // never start (and reviewer creation is intentionally fail-soft).
+  if (agentGroup && agentHost) {
+    const executionAgent = connectedAgents.find((agent) => agent.host === agentHost);
+    if (executionAgent) {
+      const advertisedBackends = new Set(
+        executionAgent.supportedBackends
+          .map((backend) => normalizeBackendType(backend))
+          .filter((backend): backend is string => Boolean(backend)),
+      );
+      const requestedAgentBackends = [
+        { agent: agentGroup[0].name, backend: workerBackendType },
+        ...reviewerSpecs.map((spec) => ({
+          agent: spec.agent,
+          backend: spec.backend ?? workerBackendType,
+        })),
+      ];
+      const unsupported = requestedAgentBackends.find(
+        (entry) => entry.backend && !advertisedBackends.has(entry.backend),
+      );
+      if (unsupported?.backend) {
+        return NextResponse.json(
+          {
+            error:
+              `agent "${unsupported.agent}" requires backend "${unsupported.backend}", ` +
+              `but daemon "${agentHost}" does not advertise it`,
+          },
+          { status: 400 },
+        );
+      }
+    }
+  }
 
   const fireTaskDaemonName =
     isConductorFireHost(agentHost) && projectDaemonHost ? projectDaemonHost : null;
 
   let metadata = parseJsonObject(normalizedBody.metadata);
   if (taskType === "ai_task" && metadata) {
-    if (requestedBackendType && metadata.backendType === undefined) {
-      metadata.backendType = requestedBackendType;
+    if (workerBackendType && metadata.backendType === undefined) {
+      metadata.backendType = workerBackendType;
     }
-    if (initialContent && metadata.initialContent === undefined) {
-      metadata.initialContent = initialContent;
+    if (effectiveInitialContent && metadata.initialContent === undefined) {
+      metadata.initialContent = effectiveInitialContent;
     }
     if (fireTaskDaemonName && metadata.daemonName === undefined) {
       metadata.daemonName = fireTaskDaemonName;
     }
-  } else if (taskType === "ai_task" && !metadata && (requestedBackendType || initialContent || fireTaskDaemonName)) {
+  } else if (taskType === "ai_task" && !metadata && (workerBackendType || effectiveInitialContent || fireTaskDaemonName)) {
     metadata = {
-      ...(requestedBackendType ? { backendType: requestedBackendType } : {}),
-      ...(initialContent ? { initialContent } : {}),
+      ...(workerBackendType ? { backendType: workerBackendType } : {}),
+      ...(effectiveInitialContent ? { initialContent: effectiveInitialContent } : {}),
       ...(fireTaskDaemonName ? { daemonName: fireTaskDaemonName } : {}),
+    };
+  }
+  // Stamp the worker's group membership onto its metadata (RFC 0033) so the
+  // group query can report its role/agent. The shared groupId is also written
+  // to the task's group_id column below.
+  if (taskType === "ai_task" && agentGroup && groupId) {
+    metadata = {
+      ...(metadata ?? {}),
+      ...buildGroupMemberMetadata({ groupId, role: "worker", agent: agentGroup[0].name }),
     };
   }
   const title = normalizeOptionalString(normalizedBody.title) ?? "New Task";
@@ -730,16 +860,23 @@ export async function POST(request: NextRequest) {
         title,
         agentHost,
         requestedId,
-        requestedBackendType,
+        requestedBackendType: workerBackendType,
         requestedSessionId,
         requestedSessionFilePath,
         launchConfig,
         metadata,
         initialMessageContent,
         status: normalizeTaskStatus(normalizedBody.status ?? defaultTaskStatus),
+        groupId,
       });
     }
   } catch (error) {
+    if (agentGroup && isMissingGroupIdColumnError(error)) {
+      return NextResponse.json(
+        { error: TASK_GROUP_SCHEMA_UNAVAILABLE_MESSAGE },
+        { status: 409 },
+      );
+    }
     if (taskType === "pty_task" && isMissingPtySchemaError(error)) {
       return NextResponse.json({ error: PTY_SCHEMA_UNAVAILABLE_MESSAGE }, { status: 409 });
     }
@@ -802,10 +939,62 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Spawn sibling reviewer tasks (RFC 0033). Each reviewer is an ordinary
+  // ai_task sharing the group's `groupId` and a bootstrap pointing it at its own
+  // agent doc. Each reviewer uses its own backend override, falling back to the
+  // worker's backend. A reviewer spawn failure must never fail the worker
+  // creation, so each is wrapped fail-soft.
+  const reviewerTaskIds: string[] = [];
+  if (taskType === "ai_task" && task && groupId && reviewerSpecs.length > 0) {
+    for (const spec of reviewerSpecs) {
+      const reviewerBackendType = spec.backend ?? workerBackendType;
+      const reviewerInitialContent = buildAgentBootstrap({
+        agent: spec.agent,
+        role: "reviewer",
+        docPath: spec.doc,
+      });
+      const reviewerLaunchConfig: JsonObject = {
+        ...(reviewerBackendType ? { backendType: reviewerBackendType } : {}),
+        ...(projectWorkspacePath ? { cwd: projectWorkspacePath } : {}),
+        ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
+        initialContent: reviewerInitialContent,
+      };
+      try {
+        const reviewerTask = await createAndDispatchAiTask({
+          userId: user.id,
+          projectId,
+          issueId: null,
+          title: `Reviewer: ${spec.agent}`,
+          agentHost,
+          requestedId: spec.taskId,
+          requestedBackendType: reviewerBackendType,
+          launchConfig: reviewerLaunchConfig,
+          metadata: {
+            ...(reviewerBackendType ? { backendType: reviewerBackendType } : {}),
+            ...(fireTaskDaemonName ? { daemonName: fireTaskDaemonName } : {}),
+            initialContent: reviewerInitialContent,
+            ...buildGroupMemberMetadata({ groupId, role: "reviewer", agent: spec.agent }),
+          },
+          initialMessageContent: reviewerInitialContent,
+          status: normalizeTaskStatus(defaultTaskStatus),
+          groupId,
+        });
+        reviewerTaskIds.push(reviewerTask.id);
+      } catch (error) {
+        console.error(
+          `Failed to spawn reviewer task for agent "${spec.agent}"`,
+          error,
+        );
+      }
+    }
+  }
+
   const taskResponseRecord = ptySession ? { ...task, ptySession } : task;
 
+  const taskResponse = serializeTaskResponse(taskResponseRecord);
   return NextResponse.json({
-    ...serializeTaskResponse(taskResponseRecord),
+    ...taskResponse,
     ...(grouping ? { grouping } : {}),
+    ...(reviewerTaskIds.length > 0 ? { reviewer_task_ids: reviewerTaskIds } : {}),
   });
 }

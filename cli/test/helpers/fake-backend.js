@@ -265,6 +265,31 @@ export class FakeBackendApi {
     return this.asTaskSummary(task);
   }
 
+  async getTaskGroup(taskId) {
+    this.calls.push({ method: "getTaskGroup", taskId });
+    const task = this.tasks.find((entry) => entry.id === taskId);
+    if (!task) {
+      throw new BackendApiError("not found", 404, { error: "Not found" });
+    }
+    const groupId = task.groupId ?? null;
+    return {
+      group_id: groupId,
+      members: groupId
+        ? this.tasks
+            .filter((entry) => entry.groupId === groupId)
+            .map((entry) => ({
+              task_id: entry.id,
+              role: entry.role ?? null,
+              agent: entry.agent ?? null,
+              title: entry.title ?? null,
+              status: entry.status ?? null,
+              backend_type: entry.backendType ?? null,
+              is_self: entry.id === taskId,
+            }))
+        : [],
+    };
+  }
+
   async listTaskMessages(taskId, params = {}) {
     this.calls.push({ method: "listTaskMessages", taskId, params });
     return this.messages.filter((message) => message.taskId === taskId).map((message) => ({ ...message }));

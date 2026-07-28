@@ -1,6 +1,7 @@
 'use client';
 
-import { useMemo, useReducer, useState } from 'react';
+import { useEffect, useMemo, useReducer, useState } from 'react';
+import { getApiClient } from '@/shared/api/client';
 import { Dialog } from '@/components/common/Dialog';
 import { HelpTip } from '@/components/common/HelpTip';
 import { InlineNotice } from '@/components/common/InlineNotice';
@@ -12,7 +13,7 @@ import { formatBindingLabel } from '@/features/projects';
 import { computeProjectGroups } from '@/features/projects/utils/project-groups';
 import { useRouter } from 'next/navigation';
 import type { TaskType } from '@/lib/tasks/task-config';
-import type { Project } from '@/shared/types';
+import type { CreateTaskInput, Project } from '@/shared/types';
 
 interface CreateTaskDialogProps {
   open: boolean;
@@ -78,6 +79,22 @@ const TASK_TYPE_OPTIONS: Array<{
   },
 ];
 
+// RFC 0033: a reviewer row in the multi-agent selector. `backend === ''` means
+// "inherit the worker's backend".
+interface ReviewerRow {
+  name: string;
+  backend: string;
+}
+
+interface AgentRegistryOption {
+  name: string;
+  description: string | null;
+  backend: string | null;
+}
+
+/** Cap mirrors MAX_AGENTS_PER_TASK on the server (1 worker + up to 7 reviewers). */
+const MAX_REVIEWER_ROWS = 7;
+
 interface CreateTaskDialogFormState {
   title: string;
   projectId: string;
@@ -85,6 +102,8 @@ interface CreateTaskDialogFormState {
   createWorktree: boolean;
   agentHost: string;
   backendType: string;
+  workerAgent: string;
+  reviewers: ReviewerRow[];
   submitError: string | null;
 }
 
@@ -96,6 +115,12 @@ type CreateTaskDialogAction =
   | { type: 'set-create-worktree'; createWorktree: boolean }
   | { type: 'set-agent-host'; agentHost: string }
   | { type: 'set-backend'; backendType: string }
+  | { type: 'set-worker-agent'; workerAgent: string }
+  | { type: 'add-reviewer' }
+  | { type: 'remove-reviewer'; index: number }
+  | { type: 'set-reviewer-name'; index: number; name: string }
+  | { type: 'set-reviewer-backend'; index: number; backend: string }
+  | { type: 'reconcile-agent-registry'; names: string[] }
   | { type: 'set-submit-error'; submitError: string | null };
 
 const initialCreateTaskDialogFormState: CreateTaskDialogFormState = {
@@ -105,6 +130,8 @@ const initialCreateTaskDialogFormState: CreateTaskDialogFormState = {
   createWorktree: false,
   agentHost: '',
   backendType: '',
+  workerAgent: '',
+  reviewers: [],
   submitError: null,
 };
 
@@ -118,7 +145,14 @@ function createTaskDialogReducer(
     case 'set-title':
       return { ...state, title: action.title, submitError: null };
     case 'set-project':
-      return { ...state, projectId: action.projectId, createWorktree: false, submitError: null };
+      return {
+        ...state,
+        projectId: action.projectId,
+        createWorktree: false,
+        workerAgent: '',
+        reviewers: [],
+        submitError: null,
+      };
     case 'set-task-type':
       return {
         ...state,
@@ -132,6 +166,67 @@ function createTaskDialogReducer(
       return { ...state, agentHost: action.agentHost, backendType: '', submitError: null };
     case 'set-backend':
       return { ...state, backendType: action.backendType, submitError: null };
+    case 'set-worker-agent':
+      return {
+        ...state,
+        workerAgent: action.workerAgent,
+        reviewers: state.reviewers.map((row) =>
+          row.name === action.workerAgent ? { ...row, name: '' } : row,
+        ),
+        submitError: null,
+      };
+    case 'add-reviewer':
+      if (state.reviewers.length >= MAX_REVIEWER_ROWS) return state;
+      return { ...state, reviewers: [...state.reviewers, { name: '', backend: '' }], submitError: null };
+    case 'remove-reviewer':
+      return {
+        ...state,
+        reviewers: state.reviewers.filter((_, i) => i !== action.index),
+        submitError: null,
+      };
+    case 'set-reviewer-name':
+      return {
+        ...state,
+        reviewers: state.reviewers.map((row, i) =>
+          i === action.index ? { ...row, name: action.name } : row,
+        ),
+        submitError: null,
+      };
+    case 'set-reviewer-backend':
+      return {
+        ...state,
+        reviewers: state.reviewers.map((row, i) =>
+          i === action.index ? { ...row, backend: action.backend } : row,
+        ),
+        submitError: null,
+      };
+    case 'reconcile-agent-registry': {
+      const availableNames = new Set(action.names);
+      if (!state.workerAgent || !availableNames.has(state.workerAgent)) {
+        return {
+          ...state,
+          workerAgent: '',
+          reviewers: [],
+          submitError: null,
+        };
+      }
+      const selectedNames = new Set([state.workerAgent]);
+      return {
+        ...state,
+        reviewers: state.reviewers.map((row) => {
+          if (
+            !row.name ||
+            !availableNames.has(row.name) ||
+            selectedNames.has(row.name)
+          ) {
+            return row.name ? { ...row, name: '' } : row;
+          }
+          selectedNames.add(row.name);
+          return row;
+        }),
+        submitError: null,
+      };
+    }
     case 'set-submit-error':
       return { ...state, submitError: action.submitError };
     default:
@@ -154,9 +249,15 @@ export function CreateTaskDialog({
     createWorktree: requestedCreateWorktree,
     agentHost: requestedAgentHost,
     backendType: requestedBackendType,
+    workerAgent,
+    reviewers,
     submitError,
   } = form;
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // RFC 0033: agents registered in the selected project's .conductor/settings.yaml.
+  const [availableAgents, setAvailableAgents] = useState<AgentRegistryOption[]>([]);
+  const [isLoadingAgents, setIsLoadingAgents] = useState(false);
+  const [agentsLoadFailed, setAgentsLoadFailed] = useState(false);
 
   const createTask = useTasksStore((state) => state.createTask);
   const projects = useProjectsStore((state) => state.projects);
@@ -305,6 +406,46 @@ export function CreateTaskDialog({
       ? [{ value: boundDaemonHost, host: boundDaemonHost, label: boundDaemonOnline ? boundDaemonHost : `${boundDaemonHost} (offline)` }]
       : eligibleDaemons.map((daemon) => ({ value: daemon.host, host: daemon.host, label: daemon.host }));
 
+  // Load the project's registered agents (RFC 0033) for the picker. Fail-soft:
+  // any error just leaves the list empty (the section then shows a hint).
+  useEffect(() => {
+    if (!open || taskType !== 'ai_task' || !projectId) {
+      setAvailableAgents([]);
+      setIsLoadingAgents(false);
+      setAgentsLoadFailed(false);
+      return;
+    }
+    let cancelled = false;
+    setAvailableAgents([]);
+    setIsLoadingAgents(true);
+    setAgentsLoadFailed(false);
+    getApiClient()
+      .get<{ agents: AgentRegistryOption[] }>(
+        `/projects/${projectId}/agents`,
+      )
+      .then((res) => {
+        if (cancelled) return;
+        const nextAgents = Array.isArray(res?.agents) ? res.agents : [];
+        setAvailableAgents(nextAgents);
+        dispatch({
+          type: 'reconcile-agent-registry',
+          names: nextAgents.map((agent) => agent.name),
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAvailableAgents([]);
+        setAgentsLoadFailed(true);
+        dispatch({ type: 'reconcile-agent-registry', names: [] });
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingAgents(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, taskType, projectId]);
+
   const handleCloseDialog = () => {
     dispatch({ type: 'reset' });
     onClose();
@@ -319,6 +460,22 @@ export function CreateTaskDialog({
       return;
     }
 
+    // RFC 0033: assemble the multi-agent group (ai_task only). agents[0] is the
+    // worker; the rest are reviewers. Only sent when a worker agent is named
+    // (reviewer inputs are hidden until then), so clearing the worker drops the
+    // whole group and falls back to a plain task.
+    const trimmedWorkerAgent = workerAgent.trim();
+    let agents: CreateTaskInput['agents'];
+    if (taskType === 'ai_task' && trimmedWorkerAgent) {
+      const reviewerSpecs = reviewers
+        .map((row) => ({ name: row.name.trim(), backend: row.backend.trim() }))
+        .filter((row) => row.name);
+      agents = [
+        { name: trimmedWorkerAgent },
+        ...reviewerSpecs.map((row) => ({ name: row.name, backend: row.backend || null })),
+      ];
+    }
+
     setIsSubmitting(true);
     dispatch({ type: 'set-submit-error', submitError: null });
     try {
@@ -328,6 +485,7 @@ export function CreateTaskDialog({
         taskType,
         agentHost: agentHost || undefined,
         backendType: taskType === 'ai_task' ? backendType || undefined : undefined,
+        ...(agents ? { agents } : {}),
         launchConfig:
           taskType === 'pty_task'
             ? {
@@ -585,6 +743,150 @@ export function CreateTaskDialog({
                       This daemon is online, but it does not advertise any AI backends yet. You can still switch daemons before creating the task.
                     </InlineNotice>
                   )}
+
+                  {/* RFC 0033: optional multi-agent group. Pick a worker agent
+                      (runs this task) and, optionally, reviewer agents that
+                      periodically review the worker. The agent list comes from
+                      the project's .conductor/settings.yaml registry; each
+                      reviewer may run on a different backend. */}
+                  <div className="mt-4 border-t border-border pt-4">
+                    <div className="mb-2 flex items-center gap-2">
+                      <label htmlFor="create-task-worker-agent" className="block text-sm font-medium">
+                        Agents <span className="text-muted">(optional)</span>
+                      </label>
+                      <HelpTip label="agents" align="right">
+                        Pick a worker agent to run this task, and optionally reviewer agents that
+                        periodically review it (each can use its own backend). Agents are
+                        registered per project in .conductor/settings.yaml. Leave as “None” for a
+                        plain task.
+                      </HelpTip>
+                    </div>
+                    {isLoadingAgents ? (
+                      <InlineNotice variant="info">
+                        Loading registered agents…
+                      </InlineNotice>
+                    ) : agentsLoadFailed ? (
+                      <InlineNotice variant="error">
+                        Could not load this project&apos;s agent registry. Check that its daemon is
+                        online, then reopen the dialog.
+                      </InlineNotice>
+                    ) : availableAgents.length === 0 ? (
+                      <InlineNotice variant="info">
+                        No agents registered for this project. Add an <code>agents:</code> block to
+                        <code> .conductor/settings.yaml</code> to enable worker/reviewer agents.
+                      </InlineNotice>
+                    ) : (
+                      <>
+                        <select
+                          id="create-task-worker-agent"
+                          value={workerAgent}
+                          onChange={(e) => {
+                            const nextWorkerAgent = e.target.value;
+                            dispatch({ type: 'set-worker-agent', workerAgent: nextWorkerAgent });
+                            const agentDefaultBackend = availableAgents.find(
+                              (agent) => agent.name === nextWorkerAgent,
+                            )?.backend;
+                            if (
+                              agentDefaultBackend &&
+                              availableBackends.includes(agentDefaultBackend)
+                            ) {
+                              dispatch({ type: 'set-backend', backendType: agentDefaultBackend });
+                            }
+                          }}
+                          className="webapp-input w-full"
+                          aria-label="Worker agent"
+                        >
+                          <option value="">None (plain task)</option>
+                          {availableAgents.map((agent) => (
+                            <option key={agent.name} value={agent.name}>
+                              {agent.description ? `${agent.name} — ${agent.description}` : agent.name}
+                            </option>
+                          ))}
+                        </select>
+
+                        {workerAgent.trim() ? (
+                          <div className="mt-3 space-y-2">
+                            {reviewers.map((row, index) => {
+                              const selectedElsewhere = new Set(
+                                reviewers
+                                  .filter((_, reviewerIndex) => reviewerIndex !== index)
+                                  .map((reviewer) => reviewer.name)
+                                  .filter(Boolean),
+                              );
+                              const selectedAgent = availableAgents.find(
+                                (agent) => agent.name === row.name,
+                              );
+                              return (
+                                <div key={index} className="flex items-center gap-2">
+                                  <select
+                                    value={row.name}
+                                    onChange={(e) =>
+                                      dispatch({ type: 'set-reviewer-name', index, name: e.target.value })
+                                    }
+                                    className="webapp-input flex-1"
+                                    aria-label={`Reviewer ${index + 1} agent`}
+                                  >
+                                    <option value="">Select reviewer agent…</option>
+                                    {availableAgents
+                                      .filter(
+                                        (agent) =>
+                                          agent.name !== workerAgent &&
+                                          (!selectedElsewhere.has(agent.name) || agent.name === row.name),
+                                      )
+                                      .map((agent) => (
+                                        <option key={agent.name} value={agent.name}>
+                                          {agent.description
+                                            ? `${agent.name} — ${agent.description}`
+                                            : agent.name}
+                                        </option>
+                                      ))}
+                                  </select>
+                                  <select
+                                    value={row.backend}
+                                    onChange={(e) =>
+                                      dispatch({ type: 'set-reviewer-backend', index, backend: e.target.value })
+                                    }
+                                    className="webapp-input w-40"
+                                    aria-label={`Reviewer ${index + 1} backend`}
+                                  >
+                                    <option value="">
+                                      {selectedAgent?.backend
+                                        ? `agent default (${selectedAgent.backend})`
+                                        : 'inherit worker backend'}
+                                    </option>
+                                    {availableBackends.map((backend) => (
+                                      <option key={backend} value={backend}>
+                                        {backend}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    type="button"
+                                    onClick={() => dispatch({ type: 'remove-reviewer', index })}
+                                    className="rounded-lg px-2 py-2 text-sm font-medium transition-colors hover:bg-[var(--border)]/50"
+                                    aria-label={`Remove reviewer ${index + 1}`}
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                              );
+                            })}
+                            {reviewers.length < MAX_REVIEWER_ROWS &&
+                            reviewers.every((row) => row.name) &&
+                            reviewers.length + 1 < availableAgents.length ? (
+                              <button
+                                type="button"
+                                onClick={() => dispatch({ type: 'add-reviewer' })}
+                                className="rounded-lg px-3 py-2 text-sm font-medium transition-colors hover:bg-[var(--border)]/50"
+                              >
+                                + Add reviewer
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <div className="rounded-2xl border border-dashed border-border bg-panel/70 p-4">

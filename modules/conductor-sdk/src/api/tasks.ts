@@ -31,6 +31,23 @@ export interface Message {
   raw: Record<string, unknown>;
 }
 
+/** RFC 0033 — one member of a multi-agent task group. */
+export interface TaskGroupMember {
+  taskId: string;
+  role: string | null;
+  agent: string | null;
+  title: string | null;
+  status: string | null;
+  backendType: string | null;
+  isSelf: boolean;
+}
+
+/** RFC 0033 — the group a task belongs to (groupId null when standalone). */
+export interface TaskGroup {
+  groupId: string | null;
+  members: TaskGroupMember[];
+}
+
 export type ScheduledMessageSchedule =
   | {
       mode: 'delay';
@@ -126,6 +143,26 @@ const normalizeTask = (payload: Record<string, any>): Task => {
     updatedAt: payload.updatedAt ?? payload.updated_at ?? null,
     grouping,
     raw: payload,
+  };
+};
+
+const asStringOrNull = (value: unknown): string | null =>
+  typeof value === 'string' && value.trim() ? value.trim() : null;
+
+const normalizeTaskGroup = (payload: Record<string, any>): TaskGroup => {
+  const rawMembers = Array.isArray(payload?.members) ? payload.members : [];
+  const members: TaskGroupMember[] = rawMembers.map((m: Record<string, any>) => ({
+    taskId: String(m?.task_id ?? m?.taskId ?? ''),
+    role: asStringOrNull(m?.role),
+    agent: asStringOrNull(m?.agent),
+    title: asStringOrNull(m?.title),
+    status: asStringOrNull(m?.status),
+    backendType: asStringOrNull(m?.backend_type ?? m?.backendType),
+    isSelf: Boolean(m?.is_self ?? m?.isSelf),
+  }));
+  return {
+    groupId: asStringOrNull(payload?.group_id ?? payload?.groupId),
+    members,
   };
 };
 
@@ -314,6 +351,21 @@ export class TasksApi {
         ? (payload as any).asObject()
         : (payload as any),
     );
+  }
+
+  /**
+   * RFC 0033 — resolve the multi-agent group a task belongs to. Returns the
+   * group id (null if the task is standalone) and every sibling task with its
+   * role/agent. Agents use this to discover the task(s) they read from / send
+   * feedback to.
+   */
+  async getTaskGroup(taskId: string): Promise<TaskGroup> {
+    const trimmed = String(taskId ?? '').trim();
+    if (!trimmed) {
+      throw new Error('taskId is required');
+    }
+    const payload = await this.client.getTaskGroup(trimmed);
+    return normalizeTaskGroup(payload);
   }
 
   async sendTaskMessage(

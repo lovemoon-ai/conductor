@@ -7630,7 +7630,7 @@ describe("Daemon", () => {
       assert.ok(typeof handler === "function");
       assert.strictEqual(
         webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-        "project_path_validation,restart_daemon,refresh_session_inplace,custom_commands,pty_task,terminal_snapshot",
+        "project_path_validation,project_agents_registry,restart_daemon,refresh_session_inplace,custom_commands,pty_task,terminal_snapshot",
       );
 
       handler({
@@ -7660,7 +7660,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,restart_daemon,refresh_session_inplace,custom_commands,pty_task,terminal_snapshot",
+      "project_path_validation,project_agents_registry,restart_daemon,refresh_session_inplace,custom_commands,pty_task,terminal_snapshot",
     );
 
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -7933,7 +7933,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,restart_daemon,refresh_session_inplace,custom_commands",
+      "project_path_validation,project_agents_registry,restart_daemon,refresh_session_inplace,custom_commands",
     );
 
     handler({
@@ -9611,6 +9611,7 @@ describe("Daemon", () => {
           git_remote_url: "github.com/example/project-real",
           file_count: 8,
           icon: null,
+          agents: [],
           error: null,
           error_code: null,
           validated_at: events[0]?.payload?.validated_at,
@@ -9619,6 +9620,120 @@ describe("Daemon", () => {
     ]);
     assert.ok(typeof events[0]?.payload?.validated_at === "string");
     assert.ok(projectSettingsTemplate.includes("  sync_branch: false"));
+
+    if (daemonInstance && typeof daemonInstance.close === "function") {
+      daemonInstance.close();
+    }
+  });
+
+  it("reads project agents without running a project snapshot or writing settings", async () => {
+    let handler;
+    const events = [];
+    let snapshotCalls = 0;
+    let settingsWrites = 0;
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-project-agents",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "project-agents-daemon",
+      },
+      {
+        spawn: () => ({
+          on: () => {},
+          stdout: { on: () => {} },
+          stderr: { on: () => {} },
+        }),
+        mkdirSync: () => {},
+        writeFileSync: (filePath) => {
+          if (filePath === "/tmp/project-agents/.conductor/settings.yaml") {
+            settingsWrites += 1;
+          }
+        },
+        existsSync: (targetPath) =>
+          targetPath === "/tmp/project-agents" ||
+          targetPath === "/tmp/project-agents/.conductor/settings.yaml",
+        statSync: (targetPath) => {
+          assert.strictEqual(targetPath, "/tmp/project-agents");
+          return { isDirectory: () => true };
+        },
+        readFileSync: (filePath) => {
+          if (filePath === "/tmp/project-agents/.conductor/settings.yaml") {
+            return [
+              "agents:",
+              "  review:",
+              "    doc: docs/review.md",
+              "    backend: Codex",
+              "",
+            ].join("\n");
+          }
+          return "";
+        },
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        resolveProjectSnapshot: () => {
+          snapshotCalls += 1;
+          return {};
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (h) => {
+            handler = h;
+          },
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            events.push(payload);
+          },
+        }),
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+    handler({
+      type: "get_project_agents",
+      payload: {
+        request_id: "req-project-agents",
+        workspace_path: "/tmp/project-agents",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.deepStrictEqual(events, [
+      {
+        type: "project_agents_resolved",
+        payload: {
+          request_id: "req-project-agents",
+          daemon_host: "project-agents-daemon",
+          workspace_path: "/tmp/project-agents",
+          agents: [
+            {
+              name: "review",
+              doc: "docs/review.md",
+              description: null,
+              backend: "codex",
+            },
+          ],
+          error: null,
+          error_code: null,
+          resolved_at: events[0]?.payload?.resolved_at,
+        },
+      },
+    ]);
+    assert.strictEqual(snapshotCalls, 0);
+    assert.strictEqual(settingsWrites, 0);
 
     if (daemonInstance && typeof daemonInstance.close === "function") {
       daemonInstance.close();
@@ -9661,7 +9776,17 @@ describe("Daemon", () => {
         },
         readFileSync: (filePath) => {
           if (filePath === "/tmp/project-real/.conductor/settings.yaml") {
-            return "icon: ./logo.svg\n";
+            return [
+              "icon: ./logo.svg",
+              "agents:",
+              "  feature-dev:",
+              "    doc: personas/feature.md",
+              "    description: Builds features",
+              "    backend: Codex",
+              "  unsafe:",
+              "    doc: ../outside.md",
+              "",
+            ].join("\n");
           }
           if (filePath === "/tmp/project-real/.conductor/logo.svg") {
             return Buffer.from(sampleSvg, "utf8");
@@ -9717,6 +9842,14 @@ describe("Daemon", () => {
       events[0]?.payload?.icon,
       `data:image/svg+xml;base64,${Buffer.from(sampleSvg, "utf8").toString("base64")}`,
     );
+    assert.deepStrictEqual(events[0]?.payload?.agents, [
+      {
+        name: "feature-dev",
+        doc: "personas/feature.md",
+        description: "Builds features",
+        backend: "codex",
+      },
+    ]);
 
     if (daemonInstance && typeof daemonInstance.close === "function") {
       daemonInstance.close();

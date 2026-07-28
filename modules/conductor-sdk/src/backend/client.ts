@@ -267,6 +267,19 @@ export class BackendApiClient {
     return TaskSummary.fromJSON(payload);
   }
 
+  /**
+   * GET /tasks/[taskId]/group — RFC 0033 task-group discovery. Returns the raw
+   * payload `{ group_id, members }`; the higher layer normalizes it.
+   */
+  async getTaskGroup(taskId: string): Promise<Record<string, any>> {
+    const response = await this.request('GET', `/tasks/${taskId}/group`);
+    const payload = await this.parseJson(response);
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      return payload as Record<string, any>;
+    }
+    throw new BackendApiError('Invalid task group response', response.status, payload);
+  }
+
   async updateTask(
     taskId: string,
     params: {

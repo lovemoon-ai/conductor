@@ -54,6 +54,7 @@ export const taskSelectWithoutIssueId = {
   sessionId: true,
   sessionFilePath: true,
   launchConfig: true,
+  groupId: true,
   killedReason: true,
   killedAt: true,
   metadata: true,
@@ -92,6 +93,10 @@ const isMissingAchievedAtColumnError = (error: unknown): boolean =>
   hasErrorCode(error, "P2022") &&
   includesAny(errorMessage(error), ["achieved_at", "achievedAt"]);
 
+export const isMissingGroupIdColumnError = (error: unknown): boolean =>
+  hasErrorCode(error, "P2022") &&
+  includesAny(errorMessage(error), ["group_id", "groupId"]);
+
 /**
  * True when the error is caused by a missing `second_project_id` column (a
  * display-only field added after earlier migrations). Reads that only SELECT
@@ -115,6 +120,7 @@ export const isMissingPtySchemaError = (error: unknown): boolean =>
   isMissingLaunchConfigColumnError(error) ||
   isMissingKilledStateColumnError(error) ||
   isMissingAchievedAtColumnError(error) ||
+  isMissingGroupIdColumnError(error) ||
   isMissingSecondProjectIdColumnError(error);
 
 /**
@@ -192,6 +198,7 @@ export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
       killedReason: null;
       killedAt: null;
       achievedAt: null;
+      groupId: null;
     } => {
   if (!task) {
     return null as T extends null
@@ -204,6 +211,7 @@ export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
           killedReason: null;
           killedAt: null;
           achievedAt: null;
+          groupId: null;
         };
   }
   return {
@@ -219,6 +227,7 @@ export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
     killedReason: null,
     killedAt: null,
     achievedAt: null,
+    groupId: null,
   } as T extends null
     ? null
     : T & {
@@ -229,6 +238,7 @@ export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
         killedReason: null;
         killedAt: null;
         achievedAt: null;
+        groupId: null;
       };
 };
 

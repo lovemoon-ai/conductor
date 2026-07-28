@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   clearProjectSettingsCache,
+  normalizeProjectAgentsRegistry,
+  readProjectAgentsRegistry,
   readProjectSettingsYaml,
 } from "./project-settings-yaml";
 
@@ -113,5 +115,79 @@ describe("readProjectSettingsYaml", () => {
 
     const settings = await readProjectSettingsYaml(tmpRoot);
     expect(settings.icon).toBe(`data:image/png;base64,${pngBytes.toString("base64")}`);
+  });
+
+  it("reads the project agent registry with configurable doc paths and defaults", async () => {
+    await writeSettings(
+      tmpRoot,
+      [
+        "agents:",
+        "  feature-dev:",
+        "    doc: personas/implementation.md",
+        "    description: Builds the feature",
+        "    backend: Codex",
+        "  code-reviewer: reviews/code.md",
+        "",
+      ].join("\n"),
+    );
+
+    await expect(readProjectAgentsRegistry(tmpRoot)).resolves.toEqual([
+      {
+        name: "feature-dev",
+        doc: "personas/implementation.md",
+        description: "Builds the feature",
+        backend: "codex",
+      },
+      {
+        name: "code-reviewer",
+        doc: "reviews/code.md",
+        description: null,
+        backend: null,
+      },
+    ]);
+  });
+
+  it("accepts legacy list entries while dropping doc-less or unsafe agents", async () => {
+    await writeSettings(
+      tmpRoot,
+      [
+        "agents:",
+        "  - review: docs/review.md",
+        "  - planner:",
+        "  - escape: ../outside.md",
+        "  - /invalid: docs/invalid.md",
+        "",
+      ].join("\n"),
+    );
+
+    await expect(readProjectAgentsRegistry(tmpRoot)).resolves.toEqual([
+      {
+        name: "review",
+        doc: "docs/review.md",
+        description: null,
+        backend: null,
+      },
+    ]);
+  });
+
+  it("sanitizes registry arrays received from a daemon", () => {
+    expect(
+      normalizeProjectAgentsRegistry([
+        {
+          name: "security",
+          doc: "agents/security.md",
+          description: "Security review",
+          backend: "CLAUDE",
+        },
+        { name: "escape", doc: "../../secret.md" },
+      ]),
+    ).toEqual([
+      {
+        name: "security",
+        doc: "agents/security.md",
+        description: "Security review",
+        backend: "claude",
+      },
+    ]);
   });
 });

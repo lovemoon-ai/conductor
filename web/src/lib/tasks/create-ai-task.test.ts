@@ -260,6 +260,65 @@ describe('createAiTaskArtifacts (goal mode)', () => {
     const messageData = dbClient.message.create.mock.calls.at(-1)?.[0]?.data;
     expect(messageData).not.toHaveProperty('metadata');
   });
+
+  it('does not create an ungrouped fallback task when group_id is missing', async () => {
+    const dbClient = buildDbClient();
+    const schemaError = Object.assign(
+      new Error('The column `tasks.group_id` does not exist in the current database.'),
+      { code: 'P2022' },
+    );
+    dbClient.task.create.mockRejectedValueOnce(schemaError);
+
+    await expect(
+      createAiTaskArtifacts(
+        {
+          userId: 'user-1',
+          projectId: 'project-1',
+          title: 'Grouped task',
+          agentHost: 'daemon-a',
+          metadata: {
+            groupId: 'group-1',
+            agentRole: 'worker',
+            agentName: 'feature-dev',
+          },
+          groupId: 'group-1',
+        },
+        dbClient as any,
+      ),
+    ).rejects.toBe(schemaError);
+
+    expect(dbClient.task.create).toHaveBeenCalledTimes(1);
+    expect(dbClient.message.create).not.toHaveBeenCalled();
+  });
+
+  it('keeps groupId when only the issue_id fallback is needed', async () => {
+    const dbClient = buildDbClient();
+    const issueSchemaError = Object.assign(
+      new Error('The column `tasks.issue_id` does not exist in the current database.'),
+      { code: 'P2022' },
+    );
+    dbClient.task.create
+      .mockRejectedValueOnce(issueSchemaError)
+      .mockResolvedValueOnce({
+        ...dbClient.createdTask,
+        issueId: undefined,
+        groupId: 'group-1',
+      });
+
+    await createAiTaskArtifacts(
+      {
+        userId: 'user-1',
+        projectId: 'project-1',
+        title: 'Grouped task',
+        agentHost: 'daemon-a',
+        groupId: 'group-1',
+      },
+      dbClient as any,
+    );
+
+    expect(dbClient.task.create).toHaveBeenCalledTimes(2);
+    expect(dbClient.task.create.mock.calls[1][0].data.groupId).toBe('group-1');
+  });
 });
 
 describe('finalizeAiTaskCreation (goal mode)', () => {

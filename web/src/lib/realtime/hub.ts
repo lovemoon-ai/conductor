@@ -61,9 +61,30 @@ export type ProjectPathValidationResult = {
   git_remote_url: string | null;
   file_count: number | null;
   icon?: string | null;
+  agents?: Array<{
+    name: string;
+    doc: string;
+    description: string | null;
+    backend: string | null;
+  }> | null;
   error: string | null;
   error_code: string | null;
   validated_at: string;
+};
+
+export type ProjectAgentsResult = {
+  request_id: string;
+  daemon_host: string | null;
+  workspace_path: string | null;
+  agents: Array<{
+    name: string;
+    doc: string;
+    description: string | null;
+    backend: string | null;
+  }>;
+  error: string | null;
+  error_code: string | null;
+  resolved_at: string;
 };
 
 export type TaskWorktreeCleanupResult = {
@@ -95,6 +116,11 @@ type AgentLogWaiter = {
 
 type ProjectPathValidationWaiter = {
   resolve: (result: ProjectPathValidationResult | null) => void;
+  timeout: NodeJS.Timeout;
+};
+
+type ProjectAgentsWaiter = {
+  resolve: (result: ProjectAgentsResult | null) => void;
   timeout: NodeJS.Timeout;
 };
 
@@ -154,6 +180,7 @@ export class RealtimeHub {
   private finalStatusWaiters = new Map<string, Set<FinalStatusWaiter>>();
   private agentLogWaiters = new Map<string, AgentLogWaiter>();
   private projectPathValidationWaiters = new Map<string, ProjectPathValidationWaiter>();
+  private projectAgentsWaiters = new Map<string, ProjectAgentsWaiter>();
   private taskWorktreeCleanupWaiters = new Map<string, TaskWorktreeCleanupWaiter>();
   private aiManagerWaiters = new Map<string, AiManagerWaiter>();
   private customCommandsWaiters = new Map<string, CustomCommandsWaiter>();
@@ -819,6 +846,34 @@ export class RealtimeHub {
 
     clearTimeout(waiter.timeout);
     this.projectPathValidationWaiters.delete(requestId);
+    waiter.resolve(null);
+  }
+
+  waitForProjectAgents(requestId: string, timeoutMs: number): Promise<ProjectAgentsResult | null> {
+    return new Promise<ProjectAgentsResult | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.projectAgentsWaiters.delete(requestId);
+        resolve(null);
+      }, timeoutMs);
+      this.projectAgentsWaiters.set(requestId, { resolve, timeout });
+    });
+  }
+
+  resolveProjectAgents(result: ProjectAgentsResult) {
+    const waiter = this.projectAgentsWaiters.get(result.request_id);
+    if (!waiter) return;
+
+    clearTimeout(waiter.timeout);
+    this.projectAgentsWaiters.delete(result.request_id);
+    waiter.resolve(result);
+  }
+
+  cancelProjectAgents(requestId: string) {
+    const waiter = this.projectAgentsWaiters.get(requestId);
+    if (!waiter) return;
+
+    clearTimeout(waiter.timeout);
+    this.projectAgentsWaiters.delete(requestId);
     waiter.resolve(null);
   }
 

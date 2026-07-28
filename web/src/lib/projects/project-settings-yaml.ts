@@ -31,6 +31,143 @@ export interface ProjectSettingsYaml {
 const EMPTY_SETTINGS: ProjectSettingsYaml = { icon: null };
 
 /**
+ * RFC 0033: one registered agent from `.conductor/settings.yaml`'s `agents`
+ * block. The project owner registers which agents exist and where each agent's
+ * doc lives — the doc PATH is not hard-coded by Conductor. `doc` is a
+ * workspace-relative path (embedded into the agent's bootstrap so it reads its
+ * own persona from its worktree). `backend` is an optional per-agent default.
+ */
+export interface AgentRegistryEntry {
+  name: string;
+  doc: string;
+  description: string | null;
+  backend: string | null;
+}
+
+/** Agent registry key + backend slug validation (mirrors agent-group.ts). */
+const AGENT_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const AGENT_BACKEND_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const MAX_AGENT_REGISTRY_ENTRIES = 64;
+const MAX_AGENT_NAME_LENGTH = 64;
+const MAX_AGENT_DOC_LENGTH = 512;
+const MAX_AGENT_DESCRIPTION_LENGTH = 512;
+const MAX_AGENT_BACKEND_LENGTH = 64;
+
+/**
+ * A doc path must be workspace-relative and must not escape the workspace. It is
+ * embedded into a prompt the agent follows, so we refuse absolute paths and
+ * `..` traversal even though the file is read by the agent (not by us).
+ */
+const isSafeDocPath = (value: unknown): value is string => {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (
+    !trimmed ||
+    path.isAbsolute(trimmed) ||
+    /^[A-Za-z]:[\\/]/.test(trimmed) ||
+    /^[/\\]{2}/.test(trimmed)
+  ) {
+    return false;
+  }
+  const normalized = path.posix.normalize(trimmed.replaceAll("\\", "/"));
+  if (normalized === ".." || normalized.startsWith("../")) return false;
+  return true;
+};
+
+const normalizeDocEntry = (
+  name: unknown,
+  value: unknown,
+): AgentRegistryEntry | null => {
+  if (
+    typeof name !== "string" ||
+    name.trim().length > MAX_AGENT_NAME_LENGTH ||
+    !AGENT_KEY_RE.test(name.trim())
+  ) {
+    return null;
+  }
+  const key = name.trim();
+  let doc: unknown;
+  let description: unknown;
+  let backend: unknown;
+  if (typeof value === "string") {
+    doc = value;
+  } else if (value && typeof value === "object" && !Array.isArray(value)) {
+    const rec = value as Record<string, unknown>;
+    doc = rec.doc ?? rec.path;
+    description = rec.description;
+    backend = rec.backend;
+  } else {
+    // null / unset value (e.g. the `planner:` stub) — not usable without a doc.
+    return null;
+  }
+  if (!isSafeDocPath(doc) || doc.trim().length > MAX_AGENT_DOC_LENGTH) return null;
+  const normalizedDescription =
+    typeof description === "string" && description.trim()
+      ? description.trim()
+      : null;
+  const normBackend =
+    typeof backend === "string" &&
+    backend.trim().length <= MAX_AGENT_BACKEND_LENGTH &&
+    AGENT_BACKEND_RE.test(backend.trim().toLowerCase())
+      ? backend.trim().toLowerCase()
+      : null;
+  return {
+    name: key,
+    doc: (doc as string).trim(),
+    description:
+      normalizedDescription &&
+      normalizedDescription.length <= MAX_AGENT_DESCRIPTION_LENGTH
+        ? normalizedDescription
+        : null,
+    backend: normBackend,
+  };
+};
+
+/**
+ * Normalize an `agents` block into a registry. Accepts either a mapping
+ * (`name: doc` or `name: { doc, description?, backend? }`) or a list of
+ * single-key maps (the existing settings stub, `- name: doc`). Invalid or
+ * doc-less entries are dropped; duplicate names keep the first. This is also
+ * used to sanitize the same registry when it crosses the daemon/WebSocket
+ * boundary.
+ */
+export const normalizeProjectAgentsRegistry = (
+  agentsNode: unknown,
+): AgentRegistryEntry[] => {
+  if (!agentsNode) return [];
+  const out: AgentRegistryEntry[] = [];
+  const seen = new Set<string>();
+  const push = (entry: AgentRegistryEntry | null) => {
+    if (
+      entry &&
+      out.length < MAX_AGENT_REGISTRY_ENTRIES &&
+      !seen.has(entry.name)
+    ) {
+      seen.add(entry.name);
+      out.push(entry);
+    }
+  };
+  if (Array.isArray(agentsNode)) {
+    for (const item of agentsNode) {
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        const keys = Object.keys(item as Record<string, unknown>);
+        if (keys.length === 1) {
+          push(normalizeDocEntry(keys[0], (item as Record<string, unknown>)[keys[0]]));
+        } else if ("name" in (item as Record<string, unknown>)) {
+          const rec = item as Record<string, unknown>;
+          push(normalizeDocEntry(rec.name, rec));
+        }
+      }
+    }
+  } else {
+    for (const [name, value] of Object.entries(agentsNode as Record<string, unknown>)) {
+      push(normalizeDocEntry(name, value));
+    }
+  }
+  return out;
+};
+
+/**
  * Hard cap on settings.yaml file size. Settings should be tiny (a few hundred
  * bytes in practice). Anything larger is treated as a configuration mistake
  * and ignored so we never load a malicious or runaway file into the API
@@ -259,10 +396,59 @@ export async function readProjectSettingsYaml(
   return result;
 }
 
+const agentsCache = new Map<string, { value: AgentRegistryEntry[]; expiresAt: number }>();
+
+/**
+ * Read the `agents` registry from `.conductor/settings.yaml` for a workspace.
+ *
+ * Returns `[]` when the workspace path is missing, the file is absent/too large,
+ * YAML parsing fails, or no valid agents are registered. Mirrors the icon
+ * reader's co-located-filesystem assumption and fail-soft behavior.
+ */
+export async function readProjectAgentsRegistry(
+  workspacePath: string | null | undefined,
+): Promise<AgentRegistryEntry[]> {
+  if (!workspacePath || typeof workspacePath !== "string") return [];
+  const trimmed = workspacePath.trim();
+  if (!trimmed) return [];
+
+  const now = Date.now();
+  const cached = agentsCache.get(trimmed);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  let agents: AgentRegistryEntry[] = [];
+  for (const candidate of SETTINGS_FILE_CANDIDATES) {
+    const candidatePath = path.join(trimmed, candidate);
+    let raw: string;
+    try {
+      const stat = await fs.stat(candidatePath);
+      if (!stat.isFile() || stat.size > MAX_SETTINGS_FILE_BYTES) continue;
+      raw = await fs.readFile(candidatePath, "utf8");
+    } catch {
+      continue;
+    }
+    try {
+      const parsed = parseYaml(raw);
+      const agentsNode =
+        parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>).agents
+          : undefined;
+      agents = normalizeProjectAgentsRegistry(agentsNode);
+    } catch {
+      agents = [];
+    }
+    break; // first existing settings file wins (matches icon reader)
+  }
+
+  agentsCache.set(trimmed, { value: agents, expiresAt: now + SETTINGS_CACHE_TTL_MS });
+  return agents;
+}
+
 /**
  * Clear the in-process settings cache. Exposed for tests; production code
  * relies on the TTL.
  */
 export function clearProjectSettingsCache(): void {
   settingsCache.clear();
+  agentsCache.clear();
 }

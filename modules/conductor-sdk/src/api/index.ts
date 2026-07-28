@@ -17,6 +17,8 @@ export {
   TasksApi,
   type Task,
   type TaskGroupingResult,
+  type TaskGroup,
+  type TaskGroupMember,
   type Message,
   type ListTasksInput,
   type CreateTaskInput,

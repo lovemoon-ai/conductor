@@ -8,9 +8,21 @@ worktree:
 
 icon: ../web/public/icon.svg
 
+# RFC 0033: agent registry. Each entry maps an agent name to its doc (a
+# workspace-relative markdown persona the agent reads at runtime). Optional
+# `description` (shown in the task-composer picker) and `backend` (per-agent
+# default backend). The first agent selected on a task is the worker; any
+# others are spawned as sibling reviewer tasks.
 agents:
-  - review: claw/sop/04_review-code.md
-  - publish: claw/sop/06_release.md
-  - planner:
-  - executor:
-  - critic:
+  review:
+    doc: claw/sop/04_review-code.md
+    description: Reviews code using the repository review SOP.
+  publish:
+    doc: claw/sop/06_release.md
+    description: Publishes releases using the repository release SOP.
+  feature-dev:
+    doc: claw/agents/feature-dev.md
+    description: Executes feature-development tasks end to end with tests.
+  code-reviewer:
+    doc: claw/agents/code-reviewer.md
+    description: Periodically reviews the worker for drift and regressions.

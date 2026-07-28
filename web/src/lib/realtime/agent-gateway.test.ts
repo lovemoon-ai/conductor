@@ -46,6 +46,7 @@ vi.mock("./hub", () => ({
     notifyTaskStatus: vi.fn(),
     resolveAiManagerResponse: vi.fn(),
     resolveCustomCommandsResponse: vi.fn(),
+    resolveProjectAgents: vi.fn(),
   },
 }));
 
@@ -219,6 +220,67 @@ describe("agent-gateway ownership handling", () => {
       }),
     );
     expect(socket.close).not.toHaveBeenCalledWith(4002, "duplicate-host");
+  });
+
+  it("normalizes and resolves project agent registry responses", async () => {
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+
+    const socket = new FakeSocket();
+    const wss = setupAgentGateway();
+    const request = {
+      headers: {
+        authorization: "Bearer test-token",
+        "x-conductor-host": "daemon-a",
+        "x-conductor-backends": "codex",
+      },
+      socket: {
+        remoteAddress: "127.0.0.1",
+      },
+    } as any;
+
+    wss.emit("connection", socket as any, request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    socket.emit("message", Buffer.from(JSON.stringify({
+      type: "project_agents_resolved",
+      payload: {
+        request_id: "req-agents-1",
+        daemon_host: "daemon-a",
+        workspace_path: "/repo/project",
+        agents: {
+          "feature-dev": {
+            doc: "agents/feature.md",
+            description: "Builds features",
+            backend: "Codex",
+          },
+        },
+        error: null,
+        error_code: null,
+        resolved_at: "2026-07-28T00:00:00.000Z",
+      },
+    })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(realtimeHub.resolveProjectAgents).toHaveBeenCalledWith({
+      request_id: "req-agents-1",
+      daemon_host: "daemon-a",
+      workspace_path: "/repo/project",
+      agents: [
+        {
+          name: "feature-dev",
+          doc: "agents/feature.md",
+          description: "Builds features",
+          backend: "codex",
+        },
+      ],
+      error: null,
+      error_code: null,
+      resolved_at: "2026-07-28T00:00:00.000Z",
+    });
   });
 
   it("only rebinds resumed tasks that are actively assigned to the reconnecting host", async () => {

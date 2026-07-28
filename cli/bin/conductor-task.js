@@ -8,6 +8,7 @@
  *   create --title <title> [--prompt <prompt>] [--backend <backend>]
  *          [--parent-task-id <id>] [--project ...]
  *   show <id>
+ *   group [<id>]
  *   send <id> [<message>] [--stdin] [--from-file FILE] [--metadata-json '{...}']
  *   insert <id> [<message>] [--stdin] [--from-file FILE] [--target-reply-to <msg-id>]
  *   messages <id> [--limit N] [--before <msg-id>]
@@ -318,6 +319,45 @@ async function handleShow(argv, deps) {
   return EXIT.OK;
 }
 
+async function handleGroup(argv, deps) {
+  const apis = await buildApis(deps);
+  const taskId =
+    (argv.id && String(argv.id).trim()) ||
+    (deps.env.CONDUCTOR_TASK_ID && String(deps.env.CONDUCTOR_TASK_ID).trim());
+  if (!taskId) {
+    const err = new Error(
+      "No task id: pass <id> or run inside a task (CONDUCTOR_TASK_ID)",
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  const group = await apis.tasks.getTaskGroup(taskId);
+  if (argv.json) {
+    printJson(deps.stdout, group);
+    return EXIT.OK;
+  }
+  if (!group.groupId) {
+    printPretty(deps.stdout, "(task is not in a group)");
+    return EXIT.OK;
+  }
+  printPretty(deps.stdout, `group ${group.groupId}`);
+  printPretty(
+    deps.stdout,
+    `${pad("ROLE", 10)} ${pad("TASK ID", 24)} ${pad("AGENT", 20)} STATUS`,
+  );
+  for (const member of group.members) {
+    const selfMark = member.isSelf ? "  (you)" : "";
+    printPretty(
+      deps.stdout,
+      `${pad(member.role || "?", 10)} ${pad(member.taskId, 24)} ${pad(
+        member.agent || "-",
+        20,
+      )} ${member.status || ""}${selfMark}`,
+    );
+  }
+  return EXIT.OK;
+}
+
 async function handleSend(argv, deps) {
   const apis = await buildApis(deps);
   const content = readMessageInput({
@@ -567,6 +607,14 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
         (cmd) => cmd.positional("id", { type: "string", demandOption: true }),
         async (argv) => {
           exitCode = await handleShow(argv, { ...handlerDeps, configFile: argv.configFile });
+        },
+      )
+      .command(
+        "group [id]",
+        "Show the multi-agent group a task belongs to (defaults to $CONDUCTOR_TASK_ID)",
+        (cmd) => cmd.positional("id", { type: "string" }),
+        async (argv) => {
+          exitCode = await handleGroup(argv, { ...handlerDeps, configFile: argv.configFile });
         },
       )
       .command(

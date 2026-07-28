@@ -312,6 +312,57 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect((restartOutbox![0] as any).data.agentHost).toBe("daemon-2");
   });
 
+  it("transfers group membership to a new-task successor", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        groupId: "group-1",
+        metadata: JSON.stringify({
+          groupId: "group-1",
+          agentRole: "worker",
+          agentName: "feature-dev",
+          note: "source-only",
+        }),
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+
+    const createArgs = vi.mocked(db.task.create).mock.calls.at(-1)?.[0] as any;
+    expect(createArgs.data.groupId).toBe("group-1");
+    expect(JSON.parse(createArgs.data.metadata)).toMatchObject({
+      groupId: "group-1",
+      agentRole: "worker",
+      agentName: "feature-dev",
+      continuedFromTaskId: "task-1",
+      restartStrategy: "new_task",
+    });
+
+    const sourceUpdate = vi
+      .mocked(db.task.update)
+      .mock.calls.find((call) => (call[0] as any)?.where?.id === "task-1");
+    expect(sourceUpdate).toBeTruthy();
+    expect((sourceUpdate![0] as any).data.groupId).toBeNull();
+    const sourceMetadata = JSON.parse((sourceUpdate![0] as any).data.metadata);
+    expect(sourceMetadata).toMatchObject({
+      note: "source-only",
+      successorTaskId: expect.any(String),
+    });
+    expect(sourceMetadata).not.toHaveProperty("groupId");
+    expect(sourceMetadata).not.toHaveProperty("agentRole");
+    expect(sourceMetadata).not.toHaveProperty("agentName");
+  });
+
   it("refreshes a running task session in place without mutating task ownership or status", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(
       buildTask({ status: "running", executionHost: "conductor-fire-test-1" }) as any,

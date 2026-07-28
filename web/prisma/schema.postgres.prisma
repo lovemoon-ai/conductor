@@ -223,6 +223,8 @@ model Task {
   sessionFilePath String? @map("session_file_path")
   launchConfig String? @map("launch_config")
   metadata  String?
+  /// RFC 0033: shared execution group for a worker and its reviewer siblings.
+  groupId   String? @map("group_id")
   achievedAt DateTime? @map("achieved_at")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -242,6 +244,7 @@ model Task {
   @@index([issueId])
   @@index([executionHost])
   @@index([achievedAt])
+  @@index([groupId])
   @@map("tasks")
 }
 

@@ -18,6 +18,7 @@ export type ApiClient = Pick<
   | 'listTasks'
   | 'createTask'
   | 'getTask'
+  | 'getTaskGroup'
   | 'listTaskMessages'
   | 'postTaskMessage'
   | 'postTaskInsert'
