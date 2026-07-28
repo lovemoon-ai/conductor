@@ -30,8 +30,8 @@ const TAB_LONG_PRESS_MOVE_TOLERANCE_SQ = 100;
 /**
  * The tab strip shown on an aggregated project card. Clicking a tab brings its
  * card to the front; double-clicking ejects it from the aggregation; a
- * press-and-hold renames it inline. All pointer events stop propagation so they
- * never start a card drag or select the underlying project.
+ * press-and-hold renames it inline. Pointer events stop propagation so they
+ * never start a card drag; project selection is handled explicitly by onSelect.
  */
 export function ProjectCardTabBar({
   tabs,

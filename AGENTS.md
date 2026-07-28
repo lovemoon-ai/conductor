@@ -53,5 +53,8 @@ Note: the system-wide `conductor` on PATH is reserved for the formal release (br
 ## How to review code
 Refer to `claw/sop/04_review-code.md`.
 
+## How to qa before release
+Refer to `claw/sop/05_qa.md`.
+
 ## How to Release
 Refer to `claw/sop/06_release.md`.

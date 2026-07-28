@@ -1,4 +1,4 @@
-import { act, render } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from '@/shared/types';
 import { ProjectList } from './ProjectList';
@@ -65,7 +65,9 @@ vi.mock('@dnd-kit/core', () => ({
 }));
 
 vi.mock('@dnd-kit/sortable', () => ({
-  SortableContext: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  SortableContext: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="sortable-context">{children}</div>
+  ),
   useSortable: () => ({
     attributes: {},
     listeners: {},
@@ -87,7 +89,11 @@ vi.mock('./ProjectItem', () => ({
     aggregation,
   }: {
     project: Project;
-    aggregation?: { id: string; tabs: unknown[] };
+    aggregation?: {
+      id: string;
+      tabs: Array<{ projectId: string; name: string }>;
+      onSelectTab: (projectId: string) => void;
+    };
   }) => (
     <div
       data-project-id={project.id}
@@ -95,6 +101,15 @@ vi.mock('./ProjectItem', () => ({
       data-tab-count={aggregation ? aggregation.tabs.length : 0}
     >
       {project.name}
+      {aggregation?.tabs.map((tab) => (
+        <button
+          key={tab.projectId}
+          type="button"
+          onClick={() => aggregation.onSelectTab(tab.projectId)}
+        >
+          {tab.name}
+        </button>
+      ))}
     </div>
   ),
 }));
@@ -105,29 +120,48 @@ const threeProjects: Project[] = [
   { id: 'p3', name: 'P3' } as Project,
 ];
 
-// The production code decides aggregate-vs-reorder from the LIVE POINTER
-// position (activatorEvent.clientY + accumulated delta.y) measured against the
-// target row wrapper's real getBoundingClientRect — NOT the dragged card's
-// dnd-kit translated box (which the sortable strategy displaces mid-drag). We
-// stub every wrapper rect to {top:0,height:100} in beforeEach, so a pointer at
-// `ratio * 100` lands at `ratio` down the target card.
+const projectTopById: Record<string, number> = {
+  p1: 0,
+  p2: 100,
+  p3: 200,
+};
+
+// The production code decides aggregate-vs-reorder from the live pointer
+// measured against stable row wrappers. Give each wrapper a distinct 100px slot
+// so the tests exercise the same hit-testing path as the browser.
 const overEvent = (activeId: string, overId: string, ratio: number) => ({
   active: { id: activeId },
   over: { id: overId },
-  activatorEvent: { clientY: ratio * 100 },
-  delta: { y: 0 },
+  activatorEvent: {
+    clientX: 50,
+    clientY: projectTopById[overId] + ratio * 100,
+  },
+  delta: { x: 0, y: 0 },
 });
+
+const renderedProjectOrder = (container: HTMLElement): string[] =>
+  Array.from(
+    container.querySelectorAll('[data-testid="sortable-context"] [data-project-id]'),
+  ).map((node) => node.getAttribute('data-project-id') ?? '');
 
 describe('ProjectList aggregation drag', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Row wrappers have no layout in jsdom (all zeros), so the pointer-band math
-    // can't run. Give every element a stable 100px-tall rect anchored at top 0,
-    // matching the pointer coordinates the overEvent helper feeds in.
-    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
-      top: 0, left: 0, bottom: 100, right: 100, width: 100, height: 100, x: 0, y: 0,
-      toJSON: () => ({}),
-    } as DOMRect);
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function () {
+      const projectId = this.querySelector('[data-project-id]')?.getAttribute('data-project-id');
+      const top = projectId ? projectTopById[projectId] : 0;
+      return {
+        top,
+        left: 0,
+        bottom: top + 100,
+        right: 100,
+        width: 100,
+        height: 100,
+        x: 0,
+        y: top,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
     latestDndContextProps = null;
     projectsState = {
       ...projectsState,
@@ -152,10 +186,10 @@ describe('ProjectList aggregation drag', () => {
       latestDndContextProps?.onDragStart?.({ active: { id: 'p2' } });
     });
     await act(async () => {
-      latestDndContextProps?.onDragOver?.(overEvent('p2', 'p1', 0.5));
+      latestDndContextProps?.onDragMove?.(overEvent('p2', 'p1', 0.5));
     });
     await act(async () => {
-      await latestDndContextProps?.onDragEnd?.({ active: { id: 'p2' }, over: { id: 'p1' } });
+      await latestDndContextProps?.onDragEnd?.(overEvent('p2', 'p1', 0.5));
     });
 
     expect(saveScopeMock).toHaveBeenCalledWith(
@@ -169,6 +203,62 @@ describe('ProjectList aggregation drag', () => {
     expect(aggCard?.getAttribute('data-tab-count')).toBe('2');
   });
 
+  it('keeps row wrappers stable while crossing the outer band before a center-drop', async () => {
+    const { container } = render(<ProjectList />);
+
+    await act(async () => {
+      latestDndContextProps?.onDragStart?.({ active: { id: 'p2' } });
+    });
+    await act(async () => {
+      // A real pointer must cross p3's outer band before reaching its center.
+      // Reordering the rendered rows here moves p3 away before that can happen.
+      latestDndContextProps?.onDragMove?.(overEvent('p2', 'p3', 0.05));
+    });
+
+    expect(renderedProjectOrder(container)).toEqual(['p1', 'p2', 'p3']);
+
+    await act(async () => {
+      latestDndContextProps?.onDragMove?.(overEvent('p2', 'p3', 0.5));
+    });
+    await act(async () => {
+      await latestDndContextProps?.onDragEnd?.(overEvent('p2', 'p3', 0.5));
+    });
+
+    expect(saveScopeMock).toHaveBeenCalledWith(
+      'user-1',
+      'projects:all',
+      expect.arrayContaining([expect.objectContaining({ projectIds: ['p3', 'p2'] })]),
+    );
+    expect(reorderProjectsMock).not.toHaveBeenCalled();
+  });
+
+  it('selects the project immediately when an aggregation tab is clicked', async () => {
+    syncState = {
+      ...syncState,
+      snapshot: {
+        version: 1,
+        revision: 1,
+        scopes: {
+          'projects:all': [{
+            id: 'projcard-1',
+            projectIds: ['p1', 'p2'],
+            labels: {},
+          }],
+        },
+      },
+    };
+
+    render(<ProjectList />);
+
+    const p2Tab = await screen.findByRole('button', { name: 'P2' });
+    fireEvent.click(p2Tab);
+
+    expect(setSelectedProjectIdMock).toHaveBeenCalledWith('p2');
+    await waitFor(() => {
+      expect(screen.getByTestId('aggregation-projcard-1')).toHaveAttribute('data-project-id', 'p2');
+    });
+  });
+
   it('does not aggregate when dropped near a card edge (outer band)', async () => {
     const { container } = render(<ProjectList />);
 
@@ -177,10 +267,10 @@ describe('ProjectList aggregation drag', () => {
     });
     await act(async () => {
       // ratio 0.05 → outer band → reorder, not aggregate.
-      latestDndContextProps?.onDragOver?.(overEvent('p2', 'p1', 0.05));
+      latestDndContextProps?.onDragMove?.(overEvent('p2', 'p1', 0.05));
     });
     await act(async () => {
-      await latestDndContextProps?.onDragEnd?.({ active: { id: 'p2' }, over: { id: 'p1' } });
+      await latestDndContextProps?.onDragEnd?.(overEvent('p2', 'p1', 0.05));
     });
 
     // No aggregation is created and nothing is persisted to the sync scope.
@@ -196,16 +286,16 @@ describe('ProjectList aggregation drag', () => {
       latestDndContextProps?.onDragStart?.({ active: { id: 'p2' } });
     });
     await act(async () => {
-      latestDndContextProps?.onDragOver?.(overEvent('p2', 'p1', 0.5));
+      latestDndContextProps?.onDragMove?.(overEvent('p2', 'p1', 0.5));
     });
     await act(async () => {
-      await latestDndContextProps?.onDragEnd?.({ active: { id: 'p2' }, over: { id: 'p1' } });
+      await latestDndContextProps?.onDragEnd?.(overEvent('p2', 'p1', 0.5));
     });
 
     expect(saveScopeMock).not.toHaveBeenCalled();
   });
 
-  it('does not aggregate onto a stale target when the final drop is over a different card', async () => {
+  it('uses the final pointer target instead of a stale highlighted card', async () => {
     render(<ProjectList />);
 
     await act(async () => {
@@ -213,13 +303,22 @@ describe('ProjectList aggregation drag', () => {
     });
     await act(async () => {
       // Highlighted p1 as the aggregate target...
-      latestDndContextProps?.onDragOver?.(overEvent('p2', 'p1', 0.5));
+      latestDndContextProps?.onDragMove?.(overEvent('p2', 'p1', 0.5));
     });
     await act(async () => {
       // ...but released over p3.
-      await latestDndContextProps?.onDragEnd?.({ active: { id: 'p2' }, over: { id: 'p3' } });
+      await latestDndContextProps?.onDragEnd?.(overEvent('p2', 'p3', 0.5));
     });
 
-    expect(saveScopeMock).not.toHaveBeenCalled();
+    expect(saveScopeMock).toHaveBeenCalledWith(
+      'user-1',
+      'projects:all',
+      expect.arrayContaining([expect.objectContaining({ projectIds: ['p3', 'p2'] })]),
+    );
+    expect(saveScopeMock).not.toHaveBeenCalledWith(
+      'user-1',
+      'projects:all',
+      expect.arrayContaining([expect.objectContaining({ projectIds: ['p1', 'p2'] })]),
+    );
   });
 });

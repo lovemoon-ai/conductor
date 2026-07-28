@@ -13,10 +13,10 @@ import {
   type CollisionDetection,
   type DragCancelEvent,
   type DragEndEvent,
-  type DragOverEvent,
+  type DragMoveEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
-import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { SortableContext, type SortingStrategy } from '@dnd-kit/sortable';
 import type { Project, ProjectGroup } from '@/shared/types';
 import { useAgentsStore } from '@/features/agents';
 import { useAuthStore } from '@/features/auth/store';
@@ -54,33 +54,47 @@ const PROJECT_DRAG_ACTIVATION_DELAY_MS = 350;
 const PROJECT_DRAG_ACTIVATION_TOLERANCE_PX = 8;
 const PROJECT_DRAG_ACTIVATION_DISTANCE_PX = 6;
 
-// A drop counts as "aggregate onto this card" only when the LIVE POINTER sits
+// Keep every card in its layout slot while dragging. Reorder transforms move
+// the visible target away as soon as the pointer crosses its outer edge, before
+// the pointer can reach the center band used for aggregation. The DragOverlay
+// still follows the pointer; the committed list order changes on drop.
+const stableProjectSortingStrategy: SortingStrategy = () => null;
+
+// A drop counts as "aggregate onto this card" only when the live pointer sits
 // inside the middle band of the target card. Landing in the outer thirds (i.e.
 // near the gap between two cards) reorders instead. This is the whole
 // distinction between aggregating and repositioning: on-card vs in-the-gap.
-//
-// The decision is pointer-based on purpose. dnd-kit's verticalListSortingStrategy
-// displaces the hovered card the instant it is entered (to open a reorder gap),
-// so the DRAGGED card's own moving box never stably lands in the target's middle
-// band. The physical pointer, however, is a fixed screen coordinate; measured
-// against the target row's stable layout rect it gives a reliable band decision.
 const AGGREGATE_BAND_MIN = 0.32;
 const AGGREGATE_BAND_MAX = 0.68;
 
-// Recover the live pointer position during a drag from dnd-kit's activator event
-// (the pointer/mouse/touch event that started the drag) plus the accumulated
-// delta. This avoids relying on the dragged element's transformed rect, which
-// the sortable strategy shifts around mid-drag.
-const readDragPointerY = (event: DragOverEvent): number | null => {
+type DragPointer = { x: number; y: number };
+type DragPointerEvent = Pick<DragMoveEvent, 'activatorEvent' | 'delta'>;
+type RowPointerHit = { key: string; rect: DOMRect };
+
+// Recover the live pointer position from dnd-kit's activator event plus the
+// accumulated delta. `onDragMove` runs for every pointer movement, unlike
+// `onDragOver`, which only runs when the collision target changes.
+const readDragPointer = (event: DragPointerEvent): DragPointer | null => {
   const activator = event.activatorEvent as
     | (Partial<MouseEvent> & Partial<Pick<TouchEvent, 'touches' | 'changedTouches'>>)
     | null
     | undefined;
-  const deltaY = event.delta?.y ?? 0;
   if (!activator) return null;
-  if (typeof activator.clientY === 'number') return activator.clientY + deltaY;
+  const deltaX = event.delta?.x ?? 0;
+  const deltaY = event.delta?.y ?? 0;
+  if (typeof activator.clientX === 'number' && typeof activator.clientY === 'number') {
+    return {
+      x: activator.clientX + deltaX,
+      y: activator.clientY + deltaY,
+    };
+  }
   const touch = activator.touches?.[0] ?? activator.changedTouches?.[0];
-  if (touch && typeof touch.clientY === 'number') return touch.clientY + deltaY;
+  if (touch && typeof touch.clientX === 'number' && typeof touch.clientY === 'number') {
+    return {
+      x: touch.clientX + deltaX,
+      y: touch.clientY + deltaY,
+    };
+  }
   return null;
 };
 
@@ -188,6 +202,25 @@ export function ProjectList() {
     if (node) rowRefs.current.set(key, node);
     else rowRefs.current.delete(key);
   }, []);
+  const findRowAtPointer = useCallback((
+    pointer: DragPointer,
+    exceptKey: string,
+  ): RowPointerHit | null => {
+    let hit: RowPointerHit | null = null;
+    rowRefs.current.forEach((node, key) => {
+      if (key === exceptKey) return;
+      const rect = node.getBoundingClientRect();
+      if (
+        pointer.x >= rect.left
+        && pointer.x <= rect.right
+        && pointer.y >= rect.top
+        && pointer.y <= rect.bottom
+      ) {
+        hit = { key, rect };
+      }
+    });
+    return hit;
+  }, []);
 
   const [dragOrderKeys, setDragOrderKeys] = useState<string[] | null>(null);
   const [activeRowKey, setActiveRowKey] = useState<string | null>(null);
@@ -276,46 +309,30 @@ export function ProjectList() {
     setActiveRowKey(String(event.active.id));
   }, []);
 
-  const handleDragOver = useCallback((event: DragOverEvent) => {
-    if (!event.over) {
-      setAggregateTargetKey(null);
-      return;
-    }
+  const handleDragMove = useCallback((event: DragMoveEvent) => {
     const activeId = String(event.active.id);
-    const overId = String(event.over.id);
-    if (activeId === overId) {
+    const draggedRow = rowByKey.get(activeId);
+    if (!aggregationsHydrated || draggedRow?.type !== 'group') {
       setAggregateTargetKey(null);
       return;
     }
 
-    const draggedRow = rowByKey.get(activeId);
-    const overRow = rowByKey.get(overId);
-    // Only a plain (non-aggregated) card can be dragged INTO another card, and
-    // only once the synced snapshot has loaded — aggregating before hydration
-    // would create a group the incoming snapshot then wipes. An aggregation is
-    // only ever repositioned.
-    const canAggregate = aggregationsHydrated && draggedRow?.type === 'group' && Boolean(overRow);
+    const pointer = readDragPointer(event);
+    const hit = pointer ? findRowAtPointer(pointer, activeId) : null;
+    const targetRow = hit ? rowByKey.get(hit.key) : null;
+    if (!pointer || !hit || !targetRow || hit.rect.height <= 0) {
+      setAggregateTargetKey(null);
+      return;
+    }
 
-    if (canAggregate) {
-      const pointerY = readDragPointerY(event);
-      // Measure against the target's STABLE layout rect (the row wrapper), not
-      // the dragged card's transformed box, so mid-drag displacement can't move
-      // the band out from under the pointer.
-      const targetRect = rowRefs.current.get(overId)?.getBoundingClientRect() ?? null;
-      if (pointerY !== null && targetRect && targetRect.height > 0) {
-        const ratio = (pointerY - targetRect.top) / targetRect.height;
-        if (ratio > AGGREGATE_BAND_MIN && ratio < AGGREGATE_BAND_MAX) {
-          // Middle band → aggregate: highlight target, cancel reorder preview.
-          setAggregateTargetKey(overId);
-          setDragOrderKeys(null);
-          return;
-        }
-      }
+    const ratio = (pointer.y - hit.rect.top) / hit.rect.height;
+    if (ratio > AGGREGATE_BAND_MIN && ratio < AGGREGATE_BAND_MAX) {
+      setAggregateTargetKey(hit.key);
+      return;
     }
 
     setAggregateTargetKey(null);
-    setDragOrderKeys(reorderRowsLocally(orderedRows, activeId, overId).map(rowKeyOf));
-  }, [aggregationsHydrated, orderedRows, rowByKey]);
+  }, [aggregationsHydrated, findRowAtPointer, rowByKey]);
 
   const handleDragCancel = useCallback((_event: DragCancelEvent) => {
     resetDragState();
@@ -323,20 +340,28 @@ export function ProjectList() {
 
   const handleDragEnd = useCallback(async (event: DragEndEvent) => {
     const activeId = String(event.active.id);
-    const overId = event.over ? String(event.over.id) : null;
     const draggedRow = rowByKey.get(activeId);
+    const pointer = readDragPointer(event);
+    const pointerHit = pointer ? findRowAtPointer(pointer, activeId) : null;
+    const pointerHitRatio = pointerHit && pointer && pointerHit.rect.height > 0
+      ? (pointer.y - pointerHit.rect.top) / pointerHit.rect.height
+      : null;
+    const aggregateDropTargetKey = (
+      aggregationsHydrated
+      && draggedRow?.type === 'group'
+      && pointerHit
+      && pointerHitRatio !== null
+      && pointerHitRatio > AGGREGATE_BAND_MIN
+      && pointerHitRatio < AGGREGATE_BAND_MAX
+    )
+      ? pointerHit.key
+      : null;
 
     // Aggregate branch: dropped a plain card onto the middle of another card.
-    // Require the highlighted target to still be the card under the pointer at
-    // release, so a fast final move can't aggregate onto a stale target.
-    if (
-      aggregationsHydrated
-      && aggregateTargetKey
-      && overId
-      && aggregateTargetKey === overId
-      && draggedRow?.type === 'group'
-    ) {
-      const targetRow = rowByKey.get(aggregateTargetKey);
+    // Recompute the target from the release coordinates so a final fast move
+    // cannot use stale highlight state or a transformed dnd-kit collision rect.
+    if (aggregateDropTargetKey && draggedRow?.type === 'group') {
+      const targetRow = rowByKey.get(aggregateDropTargetKey);
       const draggedProjectId = primaryProjectIdOf(draggedRow.group);
       if (targetRow && targetRow.type === 'group' && targetRow.group.key !== draggedRow.group.key) {
         const newId = `projcard-${maxProjectCardGroupIdCounter(aggregations) + 1}`;
@@ -354,6 +379,7 @@ export function ProjectList() {
     }
 
     // Reorder branch.
+    const overId = pointerHit?.key ?? (event.over ? String(event.over.id) : null);
     if (!overId) {
       resetDragState();
       return;
@@ -369,7 +395,7 @@ export function ProjectList() {
     if (previousOrder === nextOrder) return;
 
     await commitOrder(nextRows);
-  }, [aggregateTargetKey, aggregations, aggregationsHydrated, baseRows, commitOrder, orderedRows, resetDragState, rowByKey]);
+  }, [aggregations, aggregationsHydrated, baseRows, commitOrder, findRowAtPointer, orderedRows, resetDragState, rowByKey]);
 
   const renderRow = useCallback((row: Row, forOverlay = false): ReactElement => {
     if (row.type === 'group') {
@@ -415,8 +441,10 @@ export function ProjectList() {
           id: row.id,
           tabs,
           activeProjectId: activeTab.projectId,
-          onSelectTab: (projectId) =>
-            setAggregations((prev) => setActiveProjectCardTab(prev, row.id, projectId)),
+          onSelectTab: (projectId) => {
+            setAggregations((prev) => setActiveProjectCardTab(prev, row.id, projectId));
+            setSelectedProjectId(projectId);
+          },
           onEjectTab: (projectId) =>
             setAggregations((prev) => ejectProjectFromGroup(prev, row.id, projectId)),
           onRenameTab: (projectId, label) =>
@@ -462,11 +490,11 @@ export function ProjectList() {
       sensors={sensors}
       collisionDetection={collisionDetection}
       onDragStart={handleDragStart}
-      onDragOver={handleDragOver}
+      onDragMove={handleDragMove}
       onDragCancel={handleDragCancel}
       onDragEnd={handleDragEnd}
     >
-      <SortableContext items={orderedRows.map(rowKeyOf)} strategy={verticalListSortingStrategy}>
+      <SortableContext items={orderedRows.map(rowKeyOf)} strategy={stableProjectSortingStrategy}>
         <div className="space-y-3">
           {orderedRows.map((row) => {
             const key = rowKeyOf(row);

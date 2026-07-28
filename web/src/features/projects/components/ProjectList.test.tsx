@@ -346,7 +346,7 @@ describe('ProjectList', () => {
       latestDndContextProps?.onDragStart?.({ active: { id: 'online-c' } });
     });
     await act(async () => {
-      latestDndContextProps?.onDragOver?.({ active: { id: 'online-c' }, over: { id: 'online-a' } });
+      latestDndContextProps?.onDragMove?.({ active: { id: 'online-c' }, over: { id: 'online-a' } });
     });
     await act(async () => {
       render(<ProjectList />);
@@ -358,7 +358,7 @@ describe('ProjectList', () => {
     expect(reorderProjectsMock).toHaveBeenCalledWith(['online-c', 'offline-b', 'online-a']);
   });
 
-  it('reorders visible projects in-place while dragging', async () => {
+  it('keeps rows stable while dragging and reorders them on drop', async () => {
     projectsState = {
       projects: [
         { id: 'project-a', name: 'Project A' },
@@ -382,11 +382,28 @@ describe('ProjectList', () => {
       latestDndContextProps?.onDragStart?.({ active: { id: 'project-a' } });
     });
     await act(async () => {
-      latestDndContextProps?.onDragOver?.({ active: { id: 'project-a' }, over: { id: 'project-c' } });
+      latestDndContextProps?.onDragMove?.({ active: { id: 'project-a' }, over: { id: 'project-c' } });
     });
 
-    const renderedIds = screen.getAllByTestId(/project-item-/).slice(0, 3).map((item) => item.getAttribute('data-project-id'));
-    expect(renderedIds).toEqual(['project-b', 'project-c', 'project-a']);
+    const renderedIdsWhileDragging = screen
+      .getAllByTestId(/project-item-/)
+      .slice(0, 3)
+      .map((item) => item.getAttribute('data-project-id'));
+    expect(renderedIdsWhileDragging).toEqual(['project-a', 'project-b', 'project-c']);
+
+    await act(async () => {
+      await latestDndContextProps?.onDragEnd?.({
+        active: { id: 'project-a' },
+        over: { id: 'project-c' },
+      });
+    });
+
+    const renderedIdsAfterDrop = screen
+      .getAllByTestId(/project-item-/)
+      .slice(0, 3)
+      .map((item) => item.getAttribute('data-project-id'));
+    expect(renderedIdsAfterDrop).toEqual(['project-b', 'project-c', 'project-a']);
+    expect(reorderProjectsMock).toHaveBeenCalledWith(['project-b', 'project-c', 'project-a']);
   });
 
   it('hides locally hidden project cards until hidden projects are shown', () => {
