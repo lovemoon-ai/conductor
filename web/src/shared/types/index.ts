@@ -363,6 +363,8 @@ export interface WSTaskLogChunk {
 export interface ApiError {
   error: string;
   message?: string;
+  /** Stable machine-readable error discriminator (e.g. task_missing_active_fire_owner). */
+  code?: string;
   limit_type?: string;
 }
 
@@ -479,4 +481,10 @@ export interface SendMessageInput {
   content: string;
   role?: MessageRole;
   metadata?: Record<string, unknown>;
+  /**
+   * Idempotency key (RFC 0025 §5.1). When the client auto-retries a transient
+   * send failure, the same key lets the server dedupe so a retry that races a
+   * late success cannot persist two user messages.
+   */
+  clientRequestId?: string;
 }

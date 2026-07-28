@@ -684,6 +684,9 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
       const message = await sendMessage(taskId, { content, role: 'user' });
       dispatchUiState({ type: 'recordSentMessage', replyTo: message.id });
     } catch {
+      // The send (including its bounded auto-retry for the startup fire-owner
+      // race) ultimately failed. Put the text back so the user never loses it.
+      messageInputRef.current?.restoreDraft(content);
       dispatchUiState({
         type: 'setComposerFeedback',
         feedback: {

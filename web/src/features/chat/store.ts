@@ -1,7 +1,24 @@
 import { create } from 'zustand';
 import type { Message, SendMessageInput } from '@/shared/types';
-import { getApiClient } from '@/shared/api/client';
+import { getApiClient, ApiRequestError } from '@/shared/api/client';
 import { getMessageAttachments } from '@/shared/utils/message-attachments';
+
+// A newly created task briefly reports `running` before its fire owner (the
+// conductor-fire subprocess) has bound, so the very first user message can hit
+// a transient 409 `task_missing_active_fire_owner`. That 409 is raised BEFORE
+// anything is persisted, so the send can be safely retried until the fire owner
+// connects instead of dropping the user's first message.
+const FIRE_OWNER_NOT_READY_CODE = 'task_missing_active_fire_owner';
+const SEND_RETRY_WINDOW_MS = 10_000;
+const SEND_RETRY_BASE_MS = 500;
+const SEND_RETRY_MAX_MS = 1_500;
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+const isFireOwnerNotReadyError = (error: unknown): boolean =>
+  error instanceof ApiRequestError &&
+  error.status === 409 &&
+  error.payload?.code === FIRE_OWNER_NOT_READY_CODE;
 
 interface ChatState {
   messagesByTask: Record<string, Message[]>;
@@ -204,34 +221,58 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       },
     }));
 
-    try {
-      const api = getApiClient();
-      const message = normalizeMessage(await api.post<Message>(`/tasks/${taskId}/messages`, input));
+    // Idempotency key so an auto-retry that races a late success cannot persist
+    // two user messages server-side. Reuse a caller-supplied key when present so
+    // one user action maps to exactly one server-side message.
+    const clientRequestId =
+      input.clientRequestId ??
+      (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${tempId}-${Math.random().toString(36).slice(2)}`);
+    const requestBody = { ...input, client_request_id: clientRequestId };
 
-      // Replace temp message with real one.
-      // If websocket already pushed the same real message, merge by id to avoid duplicates.
-      set((state) => ({
-        messagesByTask: {
-          ...state.messagesByTask,
-          [taskId]: (() => {
-            const existing = state.messagesByTask[taskId] || [];
-            const withoutTemp = existing.filter((m) => m.id !== tempId);
-            return mergeById(withoutTemp, message);
-          })(),
-        },
-      }));
+    const api = getApiClient();
+    const deadline = Date.now() + SEND_RETRY_WINDOW_MS;
+    let attempt = 0;
 
-      return message;
-    } catch (error) {
-      // Remove temp message on error
-      set((state) => ({
-        messagesByTask: {
-          ...state.messagesByTask,
-          [taskId]: state.messagesByTask[taskId]?.filter((m) => m.id !== tempId) || [],
-        },
-        error: error instanceof Error ? error.message : 'Failed to send message',
-      }));
-      throw error;
+    for (;;) {
+      try {
+        const message = normalizeMessage(await api.post<Message>(`/tasks/${taskId}/messages`, requestBody));
+
+        // Replace temp message with real one.
+        // If websocket already pushed the same real message, merge by id to avoid duplicates.
+        set((state) => ({
+          messagesByTask: {
+            ...state.messagesByTask,
+            [taskId]: (() => {
+              const existing = state.messagesByTask[taskId] || [];
+              const withoutTemp = existing.filter((m) => m.id !== tempId);
+              return mergeById(withoutTemp, message);
+            })(),
+          },
+        }));
+
+        return message;
+      } catch (error) {
+        // Transient startup race: the task is `running` but its fire owner has
+        // not bound yet. Nothing was persisted, so keep the optimistic bubble
+        // visible and retry (bounded) until the fire connects.
+        if (isFireOwnerNotReadyError(error) && Date.now() < deadline) {
+          attempt += 1;
+          await delay(Math.min(SEND_RETRY_MAX_MS, SEND_RETRY_BASE_MS * attempt));
+          continue;
+        }
+
+        // Give up: remove temp message and surface the failure to the caller.
+        set((state) => ({
+          messagesByTask: {
+            ...state.messagesByTask,
+            [taskId]: state.messagesByTask[taskId]?.filter((m) => m.id !== tempId) || [],
+          },
+          error: error instanceof Error ? error.message : 'Failed to send message',
+        }));
+        throw error;
+      }
     }
   },
 

@@ -42,6 +42,12 @@ const SEND_BUTTON_DOUBLE_CLICK_MS = 250;
 
 export interface MessageInputHandle {
   resend: (content: string) => void;
+  /**
+   * Put text back into the composer WITHOUT sending — used to recover a draft
+   * after a send ultimately failed, so the user never loses what they typed.
+   * No-op when the user has already started a new draft (don't clobber it).
+   */
+  restoreDraft: (content: string) => void;
 }
 
 const getDraftStorageKey = (taskId: string) => `${DRAFT_STORAGE_PREFIX}${taskId}`;
@@ -306,7 +312,14 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
 
   useImperativeHandle(ref, () => ({
     resend: handleResend,
-  }), [handleResend]);
+    restoreDraft: (nextContent: string) => {
+      if (content.trim()) {
+        return;
+      }
+      updateContent(nextContent);
+      moveCaretToEnd(nextContent);
+    },
+  }), [handleResend, content, moveCaretToEnd, updateContent]);
 
   const handleSubmit = () => {
     submitContent(content);

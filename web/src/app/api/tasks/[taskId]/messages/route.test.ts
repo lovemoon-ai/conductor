@@ -123,6 +123,9 @@ describe("/api/tasks/[taskId]/messages", () => {
 
     expect(response.status).toBe(409);
     expect(data).toEqual({
+      // Stable machine code so the web client can detect this transient startup
+      // race and auto-retry instead of dropping the user's first message.
+      code: "task_missing_active_fire_owner",
       error: "Task missing active fire owner",
       message: "The task is not connected to an active fire owner. Try again after it reconnects.",
     });

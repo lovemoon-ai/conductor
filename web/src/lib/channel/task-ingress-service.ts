@@ -306,6 +306,10 @@ export async function appendUserMessageToTask(input: {
       409,
       "Task missing active fire owner",
       {
+        // Stable machine code so clients can detect this specific transient
+        // startup race (task is `running` but its fire owner has not bound yet)
+        // and auto-retry, rather than string-matching the human message.
+        code: "task_missing_active_fire_owner",
         error: "Task missing active fire owner",
         message: "The task is not connected to an active fire owner. Try again after it reconnects.",
       },

@@ -403,6 +403,7 @@ describe('task-ingress-service', () => {
       code: 'TASK_MISSING_ACTIVE_FIRE_OWNER',
       status: 409,
       details: {
+        code: 'task_missing_active_fire_owner',
         error: 'Task missing active fire owner',
       },
     });

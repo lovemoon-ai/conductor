@@ -4,14 +4,34 @@ import type { Message } from '@/shared/types';
 const mockGet = vi.fn();
 const mockPost = vi.fn();
 
-vi.mock('@/shared/api/client', () => ({
-  getApiClient: () => ({
-    get: mockGet,
-    post: mockPost,
-  }),
-}));
+vi.mock('@/shared/api/client', () => {
+  class ApiRequestError extends Error {
+    status: number;
+    payload: { error: string; message?: string; code?: string };
+    constructor(status: number, payload: { error: string; message?: string; code?: string }) {
+      super(payload.message || payload.error || `HTTP ${status}`);
+      this.name = 'ApiRequestError';
+      this.status = status;
+      this.payload = payload;
+    }
+  }
+  return {
+    getApiClient: () => ({
+      get: mockGet,
+      post: mockPost,
+    }),
+    ApiRequestError,
+  };
+});
 
+import { ApiRequestError } from "@/shared/api/client";
 import { useChatStore } from "./store";
+
+const fireOwnerNotReady = () =>
+  new ApiRequestError(409, {
+    error: "Task missing active fire owner",
+    code: "task_missing_active_fire_owner",
+  });
 
 describe("useChatStore sendMessage", () => {
   beforeEach(() => {
@@ -82,6 +102,81 @@ describe("useChatStore sendMessage", () => {
       content: "hello",
       createdAt: "2026-02-07T00:00:01.000Z",
     });
+  });
+
+  it("auto-retries the startup fire-owner 409 and succeeds when the fire binds", async () => {
+    vi.useFakeTimers();
+    try {
+      const taskId = "task-1";
+      mockPost
+        .mockRejectedValueOnce(fireOwnerNotReady())
+        .mockRejectedValueOnce(fireOwnerNotReady())
+        .mockResolvedValueOnce({
+          id: "msg-1",
+          task_id: taskId,
+          role: "user",
+          content: "hi",
+          created_at: "2026-02-07T00:00:01.000Z",
+        });
+
+      const sendPromise = useChatStore.getState().sendMessage(taskId, {
+        content: "hi",
+        role: "user",
+      });
+
+      // Optimistic bubble stays visible across the retries (never dropped).
+      expect(useChatStore.getState().messagesByTask[taskId]).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      const message = await sendPromise;
+
+      expect(message.id).toBe("msg-1");
+      expect(mockPost).toHaveBeenCalledTimes(3);
+      const bodies = mockPost.mock.calls.map((call) => call[1] as { client_request_id?: string });
+      // Same idempotency key on every retry so a late success cannot double-send.
+      expect(bodies[0].client_request_id).toBeTruthy();
+      expect(bodies[1].client_request_id).toBe(bodies[0].client_request_id);
+      expect(bodies[2].client_request_id).toBe(bodies[0].client_request_id);
+      expect(useChatStore.getState().messagesByTask[taskId]).toHaveLength(1);
+      expect(useChatStore.getState().messagesByTask[taskId]?.[0].id).toBe("msg-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up after the retry window and drops the optimistic bubble", async () => {
+    vi.useFakeTimers();
+    try {
+      const taskId = "task-1";
+      mockPost.mockRejectedValue(fireOwnerNotReady());
+
+      const sendPromise = useChatStore.getState().sendMessage(taskId, {
+        content: "hi",
+        role: "user",
+      });
+      const rejection = expect(sendPromise).rejects.toMatchObject({ status: 409 });
+
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+
+      expect(useChatStore.getState().messagesByTask[taskId] ?? []).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry non-fire-owner failures", async () => {
+    const taskId = "task-1";
+    mockPost.mockRejectedValue(
+      new ApiRequestError(409, { error: "Task archived", code: "task_archived" }),
+    );
+
+    await expect(
+      useChatStore.getState().sendMessage(taskId, { content: "hi", role: "user" }),
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().messagesByTask[taskId] ?? []).toHaveLength(0);
   });
 
   it("does not refetch hydrated task messages", async () => {
