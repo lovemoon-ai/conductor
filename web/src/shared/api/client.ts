@@ -3,6 +3,10 @@ import { getStoredJwtToken } from '@/lib/auth/token-storage';
 
 const API_TIMEOUT = 15000;
 
+export interface ApiRequestOptions {
+  timeoutMs?: number;
+}
+
 export class ApiRequestError extends Error {
   status: number;
   payload: ApiError;
@@ -27,7 +31,8 @@ export class ApiClient {
   private async request<T>(
     method: string,
     path: string,
-    body?: unknown
+    body?: unknown,
+    options?: ApiRequestOptions,
   ): Promise<T> {
     const token = this.getToken();
     const headers: Record<string, string> = {
@@ -39,7 +44,10 @@ export class ApiClient {
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT);
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      options?.timeoutMs ?? API_TIMEOUT,
+    );
 
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
@@ -76,8 +84,8 @@ export class ApiClient {
     return this.request<T>('GET', path);
   }
 
-  post<T>(path: string, body?: unknown): Promise<T> {
-    return this.request<T>('POST', path, body);
+  post<T>(path: string, body?: unknown, options?: ApiRequestOptions): Promise<T> {
+    return this.request<T>('POST', path, body, options);
   }
 
   patch<T>(path: string, body?: unknown): Promise<T> {
@@ -88,8 +96,8 @@ export class ApiClient {
     return this.request<T>('PUT', path, body);
   }
 
-  delete<T>(path: string): Promise<T> {
-    return this.request<T>('DELETE', path);
+  delete<T>(path: string, options?: ApiRequestOptions): Promise<T> {
+    return this.request<T>('DELETE', path, undefined, options);
   }
 }
 

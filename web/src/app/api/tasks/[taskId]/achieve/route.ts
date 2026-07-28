@@ -11,6 +11,17 @@ import { teardownTaskRuntime } from "@/lib/tasks/teardown";
 // left inconsistent (status=running with no runtime).
 const NON_TERMINAL_STATUSES = new Set(["running", "killing", "init"]);
 
+const isPrismaTransactionStartBusyError = (
+  error: unknown,
+): error is { code: "P2028"; message?: string } =>
+  typeof error === "object"
+  && error !== null
+  && "code" in error
+  && error.code === "P2028"
+  && "message" in error
+  && typeof error.message === "string"
+  && error.message.includes("Unable to start a transaction in the given time");
+
 /**
  * Achieve (pack) a task.
  *
@@ -24,6 +35,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ taskId: string }> },
 ) {
+  const startedAt = Date.now();
   const userResult = await getActiveSubscriptionUser(request);
   if (userResult instanceof Response) return userResult;
   const user = userResult;
@@ -60,15 +72,55 @@ export async function POST(
   const terminalPatch = NON_TERMINAL_STATUSES.has(normalizeTaskStatus(existing.status))
     ? { status: "killed", killedReason: "user_stopped", killedAt: achievedAt }
     : {};
-  const teardown = await teardownTaskRuntime({
-    userId: user.id,
-    task: existing,
-    reason: "achieved_by_user",
-    archivePatch: { achievedAt, ...terminalPatch },
-    // Keep attachments: the preserved transcript may reference uploaded files.
-    deleteAttachmentDirectory: false,
-  });
+  const teardownStartedAt = Date.now();
+  let teardown: Awaited<ReturnType<typeof teardownTaskRuntime>>;
+  try {
+    teardown = await teardownTaskRuntime({
+      userId: user.id,
+      task: existing,
+      reason: "achieved_by_user",
+      archivePatch: { achievedAt, ...terminalPatch },
+      // Keep attachments: the preserved transcript may reference uploaded files.
+      deleteAttachmentDirectory: false,
+    });
+  } catch (error) {
+    if (!isPrismaTransactionStartBusyError(error)) {
+      console.error("[task-achieve] teardown failed", {
+        taskId,
+        projectId: existing.projectId,
+        prismaCode:
+          typeof error === "object" && error !== null && "code" in error
+            ? error.code
+            : null,
+        totalDurationMs: Date.now() - startedAt,
+        teardownDurationMs: Date.now() - teardownStartedAt,
+      });
+      throw error;
+    }
+    console.error("[task-achieve] transaction busy", {
+      taskId,
+      projectId: existing.projectId,
+      prismaCode: error.code,
+      totalDurationMs: Date.now() - startedAt,
+      teardownDurationMs: Date.now() - teardownStartedAt,
+    });
+    return NextResponse.json(
+      {
+        error: "Archive is temporarily busy; retry this task.",
+        code: "archive_busy",
+        retryable: true,
+      },
+      { status: 503 },
+    );
+  }
   if (!teardown.ok) {
+    console.warn("[task-achieve] teardown rejected", {
+      taskId,
+      projectId: existing.projectId,
+      status: teardown.status ?? 409,
+      totalDurationMs: Date.now() - startedAt,
+      teardownDurationMs: Date.now() - teardownStartedAt,
+    });
     return NextResponse.json(
       { error: teardown.error ?? "Failed to pack task" },
       { status: teardown.status ?? 409 },
@@ -84,5 +136,11 @@ export async function POST(
     },
   });
 
+  console.info("[task-achieve] completed", {
+    taskId,
+    projectId: existing.projectId,
+    totalDurationMs: Date.now() - startedAt,
+    teardownDurationMs: Date.now() - teardownStartedAt,
+  });
   return NextResponse.json({ id: taskId, achievedAt: achievedAt.toISOString() });
 }

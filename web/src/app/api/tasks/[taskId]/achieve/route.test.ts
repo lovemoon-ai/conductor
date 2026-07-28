@@ -148,16 +148,77 @@ describe("POST /api/tasks/[taskId]/achieve", () => {
   });
 
   it("does not stamp achievedAt when teardown fails", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.mocked(teardownTaskRuntime).mockResolvedValue({
       ok: false,
       status: 409,
       error: "boom",
     } as any);
 
-    const res = await callAchieve();
-    expect(res.status).toBe(409);
-    expect(db.task.update).not.toHaveBeenCalled();
-    expect(realtimeHub.broadcast).not.toHaveBeenCalled();
+    try {
+      const res = await callAchieve();
+      expect(res.status).toBe(409);
+      expect(db.task.update).not.toHaveBeenCalled();
+      expect(realtimeHub.broadcast).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[task-achieve] teardown rejected",
+        expect.objectContaining({ taskId: "ai-1", status: 409 }),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("does not classify an expired P2028 transaction as archive busy", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const expiredError = Object.assign(
+      new Error("Transaction already closed: A query cannot be executed on an expired transaction."),
+      { code: "P2028" },
+    );
+    vi.mocked(teardownTaskRuntime).mockRejectedValue(expiredError);
+
+    try {
+      await expect(callAchieve()).rejects.toBe(expiredError);
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[task-achieve] teardown failed",
+        expect.objectContaining({
+          taskId: "ai-1",
+          prismaCode: "P2028",
+        }),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("returns a retryable 503 when the archive transaction is busy", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(teardownTaskRuntime).mockRejectedValue(
+      Object.assign(new Error("Unable to start a transaction in the given time"), {
+        code: "P2028",
+      }),
+    );
+
+    try {
+      const res = await callAchieve();
+      expect(res.status).toBe(503);
+      expect(await extractJson(res)).toEqual({
+        error: "Archive is temporarily busy; retry this task.",
+        code: "archive_busy",
+        retryable: true,
+      });
+      expect(realtimeHub.broadcast).not.toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[task-achieve] transaction busy",
+        expect.objectContaining({
+          taskId: "ai-1",
+          projectId: "proj-1",
+          prismaCode: "P2028",
+        }),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("returns 404 for an unknown task", async () => {

@@ -1,7 +1,13 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AuthSession, AuthUser } from '@/shared/types';
-import { createApiClientWithToken, getApiClient, type ApiClient, resetApiClient } from '@/shared/api/client';
+import {
+  ApiRequestError,
+  createApiClientWithToken,
+  getApiClient,
+  type ApiClient,
+  resetApiClient,
+} from '@/shared/api/client';
 import { clearStoredJwtToken, getStoredJwtToken, storeJwtToken } from '@/lib/auth/token-storage';
 import { useProjectsStore } from '@/features/projects/store';
 import { useSettingsNavStore } from '@/features/settings/nav-store';
@@ -26,6 +32,18 @@ interface AuthState {
   fetchUser: () => Promise<void>;
   initFromStorage: () => Promise<void>;
   clearError: () => void;
+}
+
+function isAuthenticationFailure(error: unknown): boolean {
+  if (error instanceof ApiRequestError) {
+    return error.status === 401;
+  }
+  return (
+    typeof error === 'object'
+    && error !== null
+    && 'status' in error
+    && error.status === 401
+  );
 }
 
 function normalizeAuthUser(value: unknown): AuthUser | null {
@@ -66,7 +84,10 @@ async function fetchUserToken(api: Pick<ApiClient, 'get' | 'post'>): Promise<str
       name: 'webapp',
     });
     return newToken;
-  } catch {
+  } catch (error) {
+    if (isAuthenticationFailure(error)) {
+      throw error;
+    }
     return null;
   }
 }
@@ -150,12 +171,20 @@ export const useAuthStore = create<AuthState>()(
           return;
         }
 
-        set({ isLoading: true });
+        set({ isLoading: true, error: null });
         try {
           const session = await buildSession(jwt, get().session);
           get().setSession(session);
-        } catch {
-          get().logout();
+        } catch (error) {
+          if (isAuthenticationFailure(error)) {
+            get().logout();
+          } else {
+            set({
+              error: error instanceof Error
+                ? error.message
+                : 'Failed to restore session',
+            });
+          }
         } finally {
           set({ isLoading: false });
         }
@@ -246,10 +275,18 @@ export const useAuthStore = create<AuthState>()(
           }
           set({
             session: { ...session, user },
+            error: null,
           });
-        } catch {
-          // Token might be invalid, logout
-          get().logout();
+        } catch (error) {
+          if (isAuthenticationFailure(error)) {
+            get().logout();
+          } else {
+            set({
+              error: error instanceof Error
+                ? error.message
+                : 'Failed to refresh user',
+            });
+          }
         }
       },
 

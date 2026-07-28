@@ -51,6 +51,7 @@ import {
   type TaskCardGroup,
 } from '../utils/task-card-groups';
 import { useTaskCardGroupsSyncStore } from '../task-card-groups-sync-store';
+import { mapConcurrentSettled } from '@/shared/async/map-concurrent';
 
 export type TaskListViewMode = 'list' | 'graph';
 
@@ -64,6 +65,7 @@ const TOUCH_DRAG_ACTIVATE_MS = 450;
 const TOUCH_DRAG_MOVE_TOLERANCE = 8;
 // Press-and-hold duration that turns a tab press into an inline rename.
 const TAB_LONG_PRESS_MS = 450;
+const TASK_MUTATION_CONCURRENCY = 3;
 
 type DragGhost = { taskId: string; title: string; x: number; y: number; width: number };
 type RowDragState = {
@@ -213,6 +215,11 @@ export function TaskList({
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
   const [isArchivingSelected, setIsArchivingSelected] = useState(false);
   const [isDeletingSelected, setIsDeletingSelected] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{
+    action: 'Archiving' | 'Deleting';
+    completed: number;
+    total: number;
+  } | null>(null);
   const [groups, setGroups] = useState<TaskCardGroup[]>([]);
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
@@ -411,7 +418,7 @@ export function TaskList({
     [...selectedTaskIds].filter((taskId) => visibleTaskIdSet.has(taskId)),
   ), [selectedTaskIds, visibleTaskIdSet]);
   const selectedCount = selectedTaskIdSet.size;
-  const selectionMode = selectedCount > 0;
+  const selectionMode = selectedCount > 0 || batchProgress !== null;
   const hasToolbarContent = viewMode === 'list' && selectionMode;
   const allSelected = allTaskIds.length > 0 && selectedCount === allTaskIds.length;
   const selectedTasksAreArchivable = useMemo(
@@ -662,6 +669,9 @@ export function TaskList({
   };
 
   const toggleTaskSelection = (taskId: string) => {
+    if (selectionActionBusy) {
+      return;
+    }
     setSelectedTaskIds((prev) => {
       const next = new Set([...prev].filter((id) => visibleTaskIdSet.has(id)));
       if (next.has(taskId)) {
@@ -703,8 +713,14 @@ export function TaskList({
 
     setIsArchivingSelected(true);
     try {
-      const results = await Promise.allSettled(
-        taskIds.map((taskId) => achieveTask(taskId)),
+      setBatchProgress({ action: 'Archiving', completed: 0, total: taskIds.length });
+      const results = await mapConcurrentSettled(
+        taskIds,
+        TASK_MUTATION_CONCURRENCY,
+        (taskId) => achieveTask(taskId),
+        (completed, total) => {
+          setBatchProgress({ action: 'Archiving', completed, total });
+        },
       );
       const failedTaskIds = taskIds.filter(
         (_, index) => results[index]?.status === 'rejected',
@@ -735,6 +751,7 @@ export function TaskList({
       });
     } finally {
       setIsArchivingSelected(false);
+      setBatchProgress(null);
     }
   };
 
@@ -752,17 +769,47 @@ export function TaskList({
       return;
     }
 
+    const taskIds = [...selectedTaskIdSet];
     setIsDeletingSelected(true);
+    setBatchProgress({ action: 'Deleting', completed: 0, total: taskIds.length });
     try {
-      await Promise.all([...selectedTaskIdSet].map((taskId) => deleteTask(taskId)));
-      setSelectedTaskIds(new Set());
-    } catch {
+      const results = await mapConcurrentSettled(
+        taskIds,
+        TASK_MUTATION_CONCURRENCY,
+        (taskId) => deleteTask(taskId),
+        (completed, total) => {
+          setBatchProgress({ action: 'Deleting', completed, total });
+        },
+      );
+      const failedTaskIds = taskIds.filter(
+        (_, index) => results[index]?.status === 'rejected',
+      );
+      const deletedCount = taskIds.length - failedTaskIds.length;
+      setSelectedTaskIds(new Set(failedTaskIds));
+
+      if (failedTaskIds.length > 0) {
+        const firstFailure = results.find((result) => result.status === 'rejected');
+        const description = firstFailure?.status === 'rejected'
+          && firstFailure.reason instanceof Error
+          ? firstFailure.reason.message
+          : 'Some selected tasks could not be deleted.';
+        pushToast({
+          title: deletedCount > 0
+            ? `${deletedCount} deleted, ${failedTaskIds.length} failed`
+            : 'Failed to delete selected tasks',
+          description,
+          variant: 'error',
+        });
+        return;
+      }
+
       pushToast({
-        title: 'Failed to delete selected tasks',
-        variant: 'error',
+        title: `${taskIds.length} task${taskIds.length === 1 ? '' : 's'} deleted`,
+        variant: 'success',
       });
     } finally {
       setIsDeletingSelected(false);
+      setBatchProgress(null);
     }
   };
 
@@ -1168,6 +1215,17 @@ export function TaskList({
     );
   }
 
+  if (visibleTasks.length === 0 && batchProgress && viewMode === 'list') {
+    return (
+      <div
+        aria-live="polite"
+        className="flex h-72 items-center justify-center text-sm font-medium text-[var(--accent)]"
+      >
+        {batchProgress.action} {batchProgress.completed} of {batchProgress.total}
+      </div>
+    );
+  }
+
   if (visibleTasks.length === 0) {
     const filterSummary = [
       taskTypeFilterLabel,
@@ -1230,8 +1288,13 @@ export function TaskList({
         <div className="flex flex-col gap-3 rounded-2xl bg-panel/80 p-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap items-center gap-2">
             {selectionMode ? (
-              <span className="rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-[var(--accent)]">
-                {selectedCount} selected
+              <span
+                aria-live="polite"
+                className="rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-[var(--accent)]"
+              >
+                {batchProgress
+                  ? `${batchProgress.action} ${batchProgress.completed} of ${batchProgress.total}`
+                  : `${selectedCount} selected`}
               </span>
             ) : null}
           </div>

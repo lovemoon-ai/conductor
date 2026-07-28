@@ -276,6 +276,150 @@ describe('TaskList', () => {
     }
   });
 
+  it('limits a 70-task batch archive to three active requests', async () => {
+    const taskCount = 70;
+    const pending: Array<() => void> = [];
+    tasksState = {
+      ...tasksState,
+      currentProjectFilter: null,
+      tasks: Array.from({ length: taskCount }, (_, index) => ({
+        id: `task-${index + 1}`,
+        title: `Task ${index + 1}`,
+        projectId: 'project-1',
+        status: 'completed',
+      })),
+    };
+    achieveTaskMock.mockImplementation(
+      () => new Promise<void>((resolve) => pending.push(resolve)),
+    );
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+
+    try {
+      render(<TaskList viewMode="list" projectFilter={null} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Select Task 1' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Select all tasks' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Archive 70 selected tasks' }));
+
+      await waitFor(() => {
+        expect(achieveTaskMock).toHaveBeenCalledTimes(3);
+        expect(screen.getByText('Archiving 0 of 70')).toBeInTheDocument();
+      });
+      const busyArchiveButton = screen.getByRole('button', {
+        name: 'Archive 70 selected tasks',
+      });
+      expect(busyArchiveButton).toBeDisabled();
+      expect(screen.getByRole('button', {
+        name: 'Delete 70 selected tasks',
+      })).toBeDisabled();
+      fireEvent.click(busyArchiveButton);
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      const renderCallsBeforeBusySelection = taskItemMock.mock.calls.length;
+      await act(async () => {
+        taskItemMock.mock.calls.at(-1)?.[0].onToggleSelect?.('task-70');
+      });
+      expect(taskItemMock).toHaveBeenCalledTimes(renderCallsBeforeBusySelection);
+
+      const firstBatch = pending.splice(0);
+      const callsBeforeFirstRelease = achieveTaskMock.mock.calls.length;
+      await act(async () => firstBatch.forEach((resolve) => resolve()));
+      await waitFor(() => {
+        expect(achieveTaskMock).toHaveBeenCalledTimes(
+          callsBeforeFirstRelease + firstBatch.length,
+        );
+        expect(screen.getByText('Archiving 3 of 70')).toBeInTheDocument();
+      });
+
+      while (achieveTaskMock.mock.calls.length < taskCount) {
+        const active = pending.splice(0);
+        const callsBeforeRelease = achieveTaskMock.mock.calls.length;
+        await act(async () => active.forEach((resolve) => resolve()));
+        const expected = Math.min(taskCount, callsBeforeRelease + active.length);
+        await waitFor(() => expect(achieveTaskMock).toHaveBeenCalledTimes(expected));
+      }
+      await act(async () => pending.splice(0).forEach((resolve) => resolve()));
+
+      await waitFor(() => {
+        expect(screen.queryByRole('toolbar', {
+          name: 'Selected task actions',
+        })).toBeNull();
+      });
+    } finally {
+      confirmSpy.mockRestore();
+      alertSpy.mockRestore();
+    }
+  });
+
+  it('limits a 70-task batch delete and retains only failed tasks', async () => {
+    const taskCount = 70;
+    const pending: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+    tasksState = {
+      ...tasksState,
+      currentProjectFilter: null,
+      tasks: Array.from({ length: taskCount }, (_, index) => ({
+        id: `task-${index + 1}`,
+        title: `Task ${index + 1}`,
+        projectId: 'project-1',
+        status: 'completed',
+      })),
+    };
+    deleteTaskMock.mockImplementation(
+      () => new Promise<void>((resolve, reject) => pending.push({ resolve, reject })),
+    );
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+
+    try {
+      render(<TaskList viewMode="list" projectFilter={null} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Select Task 1' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Select all tasks' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Delete 70 selected tasks' }));
+
+      await waitFor(() => {
+        expect(deleteTaskMock).toHaveBeenCalledTimes(3);
+        expect(screen.getByText('Deleting 0 of 70')).toBeInTheDocument();
+      });
+      expect(screen.getByRole('button', {
+        name: 'Archive 70 selected tasks',
+      })).toBeDisabled();
+      const busyDeleteButton = screen.getByRole('button', {
+        name: 'Delete 70 selected tasks',
+      });
+      expect(busyDeleteButton).toBeDisabled();
+      fireEvent.click(busyDeleteButton);
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+
+      const firstBatch = pending.splice(0);
+      await act(async () => {
+        firstBatch[0]?.reject(new Error('Request timeout'));
+        firstBatch.slice(1).forEach(({ resolve }) => resolve());
+      });
+      await waitFor(() => {
+        expect(screen.getByText('Deleting 3 of 70')).toBeInTheDocument();
+      });
+
+      while (deleteTaskMock.mock.calls.length < taskCount) {
+        const active = pending.splice(0);
+        const callsBeforeRelease = deleteTaskMock.mock.calls.length;
+        await act(async () => active.forEach(({ resolve }) => resolve()));
+        const expected = Math.min(taskCount, callsBeforeRelease + active.length);
+        await waitFor(() => expect(deleteTaskMock).toHaveBeenCalledTimes(expected));
+      }
+      await act(async () => pending.splice(0).forEach(({ resolve }) => resolve()));
+
+      await waitFor(() => {
+        expect(screen.getByText('1 selected')).toBeInTheDocument();
+      });
+      expect(screen.getByRole('button', {
+        name: 'Delete 1 selected task',
+      })).toBeEnabled();
+      expect(deleteTaskMock).toHaveBeenCalledTimes(taskCount);
+    } finally {
+      confirmSpy.mockRestore();
+      alertSpy.mockRestore();
+    }
+  });
+
   it('disables batch archive when the selection includes a PTY task', () => {
     tasksState = {
       ...tasksState,

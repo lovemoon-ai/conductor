@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockGet = vi.fn();
 const mockPost = vi.fn();
 const mockPatch = vi.fn();
+const mockDelete = vi.fn();
 
 vi.mock('@/shared/api/client', () => ({
   getApiClient: () => ({
     get: mockGet,
     post: mockPost,
     patch: mockPatch,
+    delete: mockDelete,
   }),
 }));
 
@@ -27,6 +29,44 @@ describe('tasks store', () => {
       currentProjectIds: [],
       unreadTaskIds: new Set(),
     });
+  });
+
+  it("uses the extended task-mutation timeout for archive and delete", async () => {
+    mockPost.mockResolvedValueOnce({});
+    mockDelete.mockResolvedValueOnce(undefined);
+    useTasksStore.setState({
+      tasks: [
+        {
+          id: "task-1",
+          title: "Task",
+          status: "completed",
+          taskType: "ai_task",
+        },
+      ],
+    });
+
+    await useTasksStore.getState().achieveTask("task-1");
+    expect(mockPost).toHaveBeenCalledWith(
+      "/tasks/task-1/achieve",
+      {},
+      { timeoutMs: 60_000 },
+    );
+
+    useTasksStore.setState({
+      tasks: [
+        {
+          id: "task-2",
+          title: "Task 2",
+          status: "completed",
+          taskType: "ai_task",
+        },
+      ],
+    });
+    await useTasksStore.getState().deleteTask("task-2");
+    expect(mockDelete).toHaveBeenCalledWith(
+      "/tasks/task-2",
+      { timeoutMs: 60_000 },
+    );
   });
 
   it('restarts a task and moves the returned task to the front', async () => {

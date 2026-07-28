@@ -12,6 +12,7 @@ import { usePtyToggleStore } from './pty-toggle-store';
 import { useTaskCardGroupsSyncStore } from './task-card-groups-sync-store';
 
 let fetchTasksRequestSequence = 0;
+const TASK_MUTATION_TIMEOUT_MS = 60_000;
 
 const normalizeObject = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -542,7 +543,9 @@ export const useTasksStore = create<TasksState>()((set, get) => {
     deleteTask: async (taskId) => {
       try {
         const api = getApiClient();
-        await api.delete(`/tasks/${taskId}`);
+        await api.delete(`/tasks/${taskId}`, {
+          timeoutMs: TASK_MUTATION_TIMEOUT_MS,
+        });
         // Route through `removeTask` so the attached-terminal cleanup
         // (clearing the owning AI task's `attachedTerminal` field + the
         // PTY toggle visibility flag) fires for both code paths. Without
@@ -560,7 +563,9 @@ export const useTasksStore = create<TasksState>()((set, get) => {
     achieveTask: async (taskId) => {
       try {
         const api = getApiClient();
-        await api.post(`/tasks/${taskId}/achieve`, {});
+        await api.post(`/tasks/${taskId}/achieve`, {}, {
+          timeoutMs: TASK_MUTATION_TIMEOUT_MS,
+        });
         // Same client-side cleanup as delete: the packed task leaves the active
         // list and all counts; its transcript stays searchable server-side.
         get().removeTask(taskId);

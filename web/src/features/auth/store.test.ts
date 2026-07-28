@@ -27,6 +27,14 @@ const {
 }));
 
 vi.mock('@/shared/api/client', () => ({
+  ApiRequestError: class ApiRequestError extends Error {
+    status: number;
+
+    constructor(status: number, payload: { error?: string; message?: string }) {
+      super(payload.message || payload.error || `HTTP ${status}`);
+      this.status = status;
+    }
+  },
   getApiClient: () => ({
     get: mockApiGet,
     post: mockApiPost,
@@ -66,6 +74,7 @@ vi.mock("@/features/tasks/task-card-groups-sync-store", () => ({
   },
 }));
 
+import { ApiRequestError } from "@/shared/api/client";
 import { AUTH_SESSION_STORAGE_KEY, AUTH_USER_TOKEN_STORAGE_KEY, useAuthStore } from "./store";
 
 describe("useAuthStore", () => {
@@ -227,7 +236,7 @@ describe("useAuthStore", () => {
 
   it("clears a persisted session when auth validation fails", async () => {
     mockGetStoredJwtToken.mockReturnValue("jwt-stale");
-    mockApiGet.mockRejectedValueOnce(new Error("Unauthorized"));
+    mockApiGet.mockRejectedValueOnce(new ApiRequestError(401, { error: "Unauthorized" }));
 
     useAuthStore.setState({
       session: {
@@ -248,7 +257,7 @@ describe("useAuthStore", () => {
     expect(mockResetApiClient).toHaveBeenCalledTimes(1);
   });
 
-  it("clears a persisted session when auth payload contains null user", async () => {
+  it("preserves a persisted session when auth returns a malformed payload", async () => {
     mockGetStoredJwtToken.mockReturnValue("jwt-stale");
     mockApiGet.mockResolvedValueOnce({ user: null });
 
@@ -266,9 +275,117 @@ describe("useAuthStore", () => {
 
     await useAuthStore.getState().initFromStorage();
 
-    expect(mockClearStoredJwtToken).toHaveBeenCalledTimes(1);
+    expect(mockClearStoredJwtToken).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().session?.jwtToken).toBe("jwt-stale");
+    expect(useAuthStore.getState().error).toBe("Unauthorized");
+    expect(mockResetApiClient).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["timeout", new Error("Request timeout")],
+    ["network failure", new TypeError("Failed to fetch")],
+    ["server failure", new ApiRequestError(500, { error: "Internal error" })],
+    ["rate limit", new ApiRequestError(429, { error: "Too many requests" })],
+  ])("preserves a persisted session after a transient %s", async (_label, error) => {
+    mockGetStoredJwtToken.mockReturnValue("jwt-current");
+    mockApiGet.mockRejectedValueOnce(error);
+    useAuthStore.setState({
+      session: {
+        jwtToken: "jwt-current",
+        userToken: "user-token-current",
+        user: {
+          id: "user-1",
+          email: "current@example.com",
+          phone: null,
+        },
+      },
+    });
+
+    await useAuthStore.getState().initFromStorage();
+
+    expect(useAuthStore.getState().session?.jwtToken).toBe("jwt-current");
+    expect(useAuthStore.getState().error).toBe(error.message);
+    expect(mockClearStoredJwtToken).not.toHaveBeenCalled();
+  });
+
+  it("retains a stored JWT after transient initialization failure and recovers on retry", async () => {
+    mockGetStoredJwtToken.mockReturnValue("jwt-current");
+    mockApiGet.mockRejectedValueOnce(new Error("Request timeout"));
+    useAuthStore.setState({ session: null });
+
+    await useAuthStore.getState().initFromStorage();
+
     expect(useAuthStore.getState().session).toBeNull();
-    expect(mockResetApiClient).toHaveBeenCalledTimes(1);
+    expect(mockClearStoredJwtToken).not.toHaveBeenCalled();
+
+    mockApiGet
+      .mockResolvedValueOnce({
+        user: {
+          id: "user-1",
+          email: "recovered@example.com",
+          phone: null,
+        },
+      })
+      .mockResolvedValueOnce({ token: "user-token-current" });
+
+    await useAuthStore.getState().initFromStorage();
+
+    expect(useAuthStore.getState().session).toMatchObject({
+      jwtToken: "jwt-current",
+      userToken: "user-token-current",
+      user: { id: "user-1" },
+    });
+    expect(useAuthStore.getState().error).toBeNull();
+  });
+
+  it("preserves the session when fetchUser has a transient failure", async () => {
+    mockApiGet.mockRejectedValueOnce(new ApiRequestError(503, {
+      error: "Service unavailable",
+    }));
+    useAuthStore.setState({
+      session: {
+        jwtToken: "jwt-current",
+        userToken: "user-token-current",
+        user: {
+          id: "user-1",
+          email: "current@example.com",
+          phone: null,
+        },
+      },
+    });
+
+    await useAuthStore.getState().fetchUser();
+
+    expect(useAuthStore.getState().session?.jwtToken).toBe("jwt-current");
+    expect(useAuthStore.getState().error).toBe("Service unavailable");
+    expect(mockClearStoredJwtToken).not.toHaveBeenCalled();
+  });
+
+  it("clears a transient auth error after fetchUser succeeds", async () => {
+    mockApiGet.mockResolvedValueOnce({
+      user: {
+        id: "user-1",
+        email: "recovered@example.com",
+        phone: null,
+      },
+    });
+    useAuthStore.setState({
+      session: {
+        jwtToken: "jwt-current",
+        userToken: "user-token-current",
+        user: {
+          id: "user-1",
+          email: "current@example.com",
+          phone: null,
+        },
+      },
+      error: "Service unavailable",
+    });
+
+    await useAuthStore.getState().fetchUser();
+
+    expect(useAuthStore.getState().session?.user.email).toBe("recovered@example.com");
+    expect(useAuthStore.getState().error).toBeNull();
   });
 
   it("logs out when /auth/tokens/latest returns 401 and create-token also fails", async () => {
