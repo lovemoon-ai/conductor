@@ -1,5 +1,17 @@
 # @love-moon/conductor-sdk
 
+## 0.8.0
+
+### Minor Changes
+
+- 959dd1d: Add project-configured worker and reviewer task groups, task-group discovery in
+  the SDK and `conductor task group`, and a lightweight daemon protocol for
+  refreshing the project agent registry.
+- fe76139: Add `conductor task create` for creating app tasks with title, prompt, backend,
+  project resolution, and optional parent task-card grouping. App tasks now
+  require an online compatible daemon, and grouping results are exposed to
+  callers so partial success is visible without retrying task creation.
+
 ## 0.7.7
 
 ### Patch Changes
