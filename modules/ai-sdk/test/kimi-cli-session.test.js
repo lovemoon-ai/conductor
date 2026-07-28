@@ -507,4 +507,62 @@ describe("kimi cli session", () => {
 
     await session.close();
   });
+
+  it("clears reply_in_progress on TurnEnd even when the prompt RPC never resolves", async () => {
+    const statuses = [];
+    const messages = [];
+    // Simulates BUG-R6-01: the wire reports TurnEnd but the `prompt` JSON-RPC
+    // response is delayed/dropped, so runTurn stays blocked. The terminal
+    // clear must still fire off the TurnEnd wire event.
+    const transport = new (class extends EventEmitter {
+      async boot() {}
+      async request(method) {
+        if (method === "prompt") {
+          this.emit("event", { type: "TurnBegin", payload: {} });
+          this.emit("event", { type: "StepBegin", payload: { n: 1 } });
+          this.emit("event", {
+            type: "ContentPart",
+            payload: { type: "text", text: "Final answer." },
+          });
+          this.emit("event", { type: "TurnEnd", payload: {} });
+          // Never resolves: mimics a dropped/raced prompt RPC response.
+          return await new Promise(() => {});
+        }
+        return {};
+      }
+      async close() {}
+    })();
+    const session = new KimiCliSession("kimi", {
+      cwd: process.cwd(),
+      transport,
+      logger: { log: () => {} },
+    });
+
+    session.setWorkingStatusHandler(async (payload) => {
+      statuses.push(payload);
+    });
+    session.setSessionMessageHandler(async (payload) => {
+      messages.push(payload.text);
+    });
+
+    const turnPromise = session.runTurn("go");
+    turnPromise.catch(() => {});
+
+    const deadline = Date.now() + 1_000;
+    while (
+      !statuses.some((payload) => payload.reply_in_progress === false) &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    const terminalStatus = statuses.find((payload) => payload.reply_in_progress === false);
+    assert.ok(terminalStatus, "terminal status with reply_in_progress=false was emitted on TurnEnd");
+    assert.equal(terminalStatus.phase, "turn_completed");
+    assert.equal(terminalStatus.status_done_line, "Kimi finished");
+    // Buffered assistant text is flushed before the terminal clear.
+    assert.deepEqual(messages, ["Final answer."]);
+
+    await session.close();
+  });
 });

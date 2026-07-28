@@ -860,6 +860,22 @@ export class KimiCliSession extends EventEmitter {
         return;
       case "TurnEnd":
         currentTurn.seenTurnEnd = true;
+        if (currentTurn.bufferedAssistantText) {
+          await this.finalizeAssistantMessage(currentTurn);
+        }
+        // Clear reply_in_progress as soon as the wire reports the turn ended,
+        // decoupled from the `prompt` JSON-RPC promise. Without this, a delayed
+        // or dropped prompt RPC response leaves the web UI pinned on
+        // "Kimi is writing the reply" until reload. emitTerminalWorkingStatus is
+        // idempotent, so the later runTurn call becomes a harmless no-op.
+        await this.emitTerminalWorkingStatus(
+          currentTurn,
+          {
+            phase: "turn_completed",
+            status_done_line: "Kimi finished",
+          },
+          currentTurn.onProgress,
+        );
         return;
       case "StepBegin":
         if (currentTurn.bufferedAssistantText) {
