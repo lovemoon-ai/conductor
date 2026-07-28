@@ -12,7 +12,7 @@
 ```bash
 conductor project <sub> [...]   # list / show / current / create / set-default / hide / unhide
 conductor issue   <sub> [...]   # list / show / create / update / start / done
-conductor task    <sub> [...]   # list / show / send / messages
+conductor task    <sub> [...]   # list / create / show / send / insert / messages / schedule
 ```
 
 三组命令背后统一走 `modules/conductor-sdk` 的 `BackendApiClient`，鉴权复用 `~/.conductor/config.yaml` 里的 `agent_token`，不需要额外配置。
@@ -26,7 +26,7 @@ conductor task    <sub> [...]   # list / show / send / messages
 | `--project <id\|name>` | 显式指定项目，覆盖自动解析 |
 | `--config-file <path>` | 指向自定义 `config.yaml`（与 `conductor daemon --config-file` 一致） |
 
-读操作（`list / show / current / messages`）忽略 `--dry-run`。
+读操作（`list / show / current / messages / schedule list`）忽略 `--dry-run`。
 
 ## 3. 退出码
 
@@ -158,16 +158,65 @@ conductor issue done  <id> [--evidence <text>|@FILE]
 
 ```bash
 conductor task list [--issue <id>] [--status ...]
+conductor task create --title <t>
+                      [--prompt <p>] [--backend <name>]
+                      [--parent-task-id <id>]
 conductor task show <id>
 conductor task send <id> [<message>] [--stdin] [--from-file FILE] [--metadata-json '{...}']
+conductor task insert <id> [<message>] [--stdin] [--from-file FILE]
+                      [--target-reply-to <message-id>] [--metadata-json '{...}']
 conductor task messages <id> [--limit N] [--before <msg-id>]
+conductor task schedule list <id>
+conductor task schedule create <id> [<message>] [--stdin] [--from-file FILE]
+                               (--delay <duration> | --at <datetime> | --every <duration>)
+conductor task schedule delete <id> <schedule-id>
 ```
 
 要点：
 
+- `create` 固定创建 `ai_task`，走 web 前端相同的 app-task 通路，而不是 `conductor fire` 的 fire-task 通路。
+- `--title` 必填；`--prompt` 是首条 user message；`--backend` 可选，但指定后必须由目标在线 daemon 显式支持。
+- `--parent-task-id` 只接受当前用户可见、未归档的 task。成功后，新 task 与 parent 在同一 task-card group 中展示。
+- app task 必须绑定到在线的非 fire daemon。没有在线 daemon、只有 fire host，或没有 daemon 支持指定 backend 时，服务端返回 409，且不会写入 task。
+- 分组属于创建后的展示状态。若 task 已创建但分组保存失败，命令仍返回成功并保留 task：
+  - 人类可读输出会在 stderr 打印 warning。
+  - `--json` 输出包含 `grouping: { parentTaskId, grouped, warning }`。
+  - `grouped` 为 `false` 时不要重跑 `task create`，否则会创建重复 task。
+- `create --dry-run` 会完成只读项目解析并预览 `POST /api/tasks`，但不会创建 task。
 - `send` 的 `<message>` / `--stdin` / `--from-file` 三选一。
+- `insert` 同样接受三种消息输入方式，但会中断正在执行的当前轮，让插入消息下一轮优先处理；`--target-reply-to` 可指定被中断轮次的 reply target。
 - `messages` 只拉一段历史就退出（**不**支持 `tail -f`；要实时跟看请用 web 前端）。
+- `schedule create` 的 `--delay` / `--at` / `--every` 三选一：
+  - `--delay 10m` 或 `--at 2026-07-28T18:00:00+08:00` 创建一次性消息。
+  - `--every 30m` 创建重复消息，可配 `--if-idle`、`--max-runs`、`--max-skips`、`--stop-at` 和 `--keep-when-task-stopped`。
+  - `schedule list` 查看活动计划；`schedule delete` 删除一条活动计划。
 - `--metadata-json` 可附用户自定义 metadata，但 top-level `actor / cliVersion / invokedBy / sdkVersion` 会被服务端 strip。
+
+### 8.1 `task create` 与 `fire` 的选择
+
+```bash
+# 新建由 daemon 执行、在 app 中管理的任务
+conductor task create \
+  --title "Implement parser" \
+  --prompt "Build the parser" \
+  --backend codex
+
+# 新建任务并与 parent 放入同一个 task-card group
+conductor task create \
+  --title "Parser follow-up" \
+  --prompt "Handle the remaining edge cases" \
+  --parent-task-id TASK_ID \
+  --json
+
+# 托管或恢复当前终端中的本地 backend session
+conductor fire --backend codex --resume SESSION_ID
+```
+
+选择规则：
+
+- 已有本地 Codex / Claude session，要托管或恢复它：用 `conductor fire`。
+- 要从 CLI 新建一个与 web 前端创建结果一致的 app task：用 `conductor task create`。
+- 要继续给已有 task 发消息：用 `conductor task send`。
 
 ## 9. 三个核心场景
 

@@ -1,15 +1,16 @@
 ---
-name: Conductor
+name: conductor
 description: >-
-  Operate the Conductor cli directly. Default to executing or explaining the
-  exact `conductor` subcommand the user asked for, especially `conductor fire`,
-  `conductor fire --backend <name> --resume <session-id>`, `conductor send-file`,
-  `conductor daemon`, `conductor diagnose`, `conductor config`,
-  `conductor update`, and the entity commands `conductor project|issue|task`.
-  Strictly forbid the "handoff prompt" workflow: do not
-  summarize the current Codex conversation into a new Conductor prompt, and do
-  not convert user intent into a fresh `conductor fire -- "<prompt>"` task
-  unless the user explicitly provided that prompt text and asked to run it.
+  Operate and explain the public Conductor CLI: bridge or resume local
+  Codex/Claude sessions with `conductor fire`, create daemon-backed app tasks,
+  manage projects/issues/tasks and scheduled messages, upload files, configure
+  and diagnose daemons, connect Feishu channels with `conductor channel`, update
+  the CLI, and run the OpenAI-compatible `conductor serve-ai` server. Use for requests involving any
+  `conductor` command or moving terminal work into the Conductor app.
+  Distinguish `fire` (foreground bridge or existing-session resume) from
+  `task create` (fresh app task). Never summarize the current conversation into
+  a new handoff prompt; only run a fresh prompt when the user supplied its text
+  and explicitly asked to run it.
 ---
 
 # Conductor
@@ -19,25 +20,7 @@ Use this skill for the public `conductor` command surface in this repo.
 Reference docs in this skill:
 
 - `reference/serve-ai.md`: `conductor serve-ai` usage, config fallback, startup commands, and `response_format` / output schema examples.
-- `reference/entity-commands.md`: `conductor project|issue|task` — entity-oriented CRUD commands for AI / CI / scripting. Covers global flags (`--json`, `--dry-run`, `--project`), exit codes, project resolution priority, the `metadata.audit` audit boundary, idempotency via `--client-request-id`, and the three core RFC 0025 scenarios (batch issue creation, QA → done, sending a message to a task).
-
-Use it especially when the user says things like:
-
-- "Just run `conductor fire --backend codex --resume <session-id>`"
-- "Help me restore this Conductor / Codex session"
-- "Why doesn't this command work: `conductor fire ...`"
-- "Use `conductor send-file` to transfer this file back to the task"
-- "Move the current conversation to the cloud / mobile so I can continue later"
-- "Use conductor to take over this task"
-- "Help me install and configure conductor, then send this conversation to my phone so I can continue there"
-- "Start this in Conductor so I can continue from the app"
-- "How do I use `conductor serve-ai`?"
-- "How do I start the OpenAI-compatible server and set output schema?"
-- "Create these issues in my current project with `conductor issue create`"
-- "Mark this issue as done — QA passed, attach the report as evidence"
-- "Send a follow-up message to task `<id>` from the command line"
-- "List my projects / show which project this cwd resolves to / set this project as default"
-- "Hide this old project from my list" / "show hidden projects too"
+- `reference/entity-commands.md`: `conductor project|issue|task` — entity-oriented CRUD commands for AI / CI / scripting. Covers app-task creation, global flags (`--json`, `--dry-run`, `--project`), exit codes, project resolution priority, the `metadata.audit` audit boundary, idempotency via `--client-request-id`, and the core RFC 0025 scenarios.
 
 ## First Decide The Intent
 
@@ -47,18 +30,22 @@ Classify the request before doing any prep work:
    - Prefer running or explaining that exact command path directly.
    - Do **not** first turn it into a handoff workflow.
    - Do **not** generate any new handoff prompt from conversation context.
-2. **Setup / diagnose / config intent**: the user is asking about install, config, daemon, diagnosis, update, or command syntax.
+2. **New app-task intent**: the user explicitly asks for `conductor task create`, wants a new task launched by an online daemon, or wants the new task grouped with a parent task in the app.
+   - Use `conductor task create`, not `conductor fire`.
+   - Require an explicit title; only pass prompt text supplied by the user.
+3. **Entity intent**: the user wants to create, inspect, or update a project, issue, existing task, inserted message, or scheduled message.
+   - Use `conductor project|issue|task`; this surface also includes fresh app-task creation.
+4. **Operations / integration intent**: the user is asking about install, config, daemon, diagnosis, file upload, Feishu channel connection, `serve-ai`, update, or command syntax.
    - Inspect help/config as needed.
 
 If the request is ambiguous, prefer **direct command / resume intent**.
 
-## Hard Prohibition
+## Guardrails
 
 - Do **not** summarize the current conversation into a handoff prompt.
 - Do **not** convert "use conductor to take over this task" into "organize the context and run `conductor fire -- "<handoff prompt>"`".
 - Do **not** inspect CLI help or local config as a ritual before every Conductor request.
 - Do **not** create a fresh Conductor task unless the user explicitly asked for one or explicitly provided the prompt to run.
-- For resume requests, prefer the direct command path and stop there.
 
 Only run `conductor --help`, subcommand help, or read `~/.conductor/config.yaml` / `--config-file` when:
 
@@ -73,10 +60,13 @@ Only run `conductor --help`, subcommand help, or read `~/.conductor/config.yaml`
 - `conductor send-file`: upload a local file into the active task session. This is the main path for AI-generated screenshots, videos, logs, JSON, and other artifacts.
 - `conductor config`: bootstrap `~/.conductor/config.yaml` with browser device authorization by default, plus `agent_token`, `backend_url`, `daemon_name`, `workspace`, and `allow_cli_list`.
 - `conductor fire`: run a coding CLI in the foreground and bridge it to a Conductor task.
+- `conductor task create`: create a daemon-backed app task through the same server path as the web frontend. Use it for a fresh remote task, including parent task-card grouping; do not use it to attach or resume the current local coding session.
+- `conductor project|issue|task`: manage entities, including messages, mid-turn inserts, schedules, and fresh app-task creation. See `reference/entity-commands.md`.
 - `conductor daemon`: keep a desktop agent online so tasks created from the app can run remotely.
 - `conductor diagnose <task-id>`: inspect a stuck or failed task and print likely root cause.
+- `conductor channel connect feishu`: upload `channels.feishu` from the selected config file to the Conductor backend.
+- `conductor serve-ai`: expose configured local AI backends through an OpenAI-compatible HTTP server. See `reference/serve-ai.md`.
 - `conductor update`: check npm for a newer CLI version and install it.
-- `conductor project|issue|task <sub>`: entity-oriented CRUD for projects, issues, and tasks. Use when the request is about creating/listing/updating these entities or sending a message to a task — not about launching a new coding session. See `reference/entity-commands.md` for the full surface, exit codes, and idempotency contract.
 
 ## Core Workflows
 
@@ -194,6 +184,18 @@ Key flags:
 
 For “continue this conversation on mobile” requests, prefer `--backend codex` unless the user asked for another backend.
 
+### Create A Daemon-Backed App Task
+
+Use `conductor task create` when the user wants a fresh app task dispatched through an online daemon rather than a foreground `fire` process.
+
+```bash
+conductor task create --title "Implement parser" --prompt "Build the parser" --backend codex
+conductor task create --title "Follow-up" --prompt "Handle edge cases" \
+  --parent-task-id <parent-task-id> --json
+```
+
+`--title` is required. `--parent-task-id` groups the new task with a visible, unarchived parent. The command creates an `ai_task`, requires a compatible online non-fire daemon, and never attaches the current local backend session. If JSON output reports `grouping.grouped: false`, the task already exists; do not retry creation. See `reference/entity-commands.md` for flags and failure semantics.
+
 ### Keep A Desktop Agent Online
 
 Use `conductor daemon` when the user wants the desktop to receive tasks initiated from the app.
@@ -237,7 +239,7 @@ If the built-in updater fails, fall back to the package-manager command shown by
 
 ### Operate Entities (project / issue / task)
 
-Use `conductor project|issue|task` when the user wants to **operate on existing entities**, not launch a new coding agent. The full surface lives in `reference/entity-commands.md`; the minimal forms to know:
+Use `conductor project|issue|task` for entity operations, including creating fresh daemon-backed app tasks. Use `fire` instead only when bridging the current foreground process or resuming an existing local backend session. The full surface lives in `reference/entity-commands.md`; the minimal forms to know:
 
 ```bash
 # Project
@@ -253,8 +255,11 @@ conductor issue start <id>                             # backlog → doing
 conductor issue done  <id> [--evidence <text>|@FILE]   # doing → done, writes metadata.qa.evidence
 
 # Task
+conductor task create --title "<t>" [--prompt "<p>"] [--backend <name>] [--parent-task-id <id>]
 conductor task send <id> "<message>"                   # or `--stdin` / `--from-file FILE`
+conductor task insert <id> "<message>"                 # interrupt current turn, then run this message
 conductor task messages <id> [--limit N]               # pulls a slice and exits — no --follow
+conductor task schedule create <id> "<message>" --delay 10m
 ```
 
 Rules of thumb when handling these:
@@ -270,6 +275,8 @@ Rules of thumb when handling these:
 
 These variables are the main hooks between CLI processes and task routing:
 
+- `CONDUCTOR_HOME`: user data directory; defaults to `~/.conductor`.
+- `CONDUCTOR_CONFIG`: config file override; takes precedence over `CONDUCTOR_HOME`.
 - `CONDUCTOR_BACKEND`: default backend for `conductor fire`.
 - `CONDUCTOR_PROJECT_ID`: attach `fire` to an existing project.
 - `CONDUCTOR_TASK_ID`: attach `fire` to an existing task and let `send-file` auto-target that task.
@@ -282,7 +289,7 @@ When a child tool needs to report artifacts back into the active task, first mak
 
 ## Boundaries
 
-- For “transfer this conversation” requests, preserve continuity with a summary prompt; do not promise a byte-for-byte migration of hidden chat state.
+- Conductor cannot migrate hidden chat state byte-for-byte. Resume an existing backend session when possible; if a fresh task is required, use prompt text supplied by the user.
 - If the installed CLI and the checked-out repo differ, trust `conductor --help` and `conductor send-file --help` before giving exact flags.
 - `cli/bin/conductor-chrome.js` is an auxiliary browser automation helper, not a `conductor <subcommand>` entry in the main CLI help.
 - Prefer the public `conductor ...` interface in user-facing guidance instead of invoking `cli/bin/*.js` directly, unless the user is developing the CLI itself.
