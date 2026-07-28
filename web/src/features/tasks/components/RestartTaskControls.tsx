@@ -17,6 +17,14 @@ interface RestartTaskControlsProps {
   task: Task;
   open: boolean;
   onClose: () => void;
+  /**
+   * Called with the newly created successor task id after a successful
+   * new_task restart. When provided, this takes precedence over the internal
+   * URL-only navigation so the caller can update local selection state (which
+   * otherwise keeps the UI pinned to the source task). Falls back to
+   * navigateToTask when absent.
+   */
+  onCreatedTask?: (taskId: string) => void;
 }
 
 const isConductorFireHost = (host: string | null | undefined): boolean =>
@@ -25,7 +33,7 @@ const isConductorFireHost = (host: string | null | undefined): boolean =>
 const isRestartableStatus = (status: Task['status']): boolean =>
   status === 'running' || status === 'completed' || status === 'killed' || status === 'unknown';
 
-export function RestartTaskControls({ task, open, onClose }: RestartTaskControlsProps) {
+export function RestartTaskControls({ task, open, onClose, onCreatedTask }: RestartTaskControlsProps) {
   const { push, replace } = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -157,7 +165,11 @@ export function RestartTaskControls({ task, open, onClose }: RestartTaskControls
         backendType: effectiveSelectedBackend,
         strategy: 'new_task',
       });
-      navigateToTask(result.task.id);
+      if (onCreatedTask) {
+        onCreatedTask(result.task.id);
+      } else {
+        navigateToTask(result.task.id);
+      }
       onClose();
     } catch (error) {
       pushToast({

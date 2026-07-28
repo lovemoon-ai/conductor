@@ -1712,6 +1712,7 @@ export function TaskItem({
           task={task}
           open={isRestartDialogOpen}
           onClose={() => setIsRestartDialogOpen(false)}
+          onCreatedTask={onOpenTask}
         />
       ) : null}
       <Dialog

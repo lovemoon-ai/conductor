@@ -105,16 +105,29 @@ const threeProjects: Project[] = [
   { id: 'p3', name: 'P3' } as Project,
 ];
 
-// dnd-kit style drag-over event whose translated card center sits at `ratio`
-// down the target card, so we can force the aggregate vs reorder decision.
+// The production code decides aggregate-vs-reorder from the LIVE POINTER
+// position (activatorEvent.clientY + accumulated delta.y) measured against the
+// target row wrapper's real getBoundingClientRect — NOT the dragged card's
+// dnd-kit translated box (which the sortable strategy displaces mid-drag). We
+// stub every wrapper rect to {top:0,height:100} in beforeEach, so a pointer at
+// `ratio * 100` lands at `ratio` down the target card.
 const overEvent = (activeId: string, overId: string, ratio: number) => ({
-  active: { id: activeId, rect: { current: { translated: { top: ratio * 100, height: 0 } } } },
-  over: { id: overId, rect: { top: 0, height: 100 } },
+  active: { id: activeId },
+  over: { id: overId },
+  activatorEvent: { clientY: ratio * 100 },
+  delta: { y: 0 },
 });
 
 describe('ProjectList aggregation drag', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Row wrappers have no layout in jsdom (all zeros), so the pointer-band math
+    // can't run. Give every element a stable 100px-tall rect anchored at top 0,
+    // matching the pointer coordinates the overEvent helper feeds in.
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      top: 0, left: 0, bottom: 100, right: 100, width: 100, height: 100, x: 0, y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
     latestDndContextProps = null;
     projectsState = {
       ...projectsState,

@@ -151,6 +151,52 @@ describe('RestartTaskControls', () => {
     });
   });
 
+  it('prefers onCreatedTask over URL navigation to open the successor', async () => {
+    restartTaskMock.mockResolvedValue({
+      mode: 'successor_new_task',
+      sourceTaskId: 'task-1',
+      task: {
+        id: 'task-2',
+      },
+    });
+    const onClose = vi.fn();
+    const onCreatedTask = vi.fn();
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={onClose}
+        onCreatedTask={onCreatedTask}
+        task={{
+          id: 'task-1',
+          title: 'Running Task',
+          taskType: 'ai_task',
+          status: 'running',
+          agentHost: 'daemon-1',
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          createdAt: FIXED_DATE.toISOString(),
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+
+    await waitFor(() => {
+      expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+        backendType: 'codex',
+        strategy: 'new_task',
+      });
+      // The successor id is handed to the caller so it can update local
+      // selection state, not just the URL.
+      expect(onCreatedTask).toHaveBeenCalledWith('task-2');
+      expect(onClose).toHaveBeenCalled();
+    });
+    // When a caller opts into onCreatedTask, we must NOT also mutate the URL
+    // ourselves (the reconciler would otherwise fight the local selection).
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
   it('creates a new task for stopped same-backend tasks', async () => {
     restartTaskMock.mockResolvedValue({
       mode: 'successor_new_task',
