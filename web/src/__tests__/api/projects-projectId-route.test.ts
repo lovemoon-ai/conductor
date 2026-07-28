@@ -25,6 +25,7 @@ vi.mock("@/lib/db", () => ({
       findMany: vi.fn(),
       deleteMany: vi.fn(),
       updateMany: vi.fn(),
+      count: vi.fn(),
     },
     message: {
       deleteMany: vi.fn(),
@@ -88,6 +89,7 @@ describe("/api/projects/[projectId]", () => {
       lastPaymentAt: null,
     } as any);
     vi.mocked(db.task.findMany).mockResolvedValue([]);
+    vi.mocked(db.task.count).mockResolvedValue(0);
     vi.mocked(db.agentOutbox.create).mockResolvedValue({ id: "outbox-1" } as any);
     vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(null);
     vi.mocked(realtimeHub.unbindTask).mockImplementation(() => undefined);
@@ -436,7 +438,7 @@ describe("/api/projects/[projectId]", () => {
         data: { secondProjectId: null },
       });
       expect(db.task.findMany).toHaveBeenCalledWith({
-        where: { projectId: "proj-1" },
+        where: { projectId: "proj-1", achievedAt: null },
         select: {
           id: true,
           taskType: true,
@@ -455,7 +457,7 @@ describe("/api/projects/[projectId]", () => {
         },
       });
       expect(db.task.deleteMany).toHaveBeenCalledWith({
-        where: { projectId: "proj-1" },
+        where: { projectId: "proj-1", achievedAt: null },
       });
       expect(db.project.delete).toHaveBeenCalledWith({
         where: { id: "proj-1" },
@@ -463,6 +465,111 @@ describe("/api/projects/[projectId]", () => {
       expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-1");
       expect(db.agentOutbox.create).not.toHaveBeenCalled();
       expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-1");
+    });
+
+    it("should preserve achieved tasks by re-homing them to the default project", async () => {
+      const token = createTestToken("user-1");
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-1",
+        name: "Test Project",
+      } as any);
+      // The user's default project exists and is a different project.
+      vi.mocked(db.defaultProject.findUnique).mockResolvedValue({
+        projectId: "proj-inbox",
+      } as any);
+      // One active task plus (per db.task.count) two achieved tasks. The
+      // findMany result only contains the active one because the route
+      // filters on `achievedAt: null`.
+      vi.mocked(db.task.findMany).mockResolvedValue([
+        {
+          id: "task-active",
+          taskType: "ai_task",
+          launchConfig: null,
+          status: "completed",
+        },
+      ] as any);
+      vi.mocked(db.task.count).mockResolvedValue(2);
+      vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 2 } as any);
+      vi.mocked(db.task.deleteMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.task.updateMany).mockResolvedValue({ count: 2 } as any);
+      vi.mocked(db.project.delete).mockResolvedValue({ id: "proj-1" } as any);
+
+      const request = createMockRequest({
+        method: "DELETE",
+        token,
+      });
+      const response = await DELETE(request, { params: Promise.resolve({ projectId: "proj-1" }) });
+
+      expect(response.status).toBe(204);
+      // Only active tasks are hard-deleted; achieved tasks (and thus their
+      // preserved transcripts) are excluded from the delete.
+      expect(db.task.deleteMany).toHaveBeenCalledWith({
+        where: { projectId: "proj-1", achievedAt: null },
+      });
+      // Achieved tasks are moved home to the default project before the
+      // project row (and its FK cascade) goes away.
+      expect(db.task.updateMany).toHaveBeenCalledWith({
+        where: { projectId: "proj-1", achievedAt: { not: null } },
+        data: { projectId: "proj-inbox", secondProjectId: null },
+      });
+      // Message/attachment cleanup only touches the active task, never the
+      // achieved ones.
+      expect(db.message.deleteMany).toHaveBeenCalledWith({
+        where: { taskId: { in: ["task-active"] } },
+      });
+      expect(deleteTaskAttachmentDirectory).toHaveBeenCalledTimes(1);
+      expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-active");
+      expect(db.project.delete).toHaveBeenCalledWith({
+        where: { id: "proj-1" },
+      });
+    });
+
+    it("falls back to legacy delete-everything behavior on a pre-migration schema without achieved_at", async () => {
+      const token = createTestToken("user-1");
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-1",
+        name: "Legacy Project",
+      } as any);
+      // The achieved-count probe hits a schema that predates `achieved_at`.
+      vi.mocked(db.task.count).mockRejectedValue({
+        code: "P2022",
+        message: "The column `tasks.achieved_at` does not exist in the current database.",
+      });
+      vi.mocked(db.task.findMany).mockResolvedValue([
+        {
+          id: "task-1",
+          taskType: "ai_task",
+          launchConfig: null,
+          status: "completed",
+        },
+      ] as any);
+      vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.task.deleteMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.task.updateMany).mockResolvedValue({ count: 0 } as any);
+      vi.mocked(db.project.delete).mockResolvedValue({ id: "proj-1" } as any);
+
+      const request = createMockRequest({
+        method: "DELETE",
+        token,
+      });
+      const response = await DELETE(request, { params: Promise.resolve({ projectId: "proj-1" }) });
+
+      expect(response.status).toBe(204);
+      // No achieved_at filter anywhere: a legacy schema cannot contain
+      // achieved tasks, so everything under the project is deleted as before.
+      expect(db.task.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { projectId: "proj-1" } }),
+      );
+      expect(db.task.deleteMany).toHaveBeenCalledWith({
+        where: { projectId: "proj-1" },
+      });
+      // Neither the secondProjectId revert nor the achieved re-home runs: both
+      // columns are missing on a pre-migration schema and a P2022 inside the
+      // transaction would abort the whole delete.
+      expect(db.task.updateMany).not.toHaveBeenCalled();
+      expect(db.project.delete).toHaveBeenCalledWith({
+        where: { id: "proj-1" },
+      });
     });
 
     it("should queue worktree cleanup before deleting a project with isolated worktree tasks", async () => {
@@ -512,7 +619,7 @@ describe("/api/projects/[projectId]", () => {
         }),
       );
       expect(db.task.deleteMany).toHaveBeenCalledWith({
-        where: { projectId: "proj-1" },
+        where: { projectId: "proj-1", achievedAt: null },
       });
       expect(db.project.delete).toHaveBeenCalledWith({
         where: { id: "proj-1" },
@@ -540,7 +647,7 @@ describe("/api/projects/[projectId]", () => {
       expect(response.status).toBe(204);
       expect(db.message.deleteMany).not.toHaveBeenCalled();
       expect(db.task.deleteMany).toHaveBeenCalledWith({
-        where: { projectId: "proj-empty" },
+        where: { projectId: "proj-empty", achievedAt: null },
       });
       expect(db.project.delete).toHaveBeenCalledWith({
         where: { id: "proj-empty" },

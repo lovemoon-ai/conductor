@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
+import { ensureDefaultProject } from "@/lib/auth/service";
 import { db } from "@/lib/db";
 import { deleteTaskAttachmentDirectory } from "@/lib/tasks/task-file-storage";
 import {
@@ -10,6 +11,7 @@ import {
   resolveTaskWorktreeCleanupHost,
 } from "@/lib/tasks/worktree";
 import { stopTaskBeforeRelaunch } from "@/lib/tasks/task-stop";
+import { isMissingPtySchemaError } from "@/lib/tasks/pty-compat";
 import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { countActiveScheduledMessagesForProjects } from "@/lib/tasks/scheduled-messages";
@@ -309,8 +311,28 @@ export async function DELETE(
     return NextResponse.json({ error: "Cannot delete default project" }, { status: 400 });
   }
 
+  // Achieved (packed) tasks are excluded: their runtime/worktree was already
+  // torn down at achieve time, and they must survive project deletion (see the
+  // re-home below) with messages and attachments intact. On a pre-migration
+  // schema without `achieved_at` no task can be achieved, so the legacy
+  // delete-everything behavior stays correct (same fallback pattern as
+  // `groupTaskStatusCounts` in the projects list route).
+  let achievedTaskCount = 0;
+  let achievedColumnAvailable = true;
+  try {
+    achievedTaskCount = await db.task.count({
+      where: { projectId, achievedAt: { not: null } },
+    });
+  } catch (error) {
+    if (!isMissingPtySchemaError(error)) throw error;
+    achievedColumnAvailable = false;
+  }
+  const activeTaskWhere = achievedColumnAvailable
+    ? { projectId, achievedAt: null }
+    : { projectId };
+
   const tasks = await db.task.findMany({
-    where: { projectId },
+    where: activeTaskWhere,
     select: {
       id: true,
       taskType: true,
@@ -388,6 +410,24 @@ export async function DELETE(
     }
   }
 
+  // Achieved (packed) tasks survive project deletion: packing exists precisely
+  // so the transcript stays retrievable later. They are re-homed to the user's
+  // default project before `project.delete`, otherwise the FK cascade would
+  // destroy them together with their messages. The home is resolved from the
+  // default mapping unconditionally so the tx-time filter stays authoritative
+  // even if a task is packed concurrently with this delete; `ensureDefaultProject`
+  // is only consulted when the mapping is missing and achieved tasks exist.
+  let achievedHomeProjectId: string | null = null;
+  if (achievedColumnAvailable) {
+    achievedHomeProjectId = defaultProject?.projectId ?? null;
+    if (!achievedHomeProjectId && achievedTaskCount > 0) {
+      const ensured = await ensureDefaultProject(user.id);
+      // Guard against the repaired default resolving to the project being
+      // deleted (a legacy default project whose mapping row never existed).
+      achievedHomeProjectId = ensured.id === projectId ? null : ensured.id;
+    }
+  }
+
   await db.$transaction(async (tx) => {
     for (const { task, agentHost } of cleanupTargets.values()) {
       await tx.agentOutbox.create({
@@ -414,17 +454,28 @@ export async function DELETE(
     }
 
     await tx.task.deleteMany({
-      where: { projectId },
+      where: activeTaskWhere,
     });
     // Tasks that were *displayed* under this project via the display-only
     // `secondProjectId` override still live in their real (default) project.
     // Clearing the override reverts them to the inbox instead of leaving them
     // orphaned — pointing at a project that no longer exists would hide them
     // from every task-list view (excluded from default, target gone).
-    await tx.task.updateMany({
-      where: { secondProjectId: projectId },
-      data: { secondProjectId: null },
-    });
+    // Gated on the same schema probe: `second_project_id` ships in the same
+    // migration batch as `achieved_at`, and a P2022 inside the transaction
+    // would abort the whole delete on a pre-migration schema.
+    if (achievedColumnAvailable) {
+      await tx.task.updateMany({
+        where: { secondProjectId: projectId },
+        data: { secondProjectId: null },
+      });
+    }
+    if (achievedHomeProjectId) {
+      await tx.task.updateMany({
+        where: { projectId, achievedAt: { not: null } },
+        data: { projectId: achievedHomeProjectId, secondProjectId: null },
+      });
+    }
     await tx.project.delete({
       where: { id: projectId },
     });
