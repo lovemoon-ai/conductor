@@ -14,7 +14,7 @@
  *   serve-ai - Start an OpenAI-compatible local AI server
  *   project  - Manage Conductor projects (list/show/create/...)
  *   issue    - Manage issues (list/show/create/update/start/done)
- *   task     - Manage tasks (list/show/send/messages/schedule)
+ *   task     - Manage tasks (create/list/show/send/messages/schedule)
  */
 
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -134,7 +134,7 @@ Subcommands:
   serve-ai  Start an OpenAI-compatible local AI server
   project   Manage Conductor projects (list/show/create/...)
   issue     Manage issues (list/show/create/update/start/done)
-  task      Manage tasks (list/show/send/messages/schedule)
+  task      Manage tasks (create/list/show/send/messages/schedule)
 
 Options:
   -h, --help     Show this help message
@@ -156,6 +156,7 @@ Examples:
   conductor update
   conductor project list
   conductor issue create --title "Refactor module" --priority P2
+  conductor task create --title "Refactor module" --prompt "Extract the parser" --backend codex
   conductor task send <task-id> "please add a unit test"
   conductor task schedule create <task-id> "follow up" --delay 10m
 

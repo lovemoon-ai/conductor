@@ -398,23 +398,23 @@ export async function setTaskCardGroupsScope(
 }
 
 /**
- * Atomically group a newly-created successor beside its source task.
+ * Atomically group a newly-created related task beside its source task.
  *
  * The task list now has one global grouping scope, but older installations can
  * still hold per-project scopes. Fold those scopes before applying the merge so
  * a source task keeps its existing tab-card membership during the lazy
  * migration. Compare-and-set retries prevent a concurrent drag/drop edit from
- * being overwritten by branch creation.
+ * being overwritten by related-task creation.
  */
-export async function mergeSuccessorTaskCardGroup(
+export async function mergeRelatedTaskCardGroup(
   userId: string,
   sourceTaskId: string,
-  successorTaskId: string,
+  relatedTaskId: string,
 ): Promise<TaskCardGroupsSyncSnapshot> {
   const normalizedSourceTaskId = sourceTaskId.trim();
-  const normalizedSuccessorTaskId = successorTaskId.trim();
-  if (!normalizedSourceTaskId || !normalizedSuccessorTaskId) {
-    throw new Error("Task card grouping requires source and successor task ids.");
+  const normalizedRelatedTaskId = relatedTaskId.trim();
+  if (!normalizedSourceTaskId || !normalizedRelatedTaskId) {
+    throw new Error("Task card grouping requires source and related task ids.");
   }
 
   for (let attempt = 0; attempt < TASK_CARD_GROUPS_WRITE_RETRIES; attempt += 1) {
@@ -450,14 +450,14 @@ export async function mergeSuccessorTaskCardGroup(
         localGroups,
         `tabcard-branch-${randomUUID()}`,
         normalizedSourceTaskId,
-        normalizedSuccessorTaskId,
+        normalizedRelatedTaskId,
       ),
     );
     if (!mergedGroups.some((group) =>
       group.taskIds.includes(normalizedSourceTaskId)
-      && group.taskIds.includes(normalizedSuccessorTaskId)
+      && group.taskIds.includes(normalizedRelatedTaskId)
     )) {
-      throw new Error("Task card group limits prevent grouping the successor task.");
+      throw new Error("Task card group limits prevent grouping the related task.");
     }
 
     // Another writer may have completed the same idempotent merge while this
@@ -503,6 +503,8 @@ export async function mergeSuccessorTaskCardGroup(
 
   throw new TaskCardGroupsPreferencesConflictError();
 }
+
+export const mergeSuccessorTaskCardGroup = mergeRelatedTaskCardGroup;
 
 const parseStoredProjectCardGroupsSnapshot = (
   value: string | null | undefined,

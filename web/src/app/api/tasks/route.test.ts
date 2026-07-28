@@ -4,6 +4,7 @@ import { createMockRequest, createTestToken, extractJson } from "@/__tests__/hel
 import * as authService from "@/lib/auth/service";
 
 const countActiveScheduledMessagesForTasksMock = vi.hoisted(() => vi.fn());
+const mergeRelatedTaskCardGroupMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/realtime/hub", () => ({
   realtimeHub: {
@@ -17,6 +18,7 @@ vi.mock("@/lib/realtime/hub", () => ({
     getAgentDisconnectAt: vi.fn().mockReturnValue(null),
     unbindTask: vi.fn(),
     notifyTaskStatus: vi.fn(),
+    broadcastToUser: vi.fn(),
   },
 }));
 
@@ -28,6 +30,10 @@ vi.mock("@/lib/realtime/agent-outbox", () => ({
 
 vi.mock("@/lib/tasks/scheduled-messages", () => ({
   countActiveScheduledMessagesForTasks: countActiveScheduledMessagesForTasksMock,
+}));
+
+vi.mock("@/lib/user-preferences", () => ({
+  mergeRelatedTaskCardGroup: mergeRelatedTaskCardGroupMock,
 }));
 
 vi.mock("@/lib/subscription/service", async (importOriginal) => {
@@ -43,6 +49,7 @@ vi.mock("@/lib/db", () => ({
     $transaction: vi.fn(),
     task: {
       findMany: vi.fn(),
+      findFirst: vi.fn(),
       update: vi.fn(),
       create: vi.fn(),
     },
@@ -100,6 +107,12 @@ describe("/api/tasks", () => {
           : callback,
     );
     vi.mocked(db.task.findMany).mockResolvedValue([]);
+    vi.mocked(db.task.findFirst).mockResolvedValue(null);
+    mergeRelatedTaskCardGroupMock.mockResolvedValue({
+      version: 1,
+      revision: 1,
+      scopes: {},
+    });
     countActiveScheduledMessagesForTasksMock.mockResolvedValue(new Map());
     vi.mocked(db.attachedTerminal.findMany).mockResolvedValue([]);
     vi.mocked(db.attachedTerminal.findUnique).mockResolvedValue(null);
@@ -908,6 +921,39 @@ describe("/api/tasks", () => {
       expect(db.task.create).not.toHaveBeenCalled();
     });
 
+    it("should reject a backend unsupported by the bound project daemon", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = {
+        id: "proj-bound",
+        name: "Bound Project",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/repo/bound",
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      ]);
+
+      const token = createTestToken("user-1");
+      const response = await POST(createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          project_id: "proj-bound",
+          title: "Unsupported Backend",
+          backend_type: "claude",
+        },
+      }));
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toBe("Daemon daemon-1 does not support backend claude");
+      expect(db.task.create).not.toHaveBeenCalled();
+    });
+
     it("should allow free user to create app task when only manual fire task is active", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const mockProject = { id: "proj-mixed", name: "Project Mixed", userId: "user-1" };
@@ -933,6 +979,9 @@ describe("/api/tasks", () => {
         { status: "running", agentHost: "conductor-fire-mac-1" },
       ] as any);
       vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-daemon", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      ]);
 
       const token = createTestToken("user-1");
       const request = createMockRequest({
@@ -975,6 +1024,9 @@ describe("/api/tasks", () => {
       setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-daemon", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      ]);
       vi.mocked(db.message.create).mockResolvedValue({
         id: "msg-1",
         createdAt: new Date("2024-01-03"),
@@ -992,6 +1044,245 @@ describe("/api/tasks", () => {
       expect(response.status).toBe(200);
       expect(data.id).toBe("task-2");
       expect(data.title).toBe("New Task");
+    });
+
+    it("should create an app task and group it with parent_task_id", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = { id: "proj-1", name: "Project 1", userId: "user-1" };
+      const mockTask = {
+        id: "task-child",
+        projectId: "proj-1",
+        issueId: null,
+        title: "Child Task",
+        taskType: "ai_task",
+        status: "init",
+        agentHost: null,
+        executionHost: null,
+        backendType: "codex",
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: JSON.stringify({
+          backendType: "codex",
+          initialContent: "Implement the child task",
+        }),
+        metadata: JSON.stringify({
+          backendType: "codex",
+          initialContent: "Implement the child task",
+        }),
+        createdAt: new Date("2024-01-02"),
+        updatedAt: new Date("2024-01-02"),
+      };
+      const taskCardGroupsSnapshot = {
+        version: 1,
+        revision: 2,
+        scopes: {
+          "projects:all": [{
+            id: "group-1",
+            taskIds: ["task-parent", "task-child"],
+            labels: {},
+          }],
+        },
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(db.task.findFirst).mockResolvedValue({ id: "task-parent" } as any);
+      vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-daemon", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      ]);
+      vi.mocked(db.message.create).mockResolvedValue({
+        id: "msg-child",
+        createdAt: new Date("2024-01-03"),
+      } as any);
+      mergeRelatedTaskCardGroupMock.mockResolvedValue(taskCardGroupsSnapshot);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          projectId: "proj-1",
+          title: "Child Task",
+          initialContent: "Implement the child task",
+          backendType: "codex",
+          parentTaskId: "task-parent",
+        },
+      });
+      const response = await POST(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data).toMatchObject({
+        id: "task-child",
+        task_type: "ai_task",
+        backend_type: "codex",
+        grouping: {
+          parent_task_id: "task-parent",
+          grouped: true,
+        },
+      });
+      expect(db.task.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: "task-parent",
+          achievedAt: null,
+          project: { userId: "user-1" },
+        },
+        select: { id: true },
+      });
+      expect(db.task.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          projectId: "proj-1",
+          taskType: "ai_task",
+          backendType: "codex",
+          agentHost: "daemon-1",
+          executionHost: "daemon-1",
+        }),
+      });
+      expect(db.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          role: "user",
+          content: "Implement the child task",
+        }),
+        select: {
+          id: true,
+          createdAt: true,
+        },
+      });
+      expect(mergeRelatedTaskCardGroupMock).toHaveBeenCalledWith(
+        "user-1",
+        "task-parent",
+        "task-child",
+      );
+      expect(realtimeHub.broadcastToUser).toHaveBeenCalledWith(
+        "user-1",
+        expect.objectContaining({
+          type: "task_card_groups_update",
+          payload: expect.objectContaining({
+            snapshot: taskCardGroupsSnapshot,
+          }),
+        }),
+      );
+    });
+
+    it("should reject a parent task outside the authenticated user's scope", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = { id: "proj-1", name: "Project 1", userId: "user-1" };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(db.task.findFirst).mockResolvedValue(null);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          project_id: "proj-1",
+          title: "Child Task",
+          parent_task_id: "another-user-task",
+        },
+      });
+      const response = await POST(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(404);
+      expect(data.error).toBe("Parent task not found or is archived");
+      expect(db.task.create).not.toHaveBeenCalled();
+      expect(mergeRelatedTaskCardGroupMock).not.toHaveBeenCalled();
+    });
+
+    it("should reject an archived parent task before creating the child", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = { id: "proj-1", name: "Project 1", userId: "user-1" };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(db.task.findFirst).mockResolvedValue(null);
+
+      const token = createTestToken("user-1");
+      const response = await POST(createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          project_id: "proj-1",
+          title: "Child Task",
+          parent_task_id: "archived-parent",
+        },
+      }));
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(404);
+      expect(data.error).toBe("Parent task not found or is archived");
+      expect(db.task.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: "archived-parent",
+          achievedAt: null,
+          project: { userId: "user-1" },
+        },
+        select: { id: true },
+      });
+      expect(db.task.create).not.toHaveBeenCalled();
+    });
+
+    it("should report partial success when parent grouping cannot be saved", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = { id: "proj-1", name: "Project 1", userId: "user-1" };
+      const mockTask = {
+        id: "task-child",
+        projectId: "proj-1",
+        issueId: null,
+        title: "Child Task",
+        taskType: "ai_task",
+        status: "init",
+        agentHost: "daemon-1",
+        executionHost: "daemon-1",
+        backendType: "codex",
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: null,
+        createdAt: new Date("2024-01-02"),
+        updatedAt: new Date("2024-01-02"),
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(db.task.findFirst).mockResolvedValue({ id: "task-parent" } as any);
+      vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-daemon", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      ]);
+      mergeRelatedTaskCardGroupMock.mockRejectedValue(new Error("preferences unavailable"));
+
+      const token = createTestToken("user-1");
+      const response = await POST(createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          project_id: "proj-1",
+          title: "Child Task",
+          backend_type: "codex",
+          parent_task_id: "task-parent",
+        },
+      }));
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data).toMatchObject({
+        id: "task-child",
+        grouping: {
+          parent_task_id: "task-parent",
+          grouped: false,
+          warning: "Task was created, but parent task grouping could not be saved",
+        },
+      });
+      expect(db.task.create).toHaveBeenCalled();
+      expect(realtimeHub.broadcastToUser).not.toHaveBeenCalled();
     });
 
     it("should default manual fire tasks to running when created by a fire host", async () => {
@@ -1120,6 +1411,9 @@ describe("/api/tasks", () => {
       setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-daemon", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      ]);
 
       const token = createTestToken("user-1");
       const request = createMockRequest({
@@ -1185,6 +1479,9 @@ describe("/api/tasks", () => {
       setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
       vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-daemon", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      ]);
 
       const token = createTestToken("user-1");
       const request = createMockRequest({
@@ -2138,6 +2435,57 @@ describe("/api/tasks", () => {
       );
     });
 
+    it("should reject an app task when only a fire host is connected", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = { id: "proj-app-only", name: "App Task Project", userId: "user-1" };
+      const mockTask = {
+        id: "task-app-only",
+        projectId: "proj-app-only",
+        title: "App Task",
+        status: "init",
+        agentHost: null,
+        executionHost: null,
+        backendType: "codex",
+        sessionId: null,
+        sessionFilePath: null,
+        metadata: JSON.stringify({ backendType: "codex" }),
+        createdAt: new Date("2024-01-05"),
+        updatedAt: new Date("2024-01-05"),
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        {
+          id: "agent-fire",
+          host: "conductor-fire-only-host",
+          supportedBackends: ["codex"],
+          capabilities: [],
+        },
+      ]);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          project_id: "proj-app-only",
+          title: "App Task",
+          backendType: "codex",
+        },
+      });
+      const response = await POST(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toBe("No app-task daemon is online");
+      expect(db.task.create).not.toHaveBeenCalled();
+      expect(realtimeHub.bindTaskToAgent).not.toHaveBeenCalled();
+      expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+    });
+
     it("should prefer daemon supporting requested backend type", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const mockProject = { id: "proj-5", name: "Project 5", userId: "user-1" };
@@ -2183,6 +2531,35 @@ describe("/api/tasks", () => {
           }),
         })
       );
+    });
+
+    it("should reject a requested backend that no connected daemon supports", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = { id: "proj-5", name: "Project 5", userId: "user-1" };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-codex", host: "daemon-codex", supportedBackends: ["codex"], capabilities: [] },
+      ]);
+
+      const token = createTestToken("user-1");
+      const response = await POST(createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          project_id: "proj-5",
+          title: "Unsupported Backend Task",
+          backend_type: "claude",
+        },
+      }));
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toBe("No connected daemon supports backend claude");
+      expect(db.task.create).not.toHaveBeenCalled();
+      expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
     });
   });
 });

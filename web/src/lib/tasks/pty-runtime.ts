@@ -197,28 +197,19 @@ export const pickDefaultAgentHost = (
   agents: ConnectedAgent[],
   requestedBackendType: string | null,
 ): string | undefined => {
-  if (agents.length === 0) return undefined;
+  const daemonAgents = agents.filter((agent) => !isConductorFireHost(agent.host));
+  if (daemonAgents.length === 0) return undefined;
 
   const findHost = (predicate: (agent: ConnectedAgent) => boolean): string | undefined =>
-    agents.find(predicate)?.host;
+    daemonAgents.find(predicate)?.host;
+
+  if (requestedBackendType) {
+    return findHost((agent) => agent.supportedBackends.includes(requestedBackendType));
+  }
 
   return (
-    (requestedBackendType
-      ? findHost(
-          (agent) =>
-            !isConductorFireHost(agent.host) &&
-            agent.supportedBackends.includes(requestedBackendType),
-        )
-      : undefined) ||
-    (requestedBackendType
-      ? findHost((agent) => agent.supportedBackends.includes(requestedBackendType))
-      : undefined) ||
-    findHost(
-      (agent) =>
-        !isConductorFireHost(agent.host) && agent.supportedBackends.length > 0,
-    ) ||
-    findHost((agent) => !isConductorFireHost(agent.host)) ||
-    agents[0].host
+    findHost((agent) => agent.supportedBackends.length > 0) ||
+    daemonAgents[0].host
   );
 };
 

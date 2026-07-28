@@ -11,7 +11,14 @@ export interface Task {
   sessionFilePath?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  grouping?: TaskGroupingResult | null;
   raw: Record<string, unknown>;
+}
+
+export interface TaskGroupingResult {
+  parentTaskId: string;
+  grouped: boolean;
+  warning?: string | null;
 }
 
 export interface Message {
@@ -79,6 +86,24 @@ const normalizeTask = (payload: Record<string, any>): Task => {
   if (!id) {
     throw new Error('Task payload missing id');
   }
+  const groupingPayload =
+    payload.grouping && typeof payload.grouping === 'object' && !Array.isArray(payload.grouping)
+      ? payload.grouping
+      : null;
+  const groupingParentTaskId = groupingPayload
+    ? groupingPayload.parentTaskId ?? groupingPayload.parent_task_id
+    : null;
+  const grouping =
+    groupingParentTaskId && typeof groupingPayload?.grouped === 'boolean'
+      ? {
+          parentTaskId: String(groupingParentTaskId),
+          grouped: groupingPayload.grouped,
+          warning:
+            typeof groupingPayload.warning === 'string'
+              ? groupingPayload.warning
+              : null,
+        }
+      : null;
   return {
     id,
     projectId:
@@ -99,6 +124,7 @@ const normalizeTask = (payload: Record<string, any>): Task => {
     sessionFilePath: payload.sessionFilePath ?? payload.session_file_path ?? null,
     createdAt: payload.createdAt ?? payload.created_at ?? null,
     updatedAt: payload.updatedAt ?? payload.updated_at ?? null,
+    grouping,
     raw: payload,
   };
 };
@@ -177,6 +203,15 @@ export interface ListTasksInput {
   status?: string | string[];
 }
 
+export interface CreateTaskInput {
+  projectId: string;
+  title: string;
+  backendType?: string;
+  initialContent?: string;
+  parentTaskId?: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface SendTaskMessageOptions {
   role?: string;
   metadata?: Record<string, unknown>;
@@ -244,6 +279,40 @@ export class TasksApi {
       typeof (summary as any).asObject === 'function'
         ? (summary as any).asObject()
         : (summary as any),
+    );
+  }
+
+  async createTask(input: CreateTaskInput): Promise<Task> {
+    const projectId = String(input?.projectId ?? '').trim();
+    const title = String(input?.title ?? '').trim();
+    if (!projectId) {
+      throw new Error('projectId is required');
+    }
+    if (!title) {
+      throw new Error('title is required');
+    }
+
+    const params: Parameters<ApiClient['createTask']>[0] = {
+      projectId,
+      title,
+      taskType: 'ai_task',
+      metadata: buildAuditMetadata(input.metadata, this.options),
+    };
+    if (input.backendType !== undefined) {
+      params.backendType = input.backendType;
+    }
+    if (input.initialContent !== undefined) {
+      params.initialContent = input.initialContent;
+    }
+    if (input.parentTaskId !== undefined) {
+      params.parentTaskId = input.parentTaskId;
+    }
+
+    const payload = await this.client.createTask(params);
+    return normalizeTask(
+      typeof (payload as any).asObject === 'function'
+        ? (payload as any).asObject()
+        : (payload as any),
     );
   }
 

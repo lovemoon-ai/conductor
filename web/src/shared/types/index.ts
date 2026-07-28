@@ -379,6 +379,7 @@ export interface CreateTaskInput {
   sessionId?: string;
   sessionFilePath?: string;
   launchConfig?: Record<string, unknown> | null;
+  parentTaskId?: string;
 }
 
 export interface UpdateTaskInput {

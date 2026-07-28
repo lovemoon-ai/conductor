@@ -96,6 +96,12 @@ export class ProjectSummary {
   }
 }
 
+export interface TaskGroupingSummary {
+  parentTaskId: string;
+  grouped: boolean;
+  warning?: string | null;
+}
+
 export class TaskSummary {
   constructor(
     public readonly id: string,
@@ -107,6 +113,7 @@ export class TaskSummary {
     public readonly sessionFilePath?: string | null,
     public readonly createdAt?: string | null,
     public readonly updatedAt?: string | null,
+    public readonly grouping?: TaskGroupingSummary | null,
   ) {}
 
   static fromJSON(payload: Record<string, any>): TaskSummary {
@@ -119,6 +126,25 @@ export class TaskSummary {
     if (!title || !status) {
       throw new Error('Task payload missing required fields');
     }
+    const groupingPayload =
+      payload.grouping && typeof payload.grouping === 'object' && !Array.isArray(payload.grouping)
+        ? payload.grouping
+        : null;
+    const groupingParentTaskId = groupingPayload
+      ? groupingPayload.parent_task_id ?? groupingPayload.parentTaskId
+      : null;
+    const grouping =
+      groupingParentTaskId && typeof groupingPayload?.grouped === 'boolean'
+        ? {
+            parentTaskId: String(groupingParentTaskId),
+            grouped: groupingPayload.grouped,
+            warning:
+              typeof groupingPayload.warning === 'string'
+                ? groupingPayload.warning
+                : null,
+          }
+        : null;
+
     return new TaskSummary(
       id,
       payload.project_id ? String(payload.project_id) : null,
@@ -129,6 +155,7 @@ export class TaskSummary {
       payload.session_file_path ?? payload.sessionFilePath ?? null,
       payload.created_at ?? null,
       payload.updated_at ?? null,
+      grouping,
     );
   }
 }
@@ -217,12 +244,14 @@ export class BackendApiClient {
     id?: string;
     projectId: string;
     title: string;
+    taskType?: string;
     status?: string;
     backendType?: string;
     sessionId?: string | null;
     sessionFilePath?: string | null;
     initialContent?: string;
     agentHost?: string;
+    parentTaskId?: string;
     metadata?: Record<string, unknown>;
   }): Promise<TaskSummary> {
     const response = await this.request('POST', '/tasks', {

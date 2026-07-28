@@ -46,6 +46,7 @@ import {
   findAttachedTerminalsByAiTaskIds,
 } from "@/lib/tasks/attached-terminal";
 import { countActiveScheduledMessagesForTasks } from "@/lib/tasks/scheduled-messages";
+import { mergeRelatedTaskCardGroup } from "@/lib/user-preferences";
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
@@ -403,11 +404,54 @@ export async function POST(request: NextRequest) {
   if (!projectId) {
     return NextResponse.json({ error: "project_id required" }, { status: 400 });
   }
+  const hasParentTaskId = hasBodyField(
+    normalizedBody,
+    "parent_task_id",
+    "parentTaskId",
+  );
+  const parentTaskId = normalizeOptionalString(
+    readBodyField(normalizedBody, "parent_task_id", "parentTaskId"),
+  );
+  if (hasParentTaskId && !parentTaskId) {
+    return NextResponse.json({ error: "parent_task_id must not be empty" }, { status: 400 });
+  }
 
   const project = await db.project.findFirst({
     where: { id: projectId, userId: user.id },
   });
   if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  if (parentTaskId) {
+    let parentTask: { id: string } | null;
+    try {
+      parentTask = await db.task.findFirst({
+        where: {
+          id: parentTaskId,
+          achievedAt: null,
+          project: { userId: user.id },
+        },
+        select: { id: true },
+      });
+    } catch (error) {
+      if (!isMissingAnyNewSchemaError(error)) {
+        throw error;
+      }
+      // Pre-achieve schemas have no archived tasks, so ownership is the only
+      // visibility constraint available during a rolling deployment.
+      parentTask = await db.task.findFirst({
+        where: {
+          id: parentTaskId,
+          project: { userId: user.id },
+        },
+        select: { id: true },
+      });
+    }
+    if (!parentTask) {
+      return NextResponse.json(
+        { error: "Parent task not found or is archived" },
+        { status: 404 },
+      );
+    }
+  }
   const defaultProject = await db.defaultProject.findUnique({
     where: { userId: user.id },
     select: { projectId: true },
@@ -567,7 +611,43 @@ export async function POST(request: NextRequest) {
     }
     agentHost = resolvedPtyAgent.agentHost;
   } else if (!agentHost) {
-    agentHost = pickDefaultAgentHost(connectedAgents, requestedBackendType) ?? null;
+    const pickedAgentHost = pickDefaultAgentHost(connectedAgents, requestedBackendType);
+    if (!pickedAgentHost) {
+      const connectedDaemonCount = connectedAgents.filter(
+        (agent) => !isConductorFireHost(agent.host),
+      ).length;
+      return NextResponse.json(
+        {
+          error:
+            requestedBackendType && connectedDaemonCount > 0
+              ? `No connected daemon supports backend ${requestedBackendType}`
+              : "No app-task daemon is online",
+        },
+        { status: 409 },
+      );
+    }
+    agentHost = pickedAgentHost;
+  }
+
+  if (taskType === "ai_task" && agentHost && !isConductorFireHost(agentHost)) {
+    const selectedAgent = connectedAgents.find((agent) => agent.host === agentHost);
+    if (!selectedAgent) {
+      return NextResponse.json(
+        { error: `App-task daemon ${agentHost} is offline` },
+        { status: 409 },
+      );
+    }
+    if (
+      requestedBackendType &&
+      !selectedAgent.supportedBackends.includes(requestedBackendType)
+    ) {
+      return NextResponse.json(
+        {
+          error: `Daemon ${agentHost} does not support backend ${requestedBackendType}`,
+        },
+        { status: 409 },
+      );
+    }
   }
 
 
@@ -681,7 +761,51 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  let grouping:
+    | {
+        parent_task_id: string;
+        grouped: boolean;
+        warning?: string;
+      }
+    | undefined;
+  if (parentTaskId) {
+    try {
+      const taskCardGroupsSnapshot = await mergeRelatedTaskCardGroup(
+        user.id,
+        parentTaskId,
+        task.id,
+      );
+      realtimeHub.broadcastToUser(user.id, {
+        type: "task_card_groups_update",
+        payload: {
+          user_id: user.id,
+          snapshot: taskCardGroupsSnapshot,
+          updated_at: new Date().toISOString(),
+        },
+      });
+      grouping = {
+        parent_task_id: parentTaskId,
+        grouped: true,
+      };
+    } catch (error) {
+      // Grouping is presentation state. Do not turn a successfully created
+      // task into a failed POST that invites callers to create a duplicate.
+      grouping = {
+        parent_task_id: parentTaskId,
+        grouped: false,
+        warning: "Task was created, but parent task grouping could not be saved",
+      };
+      console.warn(
+        `[tasks.POST] task ${task.id} was created but could not be grouped with ${parentTaskId}`,
+        error,
+      );
+    }
+  }
+
   const taskResponseRecord = ptySession ? { ...task, ptySession } : task;
 
-  return NextResponse.json(serializeTaskResponse(taskResponseRecord));
+  return NextResponse.json({
+    ...serializeTaskResponse(taskResponseRecord),
+    ...(grouping ? { grouping } : {}),
+  });
 }

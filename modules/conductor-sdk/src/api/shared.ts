@@ -16,6 +16,7 @@ export type ApiClient = Pick<
   | 'patchIssue'
   | 'deleteIssue'
   | 'listTasks'
+  | 'createTask'
   | 'getTask'
   | 'listTaskMessages'
   | 'postTaskMessage'

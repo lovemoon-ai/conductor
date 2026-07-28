@@ -63,6 +63,27 @@ describe('CreateTaskDialog', () => {
         { id: 'project-2', name: 'Project Two' },
       ],
     };
+    agentsState.agents = [
+      { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude', 'codex'], capabilities: ['pty_task'] },
+      { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['gpt'], capabilities: [] },
+      { id: 'fire-1', host: 'conductor-fire-worker', supportedBackends: ['fire'], capabilities: [] },
+    ];
+  });
+
+  it('disables AI task creation when no daemon is online', async () => {
+    agentsState.agents = [];
+
+    render(<CreateTaskDialog open onClose={() => {}} />);
+
+    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+      target: { value: 'Cannot dispatch yet' },
+    });
+
+    expect(screen.getByText(
+      'No daemon is online right now. Reconnect conductor daemon before creating an AI task.',
+    )).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create AI Task' })).toBeDisabled();
+    expect(createTaskMock).not.toHaveBeenCalled();
   });
 
   it('uses first option as default and reveals guidance only after clicking help', async () => {

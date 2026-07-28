@@ -285,7 +285,7 @@ export function CreateTaskDialog({
     && !isSubmitting
     && hasReadyProjectBinding
     && (isMergedGroup ? hasEligibleDaemon : (!isBoundProject || boundDaemonOnline))
-    && (taskType === 'pty_task' ? hasEligibleDaemon : true);
+    && hasEligibleDaemon;
   // Daemon select options. Merged groups list each member's daemon and use
   // the member's projectId as the option value so onChange can re-point the
   // submission target. Other modes keep the previous (host-keyed) behavior.
@@ -605,7 +605,7 @@ export function CreateTaskDialog({
                   ? `This project is bound to ${boundDaemonHost}, but it does not support PTY tasks.`
                   : taskType === 'pty_task'
                     ? 'No PTY-capable daemon is online. Reconnect conductor daemon with PTY support before creating this task.'
-                    : 'No daemon is online right now. You can still create an AI task, but reconnecting a daemon unlocks explicit backend selection.'}
+                    : 'No daemon is online right now. Reconnect conductor daemon before creating an AI task.'}
             </InlineNotice>
           )}
         </div>
