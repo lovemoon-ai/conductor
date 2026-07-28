@@ -8,7 +8,11 @@
  * documents — so a signature drift on either side breaks the tests.
  */
 
-import { BackendApiError, ProjectSummary, TaskSummary } from "@love-moon/conductor-sdk";
+import {
+  BackendApiError,
+  ProjectSummary,
+  TaskSummary,
+} from "../../../modules/conductor-sdk/dist/index.js";
 
 const SCHEDULED_MESSAGE_NOT_DELETABLE_ERROR =
   "Scheduled message is already completed, canceled, or does not exist";
@@ -20,6 +24,7 @@ export class FakeBackendApi {
     this.tasks = (initial.tasks ?? []).map((task) => ({ ...task }));
     this.messages = (initial.messages ?? []).map((message) => ({ ...message }));
     this.scheduledMessages = (initial.scheduledMessages ?? []).map((schedule) => ({ ...schedule }));
+    this.createTaskGrouping = initial.createTaskGrouping ?? null;
     this.calls = [];
     this.matchProjectByPathResult = initial.matchProjectByPathResult ?? {
       project: null,
@@ -200,6 +205,15 @@ export class FakeBackendApi {
       project_id: record.projectId,
       title: record.title,
       status: record.status,
+      ...(record.grouping
+        ? {
+            grouping: {
+              parent_task_id: record.grouping.parentTaskId,
+              grouped: record.grouping.grouped,
+              warning: record.grouping.warning ?? null,
+            },
+          }
+        : {}),
     });
     summary.asObject = () => ({
       id: record.id,
@@ -207,6 +221,7 @@ export class FakeBackendApi {
       issueId: record.issueId ?? null,
       title: record.title,
       status: record.status,
+      grouping: record.grouping ?? null,
     });
     return summary;
   }
@@ -226,6 +241,27 @@ export class FakeBackendApi {
     if (!task) {
       throw new BackendApiError("not found", 404, { error: "Not found" });
     }
+    return this.asTaskSummary(task);
+  }
+
+  async createTask(params) {
+    this.calls.push({ method: "createTask", body: params });
+    const task = {
+      id: `task-${this.tasks.length + 1}`,
+      projectId: params.projectId,
+      title: params.title,
+      status: params.status ?? "init",
+      backendType: params.backendType ?? null,
+      sessionId: params.sessionId ?? null,
+      sessionFilePath: params.sessionFilePath ?? null,
+      grouping: params.parentTaskId
+        ? this.createTaskGrouping ?? {
+            parentTaskId: params.parentTaskId,
+            grouped: true,
+          }
+        : null,
+    };
+    this.tasks.push(task);
     return this.asTaskSummary(task);
   }
 
@@ -324,7 +360,7 @@ export class FakeBackendApi {
  * package gets us the production Api classes — that's the whole point of
  * M4. We re-export it so each test file has a single import line.
  */
-export const realSdk = await import("@love-moon/conductor-sdk");
+export const realSdk = await import("../../../modules/conductor-sdk/dist/index.js");
 
 export const baseEnv = {
   CONDUCTOR_AGENT_TOKEN: "test-token",

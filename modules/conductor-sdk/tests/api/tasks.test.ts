@@ -13,6 +13,7 @@ interface TaskRecord {
 
 class FakeApiClient {
   tasks: TaskRecord[] = [];
+  createTaskCalls: Array<Record<string, unknown>> = [];
   postTaskMessageCalls: Array<{ id: string; body: any }> = [];
   listTaskMessagesCalls: Array<{ id: string; params: any }> = [];
   createScheduledMessageCalls: Array<{ id: string; body: any }> = [];
@@ -63,6 +64,32 @@ class FakeApiClient {
         title: found.title,
         status: found.status,
       }),
+    });
+  }
+
+  async createTask(params: Record<string, any>) {
+    this.createTaskCalls.push(params);
+    const task = {
+      id: `t${this.tasks.length + 1}`,
+      projectId: params.projectId,
+      title: params.title,
+      status: 'init',
+    };
+    this.tasks.push(task);
+    return TaskSummary.fromJSON({
+      id: task.id,
+      project_id: task.projectId,
+      title: task.title,
+      status: task.status,
+      backend_type: params.backendType ?? null,
+      ...(params.parentTaskId
+        ? {
+            grouping: {
+              parent_task_id: params.parentTaskId,
+              grouped: true,
+            },
+          }
+        : {}),
     });
   }
 
@@ -195,6 +222,50 @@ describe('TasksApi', () => {
   test('getTask maps 404 to BackendApiError', async () => {
     const { api } = makeApi();
     await expect(api.getTask('missing')).rejects.toBeInstanceOf(BackendApiError);
+  });
+
+  test('createTask creates an app AI task with prompt, backend, and parent grouping', async () => {
+    const { client, api } = makeApi();
+    const task = await api.createTask({
+      projectId: 'p1',
+      title: 'Implement parser',
+      initialContent: 'Build the parser',
+      backendType: 'codex',
+      parentTaskId: 'parent-1',
+      metadata: {
+        audit: {
+          actor: 'cli',
+          cliVersion: 'test',
+        },
+      },
+    });
+
+    expect(task).toMatchObject({
+      id: 't1',
+      projectId: 'p1',
+      title: 'Implement parser',
+      status: 'init',
+      grouping: {
+        parentTaskId: 'parent-1',
+        grouped: true,
+      },
+    });
+    expect(client.createTaskCalls[0]).toMatchObject({
+      projectId: 'p1',
+      title: 'Implement parser',
+      taskType: 'ai_task',
+      initialContent: 'Build the parser',
+      backendType: 'codex',
+      parentTaskId: 'parent-1',
+      metadata: {
+        audit: {
+          actor: 'cli',
+          cliVersion: 'test',
+          sdkVersion: '0.0.0-test',
+          invokedBy: null,
+        },
+      },
+    });
   });
 
   test('sendTaskMessage POSTs with audit metadata under audit namespace', async () => {

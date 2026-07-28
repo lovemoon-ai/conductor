@@ -22,6 +22,89 @@ function makeStream() {
 
 const seedProject = { id: "proj-1", name: "alpha", workspacePath: "/tmp/alpha", isDefault: true };
 
+describe("conductor task create", () => {
+  it("creates an app task with prompt, backend, title, and parent grouping", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      tasks: [{ id: "parent-1", projectId: "proj-1", title: "Parent", status: "running" }],
+    });
+    const code = await main(
+      [
+        "create",
+        "--title", "Implement parser",
+        "--prompt", "Build the parser",
+        "--backend", "codex",
+        "--parent-task-id", "parent-1",
+        "--json",
+      ],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+
+    assert.equal(code, 0, stderr.collect());
+    const data = JSON.parse(stdout.collect().trim());
+    assert.equal(data.title, "Implement parser");
+    assert.equal(data.status, "init");
+    assert.deepEqual(data.grouping, {
+      parentTaskId: "parent-1",
+      grouped: true,
+      warning: null,
+    });
+    const created = backend.calls.find((call) => call.method === "createTask");
+    assert.ok(created);
+    assert.equal(created.body.projectId, "proj-1");
+    assert.equal(created.body.taskType, "ai_task");
+    assert.equal(created.body.initialContent, "Build the parser");
+    assert.equal(created.body.backendType, "codex");
+    assert.equal(created.body.parentTaskId, "parent-1");
+    assert.equal(created.body.agentHost, undefined);
+    assert.equal(created.body.metadata.audit.actor, "cli");
+  });
+
+  it("warns when the task was created but parent grouping failed", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      tasks: [{ id: "parent-1", projectId: "proj-1", title: "Parent", status: "running" }],
+      createTaskGrouping: {
+        parentTaskId: "parent-1",
+        grouped: false,
+        warning: "Task was created, but parent task grouping could not be saved",
+      },
+    });
+
+    const code = await main(
+      ["create", "--title", "Child", "--parent-task-id", "parent-1"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+
+    assert.equal(code, 0);
+    assert.match(stdout.collect(), /Created app task/);
+    assert.match(stderr.collect(), /grouping could not be saved/);
+    assert.match(stderr.collect(), /task itself was created successfully/i);
+  });
+
+  it("dry-runs the frontend task endpoint without creating a task", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({ projects: [seedProject] });
+    const code = await main(
+      ["create", "--title", "Plan release", "--dry-run", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+
+    assert.equal(code, 0);
+    const data = JSON.parse(stdout.collect().trim());
+    assert.equal(data.request.method, "POST");
+    assert.equal(data.request.url, "https://backend.example/api/tasks");
+    assert.equal(data.request.body.taskType, "ai_task");
+    assert.equal(data.request.body.title, "Plan release");
+    assert.equal(backend.calls.find((call) => call.method === "createTask"), undefined);
+  });
+});
+
 describe("conductor task send", () => {
   it("sends a positional message via the real SDK signature", async () => {
     // Review B1: previously the CLI was passing `body` as the second arg to

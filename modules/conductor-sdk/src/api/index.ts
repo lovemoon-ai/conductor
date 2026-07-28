@@ -16,8 +16,10 @@ export {
 export {
   TasksApi,
   type Task,
+  type TaskGroupingResult,
   type Message,
   type ListTasksInput,
+  type CreateTaskInput,
   type SendTaskMessageOptions,
   type ListTaskMessagesOptions,
   type ScheduledMessage,

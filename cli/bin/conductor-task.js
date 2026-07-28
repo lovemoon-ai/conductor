@@ -5,6 +5,8 @@
  *
  * Subcommands:
  *   list [--project ...] [--issue <id>] [--status ...]
+ *   create --title <title> [--prompt <prompt>] [--backend <backend>]
+ *          [--parent-task-id <id>] [--project ...]
  *   show <id>
  *   send <id> [<message>] [--stdin] [--from-file FILE] [--metadata-json '{...}']
  *   insert <id> [<message>] [--stdin] [--from-file FILE] [--target-reply-to <msg-id>]
@@ -63,6 +65,7 @@ function taskAsObject(task) {
     sessionId: task.sessionId,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
+    grouping: task.grouping ?? undefined,
   };
 }
 
@@ -238,6 +241,54 @@ async function handleList(argv, deps) {
     printPretty(
       deps.stdout,
       `${pad(task.id, 24)} ${pad(task.status, 12)} ${task.title ?? ""}`,
+    );
+  }
+  return EXIT.OK;
+}
+
+async function handleCreate(argv, deps) {
+  const apis = await buildApis(deps);
+  const project = await resolveProject(apis, {
+    env: deps.env,
+    cwd: deps.cwd,
+    project: argv.project,
+  });
+  const title = String(argv.title ?? "").trim();
+  if (!title) {
+    const err = new Error("--title must not be empty");
+    err.code = "ARGS";
+    throw err;
+  }
+
+  const body = {
+    projectId: project.id,
+    title,
+    taskType: "ai_task",
+    ...(argv.prompt !== undefined ? { initialContent: String(argv.prompt) } : {}),
+    ...(argv.backend ? { backendType: String(argv.backend) } : {}),
+    ...(argv.parentTaskId ? { parentTaskId: String(argv.parentTaskId) } : {}),
+    metadata: buildAuditMetadata(deps.env),
+  };
+  if (argv.dryRun) {
+    emitDryRun(
+      deps.stdout,
+      argv.json,
+      makeDryRunPayload("POST", `${buildBaseUrl(apis.config)}/api/tasks`, body),
+    );
+    return EXIT.OK;
+  }
+
+  const created = await apis.tasks.createTask(body);
+  const obj = taskAsObject(created);
+  if (argv.json) {
+    printJson(deps.stdout, obj);
+    return EXIT.OK;
+  }
+  printPretty(deps.stdout, `Created app task ${obj.id}: ${obj.title}`);
+  if (obj.grouping?.grouped === false) {
+    printPretty(
+      deps.stderr,
+      `Warning: ${obj.grouping.warning || `task was not grouped with ${obj.grouping.parentTaskId}`}. The task itself was created successfully.`,
     );
   }
   return EXIT.OK;
@@ -483,6 +534,31 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
           .option("status", { type: "string", describe: "Comma-separated status filter" }),
         async (argv) => {
           exitCode = await handleList(argv, { ...handlerDeps, configFile: argv.configFile });
+        },
+      )
+      .command(
+        "create",
+        "Create a new app task through the frontend task pipeline",
+        (cmd) => cmd
+          .option("title", {
+            type: "string",
+            demandOption: true,
+            describe: "Task title",
+          })
+          .option("prompt", {
+            type: "string",
+            describe: "Initial user prompt",
+          })
+          .option("backend", {
+            type: "string",
+            describe: "AI backend type, for example codex or claude",
+          })
+          .option("parent-task-id", {
+            type: "string",
+            describe: "Display the new task in the same task-card group as this task",
+          }),
+        async (argv) => {
+          exitCode = await handleCreate(argv, { ...handlerDeps, configFile: argv.configFile });
         },
       )
       .command(
