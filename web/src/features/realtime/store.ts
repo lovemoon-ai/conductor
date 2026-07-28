@@ -11,6 +11,7 @@ import { useUserPreferencesStore } from '@/features/user-preferences/store';
 import { normalizeCatchphrases, useCatchphrasesStore } from '@/features/catchphrases/store';
 import { useDailyReportsStore } from '@/features/daily-reports/store';
 import { useTaskCardGroupsSyncStore } from '@/features/tasks/task-card-groups-sync-store';
+import { useProjectCardGroupsSyncStore } from '@/features/projects/project-card-groups-sync-store';
 
 interface WebSocketState {
   status: WSConnectionStatus;
@@ -376,6 +377,11 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
 
     case 'task_card_groups_update': {
       useTaskCardGroupsSyncStore.getState().applySnapshot(payload.snapshot, payload.user_id);
+      break;
+    }
+
+    case 'project_card_groups_update': {
+      useProjectCardGroupsSyncStore.getState().applySnapshot(payload.snapshot, payload.user_id);
       break;
     }
 

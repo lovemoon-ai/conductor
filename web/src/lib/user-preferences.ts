@@ -11,10 +11,19 @@ import {
   type SyncedTaskCardGroup,
   type TaskCardGroupsSyncSnapshot,
 } from "@/features/tasks/utils/task-card-groups";
+import {
+  MAX_SYNCED_PROJECT_CARD_SCOPES,
+  readProjectCardGroupsSyncSnapshot,
+  readSyncedProjectCardGroups,
+  type ProjectCardGroupsSyncSnapshot,
+  type SyncedProjectCardGroup,
+} from "@/features/projects/utils/project-card-groups";
 
 const TASK_LIST_PREFERENCES_KEY = "task-list";
 const TASK_CARD_GROUPS_PREFERENCES_KEY = "task-card-groups:v1";
 const TASK_CARD_GROUPS_WRITE_RETRIES = 4;
+const PROJECT_CARD_GROUPS_PREFERENCES_KEY = "project-card-groups:v1";
+const PROJECT_CARD_GROUPS_WRITE_RETRIES = 4;
 
 export type TaskListPreferences = {
   tasksRunningOnly: boolean;
@@ -56,6 +65,27 @@ export class TaskCardGroupsPreferencesLimitError extends Error {
   constructor() {
     super(`Task card groups support at most ${MAX_SYNCED_TASK_CARD_SCOPES} project scopes.`);
     this.name = "TaskCardGroupsPreferencesLimitError";
+  }
+}
+
+export class ProjectCardGroupsPreferencesConflictError extends Error {
+  constructor() {
+    super("Project card groups changed on another device. Please try again.");
+    this.name = "ProjectCardGroupsPreferencesConflictError";
+  }
+}
+
+export class ProjectCardGroupsPreferencesUnavailableError extends Error {
+  constructor() {
+    super("Project card group sync is unavailable until the user preferences schema is updated.");
+    this.name = "ProjectCardGroupsPreferencesUnavailableError";
+  }
+}
+
+export class ProjectCardGroupsPreferencesLimitError extends Error {
+  constructor() {
+    super(`Project card groups support at most ${MAX_SYNCED_PROJECT_CARD_SCOPES} scopes.`);
+    this.name = "ProjectCardGroupsPreferencesLimitError";
   }
 }
 
@@ -472,4 +502,108 @@ export async function mergeSuccessorTaskCardGroup(
   }
 
   throw new TaskCardGroupsPreferencesConflictError();
+}
+
+const parseStoredProjectCardGroupsSnapshot = (
+  value: string | null | undefined,
+): ProjectCardGroupsSyncSnapshot => {
+  if (!value) return readProjectCardGroupsSyncSnapshot(null);
+  try {
+    return readProjectCardGroupsSyncSnapshot(JSON.parse(value));
+  } catch {
+    return readProjectCardGroupsSyncSnapshot(null);
+  }
+};
+
+export async function getProjectCardGroupsPreferences(
+  userId: string,
+): Promise<ProjectCardGroupsSyncSnapshot> {
+  let rows: RawPreferenceRow[];
+  try {
+    rows = await db.$queryRaw<RawPreferenceRow[]>`
+      SELECT "value"
+      FROM "user_preferences"
+      WHERE "user_id" = ${userId} AND "key" = ${PROJECT_CARD_GROUPS_PREFERENCES_KEY}
+      LIMIT 1
+    `;
+  } catch (error) {
+    if (!isMissingUserPreferencesTableError(error)) throw error;
+    warnMissingUserPreferencesSchema("project-card-groups.get", error);
+    return readProjectCardGroupsSyncSnapshot(null);
+  }
+
+  return parseStoredProjectCardGroupsSnapshot(rows[0]?.value);
+}
+
+/**
+ * Atomically replace one aggregation scope. Comparing the previous serialized
+ * value makes concurrent writers retry against the newest snapshot. Concurrent
+ * edits to the same scope use intentional last-writer-wins semantics.
+ */
+export async function setProjectCardGroupsScope(
+  userId: string,
+  scope: string,
+  groups: SyncedProjectCardGroup[],
+): Promise<ProjectCardGroupsSyncSnapshot> {
+  const normalizedGroups = readSyncedProjectCardGroups(groups);
+
+  for (let attempt = 0; attempt < PROJECT_CARD_GROUPS_WRITE_RETRIES; attempt += 1) {
+    let rows: RawPreferenceRow[];
+    try {
+      rows = await db.$queryRaw<RawPreferenceRow[]>`
+        SELECT "value"
+        FROM "user_preferences"
+        WHERE "user_id" = ${userId} AND "key" = ${PROJECT_CARD_GROUPS_PREFERENCES_KEY}
+        LIMIT 1
+      `;
+    } catch (error) {
+      if (!isMissingUserPreferencesTableError(error)) throw error;
+      warnMissingUserPreferencesSchema("project-card-groups.set", error);
+      throw new ProjectCardGroupsPreferencesUnavailableError();
+    }
+
+    const previousRaw = rows[0]?.value;
+    const current = parseStoredProjectCardGroupsSnapshot(previousRaw);
+    if (
+      !Object.prototype.hasOwnProperty.call(current.scopes, scope)
+      && Object.keys(current.scopes).length >= MAX_SYNCED_PROJECT_CARD_SCOPES
+    ) {
+      throw new ProjectCardGroupsPreferencesLimitError();
+    }
+
+    const next = readProjectCardGroupsSyncSnapshot({
+      version: 1,
+      revision: current.revision + 1,
+      scopes: {
+        ...current.scopes,
+        // Keep [] as an authoritative tombstone so another device cannot
+        // resurrect a locally cached aggregation after the user dissolves it.
+        [scope]: normalizedGroups,
+      },
+    });
+    const nextRaw = JSON.stringify(next);
+
+    try {
+      const changed = previousRaw === undefined
+        ? await db.$executeRaw`
+            INSERT INTO "user_preferences" ("id", "user_id", "key", "value", "updated_at")
+            VALUES (${randomUUID()}, ${userId}, ${PROJECT_CARD_GROUPS_PREFERENCES_KEY}, ${nextRaw}, CURRENT_TIMESTAMP)
+            ON CONFLICT ("user_id", "key") DO NOTHING
+          `
+        : await db.$executeRaw`
+            UPDATE "user_preferences"
+            SET "value" = ${nextRaw}, "updated_at" = CURRENT_TIMESTAMP
+            WHERE "user_id" = ${userId}
+              AND "key" = ${PROJECT_CARD_GROUPS_PREFERENCES_KEY}
+              AND "value" = ${previousRaw}
+          `;
+      if (Number(changed) > 0) return next;
+    } catch (error) {
+      if (!isMissingUserPreferencesTableError(error)) throw error;
+      warnMissingUserPreferencesSchema("project-card-groups.set", error);
+      throw new ProjectCardGroupsPreferencesUnavailableError();
+    }
+  }
+
+  throw new ProjectCardGroupsPreferencesConflictError();
 }
