@@ -1,15 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   applyLegacyTaskShape,
+  isMissingGroupIdColumnError,
   isMissingPtySchemaError,
   taskSelectWithoutIssueId,
 } from "./pty-compat";
 
 describe("task schema compatibility shape", () => {
-  it("keeps killed-state columns in the issue-id-only fallback select", () => {
+  it("keeps killed-state and group columns in the issue-id-only fallback select", () => {
     expect(taskSelectWithoutIssueId).toMatchObject({
       killedReason: true,
       killedAt: true,
+      groupId: true,
     });
   });
 
@@ -51,5 +53,23 @@ describe("task schema compatibility shape", () => {
         message: "The column `tasks.killed_at` does not exist in the current database.",
       }),
     ).toBe(true);
+    expect(
+      isMissingPtySchemaError({
+        code: "P2022",
+        message: "The column `tasks.group_id` does not exist in the current database.",
+      }),
+    ).toBe(true);
+    expect(
+      isMissingGroupIdColumnError({
+        code: "P2022",
+        message: "The column `tasks.group_id` does not exist in the current database.",
+      }),
+    ).toBe(true);
+    expect(
+      isMissingGroupIdColumnError({
+        code: "P2022",
+        message: "The column `tasks.task_type` does not exist in the current database.",
+      }),
+    ).toBe(false);
   });
 });

@@ -4,6 +4,7 @@ import { createMockRequest, createTestToken, extractJson } from "@/__tests__/hel
 import * as authService from "@/lib/auth/service";
 
 const countActiveScheduledMessagesForTasksMock = vi.hoisted(() => vi.fn());
+const resolveProjectAgentsRegistryMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/realtime/hub", () => ({
   realtimeHub: {
@@ -28,6 +29,10 @@ vi.mock("@/lib/realtime/agent-outbox", () => ({
 
 vi.mock("@/lib/tasks/scheduled-messages", () => ({
   countActiveScheduledMessagesForTasks: countActiveScheduledMessagesForTasksMock,
+}));
+
+vi.mock("@/lib/projects/daemon-binding", () => ({
+  resolveProjectAgentsRegistry: resolveProjectAgentsRegistryMock,
 }));
 
 vi.mock("@/lib/subscription/service", async (importOriginal) => {
@@ -101,6 +106,7 @@ describe("/api/tasks", () => {
     );
     vi.mocked(db.task.findMany).mockResolvedValue([]);
     countActiveScheduledMessagesForTasksMock.mockResolvedValue(new Map());
+    resolveProjectAgentsRegistryMock.mockResolvedValue([]);
     vi.mocked(db.attachedTerminal.findMany).mockResolvedValue([]);
     vi.mocked(db.attachedTerminal.findUnique).mockResolvedValue(null);
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([]);
@@ -906,6 +912,286 @@ describe("/api/tasks", () => {
       expect(response.status).toBe(409);
       expect(data.error).toContain("offline");
       expect(db.task.create).not.toHaveBeenCalled();
+    });
+
+    it("rejects an agent that is not registered in project settings", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-agents",
+        name: "Agents Project",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/agents",
+        repoRoot: "/repo/agents",
+        worktreeBranch: "main",
+      } as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        {
+          id: "daemon-1",
+          host: "daemon-a",
+          supportedBackends: ["claude", "codex"],
+          capabilities: [],
+        },
+      ] as any);
+      resolveProjectAgentsRegistryMock.mockResolvedValue([
+        {
+          name: "feature-dev",
+          doc: "personas/feature.md",
+          description: null,
+          backend: "claude",
+        },
+      ]);
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {
+            project_id: "proj-agents",
+            title: "Unknown reviewer",
+            agents: ["feature-dev", "not-registered"],
+          },
+        }),
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(400);
+      expect(data.error).toContain('unknown agent "not-registered"');
+      expect(resolveProjectAgentsRegistryMock).toHaveBeenCalledWith({
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/agents",
+      });
+      expect(db.task.create).not.toHaveBeenCalled();
+    });
+
+    it("uses registry doc paths and backend defaults for worker/reviewer tasks", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const makeTask = (params: {
+        id: string;
+        title: string;
+        backendType: string;
+      }) => ({
+        id: params.id,
+        projectId: "proj-agents",
+        secondProjectId: null,
+        issueId: null,
+        title: params.title,
+        taskType: "ai_task",
+        status: "init",
+        agentHost: "daemon-a",
+        executionHost: "daemon-a",
+        backendType: params.backendType,
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: null,
+        createdAt: new Date("2026-07-28T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-28T00:00:00.000Z"),
+      });
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-agents",
+        name: "Agents Project",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/agents",
+        repoRoot: "/repo/agents",
+        worktreeBranch: "main",
+      } as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        {
+          id: "daemon-1",
+          host: "daemon-a",
+          supportedBackends: ["claude", "codex"],
+          capabilities: [],
+        },
+      ] as any);
+      resolveProjectAgentsRegistryMock.mockResolvedValue([
+        {
+          name: "feature-dev",
+          doc: "personas/feature.md",
+          description: "Builds features",
+          backend: "claude",
+        },
+        {
+          name: "code-reviewer",
+          doc: "review-guides/code.md",
+          description: "Reviews code",
+          backend: "codex",
+        },
+      ]);
+      vi.mocked(db.task.create)
+        .mockResolvedValueOnce(
+          makeTask({
+            id: "task-worker",
+            title: "Build with review",
+            backendType: "claude",
+          }) as any,
+        )
+        .mockResolvedValueOnce(
+          makeTask({
+            id: "task-reviewer",
+            title: "Reviewer: code-reviewer",
+            backendType: "codex",
+          }) as any,
+        );
+      vi.mocked(db.message.create)
+        .mockResolvedValueOnce({
+          id: "message-worker",
+          createdAt: new Date("2026-07-28T00:00:01.000Z"),
+        } as any)
+        .mockResolvedValueOnce({
+          id: "message-reviewer",
+          createdAt: new Date("2026-07-28T00:00:02.000Z"),
+        } as any);
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {
+            project_id: "proj-agents",
+            title: "Build with review",
+            initial_content: "Implement the requested feature",
+            agents: ["feature-dev", "code-reviewer"],
+          },
+        }),
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.id).toBe("task-worker");
+      expect(data.reviewer_task_ids).toEqual(["task-reviewer"]);
+      expect(db.task.create).toHaveBeenCalledTimes(2);
+
+      const workerData = vi.mocked(db.task.create).mock.calls[0][0].data as any;
+      const reviewerData = vi.mocked(db.task.create).mock.calls[1][0].data as any;
+      expect(workerData.backendType).toBe("claude");
+      expect(reviewerData.backendType).toBe("codex");
+      expect(workerData.groupId).toEqual(expect.any(String));
+      expect(reviewerData.groupId).toBe(workerData.groupId);
+      expect(JSON.parse(workerData.metadata).initialContent).toContain(
+        "Read and follow your agent doc: personas/feature.md",
+      );
+      expect(JSON.parse(workerData.metadata).initialContent).toContain(
+        "Implement the requested feature",
+      );
+      expect(JSON.parse(reviewerData.metadata).initialContent).toContain(
+        "Read and follow your agent doc: review-guides/code.md",
+      );
+    });
+
+    it("returns 409 instead of creating an ungrouped task when group_id is missing", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-agents",
+        name: "Agents Project",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/agents",
+        repoRoot: "/repo/agents",
+        worktreeBranch: "main",
+      } as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        {
+          id: "daemon-1",
+          host: "daemon-a",
+          supportedBackends: ["codex"],
+          capabilities: ["project_agents_registry"],
+        },
+      ] as any);
+      resolveProjectAgentsRegistryMock.mockResolvedValue([
+        {
+          name: "feature-dev",
+          doc: "personas/feature.md",
+          description: null,
+          backend: "codex",
+        },
+      ]);
+      vi.mocked(db.task.create).mockRejectedValue(
+        prismaError(
+          "P2022",
+          "The column `tasks.group_id` does not exist in the current database.",
+        ),
+      );
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {
+            project_id: "proj-agents",
+            title: "Grouped task",
+            agents: ["feature-dev"],
+          },
+        }),
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toContain("latest database migration");
+      expect(db.task.create).toHaveBeenCalledTimes(1);
+      expect(db.message.create).not.toHaveBeenCalled();
+      expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+    });
+
+    it("rejects an agent backend that the selected daemon does not advertise", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-agents",
+        name: "Agents Project",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/agents",
+        repoRoot: "/repo/agents",
+        worktreeBranch: "main",
+      } as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        {
+          id: "daemon-1",
+          host: "daemon-a",
+          supportedBackends: ["codex"],
+          capabilities: ["project_agents_registry"],
+        },
+      ] as any);
+      resolveProjectAgentsRegistryMock.mockResolvedValue([
+        {
+          name: "feature-dev",
+          doc: "personas/feature.md",
+          description: null,
+          backend: "codex",
+        },
+        {
+          name: "code-reviewer",
+          doc: "personas/review.md",
+          description: null,
+          backend: "claude",
+        },
+      ]);
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {
+            project_id: "proj-agents",
+            title: "Grouped task",
+            agents: ["feature-dev", "code-reviewer"],
+          },
+        }),
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(400);
+      expect(data.error).toContain('agent "code-reviewer" requires backend "claude"');
+      expect(data.error).toContain('daemon "daemon-a"');
+      expect(db.task.create).not.toHaveBeenCalled();
+      expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
     });
 
     it("should allow free user to create app task when only manual fire task is active", async () => {

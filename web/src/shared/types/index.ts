@@ -377,6 +377,12 @@ export interface CreateTaskInput {
   sessionId?: string;
   sessionFilePath?: string;
   launchConfig?: Record<string, unknown> | null;
+  /**
+   * RFC 0033: multi-agent group. The first entry executes the task (worker);
+   * additional entries are spawned as sibling reviewer tasks. Each may carry an
+   * optional per-agent backend override (reviewers fall back to the worker's).
+   */
+  agents?: Array<{ name: string; backend?: string | null }>;
 }
 
 export interface UpdateTaskInput {

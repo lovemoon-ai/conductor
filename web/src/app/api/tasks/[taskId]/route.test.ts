@@ -175,4 +175,73 @@ describe("/api/tasks/[taskId]", () => {
       },
     });
   });
+
+  it("preserves server-owned group identity when metadata is cleared", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      ...existingAiTask,
+      groupId: "group-1",
+      metadata: JSON.stringify({
+        groupId: "group-1",
+        agentRole: "worker",
+        agentName: "feature-dev",
+        removable: true,
+      }),
+    } as any);
+
+    const response = await PATCH(
+      createMockRequest({
+        method: "PATCH",
+        url: "http://localhost:6152/api/tasks/ai-1",
+        token: createTestToken(ACTIVE_USER.id),
+        body: { metadata: null },
+      }),
+      { params: Promise.resolve({ taskId: "ai-1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    const update = vi.mocked(db.task.update).mock.calls.at(-1)?.[0] as any;
+    expect(JSON.parse(update.data.metadata)).toEqual({
+      groupId: "group-1",
+      agentRole: "worker",
+      agentName: "feature-dev",
+    });
+  });
+
+  it("does not let PATCH forge group role or agent metadata", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      ...existingAiTask,
+      groupId: "group-1",
+      metadata: JSON.stringify({
+        groupId: "group-1",
+        agentRole: "reviewer",
+        agentName: "code-reviewer",
+      }),
+    } as any);
+
+    const response = await PATCH(
+      createMockRequest({
+        method: "PATCH",
+        url: "http://localhost:6152/api/tasks/ai-1",
+        token: createTestToken(ACTIVE_USER.id),
+        body: {
+          metadata: {
+            groupId: "other-group",
+            agentRole: "worker",
+            agentName: "forged-agent",
+            note: "safe user field",
+          },
+        },
+      }),
+      { params: Promise.resolve({ taskId: "ai-1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    const update = vi.mocked(db.task.update).mock.calls.at(-1)?.[0] as any;
+    expect(JSON.parse(update.data.metadata)).toEqual({
+      groupId: "group-1",
+      agentRole: "reviewer",
+      agentName: "code-reviewer",
+      note: "safe user field",
+    });
+  });
 });

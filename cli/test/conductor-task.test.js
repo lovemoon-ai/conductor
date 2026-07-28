@@ -475,3 +475,99 @@ describe("conductor task list", () => {
     assert.equal(data[0].id, "t1");
   });
 });
+
+describe("conductor task group", () => {
+  it("prints normalized group membership as JSON", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      tasks: [
+        {
+          id: "worker-1",
+          projectId: "proj-1",
+          groupId: "group-1",
+          role: "worker",
+          agent: "feature-dev",
+          title: "Build it",
+          status: "running",
+          backendType: "codex",
+        },
+        {
+          id: "reviewer-1",
+          projectId: "proj-1",
+          groupId: "group-1",
+          role: "reviewer",
+          agent: "code-reviewer",
+          title: "Review it",
+          status: "running",
+          backendType: "claude",
+        },
+      ],
+    });
+
+    const code = await main(
+      ["group", "worker-1", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+
+    assert.equal(code, 0);
+    assert.deepStrictEqual(JSON.parse(stdout.collect().trim()), {
+      groupId: "group-1",
+      members: [
+        {
+          taskId: "worker-1",
+          role: "worker",
+          agent: "feature-dev",
+          title: "Build it",
+          status: "running",
+          backendType: "codex",
+          isSelf: true,
+        },
+        {
+          taskId: "reviewer-1",
+          role: "reviewer",
+          agent: "code-reviewer",
+          title: "Review it",
+          status: "running",
+          backendType: "claude",
+          isSelf: false,
+        },
+      ],
+    });
+    assert.deepStrictEqual(
+      backend.calls.find((call) => call.method === "getTaskGroup"),
+      { method: "getTaskGroup", taskId: "worker-1" },
+    );
+  });
+
+  it("defaults to the injected CONDUCTOR_TASK_ID", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      tasks: [
+        {
+          id: "standalone-1",
+          projectId: "proj-1",
+          title: "Standalone",
+          status: "running",
+        },
+      ],
+    });
+
+    const code = await main(
+      ["group"],
+      {
+        stdout,
+        stderr,
+        ...makeCliDeps(backend, {
+          env: { CONDUCTOR_TASK_ID: "standalone-1" },
+        }),
+      },
+    );
+
+    assert.equal(code, 0);
+    assert.equal(stdout.collect(), "(task is not in a group)\n");
+  });
+});

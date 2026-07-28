@@ -1843,6 +1843,14 @@ export function startDaemon(config = {}, deps = {}) {
     "# (svg/png/jpg/gif/webp/ico/avif) relative to this .conductor/ directory.",
     "# Remove this line to use the default folder icon.",
     "",
+    "# Optional agent registry used by the task-composer worker/reviewer picker.",
+    "# Agent docs are workspace-relative paths; backend is optional.",
+    "# agents:",
+    "#   feature-dev:",
+    "#     doc: claw/agents/feature-dev.md",
+    "#     description: Implements features end to end.",
+    "#     backend: codex",
+    "",
     "worktree:",
     "  sync_branch: false",
     "  sync_submodules: true",
@@ -1856,6 +1864,13 @@ export function startDaemon(config = {}, deps = {}) {
   ].join("\n");
 
   const MAX_PROJECT_ICON_IMAGE_BYTES = 128 * 1024;
+  const MAX_PROJECT_AGENT_ENTRIES = 64;
+  const MAX_PROJECT_AGENT_NAME_LENGTH = 64;
+  const MAX_PROJECT_AGENT_DOC_LENGTH = 512;
+  const MAX_PROJECT_AGENT_DESCRIPTION_LENGTH = 512;
+  const MAX_PROJECT_AGENT_BACKEND_LENGTH = 64;
+  const PROJECT_AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+  const PROJECT_AGENT_BACKEND_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
   const PROJECT_ICON_MIME_BY_EXTENSION = {
     ".svg": "image/svg+xml",
     ".png": "image/png",
@@ -1952,6 +1967,118 @@ export function startDaemon(config = {}, deps = {}) {
       return readProjectIconAsDataUri(path.dirname(settingsPath), rawIcon);
     }
     return null;
+  }
+
+  function normalizeProjectAgentSetting(name, value) {
+    const normalizedName = normalizeOptionalString(name);
+    if (
+      !normalizedName ||
+      normalizedName.length > MAX_PROJECT_AGENT_NAME_LENGTH ||
+      !PROJECT_AGENT_NAME_RE.test(normalizedName)
+    ) {
+      return null;
+    }
+
+    let docValue = null;
+    let descriptionValue = null;
+    let backendValue = null;
+    if (typeof value === "string") {
+      docValue = value;
+    } else if (value && typeof value === "object" && !Array.isArray(value)) {
+      docValue = value.doc ?? value.path;
+      descriptionValue = value.description;
+      backendValue = value.backend;
+    } else {
+      return null;
+    }
+
+    const doc = normalizeOptionalString(docValue);
+    if (
+      !doc ||
+      doc.length > MAX_PROJECT_AGENT_DOC_LENGTH ||
+      path.isAbsolute(doc) ||
+      /^[A-Za-z]:[\\/]/.test(doc) ||
+      /^[/\\]{2}/.test(doc)
+    ) {
+      return null;
+    }
+    const normalizedDoc = path.posix.normalize(doc.split("\\").join("/"));
+    if (normalizedDoc === ".." || normalizedDoc.startsWith("../")) {
+      return null;
+    }
+
+    const description = normalizeOptionalString(descriptionValue);
+    const backend = normalizeOptionalString(backendValue)?.toLowerCase() || null;
+    return {
+      name: normalizedName,
+      doc,
+      description:
+        description && description.length <= MAX_PROJECT_AGENT_DESCRIPTION_LENGTH
+          ? description
+          : null,
+      backend:
+        backend &&
+        backend.length <= MAX_PROJECT_AGENT_BACKEND_LENGTH &&
+        PROJECT_AGENT_BACKEND_RE.test(backend)
+          ? backend
+          : null,
+    };
+  }
+
+  function normalizeProjectAgentsSetting(agentsNode) {
+    if (!agentsNode || typeof agentsNode !== "object") {
+      return [];
+    }
+    const result = [];
+    const seen = new Set();
+    const push = (entry) => {
+      if (
+        entry &&
+        result.length < MAX_PROJECT_AGENT_ENTRIES &&
+        !seen.has(entry.name)
+      ) {
+        seen.add(entry.name);
+        result.push(entry);
+      }
+    };
+
+    if (Array.isArray(agentsNode)) {
+      for (const item of agentsNode) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+          continue;
+        }
+        const keys = Object.keys(item);
+        if (keys.length === 1) {
+          push(normalizeProjectAgentSetting(keys[0], item[keys[0]]));
+        } else if (Object.prototype.hasOwnProperty.call(item, "name")) {
+          push(normalizeProjectAgentSetting(item.name, item));
+        }
+      }
+      return result;
+    }
+
+    for (const [name, value] of Object.entries(agentsNode)) {
+      push(normalizeProjectAgentSetting(name, value));
+    }
+    return result;
+  }
+
+  function readProjectAgentsSetting(projectWorkspacePath) {
+    for (const settingsPath of getProjectSettingsCandidates(projectWorkspacePath)) {
+      if (!existsSyncFn(settingsPath)) {
+        continue;
+      }
+      try {
+        const parsed = yaml.load(readFileSyncFn(settingsPath, "utf8"));
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return [];
+        }
+        return normalizeProjectAgentsSetting(parsed.agents);
+      } catch {
+        return [];
+      }
+    }
+    return [];
   }
 
   function readProjectWorktreeSettings(projectWorkspacePath) {
@@ -2804,6 +2931,7 @@ export function startDaemon(config = {}, deps = {}) {
   };
   const advertisedCapabilities = [
     "project_path_validation",
+    "project_agents_registry",
     "restart_daemon",
     "refresh_session_inplace",
     CUSTOM_COMMANDS_CAPABILITY,
@@ -5027,6 +5155,11 @@ export function startDaemon(config = {}, deps = {}) {
     }
     if (event.type === "validate_project_path") {
       void handleValidateProjectPath(event.payload);
+      return;
+    }
+    if (event.type === "get_project_agents") {
+      void handleGetProjectAgents(event.payload);
+      return;
     }
     if (event.type === "ai_manager_request") {
       handleAiManagerRequest(client, aiManagerHandlers, event.payload).catch((error) => {
@@ -5132,6 +5265,7 @@ export function startDaemon(config = {}, deps = {}) {
       lastCommitAt: null,
       fileCount: null,
       icon: null,
+      agents: [],
       error: null,
       errorCode: null,
       validatedAt,
@@ -5186,6 +5320,7 @@ export function startDaemon(config = {}, deps = {}) {
               ? snapshot.fileCount
               : null,
           icon: readProjectIconSetting(effectiveWorkspace),
+          agents: readProjectAgentsSetting(effectiveWorkspace),
         };
       }
     } catch (error) {
@@ -5210,6 +5345,7 @@ export function startDaemon(config = {}, deps = {}) {
           git_remote_url: result.gitRemoteUrl,
           file_count: result.fileCount,
           icon: result.icon,
+          agents: result.agents,
           error: result.error,
           error_code: result.errorCode,
           validated_at: result.validatedAt,
@@ -5217,6 +5353,69 @@ export function startDaemon(config = {}, deps = {}) {
       });
     } catch (error) {
       logError(`Failed to report project_path_validated for ${rawWorkspacePath}: ${error?.message || error}`);
+    }
+  }
+
+  async function handleGetProjectAgents(payload) {
+    const requestId = payload?.request_id ? String(payload.request_id).trim() : "";
+    const rawWorkspacePath = payload?.workspace_path ? String(payload.workspace_path).trim() : "";
+    const resolvedAt = new Date().toISOString();
+
+    if (!requestId || !rawWorkspacePath) {
+      logError(`Invalid get_project_agents payload: ${JSON.stringify(payload)}`);
+      return;
+    }
+
+    let result = {
+      workspacePath: null,
+      agents: [],
+      error: null,
+      errorCode: null,
+    };
+    try {
+      const resolvedPath = path.resolve(rawWorkspacePath);
+      if (!existsSyncFn(resolvedPath)) {
+        result = {
+          ...result,
+          error: `Workspace path does not exist on daemon ${AGENT_NAME}: ${rawWorkspacePath}`,
+          errorCode: "workspace_not_found",
+        };
+      } else if (!statSyncFn(resolvedPath).isDirectory()) {
+        result = {
+          ...result,
+          error: `Workspace path is not a directory on daemon ${AGENT_NAME}: ${rawWorkspacePath}`,
+          errorCode: "workspace_not_directory",
+        };
+      } else {
+        result = {
+          ...result,
+          workspacePath: resolvedPath,
+          agents: readProjectAgentsSetting(resolvedPath),
+        };
+      }
+    } catch (error) {
+      result = {
+        ...result,
+        error: `Failed to read project agents on daemon ${AGENT_NAME}: ${error?.message || error}`,
+        errorCode: "project_agents_read_failed",
+      };
+    }
+
+    try {
+      await client.sendJson({
+        type: "project_agents_resolved",
+        payload: {
+          request_id: requestId,
+          daemon_host: AGENT_NAME,
+          workspace_path: result.workspacePath,
+          agents: result.agents,
+          error: result.error,
+          error_code: result.errorCode,
+          resolved_at: resolvedAt,
+        },
+      });
+    } catch (error) {
+      logError(`Failed to report project_agents_resolved for ${rawWorkspacePath}: ${error?.message || error}`);
     }
   }
 

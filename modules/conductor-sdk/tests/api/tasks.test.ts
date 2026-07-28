@@ -17,6 +17,11 @@ class FakeApiClient {
   listTaskMessagesCalls: Array<{ id: string; params: any }> = [];
   createScheduledMessageCalls: Array<{ id: string; body: any }> = [];
   deleteScheduledMessageCalls: Array<{ taskId: string; scheduleId: string }> = [];
+  getTaskGroupCalls: string[] = [];
+  taskGroupPayload: Record<string, any> = {
+    group_id: null,
+    members: [],
+  };
 
   async listTasks(params: { projectId?: string; status?: string }) {
     let result = this.tasks.slice();
@@ -64,6 +69,11 @@ class FakeApiClient {
         status: found.status,
       }),
     });
+  }
+
+  async getTaskGroup(taskId: string) {
+    this.getTaskGroupCalls.push(taskId);
+    return this.taskGroupPayload;
   }
 
   async listTaskMessages(taskId: string, params: { limit?: number; before?: string } = {}) {
@@ -195,6 +205,46 @@ describe('TasksApi', () => {
   test('getTask maps 404 to BackendApiError', async () => {
     const { api } = makeApi();
     await expect(api.getTask('missing')).rejects.toBeInstanceOf(BackendApiError);
+  });
+
+  test('getTaskGroup normalizes snake_case group members', async () => {
+    const { client, api } = makeApi();
+    client.taskGroupPayload = {
+      group_id: 'group-1',
+      members: [
+        {
+          task_id: 'worker-1',
+          role: 'worker',
+          agent: 'feature-dev',
+          title: 'Build it',
+          status: 'running',
+          backend_type: 'codex',
+          is_self: true,
+        },
+      ],
+    };
+
+    await expect(api.getTaskGroup(' worker-1 ')).resolves.toEqual({
+      groupId: 'group-1',
+      members: [
+        {
+          taskId: 'worker-1',
+          role: 'worker',
+          agent: 'feature-dev',
+          title: 'Build it',
+          status: 'running',
+          backendType: 'codex',
+          isSelf: true,
+        },
+      ],
+    });
+    expect(client.getTaskGroupCalls).toEqual(['worker-1']);
+  });
+
+  test('getTaskGroup rejects an empty task id', async () => {
+    const { client, api } = makeApi();
+    await expect(api.getTaskGroup('   ')).rejects.toThrow(/taskId is required/);
+    expect(client.getTaskGroupCalls).toEqual([]);
   });
 
   test('sendTaskMessage POSTs with audit metadata under audit namespace', async () => {

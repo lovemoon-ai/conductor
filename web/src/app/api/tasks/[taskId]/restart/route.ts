@@ -55,6 +55,7 @@ import {
 } from "@/lib/tasks/killed-reason";
 import { isTaskReclaimEnabled } from "@/lib/tasks/reclaim-config";
 import { mergeSuccessorTaskCardGroup } from "@/lib/user-preferences";
+import { buildGroupMemberMetadata } from "@/lib/tasks/agent-group";
 
 const appendBackendSuffix = (title: string, backend: string): string => `${title} [${backend}]`;
 const REFRESH_SESSION_ACK_TIMEOUT_MS = 60_000;
@@ -806,11 +807,33 @@ export async function POST(
   const successorTaskId = randomUUID();
   const successorTitle = appendBackendSuffix(sourceTask.title, targetBackend);
   const sourceMetadata = parseJsonObject(sourceTask.metadata) ?? {};
+  const sourceGroupId = normalizeOptionalString(
+    (sourceTask as { groupId?: unknown }).groupId,
+  );
+  const sourceAgentRole = normalizeOptionalString(sourceMetadata.agentRole);
+  const sourceAgentName = normalizeOptionalString(sourceMetadata.agentName);
+  const successorGroupMetadata =
+    sourceGroupId &&
+    sourceAgentName &&
+    (sourceAgentRole === "worker" || sourceAgentRole === "reviewer")
+      ? buildGroupMemberMetadata({
+          groupId: sourceGroupId,
+          role: sourceAgentRole,
+          agent: sourceAgentName,
+        })
+      : {};
   const successorMetadata = {
+    ...successorGroupMetadata,
     continuedFromTaskId: sourceTask.id,
     restartSourceBackendType: sourceBackend,
     restartStrategy: "new_task",
   };
+  const sourceMetadataAfterGroupTransfer = { ...sourceMetadata };
+  if (sourceGroupId) {
+    delete sourceMetadataAfterGroupTransfer.groupId;
+    delete sourceMetadataAfterGroupTransfer.agentRole;
+    delete sourceMetadataAfterGroupTransfer.agentName;
+  }
   // Workspace continuity contract for "new task from this":
   //   1. If the source task is on a git worktree, inherit the full worktree
   //      launch_config so the daemon lands the successor in the SAME
@@ -895,6 +918,7 @@ export async function POST(
           Object.keys(successorLaunchConfig).length > 0 ? successorLaunchConfig : null,
         ),
         metadata: JSON.stringify(successorMetadata),
+        ...(sourceGroupId ? { groupId: sourceGroupId } : {}),
       },
     });
 
@@ -922,8 +946,12 @@ export async function POST(
       tx.task.update({
         where: { id: sourceTask.id },
         data: {
+          // A successor replaces the source task's execution-group slot. If we
+          // left both rows in the group, reviewers would see two workers (or
+          // two copies of the same reviewer) and could target the stale one.
+          ...(sourceGroupId ? { groupId: null } : {}),
           metadata: JSON.stringify({
-            ...sourceMetadata,
+            ...sourceMetadataAfterGroupTransfer,
             successorTaskId,
             restartRequestId: requestId,
             ...(isBackendSwitch ? { backendSwitchRequestId: requestId } : {}),

@@ -609,6 +609,20 @@ export async function PATCH(
   //     metadata to null (or omits this key) would otherwise wipe it and
   //     cause the attached PTY to leak into the list as a standalone card.
   const stickyMetadataFields: Record<string, unknown> = {};
+  const existingGroupId = normalizeOptionalString(
+    (existing as { groupId?: unknown }).groupId,
+  );
+  if (existingGroupId) {
+    stickyMetadataFields.groupId = existingGroupId;
+    const existingAgentRole = normalizeOptionalString(existingMetadataObject?.agentRole);
+    const existingAgentName = normalizeOptionalString(existingMetadataObject?.agentName);
+    if (existingAgentRole === "worker" || existingAgentRole === "reviewer") {
+      stickyMetadataFields.agentRole = existingAgentRole;
+    }
+    if (existingAgentName) {
+      stickyMetadataFields.agentName = existingAgentName;
+    }
+  }
   if (
     (existing.taskType ?? "ai_task") === "pty_task" &&
     typeof existingMetadataObject?.attachedToAiTaskId === "string"
@@ -623,6 +637,14 @@ export async function PATCH(
   // The only legitimate writer of this field is `createAttachedTerminalRecord`.
   if (parsedMetadataInput && "attachedToAiTaskId" in parsedMetadataInput) {
     delete (parsedMetadataInput as Record<string, unknown>).attachedToAiTaskId;
+  }
+  // Group identity is server-owned execution state. A client may merge or
+  // clear ordinary metadata, but it must not forge or erase the role/name that
+  // `conductor task group` uses to identify the worker and reviewers.
+  if (parsedMetadataInput) {
+    delete (parsedMetadataInput as Record<string, unknown>).groupId;
+    delete (parsedMetadataInput as Record<string, unknown>).agentRole;
+    delete (parsedMetadataInput as Record<string, unknown>).agentName;
   }
   // Metadata semantics:
   //   - PATCH without a metadata field            → keep existing metadata.

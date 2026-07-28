@@ -17,6 +17,7 @@ export type ApiClient = Pick<
   | 'deleteIssue'
   | 'listTasks'
   | 'getTask'
+  | 'getTaskGroup'
   | 'listTaskMessages'
   | 'postTaskMessage'
   | 'postTaskInsert'

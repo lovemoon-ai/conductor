@@ -1,8 +1,14 @@
 import { randomUUID } from "crypto";
 import { realtimeHub } from "@/lib/realtime/hub";
+import {
+  readProjectAgentsRegistry,
+  type AgentRegistryEntry,
+} from "@/lib/projects/project-settings-yaml";
 
 const PROJECT_PATH_VALIDATION_TIMEOUT_MS = 5_000;
 const PROJECT_PATH_VALIDATION_CAPABILITY = "project_path_validation";
+const PROJECT_AGENTS_TIMEOUT_MS = 2_000;
+const PROJECT_AGENTS_CAPABILITY = "project_agents_registry";
 
 const INVALID_WORKSPACE_ERROR_CODES = new Set([
   "workspace_not_found",
@@ -32,6 +38,7 @@ export type ValidatedProjectBinding = {
   gitRemoteUrl: string | null;
   fileCount: number | null;
   icon?: string | null;
+  agents?: AgentRegistryEntry[];
 };
 
 export async function validateProjectBindingWithDaemon(params: {
@@ -121,5 +128,68 @@ export async function validateProjectBindingWithDaemon(params: {
     gitRemoteUrl: result.git_remote_url ?? null,
     fileCount: result.file_count,
     icon: Object.prototype.hasOwnProperty.call(result, "icon") ? result.icon ?? null : undefined,
+    agents: Object.prototype.hasOwnProperty.call(result, "agents")
+      ? result.agents ?? []
+      : undefined,
   };
+}
+
+/**
+ * Resolve the current agent registry from the daemon that owns the workspace.
+ *
+ * The Web process cannot normally read a remote daemon's filesystem, so a live
+ * daemon registry request is the authoritative source. This uses a dedicated
+ * lightweight protocol that only reads YAML; it deliberately does not reuse
+ * project-path validation, whose Git snapshot work is too expensive for every
+ * task-composer open. Local reads remain a fail-soft fallback for self-hosted
+ * deployments and older daemons.
+ */
+export async function resolveProjectAgentsRegistry(params: {
+  userId: string;
+  daemonHost: string | null | undefined;
+  workspacePath: string | null | undefined;
+}): Promise<AgentRegistryEntry[]> {
+  const readLocalRegistry = () => readProjectAgentsRegistry(params.workspacePath);
+  const daemonHost =
+    typeof params.daemonHost === "string" ? params.daemonHost.trim() : "";
+  const workspacePath =
+    typeof params.workspacePath === "string" ? params.workspacePath.trim() : "";
+
+  if (!daemonHost || !workspacePath || !realtimeHub.hasAgentHost(daemonHost, params.userId)) {
+    return readLocalRegistry();
+  }
+
+  const daemonConnection = realtimeHub
+    .getAgentsForUser(params.userId)
+    .find((agent) => agent.host === daemonHost);
+  const supportsAgentRegistry = daemonConnection?.capabilities.some(
+    (capability) =>
+      capability.trim().toLowerCase() === PROJECT_AGENTS_CAPABILITY,
+  );
+  if (!supportsAgentRegistry) {
+    return readLocalRegistry();
+  }
+
+  const requestId = randomUUID();
+  const waitForAgents = realtimeHub.waitForProjectAgents(
+    requestId,
+    PROJECT_AGENTS_TIMEOUT_MS,
+  );
+  const sent = realtimeHub.sendToAgentHost(params.userId, daemonHost, {
+    type: "get_project_agents",
+    payload: {
+      request_id: requestId,
+      workspace_path: workspacePath,
+    },
+  });
+  if (!sent) {
+    realtimeHub.cancelProjectAgents(requestId);
+    return readLocalRegistry();
+  }
+
+  const result = await waitForAgents;
+  if (result && !result.error) {
+    return result.agents;
+  }
+  return readLocalRegistry();
 }

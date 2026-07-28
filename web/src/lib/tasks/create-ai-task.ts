@@ -6,6 +6,7 @@ import { persistIssueAiSession } from '@/lib/issues/persist-ai-session';
 import {
   applyLegacyTaskShape,
   isMissingIssueIdSchemaError,
+  isMissingGroupIdColumnError,
   isMissingPtySchemaError,
   legacyTaskSelect,
   taskSelectWithoutIssueId,
@@ -37,6 +38,12 @@ type CreateAiTaskArgs = {
   metadata?: JsonObject | null;
   initialMessageContent?: string | null;
   status?: string | null;
+  /**
+   * RFC 0033: shared multi-agent group id. When set, persisted to the task's
+   * `group_id` column so siblings are discoverable via `GET /tasks/:id/group`.
+   * Set on every group member; legacy-schema fallbacks omit it.
+   */
+  groupId?: string | null;
   /**
    * When set to `"goal"`, the task was created from a `/goal` directive (or
    * equivalent) and should be displayed as a goal-mode task in UI surfaces.
@@ -208,33 +215,46 @@ const createAiTaskRecord = async (
         sessionFilePath: args.requestedSessionFilePath ?? null,
         launchConfig: serializeJsonObject(args.launchConfig ?? null),
         metadata: args.metadata ? JSON.stringify(args.metadata) : null,
+        ...(args.groupId ? { groupId: args.groupId } : {}),
       },
     });
   } catch (error) {
+    if (args.groupId && isMissingGroupIdColumnError(error)) {
+      throw error;
+    }
+    let schemaError = error;
     // Tier 1 fallback: only issue_id column is missing — keep PTY fields intact
     if (isMissingIssueIdSchemaError(error)) {
-      const created = await taskStore.create({
-        data: {
-          id: args.requestedId,
-          projectId: args.projectId,
-          title: args.title,
-          taskType: 'ai_task',
-          status: normalizeTaskStatus(args.status),
-          agentHost: args.agentHost,
-          executionHost: args.agentHost ?? null,
-          backendType: args.requestedBackendType ?? null,
-          sessionId: args.requestedSessionId ?? null,
-          sessionFilePath: args.requestedSessionFilePath ?? null,
-          launchConfig: serializeJsonObject(args.launchConfig ?? null),
-          metadata: args.metadata ? JSON.stringify(args.metadata) : null,
-        },
-        select: taskSelectWithoutIssueId,
-      });
-      return { ...created, issueId: null, secondProjectId: null };
+      try {
+        const created = await taskStore.create({
+          data: {
+            id: args.requestedId,
+            projectId: args.projectId,
+            title: args.title,
+            taskType: 'ai_task',
+            status: normalizeTaskStatus(args.status),
+            agentHost: args.agentHost,
+            executionHost: args.agentHost ?? null,
+            backendType: args.requestedBackendType ?? null,
+            sessionId: args.requestedSessionId ?? null,
+            sessionFilePath: args.requestedSessionFilePath ?? null,
+            launchConfig: serializeJsonObject(args.launchConfig ?? null),
+            metadata: args.metadata ? JSON.stringify(args.metadata) : null,
+            ...(args.groupId ? { groupId: args.groupId } : {}),
+          },
+          select: taskSelectWithoutIssueId,
+        });
+        return { ...created, issueId: null, secondProjectId: null };
+      } catch (issueFallbackError) {
+        schemaError = issueFallbackError;
+      }
+    }
+    if (args.groupId && isMissingGroupIdColumnError(schemaError)) {
+      throw schemaError;
     }
     // Tier 2 fallback: genuinely missing PTY schema columns
-    if (!isMissingPtySchemaError(error)) {
-      throw error;
+    if (!isMissingPtySchemaError(schemaError)) {
+      throw schemaError;
     }
     const legacyTask = await taskStore.create({
       data: {

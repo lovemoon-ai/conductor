@@ -242,6 +242,14 @@ model Task {
   /// `crash`, `unknown`. Only `daemon_disconnected` is reclaim-eligible.
   killedReason String? @map("killed_reason")
   killedAt     DateTime? @map("killed_at")
+  /// RFC 0033: shared id linking tasks created together as one multi-agent
+  /// group (a worker + its reviewer siblings). Tasks with the same non-null
+  /// `groupId` can discover each other via `GET /tasks/:id/group`
+  /// (`conductor task group`) and thus read/message one another. Null for
+  /// ordinary standalone tasks. Distinct from the per-user UI "task card
+  /// grouping" (which lives in user_preferences), this is an execution-time
+  /// relationship on the task itself.
+  groupId   String?  @map("group_id")
   /// Task packing (RFC "Achieved"): non-null once the task is "achieved"/packed.
   /// An achieved task keeps its Message transcript for later search/retrieval,
   /// but its live daemon session and runtime rows are torn down (like delete).
@@ -272,6 +280,7 @@ model Task {
   @@index([issueId])
   @@index([executionHost])
   @@index([achievedAt])
+  @@index([groupId])
   @@map("tasks")
 }
 

@@ -3,9 +3,11 @@ import type { IncomingMessage } from "http";
 import {
   realtimeHub,
   type AgentLogCollectionResult,
+  type ProjectAgentsResult,
   type ProjectPathValidationResult,
   type TaskWorktreeCleanupResult,
 } from "./hub";
+import { normalizeProjectAgentsRegistry } from "../projects/project-settings-yaml";
 import { authenticateToken } from "../auth/service";
 import { randomUUID } from "crypto";
 import { db } from "../db";
@@ -104,6 +106,18 @@ type AgentEvent =
         error?: string | null;
         error_code?: string | null;
         validated_at?: string;
+      };
+    }
+  | {
+      type: "project_agents_resolved";
+      payload: {
+        request_id: string;
+        daemon_host?: string;
+        workspace_path?: string | null;
+        agents?: unknown;
+        error?: string | null;
+        error_code?: string | null;
+        resolved_at?: string;
       };
     }
   | {
@@ -731,9 +745,31 @@ const normalizeProjectPathValidationResult = (
     git_remote_url: normalizeOptionalString(payload.git_remote_url),
     file_count: normalizeNonNegativeInt(payload.file_count),
     icon: hasOwn(payload, "icon") ? normalizeOptionalString(payload.icon) : undefined,
+    agents: hasOwn(payload, "agents")
+      ? normalizeProjectAgentsRegistry(payload.agents)
+      : undefined,
     error: normalizeOptionalString(payload.error),
     error_code: normalizeOptionalString(payload.error_code),
     validated_at: normalizeIsoDate(payload.validated_at, new Date().toISOString()),
+  };
+};
+
+const normalizeProjectAgentsResult = (
+  payload: Record<string, unknown>,
+  agentHost: string,
+): ProjectAgentsResult | null => {
+  const requestId = normalizeOptionalString(payload.request_id);
+  if (!requestId) {
+    return null;
+  }
+  return {
+    request_id: requestId,
+    daemon_host: normalizeOptionalString(payload.daemon_host) || agentHost,
+    workspace_path: normalizeOptionalString(payload.workspace_path),
+    agents: normalizeProjectAgentsRegistry(payload.agents),
+    error: normalizeOptionalString(payload.error),
+    error_code: normalizeOptionalString(payload.error_code),
+    resolved_at: normalizeIsoDate(payload.resolved_at, new Date().toISOString()),
   };
 };
 
@@ -1643,6 +1679,18 @@ export const setupAgentGateway = (): WebSocketServer => {
               break;
             }
             realtimeHub.resolveProjectPathValidation(normalized);
+            break;
+          }
+          case "project_agents_resolved": {
+            const normalized = normalizeProjectAgentsResult(
+              event.payload as Record<string, unknown>,
+              agentHost,
+            );
+            if (!normalized) {
+              sendEnvelope(socket, { type: "error", payload: { message: "project_agents_resolved requires request_id" } });
+              break;
+            }
+            realtimeHub.resolveProjectAgents(normalized);
             break;
           }
           case "task_worktree_cleanup_result": {

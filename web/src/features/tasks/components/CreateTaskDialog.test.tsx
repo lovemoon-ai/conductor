@@ -7,6 +7,9 @@ import { ApiRequestError } from '@/shared/api/client';
 const pushMock = vi.fn();
 const createTaskMock = vi.fn();
 const onCreatedTaskMock = vi.fn();
+const { apiGetMock } = vi.hoisted(() => ({
+  apiGetMock: vi.fn(),
+}));
 
 let projectsState: any = {
   projects: [
@@ -28,6 +31,16 @@ vi.mock('next/navigation', () => ({
     push: pushMock,
   }),
 }));
+
+vi.mock('@/shared/api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/shared/api/client')>();
+  return {
+    ...actual,
+    getApiClient: () => ({
+      get: apiGetMock,
+    }),
+  };
+});
 
 vi.mock('@/components/common/Dialog', () => ({
   Dialog: ({ open, children }: { open: boolean; children: ReactNode }) =>
@@ -53,10 +66,25 @@ vi.mock('@/features/agents', () => ({
 
 describe('CreateTaskDialog', () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     createTaskMock.mockReset();
     pushMock.mockReset();
     onCreatedTaskMock.mockReset();
-    vi.restoreAllMocks();
+    apiGetMock.mockReset();
+    apiGetMock.mockResolvedValue({
+      agents: [
+        {
+          name: 'feature-dev',
+          description: 'Executes feature work',
+          backend: null,
+        },
+        {
+          name: 'code-reviewer',
+          description: 'Reviews code changes',
+          backend: 'codex',
+        },
+      ],
+    });
     projectsState = {
       projects: [
         { id: 'project-1', name: 'Project One', isDefault: true },
@@ -68,18 +96,20 @@ describe('CreateTaskDialog', () => {
   it('uses first option as default and reveals guidance only after clicking help', async () => {
     render(<CreateTaskDialog open onClose={() => {}} />);
 
+    await screen.findByLabelText('Worker agent');
     const selects = await screen.findAllByRole('combobox');
-    expect(selects).toHaveLength(3);
+    expect(selects).toHaveLength(4);
     const radios = screen.getAllByRole('radio');
     expect(radios).toHaveLength(2);
 
-    const [projectSelect, daemonSelect, backendSelect] = selects;
+    const [projectSelect, daemonSelect, backendSelect, workerAgentSelect] = selects;
     const [aiTaskRadio, ptyTaskRadio] = radios;
 
     await waitFor(() => {
       expect(projectSelect).toHaveValue('project-1');
       expect(daemonSelect).toHaveValue('daemon-a');
       expect(backendSelect).toHaveValue('claude');
+      expect(workerAgentSelect).toHaveValue('');
       expect(aiTaskRadio).toBeChecked();
       expect(ptyTaskRadio).not.toBeChecked();
     });
@@ -156,6 +186,109 @@ describe('CreateTaskDialog', () => {
       expect(onCreatedTaskMock).toHaveBeenCalledWith('task-inline-1');
     });
     expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('omits agents for a plain AI task (no worker agent named)', async () => {
+    createTaskMock.mockResolvedValueOnce({ id: 'task-plain' });
+    render(<CreateTaskDialog open onClose={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+      target: { value: 'Plain task' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+    await waitFor(() => expect(createTaskMock).toHaveBeenCalled());
+    expect(createTaskMock.mock.calls[0][0]).not.toHaveProperty('agents');
+  });
+
+  it('sends a worker + reviewer agents group with per-reviewer backend', async () => {
+    createTaskMock.mockResolvedValueOnce({ id: 'task-group' });
+    render(<CreateTaskDialog open onClose={() => {}} />);
+
+    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+      target: { value: 'Build with review' },
+    });
+    fireEvent.change(await screen.findByLabelText('Worker agent'), {
+      target: { value: 'feature-dev' },
+    });
+    // Reviewer controls only appear once a worker agent is named.
+    fireEvent.click(screen.getByRole('button', { name: '+ Add reviewer' }));
+    fireEvent.change(screen.getByLabelText('Reviewer 1 agent'), {
+      target: { value: 'code-reviewer' },
+    });
+    fireEvent.change(screen.getByLabelText('Reviewer 1 backend'), {
+      target: { value: 'codex' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agents: [
+            { name: 'feature-dev' },
+            { name: 'code-reviewer', backend: 'codex' },
+          ],
+        }),
+      );
+    });
+  });
+
+  it('drops the group (no agents) when the worker agent is cleared', async () => {
+    createTaskMock.mockResolvedValueOnce({ id: 'task-plain-after-clear' });
+    render(<CreateTaskDialog open onClose={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+      target: { value: 'Needs worker' },
+    });
+    // Name a worker to reveal the reviewer control, add a reviewer, then clear the worker.
+    const workerAgentSelect = await screen.findByLabelText('Worker agent');
+    fireEvent.change(workerAgentSelect, {
+      target: { value: 'feature-dev' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '+ Add reviewer' }));
+    fireEvent.change(screen.getByLabelText('Reviewer 1 agent'), {
+      target: { value: 'code-reviewer' },
+    });
+    fireEvent.change(workerAgentSelect, {
+      target: { value: '' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+
+    // Reviewer inputs are hidden once the worker name is cleared, so the group is
+    // dropped and a normal task would be created — assert createTask is NOT called
+    // with agents. (The submit still proceeds as a plain task.)
+    await waitFor(() => expect(createTaskMock).toHaveBeenCalled());
+    expect(createTaskMock.mock.calls[0][0]).not.toHaveProperty('agents');
+  });
+
+  it('shows the empty-registry guidance when settings.yaml has no agents', async () => {
+    apiGetMock.mockResolvedValueOnce({ agents: [] });
+
+    render(<CreateTaskDialog open onClose={() => {}} />);
+
+    expect(
+      await screen.findByText(/No agents registered for this project/),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText('Worker agent')).toBeNull();
+    expect(apiGetMock).toHaveBeenCalledWith('/projects/project-1/agents');
+  });
+
+  it('applies a registered worker backend default when the daemon advertises it', async () => {
+    apiGetMock.mockResolvedValueOnce({
+      agents: [
+        {
+          name: 'feature-dev',
+          description: 'Executes feature work',
+          backend: 'codex',
+        },
+      ],
+    });
+
+    render(<CreateTaskDialog open onClose={() => {}} />);
+
+    fireEvent.change(await screen.findByLabelText('Worker agent'), {
+      target: { value: 'feature-dev' },
+    });
+    expect(screen.getByLabelText('Backend')).toHaveValue('codex');
   });
 
   it('shows worktree for git projects and submits the checkbox state', async () => {
