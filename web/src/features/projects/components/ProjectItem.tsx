@@ -19,6 +19,7 @@ import { useSwipeActions } from '@/shared/hooks/useSwipeActions';
 import { formatBindingLabel } from '../utils/format-binding-label';
 import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 import { ProjectDetailsDialog } from './ProjectDetailsDialog';
+import { ProjectCardTabBar, type ProjectCardTab } from './ProjectCardTabBar';
 
 interface ProjectItemProps {
   project: Project;
@@ -41,6 +42,20 @@ interface ProjectItemProps {
    */
   sortableId?: string;
   dragDisabled?: boolean;
+  /**
+   * When present, this card represents a frontend *aggregation* of several
+   * unrelated project cards. `project`/`mergedMembers` are the currently active
+   * tab's card; this renders the tab strip that switches between them. Purely a
+   * presentational grouping — it never changes any project's database row.
+   */
+  aggregation?: {
+    id: string;
+    tabs: ProjectCardTab[];
+    activeProjectId: string;
+    onSelectTab: (projectId: string) => void;
+    onEjectTab: (projectId: string) => void;
+    onRenameTab: (projectId: string, label: string) => void;
+  };
 }
 
 const ACTIONS_WIDTH = 72;
@@ -146,6 +161,7 @@ export function ProjectItem({
   onUnhide,
   sortableId,
   dragDisabled = false,
+  aggregation,
 }: ProjectItemProps) {
   const groupMembers = mergedMembers && mergedMembers.length > 0 ? mergedMembers : [project];
   const isMergedGroup = groupMembers.length > 1;
@@ -785,6 +801,15 @@ export function ProjectItem({
           }
         }}
       >
+        {aggregation ? (
+          <ProjectCardTabBar
+            tabs={aggregation.tabs}
+            activeProjectId={aggregation.activeProjectId}
+            onSelect={aggregation.onSelectTab}
+            onEject={aggregation.onEjectTab}
+            onRename={aggregation.onRenameTab}
+          />
+        ) : null}
         <div className="flex items-start gap-3">
           <button
             type="button"
