@@ -54,13 +54,35 @@ const PROJECT_DRAG_ACTIVATION_DELAY_MS = 350;
 const PROJECT_DRAG_ACTIVATION_TOLERANCE_PX = 8;
 const PROJECT_DRAG_ACTIVATION_DISTANCE_PX = 6;
 
-// A drop counts as "aggregate onto this card" only when the dragged card's
-// vertical center lands inside the middle band of the target card. Landing in
-// the outer thirds (i.e. near the gap between two cards) reorders instead. This
-// is the whole distinction between aggregating and repositioning: on-card vs
-// in-the-gap.
+// A drop counts as "aggregate onto this card" only when the LIVE POINTER sits
+// inside the middle band of the target card. Landing in the outer thirds (i.e.
+// near the gap between two cards) reorders instead. This is the whole
+// distinction between aggregating and repositioning: on-card vs in-the-gap.
+//
+// The decision is pointer-based on purpose. dnd-kit's verticalListSortingStrategy
+// displaces the hovered card the instant it is entered (to open a reorder gap),
+// so the DRAGGED card's own moving box never stably lands in the target's middle
+// band. The physical pointer, however, is a fixed screen coordinate; measured
+// against the target row's stable layout rect it gives a reliable band decision.
 const AGGREGATE_BAND_MIN = 0.32;
 const AGGREGATE_BAND_MAX = 0.68;
+
+// Recover the live pointer position during a drag from dnd-kit's activator event
+// (the pointer/mouse/touch event that started the drag) plus the accumulated
+// delta. This avoids relying on the dragged element's transformed rect, which
+// the sortable strategy shifts around mid-drag.
+const readDragPointerY = (event: DragOverEvent): number | null => {
+  const activator = event.activatorEvent as
+    | (Partial<MouseEvent> & Partial<Pick<TouchEvent, 'touches' | 'changedTouches'>>)
+    | null
+    | undefined;
+  const deltaY = event.delta?.y ?? 0;
+  if (!activator) return null;
+  if (typeof activator.clientY === 'number') return activator.clientY + deltaY;
+  const touch = activator.touches?.[0] ?? activator.changedTouches?.[0];
+  if (touch && typeof touch.clientY === 'number') return touch.clientY + deltaY;
+  return null;
+};
 
 type Row = ProjectCardRow<ProjectGroup>;
 
@@ -155,6 +177,17 @@ export function ProjectList() {
       },
     }),
   );
+
+  // Live DOM refs for each rendered row wrapper, keyed by row key. The wrapper is
+  // NOT the dnd-kit sortable node (that transformed node lives inside
+  // ProjectItem), so its getBoundingClientRect reports the stable layout slot —
+  // exactly the target geometry the pointer band test needs, undisturbed by the
+  // sortable's transforms.
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const setRowRef = useCallback((key: string) => (node: HTMLDivElement | null) => {
+    if (node) rowRefs.current.set(key, node);
+    else rowRefs.current.delete(key);
+  }, []);
 
   const [dragOrderKeys, setDragOrderKeys] = useState<string[] | null>(null);
   const [activeRowKey, setActiveRowKey] = useState<string | null>(null);
@@ -264,11 +297,13 @@ export function ProjectList() {
     const canAggregate = aggregationsHydrated && draggedRow?.type === 'group' && Boolean(overRow);
 
     if (canAggregate) {
-      const translated = event.active.rect?.current?.translated ?? null;
-      const overRect = event.over.rect;
-      if (translated && overRect && overRect.height > 0) {
-        const draggedCenterY = translated.top + translated.height / 2;
-        const ratio = (draggedCenterY - overRect.top) / overRect.height;
+      const pointerY = readDragPointerY(event);
+      // Measure against the target's STABLE layout rect (the row wrapper), not
+      // the dragged card's transformed box, so mid-drag displacement can't move
+      // the band out from under the pointer.
+      const targetRect = rowRefs.current.get(overId)?.getBoundingClientRect() ?? null;
+      if (pointerY !== null && targetRect && targetRect.height > 0) {
+        const ratio = (pointerY - targetRect.top) / targetRect.height;
         if (ratio > AGGREGATE_BAND_MIN && ratio < AGGREGATE_BAND_MAX) {
           // Middle band → aggregate: highlight target, cancel reorder preview.
           setAggregateTargetKey(overId);
@@ -439,6 +474,7 @@ export function ProjectList() {
             return (
               <div
                 key={key}
+                ref={setRowRef(key)}
                 className={isAggregateTarget ? 'rounded-2xl ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--paper)]' : undefined}
               >
                 {renderRow(row)}
