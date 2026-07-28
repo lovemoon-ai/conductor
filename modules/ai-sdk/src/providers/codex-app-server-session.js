@@ -577,6 +577,30 @@ export class CodexAppServerSession extends EventEmitter {
     this.emit("working_status", snapshot);
   }
 
+  /**
+   * Idempotent terminal working-status clear (see BUG-R6-01 lesson). The
+   * "reply_in_progress:false" signal that unsticks the composer must be emitted
+   * from a reliable, always-arriving path, and multiple paths emitting it must
+   * be a safe no-op. A one-time guard on the turn object ensures we clear
+   * exactly once regardless of how many code paths reach here.
+   */
+  async emitTurnCompletedStatus(
+    currentTurn,
+    { phase = "turn_completed", status_done_line = "codex finished" } = {},
+  ) {
+    if (currentTurn && currentTurn.terminalStatusEmitted) {
+      return;
+    }
+    if (currentTurn) {
+      currentTurn.terminalStatusEmitted = true;
+    }
+    await this.emitWorkingStatus({
+      phase,
+      reply_in_progress: false,
+      status_done_line,
+    });
+  }
+
   async emitAssistantMessage(text) {
     this.touchTurnActivity();
     const payload = {
@@ -977,7 +1001,15 @@ export class CodexAppServerSession extends EventEmitter {
         return;
       }
       case "turn/completed": {
-        const currentTurn = this.ensureCurrentTurn(params);
+        let currentTurn = this.ensureCurrentTurn(params);
+        if (!currentTurn && this.currentTurn && !this.currentTurn.goalMode) {
+          // Defense-in-depth (BUG-R6-01 class): a non-goal session has exactly
+          // one active turn. If turn matching fails (missing `turn/started`, a
+          // turnId mismatch, or an id carried on a different field), we must NOT
+          // strand the terminal clear here — otherwise the composer stays on
+          // "codex composing reply" until the 12-min idle deadline or a reload.
+          currentTurn = this.currentTurn;
+        }
         if (!currentTurn) {
           return;
         }
@@ -995,9 +1027,8 @@ export class CodexAppServerSession extends EventEmitter {
             turnStatus: status,
             turnError,
           });
-          await this.emitWorkingStatus({
+          await this.emitTurnCompletedStatus(currentTurn, {
             phase: "turn_failed",
-            reply_in_progress: false,
             status_done_line: `codex failed (${status})`,
           });
           if (currentTurn.goalMode) {
@@ -1034,11 +1065,7 @@ export class CodexAppServerSession extends EventEmitter {
           currentTurn.activeAssistantMessageText = "";
           return;
         }
-        await this.emitWorkingStatus({
-          phase: "turn_completed",
-          reply_in_progress: false,
-          status_done_line: "codex finished",
-        });
+        await this.emitTurnCompletedStatus(currentTurn);
         currentTurn.resolve({
           turn,
           usage: this.tokenUsage ? { ...this.tokenUsage } : null,
@@ -1191,6 +1218,11 @@ export class CodexAppServerSession extends EventEmitter {
       await this.finalizeActiveAssistantMessage(currentTurn, {
         messageId: currentTurn.activeAssistantMessageId,
       });
+
+      // Belt-and-suspenders terminal clear. Idempotent (guarded on the turn),
+      // so when the wire `turn/completed` already cleared this is a no-op; it
+      // only fires if the turn resolved without the wire clear reaching here.
+      await this.emitTurnCompletedStatus(currentTurn);
 
       if (currentTurn.fullText) {
         this.history.push({ role: "assistant", content: currentTurn.fullText });

@@ -295,6 +295,9 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
       const normalized = normalizeMessagePayload(payload);
       if (!normalized) break;
       useChatStore.getState().addMessage(normalized.taskId, normalized.message);
+      // Count message traffic as turn activity so the stuck-composer watchdog
+      // does not fire while a turn is still streaming replies.
+      useRuntimeStore.getState().noteActivity(normalized.taskId);
       const tasksStore = useTasksStore.getState();
       const task = tasksStore.tasks.find((item) => item.id === normalized.taskId);
 
