@@ -7,6 +7,16 @@ import readline from "node:readline";
 
 import { KIMI_CLI_PRINT_VARIANT as KIMI_PRINT_PROVIDER_VARIANT } from "../built-in-backends.js";
 import {
+  PROVIDER_MEDIA_CAPABILITIES,
+  UNSUPPORTED_MEDIA_CAPABILITIES,
+  buildKimiContent,
+} from "../media-adapters.js";
+import {
+  assertMediaCapabilities,
+  defaultPromptForMedia,
+  resolveTurnMedia,
+} from "../media-input.js";
+import {
   emitLog,
   getBoundedEnvInt,
   loadEnvConfig,
@@ -193,33 +203,6 @@ function normalizeTextContent(content) {
   return "";
 }
 
-function guessMimeType(filePath) {
-  const ext = path.extname(String(filePath || "")).toLowerCase();
-  switch (ext) {
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".bmp":
-      return "image/bmp";
-    case ".svg":
-      return "image/svg+xml";
-    default:
-      return "application/octet-stream";
-  }
-}
-
-function filePathToDataUri(filePath) {
-  const buffer = fs.readFileSync(filePath);
-  const mimeType = guessMimeType(filePath);
-  return `data:${mimeType};base64,${buffer.toString("base64")}`;
-}
-
 export class KimiPrintSession extends EventEmitter {
   constructor(backend, options = {}) {
     super();
@@ -337,6 +320,12 @@ export class KimiPrintSession extends EventEmitter {
           }
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
+      capabilities: {
+        media:
+          this.cliMode === "prompt"
+            ? UNSUPPORTED_MEDIA_CAPABILITIES
+            : PROVIDER_MEDIA_CAPABILITIES[KIMI_PRINT_PROVIDER_VARIANT],
+      },
       pid: this.currentTurn?.child?.pid || undefined,
     };
   }
@@ -508,31 +497,16 @@ export class KimiPrintSession extends EventEmitter {
     return args;
   }
 
-  buildUserMessage(promptText, { useInitialImages = false } = {}) {
-    const images = useInitialImages && Array.isArray(this.options.initialImages)
-      ? this.options.initialImages.filter((item) => typeof item === "string" && item.trim())
-      : [];
-    if (images.length === 0) {
+  buildUserMessage(promptText, { media = [] } = {}) {
+    if (media.length === 0) {
       return {
         role: "user",
         content: promptText,
       };
     }
-    const content = [];
-    if (promptText) {
-      content.push({ type: "text", text: promptText });
-    }
-    for (const imagePath of images) {
-      content.push({
-        type: "image_url",
-        image_url: {
-          url: filePathToDataUri(imagePath),
-        },
-      });
-    }
     return {
       role: "user",
-      content,
+      content: buildKimiContent(promptText, media),
     };
   }
 
@@ -568,7 +542,7 @@ export class KimiPrintSession extends EventEmitter {
     }
   }
 
-  async runTurn(promptText, { useInitialImages = false, onProgress = null, jsonSchema = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested || this.closed) {
       throw this.createSessionClosedError();
     }
@@ -578,21 +552,22 @@ export class KimiPrintSession extends EventEmitter {
       });
     }
 
+    const media = resolveTurnMedia(this.options, { useInitialImages, media: mediaInput });
+    assertMediaCapabilities(media, this.backend, PROVIDER_MEDIA_CAPABILITIES[KIMI_PRINT_PROVIDER_VARIANT]);
     let effectivePrompt = this.buildPrompt(promptText);
-    const imagePaths = useInitialImages && Array.isArray(this.options.initialImages)
-      ? this.options.initialImages.filter((item) => typeof item === "string" && item.trim())
-      : [];
     if (jsonSchema && typeof jsonSchema === "object") {
-      const promptWithSchema = effectivePrompt || (imagePaths.length > 0 ? "Analyze the attached images." : "");
+      const promptWithSchema = effectivePrompt || (media.length > 0 ? defaultPromptForMedia(media) : "");
       if (promptWithSchema) {
         effectivePrompt = injectJsonSchemaPrompt(promptWithSchema, jsonSchema);
       }
     }
-    if (this.cliMode === "prompt" && imagePaths.length > 0) {
-      const imageContext = imagePaths.map((item, index) => `${index + 1}. ${item}`).join("\n");
-      effectivePrompt = `${effectivePrompt || "Analyze the attached images."}\n\nAttached image files:\n${imageContext}`;
+    if (this.cliMode === "prompt" && media.length > 0) {
+      throw createTurnError("Kimi prompt mode does not support media input", {
+        reason: "unsupported_media",
+        backend: this.backend,
+      });
     }
-    if (!effectivePrompt && imagePaths.length === 0) {
+    if (!effectivePrompt && media.length === 0) {
       return buildEmptyTurnResult();
     }
 
@@ -782,7 +757,7 @@ export class KimiPrintSession extends EventEmitter {
         });
 
         if (this.cliMode === "legacy-print") {
-          const userMessage = this.buildUserMessage(effectivePrompt, { useInitialImages });
+          const userMessage = this.buildUserMessage(effectivePrompt || defaultPromptForMedia(media), { media });
           child.stdin.write(`${JSON.stringify(userMessage)}\n`);
         }
         child.stdin.end();

@@ -129,6 +129,36 @@ describe("ai-sdk client boundary", () => {
     await session.close();
   });
 
+  it("forwards media options and structured unsupported-media errors across the worker boundary", async () => {
+    const dir = makeTempDir("ai-sdk-worker-media-");
+    const imagePath = path.join(dir, "image.png");
+    fs.writeFileSync(imagePath, Buffer.from("89504e470d0a1a0a00000000", "hex"));
+    const session = createAiSession("chat-web", {
+      cwd: dir,
+      logger: { log: () => {} },
+    });
+
+    try {
+      await session.readyPromise;
+      assert.deepEqual(session.getSnapshot().capabilities.media, {
+        image: "unsupported",
+        video: "unsupported",
+      });
+      await assert.rejects(
+        session.runTurn("", {
+          media: [{ kind: "image", path: imagePath, mimeType: "image/png" }],
+        }),
+        (error) =>
+          error.reason === "unsupported_media" &&
+          error.backend === "chat-web" &&
+          error.mediaKind === "image" &&
+          error.mediaIndex === 0,
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
   it("supports kimi cli wire sessions", async () => {
     const session = createAiSession("kimi-cli", {
       cwd: process.cwd(),

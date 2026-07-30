@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
 
 import { CHAT_WEB_SESSION_VARIANT } from "../built-in-backends.js";
+import { PROVIDER_MEDIA_CAPABILITIES } from "../media-adapters.js";
+import { assertMediaCapabilities, resolveTurnMedia } from "../media-input.js";
 import { emitLog, normalizeLogger } from "../shared.js";
 
 const SUPPORTED_CHAT_WEB_PROVIDERS = new Set(["chatgpt", "gemini"]);
@@ -218,6 +220,7 @@ export class ChatWebSession extends EventEmitter {
         ? { ready: true, command: this.providerConversationUrl() }
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
+      capabilities: { media: PROVIDER_MEDIA_CAPABILITIES[CHAT_WEB_SESSION_VARIANT] },
       chatWebProvider: this.chatWebProvider,
       providerConversationId: this.providerConversationId,
       providerUrl: this.providerConversationUrl(),
@@ -426,7 +429,9 @@ export class ChatWebSession extends EventEmitter {
     }
   }
 
-  async runTurn(promptText, { onProgress = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, onProgress = null } = {}) {
+    const media = resolveTurnMedia(this.options, { useInitialImages, media: mediaInput });
+    assertMediaCapabilities(media, this.backend, PROVIDER_MEDIA_CAPABILITIES[CHAT_WEB_SESSION_VARIANT]);
     const prompt = String(promptText || "").trim();
     if (!prompt) {
       return {
