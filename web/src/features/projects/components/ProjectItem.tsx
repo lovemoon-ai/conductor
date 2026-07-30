@@ -208,10 +208,8 @@ export function ProjectItem({
     : null;
   const isGitProject = Boolean(repoRoot);
   const bindingCandidate = readBindingCandidate(metadata);
-  const isBoundProject = Boolean(daemonHost) && !isDefault;
   const isPendingBinding = !isDefault && !daemonHost && Boolean(bindingCandidate);
-  const isDaemonOnline = !daemonHost || agents.some((agent) => agent.host === daemonHost);
-  const isUnavailable = isBoundProject && !isDaemonOnline;
+  const isDaemonOnline = daemonHost ? agents.some((agent) => agent.host === daemonHost) : false;
   const pendingBindingLabel = bindingCandidate
     ? formatBindingLabel(bindingCandidate.daemonHost, bindingCandidate.workspacePath)
     : null;
@@ -235,7 +233,7 @@ export function ProjectItem({
   const collaboration = project.collaboration ?? null;
   const collaborationMemberCount = collaboration?.memberCount ?? collaboration?.members.length ?? 0;
   const hasCollaboration = Boolean(collaboration);
-  const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isUnavailable || isPendingBinding || hasCollaboration || runningCount > 0 || killedCount > 0;
+  const hasMetadataChips = isGitProject || Boolean(daemonLabel) || isPendingBinding || hasCollaboration || runningCount > 0 || killedCount > 0;
   const projectTitleId = `project-title-${project.id}`;
   const [isCollaborationBusy, setIsCollaborationBusy] = useState(false);
   const canInvite = !isDefault;
@@ -775,7 +773,7 @@ export function ProjectItem({
         onDoubleClick={openProjectDetails}
         className={`webapp-card relative z-10 cursor-pointer px-4 pb-4 pt-4 transition-colors hover:border-[var(--accent)] ${
           isSelected ? 'webapp-card-list-pane-active' : 'webapp-card-list-pane-idle'
-        } ${isUnavailable || isPendingBinding ? 'opacity-70' : ''}`}
+        } ${isPendingBinding ? 'opacity-70' : ''}`}
         role="button"
         tabIndex={0}
         aria-label={project.name}
@@ -920,6 +918,7 @@ export function ProjectItem({
                 {isMergedGroup ? (
                   // Merged group: list each member's daemon as its own badge so
                   // the user can see at a glance which daemons own this name.
+                  // Offline daemons keep a gray indicator instead of hiding.
                   groupMembers.map((member) => {
                     const memberDaemon = typeof member.daemonHost === 'string' ? member.daemonHost.trim() : '';
                     if (!memberDaemon) return null;
@@ -927,16 +926,12 @@ export function ProjectItem({
                     return (
                       <span
                         key={member.id}
-                        title={formatBindingLabel(memberDaemon, member.workspacePath ?? null)}
-                        className={`flex max-w-[12rem] items-center gap-1 truncate rounded px-1.5 py-0.5 text-xs font-medium ${
-                          memberOnline
-                            ? 'bg-[var(--paper)] text-muted'
-                            : 'bg-[var(--warning)]/10 text-ink'
-                        }`}
+                        title={`${formatBindingLabel(memberDaemon, member.workspacePath ?? null)} (${memberOnline ? 'online' : 'offline'})`}
+                        className="flex max-w-[12rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted"
                       >
                         <span
                           aria-hidden="true"
-                          className={`inline-block h-1.5 w-1.5 rounded-full ${memberOnline ? 'bg-emerald-500' : 'bg-[var(--warning)]'}`}
+                          className={`inline-block h-1.5 w-1.5 rounded-full ${memberOnline ? 'bg-emerald-500' : 'bg-[var(--muted)]'}`}
                         />
                         {memberDaemon}
                       </span>
@@ -944,9 +939,13 @@ export function ProjectItem({
                   })
                 ) : daemonLabel ? (
                   <span
-                    title={daemonTitle ?? daemonLabel}
+                    title={daemonTitle ? `${daemonTitle} (${isDaemonOnline ? 'online' : 'offline'})` : daemonLabel}
                     className="flex max-w-[12rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted"
                   >
+                    <span
+                      aria-hidden="true"
+                      className={`inline-block h-1.5 w-1.5 rounded-full ${isDaemonOnline ? 'bg-emerald-500' : 'bg-[var(--muted)]'}`}
+                    />
                     {daemonLabel}
                   </span>
                 ) : null}
@@ -958,11 +957,7 @@ export function ProjectItem({
                     {groupMembers.length} daemons
                   </span>
                 ) : null}
-                {!isMergedGroup && isUnavailable ? (
-                  <span className="flex items-center gap-1 rounded bg-[var(--warning)]/10 px-1.5 py-0.5 text-xs font-medium text-ink">
-                    Daemon offline
-                  </span>
-                ) : !isMergedGroup && isPendingBinding ? (
+                {!isMergedGroup && isPendingBinding ? (
                   <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted">
                     Binding pending
                   </span>

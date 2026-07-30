@@ -18,7 +18,6 @@ import {
 } from '@dnd-kit/core';
 import { SortableContext, type SortingStrategy } from '@dnd-kit/sortable';
 import type { Project, ProjectGroup } from '@/shared/types';
-import { useAgentsStore } from '@/features/agents';
 import { useAuthStore } from '@/features/auth/store';
 import { useProjectsStore } from '../store';
 import { ProjectItem } from './ProjectItem';
@@ -142,7 +141,6 @@ export function ProjectList() {
     unhideProject,
     reorderProjects,
   } = useProjectsStore();
-  const agents = useAgentsStore((state) => state.agents);
   const userId = useAuthStore((state) => state.session?.user.id ?? null);
 
   const snapshot = useProjectCardGroupsSyncStore((state) => state.snapshot);
@@ -156,24 +154,16 @@ export function ProjectList() {
   const [aggregations, setAggregations] = useState<ProjectCardGroup[]>([]);
   const lastSyncedKeyRef = useRef<string>(projectCardGroupsSyncKey([]));
 
-  const onlineDaemonHosts = useMemo(
-    () => new Set(agents.flatMap((agent) => {
-      const host = agent.host.trim();
-      return host ? [host] : [];
-    })),
-    [agents],
-  );
   const projectListVisibility = useMemo(
     () => getProjectListVisibility(projects, {
       hiddenProjectIds,
       showHiddenProjects,
-      onlineDaemonHosts,
     }),
-    [hiddenProjectIds, onlineDaemonHosts, projects, showHiddenProjects],
+    [hiddenProjectIds, projects, showHiddenProjects],
   );
   const {
     hiddenProjectIdSet,
-    onlineProjects,
+    candidateProjects,
     visibleProjects,
     visibleGroups,
   } = projectListVisibility;
@@ -463,16 +453,10 @@ export function ProjectList() {
   }
 
   if (visibleProjects.length === 0) {
-    const emptyTitle = projects.length === 0
-      ? 'No projects yet'
-      : onlineProjects.length === 0
-        ? 'No online projects'
-        : 'No visible projects';
+    const emptyTitle = projects.length === 0 ? 'No projects yet' : 'No visible projects';
     const emptyDescription = projects.length === 0
       ? 'Create a project to organize your tasks'
-      : onlineProjects.length === 0
-        ? 'Reconnect a daemon to show its projects'
-        : 'Double-click Projects to show hidden projects';
+      : 'Double-click Projects to show hidden projects';
 
     return (
       <div className="flex flex-col items-center justify-center h-64 text-muted">

@@ -4,22 +4,15 @@ import { computeProjectGroups } from './project-groups';
 interface ProjectListVisibilityOptions {
   hiddenProjectIds?: string[];
   showHiddenProjects?: boolean;
-  onlineDaemonHosts?: Iterable<string>;
 }
 
 interface ProjectListVisibility {
   hiddenProjectIdSet: Set<string>;
-  onlineProjects: Project[];
+  /** Projects eligible to be displayed (excludes stale solo-collaboration duplicates only). */
+  candidateProjects: Project[];
   visibleProjects: Project[];
   visibleGroups: ProjectGroup[];
 }
-
-const getProjectDaemonHost = (project: Project): string | null => {
-  if (typeof project.daemonHost !== 'string') {
-    return null;
-  }
-  return project.daemonHost.trim() || null;
-};
 
 const getCollaborationMemberCount = (project: Project): number =>
   project.collaboration?.memberCount ?? project.collaboration?.members.length ?? 0;
@@ -59,44 +52,27 @@ export const getDuplicateSoloCollaborationProjectIds = (projects: Project[]): Se
   return duplicateIds;
 };
 
-const normalizeOnlineDaemonHosts = (hosts?: Iterable<string>): Set<string> => {
-  const out = new Set<string>();
-  if (!hosts) {
-    return out;
-  }
-  for (const host of hosts) {
-    const trimmed = host.trim();
-    if (trimmed) {
-      out.add(trimmed);
-    }
-  }
-  return out;
-};
-
 export const getProjectListVisibility = (
   projects: Project[],
   options: ProjectListVisibilityOptions = {},
 ): ProjectListVisibility => {
-  const onlineDaemonHosts = normalizeOnlineDaemonHosts(options.onlineDaemonHosts);
   const hiddenProjectIdSet = new Set(options.hiddenProjectIds ?? []);
   const duplicateSoloCollaborationProjectIds = getDuplicateSoloCollaborationProjectIds(projects);
 
-  const onlineProjects = projects.filter((project) => {
-    if (duplicateSoloCollaborationProjectIds.has(project.id)) {
-      return false;
-    }
-    const daemonHost = getProjectDaemonHost(project);
-    const hasCollaboration = Boolean(project.collaborationId || project.collaboration);
-    return !daemonHost || onlineDaemonHosts.has(daemonHost) || hasCollaboration;
-  });
+  // Daemon-bound projects remain visible even when their daemon is offline;
+  // the card renders a gray indicator instead of hiding the project. Only
+  // stale solo-collaboration duplicates are dropped from the candidate list.
+  const candidateProjects = projects.filter((project) =>
+    !duplicateSoloCollaborationProjectIds.has(project.id),
+  );
 
-  const visibleProjects = onlineProjects.filter(
+  const visibleProjects = candidateProjects.filter(
     (project) => options.showHiddenProjects || !hiddenProjectIdSet.has(project.id),
   );
 
   return {
     hiddenProjectIdSet,
-    onlineProjects,
+    candidateProjects,
     visibleProjects,
     visibleGroups: computeProjectGroups(visibleProjects),
   };

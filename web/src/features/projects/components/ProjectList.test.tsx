@@ -177,7 +177,7 @@ describe('ProjectList', () => {
     ]);
   });
 
-  it('hides projects bound to offline daemons', () => {
+  it('shows projects bound to offline daemons', () => {
     projectsState = {
       projects: [
         { id: 'default-project', name: 'Default Project', isDefault: true },
@@ -202,11 +202,11 @@ describe('ProjectList', () => {
 
     expect(screen.getByText('Default Project')).toBeInTheDocument();
     expect(screen.getByText('Online Project')).toBeInTheDocument();
+    expect(screen.getByText('Offline Project')).toBeInTheDocument();
     expect(screen.getByText('Legacy Project')).toBeInTheDocument();
-    expect(screen.queryByText('Offline Project')).toBeNull();
   });
 
-  it('keeps shared projects visible even when their daemon is offline', () => {
+  it('keeps shared and offline daemon projects visible', () => {
     projectsState = {
       projects: [
         { id: 'offline-project', name: 'Offline Project', daemonHost: 'daemon-offline' },
@@ -240,7 +240,7 @@ describe('ProjectList', () => {
     render(<ProjectList />);
 
     expect(screen.getByText('Shared Project')).toBeInTheDocument();
-    expect(screen.queryByText('Offline Project')).toBeNull();
+    expect(screen.getByText('Offline Project')).toBeInTheDocument();
   });
 
   it('hides stale solo collaboration duplicates when the same workspace has a shared collaboration', () => {
@@ -294,7 +294,7 @@ describe('ProjectList', () => {
     expect(screen.queryByTestId('project-item-solo-collaboration')).toBeNull();
   });
 
-  it('shows an online-projects empty state when only offline daemon projects exist', () => {
+  it('shows offline daemon projects instead of an empty state', () => {
     projectsState = {
       projects: [
         { id: 'offline-project', name: 'Offline Project', daemonHost: 'daemon-offline' },
@@ -314,12 +314,12 @@ describe('ProjectList', () => {
 
     render(<ProjectList />);
 
-    expect(screen.getByText('No online projects')).toBeInTheDocument();
-    expect(screen.getByText('Reconnect a daemon to show its projects')).toBeInTheDocument();
-    expect(screen.queryByText('Offline Project')).toBeNull();
+    expect(screen.getByText('Offline Project')).toBeInTheDocument();
+    expect(screen.queryByText('No online projects')).toBeNull();
+    expect(screen.queryByText('Reconnect a daemon to show its projects')).toBeNull();
   });
 
-  it('keeps hidden offline projects in the submitted order when visible projects are dragged', async () => {
+  it('keeps offline daemon projects in the submitted order when visible projects are dragged', async () => {
     reorderProjectsMock.mockResolvedValue(undefined);
     projectsState = {
       projects: [
@@ -355,7 +355,7 @@ describe('ProjectList', () => {
       await latestDndContextProps?.onDragEnd?.({ active: { id: 'online-c' }, over: { id: 'online-a' } });
     });
 
-    expect(reorderProjectsMock).toHaveBeenCalledWith(['online-c', 'offline-b', 'online-a']);
+    expect(reorderProjectsMock).toHaveBeenCalledWith(['online-c', 'online-a', 'offline-b']);
   });
 
   it('keeps rows stable while dragging and reorders them on drop', async () => {

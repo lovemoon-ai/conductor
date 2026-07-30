@@ -145,6 +145,28 @@ describe('ProjectItem', () => {
     vi.useRealTimers();
   });
 
+  it('shows online indicator in daemon tag when daemon is online', () => {
+    agentsState = {
+      agents: [{ id: 'daemon-1', host: 'daemon-online' }],
+    };
+
+    const { container } = render(
+      <ProjectItem
+        project={{
+          id: 'project-1',
+          name: 'Bound Project',
+          daemonHost: 'daemon-online',
+          workspacePath: '/repo/bound',
+          repoRoot: '/repo',
+        } as any}
+      />,
+    );
+
+    expect(screen.getByText('daemon-online')).toBeInTheDocument();
+    expect(container.querySelector('.bg-emerald-500')).toBeInTheDocument();
+    expect(container.querySelector('.bg-\[var\(--muted\)\]')).toBeNull();
+  });
+
   it('shows offline state for bound projects when daemon is offline', () => {
     agentsState = {
       agents: [
@@ -166,7 +188,12 @@ describe('ProjectItem', () => {
 
     expect(screen.getByText('git')).toBeInTheDocument();
     expect(screen.getByText('daemon-offline')).toBeInTheDocument();
-    expect(screen.getByText('Daemon offline')).toBeInTheDocument();
+    // The daemon tag itself carries a gray indicator instead of a separate badge.
+    const offlineTag = screen.getByText('daemon-offline').closest('span');
+    expect(offlineTag).not.toBeNull();
+    const offlineDot = offlineTag!.querySelector('span[aria-hidden="true"]');
+    expect(offlineDot?.className).toContain('bg-[var(--muted)]');
+    expect(screen.queryByText('Daemon offline')).toBeNull();
   });
 
   it('shows collaboration member count on shared project cards even when the daemon is offline', () => {
@@ -191,7 +218,12 @@ describe('ProjectItem', () => {
       />,
     );
 
-    expect(screen.getByText('Daemon offline')).toBeInTheDocument();
+    // Offline daemon shows a gray indicator in the daemon tag, not a separate badge.
+    const offlineTag = screen.getByText('daemon-offline').closest('span');
+    expect(offlineTag).not.toBeNull();
+    const offlineDot = offlineTag!.querySelector('span[aria-hidden="true"]');
+    expect(offlineDot?.className).toContain('bg-[var(--muted)]');
+    expect(screen.queryByText('Daemon offline')).toBeNull();
     expect(screen.getByText('2/5 members')).toBeInTheDocument();
   });
 

@@ -12,7 +12,6 @@ import { CreateTaskDialog } from '@/features/tasks';
 import { TaskDetailPane } from '@/features/tasks';
 import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
-import { useAgentsStore } from '@/features/agents';
 import { computeProjectGroups } from '@/features/projects/utils/project-groups';
 import { getVisibleProjectGroupsForProjectList } from '@/features/projects/utils/project-list-order';
 import { isProjectTaskGraphEnabled } from '@/features/projects/utils/task-graph-settings';
@@ -74,7 +73,6 @@ function TasksPageContent() {
   const projects = useProjectsStore((state) => state.projects);
   const hiddenProjectIds = useProjectsStore((state) => state.hiddenProjectIds);
   const setSelectedProjectId = useProjectsStore((state) => state.setSelectedProjectId);
-  const agents = useAgentsStore((state) => state.agents);
   const projectIdFromUrl = searchParams.get('projectId');
   const hiddenProjectIdSet = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
   const projectId = projectIdFromUrl && !hiddenProjectIdSet.has(projectIdFromUrl) ? projectIdFromUrl : null;
@@ -93,19 +91,11 @@ function TasksPageContent() {
     }
     return map;
   }, [projects]);
-  const onlineDaemonHosts = useMemo(
-    () => new Set(agents.flatMap((agent) => {
-      const host = agent.host.trim();
-      return host ? [host] : [];
-    })),
-    [agents],
-  );
   const switchableProjectGroups = useMemo(
     () => getVisibleProjectGroupsForProjectList(projects, {
       hiddenProjectIds,
-      onlineDaemonHosts,
     }),
-    [hiddenProjectIds, onlineDaemonHosts, projects],
+    [hiddenProjectIds, projects],
   );
   // When the URL-selected project belongs to a cross-daemon merged group,
   // expand it to every member so the task list pulls tasks from each
