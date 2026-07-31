@@ -1,19 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const SUPPORTED_KINDS = new Set(["image", "video"]);
+const SUPPORTED_KINDS = new Set(["image"]);
 const SUPPORTED_MIME_TYPES = new Set([
   "image/gif",
   "image/jpeg",
   "image/png",
   "image/webp",
-  "video/mp4",
-  "video/quicktime",
-  "video/webm",
 ]);
 const MAX_MEDIA_ITEMS = 20;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
-const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
 const MAX_TOTAL_MEDIA_BYTES = 100 * 1024 * 1024;
 
 export const MEDIA_CAPABILITY_NATIVE = "native";
@@ -21,7 +17,6 @@ export const MEDIA_CAPABILITY_UNSUPPORTED = "unsupported";
 
 function inferKind(mimeType) {
   if (mimeType.startsWith("image/")) return "image";
-  if (mimeType.startsWith("video/")) return "video";
   return "";
 }
 
@@ -33,10 +28,7 @@ function inferMimeType(filePath, kind) {
     ".heic": "image/heic",
     ".jpeg": "image/jpeg",
     ".jpg": "image/jpeg",
-    ".mov": "video/quicktime",
-    ".mp4": "video/mp4",
     ".png": "image/png",
-    ".webm": "video/webm",
     ".webp": "image/webp",
   };
   return known[extension] || `${kind}/unknown`;
@@ -52,10 +44,6 @@ function hasExpectedSignature(filePath, mimeType) {
     if (mimeType === "image/jpeg") return header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
     if (mimeType === "image/gif") return header.subarray(0, 6).toString("ascii") === "GIF87a" || header.subarray(0, 6).toString("ascii") === "GIF89a";
     if (mimeType === "image/webp") return header.subarray(0, 4).toString("ascii") === "RIFF" && header.subarray(8, 12).toString("ascii") === "WEBP";
-    if (mimeType === "video/webm") return header.subarray(0, 4).equals(Buffer.from("1a45dfa3", "hex"));
-    if (mimeType === "video/mp4" || mimeType === "video/quicktime") {
-      return header.subarray(4, 8).toString("ascii") === "ftyp";
-    }
     return false;
   } finally {
     fs.closeSync(handle);
@@ -87,7 +75,7 @@ export function normalizeMediaInputs(value) {
     const kind = explicitKind || inferKind(mimeType);
 
     if (!SUPPORTED_KINDS.has(kind)) {
-      throw createMediaInputError(`media[${index}] kind must be image or video`, {
+      throw createMediaInputError(`media[${index}] kind must be image`, {
         reason: "invalid_media_input",
         mediaIndex: index,
       });
@@ -130,7 +118,7 @@ export function normalizeMediaInputs(value) {
         mediaIndex: index,
       });
     }
-    const itemLimit = kind === "video" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+    const itemLimit = MAX_IMAGE_BYTES;
     if (stat.size > itemLimit) {
       throw createMediaInputError(`media[${index}] exceeds the ${kind} size limit`, {
         reason: "media_limit_exceeded",
@@ -211,6 +199,5 @@ export function createMediaInputError(message, extras = {}) {
 }
 
 export function defaultPromptForMedia(media) {
-  const hasVideo = media.some((item) => item.kind === "video");
-  return hasVideo ? "Analyze the attached media." : "Analyze the attached images.";
+  return "Analyze the attached images.";
 }

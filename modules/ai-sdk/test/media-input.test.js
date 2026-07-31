@@ -5,7 +5,6 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  assertMediaCapabilities,
   fileMediaToDataUri,
   normalizeMediaInputs,
   resolveTurnMedia,
@@ -15,23 +14,20 @@ function fixtureFiles() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ai-sdk-media-"));
   const image = path.join(dir, "one.png");
   const secondImage = path.join(dir, "two.jpg");
-  const video = path.join(dir, "clip.mp4");
   fs.writeFileSync(image, Buffer.from("89504e470d0a1a0a00000000", "hex"));
   fs.writeFileSync(secondImage, Buffer.from("ffd8ffe00000000000000000", "hex"));
-  fs.writeFileSync(video, Buffer.from("000000186674797069736f6d", "hex"));
-  return { dir, image, secondImage, video };
+  return { dir, image, secondImage };
 }
 
-test("normalizes ordered image and video files", () => {
+test("normalizes ordered image files", () => {
   const files = fixtureFiles();
   try {
     const media = normalizeMediaInputs([
       { kind: "image", path: files.image, mimeType: "image/png" },
       { kind: "image", path: files.secondImage, mimeType: "image/jpeg" },
-      { kind: "video", path: files.video, mimeType: "video/mp4" },
     ]);
-    assert.deepEqual(media.map((item) => item.kind), ["image", "image", "video"]);
-    assert.deepEqual(media.map((item) => item.name), ["one.png", "two.jpg", "clip.mp4"]);
+    assert.deepEqual(media.map((item) => item.kind), ["image", "image"]);
+    assert.deepEqual(media.map((item) => item.name), ["one.png", "two.jpg"]);
     assert.match(fileMediaToDataUri(media[0]), /^data:image\/png;base64,/);
   } finally {
     fs.rmSync(files.dir, { recursive: true, force: true });
@@ -47,11 +43,10 @@ test("merges legacy initial images with per-turn media", () => {
         useInitialImages: true,
         media: [
           { kind: "image", path: files.secondImage, mimeType: "image/jpeg" },
-          { kind: "video", path: files.video, mimeType: "video/mp4" },
         ],
       },
     );
-    assert.deepEqual(media.map((item) => item.path), [files.image, files.secondImage, files.video]);
+    assert.deepEqual(media.map((item) => item.path), [files.image, files.secondImage]);
   } finally {
     fs.rmSync(files.dir, { recursive: true, force: true });
   }
@@ -73,11 +68,11 @@ test("resolves relative legacy initial images against the session cwd", () => {
 test("rejects oversized media before reading it into memory", () => {
   const files = fixtureFiles();
   try {
-    fs.truncateSync(files.video, 50 * 1024 * 1024 + 1);
+    fs.truncateSync(files.image, 20 * 1024 * 1024 + 1);
     assert.throws(
       () =>
         normalizeMediaInputs([
-          { kind: "video", path: files.video, mimeType: "video/mp4" },
+          { kind: "image", path: files.image, mimeType: "image/png" },
         ]),
       (error) => error.reason === "media_limit_exceeded" && error.mediaIndex === 0,
     );
@@ -101,18 +96,15 @@ test("rejects unknown media MIME types", () => {
   }
 });
 
-test("rejects unsupported media without silently dropping it", () => {
+test("rejects video inputs during normalization", () => {
   const files = fixtureFiles();
   try {
-    const [video] = normalizeMediaInputs([
-      { kind: "video", path: files.video, mimeType: "video/mp4" },
-    ]);
     assert.throws(
-      () => assertMediaCapabilities([video], "codex", { image: "native", video: "unsupported" }),
+      () => normalizeMediaInputs([{ kind: "video", path: files.image, mimeType: "video/mp4" }]),
       (error) =>
-        error.reason === "unsupported_media" &&
-        error.backend === "codex" &&
-        error.mediaKind === "video",
+        error.reason === "invalid_media_input" &&
+        error.mediaIndex === 0 &&
+        error.message === "media[0] kind must be image",
     );
   } finally {
     fs.rmSync(files.dir, { recursive: true, force: true });

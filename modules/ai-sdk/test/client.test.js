@@ -142,7 +142,6 @@ describe("ai-sdk client boundary", () => {
       await session.readyPromise;
       assert.deepEqual(session.getSnapshot().capabilities.media, {
         image: "unsupported",
-        video: "unsupported",
       });
       await assert.rejects(
         session.runTurn("", {
