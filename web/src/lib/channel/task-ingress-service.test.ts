@@ -72,8 +72,9 @@ describe('task-ingress-service', () => {
       return operations(db);
     });
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
-      { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'] },
-      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
+      { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'], capabilities: ['task_attachments_v1'] },
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: ['task_attachments_v1'] },
+      { id: 'fire-1', host: 'conductor-fire-runtime', supportedBackends: ['claude'], capabilities: ['task_attachments_v1'] },
     ] as any);
     vi.mocked(db.task.create).mockResolvedValue({
       id: 'task-1',
@@ -272,7 +273,10 @@ describe('task-ingress-service', () => {
     const metadata = JSON.parse((vi.mocked(db.message.create).mock.calls[0][0] as any).data.metadata);
     expect(metadata.attachments.map((entry: any) => entry.id)).toEqual(['att-1', 'att-2']);
     expect(db.taskAttachment.updateMany).toHaveBeenCalledWith({
-      where: { id: { in: ['att-1', 'att-2'] }, taskId: 'task-1', messageId: null, status: 'uploaded' },
+      where: {
+        id: { in: ['att-1', 'att-2'] }, taskId: 'task-1', messageId: null, status: 'uploaded',
+        expiresAt: { gt: expect.any(Date) },
+      },
       data: { messageId: 'msg-1', status: 'bound', boundAt: expect.any(Date), expiresAt: null },
     });
     expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
@@ -288,6 +292,32 @@ describe('task-ingress-service', () => {
       }),
       expect.any(Object),
     );
+  });
+
+  it('does not bind expired staging attachments', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1', projectId: 'proj-1', agentHost: 'conductor-fire-runtime', executionHost: 'conductor-fire-runtime',
+    } as any);
+    vi.mocked(db.taskAttachment.findMany).mockResolvedValue([]);
+    await expect(appendUserMessageToTask({
+      userId: 'user-1', taskId: 'task-1', content: 'inspect', role: 'user', attachmentIds: ['expired'],
+    })).rejects.toMatchObject({ code: 'INVALID_ATTACHMENTS', status: 409 });
+    expect(db.taskAttachment.findMany).toHaveBeenCalledWith({ where: expect.objectContaining({
+      expiresAt: { gt: expect.any(Date) },
+    }) });
+  });
+
+  it('rejects attachments when the connected agent has not advertised support', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1', projectId: 'proj-1', agentHost: 'conductor-fire-runtime', executionHost: 'conductor-fire-runtime',
+    } as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([{
+      id: 'old-fire', host: 'conductor-fire-runtime', supportedBackends: ['claude'], capabilities: [],
+    }] as any);
+    await expect(appendUserMessageToTask({
+      userId: 'user-1', taskId: 'task-1', content: 'inspect', role: 'user', attachmentIds: ['att-1'],
+    })).rejects.toMatchObject({ code: 'ATTACHMENTS_UNSUPPORTED_BY_AGENT', status: 409 });
+    expect(db.taskAttachment.findMany).not.toHaveBeenCalled();
   });
 
   it('rolls back message creation when attachment binding loses a race', async () => {

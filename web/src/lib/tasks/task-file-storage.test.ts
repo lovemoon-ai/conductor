@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 
 import {
   deleteTaskAttachmentDirectory,
   writeTaskAttachment,
+  writeTaskAttachmentStream,
 } from "./task-file-storage";
 
 describe("task-file-storage", () => {
@@ -46,6 +48,14 @@ describe("task-file-storage", () => {
       mimeType: "audio/mpeg",
     });
     expect(attachment.kind).toBe("file");
+  });
+
+  it("downgrades a spoofed raster MIME type to a context file", async () => {
+    const attachment = await writeTaskAttachmentStream({
+      taskId: "task-1", fileName: "fake.png", mimeType: "image/png",
+      stream: Readable.from("<script>alert(1)</script>"), maxBytes: 1024,
+    });
+    expect(attachment).toMatchObject({ mimeType: "application/octet-stream", kind: "file" });
   });
 
   it("removes all attachment files for a deleted task", async () => {

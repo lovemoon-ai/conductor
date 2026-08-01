@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { deleteTaskAttachmentByStorageKey } from "@/lib/tasks/task-file-storage";
 
 const DEFAULT_SWEEP_INTERVAL_MS = 60_000;
+const DELETE_RETRY_BACKOFF_MS = 5 * 60_000;
 
 function sweepIntervalMs(): number {
   const parsed = Number.parseInt(process.env.CONDUCTOR_ATTACHMENT_SWEEP_INTERVAL_MS || "", 10);
@@ -16,6 +17,7 @@ export async function pruneExpiredStagedTaskAttachments(now = new Date()): Promi
       expiresAt: { lte: now },
     },
     select: { id: true, taskId: true, storageKey: true, status: true },
+    orderBy: { expiresAt: "asc" },
     take: 100,
   });
 
@@ -39,6 +41,10 @@ export async function pruneExpiredStagedTaskAttachments(now = new Date()): Promi
     } catch {
       // Keep the claimed row so a later sweep can retry without allowing the
       // attachment to be rebound while its file deletion is uncertain.
+      await db.taskAttachment.updateMany({
+        where: { id: candidate.id, status: "expiring", messageId: null },
+        data: { expiresAt: new Date(now.getTime() + DELETE_RETRY_BACKOFF_MS) },
+      }).catch(() => undefined);
       continue;
     }
     const result = await db.taskAttachment.deleteMany({

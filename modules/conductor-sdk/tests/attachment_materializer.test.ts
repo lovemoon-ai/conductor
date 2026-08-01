@@ -135,4 +135,26 @@ describe('AttachmentMaterializer', () => {
       }] },
     })).resolves.toMatchObject({ payload: { attachments: [{ status: 'ready' }] } });
   });
+
+  test('aborts a stalled attachment download', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'materializer-'));
+    roots.push(root);
+    const materializer = new AttachmentMaterializer({
+      config: new ConductorConfig({ agentToken: 'token', backendUrl: 'https://backend.test' }),
+      projectPath: root,
+      agentHost: 'fire-1',
+      transferTimeoutMs: 10,
+      fetchImpl: vi.fn((_input, init) => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+      })) as typeof fetch,
+    });
+    await expect(materializer.materializeEnvelope({
+      type: 'task_user_message',
+      payload: { task_id: 'task-1', message_id: 'msg-timeout', attachments: [{
+        id: 'file-1', name: 'spec.txt', mimeType: 'text/plain', kind: 'file', sizeBytes: 5,
+        sha256: crypto.createHash('sha256').update('right').digest('hex'),
+      }] },
+    })).rejects.toThrow(/timeout/i);
+  });
+
 });

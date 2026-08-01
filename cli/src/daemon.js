@@ -2934,6 +2934,7 @@ export function startDaemon(config = {}, deps = {}) {
     "project_agents_registry",
     "restart_daemon",
     "refresh_session_inplace",
+    "task_attachments_v1",
     CUSTOM_COMMANDS_CAPABILITY,
   ];
   if (ptyTaskCapabilityEnabled) {

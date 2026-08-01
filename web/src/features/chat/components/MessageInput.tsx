@@ -296,23 +296,34 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
     if ((!nextContent.trim() && selectedFiles.length === 0) || disabled || sendDisabled || isSubmitting) return false;
     const trimmedContent = nextContent.trim();
     const filesToSend = [...selectedFiles];
-    if (filesToSend.length === 0) {
-      onSend(trimmedContent);
-      historyCursorRef.current = null;
-      historyDraftRef.current = '';
-      updateContent('');
-      return true;
-    }
     setIsSubmitting(true);
     setFileError('');
-    void Promise.resolve(onSend(trimmedContent, filesToSend))
+    let sendResult: void | Promise<void>;
+    try {
+      sendResult = filesToSend.length ? onSend(trimmedContent, filesToSend) : onSend(trimmedContent);
+    } catch {
+      setFileError(filesToSend.length
+        ? 'Upload or send failed. Your files are still selected; please retry.'
+        : 'Send failed. Your message is still here; please retry.');
+      setIsSubmitting(false);
+      return true;
+    }
+    if (!sendResult || typeof (sendResult as Promise<void>).then !== 'function') {
+      updateContent('');
+      setSelectedFiles([]);
+      setIsSubmitting(false);
+    } else {
+      void sendResult
       .then(() => {
         updateContent('');
         setSelectedFiles([]);
         setFileError('');
       })
-      .catch(() => setFileError('Upload or send failed. Your files are still selected; please retry.'))
+      .catch(() => setFileError(filesToSend.length
+        ? 'Upload or send failed. Your files are still selected; please retry.'
+        : 'Send failed. Your message is still here; please retry.'))
       .finally(() => setIsSubmitting(false));
+    }
     // The prompt will show up in the ArrowUp history as soon as it lands in
     // the chat store (either via the optimistic insert in `sendMessage` or
     // when the server echoes it back), so no local bookkeeping is needed

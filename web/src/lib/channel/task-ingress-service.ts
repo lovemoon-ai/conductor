@@ -13,6 +13,7 @@ type ConnectedAgent = {
   id: string;
   host: string;
   supportedBackends: string[];
+  capabilities?: string[];
 };
 
 export class TaskIngressError extends Error {
@@ -326,9 +327,25 @@ export async function appendUserMessageToTask(input: {
       error: "Too many attachments",
     });
   }
+  if (attachmentIds.length > 0) {
+    const targetAgent = realtimeHub.getAgentsForUser(input.userId)
+      .find((agent) => agent.host === userMessageTargetHost);
+    const supportsAttachments = targetAgent?.capabilities
+      .some((capability) => capability.trim().toLowerCase() === "task_attachments_v1");
+    if (!supportsAttachments) {
+      throw new TaskIngressError("ATTACHMENTS_UNSUPPORTED_BY_AGENT", 409, "Connected agent does not support attachments", {
+        error: "Agent upgrade required",
+        message: "Upgrade and reconnect Conductor on the target machine before sending attachments.",
+      });
+    }
+  }
+  const attachmentBindingTime = new Date();
   const attachments = attachmentIds.length
     ? await db.taskAttachment.findMany({
-        where: { id: { in: attachmentIds }, taskId: input.taskId, messageId: null, status: "uploaded" },
+        where: {
+          id: { in: attachmentIds }, taskId: input.taskId, messageId: null,
+          status: "uploaded", expiresAt: { gt: attachmentBindingTime },
+        },
       })
     : [];
   if (attachments.length !== attachmentIds.length) {
@@ -337,6 +354,20 @@ export async function appendUserMessageToTask(input: {
     });
   }
   const orderedAttachments = attachmentIds.map((id) => attachments.find((entry) => entry.id === id)!);
+  const nativeImageTypes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+  const imageBytes = orderedAttachments
+    .filter((entry) => nativeImageTypes.has(entry.mimeType.toLowerCase()))
+    .reduce((total, entry) => total + entry.sizeBytes, 0);
+  const contextBytes = orderedAttachments
+    .filter((entry) => !nativeImageTypes.has(entry.mimeType.toLowerCase()))
+    .reduce((total, entry) => total + entry.sizeBytes, 0);
+  if (orderedAttachments.some((entry) => nativeImageTypes.has(entry.mimeType.toLowerCase()) && entry.sizeBytes > 20 * 1024 * 1024)
+      || imageBytes > 100 * 1024 * 1024
+      || contextBytes > 200 * 1024 * 1024) {
+    throw new TaskIngressError("ATTACHMENT_LIMIT_EXCEEDED", 413, "Attachment size limit exceeded", {
+      error: "Attachment size limit exceeded",
+    });
+  }
   const attachmentMetadata = orderedAttachments.map((attachment) => ({
     id: attachment.id,
     name: attachment.originalName,
@@ -368,7 +399,10 @@ export async function appendUserMessageToTask(input: {
       const created = await tx.message.create({ data: messageData });
       if (attachmentIds.length) {
         const bound = await tx.taskAttachment.updateMany({
-          where: { id: { in: attachmentIds }, taskId: input.taskId, messageId: null, status: "uploaded" },
+          where: {
+            id: { in: attachmentIds }, taskId: input.taskId, messageId: null,
+            status: "uploaded", expiresAt: { gt: attachmentBindingTime },
+          },
           data: { messageId: created.id, status: "bound", boundAt: new Date(), expiresAt: null },
         });
         if (bound.count !== attachmentIds.length) {

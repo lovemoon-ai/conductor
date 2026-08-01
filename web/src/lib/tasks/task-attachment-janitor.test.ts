@@ -18,7 +18,10 @@ const { deleteTaskAttachmentByStorageKey } = await import("@/lib/tasks/task-file
 const { pruneExpiredStagedTaskAttachments } = await import("./task-attachment-janitor");
 
 describe("task attachment janitor", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.taskAttachment.updateMany).mockResolvedValue({ count: 0 } as any);
+  });
 
   it("claims an expired unbound upload before deleting its file", async () => {
     vi.mocked(db.taskAttachment.findMany).mockResolvedValue([
@@ -67,5 +70,9 @@ describe("task attachment janitor", () => {
 
     await expect(pruneExpiredStagedTaskAttachments()).resolves.toBe(0);
     expect(db.taskAttachment.deleteMany).not.toHaveBeenCalled();
+    expect(db.taskAttachment.updateMany).toHaveBeenCalledWith({
+      where: { id: "att-1", status: "expiring", messageId: null },
+      data: { expiresAt: expect.any(Date) },
+    });
   });
 });

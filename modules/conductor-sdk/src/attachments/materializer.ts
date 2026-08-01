@@ -8,6 +8,7 @@ import { ConductorConfig } from '../config/index.js';
 
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 const MAX_ATTACHMENTS = 20;
+const DEFAULT_TRANSFER_TIMEOUT_MS = 120_000;
 
 type FetchLike = typeof fetch;
 type JsonRecord = Record<string, unknown>;
@@ -17,6 +18,7 @@ export interface AttachmentMaterializerOptions {
   projectPath: string;
   agentHost: string;
   fetchImpl?: FetchLike;
+  transferTimeoutMs?: number;
 }
 
 function cleanSegment(value: unknown, fallback: string): string {
@@ -46,12 +48,15 @@ export class AttachmentMaterializer {
   private readonly projectPath: string;
   private readonly agentHost: string;
   private readonly fetchImpl: FetchLike;
+  private readonly transferTimeoutMs: number;
+  private readonly inFlight = new Map<string, Promise<JsonRecord>>();
 
   constructor(options: AttachmentMaterializerOptions) {
     this.config = options.config;
     this.projectPath = path.resolve(options.projectPath);
     this.agentHost = options.agentHost;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.transferTimeoutMs = options.transferTimeoutMs ?? DEFAULT_TRANSFER_TIMEOUT_MS;
   }
 
   async materializeEnvelope(envelope: JsonRecord): Promise<JsonRecord> {
@@ -60,6 +65,7 @@ export class AttachmentMaterializer {
       ? { ...(envelope.payload as JsonRecord) }
       : null;
     if (!payload || !Array.isArray(payload.attachments) || payload.attachments.length === 0) return envelope;
+    const attachments = payload.attachments;
     // Attachments created before the reliable-transfer protocol did not carry a
     // digest. Preserve those legacy display-only descriptors instead of
     // turning an old message into a permanently unacknowledgeable command.
@@ -77,6 +83,26 @@ export class AttachmentMaterializer {
     const messageId = typeof payload.message_id === 'string' ? payload.message_id.trim() : '';
     if (!taskId || !messageId) throw new Error('Attachment message is missing task_id or message_id');
 
+    const key = `${taskId}:${messageId}`;
+    const current = this.inFlight.get(key);
+    if (current) return current;
+    const operation = this.materializeAttachments(envelope, payload, attachments, taskId, messageId);
+    this.inFlight.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      this.inFlight.delete(key);
+    }
+  }
+
+  private async materializeAttachments(
+    envelope: JsonRecord,
+    payload: JsonRecord,
+    attachments: unknown[],
+    taskId: string,
+    messageId: string,
+  ): Promise<JsonRecord> {
+
     const messageDir = path.join(
       this.projectPath,
       '.conductor',
@@ -89,12 +115,12 @@ export class AttachmentMaterializer {
       taskId,
       messageId,
       status: 'materializing',
-      attachments: payload.attachments,
+      attachments,
       updatedAt: new Date().toISOString(),
     });
 
     const localAttachments = [];
-    for (const raw of payload.attachments) {
+    for (const raw of attachments) {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid attachment descriptor');
       localAttachments.push(await this.materializeOne(taskId, messageDir, raw as JsonRecord));
     }
@@ -135,12 +161,14 @@ export class AttachmentMaterializer {
       `/api/agent/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(id)}/content`,
       this.config.backendUrl,
     );
+    const transferSignal = AbortSignal.timeout(this.transferTimeoutMs);
     const response = await this.fetchImpl(url, {
       headers: {
         Authorization: `Bearer ${this.config.agentToken}`,
         'X-Conductor-Host': this.agentHost,
         Accept: 'application/octet-stream',
       },
+      signal: transferSignal,
     });
     if (!response.ok || !response.body) throw new Error(`Attachment download failed with HTTP ${response.status}`);
     const contentLength = response.headers.get('content-length');
@@ -164,7 +192,12 @@ export class AttachmentMaterializer {
       },
     });
     try {
-      await pipeline(Readable.fromWeb(response.body as never), verifier, fs.createWriteStream(temporaryPath, { mode: 0o600 }));
+      await pipeline(
+        Readable.fromWeb(response.body as never),
+        verifier,
+        fs.createWriteStream(temporaryPath, { mode: 0o600 }),
+        { signal: transferSignal },
+      );
       if (received !== sizeBytes) throw new Error('Attachment size mismatch');
       if (hash.digest('hex') !== sha256) throw new Error('Attachment SHA-256 mismatch');
       fs.renameSync(temporaryPath, localPath);
@@ -180,7 +213,7 @@ export class AttachmentMaterializer {
       `/api/agent/tasks/${encodeURIComponent(taskId)}/messages/${encodeURIComponent(messageId)}/materialized`,
       this.config.backendUrl,
     );
-    const response = await this.fetchImpl(url, {
+    const response = await this.fetchWithTimeout(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.config.agentToken}`,
@@ -196,5 +229,16 @@ export class AttachmentMaterializer {
       }),
     });
     if (!response.ok) throw new Error(`Attachment materialization report failed with HTTP ${response.status}`);
+  }
+
+  private async fetchWithTimeout(input: URL, init: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error('Attachment transfer timed out')), this.transferTimeoutMs);
+    timeout.unref?.();
+    try {
+      return await this.fetchImpl(input, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 }

@@ -130,6 +130,17 @@ describe('MessageInput', () => {
     expect(screen.getByText('notes.md')).toBeTruthy();
   });
 
+  it('retains the text draft when a text-only send fails', async () => {
+    const onSend = vi.fn().mockRejectedValue(new Error('network down'));
+    render(<MessageInput taskId="task-retry-text" onSend={onSend} />);
+    const textarea = screen.getByTestId('message-input-textarea');
+    fireEvent.change(textarea, { target: { value: 'keep this draft' } });
+    fireEvent.click(screen.getByTestId('message-input-send-button'));
+
+    await screen.findByText('Send failed. Your message is still here; please retry.');
+    expect(textarea).toHaveValue('keep this draft');
+  });
+
   it('autofocuses the composer when requested', async () => {
     render(
       <MessageInput

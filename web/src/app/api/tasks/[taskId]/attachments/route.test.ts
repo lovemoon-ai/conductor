@@ -13,14 +13,14 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 vi.mock("@/lib/tasks/task-file-storage", () => ({
-  writeTaskAttachment: vi.fn(),
+  writeTaskAttachmentStream: vi.fn(),
   openTaskAttachmentStreamByStorageKey: vi.fn(),
   deleteTaskAttachmentByStorageKey: vi.fn(),
 }));
 
 const { getActiveSubscriptionUser } = await import("@/lib/auth/middleware");
 const { db } = await import("@/lib/db");
-const { writeTaskAttachment, openTaskAttachmentStreamByStorageKey, deleteTaskAttachmentByStorageKey } = await import("@/lib/tasks/task-file-storage");
+const { writeTaskAttachmentStream, openTaskAttachmentStreamByStorageKey, deleteTaskAttachmentByStorageKey } = await import("@/lib/tasks/task-file-storage");
 
 describe("/api/tasks/[taskId]/attachments", () => {
   beforeEach(() => {
@@ -31,10 +31,13 @@ describe("/api/tasks/[taskId]/attachments", () => {
   });
 
   it("uploads a staging attachment without creating a message", async () => {
-    vi.mocked(writeTaskAttachment).mockResolvedValue({
+    vi.mocked(writeTaskAttachmentStream).mockImplementation(async ({ stream }) => {
+      stream.resume();
+      return {
       id: "att-1", name: "diagram.png", mimeType: "image/png", sizeBytes: 4, kind: "image",
       downloadUrl: "/api/tasks/task-1/attachments/att-1", storageKey: "att-1--diagram.png", sha256: "a".repeat(64),
-    } as any);
+      } as any;
+    });
     vi.mocked(db.taskAttachment.create).mockResolvedValue({
       id: "att-1", taskId: "task-1", originalName: "diagram.png", mimeType: "image/png", sizeBytes: 4,
       kind: "image", status: "uploaded", sha256: "a".repeat(64), createdAt: new Date("2026-08-01T00:00:00Z"),
@@ -62,7 +65,7 @@ describe("/api/tasks/[taskId]/attachments", () => {
       method: "POST", body: formData,
     }), { params: Promise.resolve({ taskId: "task-1" }) });
     expect(response.status).toBe(415);
-    expect(writeTaskAttachment).not.toHaveBeenCalled();
+    expect(writeTaskAttachmentStream).not.toHaveBeenCalled();
   });
 
   it("rejects a video extension even when the browser omits its MIME type", async () => {
@@ -72,14 +75,17 @@ describe("/api/tasks/[taskId]/attachments", () => {
       method: "POST", body: formData,
     }), { params: Promise.resolve({ taskId: "task-1" }) });
     expect(response.status).toBe(415);
-    expect(writeTaskAttachment).not.toHaveBeenCalled();
+    expect(writeTaskAttachmentStream).not.toHaveBeenCalled();
   });
 
   it("removes the staged file when its database record cannot be created", async () => {
-    vi.mocked(writeTaskAttachment).mockResolvedValue({
+    vi.mocked(writeTaskAttachmentStream).mockImplementation(async ({ stream }) => {
+      stream.resume();
+      return {
       id: "att-orphan", name: "notes.txt", mimeType: "text/plain", sizeBytes: 4, kind: "file",
       downloadUrl: "/api/tasks/task-1/attachments/att-orphan", storageKey: "att-orphan--notes.txt", sha256: "b".repeat(64),
-    } as any);
+      } as any;
+    });
     vi.mocked(db.taskAttachment.create).mockRejectedValue(new Error("database unavailable"));
     const formData = new FormData();
     formData.set("file", new File(["data"], "notes.txt", { type: "text/plain" }));
@@ -108,5 +114,20 @@ describe("/api/tasks/[taskId]/attachments", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("ETag")).toBe(`"${"a".repeat(64)}"`);
     expect(Buffer.from(await response.arrayBuffer()).toString()).toBe("data");
+  });
+
+  it("forces active content to download without MIME sniffing", async () => {
+    vi.mocked(db.taskAttachment.findFirst).mockResolvedValue({
+      id: "att-html", taskId: "task-1", originalName: "page.html", mimeType: "text/html",
+      storageKey: "att-html--page.html", sha256: "b".repeat(64),
+    } as any);
+    const { Readable } = await import("node:stream");
+    vi.mocked(openTaskAttachmentStreamByStorageKey).mockResolvedValue({ stream: Readable.from("<script></script>") as any, sizeBytes: 17 });
+    const response = await GET_ATTACHMENT(new NextRequest("http://localhost/api/tasks/task-1/attachments/att-html"), {
+      params: Promise.resolve({ taskId: "task-1", attachmentId: "att-html" }),
+    });
+    expect(response.headers.get("Content-Type")).toBe("application/octet-stream");
+    expect(response.headers.get("Content-Disposition")).toMatch(/^attachment;/);
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
   });
 });
