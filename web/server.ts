@@ -12,7 +12,8 @@ import next from "next";
 import { setupAppGateway, APP_WS_PATH } from "./src/lib/realtime/app-gateway";
 import { setupAgentGateway, AGENT_WS_PATH } from "./src/lib/realtime/agent-gateway";
 import { setupSpeechGateway, SPEECH_WS_PATH } from "./src/lib/speech/gateway";
-import { startTaskAttachmentJanitor } from "./src/lib/tasks/task-attachment-janitor";
+import { reconcileOrphanedTaskAttachmentFiles, startTaskAttachmentJanitor } from "./src/lib/tasks/task-attachment-janitor";
+import { assertTaskAttachmentStorageConfigured } from "./src/lib/tasks/task-file-storage";
 import { startScheduledMessageDispatcher } from "./src/lib/tasks/scheduled-messages";
 import {
   reconcileDailyReportSchedules,
@@ -60,6 +61,10 @@ function setCorsHeaders(req: IncomingMessage, res: ServerResponse) {
 }
 
 app.prepare().then(async () => {
+  assertTaskAttachmentStorageConfigured();
+  await reconcileOrphanedTaskAttachmentFiles().catch((error) => {
+    console.warn(`[attachments] orphan reconciliation failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
   startTaskAttachmentJanitor();
 
   // Restore task bindings from database to prevent tasks stuck in 'init' state after restart

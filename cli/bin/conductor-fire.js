@@ -798,7 +798,7 @@ async function main() {
       extraEnv: env,
       extraHeaders: buildConductorConnectHeaders(pkgJson.version, {
         backends: [cliArgs.backend],
-        capabilities: ["refresh_session_inplace"],
+        capabilities: ["refresh_session_inplace", "task_attachments_v1"],
       }),
       configFile: cliArgs.configFile,
       onConnected: (event) => {

@@ -736,12 +736,12 @@ describe("conductor-fire backends", () => {
     assert.deepEqual(
       buildConductorConnectHeaders("0.2.21", {
         backends: ["codex"],
-        capabilities: ["refresh_session_inplace"],
+        capabilities: ["refresh_session_inplace", "task_attachments_v1"],
       }),
       {
       "x-conductor-version": "0.2.21",
         "x-conductor-backends": "codex",
-        "x-conductor-capabilities": "refresh_session_inplace",
+        "x-conductor-capabilities": "refresh_session_inplace,task_attachments_v1",
       },
     );
   });

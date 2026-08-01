@@ -1,8 +1,17 @@
 import { db } from "@/lib/db";
-import { deleteTaskAttachmentByStorageKey } from "@/lib/tasks/task-file-storage";
+import { deleteTaskAttachmentByStorageKey, pruneOrphanedTaskAttachmentFiles } from "@/lib/tasks/task-file-storage";
 
 const DEFAULT_SWEEP_INTERVAL_MS = 60_000;
 const DELETE_RETRY_BACKOFF_MS = 5 * 60_000;
+const ORPHAN_GRACE_MS = 24 * 60 * 60 * 1000;
+
+export async function reconcileOrphanedTaskAttachmentFiles(now = new Date()): Promise<number> {
+  const records = await db.taskAttachment.findMany({ select: { storageKey: true } });
+  return pruneOrphanedTaskAttachmentFiles(
+    new Set(records.map((record) => record.storageKey)),
+    new Date(now.getTime() - ORPHAN_GRACE_MS),
+  );
+}
 
 function sweepIntervalMs(): number {
   const parsed = Number.parseInt(process.env.CONDUCTOR_ATTACHMENT_SWEEP_INTERVAL_MS || "", 10);
@@ -56,10 +65,16 @@ export async function pruneExpiredStagedTaskAttachments(now = new Date()): Promi
 }
 
 export function startTaskAttachmentJanitor(log: Pick<Console, "info" | "error"> = console): NodeJS.Timeout {
+  let sweepCount = 0;
   const timer = setInterval(() => {
     void pruneExpiredStagedTaskAttachments()
-      .then((deletedCount) => {
+      .then(async (deletedCount) => {
         if (deletedCount > 0) log.info?.(`[attachments] pruned ${deletedCount} expired staged attachment(s)`);
+        sweepCount += 1;
+        if (sweepCount % 60 === 0) {
+          const orphanCount = await reconcileOrphanedTaskAttachmentFiles();
+          if (orphanCount > 0) log.info?.(`[attachments] pruned ${orphanCount} orphaned attachment file(s)`);
+        }
       })
       .catch((error) => {
         log.error?.(`[attachments] failed to prune staged attachments: ${error instanceof Error ? error.message : String(error)}`);

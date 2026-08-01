@@ -3,12 +3,14 @@ import { z } from "zod";
 
 import { authenticateAgentRequest } from "@/lib/auth/agent-request";
 import { db } from "@/lib/db";
+import { verifyAttachmentTransferToken } from "@/lib/tasks/attachment-transfer-token";
 
 const bodySchema = z.object({
   attachments: z.array(z.object({
     id: z.string().min(1),
     sha256: z.string().regex(/^[a-f0-9]{64}$/i),
     status: z.literal("ready"),
+    transferToken: z.string().min(1),
   })).min(1).max(20),
 }).superRefine((value, context) => {
   const ids = value.attachments.map((entry) => entry.id);
@@ -26,6 +28,10 @@ export async function POST(
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   const { taskId, messageId } = await params;
+  if (parsed.data.attachments.some((attachment) => !verifyAttachmentTransferToken(
+    attachment.transferToken,
+    { taskId, attachmentId: attachment.id, agentHost: auth.agentHost },
+  ))) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const task = await db.task.findFirst({
     where: {
       id: taskId,

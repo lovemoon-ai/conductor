@@ -31,6 +31,11 @@ function normalizeSha256(value: unknown): string {
   return /^[a-f0-9]{64}$/.test(normalized) ? normalized : '';
 }
 
+function withoutTransferToken(attachment: JsonRecord): JsonRecord {
+  const { transferToken: _transferToken, ...safe } = attachment;
+  return safe;
+}
+
 function atomicWriteJson(filePath: string, value: unknown): void {
   const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
@@ -50,6 +55,7 @@ export class AttachmentMaterializer {
   private readonly fetchImpl: FetchLike;
   private readonly transferTimeoutMs: number;
   private readonly inFlight = new Map<string, Promise<JsonRecord>>();
+  private readonly shutdownController = new AbortController();
 
   constructor(options: AttachmentMaterializerOptions) {
     this.config = options.config;
@@ -57,6 +63,34 @@ export class AttachmentMaterializer {
     this.agentHost = options.agentHost;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.transferTimeoutMs = options.transferTimeoutMs ?? DEFAULT_TRANSFER_TIMEOUT_MS;
+  }
+
+  abortAll(): void {
+    this.shutdownController.abort(new Error('Attachment materializer closed'));
+  }
+
+  validateEnvelopeForStaging(envelope: JsonRecord): boolean {
+    if (envelope.type !== 'task_user_message') return false;
+    const payload = envelope.payload && typeof envelope.payload === 'object' ? envelope.payload as JsonRecord : null;
+    if (!payload || !Array.isArray(payload.attachments) || payload.attachments.length === 0) return false;
+    const attachments = payload.attachments;
+    if (attachments.some((entry) => !entry || typeof entry !== 'object' || Array.isArray(entry)
+      || !normalizeSha256((entry as JsonRecord).sha256))) return false;
+    if (attachments.length > MAX_ATTACHMENTS) throw new Error('Too many message attachments');
+    const ids = attachments.map((entry) => typeof (entry as JsonRecord).id === 'string'
+      ? String((entry as JsonRecord).id).trim() : '');
+    if (ids.some((id) => !id) || new Set(ids).size !== ids.length) throw new Error('Message attachments must have unique IDs');
+    for (const raw of attachments as JsonRecord[]) {
+      const size = typeof raw.sizeBytes === 'number' ? raw.sizeBytes : Number.NaN;
+      const transferToken = typeof raw.transferToken === 'string' ? raw.transferToken.trim() : '';
+      if (!transferToken || (raw.kind !== 'image' && raw.kind !== 'file') || !Number.isSafeInteger(size) || size < 0 || size > MAX_ATTACHMENT_BYTES) {
+        throw new Error(`Invalid attachment descriptor for ${String(raw.id || 'attachment')}`);
+      }
+    }
+    const taskId = typeof payload.task_id === 'string' ? payload.task_id.trim() : '';
+    const messageId = typeof payload.message_id === 'string' ? payload.message_id.trim() : '';
+    if (!taskId || !messageId) throw new Error('Attachment message is missing task_id or message_id');
+    return true;
   }
 
   async materializeEnvelope(envelope: JsonRecord): Promise<JsonRecord> {
@@ -115,7 +149,7 @@ export class AttachmentMaterializer {
       taskId,
       messageId,
       status: 'materializing',
-      attachments,
+      attachments: attachments.map((entry) => withoutTransferToken(entry as JsonRecord)),
       updatedAt: new Date().toISOString(),
     });
 
@@ -131,7 +165,7 @@ export class AttachmentMaterializer {
       attachments: localAttachments,
       updatedAt: new Date().toISOString(),
     });
-    await this.reportMaterialized(taskId, messageId, localAttachments);
+    await this.reportMaterialized(taskId, messageId, localAttachments, attachments as JsonRecord[]);
 
     const metadata = payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
       ? { ...(payload.metadata as JsonRecord), attachments: localAttachments }
@@ -152,7 +186,7 @@ export class AttachmentMaterializer {
     if (fs.existsSync(localPath)) {
       const stat = fs.statSync(localPath);
       if (stat.isFile() && stat.size === sizeBytes && await hashFile(localPath) === sha256) {
-        return { ...attachment, path: localPath, localPath, status: 'ready' };
+        return { ...withoutTransferToken(attachment), path: localPath, localPath, status: 'ready' };
       }
       fs.rmSync(localPath, { force: true });
     }
@@ -161,13 +195,20 @@ export class AttachmentMaterializer {
       `/api/agent/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(id)}/content`,
       this.config.backendUrl,
     );
-    const transferSignal = AbortSignal.timeout(this.transferTimeoutMs);
+    const transferToken = typeof attachment.transferToken === 'string' ? attachment.transferToken.trim() : '';
+    if (!transferToken) throw new Error(`Attachment transfer token missing for ${id}`);
+    const transferHeaders = {
+      Authorization: `Bearer ${this.config.agentToken}`,
+      'X-Conductor-Host': this.agentHost,
+      'X-Conductor-Attachment-Token': transferToken,
+      Accept: 'application/octet-stream',
+    };
+    const transferSignal = AbortSignal.any([
+      AbortSignal.timeout(this.transferTimeoutMs),
+      this.shutdownController.signal,
+    ]);
     const response = await this.fetchImpl(url, {
-      headers: {
-        Authorization: `Bearer ${this.config.agentToken}`,
-        'X-Conductor-Host': this.agentHost,
-        Accept: 'application/octet-stream',
-      },
+      headers: transferHeaders,
       signal: transferSignal,
     });
     if (!response.ok || !response.body) throw new Error(`Attachment download failed with HTTP ${response.status}`);
@@ -205,10 +246,15 @@ export class AttachmentMaterializer {
       fs.rmSync(temporaryPath, { force: true });
       throw error;
     }
-    return { ...attachment, path: localPath, localPath, status: 'ready' };
+    return { ...withoutTransferToken(attachment), path: localPath, localPath, status: 'ready' };
   }
 
-  private async reportMaterialized(taskId: string, messageId: string, attachments: JsonRecord[]): Promise<void> {
+  private async reportMaterialized(
+    taskId: string,
+    messageId: string,
+    attachments: JsonRecord[],
+    sourceAttachments: JsonRecord[],
+  ): Promise<void> {
     const url = new URL(
       `/api/agent/tasks/${encodeURIComponent(taskId)}/messages/${encodeURIComponent(messageId)}/materialized`,
       this.config.backendUrl,
@@ -221,10 +267,11 @@ export class AttachmentMaterializer {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        attachments: attachments.map((attachment) => ({
+        attachments: attachments.map((attachment, index) => ({
           id: attachment.id,
           sha256: attachment.sha256,
           status: 'ready',
+          transferToken: sourceAttachments[index]?.transferToken,
         })),
       }),
     });
@@ -234,11 +281,14 @@ export class AttachmentMaterializer {
   private async fetchWithTimeout(input: URL, init: RequestInit): Promise<Response> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error('Attachment transfer timed out')), this.transferTimeoutMs);
+    const abortForShutdown = () => controller.abort(this.shutdownController.signal.reason);
+    this.shutdownController.signal.addEventListener('abort', abortForShutdown, { once: true });
     timeout.unref?.();
     try {
       return await this.fetchImpl(input, { ...init, signal: controller.signal });
     } finally {
       clearTimeout(timeout);
+      this.shutdownController.signal.removeEventListener('abort', abortForShutdown);
     }
   }
 }

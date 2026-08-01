@@ -272,6 +272,7 @@ describe('task-ingress-service', () => {
 
     const metadata = JSON.parse((vi.mocked(db.message.create).mock.calls[0][0] as any).data.metadata);
     expect(metadata.attachments.map((entry: any) => entry.id)).toEqual(['att-1', 'att-2']);
+    expect(metadata.attachments.every((entry: any) => entry.transferToken === undefined)).toBe(true);
     expect(db.taskAttachment.updateMany).toHaveBeenCalledWith({
       where: {
         id: { in: ['att-1', 'att-2'] }, taskId: 'task-1', messageId: null, status: 'uploaded',
@@ -292,6 +293,8 @@ describe('task-ingress-service', () => {
       }),
       expect.any(Object),
     );
+    const command = vi.mocked(enqueueAndAttemptAgentCommand).mock.calls[0][0] as any;
+    expect(command.envelope.payload.attachments.every((entry: any) => typeof entry.transferToken === 'string')).toBe(true);
   });
 
   it('does not bind expired staging attachments', async () => {

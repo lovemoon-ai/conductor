@@ -38,4 +38,12 @@ describe('SessionManager', () => {
     const sessions = await manager.listSessions();
     expect(new Set(sessions.map((s) => s.taskId))).toEqual(new Set(['task1', 'task2']));
   });
+
+  test('deduplicates retried downstream messages by message id', async () => {
+    const manager = new SessionManager();
+    await manager.addSession('task1', 'sess1', 'proj1');
+    await manager.addMessage('task1', { messageId: 'same', role: 'user', content: 'hello' });
+    await manager.addMessage('task1', { messageId: 'same', role: 'user', content: 'hello' });
+    expect(await manager.popMessages('task1')).toHaveLength(1);
+  });
 });

@@ -9,6 +9,7 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 vi.mock("@/lib/tasks/task-file-storage", () => ({ openTaskAttachmentStreamByStorageKey: vi.fn() }));
+vi.mock("@/lib/tasks/attachment-transfer-token", () => ({ verifyAttachmentTransferToken: vi.fn(() => true) }));
 
 const { authenticateAgentRequest } = await import("@/lib/auth/agent-request");
 const { db } = await import("@/lib/db");
@@ -81,8 +82,8 @@ describe("agent task attachments", () => {
       {
         method: "POST",
         body: JSON.stringify({ attachments: [
-          { id: "att-1", sha256: "a".repeat(64), status: "ready" },
-          { id: "att-2", sha256: "b".repeat(64), status: "ready" },
+          { id: "att-1", sha256: "a".repeat(64), status: "ready", transferToken: "one" },
+          { id: "att-2", sha256: "b".repeat(64), status: "ready", transferToken: "two" },
         ] }),
       },
     ), { params: Promise.resolve({ taskId: "task-1", messageId: "msg-1" }) });
@@ -100,7 +101,7 @@ describe("agent task attachments", () => {
     const response = await POST(agentRequest(
       "http://localhost/api/agent/tasks/task-1/messages/msg-1/materialized",
       { method: "POST", body: JSON.stringify({ attachments: [
-        { id: "att-1", sha256: "a".repeat(64), status: "ready" },
+        { id: "att-1", sha256: "a".repeat(64), status: "ready", transferToken: "one" },
       ] }) },
     ), { params: Promise.resolve({ taskId: "task-1", messageId: "msg-1" }) });
 

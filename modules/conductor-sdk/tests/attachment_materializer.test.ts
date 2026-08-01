@@ -48,6 +48,7 @@ describe('AttachmentMaterializer', () => {
       name: index === 0 ? 'image.png' : 'spec.txt',
       mimeType: index === 0 ? 'image/png' : 'text/plain',
       kind: index === 0 ? 'image' : 'file',
+      transferToken: `token-${id}`,
       sizeBytes: body.length,
       sha256: crypto.createHash('sha256').update(body).digest('hex'),
     }));
@@ -58,8 +59,11 @@ describe('AttachmentMaterializer', () => {
     });
     const local = (result.payload as any).attachments;
     expect(local).toHaveLength(2);
+    expect(local.every((entry: any) => entry.transferToken === undefined)).toBe(true);
     expect(local.every((entry: any) => path.isAbsolute(entry.path) && fs.existsSync(entry.path))).toBe(true);
-    expect(JSON.parse(fs.readFileSync(path.join(root, '.conductor/attachments/msg-1/manifest.json'), 'utf8')).status).toBe('ready');
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, '.conductor/attachments/msg-1/manifest.json'), 'utf8'));
+    expect(manifest.status).toBe('ready');
+    expect(manifest.attachments.every((entry: any) => entry.transferToken === undefined)).toBe(true);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
@@ -81,7 +85,7 @@ describe('AttachmentMaterializer', () => {
         task_id: 'task-1',
         message_id: 'msg-1',
         attachments: [{
-          id: 'file-1', name: 'spec.txt', mimeType: 'text/plain', kind: 'file', sizeBytes: 5,
+          id: 'file-1', name: 'spec.txt', mimeType: 'text/plain', kind: 'file', sizeBytes: 5, transferToken: 'token',
           sha256: crypto.createHash('sha256').update('right').digest('hex'),
         }],
       },
@@ -99,7 +103,7 @@ describe('AttachmentMaterializer', () => {
       fetchImpl: fetchImpl as typeof fetch,
     });
     const descriptor = {
-      id: 'same', name: 'spec.txt', mimeType: 'text/plain', kind: 'file', sizeBytes: 5,
+      id: 'same', name: 'spec.txt', mimeType: 'text/plain', kind: 'file', sizeBytes: 5, transferToken: 'token',
       sha256: crypto.createHash('sha256').update('right').digest('hex'),
     };
     await expect(materializer.materializeEnvelope({
@@ -130,7 +134,7 @@ describe('AttachmentMaterializer', () => {
     await expect(materializer.materializeEnvelope({
       type: 'task_user_message',
       payload: { task_id: 'task-1', message_id: 'msg-1', attachments: [{
-        id: 'file-1', name: 'spec.txt', mimeType: 'text/plain', kind: 'file', sizeBytes: body.length,
+        id: 'file-1', name: 'spec.txt', mimeType: 'text/plain', kind: 'file', sizeBytes: body.length, transferToken: 'token',
         sha256: crypto.createHash('sha256').update(body).digest('hex'),
       }] },
     })).resolves.toMatchObject({ payload: { attachments: [{ status: 'ready' }] } });
@@ -151,7 +155,7 @@ describe('AttachmentMaterializer', () => {
     await expect(materializer.materializeEnvelope({
       type: 'task_user_message',
       payload: { task_id: 'task-1', message_id: 'msg-timeout', attachments: [{
-        id: 'file-1', name: 'spec.txt', mimeType: 'text/plain', kind: 'file', sizeBytes: 5,
+        id: 'file-1', name: 'spec.txt', mimeType: 'text/plain', kind: 'file', sizeBytes: 5, transferToken: 'token',
         sha256: crypto.createHash('sha256').update('right').digest('hex'),
       }] },
     })).rejects.toThrow(/timeout/i);

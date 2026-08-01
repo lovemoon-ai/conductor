@@ -8,6 +8,7 @@ import {
 } from "@/lib/subscription/plan-limits";
 import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 import { projectTaskMessage } from "./task-event-projector";
+import { signAttachmentTransferToken } from "@/lib/tasks/attachment-transfer-token";
 
 type ConnectedAgent = {
   id: string;
@@ -368,7 +369,7 @@ export async function appendUserMessageToTask(input: {
       error: "Attachment size limit exceeded",
     });
   }
-  const attachmentMetadata = orderedAttachments.map((attachment) => ({
+  const attachmentDeliveryMetadata = orderedAttachments.map((attachment) => ({
     id: attachment.id,
     name: attachment.originalName,
     mimeType: attachment.mimeType,
@@ -378,7 +379,13 @@ export async function appendUserMessageToTask(input: {
     status: "bound",
     downloadUrl: `/api/tasks/${encodeURIComponent(input.taskId)}/attachments/${encodeURIComponent(attachment.id)}`,
     createdAt: attachment.createdAt.toISOString(),
+    transferToken: signAttachmentTransferToken({
+      taskId: input.taskId,
+      attachmentId: attachment.id,
+      agentHost: userMessageTargetHost!,
+    }),
   }));
+  const attachmentMetadata = attachmentDeliveryMetadata.map(({ transferToken: _transferToken, ...attachment }) => attachment);
   const callerMetadata = input.metadata ? { ...input.metadata } : null;
   if (callerMetadata) delete callerMetadata.attachments;
   const finalMetadata = attachmentMetadata.length
@@ -465,7 +472,7 @@ export async function appendUserMessageToTask(input: {
             content: message.content,
             created_at: message.createdAt.toISOString(),
             metadata: finalMetadata ?? undefined,
-            attachments: getMessageAttachments(finalMetadata),
+            attachments: attachmentDeliveryMetadata,
           },
         },
       },
