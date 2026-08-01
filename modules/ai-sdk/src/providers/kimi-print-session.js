@@ -6,6 +6,7 @@ import { EventEmitter } from "node:events";
 import readline from "node:readline";
 
 import { KIMI_CLI_PRINT_VARIANT as KIMI_PRINT_PROVIDER_VARIANT } from "../built-in-backends.js";
+import { appendContextFilesToPrompt } from "../context-files.js";
 import {
   PROVIDER_MEDIA_CAPABILITIES,
   UNSUPPORTED_MEDIA_CAPABILITIES,
@@ -542,7 +543,7 @@ export class KimiPrintSession extends EventEmitter {
     }
   }
 
-  async runTurn(promptText, { useInitialImages = false, media: mediaInput, onProgress = null, jsonSchema = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested || this.closed) {
       throw this.createSessionClosedError();
     }
@@ -555,6 +556,7 @@ export class KimiPrintSession extends EventEmitter {
     const media = resolveTurnMedia(this.options, { useInitialImages, media: mediaInput });
     assertMediaCapabilities(media, this.backend, PROVIDER_MEDIA_CAPABILITIES[KIMI_PRINT_PROVIDER_VARIANT]);
     let effectivePrompt = this.buildPrompt(promptText);
+    effectivePrompt = appendContextFilesToPrompt(effectivePrompt, contextFiles).prompt;
     if (jsonSchema && typeof jsonSchema === "object") {
       const promptWithSchema = effectivePrompt || (media.length > 0 ? defaultPromptForMedia(media) : "");
       if (promptWithSchema) {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 
 import { KIMI_CLI_WIRE_VARIANT as KIMI_PROVIDER_VARIANT } from "../built-in-backends.js";
+import { appendContextFilesToPrompt } from "../context-files.js";
 import { PROVIDER_MEDIA_CAPABILITIES, buildKimiContent } from "../media-adapters.js";
 import {
   assertMediaCapabilities,
@@ -1040,7 +1041,7 @@ export class KimiCliSession extends EventEmitter {
     return false;
   }
 
-  async runTurn(promptText, { useInitialImages = false, media: mediaInput, onProgress = null, jsonSchema = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested || this.closed) {
       throw this.createSessionClosedError();
     }
@@ -1050,6 +1051,7 @@ export class KimiCliSession extends EventEmitter {
     let effectivePrompt =
       this.buildPrompt(promptText, { useInitialImages: false }) ||
       (media.length ? defaultPromptForMedia(media) : "");
+    effectivePrompt = appendContextFilesToPrompt(effectivePrompt, contextFiles).prompt;
     if (jsonSchema && typeof jsonSchema === "object" && effectivePrompt) {
       effectivePrompt = injectJsonSchemaPrompt(effectivePrompt, jsonSchema);
     }

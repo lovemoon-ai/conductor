@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 
 import { OPENCODE_SDK_VARIANT as OPENCODE_PROVIDER_VARIANT } from "../built-in-backends.js";
+import { appendContextFilesToPrompt } from "../context-files.js";
 import { PROVIDER_MEDIA_CAPABILITIES, buildOpencodeParts } from "../media-adapters.js";
 import {
   assertMediaCapabilities,
@@ -1313,16 +1314,18 @@ export class OpencodeSdkSession extends EventEmitter {
     return true;
   }
 
-  async runTurn(promptText, { useInitialImages = false, media: mediaInput, onProgress = null, jsonSchema = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested) {
       throw this.createSessionClosedError();
     }
 
     const media = resolveTurnMedia(this.options, { useInitialImages, media: mediaInput });
     assertMediaCapabilities(media, this.backend, PROVIDER_MEDIA_CAPABILITIES[OPENCODE_PROVIDER_VARIANT]);
-    const effectivePrompt =
+    const effectivePrompt = appendContextFilesToPrompt(
       this.buildPrompt(promptText, { useInitialImages: false }) ||
-      (media.length ? defaultPromptForMedia(media) : "");
+      (media.length ? defaultPromptForMedia(media) : ""),
+      contextFiles,
+    ).prompt;
     if (!effectivePrompt && media.length === 0) {
       return buildEmptyTurnResult();
     }

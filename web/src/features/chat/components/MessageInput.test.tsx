@@ -89,6 +89,47 @@ describe('MessageInput', () => {
     );
   });
 
+  it('selects and sends multiple files in their original order', async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    render(<MessageInput taskId="task-files" onSend={onSend} />);
+    const image = new File(['image'], 'diagram.png', { type: 'image/png' });
+    const notes = new File(['notes'], 'notes.md', { type: 'text/markdown' });
+
+    fireEvent.change(screen.getByTestId('message-input-file-picker'), {
+      target: { files: [image, notes] },
+    });
+    expect(screen.getByText('diagram.png')).toBeTruthy();
+    expect(screen.getByText('notes.md')).toBeTruthy();
+    fireEvent.change(screen.getByTestId('message-input-textarea'), { target: { value: 'inspect' } });
+    fireEvent.click(screen.getByTestId('message-input-send-button'));
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('inspect', [image, notes]));
+    await waitFor(() => expect(screen.queryByTestId('message-input-files')).toBeNull());
+  });
+
+  it('rejects video files before sending', () => {
+    const onSend = vi.fn();
+    render(<MessageInput taskId="task-video" onSend={onSend} />);
+    fireEvent.change(screen.getByTestId('message-input-file-picker'), {
+      target: { files: [new File(['video'], 'clip.mp4', { type: 'video/mp4' })] },
+    });
+
+    expect(screen.getByText('Video attachments are not supported.')).toBeTruthy();
+    expect(screen.queryByTestId('message-input-files')).toBeNull();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('retains selected files when upload or send fails', async () => {
+    const onSend = vi.fn().mockRejectedValue(new Error('network down'));
+    render(<MessageInput taskId="task-retry-files" onSend={onSend} />);
+    const notes = new File(['notes'], 'notes.md', { type: 'text/markdown' });
+    fireEvent.change(screen.getByTestId('message-input-file-picker'), { target: { files: [notes] } });
+    fireEvent.click(screen.getByTestId('message-input-send-button'));
+
+    await screen.findByText('Upload or send failed. Your files are still selected; please retry.');
+    expect(screen.getByText('notes.md')).toBeTruthy();
+  });
+
   it('autofocuses the composer when requested', async () => {
     render(
       <MessageInput
@@ -685,22 +726,31 @@ describe('MessageInput', () => {
     });
 
     it('shows a retryable error instead of the empty state when hydrate fails', async () => {
-      resetCatchphrasesStore();
-      vi.mocked(fetch).mockRejectedValueOnce(new Error('network down'));
-      useCatchphrasesStore.setState({
-        hydrated: false,
-        loading: false,
-        error: null,
+      const localStorageDescriptor = Object.getOwnPropertyDescriptor(window, 'localStorage');
+      Object.defineProperty(window, 'localStorage', {
+        configurable: true,
+        value: { getItem: () => null, setItem: () => {}, removeItem: () => {}, clear: () => {} },
       });
-      render(<MessageInput taskId="task-cp-hydrate-error" onSend={() => {}} />);
-      fireEvent.doubleClick(screen.getByTestId('message-input-textarea'));
+      try {
+        resetCatchphrasesStore();
+        vi.mocked(fetch).mockRejectedValueOnce(new Error('network down'));
+        useCatchphrasesStore.setState({
+          hydrated: false,
+          loading: false,
+          error: null,
+        });
+        render(<MessageInput taskId="task-cp-hydrate-error" onSend={() => {}} />);
+        fireEvent.doubleClick(screen.getByTestId('message-input-textarea'));
 
-      await waitFor(() => {
-        expect(screen.getByText('network down')).toBeInTheDocument();
-      });
-      expect(screen.getByTestId('catchphrase-popover-retry')).toBeInTheDocument();
-      expect(screen.queryByTestId('catchphrase-popover-empty-link')).not.toBeInTheDocument();
-      expect(useCatchphrasesStore.getState().hydrated).toBe(false);
+        await waitFor(() => {
+          expect(screen.getByText('network down')).toBeInTheDocument();
+        });
+        expect(screen.getByTestId('catchphrase-popover-retry')).toBeInTheDocument();
+        expect(screen.queryByTestId('catchphrase-popover-empty-link')).not.toBeInTheDocument();
+        expect(useCatchphrasesStore.getState().hydrated).toBe(false);
+      } finally {
+        if (localStorageDescriptor) Object.defineProperty(window, 'localStorage', localStorageDescriptor);
+      }
     });
   });
 });

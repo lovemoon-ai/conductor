@@ -12,7 +12,7 @@ import next from "next";
 import { setupAppGateway, APP_WS_PATH } from "./src/lib/realtime/app-gateway";
 import { setupAgentGateway, AGENT_WS_PATH } from "./src/lib/realtime/agent-gateway";
 import { setupSpeechGateway, SPEECH_WS_PATH } from "./src/lib/speech/gateway";
-import { startTaskAttachmentJanitor } from "./src/lib/tasks/task-file-storage";
+import { startTaskAttachmentJanitor } from "./src/lib/tasks/task-attachment-janitor";
 import { startScheduledMessageDispatcher } from "./src/lib/tasks/scheduled-messages";
 import {
   reconcileDailyReportSchedules,

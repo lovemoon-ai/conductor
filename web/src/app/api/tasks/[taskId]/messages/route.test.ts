@@ -337,6 +337,28 @@ describe("/api/tasks/[taskId]/messages", () => {
     expect(call.metadata?.invokedBy).toBeUndefined();
   });
 
+  it("forwards ordered attachment IDs to the ingress service", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({ id: "task-files", projectId: "proj-1", taskType: "ai_task" } as any);
+    vi.mocked(appendUserMessageToTask).mockResolvedValueOnce({
+      task: { id: "task-files", projectId: "proj-1" } as any,
+      message: {
+        id: "msg-files", taskId: "task-files", role: "user", content: "inspect", metadata: null,
+        createdAt: new Date("2026-08-01T00:00:00Z"),
+      } as any,
+    });
+
+    const response = await POST(createMockRequest({
+      method: "POST",
+      url: "http://localhost:6152/api/tasks/task-files/messages",
+      body: { content: "inspect", role: "user", attachmentIds: ["att-2", "att-1"] },
+    }), { params: Promise.resolve({ taskId: "task-files" }) });
+
+    expect(response.status).toBe(200);
+    expect(appendUserMessageToTask).toHaveBeenCalledWith(expect.objectContaining({
+      attachmentIds: ["att-2", "att-1"],
+    }));
+  });
+
   it("returns existing message without re-creating when clientRequestId already exists", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue({
       id: "task-cri",

@@ -263,7 +263,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const previousWebSocketStatusRef = useRef<'connected' | 'connecting' | 'disconnected' | null>(null);
   const pendingInterruptReplyToRef = useRef<string | null>(null);
   const messageInputRef = useRef<MessageInputHandle>(null);
-  const { messagesByTask, historyStateByTask, loadingTasks, fetchMessages, sendMessage, insertMessage } = useChatStore();
+  const { messagesByTask, historyStateByTask, loadingTasks, fetchMessages, sendMessage, uploadAttachments, insertMessage } = useChatStore();
   const runtime = useRuntimeStore((state) => state.byTask[taskId]);
   const clearRuntime = useRuntimeStore((state) => state.clearTask);
   const tasks = useTasksStore((state) => state.tasks);
@@ -639,7 +639,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     dispatchUiState({ type: 'settleInterrupt' });
   }, [clearInterruptTimeout, hasPendingInterruptConfirmation]);
 
-  const handleSend = async (content: string) => {
+  const handleSend = async (content: string, files: File[] = []) => {
     if (interruptPending) {
       dispatchUiState({
         type: 'setComposerFeedback',
@@ -648,6 +648,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
           message: 'Wait for the current interrupt to finish before sending another message.',
         },
       });
+      if (files.length) throw new Error('Interrupt in progress');
       return;
     }
     if (restartPending) {
@@ -658,6 +659,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
           message: 'Wait for the task restart to finish before sending another message.',
         },
       });
+      if (files.length) throw new Error('Restart in progress');
       return;
     }
     if (!isTaskRunning) {
@@ -674,6 +676,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
                 : 'The session is still starting. You can keep drafting, and send once the task is ready.',
         },
       });
+      if (files.length) throw new Error('Task is not ready');
       return;
     }
 
@@ -681,7 +684,12 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
       dispatchUiState({ type: 'setComposerFeedback', feedback: null });
       clearRuntime(taskId);
       forceScrollToBottomRef.current = true;
-      const message = await sendMessage(taskId, { content, role: 'user' });
+      const attachmentIds = files.length ? await uploadAttachments(taskId, files) : [];
+      const message = await sendMessage(taskId, {
+        content: content || (files.length ? `Attached ${files.length} file${files.length === 1 ? '' : 's'}` : ''),
+        role: 'user',
+        ...(attachmentIds.length ? { attachmentIds } : {}),
+      });
       dispatchUiState({ type: 'recordSentMessage', replyTo: message.id });
     } catch {
       // The send (including its bounded auto-retry for the startup fire-owner
@@ -694,6 +702,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
           message: 'Failed to send the message. Please try again in a moment.',
         },
       });
+      throw new Error('Failed to upload attachments or send message');
     }
   };
 

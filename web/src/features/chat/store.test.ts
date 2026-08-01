@@ -3,6 +3,7 @@ import type { Message } from '@/shared/types';
 
 const mockGet = vi.fn();
 const mockPost = vi.fn();
+const mockUpload = vi.fn();
 
 vi.mock('@/shared/api/client', () => {
   class ApiRequestError extends Error {
@@ -19,6 +20,7 @@ vi.mock('@/shared/api/client', () => {
     getApiClient: () => ({
       get: mockGet,
       post: mockPost,
+      upload: mockUpload,
     }),
     ApiRequestError,
   };
@@ -43,6 +45,25 @@ describe("useChatStore sendMessage", () => {
       loadingTasks: new Set(),
       error: null,
     });
+  });
+
+  it("uploads multiple attachments in selection order and returns their IDs", async () => {
+    mockUpload
+      .mockResolvedValueOnce({ attachment: { id: "att-image" } })
+      .mockResolvedValueOnce({ attachment: { id: "att-file" } });
+    const image = new File(["image"], "diagram.png", { type: "image/png" });
+    const file = new File(["notes"], "notes.md", { type: "text/markdown" });
+
+    await expect(useChatStore.getState().uploadAttachments("task-1", [image, file]))
+      .resolves.toEqual(["att-image", "att-file"]);
+
+    expect(mockUpload).toHaveBeenCalledTimes(2);
+    expect(mockUpload.mock.calls.map((call) => call[0])).toEqual([
+      "/tasks/task-1/attachments",
+      "/tasks/task-1/attachments",
+    ]);
+    expect((mockUpload.mock.calls[0][1] as FormData).get("file")).toBe(image);
+    expect((mockUpload.mock.calls[1][1] as FormData).get("file")).toBe(file);
   });
 
   it("deduplicates when websocket message arrives before POST response", async () => {

@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 
 import { CLAUDE_AGENT_SDK_VARIANT as CLAUDE_PROVIDER_VARIANT } from "../built-in-backends.js";
+import { appendContextFilesToPrompt } from "../context-files.js";
 import { PROVIDER_MEDIA_CAPABILITIES, buildClaudeContent } from "../media-adapters.js";
 import {
   assertMediaCapabilities,
@@ -844,16 +845,17 @@ export class ClaudeAgentSdkSession extends EventEmitter {
     return true;
   }
 
-  async runTurn(promptText, { useInitialImages = false, media: mediaInput, onProgress = null, jsonSchema = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested) {
       throw this.createSessionClosedError();
     }
 
     const media = resolveTurnMedia(this.options, { useInitialImages, media: mediaInput });
     assertMediaCapabilities(media, this.backend, PROVIDER_MEDIA_CAPABILITIES[CLAUDE_PROVIDER_VARIANT]);
-    const effectivePrompt =
+    let effectivePrompt =
       this.buildPrompt(promptText, { useInitialImages: false }) ||
       (media.length ? defaultPromptForMedia(media) : "");
+    effectivePrompt = appendContextFilesToPrompt(effectivePrompt, contextFiles).prompt;
     if (!effectivePrompt) {
       return {
         text: "",

@@ -2706,6 +2706,44 @@ describe("conductor-fire backends", () => {
     assert.equal(sentMessages[0].metadata?.reply_to, "msg-initial-1");
   });
 
+  it("forwards materialized images and ordinary files through separate AI SDK inputs", async () => {
+    const calls = [];
+    const runner = new BridgeRunner({
+      backendSession: {
+        runTurn: async (content, options = {}) => {
+          calls.push({ content, options });
+          return { text: "done", usage: null, items: [], metadata: {} };
+        },
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        sendRuntimeStatus: async () => ({}),
+        sendMessage: async () => ({}),
+      },
+      taskId: "task-attachments",
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    await runner.respondToMessage({
+      message_id: "msg-attachments",
+      role: "user",
+      content: "inspect these",
+      attachments: [
+        { id: "image-1", kind: "image", mimeType: "image/png", name: "screen.png", path: "/tmp/screen.png" },
+        { id: "file-1", kind: "file", mimeType: "text/plain", name: "spec.txt", path: "/tmp/spec.txt" },
+      ],
+    });
+
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].options.media, [
+      { kind: "image", path: "/tmp/screen.png", mimeType: "image/png", name: "screen.png" },
+    ]);
+    assert.deepEqual(calls[0].options.contextFiles, [
+      { path: "/tmp/spec.txt", mimeType: "text/plain", name: "spec.txt" },
+    ]);
+  });
+
   it("retries queued initial prompts with initial images until the turn succeeds", async () => {
     const runTurnCalls = [];
     let attempt = 0;

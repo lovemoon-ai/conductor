@@ -7,6 +7,7 @@ import { EventEmitter } from "node:events";
 import readline from "node:readline";
 
 import { CODEX_EXEC_VARIANT as CODEX_EXEC_PROVIDER_VARIANT } from "../built-in-backends.js";
+import { appendContextFilesToPrompt } from "../context-files.js";
 import { PROVIDER_MEDIA_CAPABILITIES } from "../media-adapters.js";
 import {
   assertMediaCapabilities,
@@ -439,7 +440,7 @@ export class CodexExecSession extends EventEmitter {
     });
   }
 
-  async runTurn(promptText, { useInitialImages = false, media: mediaInput, onProgress = null, jsonSchema = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested || this.closed) {
       throw this.createSessionClosedError();
     }
@@ -452,7 +453,10 @@ export class CodexExecSession extends EventEmitter {
     const media = resolveTurnMedia(this.options, { useInitialImages, media: mediaInput });
     assertMediaCapabilities(media, this.backend, PROVIDER_MEDIA_CAPABILITIES[CODEX_EXEC_PROVIDER_VARIANT]);
     const effectivePrompt = this.buildPrompt(promptText);
-    const stdinPrompt = effectivePrompt || (media.length > 0 ? defaultPromptForMedia(media) : "");
+    const stdinPrompt = appendContextFilesToPrompt(
+      effectivePrompt || (media.length > 0 ? defaultPromptForMedia(media) : ""),
+      contextFiles,
+    ).prompt;
     if (!stdinPrompt && media.length === 0) {
       return buildEmptyTurnResult();
     }

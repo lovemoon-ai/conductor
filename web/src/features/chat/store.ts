@@ -30,6 +30,7 @@ interface ChatState {
   // Actions
   fetchMessages: (taskId: string, options?: { beforeId?: string; force?: boolean }) => Promise<void>;
   sendMessage: (taskId: string, input: SendMessageInput) => Promise<Message>;
+  uploadAttachments: (taskId: string, files: File[]) => Promise<string[]>;
   insertMessage: (taskId: string, input: { content: string; targetReplyTo?: string }) => Promise<Message>;
   addMessage: (taskId: string, message: Message) => void;
   updateMessage: (taskId: string, message: Message) => void;
@@ -274,6 +275,22 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         throw error;
       }
     }
+  },
+
+  uploadAttachments: async (taskId, files) => {
+    const api = getApiClient();
+    const ids: string[] = [];
+    for (const file of files) {
+      const formData = new FormData();
+      formData.set('file', file);
+      const result = await api.upload<{ attachment: { id: string } }>(
+        `/tasks/${taskId}/attachments`,
+        formData,
+        { timeoutMs: 120_000 },
+      );
+      ids.push(result.attachment.id);
+    }
+    return ids;
   },
 
   insertMessage: async (taskId, input) => {

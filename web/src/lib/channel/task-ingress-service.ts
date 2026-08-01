@@ -272,6 +272,7 @@ export async function appendUserMessageToTask(input: {
   role?: string | null;
   clientMessageId?: string | null;
   metadata?: Record<string, unknown> | null;
+  attachmentIds?: string[];
 }): Promise<{
   task: Awaited<ReturnType<typeof db.task.findFirst>>;
   message: Awaited<ReturnType<typeof db.message.create>>;
@@ -317,26 +318,68 @@ export async function appendUserMessageToTask(input: {
   }
 
   const clientMessageId = normalizeOptionalString(input.clientMessageId);
+  const attachmentIds = Array.from(new Set((input.attachmentIds ?? [])
+    .map((value) => normalizeOptionalString(value))
+    .filter((value): value is string => Boolean(value))));
+  if (attachmentIds.length > 20) {
+    throw new TaskIngressError("TOO_MANY_ATTACHMENTS", 400, "A message can contain at most 20 attachments", {
+      error: "Too many attachments",
+    });
+  }
+  const attachments = attachmentIds.length
+    ? await db.taskAttachment.findMany({
+        where: { id: { in: attachmentIds }, taskId: input.taskId, messageId: null, status: "uploaded" },
+      })
+    : [];
+  if (attachments.length !== attachmentIds.length) {
+    throw new TaskIngressError("INVALID_ATTACHMENTS", 409, "One or more attachments are missing or already bound", {
+      error: "Invalid attachments",
+    });
+  }
+  const orderedAttachments = attachmentIds.map((id) => attachments.find((entry) => entry.id === id)!);
+  const attachmentMetadata = orderedAttachments.map((attachment) => ({
+    id: attachment.id,
+    name: attachment.originalName,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes,
+    kind: attachment.kind,
+    sha256: attachment.sha256,
+    status: "bound",
+    downloadUrl: `/api/tasks/${encodeURIComponent(input.taskId)}/attachments/${encodeURIComponent(attachment.id)}`,
+    createdAt: attachment.createdAt.toISOString(),
+  }));
+  const callerMetadata = input.metadata ? { ...input.metadata } : null;
+  if (callerMetadata) delete callerMetadata.attachments;
+  const finalMetadata = attachmentMetadata.length
+    ? { ...(callerMetadata ?? {}), attachments: attachmentMetadata }
+    : callerMetadata;
   const messageData = {
     taskId: input.taskId,
     role: input.role ?? "sdk",
     content: input.content,
-    metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+    metadata: finalMetadata ? JSON.stringify(finalMetadata) : null,
     ...(clientMessageId ? { clientMessageId } : {}),
   };
 
   let message: Awaited<ReturnType<typeof db.message.create>>;
   let createdMessage = true;
   try {
-    [message] = await db.$transaction([
-      db.message.create({
-        data: messageData,
-      }),
-      db.task.update({
-        where: { id: input.taskId },
-        data: { updatedAt: new Date() },
-      }),
-    ]);
+    message = await db.$transaction(async (tx) => {
+      const created = await tx.message.create({ data: messageData });
+      if (attachmentIds.length) {
+        const bound = await tx.taskAttachment.updateMany({
+          where: { id: { in: attachmentIds }, taskId: input.taskId, messageId: null, status: "uploaded" },
+          data: { messageId: created.id, status: "bound", boundAt: new Date(), expiresAt: null },
+        });
+        if (bound.count !== attachmentIds.length) {
+          throw new TaskIngressError("ATTACHMENT_BIND_RACE", 409, "Attachments were bound by another message", {
+            error: "Attachment binding conflict",
+          });
+        }
+      }
+      await tx.task.update({ where: { id: input.taskId }, data: { updatedAt: new Date() } });
+      return created;
+    });
   } catch (error) {
     if (!clientMessageId || !isUniqueConstraintError(error)) {
       throw error;
@@ -387,8 +430,8 @@ export async function appendUserMessageToTask(input: {
             role: "user",
             content: message.content,
             created_at: message.createdAt.toISOString(),
-            metadata: input.metadata ?? undefined,
-            attachments: getMessageAttachments(input.metadata),
+            metadata: finalMetadata ?? undefined,
+            attachments: getMessageAttachments(finalMetadata),
           },
         },
       },

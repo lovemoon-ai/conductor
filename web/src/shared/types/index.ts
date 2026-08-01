@@ -268,6 +268,8 @@ export interface MessageAttachment {
   sizeBytes: number;
   kind: MessageAttachmentKind;
   downloadUrl: string;
+  sha256?: string;
+  status?: 'uploaded' | 'bound' | 'materialized' | 'failed';
   createdAt?: string;
   expiresAt?: string;
 }
@@ -488,6 +490,7 @@ export interface SendMessageInput {
   content: string;
   role?: MessageRole;
   metadata?: Record<string, unknown>;
+  attachmentIds?: string[];
   /**
    * Idempotency key (RFC 0025 §5.1). When the client auto-retries a transient
    * send failure, the same key lets the server dedupe so a retry that races a

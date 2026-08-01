@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { BackendApiClient, BackendApiError } from './backend/index.js';
+import { AttachmentMaterializer } from './attachments/index.js';
 import { ConductorConfig, loadConfig } from './config/index.js';
 import { ProjectContext } from './context/index.js';
 import { getPlanLimitMessageFromError } from './limits/index.js';
@@ -62,6 +63,7 @@ export interface ConductorClientConnectOptions {
   messageRouter?: MessageRouter;
   upstreamOutbox?: DurableUpstreamOutboxStore;
   downstreamCursorStore?: DownstreamCursorStore;
+  attachmentMaterializer?: AttachmentMaterializer;
   agentHost?: string;
   extraHeaders?: Record<string, string>;
   onConnected?: (event: WebSocketConnectedEvent) => void;
@@ -84,6 +86,7 @@ interface ConductorClientInit {
   messageRouter: MessageRouter;
   upstreamOutbox: DurableUpstreamOutboxStore;
   downstreamCursorStore: DownstreamCursorStore;
+  attachmentMaterializer: AttachmentMaterializer;
   agentHost: string;
   onStopTask?: (event: StopTaskEvent) => Promise<void> | void;
   onInterruptTurn?: (event: InterruptTurnEvent) => Promise<boolean | void> | boolean | void;
@@ -129,6 +132,7 @@ export class ConductorClient {
   private readonly messageRouter: MessageRouter;
   private upstreamOutbox: DurableUpstreamOutboxStore;
   private downstreamCursorStore: DownstreamCursorStore;
+  private readonly attachmentMaterializer: AttachmentMaterializer;
   private readonly agentHost: string;
   private readonly onStopTask?: (event: StopTaskEvent) => Promise<void> | void;
   private readonly onInterruptTurn?: (event: InterruptTurnEvent) => Promise<boolean | void> | boolean | void;
@@ -150,6 +154,7 @@ export class ConductorClient {
     this.messageRouter = init.messageRouter;
     this.upstreamOutbox = init.upstreamOutbox;
     this.downstreamCursorStore = init.downstreamCursorStore;
+    this.attachmentMaterializer = init.attachmentMaterializer;
     this.agentHost = init.agentHost;
     this.onStopTask = init.onStopTask;
     this.onInterruptTurn = init.onInterruptTurn;
@@ -172,6 +177,11 @@ export class ConductorClient {
       options.upstreamOutbox ?? DurableUpstreamOutboxStore.forProjectPath(projectPath, deliveryScopeId);
     const downstreamCursorStore =
       options.downstreamCursorStore ?? DownstreamCursorStore.forProjectPath(projectPath, deliveryScopeId);
+    const attachmentMaterializer = options.attachmentMaterializer ?? new AttachmentMaterializer({
+      config,
+      projectPath,
+      agentHost,
+    });
     const wsClient =
       options.wsClient ??
       new ConductorWebSocketClient(config, {
@@ -199,6 +209,7 @@ export class ConductorClient {
       messageRouter,
       upstreamOutbox,
       downstreamCursorStore,
+      attachmentMaterializer,
       agentHost,
       onStopTask: options.onStopTask,
       onInterruptTurn: options.onInterruptTurn,
@@ -778,7 +789,8 @@ export class ConductorClient {
 
     const alreadyApplied = command ? this.downstreamCursorStore.hasApplied(this.agentHost, command.cursor) : false;
     if (!alreadyApplied) {
-      await this.messageRouter.handleBackendEvent(payload);
+      const materializedPayload = await this.attachmentMaterializer.materializeEnvelope(payload);
+      await this.messageRouter.handleBackendEvent(materializedPayload);
       if (command) {
         this.downstreamCursorStore.advance(this.agentHost, command.cursor);
       }

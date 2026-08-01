@@ -10,6 +10,9 @@ const COMPOSER_HORIZONTAL_PADDING_PX = 24;
 const COMPOSER_GAP_PX = 8;
 const SEND_BUTTON_SAFETY_GAP_PX = 12;
 const INPUT_SCROLL_THRESHOLD_RATIO = 0.75;
+const MAX_ATTACHMENTS = 20;
+const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+const VIDEO_EXTENSIONS = new Set(['avi', 'm4v', 'mkv', 'mov', 'mp4', 'mpeg', 'mpg', 'webm']);
 
 const DRAFT_STORAGE_PREFIX = 'conductor-task-draft:';
 const MAX_HISTORY_ITEMS = 200;
@@ -23,7 +26,7 @@ const PLACEHOLDER_MESSAGES = [
 
 interface MessageInputProps {
   taskId: string;
-  onSend: (content: string) => void;
+  onSend: (content: string, files?: File[]) => Promise<void> | void;
   onInsert?: (content: string) => void;
   onInterrupt?: () => void;
   disabled?: boolean;
@@ -142,6 +145,10 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   autoFocus = false,
 }: MessageInputProps, ref) {
   const [content, setContent] = useState(() => readStoredDraft(taskId));
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [fileError, setFileError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [layoutState, setLayoutState] = useState(INITIAL_LAYOUT_STATE);
   const [isCatchphraseOpen, setIsCatchphraseOpen] = useState(false);
   const taskMessages = useChatStore((state) => state.messagesByTask[taskId]);
@@ -271,7 +278,7 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
     ));
   }, [content]);
 
-  const canSend = Boolean(content.trim()) && !disabled && !sendDisabled;
+  const canSend = Boolean(content.trim() || selectedFiles.length) && !disabled && !sendDisabled && !isSubmitting;
 
   const moveCaretToEnd = useCallback((nextValue?: string) => {
     const textarea = textareaRef.current;
@@ -286,18 +293,34 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   }, []);
 
   const submitContent = useCallback((nextContent: string) => {
-    if (!nextContent.trim() || disabled || sendDisabled) return false;
+    if ((!nextContent.trim() && selectedFiles.length === 0) || disabled || sendDisabled || isSubmitting) return false;
     const trimmedContent = nextContent.trim();
-    onSend(trimmedContent);
+    const filesToSend = [...selectedFiles];
+    if (filesToSend.length === 0) {
+      onSend(trimmedContent);
+      historyCursorRef.current = null;
+      historyDraftRef.current = '';
+      updateContent('');
+      return true;
+    }
+    setIsSubmitting(true);
+    setFileError('');
+    void Promise.resolve(onSend(trimmedContent, filesToSend))
+      .then(() => {
+        updateContent('');
+        setSelectedFiles([]);
+        setFileError('');
+      })
+      .catch(() => setFileError('Upload or send failed. Your files are still selected; please retry.'))
+      .finally(() => setIsSubmitting(false));
     // The prompt will show up in the ArrowUp history as soon as it lands in
     // the chat store (either via the optimistic insert in `sendMessage` or
     // when the server echoes it back), so no local bookkeeping is needed
     // here beyond resetting the browsing cursor.
     historyCursorRef.current = null;
     historyDraftRef.current = '';
-    updateContent('');
     return true;
-  }, [disabled, onSend, sendDisabled, updateContent]);
+  }, [disabled, isSubmitting, onSend, selectedFiles, sendDisabled, updateContent]);
 
   const handleResend = useCallback((nextContent: string) => {
     historyCursorRef.current = null;
@@ -331,7 +354,7 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   const submitInsert = useCallback((nextContent: string) => {
     const trimmed = nextContent.trim();
     if (!trimmed || disabled || sendDisabled) return false;
-    if (!insertEnabled || !onInsert) {
+    if (selectedFiles.length > 0 || !insertEnabled || !onInsert) {
       return submitContent(nextContent);
     }
     onInsert(trimmed);
@@ -339,7 +362,7 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
     historyDraftRef.current = '';
     updateContent('');
     return true;
-  }, [disabled, insertEnabled, onInsert, sendDisabled, submitContent, updateContent]);
+  }, [disabled, insertEnabled, onInsert, selectedFiles.length, sendDisabled, submitContent, updateContent]);
 
   const clearSendClickTimer = useCallback(() => {
     if (sendClickTimerRef.current !== null) {
@@ -519,6 +542,35 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
     handleSubmit();
   };
 
+  const handleFilesSelected = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const incoming = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    const invalidVideo = incoming.find((file) => {
+      const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+      return file.type.startsWith('video/') || VIDEO_EXTENSIONS.has(extension);
+    });
+    const oversized = incoming.find((file) => file.size > MAX_ATTACHMENT_BYTES);
+    if (invalidVideo) {
+      setFileError('Video attachments are not supported.');
+      return;
+    }
+    if (oversized) {
+      setFileError(`${oversized.name} exceeds the 100 MB limit.`);
+      return;
+    }
+    setSelectedFiles((current) => {
+      const next = [...current];
+      for (const file of incoming) {
+        if (next.length >= MAX_ATTACHMENTS) break;
+        if (!next.some((entry) => entry.name === file.name && entry.size === file.size && entry.lastModified === file.lastModified)) {
+          next.push(file);
+        }
+      }
+      return next;
+    });
+    setFileError(incoming.length + selectedFiles.length > MAX_ATTACHMENTS ? 'A message can contain at most 20 files.' : '');
+  }, [selectedFiles.length]);
+
   return (
     <div className="relative border-t border-border bg-panel/95 px-4 py-3 backdrop-blur-sm md:px-6">
       <CatchphrasePopover
@@ -533,7 +585,47 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
           data-testid="message-input-composer"
           className="w-full min-h-11 rounded-2xl border border-zinc-50 bg-paper p-3 transition-all dark:border-zinc-700/70 focus-within:border-accent focus-within:shadow-[0_0_0_4px_rgba(228,87,46,0.1)]"
         >
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            data-testid="message-input-file-picker"
+            onChange={handleFilesSelected}
+            disabled={disabled || sendDisabled || isSubmitting}
+          />
+          {selectedFiles.length > 0 ? (
+            <div className="mb-2 flex flex-wrap gap-1.5" data-testid="message-input-files">
+              {selectedFiles.map((file) => (
+                <span key={`${file.name}-${file.size}-${file.lastModified}`} className="inline-flex max-w-full items-center gap-1 rounded-md bg-border/50 px-2 py-1 text-xs text-ink">
+                  <span className="max-w-48 truncate">{file.name}</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${file.name}`}
+                    className="text-muted hover:text-ink"
+                    onClick={() => setSelectedFiles((current) => current.filter((entry) => entry !== file))}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {fileError ? <p className="mb-2 text-xs text-red-600">{fileError}</p> : null}
           <div className={isSendOnNextLine ? 'flex flex-col gap-2' : 'flex items-center gap-2'}>
+            <button
+              type="button"
+              aria-label="Attach files"
+              title="Attach images or context files"
+              data-testid="message-input-attach-button"
+              disabled={disabled || sendDisabled || isSubmitting || selectedFiles.length >= MAX_ATTACHMENTS}
+              onClick={() => fileInputRef.current?.click()}
+              className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-border/50 hover:text-ink disabled:opacity-40"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="size-4" aria-hidden="true">
+                <path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.9-8.9" />
+              </svg>
+            </button>
             <textarea
               ref={textareaRef}
               aria-label="Message input"

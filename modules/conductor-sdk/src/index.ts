@@ -9,3 +9,4 @@ export * from './context/index.js';
 export * from './limits/index.js';
 export * from './outbox/index.js';
 export * from './api/index.js';
+export * from './attachments/index.js';

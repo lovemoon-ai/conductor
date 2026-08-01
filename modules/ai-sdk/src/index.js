@@ -1,6 +1,7 @@
 export { createAiSession, RemoteAiSession } from "./client.js";
 export { BUILT_IN_BACKENDS } from "./built-in-backends.js";
 export { PROVIDER_MEDIA_CAPABILITIES } from "./media-adapters.js";
+export { appendContextFilesToPrompt, normalizeContextFiles } from "./context-files.js";
 export {
   assertMediaCapabilities,
   fileMediaToBase64,

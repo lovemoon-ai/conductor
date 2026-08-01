@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 
 import { CODEX_APP_SERVER_VARIANT } from "../built-in-backends.js";
+import { appendContextFilesToPrompt } from "../context-files.js";
 import { PROVIDER_MEDIA_CAPABILITIES, buildCodexAppServerInput } from "../media-adapters.js";
 import {
   assertMediaCapabilities,
@@ -1143,7 +1144,7 @@ export class CodexAppServerSession extends EventEmitter {
     return false;
   }
 
-  async runTurn(promptText, { useInitialImages = false, media: mediaInput, jsonSchema = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, jsonSchema = null } = {}) {
     if (this.closeRequested) {
       throw this.createSessionClosedError();
     }
@@ -1153,6 +1154,7 @@ export class CodexAppServerSession extends EventEmitter {
     let effectivePrompt =
       this.buildPrompt(promptText, { useInitialImages: false }) ||
       (media.length ? defaultPromptForMedia(media) : "");
+    effectivePrompt = appendContextFilesToPrompt(effectivePrompt, contextFiles).prompt;
     if (jsonSchema && typeof jsonSchema === "object" && effectivePrompt) {
       effectivePrompt = injectJsonSchemaPrompt(effectivePrompt, jsonSchema);
     }

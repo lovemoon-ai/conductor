@@ -1,5 +1,7 @@
 ---
 "@love-moon/ai-sdk": minor
+"@love-moon/conductor-sdk": minor
+"@love-moon/conductor-cli": minor
 ---
 
-Add per-turn image and video inputs with provider-specific capability reporting and native media adapters.
+Add per-turn multi-image and local context-file inputs, plus authenticated attachment materialization from Conductor Web to the executing daemon.

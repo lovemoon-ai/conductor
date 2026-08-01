@@ -3091,6 +3091,27 @@ export class BridgeRunner {
       String(message.role || "").toLowerCase() === "user" &&
       content === this.pendingInitialPrompt;
     const useInitialImages = isQueuedInitialPromptMessage && this.includeInitialImages;
+    const localAttachments = Array.isArray(message.attachments)
+      ? message.attachments.filter((attachment) =>
+          attachment && typeof attachment === "object" && typeof (attachment.path || attachment.localPath) === "string"
+        )
+      : [];
+    const nativeImageMimes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+    const media = localAttachments
+      .filter((attachment) => attachment.kind === "image" && nativeImageMimes.has(String(attachment.mimeType || "").toLowerCase()))
+      .map((attachment) => ({
+        kind: "image",
+        path: attachment.path || attachment.localPath,
+        mimeType: attachment.mimeType,
+        name: attachment.name,
+      }));
+    const contextFiles = localAttachments
+      .filter((attachment) => !media.some((image) => image.path === (attachment.path || attachment.localPath)))
+      .map((attachment) => ({
+        path: attachment.path || attachment.localPath,
+        mimeType: attachment.mimeType,
+        name: attachment.name,
+      }));
     if (
       this.useSessionFileReplyStream &&
       typeof this.backendSession?.setSessionReplyTarget === "function"
@@ -3140,6 +3161,8 @@ export class BridgeRunner {
 
       const turnPromise = this.dispatchBackendTurn(content, {
         useInitialImages,
+        media,
+        contextFiles,
         onProgress: (payload) => {
           void this.reportRuntimeStatus(payload, replyTo);
         },

@@ -88,6 +88,27 @@ export class ApiClient {
     return this.request<T>('POST', path, body, options);
   }
 
+  async upload<T>(path: string, formData: FormData, options?: ApiRequestOptions): Promise<T> {
+    const token = this.getToken();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), options?.timeoutMs ?? 120_000);
+    try {
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: formData,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const error: ApiError = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+        throw new ApiRequestError(response.status, error);
+      }
+      return response.json();
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
   patch<T>(path: string, body?: unknown): Promise<T> {
     return this.request<T>('PATCH', path, body);
   }
