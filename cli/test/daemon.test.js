@@ -6349,6 +6349,7 @@ describe("Daemon", () => {
     let connected = false;
     const spawnCalls = [];
     const sentEvents = [];
+    const resumeContextCalls = [];
 
     const daemonInstance = startDaemon(
       {
@@ -6380,12 +6381,18 @@ describe("Daemon", () => {
           write: () => {},
           end: () => {},
         }),
-        resolveResumeContext: async () => ({ cwd: "" }),
+        resolveResumeContext: async (backend, sessionId) => {
+          resumeContextCalls.push({ backend, sessionId });
+          if (backend === "claude" && sessionId === "sess-claude-1") {
+            return { cwd: "/tmp/source-session-cwd" };
+          }
+          return { cwd: "" };
+        },
         fetch: async (url) => {
           if (String(url).includes("/api/projects/")) {
             return {
               ok: true,
-              json: async () => ({ metadata: { localPaths: { default: "/tmp/handoff-cwd" } } }),
+              json: async () => ({ metadata: {} }),
             };
           }
           if (String(url).endsWith("/api/tasks")) {
@@ -6417,11 +6424,10 @@ describe("Daemon", () => {
         source_task_id: "task-source-1",
         target_task_id: "task-successor-1",
         project_id: "proj-handoff-1",
-        title: "Fix login bug [claude]",
-        source_backend_type: "codex",
-        source_session_id: "sess-codex-1",
-        source_session_file_path: "/tmp/sess-codex-1.jsonl",
-        target_backend_type: "claude",
+        title: "Fix login bug [codex]",
+        source_backend_type: "claude",
+        source_session_id: "sess-claude-1",
+        target_backend_type: "codex",
         resume_context_url: "http://localhost:6152/share/tok-abc/plain",
         request_id: "req-handoff-1",
       },
@@ -6438,15 +6444,15 @@ describe("Daemon", () => {
     assert.strictEqual(cliPath, "/tmp/cli.js");
     // New contract: --backend <X> -- <handoff prompt>; no --resume, and the
     // prompt is the final positional argument.
-    assert.deepStrictEqual(argsRest.slice(0, 3), ["--backend", "claude", "--"]);
-    assert.strictEqual(argsRest.length, 4, "expected [--backend, claude, --, prompt]");
+    assert.deepStrictEqual(argsRest.slice(0, 3), ["--backend", "codex", "--"]);
+    assert.strictEqual(argsRest.length, 4, "expected [--backend, codex, --, prompt]");
     const prompt = argsRest[3];
     assert.ok(
       prompt.includes("http://localhost:6152/share/tok-abc/plain"),
       `handoff prompt should embed the transcript URL; got: ${prompt}`,
     );
-    assert.ok(/codex/i.test(prompt), "handoff prompt should mention the source backend");
-    assert.ok(/claude/i.test(prompt), "handoff prompt should mention the target backend");
+    assert.ok(/claude/i.test(prompt), "handoff prompt should mention the source backend");
+    assert.ok(/codex/i.test(prompt), "handoff prompt should mention the target backend");
     assert.ok(!argsRest.includes("--resume"), "fork mode must not pass --resume");
     // Prompt-injection defense: the prompt must reference the transcript
     // fence markers and frame fenced content as historical data, not as
@@ -6460,9 +6466,12 @@ describe("Daemon", () => {
       /historical|not\s+instructions/i.test(prompt),
       "handoff prompt should frame fenced content as historical data, not live instructions",
     );
-    assert.strictEqual(spawnCalls[0].opts.cwd, "/tmp/handoff-cwd");
+    assert.deepStrictEqual(resumeContextCalls, [
+      { backend: "claude", sessionId: "sess-claude-1" },
+    ]);
+    assert.strictEqual(spawnCalls[0].opts.cwd, "/tmp/source-session-cwd");
     assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_TASK_ID, "task-successor-1");
-    assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_RESUME_CWD, "/tmp/handoff-cwd");
+    assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_RESUME_CWD, "/tmp/source-session-cwd");
 
     daemonInstance.close();
   });

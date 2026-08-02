@@ -6732,7 +6732,11 @@ export function startDaemon(config = {}, deps = {}) {
         resolvedResumeCwd = await resolveRestartCwd({
           taskId: normalizedTargetTaskId,
           projectId: normalizedProjectId,
-          backendType: effectiveBackend,
+          // A fork starts a fresh target-backend session, but its workspace
+          // still belongs to the source task. Resolve the source session in
+          // its own provider namespace; target + source session id is not a
+          // meaningful pair for cross-backend handoff.
+          backendType: sourceBackendType,
           launchConfig: targetLaunchConfig,
           sessionId: normalizedSourceSessionId,
           sourceSessionFilePath: sourceSessionFilePath ? String(sourceSessionFilePath) : "",
