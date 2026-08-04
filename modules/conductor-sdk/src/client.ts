@@ -872,10 +872,14 @@ export class ConductorClient {
         }
         try {
           const materialized = await this.attachmentMaterializer.materializeEnvelope(entry.envelope);
-          if (this.closed || this.downstreamClosing || this.cancelledDownstreamTasks.has(entry.taskId)) {
+          if (this.cancelledDownstreamTasks.has(entry.taskId)) {
             this.downstreamInboxStore.remove(entry.requestId);
             return;
           }
+          // A shutdown after download must leave the already-ACKed command in
+          // the durable inbox so the next process can route it. Removing it
+          // here would make the Web outbox and the Daemon both forget it.
+          if (this.closed || this.downstreamClosing) return;
           await this.messageRouter.handleBackendEvent(materialized);
           this.downstreamCursorStore.advance(this.agentHost, entry.cursor);
           this.downstreamInboxStore.remove(entry.requestId);

@@ -515,6 +515,16 @@ export class RealtimeHub {
   sendToAgentHost(userId: string, agentHost: string, payload: unknown): boolean {
     const conn = this.findAgentConnectionByHost(agentHost, userId);
     if (!conn) return false;
+    const envelopePayload = payload && typeof payload === "object"
+      && "payload" in payload && (payload as { payload?: unknown }).payload
+      && typeof (payload as { payload?: unknown }).payload === "object"
+      ? (payload as { payload: Record<string, unknown> }).payload
+      : null;
+    const required = Array.isArray(envelopePayload?.required_capabilities)
+      ? envelopePayload.required_capabilities.filter((value): value is string => typeof value === "string")
+      : [];
+    const advertised = new Set((conn.capabilities ?? []).map((value) => value.trim().toLowerCase()));
+    if (required.some((value) => !advertised.has(value.trim().toLowerCase()))) return false;
     conn.send(payload);
     return true;
   }

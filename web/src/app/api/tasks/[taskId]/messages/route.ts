@@ -230,6 +230,7 @@ export async function POST(
       content: body.content,
       role: body.role ?? "sdk",
       metadata: mergedMetadata,
+      clientMessageId: clientRequestId,
       attachmentIds,
     }));
   } catch (error) {

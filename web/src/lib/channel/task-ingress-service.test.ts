@@ -7,6 +7,7 @@ vi.mock('@/lib/db', () => ({
     task: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
     message: { create: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
     taskAttachment: { findMany: vi.fn(), updateMany: vi.fn() },
+    agentOutbox: { create: vi.fn() },
     $transaction: vi.fn(),
     user: { findUnique: vi.fn() },
     attachedTerminal: {
@@ -105,6 +106,7 @@ describe('task-ingress-service', () => {
     vi.mocked(db.message.findFirst).mockResolvedValue(null as any);
     vi.mocked(db.taskAttachment.findMany).mockResolvedValue([] as any);
     vi.mocked(db.taskAttachment.updateMany).mockResolvedValue({ count: 0 } as any);
+    vi.mocked(db.agentOutbox.create).mockResolvedValue({ id: 'outbox-1' } as any);
     vi.mocked(db.task.update).mockResolvedValue({
       id: 'task-1',
       updatedAt: new Date('2026-03-16T00:00:01.000Z'),
@@ -280,6 +282,13 @@ describe('task-ingress-service', () => {
       },
       data: { messageId: 'msg-1', status: 'bound', boundAt: expect.any(Date), expiresAt: null },
     });
+    expect(db.agentOutbox.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        requestId: 'msg-1',
+        eventType: 'task_user_message',
+        status: 'pending',
+      }),
+    });
     expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         envelope: expect.objectContaining({
@@ -308,6 +317,21 @@ describe('task-ingress-service', () => {
     expect(db.taskAttachment.findMany).toHaveBeenCalledWith({ where: expect.objectContaining({
       expiresAt: { gt: expect.any(Date) },
     }) });
+  });
+
+  it('rejects ordinary context files before binding them for chat-web', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1', projectId: 'proj-1', backendType: 'chat-web',
+      agentHost: 'conductor-fire-runtime', executionHost: 'conductor-fire-runtime',
+    } as any);
+    vi.mocked(db.taskAttachment.findMany).mockResolvedValue([{
+      id: 'att-file', originalName: 'notes.md', mimeType: 'text/markdown', sizeBytes: 5,
+      kind: 'file', sha256: 'c'.repeat(64), createdAt: new Date(),
+    }] as any);
+    await expect(appendUserMessageToTask({
+      userId: 'user-1', taskId: 'task-1', content: 'inspect', role: 'user', attachmentIds: ['att-file'],
+    })).rejects.toMatchObject({ code: 'CONTEXT_FILES_UNSUPPORTED_BY_BACKEND', status: 409 });
+    expect(db.taskAttachment.updateMany).not.toHaveBeenCalled();
   });
 
   it('rejects attachments when the connected agent has not advertised support', async () => {

@@ -67,6 +67,18 @@ describe('RealtimeHub terminal writer leases', () => {
 });
 
 describe('RealtimeHub connected agents metadata', () => {
+  it('enforces required capabilities for every host delivery path', () => {
+    const hub = new RealtimeHub();
+    const legacySend = vi.fn();
+    hub.register({
+      id: 'legacy-agent', kind: 'agent', userId: 'user-1', projectIds: ['*'],
+      host: 'daemon-a', capabilities: [], send: legacySend, close: vi.fn(),
+    });
+    const envelope = { type: 'task_user_message', payload: { required_capabilities: ['task_attachments_v1'] } };
+    expect(hub.sendToAgentHost('user-1', 'daemon-a', envelope)).toBe(false);
+    expect(legacySend).not.toHaveBeenCalled();
+  });
+
   it('broadcasts user preference updates only to app connections for that user', () => {
     const hub = new RealtimeHub();
     const appSend = vi.fn();

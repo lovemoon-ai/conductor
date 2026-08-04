@@ -85,6 +85,13 @@ describe("task-file-storage", () => {
     })).rejects.toMatchObject({ code: "ATTACHMENT_VIDEO" });
   });
 
+  it("does not reject ordinary text that mentions ftyp", async () => {
+    await expect(writeTaskAttachmentStream({
+      taskId: "task-1", fileName: "notes.txt", mimeType: "text/plain",
+      stream: Readable.from("the parser looks for ftyp metadata"), maxBytes: 1024,
+    })).resolves.toMatchObject({ kind: "file" });
+  });
+
   it("removes all attachment files for a deleted task", async () => {
     await writeTaskAttachment({
       taskId: "task-delete-1",

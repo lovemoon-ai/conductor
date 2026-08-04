@@ -356,6 +356,13 @@ export async function appendUserMessageToTask(input: {
   }
   const orderedAttachments = attachmentIds.map((id) => attachments.find((entry) => entry.id === id)!);
   const nativeImageTypes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+  if (normalizeBackendType((task as { backendType?: unknown }).backendType) === "chat-web"
+      && orderedAttachments.some((entry) => !nativeImageTypes.has(entry.mimeType.toLowerCase()))) {
+    throw new TaskIngressError("CONTEXT_FILES_UNSUPPORTED_BY_BACKEND", 409, "The selected backend does not support context files", {
+      error: "Context files unsupported",
+      message: "Chat Web does not support ordinary file context. Remove the file or select another backend.",
+    });
+  }
   const imageBytes = orderedAttachments
     .filter((entry) => nativeImageTypes.has(entry.mimeType.toLowerCase()))
     .reduce((total, entry) => total + entry.sizeBytes, 0);
@@ -399,6 +406,22 @@ export async function appendUserMessageToTask(input: {
     ...(clientMessageId ? { clientMessageId } : {}),
   };
 
+  const buildUserMessageEnvelope = (created: { id: string; taskId: string; content: string; createdAt: Date }) => ({
+    type: "task_user_message",
+    payload: {
+      request_id: created.id,
+      message_id: created.id,
+      task_id: created.taskId,
+      project_id: task.projectId,
+      role: "user",
+      content: created.content,
+      created_at: created.createdAt.toISOString(),
+      metadata: finalMetadata ?? undefined,
+      attachments: attachmentDeliveryMetadata,
+      ...(attachmentDeliveryMetadata.length ? { required_capabilities: ["task_attachments_v1"] } : {}),
+    },
+  });
+
   let message: Awaited<ReturnType<typeof db.message.create>>;
   let createdMessage = true;
   try {
@@ -419,6 +442,24 @@ export async function appendUserMessageToTask(input: {
         }
       }
       await tx.task.update({ where: { id: input.taskId }, data: { updatedAt: new Date() } });
+      // Attachment binding and its downstream command are one atomic unit. If
+      // the outbox cannot be written, the transaction rolls back and the same
+      // uploaded attachment remains reusable by the client.
+      if (attachmentIds.length && normalizedInputRole === "user") {
+        await tx.agentOutbox.create({
+          data: {
+            userId: input.userId,
+            agentHost: userMessageTargetHost,
+            taskId: task.id,
+            eventType: "task_user_message",
+            requestId: created.id,
+            payloadJson: JSON.stringify(buildUserMessageEnvelope(created)),
+            status: "pending",
+            attemptCount: 0,
+            nextRetryAt: null,
+          },
+        });
+      }
       return created;
     });
   } catch (error) {
@@ -454,30 +495,27 @@ export async function appendUserMessageToTask(input: {
     const targetHost = userMessageTargetHost;
     const requestId = message.id;
 
-    await enqueueAndAttemptAgentCommand(
+    const delivery = enqueueAndAttemptAgentCommand(
       {
         userId: input.userId,
         agentHost: targetHost,
         taskId: task.id,
         eventType: "task_user_message",
         requestId,
-        envelope: {
-          type: "task_user_message",
-          payload: {
-            request_id: requestId,
-            message_id: message.id,
-            task_id: message.taskId,
-            project_id: task.projectId,
-            role: "user",
-            content: message.content,
-            created_at: message.createdAt.toISOString(),
-            metadata: finalMetadata ?? undefined,
-            attachments: attachmentDeliveryMetadata,
-          },
-        },
+        envelope: buildUserMessageEnvelope(message),
       },
       buildOutboxDeliveryOptions(targetHost),
     );
+    if (attachmentIds.length) {
+      // The durable row already committed with the message. A best-effort
+      // immediate delivery failure must not turn a successful atomic enqueue
+      // into an HTTP error that encourages the browser to duplicate the turn.
+      await delivery.catch((error) => {
+        console.warn(`[task-ingress] immediate attachment delivery failed for ${requestId}: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    } else {
+      await delivery;
+    }
   }
 
   return { task, message };

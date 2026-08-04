@@ -12,6 +12,9 @@ const SEND_BUTTON_SAFETY_GAP_PX = 12;
 const INPUT_SCROLL_THRESHOLD_RATIO = 0.75;
 const MAX_ATTACHMENTS = 20;
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const NATIVE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+const NATIVE_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 const VIDEO_EXTENSIONS = new Set(['avi', 'm4v', 'mkv', 'mov', 'mp4', 'mpeg', 'mpg', 'webm']);
 
 const DRAFT_STORAGE_PREFIX = 'conductor-task-draft:';
@@ -563,6 +566,15 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
     const oversized = incoming.find((file) => file.size > MAX_ATTACHMENT_BYTES);
     if (invalidVideo) {
       setFileError('Video attachments are not supported.');
+      return;
+    }
+    const oversizedImage = incoming.find((file) => {
+      const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+      return (NATIVE_IMAGE_TYPES.has(file.type.toLowerCase()) || NATIVE_IMAGE_EXTENSIONS.has(extension))
+        && file.size > MAX_IMAGE_BYTES;
+    });
+    if (oversizedImage) {
+      setFileError(`${oversizedImage.name} exceeds the 20 MB image limit.`);
       return;
     }
     if (oversized) {

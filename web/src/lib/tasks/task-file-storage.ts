@@ -62,7 +62,12 @@ function matchesImageSignature(mimeType: string, prefix: Buffer): boolean {
 }
 
 function matchesVideoSignature(prefix: Buffer): boolean {
-  if (prefix.indexOf(Buffer.from("ftyp"), 4) >= 4) return true;
+  // ISO BMFF begins with a sized box whose type is `ftyp`; an arbitrary
+  // occurrence of that word in a text file is not a video signature.
+  if (prefix.length >= 12 && prefix.subarray(4, 8).toString("ascii") === "ftyp") {
+    const boxSize = prefix.readUInt32BE(0);
+    if (boxSize >= 8) return true;
+  }
   if (prefix.subarray(0, 3).toString("ascii") === "FLV") return true;
   if (prefix.subarray(0, 16).equals(Buffer.from("3026b2758e66cf11a6d900aa0062ce6c", "hex"))) return true;
   if (prefix.length >= 12 && prefix.subarray(0, 4).toString("ascii") === "RIFF"
@@ -167,8 +172,9 @@ export async function writeTaskAttachment(params: {
     throw Object.assign(new Error("video attachments are not supported"), { code: "ATTACHMENT_VIDEO" });
   }
 
-  await fs.mkdir(directory, { recursive: true });
-  await fs.writeFile(filePath, params.bytes);
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  await fs.chmod(directory, 0o700);
+  await fs.writeFile(filePath, params.bytes, { mode: 0o600 });
   const sha256 = createHash("sha256").update(params.bytes).digest("hex");
   if (NATIVE_IMAGE_TYPES.has(mimeType) && !matchesImageSignature(mimeType, params.bytes.subarray(0, 12))) {
     mimeType = DEFAULT_MIME_TYPE;
@@ -206,7 +212,8 @@ export async function writeTaskAttachmentStream(params: {
   let sizeBytes = 0;
   let prefix = Buffer.alloc(0);
 
-  await fs.mkdir(directory, { recursive: true });
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  await fs.chmod(directory, 0o700);
   const meter = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
       sizeBytes += chunk.byteLength;
@@ -225,7 +232,7 @@ export async function writeTaskAttachmentStream(params: {
   });
 
   try {
-    await pipeline(params.stream, meter, nodeFs.createWriteStream(temporaryPath, { flags: "wx" }));
+    await pipeline(params.stream, meter, nodeFs.createWriteStream(temporaryPath, { flags: "wx", mode: 0o600 }));
     if (sizeBytes === 0) {
       throw Object.assign(new Error("file is empty"), { code: "ATTACHMENT_EMPTY" });
     }

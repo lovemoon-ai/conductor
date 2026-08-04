@@ -119,6 +119,15 @@ describe('MessageInput', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it('rejects native images above 20 MB before upload', () => {
+    render(<MessageInput taskId="task-large-image" onSend={vi.fn()} />);
+    const image = new File(['x'], 'large.png', { type: '' });
+    Object.defineProperty(image, 'size', { value: 20 * 1024 * 1024 + 1 });
+    fireEvent.change(screen.getByTestId('message-input-file-picker'), { target: { files: [image] } });
+    expect(screen.getByText('large.png exceeds the 20 MB image limit.')).toBeTruthy();
+    expect(screen.queryByTestId('message-input-files')).toBeNull();
+  });
+
   it('retains selected files when upload or send fails', async () => {
     const onSend = vi.fn().mockRejectedValue(new Error('network down'));
     render(<MessageInput taskId="task-retry-files" onSend={onSend} />);

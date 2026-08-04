@@ -3069,7 +3069,13 @@ export class BridgeRunner {
   }
 
   async respondToMessage(message) {
-    const content = String(message.content || "").trim();
+    const localAttachments = Array.isArray(message.attachments)
+      ? message.attachments.filter((attachment) =>
+          attachment && typeof attachment === "object" && typeof (attachment.path || attachment.localPath) === "string"
+        )
+      : [];
+    const rawContent = String(message.content || "").trim();
+    const content = rawContent || (localAttachments.length ? "Analyze the attached files." : "");
     if (!content) {
       this.copilotLog(`skip empty message replyTo=${message?.message_id || "latest"}`);
       return;
@@ -3091,11 +3097,6 @@ export class BridgeRunner {
       String(message.role || "").toLowerCase() === "user" &&
       content === this.pendingInitialPrompt;
     const useInitialImages = isQueuedInitialPromptMessage && this.includeInitialImages;
-    const localAttachments = Array.isArray(message.attachments)
-      ? message.attachments.filter((attachment) =>
-          attachment && typeof attachment === "object" && typeof (attachment.path || attachment.localPath) === "string"
-        )
-      : [];
     const nativeImageMimes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
     const media = localAttachments
       .filter((attachment) => attachment.kind === "image" && nativeImageMimes.has(String(attachment.mimeType || "").toLowerCase()))
@@ -3353,8 +3354,12 @@ export class BridgeRunner {
     const goalCapable = Boolean(
       snapshot && snapshot.capabilities && snapshot.capabilities.goal === true,
     );
+    const hasAttachmentInputs =
+      (Array.isArray(options.media) && options.media.length > 0) ||
+      (Array.isArray(options.contextFiles) && options.contextFiles.length > 0);
     const willRunGoal =
       goalDirective != null &&
+      !hasAttachmentInputs &&
       goalCapable &&
       typeof this.backendSession?.runGoal === "function";
 
