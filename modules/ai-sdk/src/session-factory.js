@@ -5,6 +5,7 @@ import {
   CODEX_APP_SERVER_VARIANT,
   CODEX_EXEC_VARIANT,
   COPILOT_SDK_VARIANT,
+  DSH_SDK_VARIANT,
   KIMI_CLI_PRINT_VARIANT,
   KIMI_CLI_WIRE_VARIANT,
   OPENCODE_SDK_VARIANT,
@@ -18,6 +19,7 @@ import { CodexAppServerSession } from "./providers/codex-app-server-session.js";
 import { CodexExecSession } from "./providers/codex-exec-session.js";
 import { ClaudeAgentSdkSession } from "./providers/claude-agent-sdk-session.js";
 import { CopilotSdkSession } from "./providers/copilot-sdk-session.js";
+import { DshSdkSession } from "./providers/dsh-sdk-session.js";
 import { KimiCliSession } from "./providers/kimi-cli-session.js";
 import { resolveKimiCliMode } from "./providers/kimi-cli-mode.js";
 import { KimiPrintSession } from "./providers/kimi-print-session.js";
@@ -35,6 +37,7 @@ export const KIMI_PROVIDER_VARIANT = KIMI_CLI_WIRE_VARIANT;
 export const KIMI_PRINT_PROVIDER_VARIANT = KIMI_CLI_PRINT_VARIANT;
 export const OPENCODE_PROVIDER_VARIANT = OPENCODE_SDK_VARIANT;
 export const CHAT_WEB_PROVIDER_VARIANT = CHAT_WEB_SESSION_VARIANT;
+export const DSH_PROVIDER_VARIANT = DSH_SDK_VARIANT;
 
 const SESSION_FACTORIES_BY_BACKEND = new Map([
   [
@@ -66,6 +69,7 @@ const SESSION_FACTORIES_BY_BACKEND = new Map([
   ],
   ["opencode", (backend, options) => new OpencodeSdkSession(backend, options)],
   ["chat-web", (backend, options) => new ChatWebSession(backend, options)],
+  ["dsh", (backend, options) => new DshSdkSession(backend, options)],
 ]);
 
 function hasStructuredOutputPreference(options = {}) {
@@ -161,3 +165,4 @@ export { CopilotSdkSession };
 export { KimiCliSession };
 export { KimiPrintSession };
 export { OpencodeSdkSession };
+export { DshSdkSession };

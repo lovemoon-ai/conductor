@@ -6,6 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { execFileSync, execSync } from "node:child_process";
+import { createRequire } from "node:module";
 import yargs from "yargs/yargs";
 import { hideBin } from "yargs/helpers";
 import { RUNTIME_SUPPORTED_BACKENDS } from "../src/runtime-backends.js";
@@ -42,6 +43,11 @@ const DEFAULT_CLIs = {
     command: "copilot",
     execArgs: "",
     description: "GitHub Copilot (built in via SDK)"
+  },
+  dsh: {
+    command: "dsh",
+    execArgs: "",
+    description: "DeepSeek Harness agent (built in via SDK; needs DEEPSEEK_API_KEY)"
   },
   // chat-web is the runtime backend (an in-process Chromium driver, not a CLI
   // binary). It has multiple sub-providers selected via --model. Each user-
@@ -100,6 +106,20 @@ function isBuiltInChatWebAvailable() {
     packageJson?.dependencies?.["@love-moon/chat-web"] ||
     packageJson?.optionalDependencies?.["@love-moon/chat-web"],
   );
+}
+
+function isBuiltInDshAvailable() {
+  // The dsh runtime ships as pinned dependencies of @love-moon/ai-sdk (not of
+  // the CLI itself), so resolve it THROUGH ai-sdk's resolution context — a
+  // direct resolve from cli/bin fails under pnpm's isolated node_modules.
+  try {
+    const require = createRequire(import.meta.url);
+    const aiSdkEntry = require.resolve("@love-moon/ai-sdk");
+    createRequire(aiSdkEntry).resolve("@deepseek-ai/dsh-sdk-jsonrpc-demo/bin");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function buildConfigEntryLines(cli, info, { commented = false } = {}) {
@@ -332,6 +352,10 @@ function detectInstalledCLIs() {
       continue;
     }
     if (runtimeBackend === "chat-web" && isBuiltInChatWebAvailable()) {
+      detected.push(key);
+      continue;
+    }
+    if (runtimeBackend === "dsh" && isBuiltInDshAvailable()) {
       detected.push(key);
       continue;
     }
