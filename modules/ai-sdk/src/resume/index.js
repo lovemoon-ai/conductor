@@ -12,6 +12,7 @@ import * as chatWeb from "./chat-web.js";
 import * as claude from "./claude.js";
 import * as codex from "./codex.js";
 import * as copilot from "./copilot.js";
+import * as dsh from "./dsh.js";
 import * as kimi from "./kimi.js";
 import * as opencode from "./opencode.js";
 import {
@@ -43,6 +44,7 @@ const RESUME_MODULES_BY_BACKEND = new Map([
   ["kimi", kimi],
   ["opencode", opencode],
   ["chat-web", chatWeb],
+  ["dsh", dsh],
 ]);
 
 // Sanity-check at module load:

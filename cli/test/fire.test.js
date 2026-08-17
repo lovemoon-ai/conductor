@@ -374,12 +374,13 @@ describe("conductor-fire backends", () => {
       // `test-external-no-goal` is also exposed by the fake-external-provider
       // fixture as a second provider (for capability-detection tests in
       // ai-sdk). It surfaces here unaliased.
-      assert.deepEqual(advertisedBackends.supportedBackends, ["test-external", "yaml-list-external", "test-external-no-goal", "copilot"]);
+      assert.deepEqual(advertisedBackends.supportedBackends, ["test-external", "yaml-list-external", "test-external-no-goal", "copilot", "dsh"]);
       assert.deepEqual(advertisedBackends.runtimeBackendMap, {
         "test-external": "test-external",
         "yaml-list-external": "yaml-list-external",
         "test-external-no-goal": "test-external-no-goal",
         "copilot": "copilot",
+        "dsh": "dsh",
       });
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -410,12 +411,13 @@ describe("conductor-fire backends", () => {
       //   - `test-external-no-goal` (no alias, so it surfaces as a raw external backend)
       // The point of this test is that aliased externals get hidden; the
       // unaliased `test-external-no-goal` is expected to come through.
-      assert.deepEqual(advertisedBackends.supportedBackends, ["my-external", "test-external-no-goal", "copilot"]);
+      assert.deepEqual(advertisedBackends.supportedBackends, ["my-external", "test-external-no-goal", "copilot", "dsh"]);
       assert.deepEqual(advertisedBackends.externalBackends, ["test-external-no-goal"]);
       assert.deepEqual(advertisedBackends.runtimeBackendMap, {
         "my-external": "test-external",
         "test-external-no-goal": "test-external-no-goal",
         "copilot": "copilot",
+        "dsh": "dsh",
       });
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });

@@ -9,12 +9,13 @@ import { resolveConductorConfigPath } from "./conductor-paths.js";
 // CLI display order for built-in backends. ai-sdk owns the canonical set of
 // built-in backends; CLI just picks an ordering for "Supported Backends:" log
 // output. The self-check below ensures this list always matches ai-sdk's set.
-const BUILT_IN_RUNTIME_BACKENDS = ["codex", "claude", "kimi", "opencode", "copilot", "chat-web"];
+const BUILT_IN_RUNTIME_BACKENDS = ["codex", "claude", "kimi", "opencode", "copilot", "chat-web", "dsh"];
 const BUILT_IN_RUNTIME_BACKEND_SET = new Set(BUILT_IN_RUNTIME_BACKENDS);
 // Backends that don't shell out to a CLI binary AND should be advertised
-// without any user-side allow_cli_list entry. `copilot` is the only such
-// backend today — it ships with @github/copilot-sdk as a hard dep so
-// every install gets it for free.
+// without any user-side allow_cli_list entry. `copilot` ships with
+// @github/copilot-sdk as a hard dep so every install gets it for free;
+// `dsh` (DeepSeek Harness) ships its pinned runtime inside ai-sdk's own
+// dependencies and is spawned via @deepseek-ai/dsh-sdk-client.
 //
 // chat-web is intentionally NOT here even though it's also command-optional
 // (it drives a Chromium browser, not a CLI). The reason: chat-web has
@@ -23,7 +24,7 @@ const BUILT_IN_RUNTIME_BACKEND_SET = new Set(BUILT_IN_RUNTIME_BACKENDS);
 // aliases like `web-chatgpt` / `web-gemini` is just confusing — the alias
 // IS the sub-provider choice. Users who want chat-web must declare an
 // explicit allow_cli_list entry (which is also where `--model` lives).
-const COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKENDS = ["copilot"];
+const COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKENDS = ["copilot", "dsh"];
 const COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKEND_SET = new Set(COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKENDS);
 
 // Legacy aliases (e.g. "code" → "codex", "kimi-cli" → "kimi") are derived
