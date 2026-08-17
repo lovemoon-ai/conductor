@@ -3103,7 +3103,7 @@ describe("Daemon", () => {
   // breaking restart for that task with no daemon log and no status summary.
   // Shared harness for the worktree-symlink destination probe. `linkState`
   // decides what the destination currently looks like on disk.
-  const runWorktreeSymlinkCase = ({ name, linkState, onSettled }) => {
+  const runWorktreeSymlinkCase = ({ name, linkState, linkIsSymlink = true, onSettled }) => {
     const worktreeRoot = `/tmp/repo/.conductor/worktrees/${name}`;
     const linkPath = `${worktreeRoot}/xr/local.properties`;
     const sourcePath = "/tmp/repo/xr/local.properties";
@@ -3170,11 +3170,15 @@ describe("Daemon", () => {
           filePath === "/tmp/repo/.conductor/settings.yaml" || filePath === sourcePath,
         lstatSync: (filePath) => {
           if (filePath === linkPath) {
-            return { isSymbolicLink: () => true };
+            return { isSymbolicLink: () => linkIsSymlink };
           }
           throw enoent();
         },
         readlinkSync: (filePath) => {
+          assert.ok(
+            linkIsSymlink,
+            "readlinkSync must not be called for a non-symlink destination",
+          );
           assert.strictEqual(filePath, linkPath);
           return linkState;
         },
@@ -3243,6 +3247,28 @@ describe("Daemon", () => {
         // No unlink of the live path at any point — rename replaces it.
         assert.deepStrictEqual(unlinkCalls, []);
         // Self-heal means the task still launches.
+        assert.strictEqual(spawnedCwd, worktreeRoot);
+        done();
+      },
+    });
+  });
+
+  // Regression: a REAL file/dir at the destination (e.g. `pnpm install` ran
+  // inside the worktree and replaced the node_modules symlink with a real
+  // directory) used to throw, which failed worktree re-preparation and made
+  // every task in that worktree permanently un-restartable. The daemon must
+  // keep the local copy, skip the link, and still launch the task.
+  it("keeps a real non-symlink destination and still launches the task", (t, done) => {
+    runWorktreeSymlinkCase({
+      name: "task-worktree-real-dest",
+      linkState: null,
+      linkIsSymlink: false,
+      onSettled: ({ symlinkCalls, unlinkCalls, renameCalls, spawnedCwd, worktreeRoot }) => {
+        // Never clobber real data: no link creation, no unlink, no rename.
+        assert.deepStrictEqual(symlinkCalls, []);
+        assert.deepStrictEqual(unlinkCalls, []);
+        assert.deepStrictEqual(renameCalls, []);
+        // Skip means the task still launches.
         assert.strictEqual(spawnedCwd, worktreeRoot);
         done();
       },

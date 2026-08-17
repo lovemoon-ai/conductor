@@ -2196,11 +2196,19 @@ export function startDaemon(config = {}, deps = {}) {
 
       if (linkStat) {
         if (!linkStat.isSymbolicLink()) {
-          throw new Error(
-            `worktree symlink destination already exists and is not a symlink: ${linkPath}. ` +
-              `Refusing to replace it because it may hold real data — remove it manually, ` +
-              `or drop "${configuredPath}" from worktree.symlink in .conductor/settings.yaml.`,
+          // A real file/dir at the destination means something materialised
+          // data inside the worktree (e.g. `pnpm install` replaced the
+          // node_modules link with a real directory). It may hold real data,
+          // so never clobber it — but throwing here made every task in this
+          // worktree permanently un-restartable. Keep the local copy and skip
+          // the link; remove the path manually (or drop the entry from
+          // worktree.symlink) to restore sharing with the project workspace.
+          logError(
+            `[worktree] skipping symlink for ${configuredPath}: destination already exists and ` +
+              `is not a symlink: ${linkPath}. Keeping the local copy — remove it manually to ` +
+              `restore sharing via worktree.symlink in .conductor/settings.yaml.`,
           );
+          continue;
         }
         // Compare the link's TARGET, not whether that target resolves. A link
         // that already points at the right place is correct even when the
