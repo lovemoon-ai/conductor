@@ -7,6 +7,7 @@ import { getCodexQuota, readCachedCodexQuota, type GetCodexQuotaOptions } from "
 import { getClaudeQuota, type GetClaudeQuotaOptions } from "./quota/claude.js";
 import { getKimiQuota, type GetKimiQuotaOptions } from "./quota/kimi.js";
 import { getCopilotQuota, type GetCopilotQuotaOptions } from "./quota/copilot.js";
+import { getDshQuota, readCachedDshQuota, type DshQuotaOptions } from "./quota/dsh.js";
 import {
   getExternalQuota,
   getExternalQuotaList,
@@ -19,6 +20,7 @@ import type {
   CodexAccount,
   CodexQuota,
   ClaudeQuota,
+  DshQuota,
   ExternalQuota,
   ExternalQuotaList,
   KimiQuota,
@@ -122,6 +124,15 @@ export class AiManager {
 
   getCopilotQuota(opts?: GetCopilotQuotaOptions): Promise<CopilotQuota> {
     return getCopilotQuota(opts);
+  }
+
+  getDshQuota(opts?: DshQuotaOptions): Promise<DshQuota> {
+    return getDshQuota({ configPath: this.configPath, ...opts });
+  }
+
+  /** Last cached DeepSeek balance, no network call. */
+  readCachedDshQuota(opts?: DshQuotaOptions): Promise<DshQuota | null> {
+    return readCachedDshQuota({ configPath: this.configPath, ...opts });
   }
 
   getExternalQuota(opts: GetExternalQuotaOptions): Promise<ExternalQuota> {

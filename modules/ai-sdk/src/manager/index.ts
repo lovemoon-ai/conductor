@@ -32,6 +32,14 @@ export {
   type GetCopilotQuotaOptions,
 } from "./quota/copilot.js";
 export {
+  getDshQuota,
+  readCachedDshQuota,
+  resolveDeepSeekCredential,
+  parseDshBalance,
+  normalizeDshBaseUrl,
+  type DshQuotaOptions,
+} from "./quota/dsh.js";
+export {
   getExternalQuota,
   getExternalQuotaList,
   normalizeExternalQuota,

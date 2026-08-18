@@ -27,7 +27,9 @@ import { RefreshIcon } from '@/features/tasks';
 // mechanism the chat view uses, proven to survive `<Link>` navigation.
 
 const SCROLL_STORAGE_PREFIX = 'conductor-daemon-scroll:';
-const BUILT_IN_AI_BACKENDS = new Set(['codex', 'claude', 'kimi', 'copilot']);
+// Backends whose quota the daemon reports directly under its own key; they
+// must not be routed through the external-provider quota path.
+const BUILT_IN_AI_BACKENDS = new Set(['codex', 'claude', 'kimi', 'copilot', 'dsh', 'deepseek-harness']);
 
 function externalQuotaBackends(backends: string[] | undefined): string[] {
   return [...new Set(

@@ -5,7 +5,7 @@
 import { AiManager } from "@love-moon/ai-sdk";
 
 const VALID_ACTIONS = new Set(["status", "quota", "list_accounts", "switch_account"]);
-const BASE_QUOTA_TOOLS = ["codex", "claude", "kimi", "copilot"];
+const BASE_QUOTA_TOOLS = ["codex", "claude", "kimi", "copilot", "dsh"];
 
 /**
  * @param {object} opts
@@ -23,7 +23,7 @@ export function createAiManagerHandlers(opts = {}) {
       manager.getCurrentCodexAccount().catch(() => null),
     ]);
     const network = {};
-    const tools = ["codex", "claude", "kimi", "copilot"];
+    const tools = [...BASE_QUOTA_TOOLS];
     await Promise.all(
       tools.map(async (tool) => {
         if (install[tool]?.installed) {
@@ -68,6 +68,9 @@ export function createAiManagerHandlers(opts = {}) {
       forceRefresh,
     }));
     addJob("copilot", () => manager.getCopilotQuota({
+      forceRefresh,
+    }));
+    addJob("dsh", () => manager.getDshQuota({
       forceRefresh,
     }));
     const externalBackends = pickExternalQuotaBackends(args);

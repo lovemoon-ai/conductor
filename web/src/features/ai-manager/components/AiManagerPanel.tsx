@@ -22,7 +22,7 @@ function isManageableHost(host: string): boolean {
   return !host.startsWith('conductor-fire-');
 }
 
-const MANAGED_TOOL_ORDER: Tool[] = ['codex', 'claude', 'kimi', 'copilot'];
+const MANAGED_TOOL_ORDER: Tool[] = ['codex', 'claude', 'kimi', 'copilot', 'dsh'];
 const BUILT_IN_NON_QUOTA_BACKENDS = new Set(['chat-web', 'opencode']);
 const TOOL_ALIASES: Record<string, Tool> = {
   codex: 'codex',
@@ -33,6 +33,8 @@ const TOOL_ALIASES: Record<string, Tool> = {
   'kimi-cli': 'kimi',
   'kimi-code': 'kimi',
   copilot: 'copilot',
+  dsh: 'dsh',
+  'deepseek-harness': 'dsh',
 };
 
 function normalizeManagedTool(value: unknown): Tool | null {
@@ -365,6 +367,46 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
                     <QuotaBar label="Weekly" window={quota?.kimi?.weekly} />
                     {quota?.kimi?.error ? (
                       <p className="text-xs text-[var(--error)]">{quota.kimi.error}</p>
+                    ) : null}
+                  </div>
+                );
+              }
+
+              if (tool === 'dsh') {
+                // DeepSeek bills per token with no rolling window, so this
+                // shows prepaid balance rather than a QuotaBar percentage.
+                return (
+                  <div key={tool} className="flex min-w-0 flex-col gap-3">
+                    <div className="text-sm font-semibold text-ink">
+                      DeepSeek Harness
+                      {quota?.dsh && !quota.dsh.error ? (
+                        <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
+                          {quota.dsh.isAvailable ? 'available' : 'unavailable'}
+                        </span>
+                      ) : null}
+                    </div>
+                    {quota?.dsh?.primaryBalance ? (
+                      <div className="flex min-w-0 flex-col gap-1">
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-lg font-semibold text-ink">
+                            {quota.dsh.primaryBalance.totalBalance.toFixed(2)}
+                          </span>
+                          <span className="text-xs text-muted">
+                            {quota.dsh.primaryBalance.currency} balance
+                          </span>
+                        </div>
+                        {quota.dsh.primaryBalance.grantedBalance > 0 ? (
+                          <p className="text-xs text-muted">
+                            granted {quota.dsh.primaryBalance.grantedBalance.toFixed(2)} · topped up{' '}
+                            {quota.dsh.primaryBalance.toppedUpBalance.toFixed(2)}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : !quota?.dsh?.error ? (
+                      <p className="text-sm text-muted">Loading balance…</p>
+                    ) : null}
+                    {quota?.dsh?.error ? (
+                      <p className="text-xs text-[var(--error)]">{quota.dsh.error}</p>
                     ) : null}
                   </div>
                 );

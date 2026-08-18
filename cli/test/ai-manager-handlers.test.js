@@ -120,12 +120,13 @@ test("dispatch quota includes copilot but not external providers by default", as
   handlers.manager.getClaudeQuota = async () => ({ tool: "claude", source: "fresh" });
   handlers.manager.getKimiQuota = async () => ({ tool: "kimi", source: "fresh" });
   handlers.manager.getCopilotQuota = async () => ({ tool: "copilot", source: "fresh" });
+  handlers.manager.getDshQuota = async () => ({ tool: "dsh", source: "fresh" });
   handlers.manager.getExternalQuotaList = async () => {
     throw new Error("external provider should not be called by default");
   };
 
   const out = await handlers.dispatch({ action: "quota", args: {} });
-  assert.deepEqual(Object.keys(out.result).sort(), ["claude", "codex", "copilot", "kimi"]);
+  assert.deepEqual(Object.keys(out.result).sort(), ["claude", "codex", "copilot", "dsh", "kimi"]);
   assert.equal(out.result.copilot.tool, "copilot");
 });
 
@@ -145,10 +146,11 @@ test("dispatch quota probes selected providers concurrently", async () => {
   handlers.manager.getClaudeQuota = probe("claude");
   handlers.manager.getKimiQuota = probe("kimi");
   handlers.manager.getCopilotQuota = probe("copilot");
+  handlers.manager.getDshQuota = probe("dsh");
 
   const out = await handlers.dispatch({ action: "quota", args: {} });
 
-  assert.deepEqual(Object.keys(out.result).sort(), ["claude", "codex", "copilot", "kimi"]);
+  assert.deepEqual(Object.keys(out.result).sort(), ["claude", "codex", "copilot", "dsh", "kimi"]);
   assert.ok(maxActive > 1, "quota probes should overlap instead of running serially");
 });
 
@@ -159,6 +161,7 @@ test("dispatch quota includes external providers when requested", async () => {
   handlers.manager.getClaudeQuota = async () => ({ tool: "claude", source: "fresh" });
   handlers.manager.getKimiQuota = async () => ({ tool: "kimi", source: "fresh" });
   handlers.manager.getCopilotQuota = async () => ({ tool: "copilot", source: "fresh" });
+  handlers.manager.getDshQuota = async () => ({ tool: "dsh", source: "fresh" });
   handlers.manager.getExternalQuotaList = async ({ backend }) => ({
     backend,
     source: "fresh",
@@ -171,7 +174,7 @@ test("dispatch quota includes external providers when requested", async () => {
     args: { externalQuotaBackends: ["private-ext"] },
   });
 
-  assert.deepEqual(Object.keys(out.result).sort(), ["claude", "codex", "copilot", "external", "kimi"]);
+  assert.deepEqual(Object.keys(out.result).sort(), ["claude", "codex", "copilot", "dsh", "external", "kimi"]);
   assert.equal(out.result.external["private-ext"].backend, "private-ext");
 });
 

@@ -13,6 +13,7 @@ const TOOL_LABEL: Record<Tool, string> = {
   claude: 'Claude',
   kimi: 'Kimi',
   copilot: 'Copilot',
+  dsh: 'DeepSeek Harness',
 };
 
 function badge(ok: boolean, text: string) {

@@ -5,6 +5,7 @@ const ENDPOINTS: Record<Tool, string> = {
   claude: "https://api.anthropic.com/v1/messages",
   kimi: "https://api.kimi.com/coding/v1/usages",
   copilot: "https://api.githubcopilot.com/",
+  dsh: "https://api.deepseek.com/",
 };
 
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -45,11 +46,12 @@ export async function checkNetwork(
 export async function checkNetworkAll(opts?: {
   timeoutMs?: number;
 }): Promise<Record<Tool, NetworkStatus>> {
-  const [codex, claude, kimi, copilot] = await Promise.all([
+  const [codex, claude, kimi, copilot, dsh] = await Promise.all([
     checkNetwork("codex", opts),
     checkNetwork("claude", opts),
     checkNetwork("kimi", opts),
     checkNetwork("copilot", opts),
+    checkNetwork("dsh", opts),
   ]);
-  return { codex, claude, kimi, copilot };
+  return { codex, claude, kimi, copilot, dsh };
 }

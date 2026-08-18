@@ -1,7 +1,7 @@
 // Mirror of @love-moon/ai-sdk manager response shapes (loose; daemon may add fields).
 // We intentionally avoid importing the SDK directly so frontend bundles stay small.
 
-export type Tool = 'codex' | 'claude' | 'kimi' | 'copilot';
+export type Tool = 'codex' | 'claude' | 'kimi' | 'copilot' | 'dsh';
 export type QuotaSource = 'fresh' | 'cached' | 'stale' | 'unknown';
 
 export interface InstallStatus {
@@ -34,6 +34,28 @@ export interface CodexAccount {
    * live quota for this account.
    */
   cachedQuota?: CodexQuota;
+}
+
+/** One currency bucket of a DeepSeek account balance. */
+export interface DshBalanceInfo {
+  currency: string;
+  totalBalance: number;
+  grantedBalance: number;
+  toppedUpBalance: number;
+}
+
+/**
+ * DeepSeek bills per token with no rolling usage window, so this carries a
+ * prepaid balance instead of a QuotaWindow — there is no percentage to show.
+ */
+export interface DshQuota {
+  tool: 'dsh';
+  isAvailable: boolean;
+  primaryBalance?: DshBalanceInfo;
+  balances: DshBalanceInfo[];
+  fetchedAt: number;
+  source: QuotaSource;
+  error?: string;
 }
 
 export interface QuotaWindow {
@@ -153,6 +175,7 @@ export interface QuotaResponse {
   claude?: ClaudeQuota;
   kimi?: KimiQuota;
   copilot?: CopilotQuota;
+  dsh?: DshQuota;
   external?: Record<string, ExternalQuotaList>;
 }
 

@@ -58,6 +58,10 @@ export async function checkInstall(
     return checkCopilotSdkInstall();
   }
 
+  if (tool === "dsh") {
+    return checkDshSdkInstall();
+  }
+
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const bin = tool; // codex / claude
   const path = await which(bin, timeoutMs);
@@ -86,13 +90,14 @@ function extractSemver(line: string): string | undefined {
 export async function checkInstallAll(opts?: {
   timeoutMs?: number;
 }): Promise<Record<Tool, InstallStatus>> {
-  const [codex, claude, kimi, copilot] = await Promise.all([
+  const [codex, claude, kimi, copilot, dsh] = await Promise.all([
     checkInstall("codex", opts),
     checkInstall("claude", opts),
     checkInstall("kimi", opts),
     checkInstall("copilot", opts),
+    checkInstall("dsh", opts),
   ]);
-  return { codex, claude, kimi, copilot };
+  return { codex, claude, kimi, copilot, dsh };
 }
 
 async function checkCopilotSdkInstall(): Promise<InstallStatus> {
@@ -108,6 +113,29 @@ async function checkCopilotSdkInstall(): Promise<InstallStatus> {
     return {
       installed: false,
       error: `@github/copilot-sdk not available: ${err?.message ?? err}`,
+    };
+  }
+}
+
+/**
+ * DeepSeek Harness ships as pinned dependencies of this package rather than a
+ * CLI on PATH, so the reported version is the runtime package's own npm
+ * version — the same shape as the Copilot SDK probe above.
+ */
+async function checkDshSdkInstall(): Promise<InstallStatus> {
+  const RUNTIME_PACKAGE = "@deepseek-ai/dsh-sdk-jsonrpc-demo";
+  try {
+    const entryPath = require.resolve(`${RUNTIME_PACKAGE}/bin`);
+    const version = await findPackageVersionForEntry(entryPath, RUNTIME_PACKAGE);
+    return {
+      installed: true,
+      path: RUNTIME_PACKAGE,
+      version: version ?? "installed",
+    };
+  } catch (err: any) {
+    return {
+      installed: false,
+      error: `${RUNTIME_PACKAGE} not available: ${err?.message ?? err}`,
     };
   }
 }

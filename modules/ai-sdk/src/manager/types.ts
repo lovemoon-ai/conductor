@@ -1,4 +1,4 @@
-export type Tool = "codex" | "claude" | "kimi" | "copilot";
+export type Tool = "codex" | "claude" | "kimi" | "copilot" | "dsh";
 export type QuotaSource = "fresh" | "cached" | "stale" | "unknown";
 
 export interface InstallStatus {
@@ -109,6 +109,33 @@ export interface CopilotQuota {
   host?: string;
   loginSource?: "sdk" | "github_token";
   snapshots: Record<string, CopilotQuotaSnapshot>;
+  fetchedAt: number;
+  source: QuotaSource;
+  raw?: Record<string, unknown>;
+  error?: string;
+}
+
+/** One currency bucket of a DeepSeek account balance. */
+export interface DshBalanceInfo {
+  currency: string;
+  totalBalance: number;
+  grantedBalance: number;
+  toppedUpBalance: number;
+}
+
+/**
+ * DeepSeek Harness account state. DeepSeek bills per token with no rolling
+ * usage window, so this carries a prepaid balance rather than a
+ * {@link QuotaWindow}: there is no percentage to render.
+ */
+export interface DshQuota {
+  tool: "dsh";
+  /** Whether DeepSeek considers the account usable for inference. */
+  isAvailable: boolean;
+  /** The account's primary balance bucket (first entry, usually CNY). */
+  primaryBalance?: DshBalanceInfo;
+  /** Every currency bucket the API reported. */
+  balances: DshBalanceInfo[];
   fetchedAt: number;
   source: QuotaSource;
   raw?: Record<string, unknown>;
