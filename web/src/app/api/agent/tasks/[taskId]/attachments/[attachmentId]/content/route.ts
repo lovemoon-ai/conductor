@@ -31,8 +31,12 @@ export async function GET(
     select: { id: true },
   });
   if (!task) return NextResponse.json({ error: "Attachment not found" }, { status: 404 });
+  // `materialized` stays downloadable: a Daemon that lost its local copy (wiped
+  // worktree, restored session, takeover by another host) must be able to fetch
+  // the attachment again instead of retrying a 404 forever. `pruned` is absent
+  // on purpose — its bytes are already gone, so the miss is reported below.
   const attachment = await db.taskAttachment.findFirst({
-    where: { id: attachmentId, taskId, messageId: { not: null }, status: "bound" },
+    where: { id: attachmentId, taskId, messageId: { not: null }, status: { in: ["bound", "materialized"] } },
   });
   if (!attachment) return NextResponse.json({ error: "Attachment not found" }, { status: 404 });
   const body = await openTaskAttachmentStreamByStorageKey(taskId, attachment.storageKey);

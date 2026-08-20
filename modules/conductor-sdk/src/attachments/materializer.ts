@@ -211,7 +211,14 @@ export class AttachmentMaterializer {
       headers: transferHeaders,
       signal: transferSignal,
     });
-    if (!response.ok || !response.body) throw new Error(`Attachment download failed with HTTP ${response.status}`);
+    if (!response.ok || !response.body) {
+      const error: Error & { permanent?: boolean } = new Error(`Attachment download failed with HTTP ${response.status}`);
+      // The attachment was released, deleted or is no longer readable by this
+      // host. Retrying cannot fix that, so let the caller stop instead of
+      // looping on a 404 until the process dies.
+      if (response.status === 403 || response.status === 404 || response.status === 410) error.permanent = true;
+      throw error;
+    }
     const contentLength = response.headers.get('content-length');
     const declaredLength = contentLength === null ? null : Number(contentLength);
     if (declaredLength !== null && Number.isFinite(declaredLength) && declaredLength !== sizeBytes) {

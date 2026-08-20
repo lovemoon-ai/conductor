@@ -1342,6 +1342,37 @@ describe('ConductorClient', () => {
     await client.close();
   });
 
+  test('stops retrying and explains itself when an attachment is gone for good', async () => {
+    let downloadAttempts = 0;
+    const attachmentMaterializer = new AttachmentMaterializer({
+      config: makeConfig(), projectPath, agentHost: 'conductor-fire-test-host-1',
+      fetchImpl: vi.fn(async (input) => {
+        if (String(input).endsWith('/materialized')) return new Response('{}', { status: 200 });
+        downloadAttempts += 1;
+        // The retention sweep already released the bytes.
+        return new Response('{"error":"Attachment not found"}', { status: 404 });
+      }) as typeof fetch,
+    });
+    const client = await ConductorClient.connect({
+      config: makeConfig(), projectPath, backendApi: backendApi as any, wsClient: wsClient as any,
+      sessionStore, agentHost: 'conductor-fire-test-host-1', attachmentMaterializer,
+    });
+    await client.createTaskSession({ project_id: 'proj1', task_title: 'Hello', task_id: 'task-gone' });
+    await wsClient.emit({ type: 'task_user_message', payload: {
+      task_id: 'task-gone', project_id: 'proj1', request_id: 'cmd-gone', message_id: 'msg-gone',
+      role: 'user', content: 'look at this', delivery_cursor: { created_at: '2026-08-01T00:00:00Z', request_id: 'cmd-gone' },
+      attachments: [{ id: 'att-1', name: 'spec.txt', mimeType: 'text/plain', kind: 'file', sizeBytes: 7, sha256: 'a'.repeat(64), transferToken: 'token' }],
+    } });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // A 404 is not retried: one attempt, then the user is told what happened.
+    expect(downloadAttempts).toBe(1);
+    const reported = backendApi.commitSdkMessageCalls.find((message: any) => message.taskId === 'task-gone');
+    expect(reported?.content).toContain('no longer available');
+    expect(reported?.metadata?.attachment_delivery).toBe('failed');
+    await client.close();
+  });
+
   test('match/bind/getLocal project path methods mirror prior behavior', async () => {
     backendApi.projects.push({
       id: 'p1',

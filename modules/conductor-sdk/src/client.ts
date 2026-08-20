@@ -885,6 +885,16 @@ export class ConductorClient {
           this.downstreamInboxStore.remove(entry.requestId);
           return;
         } catch (error) {
+          if ((error as { permanent?: boolean } | null)?.permanent) {
+            const reported = await this.reportUnrecoverableAttachmentCommand(entry, error);
+            // Only drop the command once the user-facing explanation is durably
+            // queued; otherwise keep retrying so the failure cannot vanish.
+            if (reported) {
+              this.downstreamCursorStore.advance(this.agentHost, entry.cursor);
+              this.downstreamInboxStore.remove(entry.requestId);
+              return;
+            }
+          }
           attempt += 1;
           const delayMs = Math.min(1_000 * (2 ** Math.min(attempt, 5)), 30_000);
           try {
@@ -903,6 +913,30 @@ export class ConductorClient {
       if (this.downstreamTasks.get(entry.taskId) === current) this.downstreamTasks.delete(entry.taskId);
     });
     this.downstreamTasks.set(entry.taskId, current);
+  }
+
+  /**
+   * Tell the user why an attachment message will never run. Silently dropping
+   * it would leave a question in the chat that never gets an answer.
+   */
+  private async reportUnrecoverableAttachmentCommand(
+    entry: DurableDownstreamCommand,
+    error: unknown,
+  ): Promise<boolean> {
+    const reason = error instanceof Error ? error.message : String(error);
+    try {
+      await this.sendMessage(
+        entry.taskId,
+        `The attachments on this message are no longer available, so it could not be processed (${reason}). Please send them again.`,
+        { attachment_delivery: 'failed', reply_to: entry.requestId },
+      );
+      return true;
+    } catch (reportError) {
+      console.warn(
+        `[sdk] failed to report unrecoverable attachment command ${entry.requestId}: ${reportError instanceof Error ? reportError.message : String(reportError)}`,
+      );
+      return false;
+    }
   }
 
   private extractDownstreamCommandContext(payload: BackendEnvelope): {

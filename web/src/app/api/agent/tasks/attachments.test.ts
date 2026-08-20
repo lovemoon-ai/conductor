@@ -62,6 +62,27 @@ describe("agent task attachments", () => {
     }));
   });
 
+  it("still serves an already materialized attachment so a lost local copy can be refetched", async () => {
+    vi.mocked(db.taskAttachment.findFirst).mockResolvedValue({
+      id: "att-1", taskId: "task-1", messageId: "msg-1", storageKey: "att-1--diagram.png",
+      originalName: "diagram.png", mimeType: "image/png", sha256: "a".repeat(64),
+    } as any);
+    const { Readable } = await import("node:stream");
+    vi.mocked(openTaskAttachmentStreamByStorageKey).mockResolvedValue({
+      stream: Readable.from(Buffer.from("image")) as any,
+      sizeBytes: 5,
+    });
+
+    const response = await GET(agentRequest("http://localhost/api/agent/tasks/task-1/attachments/att-1/content"), {
+      params: Promise.resolve({ taskId: "task-1", attachmentId: "att-1" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(db.taskAttachment.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ status: { in: ["bound", "materialized"] } }),
+    }));
+  });
+
   it("does not reveal attachments to an unauthorized host", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(null);
     const response = await GET(agentRequest("http://localhost/api/agent/tasks/task-1/attachments/att-1/content"), {
