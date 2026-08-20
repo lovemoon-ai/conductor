@@ -58,16 +58,36 @@ async function waitUntil(predicate, { timeoutMs = 500, intervalMs = 10, message 
   assert.fail(`Timed out waiting for ${message}`);
 }
 
+// Isolating HOME alone is not enough: `resolveConductorConfigPath` reads
+// CONDUCTOR_CONFIG (and CONDUCTOR_HOME) *before* falling back to HOME, so a
+// developer running these tests from inside a Conductor session — which exports
+// both — would load their real ~/.conductor/config.yaml. That leaked
+// `fire_tmux_mode: true` into the daemon under test, flipping spawn into tmux
+// mode; the resulting assertion threw inside a spawn callback, became an
+// uncaught exception, and killed the whole file after 12 of 117 tests.
+const ISOLATED_ENV_KEYS = [
+  "HOME",
+  "CONDUCTOR_CONFIG",
+  "CONDUCTOR_HOME",
+  "CONDUCTOR_FIRE_TMUX_MODE",
+  "CONDUCTOR_AGENT_TOKEN",
+  "CONDUCTOR_BACKEND_URL",
+  "CONDUCTOR_WS_URL",
+];
+
 describe("Daemon", () => {
   let wss;
   let daemon;
   let port;
-  let previousHome;
+  let previousEnv;
   let testHomeDir;
 
   before(async () => {
-    previousHome = process.env.HOME;
+    previousEnv = new Map(ISOLATED_ENV_KEYS.map((key) => [key, process.env[key]]));
     testHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-daemon-home-"));
+    for (const key of ISOLATED_ENV_KEYS) {
+      delete process.env[key];
+    }
     process.env.HOME = testHomeDir;
     wss = new WebSocketServer({ port: 0 });
     await new Promise((resolve) => wss.on("listening", resolve));
@@ -77,7 +97,9 @@ describe("Daemon", () => {
   after(() => {
     if (daemon) daemon.close();
     if (wss) wss.close();
-    restoreEnv("HOME", previousHome);
+    for (const [key, value] of previousEnv ?? []) {
+      restoreEnv(key, value);
+    }
     if (testHomeDir) {
       fs.rmSync(testHomeDir, { recursive: true, force: true });
     }

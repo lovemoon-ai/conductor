@@ -406,6 +406,10 @@ describe("fire resume resolver", () => {
 
     const resolved = await resolveResumeContext("kimi", sessionId, {
       homeDir: tempDir,
+      // Without this, an ambient CONDUCTOR_HOME (every shell launched by
+      // Conductor exports one) outranks `homeDir` and the lookup reads the
+      // developer's real session store instead of the fixture.
+      env: { HOME: tempDir, CONDUCTOR_HOME: path.join(tempDir, ".conductor") },
       cwd: path.join(tempDir, "somewhere-else"),
     });
     assert.equal(resolved.provider, "kimi");
@@ -485,6 +489,7 @@ describe("fire resume resolver", () => {
 
       const resolved = await resolveResumeContext("test-external-alias", "ext-123", {
         homeDir: tempDir,
+        env: { HOME: tempDir, CONDUCTOR_HOME: path.join(tempDir, ".conductor") },
         configFilePath: configPath,
       });
       assert.equal(resolved.provider, "test-external");
@@ -516,6 +521,7 @@ describe("fire resume resolver", () => {
 
       const resolved = await resolveResumeContext("test-external", "ext-configured-alias-1", {
         homeDir: tempDir,
+        env: { HOME: tempDir, CONDUCTOR_HOME: path.join(tempDir, ".conductor") },
         configFilePath: configPath,
       });
       assert.equal(resolved.provider, "test-external");

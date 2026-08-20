@@ -87,12 +87,30 @@ function runInteractiveProcess(command, args, { prompts, ...options }) {
   });
 }
 
+// `resolveConductorConfigPath` prefers CONDUCTOR_CONFIG/CONDUCTOR_HOME over HOME, so a
+// shell launched by Conductor (which exports both) would point these subprocesses
+// at the developer's real ~/.conductor/config.yaml instead of the temp HOME —
+// one `--force` away from overwriting it.
+function conductorFreeEnv() {
+  const env = { ...process.env };
+  for (const key of [
+    "CONDUCTOR_CONFIG",
+    "CONDUCTOR_HOME",
+    "CONDUCTOR_AGENT_TOKEN",
+    "CONDUCTOR_BACKEND_URL",
+    "CONDUCTOR_WS_URL",
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
 describe("conductor-config", () => {
   it("writes allow_cli_list as a nested map in YAML when using manual token entry", () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-home-"));
     const fakeBinDir = createFakeCliBinDir();
     const env = {
-      ...process.env,
+      ...conductorFreeEnv(),
       HOME: tempHome,
       PATH: `${fakeBinDir}:${process.env.PATH || ""}`,
     };
@@ -138,7 +156,7 @@ describe("conductor-config", () => {
     const conductorHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-custom-home-"));
     const fakeBinDir = createFakeCliBinDir();
     const env = {
-      ...process.env,
+      ...conductorFreeEnv(),
       HOME: tempHome,
       CONDUCTOR_HOME: conductorHome,
       CONDUCTOR_CONFIG: "",
@@ -160,7 +178,7 @@ describe("conductor-config", () => {
   it("treats builtin copilot as available even when no PATH CLI is installed", async () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-home-"));
     const env = {
-      ...process.env,
+      ...conductorFreeEnv(),
       HOME: tempHome,
       PATH: "",
     };
@@ -231,7 +249,7 @@ describe("conductor-config", () => {
 
     try {
       const env = {
-        ...process.env,
+        ...conductorFreeEnv(),
         HOME: tempHome,
         PATH: `${fakeBinDir}:${process.env.PATH || ""}`,
         CONDUCTOR_BACKEND_URL: `http://127.0.0.1:${port}`,
@@ -261,7 +279,7 @@ describe("conductor-config", () => {
   it("does not start browser authorization when no local coding CLI is detected and the user cancels", async () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-config-home-"));
     const env = {
-      ...process.env,
+      ...conductorFreeEnv(),
       HOME: tempHome,
       PATH: "",
       CONDUCTOR_BACKEND_URL: "http://127.0.0.1:1",
