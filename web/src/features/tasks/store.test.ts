@@ -147,6 +147,34 @@ describe('tasks store', () => {
     });
   });
 
+  it('passes the selected daemon through as agent_host on restart', async () => {
+    mockPost.mockResolvedValueOnce({
+      mode: 'successor_new_task',
+      source_task_id: 'task-1',
+      task: {
+        id: 'task-3',
+        title: 'Old task [codex]',
+        task_type: 'ai_task',
+        status: 'init',
+        backend_type: 'codex',
+        created_at: '2024-01-01T00:02:00.000Z',
+        updated_at: '2024-01-01T00:02:00.000Z',
+      },
+    });
+
+    await useTasksStore.getState().restartTask('task-1', {
+      backendType: 'codex',
+      strategy: 'new_task',
+      agentHost: 'daemon-2',
+    });
+
+    expect(mockPost).toHaveBeenCalledWith('/tasks/task-1/restart', {
+      backend_type: 'codex',
+      strategy: 'new_task',
+      agent_host: 'daemon-2',
+    });
+  });
+
   it('does not downgrade a newer running task back to init when restart response arrives late', async () => {
     useTasksStore.setState({
       tasks: [

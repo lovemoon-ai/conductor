@@ -404,6 +404,8 @@ export interface RestartTaskInput {
   backendType?: string;
   strategy?: RestartStrategy;
   restartMode?: "refresh_session";
+  /** Explicit daemon override for the new_task path (`agent_host`). */
+  agentHost?: string;
 }
 
 export interface RestartTaskResponse {

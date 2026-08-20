@@ -305,6 +305,9 @@ export async function POST(
     sourceAgentFireHost,
   ]);
   const preferredManualFireDaemonHost = manualFireDaemonHosts[0] ?? null;
+  // The daemon whose filesystem holds the source task's workspace. Paths in
+  // the source launch_config (cwd, worktree roots) are only meaningful there.
+  const sourceRunHost = isManualFireTask ? preferredManualFireDaemonHost : sourceAgentHost;
 
   const hasExplicitBackendTarget =
     Object.prototype.hasOwnProperty.call(normalizedBody, "backend_type") ||
@@ -846,12 +849,25 @@ export async function POST(
   //      entirely) must not have its successor jump back to the project root
   //      — that breaks the user's expectation that "continue this work" means
   //      "continue in the same place".
+  //   3. EXCEPT when an explicit agent_host override targets a daemon other
+  //      than the one the source task ran on: inherited paths (cwd, worktree
+  //      roots) only exist on the source machine. Shipping them cross-daemon
+  //      would make the target mkdir an empty foreign path and "continue" the
+  //      work there (or fail a git worktree add against a missing repo root).
+  //      Drop them and let the daemon's own fallback chain resolve the
+  //      project's local path on the target machine — if the project has no
+  //      binding there, the daemon fails with a clear "Could not resolve
+  //      resume cwd" instead of fabricating a workspace.
+  const isCrossDaemonOverride =
+    useAgentHostOverride && restartAgentHost !== sourceRunHost;
   const sourceCwd = normalizeOptionalString(sourceLaunchConfig?.cwd);
   const successorCwd = sourceCwd ?? projectWorkspacePath ?? null;
-  const successorLaunchConfig = inheritedWorktreeLaunchConfig ?? {
-    ...(successorCwd ? { cwd: successorCwd } : {}),
-    ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
-  };
+  const successorLaunchConfig = isCrossDaemonOverride
+    ? {}
+    : inheritedWorktreeLaunchConfig ?? {
+        ...(successorCwd ? { cwd: successorCwd } : {}),
+        ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
+      };
 
   // Generate a short-lived handoff share so the successor backend can pull the
   // prior conversation as plain text — this replaces brittle JSONL session

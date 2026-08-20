@@ -366,7 +366,17 @@ describe('RestartTaskControls', () => {
     expect(screen.getByRole('button', { name: 'New task' })).toBeEnabled();
   });
 
-  it('disables restart when a conductor-fire task is missing its original daemon binding', () => {
+  it('lets a conductor-fire task without an original daemon binding branch onto an explicitly chosen daemon', async () => {
+    // Previously this case was a hard block. With the daemon selector the
+    // user can pick any online daemon — but only explicitly: nothing is
+    // preselected behind their back, and the choice is sent as an agent_host
+    // override so the server skips auto-resolution.
+    restartTaskMock.mockResolvedValue({
+      mode: 'successor_new_task',
+      sourceTaskId: 'task-fire-2',
+      task: { id: 'task-fire-2-successor' },
+    });
+
     render(
       <RestartTaskControls
         open
@@ -385,7 +395,55 @@ describe('RestartTaskControls', () => {
       />,
     );
 
+    // No auto-resolvable daemon: require an explicit choice.
+    expect(screen.getByLabelText('Daemon')).toHaveValue('');
+    const submitButton = screen.getByRole('button', { name: 'New task' });
+    expect(submitButton).toBeDisabled();
+    expect(submitButton).toHaveAttribute('title', 'Select a daemon to run the new task');
+
+    fireEvent.change(screen.getByLabelText('Daemon'), {
+      target: { value: 'daemon-1' },
+    });
+    // The chosen daemon is a different machine: warn that the source working
+    // directory does not carry over.
+    expect(screen.getByText(/different machine than the source task/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New task' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+
+    await waitFor(() => {
+      expect(restartTaskMock).toHaveBeenCalledWith('task-fire-2', {
+        backendType: 'codex',
+        strategy: 'new_task',
+        agentHost: 'daemon-1',
+      });
+    });
+  });
+
+  it('disables restart when no daemon is online', () => {
+    agentsState = { agents: [] };
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-fire-2',
+          title: 'Stopped Fire Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'conductor-fire-mac-1',
+          executionHost: 'conductor-fire-mac-1',
+          backendType: 'codex',
+          sessionId: 'sess-fire-2',
+          createdAt: FIXED_DATE.toISOString(),
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText('Daemon')).toBeDisabled();
     expect(screen.getByRole('button', { name: 'New task' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'New task' })).toHaveAttribute('title', 'No daemon online');
   });
 
   it('offers every daemon-supported backend as a handoff target, including arbitrary external providers', () => {
@@ -495,5 +553,385 @@ describe('RestartTaskControls', () => {
 
     expect(screen.getByRole('option', { name: 'codex-enterprise' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'claude' })).toBeInTheDocument();
+  });
+
+  it('lists online daemons and defaults to the source daemon marked as current', () => {
+    agentsState = {
+      agents: [
+        { host: 'daemon-1', supportedBackends: ['codex', 'claude'] },
+        { host: 'daemon-2', supportedBackends: ['claude'] },
+        // Fire connections are not spawn targets and must not be offered.
+        { host: 'conductor-fire-mac-1', supportedBackends: ['codex'] },
+      ],
+    };
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-1',
+          title: 'Stopped Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'daemon-1',
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          createdAt: FIXED_DATE.toISOString(),
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText('Daemon')).toHaveValue('daemon-1');
+    expect(screen.getByRole('option', { name: 'daemon-1 (current)' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'daemon-2' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /conductor-fire/ })).not.toBeInTheDocument();
+  });
+
+  it('sends the selected daemon as agent_host override and recomputes backends from it', async () => {
+    agentsState = {
+      agents: [
+        { host: 'daemon-1', supportedBackends: ['codex', 'claude'] },
+        { host: 'daemon-2', supportedBackends: ['claude'] },
+      ],
+    };
+    restartTaskMock.mockResolvedValue({
+      mode: 'successor_new_task',
+      sourceTaskId: 'task-1',
+      task: { id: 'task-2' },
+    });
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-1',
+          title: 'Stopped Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'daemon-1',
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          createdAt: FIXED_DATE.toISOString(),
+        }}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Daemon'), {
+      target: { value: 'daemon-2' },
+    });
+
+    // daemon-2 does not support codex, so the backend falls back to the
+    // first backend that daemon actually advertises.
+    await waitFor(() => {
+      expect(screen.getByLabelText('Backend')).toHaveValue('claude');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+
+    await waitFor(() => {
+      expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+        backendType: 'claude',
+        strategy: 'new_task',
+        agentHost: 'daemon-2',
+      });
+    });
+  });
+
+  it('omits the agent_host override when the default source daemon stays selected', async () => {
+    agentsState = {
+      agents: [
+        { host: 'daemon-1', supportedBackends: ['codex', 'claude'] },
+        { host: 'daemon-2', supportedBackends: ['claude'] },
+      ],
+    };
+    restartTaskMock.mockResolvedValue({
+      mode: 'successor_new_task',
+      sourceTaskId: 'task-1',
+      task: { id: 'task-2' },
+    });
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-1',
+          title: 'Stopped Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'daemon-1',
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          createdAt: FIXED_DATE.toISOString(),
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+
+    await waitFor(() => {
+      // No agentHost key: the server keeps its own auto-resolution (including
+      // project daemon binding checks) for the default path.
+      expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+        backendType: 'codex',
+        strategy: 'new_task',
+      });
+    });
+  });
+
+  it('requires an explicit daemon choice when the source daemon is offline', async () => {
+    // The source daemon being offline must NOT silently move the branch to
+    // another machine: nothing is preselected and the submit stays disabled
+    // until the user actively picks a daemon.
+    agentsState = {
+      agents: [{ host: 'daemon-2', supportedBackends: ['codex', 'claude'] }],
+    };
+    restartTaskMock.mockResolvedValue({
+      mode: 'successor_new_task',
+      sourceTaskId: 'task-1',
+      task: { id: 'task-2' },
+    });
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-1',
+          title: 'Stopped Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'daemon-1',
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          createdAt: FIXED_DATE.toISOString(),
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText('Daemon')).toHaveValue('');
+    const submitButton = screen.getByRole('button', { name: 'New task' });
+    expect(submitButton).toBeDisabled();
+    expect(submitButton).toHaveAttribute(
+      'title',
+      'Source daemon daemon-1 is offline — select a daemon to run the new task',
+    );
+
+    fireEvent.change(screen.getByLabelText('Daemon'), {
+      target: { value: 'daemon-2' },
+    });
+    expect(screen.getByText(/different machine than the source task/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New task' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+
+    await waitFor(() => {
+      expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+        backendType: 'codex',
+        strategy: 'new_task',
+        agentHost: 'daemon-2',
+      });
+    });
+  });
+
+  it('defaults a fire task to the first ONLINE daemon candidate, matching server auto-resolution', async () => {
+    // metadata daemon A is offline; execution daemon B is online. The server
+    // auto-resolves to the first ONLINE candidate (B), so the UI must default
+    // to B too — not to an arbitrary online daemon like C. Because B is NOT
+    // the machine the source workspace lives on (A), the submit must carry an
+    // explicit agent_host so the server's cross-daemon guard drops the
+    // source-machine paths instead of shipping them to B.
+    agentsState = {
+      agents: [
+        { host: 'daemon-c', supportedBackends: ['codex'] },
+        { host: 'daemon-b', supportedBackends: ['codex'] },
+      ],
+    };
+    restartTaskMock.mockResolvedValue({
+      mode: 'successor_new_task',
+      sourceTaskId: 'task-fire-4',
+      task: { id: 'task-fire-4-successor' },
+    });
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-fire-4',
+          title: 'Stopped Fire Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'conductor-fire-mac-1',
+          executionHost: 'daemon-b',
+          metadata: { daemonName: 'daemon-a' },
+          backendType: 'codex',
+          sessionId: 'sess-fire-4',
+          createdAt: FIXED_DATE.toISOString(),
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText('Daemon')).toHaveValue('daemon-b');
+    expect(screen.getByText(/different machine than the source task/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New task' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+
+    await waitFor(() => {
+      expect(restartTaskMock).toHaveBeenCalledWith('task-fire-4', {
+        backendType: 'codex',
+        strategy: 'new_task',
+        agentHost: 'daemon-b',
+      });
+    });
+  });
+
+  it('defaults to the project-bound daemon and sends it explicitly when it differs from the source daemon', async () => {
+    // The server's auto-resolution forces the project daemon binding, so the
+    // UI must show that binding as the default target. Since it is a
+    // different machine from where the source task ran, the submit carries an
+    // explicit agent_host so dispatch matches the display and the
+    // cross-daemon path-drop guard applies.
+    agentsState = {
+      agents: [
+        { host: 'daemon-1', supportedBackends: ['codex'] },
+        { host: 'daemon-p', supportedBackends: ['codex'] },
+      ],
+    };
+    projectsState = {
+      projects: [{ id: 'project-1', daemonHost: 'daemon-p' }],
+    };
+    restartTaskMock.mockResolvedValue({
+      mode: 'successor_new_task',
+      sourceTaskId: 'task-1',
+      task: { id: 'task-2' },
+    });
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-1',
+          projectId: 'project-1',
+          title: 'Stopped Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'daemon-1',
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          createdAt: FIXED_DATE.toISOString(),
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText('Daemon')).toHaveValue('daemon-p');
+    expect(screen.getByText(/different machine than the source task/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+
+    await waitFor(() => {
+      expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+        backendType: 'codex',
+        strategy: 'new_task',
+        agentHost: 'daemon-p',
+      });
+    });
+  });
+
+  it('does not warn about machines when the explicit choice is the source daemon itself', async () => {
+    // Project daemon P is bound but offline, so nothing auto-resolves. The
+    // user picks the source daemon itself: the override is still sent (so
+    // dispatch matches the display), but this is NOT a cross-machine branch,
+    // so no warning is shown and the server keeps the inherited workspace.
+    agentsState = {
+      agents: [{ host: 'daemon-1', supportedBackends: ['codex'] }],
+    };
+    projectsState = {
+      projects: [{ id: 'project-1', daemonHost: 'daemon-p' }],
+    };
+    restartTaskMock.mockResolvedValue({
+      mode: 'successor_new_task',
+      sourceTaskId: 'task-1',
+      task: { id: 'task-2' },
+    });
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-1',
+          projectId: 'project-1',
+          title: 'Stopped Task',
+          taskType: 'ai_task',
+          status: 'killed',
+          agentHost: 'daemon-1',
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          createdAt: FIXED_DATE.toISOString(),
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText('Daemon')).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'New task' })).toHaveAttribute(
+      'title',
+      'Project daemon daemon-p is offline — select a daemon to run the new task',
+    );
+
+    fireEvent.change(screen.getByLabelText('Daemon'), {
+      target: { value: 'daemon-1' },
+    });
+
+    expect(screen.queryByText(/different machine than the source task/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+
+    await waitFor(() => {
+      expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+        backendType: 'codex',
+        strategy: 'new_task',
+        agentHost: 'daemon-1',
+      });
+    });
+  });
+
+  it('resets a tentative daemon choice when the dialog is reopened', async () => {
+    agentsState = {
+      agents: [
+        { host: 'daemon-1', supportedBackends: ['codex'] },
+        { host: 'daemon-2', supportedBackends: ['codex'] },
+      ],
+    };
+    const task = {
+      id: 'task-1',
+      title: 'Stopped Task',
+      taskType: 'ai_task',
+      status: 'killed',
+      agentHost: 'daemon-1',
+      backendType: 'codex',
+      sessionId: 'sess-1',
+      createdAt: FIXED_DATE.toISOString(),
+    } as const;
+
+    const { rerender } = render(
+      <RestartTaskControls open onClose={() => {}} task={task} />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Daemon'), {
+      target: { value: 'daemon-2' },
+    });
+    expect(screen.getByLabelText('Daemon')).toHaveValue('daemon-2');
+
+    rerender(<RestartTaskControls open={false} onClose={() => {}} task={task} />);
+    rerender(<RestartTaskControls open onClose={() => {}} task={task} />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Daemon')).toHaveValue('daemon-1');
+    });
   });
 });
