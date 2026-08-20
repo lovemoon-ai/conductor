@@ -38,6 +38,21 @@ const resolveStorageRoot = (): string => (
   path.resolve(process.env.CONDUCTOR_FILE_STORAGE_DIR || DEFAULT_STORAGE_ROOT)
 );
 
+const DEFAULT_ATTACHMENT_TTL_MINUTES = 10;
+
+/**
+ * How long the Web server keeps an attachment file on disk. It bounds two
+ * things: how long an uploaded-but-unsent attachment may be staged, and how
+ * long a delivered attachment is retained after the Daemon has its own copy.
+ * A `bound` attachment that no Daemon has materialized yet is never expired by
+ * time, because the Daemon may still be offline and would lose the file.
+ */
+export function taskAttachmentTtlMs(): number {
+  const parsed = Number.parseInt(process.env.CONDUCTOR_ATTACHMENT_TTL_MINUTES || "", 10);
+  const minutes = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ATTACHMENT_TTL_MINUTES;
+  return minutes * 60 * 1000;
+}
+
 export function assertTaskAttachmentStorageConfigured(): void {
   if (process.env.NODE_ENV === "production"
       && (!process.env.CONDUCTOR_FILE_STORAGE_DIR?.trim() || process.env.CONDUCTOR_FILE_STORAGE_SHARED !== "true")) {

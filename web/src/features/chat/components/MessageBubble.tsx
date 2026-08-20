@@ -46,6 +46,9 @@ export function MessageBubble({
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [isToolbarOpen, setIsToolbarOpen] = useState(false);
   const [isTimestampVisible, setIsTimestampVisible] = useState(false);
+  // Attachment bytes are released from the Web server once the retention window
+  // has elapsed, so an older message can reference a body that no longer exists.
+  const [releasedAttachmentIds, setReleasedAttachmentIds] = useState<string[]>([]);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const lastTouchEndAtRef = useRef(0);
@@ -387,7 +390,7 @@ export function MessageBubble({
                       isUser ? 'border-white/20 bg-white/10' : 'border-border bg-paper'
                     }`}
                   >
-                    {attachment.kind === 'image' ? (
+                    {attachment.kind === 'image' && !releasedAttachmentIds.includes(attachment.id) ? (
                       <a href={attachment.downloadUrl} target="_blank" rel="noreferrer" className="block">
                         <Image
                           src={attachment.downloadUrl}
@@ -397,8 +400,16 @@ export function MessageBubble({
                           unoptimized
                           loader={({ src }) => src}
                           className="h-auto max-h-[28rem] w-full object-cover"
+                          onError={() => setReleasedAttachmentIds((current) => (
+                            current.includes(attachment.id) ? current : [...current, attachment.id]
+                          ))}
                         />
                       </a>
+                    ) : null}
+                    {attachment.kind === 'image' && releasedAttachmentIds.includes(attachment.id) ? (
+                      <div className={`px-3 py-6 text-center text-xs ${isUser ? 'text-white/70' : 'text-muted'}`}>
+                        Preview no longer available
+                      </div>
                     ) : null}
                     {attachment.kind === 'video' ? (
                       <video

@@ -6,13 +6,12 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
-import { deleteTaskAttachmentByStorageKey, writeTaskAttachmentStream } from "@/lib/tasks/task-file-storage";
+import { deleteTaskAttachmentByStorageKey, taskAttachmentTtlMs, writeTaskAttachmentStream } from "@/lib/tasks/task-file-storage";
 
 export const runtime = "nodejs";
 
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 const MAX_MULTIPART_OVERHEAD_BYTES = 1024 * 1024;
-const STAGING_TTL_MS = 24 * 60 * 60 * 1000;
 const VIDEO_EXTENSIONS = new Set([".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"]);
 
 export async function POST(
@@ -111,7 +110,7 @@ export async function POST(
         sizeBytes: stored.sizeBytes,
         sha256: stored.sha256,
         status: "uploaded",
-        expiresAt: new Date(Date.now() + STAGING_TTL_MS),
+        expiresAt: new Date(Date.now() + taskAttachmentTtlMs()),
       },
     });
   } catch (error) {

@@ -1,5 +1,9 @@
 import { db } from "@/lib/db";
-import { deleteTaskAttachmentByStorageKey, pruneOrphanedTaskAttachmentFiles } from "@/lib/tasks/task-file-storage";
+import {
+  deleteTaskAttachmentByStorageKey,
+  pruneOrphanedTaskAttachmentFiles,
+  taskAttachmentTtlMs,
+} from "@/lib/tasks/task-file-storage";
 
 const DEFAULT_SWEEP_INTERVAL_MS = 60_000;
 const DELETE_RETRY_BACKOFF_MS = 5 * 60_000;
@@ -64,12 +68,50 @@ export async function pruneExpiredStagedTaskAttachments(now = new Date()): Promi
   return deleted;
 }
 
+/**
+ * Reclaim disk for attachments the Daemon already downloaded and verified.
+ * Once an attachment is `materialized` the Daemon owns a SHA-256 verified copy
+ * in the task worktree, so the Web copy is only needed for browser preview.
+ * The row is kept (status `pruned`) so message history still renders the file
+ * name, size and kind after the bytes are gone.
+ *
+ * `bound` attachments are deliberately excluded: nobody has confirmed a remote
+ * copy yet, and deleting one would strand the message forever.
+ */
+export async function pruneMaterializedTaskAttachmentFiles(now = new Date()): Promise<number> {
+  const cutoff = new Date(now.getTime() - taskAttachmentTtlMs());
+  const candidates = await db.taskAttachment.findMany({
+    where: { status: "materialized", materializedAt: { lte: cutoff } },
+    select: { id: true, taskId: true, storageKey: true },
+    orderBy: { materializedAt: "asc" },
+    take: 100,
+  });
+
+  let pruned = 0;
+  for (const candidate of candidates) {
+    try {
+      await deleteTaskAttachmentByStorageKey(candidate.taskId, candidate.storageKey);
+    } catch {
+      // Leave the row as `materialized` so the next sweep retries the deletion.
+      continue;
+    }
+    const result = await db.taskAttachment.updateMany({
+      where: { id: candidate.id, status: "materialized" },
+      data: { status: "pruned" },
+    });
+    pruned += result.count;
+  }
+  return pruned;
+}
+
 export function startTaskAttachmentJanitor(log: Pick<Console, "info" | "error"> = console): NodeJS.Timeout {
   let sweepCount = 0;
   const timer = setInterval(() => {
     void pruneExpiredStagedTaskAttachments()
       .then(async (deletedCount) => {
         if (deletedCount > 0) log.info?.(`[attachments] pruned ${deletedCount} expired staged attachment(s)`);
+        const prunedCount = await pruneMaterializedTaskAttachmentFiles();
+        if (prunedCount > 0) log.info?.(`[attachments] released ${prunedCount} delivered attachment file(s)`);
         sweepCount += 1;
         if (sweepCount % 60 === 0) {
           const orphanCount = await reconcileOrphanedTaskAttachmentFiles();

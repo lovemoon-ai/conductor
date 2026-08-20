@@ -16,6 +16,7 @@ vi.mock("@/lib/tasks/task-file-storage", () => ({
   writeTaskAttachmentStream: vi.fn(),
   openTaskAttachmentStreamByStorageKey: vi.fn(),
   deleteTaskAttachmentByStorageKey: vi.fn(),
+  taskAttachmentTtlMs: () => 10 * 60 * 1000,
 }));
 
 const { getActiveSubscriptionUser } = await import("@/lib/auth/middleware");

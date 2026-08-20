@@ -249,4 +249,33 @@ describe('MessageBubble', () => {
 
     expect(timestamp).toHaveClass('opacity-0');
   });
+
+  it('falls back to a placeholder when an expired image body can no longer be loaded', () => {
+    render(
+      <MessageBubble
+        message={makeMessage({
+          role: 'user',
+          attachments: [{
+            id: 'att-1',
+            name: 'shot.png',
+            kind: 'image',
+            mimeType: 'image/png',
+            sizeBytes: 1024,
+            downloadUrl: '/api/tasks/task-1/attachments/att-1',
+          }],
+        } as never)}
+      />,
+    );
+
+    const image = screen.getByAltText('shot.png');
+    expect(screen.queryByText('Preview no longer available')).toBeNull();
+
+    // The retention sweep released the bytes, so the request 404s.
+    fireEvent.error(image);
+
+    expect(screen.getByText('Preview no longer available')).toBeInTheDocument();
+    expect(screen.queryByAltText('shot.png')).toBeNull();
+    // Metadata stays visible so history still shows what was sent.
+    expect(screen.getByText('shot.png')).toBeInTheDocument();
+  });
 });
