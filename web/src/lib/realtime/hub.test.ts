@@ -292,6 +292,125 @@ describe('RealtimeHub custom commands waiter', () => {
   });
 });
 
+describe('RealtimeHub remote exec waiter', () => {
+  it('resolves only when source userId+host match the registered waiter', async () => {
+    const hub = new RealtimeHub();
+    const pending = hub.waitForRemoteExecResponse('req-exec-1', 5000, 'user-1', 'daemon-a');
+    hub.resolveRemoteExecResponse(
+      { request_id: 'req-exec-1', action: 'exec', result: { runId: 'run-1' } },
+      'user-1',
+      'daemon-a',
+    );
+    const result = await pending;
+    expect(result).toMatchObject({ request_id: 'req-exec-1', action: 'exec' });
+  });
+
+  it('drops remote exec responses from a different user', async () => {
+    vi.useFakeTimers();
+    try {
+      const hub = new RealtimeHub();
+      const pending = hub.waitForRemoteExecResponse('req-exec-2', 5000, 'user-1', 'daemon-a');
+      hub.resolveRemoteExecResponse(
+        { request_id: 'req-exec-2', action: 'exec', result: { hijacked: true } },
+        'user-2',
+        'daemon-a',
+      );
+      vi.advanceTimersByTime(5000);
+      expect(await pending).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops remote exec responses from a different host', async () => {
+    vi.useFakeTimers();
+    try {
+      const hub = new RealtimeHub();
+      const pending = hub.waitForRemoteExecResponse('req-exec-3', 5000, 'user-1', 'daemon-a');
+      hub.resolveRemoteExecResponse(
+        { request_id: 'req-exec-3', action: 'exec', result: { hijacked: true } },
+        'user-1',
+        'daemon-imposter',
+      );
+      vi.advanceTimersByTime(5000);
+      expect(await pending).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resolves pending waiters for a daemon that disconnects', async () => {
+    const hub = new RealtimeHub();
+    hub.register({
+      id: 'conn-1',
+      kind: 'agent',
+      userId: 'user-1',
+      projectIds: [],
+      host: 'daemon-a',
+      send: () => {},
+      close: () => {},
+    } as never);
+
+    const mine = hub.waitForRemoteExecResponse('req-drop', 60_000, 'user-1', 'daemon-a');
+    const otherHost = hub.waitForRemoteExecResponse('req-other-host', 60_000, 'user-1', 'daemon-b');
+    const otherUser = hub.waitForRemoteExecResponse('req-other-user', 60_000, 'user-2', 'daemon-a');
+
+    hub.unregister('conn-1');
+
+    expect(await mine).toBeNull();
+
+    // Waiters addressed elsewhere must survive the sweep.
+    let settled = false;
+    void Promise.race([otherHost, otherUser]).then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(settled).toBe(false);
+
+    hub.cancelRemoteExecResponse('req-other-host');
+    hub.cancelRemoteExecResponse('req-other-user');
+    await Promise.all([otherHost, otherUser]);
+  });
+
+  it('leaves waiters alone when another connection still serves the host', async () => {
+    const hub = new RealtimeHub();
+    const conn = (id: string) =>
+      ({
+        id,
+        kind: 'agent',
+        userId: 'user-1',
+        projectIds: [],
+        host: 'daemon-a',
+        send: () => {},
+        close: () => {},
+      }) as never;
+    hub.register(conn('conn-old'));
+    hub.register(conn('conn-new'));
+
+    const pending = hub.waitForRemoteExecResponse('req-reconnect', 60_000, 'user-1', 'daemon-a');
+    hub.unregister('conn-old');
+
+    hub.resolveRemoteExecResponse(
+      { request_id: 'req-reconnect', action: 'exec', result: { runId: 'still-alive' } },
+      'user-1',
+      'daemon-a',
+    );
+    expect(await pending).toMatchObject({ request_id: 'req-reconnect' });
+  });
+
+  it('cancelRemoteExecResponse after resolve is a no-op', async () => {
+    const hub = new RealtimeHub();
+    const pending = hub.waitForRemoteExecResponse('req-exec-4', 5000, 'user-1', 'daemon-a');
+    hub.resolveRemoteExecResponse(
+      { request_id: 'req-exec-4', action: 'status', result: { status: 'completed' } },
+      'user-1',
+      'daemon-a',
+    );
+    await pending;
+    expect(() => hub.cancelRemoteExecResponse('req-exec-4')).not.toThrow();
+  });
+});
+
 describe('RealtimeHub agent command ack waiter', () => {
   it('resolves true when any expected host accepts the command', async () => {
     const hub = new RealtimeHub();

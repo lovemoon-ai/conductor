@@ -30,6 +30,11 @@ import {
   createCustomCommandHandlers,
   handleCustomCommandsRequest,
 } from "./custom-command-handlers.js";
+import {
+  REMOTE_EXEC_CAPABILITY,
+  createRemoteExecHandlers,
+  handleRemoteExecRequest,
+} from "./remote-exec-handlers.js";
 import { resolveResumeContext } from "./fire/resume.js";
 import {
   filterRuntimeSupportedAllowCliList,
@@ -211,6 +216,32 @@ function getFireTmuxModeEnabled(userConfig) {
     return userConfig.fire_tmux_mode === true;
   }
   return false;
+}
+
+// Whether this host will accept `remote-exec`. Unlike `pty_task` (gated on a
+// node-pty probe) and `custom_commands` (opt-in per script), remote exec would
+// otherwise be unconditional, leaving a shared CI box or a root-owned daemon no
+// way to decline. Defaults to enabled to match the other daemon capabilities.
+//
+// Resolution order:
+//   1. CONDUCTOR_REMOTE_EXEC env var ("1"/"true"/"on" enable, "0"/"false"/"off" disable)
+//   2. remote_exec boolean in the resolved Conductor config.yaml
+//   3. Default: true
+function getRemoteExecEnabled(userConfig) {
+  const rawEnv = process.env.CONDUCTOR_REMOTE_EXEC;
+  if (typeof rawEnv === "string" && rawEnv.trim()) {
+    const normalized = rawEnv.trim().toLowerCase();
+    if (normalized === "1" || normalized === "true" || normalized === "on" || normalized === "yes") {
+      return true;
+    }
+    if (normalized === "0" || normalized === "false" || normalized === "off" || normalized === "no") {
+      return false;
+    }
+  }
+  if (userConfig && typeof userConfig === "object" && userConfig.remote_exec === false) {
+    return false;
+  }
+  return true;
 }
 
 function normalizePlanLimitType(limitType) {
@@ -799,6 +830,7 @@ export function startDaemon(config = {}, deps = {}) {
   // warning and silently fall back to direct spawn rather than failing every
   // create_task with ENOENT.
   const FIRE_TMUX_MODE_ENABLED = getFireTmuxModeEnabled(userConfig);
+  const remoteExecEnabled = getRemoteExecEnabled(userConfig);
 
   // Get allow_cli_list from config
   const RAW_ALLOW_CLI_LIST = getRawAllowCliList(userConfig);
@@ -2944,6 +2976,11 @@ export function startDaemon(config = {}, deps = {}) {
     "refresh_session_inplace",
     CUSTOM_COMMANDS_CAPABILITY,
   ];
+  if (remoteExecEnabled) {
+    advertisedCapabilities.push(REMOTE_EXEC_CAPABILITY);
+  } else {
+    log("[remote-exec] Disabled by config (remote_exec: false); capability not advertised");
+  }
   if (ptyTaskCapabilityEnabled) {
     advertisedCapabilities.push("pty_task", "terminal_snapshot");
   }
@@ -2952,6 +2989,9 @@ export function startDaemon(config = {}, deps = {}) {
   }
   const aiManagerHandlers = createAiManagerHandlers({ configPath: effectiveConfigPath });
   const customCommandHandlers = createCustomCommandHandlers({ configPath: effectiveConfigPath });
+  const remoteExecHandlers = remoteExecEnabled
+    ? createRemoteExecHandlers({ defaultWorkspace: homeDir })
+    : null;
 
   const client = createWebSocketClient(sdkConfig, {
     extraHeaders,
@@ -5177,6 +5217,40 @@ export function startDaemon(config = {}, deps = {}) {
     if (event.type === "custom_commands_request") {
       handleCustomCommandsRequest(client, customCommandHandlers, event.payload).catch((error) => {
         logError(`Unhandled custom_commands_request failure: ${error?.message || error}`);
+      });
+    }
+    if (event.type === "remote_exec_request") {
+      // Remote exec is the only execution path that leaves no Task row and no
+      // per-run log file, so record it here — otherwise a run is invisible
+      // once the daemon restarts. argv is deliberately omitted: it routinely
+      // carries secrets and this log is collected by `collect_logs`.
+      const execArgs = event?.payload?.args && typeof event.payload.args === "object" ? event.payload.args : {};
+      log(
+        `[remote-exec] ${event?.payload?.action || "?"} command=${execArgs.command || ""} ` +
+          `argc=${Array.isArray(execArgs.args) ? execArgs.args.length : 0} cwd=${execArgs.workspace || "<default>"}`,
+      );
+      // Fail fast rather than letting the caller wait out its full timeout —
+      // it has no other way to learn that this daemon will never answer.
+      const rejectReason = !remoteExecHandlers
+        ? "remote exec is disabled on this daemon (remote_exec: false)"
+        : daemonShuttingDown
+          ? "daemon is shutting down"
+          : "";
+      if (rejectReason) {
+        void client
+          .sendJson({
+            type: "remote_exec_response",
+            payload: {
+              request_id: event?.payload?.request_id ? String(event.payload.request_id) : "",
+              action: event?.payload?.action ? String(event.payload.action) : "",
+              error: rejectReason,
+            },
+          })
+          .catch(() => {});
+        return;
+      }
+      handleRemoteExecRequest(client, remoteExecHandlers, event.payload).catch((error) => {
+        logError(`Unhandled remote_exec_request failure: ${error?.message || error}`);
       });
     }
     if (event.type === "restart_daemon") {

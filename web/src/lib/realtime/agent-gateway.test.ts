@@ -46,6 +46,7 @@ vi.mock("./hub", () => ({
     notifyTaskStatus: vi.fn(),
     resolveAiManagerResponse: vi.fn(),
     resolveCustomCommandsResponse: vi.fn(),
+    resolveRemoteExecResponse: vi.fn(),
     resolveProjectAgents: vi.fn(),
   },
 }));
@@ -1177,6 +1178,90 @@ describe("agent-gateway ownership handling", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(realtimeHub.resolveCustomCommandsResponse).not.toHaveBeenCalled();
+    const errorSends = (socket.send as any).mock.calls.filter((call: any[]) => {
+      try {
+        return JSON.parse(String(call[0])).type === "error";
+      } catch {
+        return false;
+      }
+    });
+    expect(errorSends.length).toBeGreaterThan(0);
+    const lastError = JSON.parse(String(errorSends[errorSends.length - 1][0]));
+    expect(lastError.payload.message).toMatch(/request_id/);
+  });
+
+  it("remote_exec_response forwards user.id + agentHost to the hub on resolve", async () => {
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+    const socket = new FakeSocket();
+    const wss = setupAgentGateway();
+    const request = {
+      headers: { authorization: "Bearer test-token", "x-conductor-host": "daemon-exec" },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as any;
+
+    wss.emit("connection", socket as any, request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    socket.emit(
+      "message",
+      Buffer.from(
+        JSON.stringify({
+          type: "remote_exec_response",
+          payload: {
+            request_id: "req-exec-1",
+            action: "exec",
+            result: { runId: "run-1", status: "completed", exitCode: 0 },
+            error: null,
+          },
+        }),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(realtimeHub.resolveRemoteExecResponse).toHaveBeenCalledWith(
+      {
+        request_id: "req-exec-1",
+        action: "exec",
+        result: { runId: "run-1", status: "completed", exitCode: 0 },
+        error: null,
+      },
+      "user-1",
+      "daemon-exec",
+    );
+  });
+
+  it("remote_exec_response with missing request_id sends an error envelope and does not resolve", async () => {
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+    const socket = new FakeSocket();
+    const wss = setupAgentGateway();
+    const request = {
+      headers: { authorization: "Bearer test-token", "x-conductor-host": "daemon-exec-2" },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as any;
+
+    wss.emit("connection", socket as any, request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    socket.emit(
+      "message",
+      Buffer.from(
+        JSON.stringify({
+          type: "remote_exec_response",
+          payload: { action: "exec", result: { runId: "run-1" } },
+        }),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(realtimeHub.resolveRemoteExecResponse).not.toHaveBeenCalled();
     const errorSends = (socket.send as any).mock.calls.filter((call: any[]) => {
       try {
         return JSON.parse(String(call[0])).type === "error";

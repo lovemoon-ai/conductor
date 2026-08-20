@@ -160,6 +160,31 @@ type CustomCommandsWaiter = {
   expectedAgentHost: string;
 };
 
+export type RemoteExecResponse = {
+  request_id: string;
+  action: string;
+  result?: unknown;
+  error?: string | null;
+};
+
+type RemoteExecWaiter = {
+  resolve: (result: RemoteExecResponse | null) => void;
+  timeout: NodeJS.Timeout;
+  expectedUserId: string;
+  expectedAgentHost: string;
+};
+
+/**
+ * The shape shared by every request/response waiter that is addressed to one
+ * specific daemon, so `failWaitersForAgent` can sweep them uniformly.
+ */
+type HostScopedWaiter = {
+  resolve: (result: null) => void;
+  timeout: NodeJS.Timeout;
+  expectedUserId: string;
+  expectedAgentHost: string;
+};
+
 type TerminalDetachResult = {
   detachedTaskIds: string[];
   releasedWriterTaskIds: string[];
@@ -184,6 +209,7 @@ export class RealtimeHub {
   private taskWorktreeCleanupWaiters = new Map<string, TaskWorktreeCleanupWaiter>();
   private aiManagerWaiters = new Map<string, AiManagerWaiter>();
   private customCommandsWaiters = new Map<string, CustomCommandsWaiter>();
+  private remoteExecWaiters = new Map<string, RemoteExecWaiter>();
   private terminalSubscriptions = new Map<string, Set<string>>();
   private appTerminalTasks = new Map<string, Set<string>>();
   private terminalWriters = new Map<string, string>();
@@ -217,12 +243,41 @@ export class RealtimeHub {
           this.taskToAgent.delete(taskId);
         }
       }
+      // A request/response waiter addressed to this daemon can never be
+      // answered now, so resolve it immediately instead of pinning an open
+      // HTTP request until its timeout fires.
+      this.failWaitersForAgent(conn.userId, conn.host);
     }
 
     return {
       connection: conn ?? null,
       ...appDetachResult,
     };
+  }
+
+  /**
+   * Resolve every pending daemon RPC waiter addressed to this user+host with
+   * `null` (the same value a timeout produces), so callers fail fast on
+   * disconnect. Only fires when no other connection still serves that host, so
+   * a reconnect racing the old socket's close does not cancel live requests.
+   */
+  private failWaitersForAgent(userId: string, host: string) {
+    if (this.findAgentConnectionByHost(host, userId)) return;
+
+    const asHostScoped = (waiters: Map<string, HostScopedWaiter>) => waiters;
+    const maps = [
+      asHostScoped(this.remoteExecWaiters),
+      asHostScoped(this.customCommandsWaiters),
+      asHostScoped(this.aiManagerWaiters),
+    ];
+    for (const waiters of maps) {
+      for (const [requestId, waiter] of waiters.entries()) {
+        if (waiter.expectedUserId !== userId || waiter.expectedAgentHost !== host) continue;
+        clearTimeout(waiter.timeout);
+        waiters.delete(requestId);
+        waiter.resolve(null);
+      }
+    }
   }
 
   heartbeat(id: string) {
@@ -821,6 +876,52 @@ export class RealtimeHub {
     waiter.resolve(null);
   }
 
+  waitForRemoteExecResponse(
+    requestId: string,
+    timeoutMs: number,
+    expectedUserId: string,
+    expectedAgentHost: string,
+  ): Promise<RemoteExecResponse | null> {
+    return new Promise<RemoteExecResponse | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.remoteExecWaiters.delete(requestId);
+        resolve(null);
+      }, timeoutMs);
+      this.remoteExecWaiters.set(requestId, {
+        resolve,
+        timeout,
+        expectedUserId,
+        expectedAgentHost,
+      });
+    });
+  }
+
+  resolveRemoteExecResponse(
+    result: RemoteExecResponse,
+    sourceUserId: string,
+    sourceAgentHost: string,
+  ) {
+    const waiter = this.remoteExecWaiters.get(result.request_id);
+    if (!waiter) return;
+    if (waiter.expectedUserId !== sourceUserId || waiter.expectedAgentHost !== sourceAgentHost) {
+      console.warn(
+        `[realtimeHub] dropped remote_exec_response: requestId=${result.request_id}, expected=${waiter.expectedUserId}/${waiter.expectedAgentHost}, got=${sourceUserId}/${sourceAgentHost}`,
+      );
+      return;
+    }
+    clearTimeout(waiter.timeout);
+    this.remoteExecWaiters.delete(result.request_id);
+    waiter.resolve(result);
+  }
+
+  cancelRemoteExecResponse(requestId: string) {
+    const waiter = this.remoteExecWaiters.get(requestId);
+    if (!waiter) return;
+    clearTimeout(waiter.timeout);
+    this.remoteExecWaiters.delete(requestId);
+    waiter.resolve(null);
+  }
+
   waitForProjectPathValidation(requestId: string, timeoutMs: number): Promise<ProjectPathValidationResult | null> {
     return new Promise<ProjectPathValidationResult | null>((resolve) => {
       const timeout = setTimeout(() => {
@@ -909,7 +1010,10 @@ export class RealtimeHub {
     for (const conn of this.connections.values()) {
       if (conn.kind !== "agent") continue;
       if (conn.host !== host) continue;
-      if (userId && conn.userId !== userId) continue;
+      // `undefined` means "any owner" (the task-id routing path). An empty
+      // string must NOT silently mean that too, or a blank userId would
+      // disable tenant filtering entirely.
+      if (userId !== undefined && conn.userId !== userId) continue;
       return conn;
     }
     return null;
