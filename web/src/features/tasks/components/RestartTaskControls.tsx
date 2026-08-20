@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { Task } from '@/shared/types';
 import { useAgentsStore } from '@/features/agents';
@@ -42,6 +42,7 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
   const restartTask = useTasksStore((state) => state.restartTask);
   const { pushToast } = useToast();
   const [selectedBackend, setSelectedBackend] = useState('');
+  const [selectedDaemonHost, setSelectedDaemonHost] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const sourceAgentHost = typeof task.agentHost === 'string' ? task.agentHost.trim() : '';
@@ -58,22 +59,64 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
   }, [projects, task.projectId]);
   const currentBackend = typeof task.backendType === 'string' ? task.backendType.trim() : '';
   const isManualFireTask = isConductorFireHost(sourceAgentHost);
-  const sourceExecutionDaemonHost =
-    isManualFireTask
-      ? (
-          (!isConductorFireHost(sourceMetadataDaemonHost) ? sourceMetadataDaemonHost : '') ||
-          (sourceExecutionHost && !isConductorFireHost(sourceExecutionHost) ? sourceExecutionHost : '') ||
-          (!isConductorFireHost(sourceProjectDaemonHost) ? sourceProjectDaemonHost : '')
-        )
-      : '';
-  const restartSourceHost = isManualFireTask ? sourceExecutionDaemonHost : sourceAgentHost;
-  const sourceAgent = useMemo(
-    () => agents.find((agent) => agent.host === restartSourceHost) ?? null,
-    [agents, restartSourceHost],
+  // Daemon candidates that may hold the manual-fire task's workspace, in the
+  // same priority order the server uses for auto-resolution.
+  const manualFireDaemonCandidates = isManualFireTask
+    ? [
+        !isConductorFireHost(sourceMetadataDaemonHost) ? sourceMetadataDaemonHost : '',
+        sourceExecutionHost && !isConductorFireHost(sourceExecutionHost) ? sourceExecutionHost : '',
+        !isConductorFireHost(sourceProjectDaemonHost) ? sourceProjectDaemonHost : '',
+      ].filter(Boolean)
+    : [];
+  const restartSourceHost = isManualFireTask
+    ? manualFireDaemonCandidates[0] ?? ''
+    : sourceAgentHost;
+  // Online daemons the successor can run on. The agents store only lists
+  // connected agents; fire connections are not spawn targets.
+  const daemonOptions = useMemo(
+    () => agents.filter((agent) => !isConductorFireHost(agent.host)).map((agent) => agent.host),
+    [agents],
+  );
+  // Mirror the server's auto-resolution: the host it would pick without an
+  // explicit override. A project daemon binding wins over everything (the
+  // server forces it); otherwise fire tasks use the first ONLINE candidate
+  // and normal tasks reuse the source daemon when it is online. No silent
+  // fallback to an arbitrary other machine — when auto-resolution fails, the
+  // user must explicitly pick a daemon (the branch then runs on a different
+  // machine, which we never do behind their back).
+  const projectDaemonCandidate = !isConductorFireHost(sourceProjectDaemonHost)
+    ? sourceProjectDaemonHost
+    : '';
+  const autoResolvedDaemonHost = projectDaemonCandidate
+    ? daemonOptions.includes(projectDaemonCandidate)
+      ? projectDaemonCandidate
+      : ''
+    : isManualFireTask
+      ? manualFireDaemonCandidates.find((host) => daemonOptions.includes(host)) ?? ''
+      : restartSourceHost && daemonOptions.includes(restartSourceHost)
+        ? restartSourceHost
+        : '';
+  const effectiveSelectedDaemonHost =
+    selectedDaemonHost && daemonOptions.includes(selectedDaemonHost)
+      ? selectedDaemonHost
+      : autoResolvedDaemonHost;
+  const isCrossDaemonSelection = Boolean(
+    effectiveSelectedDaemonHost && effectiveSelectedDaemonHost !== restartSourceHost,
+  );
+
+  // A stale explicit choice must not silently survive a close/reopen.
+  useEffect(() => {
+    if (open) {
+      setSelectedDaemonHost('');
+    }
+  }, [open]);
+  const selectedAgent = useMemo(
+    () => agents.find((agent) => agent.host === effectiveSelectedDaemonHost) ?? null,
+    [agents, effectiveSelectedDaemonHost],
   );
   const supportedBackends = useMemo(
-    () => (Array.isArray(sourceAgent?.supportedBackends) ? sourceAgent.supportedBackends : []),
-    [sourceAgent],
+    () => (Array.isArray(selectedAgent?.supportedBackends) ? selectedAgent.supportedBackends : []),
+    [selectedAgent],
   );
   const backendOptions = useMemo(
     () => getCompatibleRestartBackends(currentBackend, supportedBackends),
@@ -108,20 +151,23 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
     if (!sourceAgentHost) {
       return 'Missing source daemon binding';
     }
-    if (isManualFireTask && !sourceExecutionDaemonHost) {
-      return 'Missing original daemon binding';
-    }
     if (!isRestartableStatus(task.status)) {
       return 'Only running or stopped tasks can restart';
     }
     // Note: Fire tasks can always create new tasks; in-place restart is handled by the backend based on strategy
-    if (!sourceAgent) {
-      return isManualFireTask ? 'Original daemon is offline' : 'Source daemon is offline';
+    if (daemonOptions.length === 0) {
+      return 'No daemon online';
+    }
+    if (!selectedAgent) {
+      if (projectDaemonCandidate && !daemonOptions.includes(projectDaemonCandidate)) {
+        return `Project daemon ${projectDaemonCandidate} is offline — select a daemon to run the new task`;
+      }
+      return restartSourceHost
+        ? `Source daemon ${restartSourceHost} is offline — select a daemon to run the new task`
+        : 'Select a daemon to run the new task';
     }
     if (backendOptions.length === 0) {
-      return isManualFireTask
-        ? 'No compatible backend available on the original daemon'
-        : 'No compatible backend available on the source daemon';
+      return 'No compatible backend available on the selected daemon';
     }
     if (!effectiveSelectedBackend) {
       return 'Select a backend first';
@@ -133,11 +179,12 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
   }, [
     backendOptions.length,
     currentBackend,
-    isManualFireTask,
+    daemonOptions,
     effectiveSelectedBackend,
-    sourceAgent,
+    projectDaemonCandidate,
+    restartSourceHost,
+    selectedAgent,
     sourceAgentHost,
-    sourceExecutionDaemonHost,
     task.sessionId,
     task.status,
     task.taskType,
@@ -161,9 +208,25 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
 
     try {
       setIsSubmitting(true);
+      // Omit the explicit override ONLY in the fully-trivial case: the shown
+      // daemon is both what the server would auto-resolve AND the machine the
+      // source task ran on — full parity with the pre-selector behavior. In
+      // every other case send the displayed daemon explicitly, so the server
+      // dispatches to exactly what the UI shows, and any target other than
+      // the source machine goes through the cross-daemon path-drop guard
+      // (making the warning below always truthful).
+      const agentHostOverride =
+        effectiveSelectedDaemonHost &&
+        !(
+          effectiveSelectedDaemonHost === autoResolvedDaemonHost &&
+          effectiveSelectedDaemonHost === restartSourceHost
+        )
+          ? effectiveSelectedDaemonHost
+          : undefined;
       const result = await restartTask(task.id, {
         backendType: effectiveSelectedBackend,
         strategy: 'new_task',
+        ...(agentHostOverride ? { agentHost: agentHostOverride } : {}),
       });
       if (onCreatedTask) {
         onCreatedTask(result.task.id);
@@ -190,6 +253,36 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
       maxWidthClassName="max-w-lg"
     >
       <div className="space-y-5">
+        <div className="space-y-2">
+          <label htmlFor={`restart-daemon-${task.id}`} className="text-sm font-medium text-ink">
+            Daemon
+          </label>
+          <select
+            id={`restart-daemon-${task.id}`}
+            value={effectiveSelectedDaemonHost}
+            onChange={(event) => setSelectedDaemonHost(event.target.value)}
+            disabled={daemonOptions.length === 0 || isSubmitting}
+            className="w-full rounded-xl border border-border bg-paper px-3 py-2 text-sm text-ink disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {daemonOptions.length > 0 && !effectiveSelectedDaemonHost ? (
+              <option value="" disabled>
+                Select a daemon…
+              </option>
+            ) : null}
+            {daemonOptions.map((host) => (
+              <option key={host} value={host}>
+                {host === restartSourceHost ? `${host} (current)` : host}
+              </option>
+            ))}
+            {!daemonOptions.length ? <option value="">No daemon online</option> : null}
+          </select>
+          {isCrossDaemonSelection ? (
+            <p className="text-xs text-muted">
+              Runs on a different machine than the source task — starts from that daemon&apos;s own project path.
+            </p>
+          ) : null}
+        </div>
+
         <div className="space-y-2">
           <label htmlFor={`restart-backend-${task.id}`} className="text-sm font-medium text-ink">
             Backend

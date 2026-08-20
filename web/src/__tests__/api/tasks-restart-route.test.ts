@@ -2124,6 +2124,134 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(JSON.parse(payloadJson).payload.target_launch_config).toEqual(worktreeLaunchConfig);
   });
 
+  it("drops the inherited source cwd when agent_host targets a different daemon", async () => {
+    // The source cwd is a path on daemon-1's filesystem. Branching to
+    // daemon-2 must not ship it: the target daemon would blindly mkdir the
+    // foreign path and "continue" the work in an empty directory. With no
+    // launch config the daemon falls back to its own project-bound path.
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        launchConfig: JSON.stringify({ cwd: "/home/user/project/sub" }),
+      }) as any,
+    );
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      { id: "agent-2", host: "daemon-2", supportedBackends: ["codex"], capabilities: [] },
+    ] as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task", agent_host: "daemon-2" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+    expect(db.task.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentHost: "daemon-2",
+          launchConfig: null,
+        }),
+      }),
+    );
+    const payloadJson = vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson as string;
+    expect(JSON.parse(payloadJson).payload.target_launch_config).toBeUndefined();
+  });
+
+  it("drops the inherited worktree config when agent_host targets a different daemon", async () => {
+    // A worktree only exists on the machine that created it. Cross-daemon
+    // branches must not inherit it, or the target daemon would try a
+    // `git worktree add` against a repo root that does not exist there.
+    const worktreeLaunchConfig = {
+      worktree: true,
+      worktreeId: "task-1",
+      worktreeBranch: "conductor/task/task-1",
+      worktreeBaseRef: "main",
+      projectRepoRoot: "/repo/project",
+      projectWorkspacePath: "/repo/project",
+      projectRelativePath: ".",
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        launchConfig: JSON.stringify(worktreeLaunchConfig),
+      }) as any,
+    );
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      { id: "agent-2", host: "daemon-2", supportedBackends: ["codex"], capabilities: [] },
+    ] as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task", agent_host: "daemon-2" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+    expect(db.task.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentHost: "daemon-2",
+          launchConfig: null,
+        }),
+      }),
+    );
+    const payloadJson = vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson as string;
+    expect(JSON.parse(payloadJson).payload.target_launch_config).toBeUndefined();
+  });
+
+  it("keeps the inherited launch config when agent_host targets the source daemon", async () => {
+    // An explicit override that lands on the SAME machine the source ran on
+    // is not cross-daemon: workspace continuity still applies.
+    const worktreeLaunchConfig = {
+      worktree: true,
+      worktreeId: "task-1",
+      worktreeBranch: "conductor/task/task-1",
+      worktreeBaseRef: "main",
+      projectRepoRoot: "/repo/project",
+      projectWorkspacePath: "/repo/project",
+      projectRelativePath: ".",
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        launchConfig: JSON.stringify(worktreeLaunchConfig),
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task", agent_host: "daemon-1" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+    expect(db.task.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentHost: "daemon-1",
+          launchConfig: JSON.stringify(worktreeLaunchConfig),
+        }),
+      }),
+    );
+    const payloadJson = vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson as string;
+    expect(JSON.parse(payloadJson).payload.target_launch_config).toEqual(worktreeLaunchConfig);
+  });
+
   // RFC 0029: Reclaim path tests. The reclaim attempt is feature-flagged via
   // CONDUCTOR_TASK_RECLAIM_ENABLED; flip it on for these tests and restore at
   // the end so we don't pollute other suites in the same vitest worker.
