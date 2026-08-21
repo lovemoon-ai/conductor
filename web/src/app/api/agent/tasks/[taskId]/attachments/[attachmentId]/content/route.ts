@@ -31,10 +31,11 @@ export async function GET(
     select: { id: true },
   });
   if (!task) return NextResponse.json({ error: "Attachment not found" }, { status: 404 });
-  // `materialized` stays downloadable: a Daemon that lost its local copy (wiped
-  // worktree, restored session, takeover by another host) must be able to fetch
-  // the attachment again instead of retrying a 404 forever. `pruned` is absent
-  // on purpose — its bytes are already gone, so the miss is reported below.
+  // `materialized` stays downloadable so a Daemon that lost its local copy
+  // (wiped worktree, restored session, takeover by another host) can refetch
+  // instead of retrying a 404 forever. This only works inside the retention
+  // window: once the janitor releases the bytes the row turns `pruned` and the
+  // miss below is permanent, which the Daemon reports back to the user.
   const attachment = await db.taskAttachment.findFirst({
     where: { id: attachmentId, taskId, messageId: { not: null }, status: { in: ["bound", "materialized"] } },
   });

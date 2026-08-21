@@ -49,6 +49,20 @@ export function MessageBubble({
   // Attachment bytes are released from the Web server once the retention window
   // has elapsed, so an older message can reference a body that no longer exists.
   const [releasedAttachmentIds, setReleasedAttachmentIds] = useState<string[]>([]);
+  const markAttachmentReleased = (attachmentId: string) => setReleasedAttachmentIds((current) => (
+    current.includes(attachmentId) ? current : [...current, attachmentId]
+  ));
+  // Images surface a released body through `onError`; a file link has no such
+  // signal, so probe it. Only an explicit 404 flips the chip — any other
+  // outcome leaves the normal download untouched.
+  const probeAttachment = async (attachmentId: string, downloadUrl: string) => {
+    try {
+      const response = await fetch(downloadUrl, { method: 'HEAD' });
+      if (response.status === 404) markAttachmentReleased(attachmentId);
+    } catch {
+      // Offline or blocked probe: keep the link usable.
+    }
+  };
   const rootRef = useRef<HTMLDivElement | null>(null);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const lastTouchEndAtRef = useRef(0);
@@ -400,9 +414,7 @@ export function MessageBubble({
                           unoptimized
                           loader={({ src }) => src}
                           className="h-auto max-h-[28rem] w-full object-cover"
-                          onError={() => setReleasedAttachmentIds((current) => (
-                            current.includes(attachment.id) ? current : [...current, attachment.id]
-                          ))}
+                          onError={() => markAttachmentReleased(attachment.id)}
                         />
                       </a>
                     ) : null}
@@ -440,9 +452,20 @@ export function MessageBubble({
                         target="_blank"
                         rel="noreferrer"
                         className="flex items-center justify-between gap-3 p-3 text-sm"
+                        onClick={(event) => {
+                          if (releasedAttachmentIds.includes(attachment.id)) {
+                            event.preventDefault();
+                            return;
+                          }
+                          void probeAttachment(attachment.id, attachment.downloadUrl);
+                        }}
                       >
                         <span className={isUser ? 'text-white' : 'text-ink'}>{attachment.name}</span>
-                        <span className={isUser ? 'text-white/70' : 'text-muted'}>{formatBytes(attachment.sizeBytes)}</span>
+                        <span className={isUser ? 'text-white/70' : 'text-muted'}>
+                          {releasedAttachmentIds.includes(attachment.id)
+                            ? 'No longer available'
+                            : formatBytes(attachment.sizeBytes)}
+                        </span>
                       </a>
                     ) : null}
                     {attachment.kind !== 'file' ? (

@@ -184,6 +184,38 @@ describe('RealtimeHub connected agents metadata', () => {
     expect(hub.getTaskAgentHost('task-1')).toBe('daemon-a');
     expect(hub.getAgentDisconnectAt('daemon-a', 'user-1')).toBeNull();
   });
+
+  it('keeps the replacement binding when the replaced socket closes late', () => {
+    // A fire keeps one identity across restarts, so the old and the new process
+    // share a host name. `unregister` clears bindings by host, so the dying
+    // socket's close callback must not evict the fire that already replaced it.
+    const hub = new RealtimeHub();
+    const host = 'conductor-fire-daemon-a-task-1';
+    const registerFire = (id: string) => hub.register({
+      id,
+      kind: 'agent',
+      userId: 'user-1',
+      projectIds: ['*'],
+      host,
+      supportedBackends: ['claude'],
+      capabilities: ['task_attachments_v1'],
+      send: vi.fn(),
+      close: vi.fn(),
+    });
+
+    registerFire('fire-old');
+    hub.bindTaskToAgent('task-1', host);
+    expect(hub.takeOverAgentHost(host, 'user-1')).toBe(1);
+    registerFire('fire-new');
+    hub.bindTaskToAgent('task-1', host);
+
+    // The replaced socket's close event arrives only now.
+    hub.unregister('fire-old');
+
+    expect(hub.getTaskAgentHost('task-1')).toBe(host);
+    expect(hub.hasAgentHost(host, 'user-1')).toBe(true);
+    expect(hub.getAgentDisconnectAt(host, 'user-1')).toBeNull();
+  });
 });
 
 describe('RealtimeHub ai_manager waiter', () => {
