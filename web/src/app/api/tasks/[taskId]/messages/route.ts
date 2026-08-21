@@ -218,6 +218,9 @@ export async function POST(
   const mergedMetadata: Record<string, unknown> | null = clientRequestId
     ? { ...(callerMetadata ?? {}), clientRequestId }
     : callerMetadata;
+  const attachmentIds = Array.isArray(body.attachmentIds ?? body.attachment_ids)
+    ? (body.attachmentIds ?? body.attachment_ids).filter((value: unknown): value is string => typeof value === "string")
+    : [];
 
   let message;
   try {
@@ -227,6 +230,8 @@ export async function POST(
       content: body.content,
       role: body.role ?? "sdk",
       metadata: mergedMetadata,
+      clientMessageId: clientRequestId,
+      attachmentIds,
     }));
   } catch (error) {
     if (error instanceof TaskIngressError) {

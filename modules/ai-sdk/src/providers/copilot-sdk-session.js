@@ -4,6 +4,13 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 import { COPILOT_SDK_VARIANT as COPILOT_PROVIDER_VARIANT } from "../built-in-backends.js";
+import { appendContextFilesToPrompt } from "../context-files.js";
+import { PROVIDER_MEDIA_CAPABILITIES, buildCopilotAttachments } from "../media-adapters.js";
+import {
+  assertMediaCapabilities,
+  defaultPromptForMedia,
+  resolveTurnMedia,
+} from "../media-input.js";
 import {
   emitLog,
   getBoundedEnvInt,
@@ -688,6 +695,7 @@ export class CopilotSdkSession extends EventEmitter {
           }
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
+      capabilities: { media: PROVIDER_MEDIA_CAPABILITIES[COPILOT_PROVIDER_VARIANT] },
     };
   }
 
@@ -1564,12 +1572,17 @@ export class CopilotSdkSession extends EventEmitter {
     }
   }
 
-  async runTurn(promptText, { useInitialImages = false, onProgress = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null } = {}) {
     if (this.currentTurn) {
       throw this.createTurnAlreadyRunningError();
     }
-    const prompt = this.buildPrompt(promptText, { useInitialImages });
-    if (!prompt) {
+    const media = resolveTurnMedia(this.options, { useInitialImages, media: mediaInput });
+    assertMediaCapabilities(media, this.backend, PROVIDER_MEDIA_CAPABILITIES[COPILOT_PROVIDER_VARIANT]);
+    const prompt = appendContextFilesToPrompt(
+      this.buildPrompt(promptText, { useInitialImages: false }) || (media.length ? defaultPromptForMedia(media) : ""),
+      contextFiles,
+    ).prompt;
+    if (!prompt && media.length === 0) {
       return {
         text: "",
         usage: this.lastUsage ? { ...this.lastUsage } : null,
@@ -1621,6 +1634,7 @@ export class CopilotSdkSession extends EventEmitter {
           this.session.sendAndWait(
             {
               prompt,
+              attachments: buildCopilotAttachments(media),
               mode: "immediate",
             },
             this.turnDeadlineMs + SDK_SEND_AND_WAIT_TIMEOUT_GRACE_MS,

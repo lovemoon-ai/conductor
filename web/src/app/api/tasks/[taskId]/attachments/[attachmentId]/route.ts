@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Readable } from "node:stream";
 
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
-import { getMessageAttachments, normalizeMessageMetadata } from "@/shared/utils/message-attachments";
-import { readTaskAttachment } from "@/lib/tasks/task-file-storage";
+import { openTaskAttachmentStreamByStorageKey } from "@/lib/tasks/task-file-storage";
 
 export const runtime = "nodejs";
+
+const INLINE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+function contentDisposition(fileName: string, inline: boolean): string {
+  const asciiName = fileName.replace(/[^A-Za-z0-9._-]+/g, "-") || "attachment";
+  return `${inline ? "inline" : "attachment"}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+}
 
 export async function GET(
   request: NextRequest,
@@ -24,29 +31,27 @@ export async function GET(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const messages = await db.message.findMany({
-    where: { taskId },
-    select: { metadata: true },
+  const attachment = await db.taskAttachment.findFirst({
+    where: { id: attachmentId, taskId },
   });
-
-  const attachment = messages
-    .flatMap((message) => getMessageAttachments(normalizeMessageMetadata(message.metadata)))
-    .find((entry) => entry.id === attachmentId);
 
   if (!attachment) {
     return NextResponse.json({ error: "Attachment not found" }, { status: 404 });
   }
 
-  const body = await readTaskAttachment(taskId, attachmentId);
+  const body = await openTaskAttachmentStreamByStorageKey(taskId, attachment.storageKey);
   if (!body) {
     return NextResponse.json({ error: "Attachment body missing" }, { status: 404 });
   }
 
-  return new NextResponse(new Uint8Array(body), {
+  const inline = INLINE_IMAGE_TYPES.has(attachment.mimeType.toLowerCase());
+  return new NextResponse(Readable.toWeb(body.stream) as ReadableStream, {
     headers: {
-      "Content-Type": attachment.mimeType,
-      "Content-Length": String(body.byteLength),
-      "Content-Disposition": `inline; filename="${attachment.name}"`,
+      "Content-Type": inline ? attachment.mimeType : "application/octet-stream",
+      "Content-Length": String(body.sizeBytes),
+      "Content-Disposition": contentDisposition(attachment.originalName, inline),
+      "X-Content-Type-Options": "nosniff",
+      ETag: `"${attachment.sha256}"`,
       "Cache-Control": "private, max-age=3600",
     },
   });

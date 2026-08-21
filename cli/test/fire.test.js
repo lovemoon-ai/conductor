@@ -738,12 +738,12 @@ describe("conductor-fire backends", () => {
     assert.deepEqual(
       buildConductorConnectHeaders("0.2.21", {
         backends: ["codex"],
-        capabilities: ["refresh_session_inplace"],
+        capabilities: ["refresh_session_inplace", "task_attachments_v1"],
       }),
       {
       "x-conductor-version": "0.2.21",
         "x-conductor-backends": "codex",
-        "x-conductor-capabilities": "refresh_session_inplace",
+        "x-conductor-capabilities": "refresh_session_inplace,task_attachments_v1",
       },
     );
   });
@@ -2706,6 +2706,89 @@ describe("conductor-fire backends", () => {
       ["initial live reply"],
     );
     assert.equal(sentMessages[0].metadata?.reply_to, "msg-initial-1");
+  });
+
+  it("forwards materialized images and ordinary files through separate AI SDK inputs", async () => {
+    const calls = [];
+    const runner = new BridgeRunner({
+      backendSession: {
+        runTurn: async (content, options = {}) => {
+          calls.push({ content, options });
+          return { text: "done", usage: null, items: [], metadata: {} };
+        },
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        sendRuntimeStatus: async () => ({}),
+        sendMessage: async () => ({}),
+      },
+      taskId: "task-attachments",
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    await runner.respondToMessage({
+      message_id: "msg-attachments",
+      role: "user",
+      content: "inspect these",
+      attachments: [
+        { id: "image-1", kind: "image", mimeType: "image/png", name: "screen.png", path: "/tmp/screen.png" },
+        { id: "file-1", kind: "file", mimeType: "text/plain", name: "spec.txt", path: "/tmp/spec.txt" },
+      ],
+    });
+
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].options.media, [
+      { kind: "image", path: "/tmp/screen.png", mimeType: "image/png", name: "screen.png" },
+    ]);
+    assert.deepEqual(calls[0].options.contextFiles, [
+      { path: "/tmp/spec.txt", mimeType: "text/plain", name: "spec.txt" },
+    ]);
+  });
+
+  it("processes attachment-only messages with a default prompt", async () => {
+    const calls = [];
+    const runner = new BridgeRunner({
+      backendSession: {
+        runTurn: async (content, options = {}) => {
+          calls.push({ content, options });
+          return { text: "done", usage: null, items: [], metadata: {} };
+        },
+        threadOptions: { model: "codex" },
+      },
+      conductor: { sendRuntimeStatus: async () => ({}), sendMessage: async () => ({}) },
+      taskId: "task-attachment-only", cliArgs: [], backendName: "codex",
+    });
+    await runner.respondToMessage({
+      message_id: "msg-attachment-only", role: "user", content: "",
+      attachments: [{ kind: "file", mimeType: "text/plain", name: "spec.txt", path: "/tmp/spec.txt" }],
+    });
+    assert.equal(calls[0].content, "Analyze the attached files.");
+    assert.equal(calls[0].options.contextFiles.length, 1);
+  });
+
+  it("falls back to runTurn when a goal message contains attachments", async () => {
+    const calls = [];
+    const runner = new BridgeRunner({
+      backendSession: {
+        getSnapshot: () => ({ capabilities: { goal: true } }),
+        runGoal: async () => { throw new Error("must not run goal"); },
+        runTurn: async (content, options = {}) => {
+          calls.push({ content, options });
+          return { text: "done", usage: null, items: [], metadata: {} };
+        },
+        threadOptions: { model: "codex" },
+      },
+      conductor: { sendRuntimeStatus: async () => ({}), sendMessage: async () => ({}) },
+      taskId: "task-goal-attachment", cliArgs: [], backendName: "codex",
+    });
+    await runner.respondToMessage({
+      message_id: "msg-goal-attachment", role: "user", content: "/goal inspect this",
+      attachments: [{ kind: "image", mimeType: "image/png", name: "shot.png", path: "/tmp/shot.png" }],
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].content, "/goal inspect this");
+    assert.equal(calls[0].options.media.length, 1);
   });
 
   it("retries queued initial prompts with initial images until the turn succeeds", async () => {

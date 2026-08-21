@@ -1,3 +1,4 @@
+export * from './agent-host.js';
 export * from './paths.js';
 export * from './config/index.js';
 export * from './backend/index.js';
@@ -9,3 +10,4 @@ export * from './context/index.js';
 export * from './limits/index.js';
 export * from './outbox/index.js';
 export * from './api/index.js';
+export * from './attachments/index.js';

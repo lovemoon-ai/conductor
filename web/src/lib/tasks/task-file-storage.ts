@@ -1,15 +1,15 @@
-import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
+import nodeFs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { Transform, type Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 import type { MessageAttachment } from "@/shared/types";
-import { attachmentKindFromMimeType } from "@/shared/utils/message-attachments";
 
 const DEFAULT_STORAGE_ROOT = path.join(process.cwd(), ".conductor-data", "task-attachments");
 const DEFAULT_MIME_TYPE = "application/octet-stream";
-const DEFAULT_ATTACHMENT_TTL_MINUTES = 10;
-const DEFAULT_ATTACHMENT_SWEEP_INTERVAL_MS = 60_000;
+const NATIVE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 const EXTENSION_TO_MIME: Record<string, string> = {
   ".gif": "image/gif",
@@ -34,22 +34,31 @@ const sanitizeFileName = (value: string): string => {
   return normalized || "attachment";
 };
 
-const parsePositiveInteger = (value: string | undefined, fallback: number): number => {
-  const parsed = Number.parseInt(String(value || ""), 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
-};
-
 const resolveStorageRoot = (): string => (
   path.resolve(process.env.CONDUCTOR_FILE_STORAGE_DIR || DEFAULT_STORAGE_ROOT)
 );
 
-const resolveAttachmentTtlMs = (): number => (
-  parsePositiveInteger(process.env.CONDUCTOR_ATTACHMENT_TTL_MINUTES, DEFAULT_ATTACHMENT_TTL_MINUTES) * 60 * 1000
-);
+const DEFAULT_ATTACHMENT_TTL_MINUTES = 10;
 
-const resolveAttachmentSweepIntervalMs = (): number => (
-  parsePositiveInteger(process.env.CONDUCTOR_ATTACHMENT_SWEEP_INTERVAL_MS, DEFAULT_ATTACHMENT_SWEEP_INTERVAL_MS)
-);
+/**
+ * How long the Web server keeps an attachment file on disk. It bounds two
+ * things: how long an uploaded-but-unsent attachment may be staged, and how
+ * long a delivered attachment is retained after the Daemon has its own copy.
+ * A `bound` attachment that no Daemon has materialized yet is never expired by
+ * time, because the Daemon may still be offline and would lose the file.
+ */
+export function taskAttachmentTtlMs(): number {
+  const parsed = Number.parseInt(process.env.CONDUCTOR_ATTACHMENT_TTL_MINUTES || "", 10);
+  const minutes = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ATTACHMENT_TTL_MINUTES;
+  return minutes * 60 * 1000;
+}
+
+export function assertTaskAttachmentStorageConfigured(): void {
+  if (process.env.NODE_ENV === "production"
+      && (!process.env.CONDUCTOR_FILE_STORAGE_DIR?.trim() || process.env.CONDUCTOR_FILE_STORAGE_SHARED !== "true")) {
+    throw new Error("Production attachments require CONDUCTOR_FILE_STORAGE_DIR and CONDUCTOR_FILE_STORAGE_SHARED=true after verifying every Web replica mounts the same storage");
+  }
+}
 
 export const guessMimeType = (fileName: string, fallback?: string | null): string => {
   if (typeof fallback === "string" && fallback.trim()) {
@@ -59,16 +68,37 @@ export const guessMimeType = (fileName: string, fallback?: string | null): strin
   return EXTENSION_TO_MIME[extension] || DEFAULT_MIME_TYPE;
 };
 
+function matchesImageSignature(mimeType: string, prefix: Buffer): boolean {
+  if (mimeType === "image/png") return prefix.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  if (mimeType === "image/jpeg") return prefix[0] === 0xff && prefix[1] === 0xd8 && prefix[2] === 0xff;
+  if (mimeType === "image/gif") return prefix.subarray(0, 6).toString("ascii") === "GIF87a" || prefix.subarray(0, 6).toString("ascii") === "GIF89a";
+  if (mimeType === "image/webp") return prefix.subarray(0, 4).toString("ascii") === "RIFF" && prefix.subarray(8, 12).toString("ascii") === "WEBP";
+  return false;
+}
+
+function matchesVideoSignature(prefix: Buffer): boolean {
+  // ISO BMFF begins with a sized box whose type is `ftyp`; an arbitrary
+  // occurrence of that word in a text file is not a video signature.
+  if (prefix.length >= 12 && prefix.subarray(4, 8).toString("ascii") === "ftyp") {
+    const boxSize = prefix.readUInt32BE(0);
+    if (boxSize >= 8) return true;
+  }
+  if (prefix.subarray(0, 3).toString("ascii") === "FLV") return true;
+  if (prefix.subarray(0, 16).equals(Buffer.from("3026b2758e66cf11a6d900aa0062ce6c", "hex"))) return true;
+  if (prefix.length >= 12 && prefix.subarray(0, 4).toString("ascii") === "RIFF"
+      && prefix.subarray(8, 12).toString("ascii") === "AVI ") return true;
+  if (prefix.length >= 4 && prefix.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) return true;
+  if (prefix.length > 188 && prefix[0] === 0x47 && prefix[188] === 0x47) return true;
+  return prefix.length >= 4 && prefix[0] === 0x00 && prefix[1] === 0x00 && prefix[2] === 0x01
+    && (prefix[3] === 0xba || prefix[3] === 0xb3);
+}
+
 const resolveAttachmentDirectory = (taskId: string): string => (
   path.join(resolveStorageRoot(), taskId)
 );
 
 function buildAttachmentTimestamp(date = new Date()): string {
   return date.toISOString();
-}
-
-function buildAttachmentExpiration(createdAt = new Date()): string {
-  return new Date(createdAt.getTime() + resolveAttachmentTtlMs()).toISOString();
 }
 
 async function removeFileAndEmptyParents(filePath: string, stopDir: string): Promise<void> {
@@ -92,41 +122,6 @@ async function removeFileAndEmptyParents(filePath: string, stopDir: string): Pro
   }
 }
 
-async function isExpiredFile(filePath: string, now = Date.now()): Promise<boolean> {
-  const stat = await fs.stat(filePath).catch(() => null);
-  if (!stat) {
-    return true;
-  }
-  return stat.mtimeMs + resolveAttachmentTtlMs() <= now;
-}
-
-export async function pruneExpiredTaskAttachments(options: { now?: number } = {}): Promise<number> {
-  const now = typeof options.now === "number" ? options.now : Date.now();
-  const root = resolveStorageRoot();
-  const taskDirs = await fs.readdir(root, { withFileTypes: true }).catch((): Dirent[] => []);
-  const deletedCounts = await Promise.all(taskDirs.map(async (taskDir) => {
-    if (!taskDir.isDirectory()) {
-      return 0;
-    }
-    const taskPath = path.join(root, taskDir.name);
-    const entries = await fs.readdir(taskPath, { withFileTypes: true }).catch((): Dirent[] => []);
-    const entryResults = await Promise.all(entries.map(async (entry) => {
-      if (!entry.isFile()) {
-        return 0;
-      }
-      const filePath = path.join(taskPath, entry.name);
-      if (!(await isExpiredFile(filePath, now))) {
-        return 0;
-      }
-      await removeFileAndEmptyParents(filePath, root).catch(() => undefined);
-      return 1;
-    }));
-    return entryResults.reduce<number>((sum, count) => sum + count, 0);
-  }));
-
-  return deletedCounts.reduce<number>((sum, count) => sum + count, 0);
-}
-
 export async function deleteTaskAttachmentDirectory(taskId: string): Promise<void> {
   const normalizedTaskId = taskId.trim();
   if (!normalizedTaskId) {
@@ -138,23 +133,39 @@ export async function deleteTaskAttachmentDirectory(taskId: string): Promise<voi
   });
 }
 
-export function startTaskAttachmentJanitor(log: Pick<Console, "info" | "error"> = console): NodeJS.Timeout {
-  const intervalMs = resolveAttachmentSweepIntervalMs();
-  const timer = setInterval(() => {
-    void pruneExpiredTaskAttachments()
-      .then((deletedCount) => {
-        if (deletedCount > 0) {
-          log.info?.(`[attachments] pruned ${deletedCount} expired attachment file(s)`);
-        }
-      })
-      .catch((error) => {
-        log.error?.(`[attachments] failed to prune expired attachments: ${error instanceof Error ? error.message : String(error)}`);
-      });
-  }, Math.max(intervalMs, 1000));
-  if (typeof timer.unref === "function") {
-    timer.unref();
+export async function pruneOrphanedTaskAttachmentFiles(
+  knownStorageKeys: Set<string>,
+  olderThan: Date,
+): Promise<number> {
+  const root = resolveStorageRoot();
+  const taskDirectories = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+  let deleted = 0;
+  for (const taskDirectory of taskDirectories) {
+    if (!taskDirectory.isDirectory()) continue;
+    const directory = path.join(root, taskDirectory.name);
+    const files = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
+    for (const file of files) {
+      if (!file.isFile() || knownStorageKeys.has(file.name)) continue;
+      const filePath = path.join(directory, file.name);
+      const stat = await fs.stat(filePath).catch(() => null);
+      if (!stat || stat.mtime >= olderThan) continue;
+      await removeFileAndEmptyParents(filePath, root);
+      deleted += 1;
+    }
   }
-  return timer;
+  return deleted;
+}
+
+export async function deleteTaskAttachmentByStorageKey(taskId: string, storageKey: string): Promise<void> {
+  const normalizedTaskId = taskId.trim();
+  const safeStorageKey = path.basename(storageKey);
+  if (!normalizedTaskId || !safeStorageKey || safeStorageKey !== storageKey) {
+    return;
+  }
+  await removeFileAndEmptyParents(
+    path.join(resolveAttachmentDirectory(normalizedTaskId), safeStorageKey),
+    resolveStorageRoot(),
+  );
 }
 
 export async function writeTaskAttachment(params: {
@@ -162,59 +173,118 @@ export async function writeTaskAttachment(params: {
   fileName: string;
   bytes: Buffer;
   mimeType?: string | null;
-}): Promise<MessageAttachment> {
+}): Promise<MessageAttachment & { storageKey: string; sha256: string }> {
   const taskId = params.taskId.trim();
   const originalName = sanitizeFileName(params.fileName);
   const attachmentId = randomUUID();
-  const mimeType = guessMimeType(originalName, params.mimeType);
+  let mimeType = guessMimeType(originalName, params.mimeType).toLowerCase();
   const storedName = `${attachmentId}--${originalName}`;
   const directory = resolveAttachmentDirectory(taskId);
   const filePath = path.join(directory, storedName);
   const createdAt = new Date();
 
-  await fs.mkdir(directory, { recursive: true });
-  await fs.writeFile(filePath, params.bytes);
+  if (matchesVideoSignature(params.bytes.subarray(0, 512))) {
+    throw Object.assign(new Error("video attachments are not supported"), { code: "ATTACHMENT_VIDEO" });
+  }
+
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  await fs.chmod(directory, 0o700);
+  await fs.writeFile(filePath, params.bytes, { mode: 0o600 });
+  const sha256 = createHash("sha256").update(params.bytes).digest("hex");
+  if (NATIVE_IMAGE_TYPES.has(mimeType) && !matchesImageSignature(mimeType, params.bytes.subarray(0, 12))) {
+    mimeType = DEFAULT_MIME_TYPE;
+  }
 
   return {
     id: attachmentId,
     name: originalName,
     mimeType,
     sizeBytes: params.bytes.byteLength,
-    kind: attachmentKindFromMimeType(mimeType),
+    kind: NATIVE_IMAGE_TYPES.has(mimeType) ? "image" : "file",
     downloadUrl: `/api/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}`,
     createdAt: buildAttachmentTimestamp(createdAt),
-    expiresAt: buildAttachmentExpiration(createdAt),
+    storageKey: storedName,
+    sha256,
   };
 }
 
-async function resolveStoredAttachmentPath(taskId: string, attachmentId: string): Promise<string | null> {
+export async function writeTaskAttachmentStream(params: {
+  taskId: string;
+  fileName: string;
+  stream: Readable;
+  mimeType?: string | null;
+  maxBytes: number;
+}): Promise<MessageAttachment & { storageKey: string; sha256: string }> {
+  const taskId = params.taskId.trim();
+  const originalName = sanitizeFileName(params.fileName);
+  const attachmentId = randomUUID();
+  let mimeType = guessMimeType(originalName, params.mimeType).toLowerCase();
+  const storedName = `${attachmentId}--${originalName}`;
   const directory = resolveAttachmentDirectory(taskId);
-  let entries: string[];
+  const finalPath = path.join(directory, storedName);
+  const temporaryPath = path.join(directory, `.${attachmentId}.uploading`);
+  const hash = createHash("sha256");
+  let sizeBytes = 0;
+  let prefix = Buffer.alloc(0);
+
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  await fs.chmod(directory, 0o700);
+  const meter = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      sizeBytes += chunk.byteLength;
+      if (prefix.byteLength < 512) prefix = Buffer.concat([prefix, chunk.subarray(0, 512 - prefix.byteLength)]);
+      if (matchesVideoSignature(prefix)) {
+        callback(Object.assign(new Error("video attachments are not supported"), { code: "ATTACHMENT_VIDEO" }));
+        return;
+      }
+      if (sizeBytes > params.maxBytes) {
+        callback(Object.assign(new Error("file too large"), { code: "ATTACHMENT_TOO_LARGE" }));
+        return;
+      }
+      hash.update(chunk);
+      callback(null, chunk);
+    },
+  });
+
   try {
-    entries = await fs.readdir(directory);
-  } catch {
-    return null;
+    await pipeline(params.stream, meter, nodeFs.createWriteStream(temporaryPath, { flags: "wx", mode: 0o600 }));
+    if (sizeBytes === 0) {
+      throw Object.assign(new Error("file is empty"), { code: "ATTACHMENT_EMPTY" });
+    }
+    await fs.rename(temporaryPath, finalPath);
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw error;
   }
-  const prefix = `${attachmentId}--`;
-  const match = entries.find((entry) => entry.startsWith(prefix));
-  if (!match) {
-    return null;
+
+  if (NATIVE_IMAGE_TYPES.has(mimeType) && !matchesImageSignature(mimeType, prefix)) {
+    mimeType = DEFAULT_MIME_TYPE;
   }
-  return path.join(directory, match);
+
+  return {
+    id: attachmentId,
+    name: originalName,
+    mimeType,
+    sizeBytes,
+    kind: NATIVE_IMAGE_TYPES.has(mimeType) ? "image" : "file",
+    downloadUrl: `/api/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    createdAt: buildAttachmentTimestamp(),
+    storageKey: storedName,
+    sha256: hash.digest("hex"),
+  };
 }
 
-export async function readTaskAttachment(taskId: string, attachmentId: string): Promise<Buffer | null> {
-  const filePath = await resolveStoredAttachmentPath(taskId, attachmentId);
-  if (!filePath) {
-    return null;
-  }
-  const root = resolveStorageRoot();
-  if (await isExpiredFile(filePath)) {
-    await removeFileAndEmptyParents(filePath, root).catch(() => undefined);
-    return null;
-  }
+export async function openTaskAttachmentStreamByStorageKey(
+  taskId: string,
+  storageKey: string,
+): Promise<{ stream: nodeFs.ReadStream; sizeBytes: number } | null> {
+  const safeStorageKey = path.basename(storageKey);
+  if (!safeStorageKey || safeStorageKey !== storageKey) return null;
+  const filePath = path.join(resolveAttachmentDirectory(taskId), safeStorageKey);
   try {
-    return await fs.readFile(filePath);
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile()) return null;
+    return { stream: nodeFs.createReadStream(filePath), sizeBytes: stat.size };
   } catch {
     return null;
   }

@@ -12,6 +12,7 @@ const FIRE_OWNER_NOT_READY_CODE = 'task_missing_active_fire_owner';
 const SEND_RETRY_WINDOW_MS = 10_000;
 const SEND_RETRY_BASE_MS = 500;
 const SEND_RETRY_MAX_MS = 1_500;
+const uploadedAttachmentCache = new WeakMap<File, Map<string, string>>();
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -30,6 +31,8 @@ interface ChatState {
   // Actions
   fetchMessages: (taskId: string, options?: { beforeId?: string; force?: boolean }) => Promise<void>;
   sendMessage: (taskId: string, input: SendMessageInput) => Promise<Message>;
+  uploadAttachments: (taskId: string, files: File[]) => Promise<string[]>;
+  clearUploadedAttachmentCache: (taskId: string, files: File[]) => void;
   insertMessage: (taskId: string, input: { content: string; targetReplyTo?: string }) => Promise<Message>;
   addMessage: (taskId: string, message: Message) => void;
   updateMessage: (taskId: string, message: Message) => void;
@@ -273,6 +276,36 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }));
         throw error;
       }
+    }
+  },
+
+  uploadAttachments: async (taskId, files) => {
+    const api = getApiClient();
+    const ids: string[] = [];
+    for (const file of files) {
+      const cached = uploadedAttachmentCache.get(file)?.get(taskId);
+      if (cached) {
+        ids.push(cached);
+        continue;
+      }
+      const formData = new FormData();
+      formData.set('file', file);
+      const result = await api.upload<{ attachment: { id: string } }>(
+        `/tasks/${taskId}/attachments`,
+        formData,
+        { timeoutMs: 120_000 },
+      );
+      ids.push(result.attachment.id);
+      const byTask = uploadedAttachmentCache.get(file) ?? new Map<string, string>();
+      byTask.set(taskId, result.attachment.id);
+      uploadedAttachmentCache.set(file, byTask);
+    }
+    return ids;
+  },
+
+  clearUploadedAttachmentCache: (taskId, files) => {
+    for (const file of files) {
+      uploadedAttachmentCache.get(file)?.delete(taskId);
     }
   },
 

@@ -2,6 +2,13 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 
 import { KIMI_CLI_WIRE_VARIANT as KIMI_PROVIDER_VARIANT } from "../built-in-backends.js";
+import { appendContextFilesToPrompt } from "../context-files.js";
+import { PROVIDER_MEDIA_CAPABILITIES, buildKimiContent } from "../media-adapters.js";
+import {
+  assertMediaCapabilities,
+  defaultPromptForMedia,
+  resolveTurnMedia,
+} from "../media-input.js";
 import { KimiWireTransport } from "../transports/kimi-wire-transport.js";
 import {
   emitLog,
@@ -288,6 +295,7 @@ export class KimiCliSession extends EventEmitter {
           }
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
+      capabilities: { media: PROVIDER_MEDIA_CAPABILITIES[KIMI_PROVIDER_VARIANT] },
       pid: this.transport.pid || undefined,
     };
   }
@@ -1033,12 +1041,17 @@ export class KimiCliSession extends EventEmitter {
     return false;
   }
 
-  async runTurn(promptText, { useInitialImages = false, onProgress = null, jsonSchema = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested || this.closed) {
       throw this.createSessionClosedError();
     }
 
-    let effectivePrompt = this.buildPrompt(promptText, { useInitialImages });
+    const media = resolveTurnMedia(this.options, { useInitialImages, media: mediaInput });
+    assertMediaCapabilities(media, this.backend, PROVIDER_MEDIA_CAPABILITIES[KIMI_PROVIDER_VARIANT]);
+    let effectivePrompt =
+      this.buildPrompt(promptText, { useInitialImages: false }) ||
+      (media.length ? defaultPromptForMedia(media) : "");
+    effectivePrompt = appendContextFilesToPrompt(effectivePrompt, contextFiles).prompt;
     if (jsonSchema && typeof jsonSchema === "object" && effectivePrompt) {
       effectivePrompt = injectJsonSchemaPrompt(effectivePrompt, jsonSchema);
     }
@@ -1100,7 +1113,10 @@ export class KimiCliSession extends EventEmitter {
 
       const promptResult = await Promise.race([
         this.transport.request("prompt", {
-          user_input: effectivePrompt,
+          user_input:
+            media.length === 0
+              ? effectivePrompt
+              : buildKimiContent(effectivePrompt, media),
         }),
         turnFailurePromise,
         closeGuard.promise,

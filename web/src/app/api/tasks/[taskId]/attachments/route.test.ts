@@ -5,266 +5,130 @@ import { POST } from "@/app/api/tasks/[taskId]/attachments/route";
 import { GET as GET_ATTACHMENT } from "@/app/api/tasks/[taskId]/attachments/[attachmentId]/route";
 import { extractJson } from "@/__tests__/helpers";
 
-vi.mock("@/lib/auth/middleware", () => ({
-  getActiveSubscriptionUser: vi.fn(),
-}));
-
+vi.mock("@/lib/auth/middleware", () => ({ getActiveSubscriptionUser: vi.fn() }));
 vi.mock("@/lib/db", () => ({
   db: {
-    $transaction: vi.fn(),
-    task: {
-      findFirst: vi.fn(),
-      update: vi.fn(),
-    },
-    message: {
-      create: vi.fn(),
-      findMany: vi.fn(),
-    },
+    task: { findFirst: vi.fn() },
+    taskAttachment: { create: vi.fn(), findFirst: vi.fn() },
   },
 }));
-
-vi.mock("@/lib/realtime/hub", () => ({
-  realtimeHub: {
-    broadcast: vi.fn(),
-    getTaskAgentHost: vi.fn().mockReturnValue(null),
-    sendToAgentHost: vi.fn().mockReturnValue(true),
-  },
-}));
-
-vi.mock("@/lib/realtime/agent-outbox", () => ({
-  enqueueAndAttemptAgentCommand: vi.fn().mockResolvedValue({ delivered: false }),
-}));
-
 vi.mock("@/lib/tasks/task-file-storage", () => ({
-  writeTaskAttachment: vi.fn(),
-  readTaskAttachment: vi.fn(),
+  writeTaskAttachmentStream: vi.fn(),
+  openTaskAttachmentStreamByStorageKey: vi.fn(),
+  deleteTaskAttachmentByStorageKey: vi.fn(),
+  taskAttachmentTtlMs: () => 10 * 60 * 1000,
 }));
 
 const { getActiveSubscriptionUser } = await import("@/lib/auth/middleware");
 const { db } = await import("@/lib/db");
-const { realtimeHub } = await import("@/lib/realtime/hub");
-const { enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
-const { writeTaskAttachment, readTaskAttachment } = await import("@/lib/tasks/task-file-storage");
+const { writeTaskAttachmentStream, openTaskAttachmentStreamByStorageKey, deleteTaskAttachmentByStorageKey } = await import("@/lib/tasks/task-file-storage");
 
 describe("/api/tasks/[taskId]/attachments", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(db.$transaction).mockImplementation(async (operations: any) => {
-      if (Array.isArray(operations)) {
-        return Promise.all(operations);
-      }
-      return operations;
-    });
-    vi.mocked(getActiveSubscriptionUser).mockResolvedValue({
-      id: "user-1",
-      email: "test@example.com",
-      phone: null,
-    } as any);
-    vi.mocked(db.task.findFirst).mockResolvedValue({
-      id: "task-1",
-      projectId: "proj-1",
-      agentHost: null,
-      executionHost: null,
-    } as any);
-    vi.mocked(db.task.update).mockResolvedValue({
-      id: "task-1",
-      updatedAt: new Date("2026-03-10T12:00:00.000Z"),
-    } as any);
+    vi.mocked(deleteTaskAttachmentByStorageKey).mockResolvedValue(undefined);
+    vi.mocked(getActiveSubscriptionUser).mockResolvedValue({ id: "user-1" } as any);
+    vi.mocked(db.task.findFirst).mockResolvedValue({ id: "task-1", achievedAt: null } as any);
   });
 
-  it("uploads a task attachment as sdk message", async () => {
-    const attachment = {
-      id: "att-1",
-      name: "diagram.png",
-      mimeType: "image/png",
-      sizeBytes: 4,
-      kind: "image",
-      downloadUrl: "/api/tasks/task-1/attachments/att-1",
-    };
-    vi.mocked(writeTaskAttachment).mockResolvedValue(attachment as any);
-    vi.mocked(db.message.create).mockResolvedValue({
-      id: "msg-1",
-      taskId: "task-1",
-      role: "sdk",
-      content: "Attached file: diagram.png",
-      metadata: JSON.stringify({ attachments: [attachment] }),
-      createdAt: new Date("2026-03-10T12:00:00.000Z"),
+  it("uploads a staging attachment without creating a message", async () => {
+    vi.mocked(writeTaskAttachmentStream).mockImplementation(async ({ stream }) => {
+      stream.resume();
+      return {
+      id: "att-1", name: "diagram.png", mimeType: "image/png", sizeBytes: 4, kind: "image",
+      downloadUrl: "/api/tasks/task-1/attachments/att-1", storageKey: "att-1--diagram.png", sha256: "a".repeat(64),
+      } as any;
+    });
+    vi.mocked(db.taskAttachment.create).mockResolvedValue({
+      id: "att-1", taskId: "task-1", originalName: "diagram.png", mimeType: "image/png", sizeBytes: 4,
+      kind: "image", status: "uploaded", sha256: "a".repeat(64), createdAt: new Date("2026-08-01T00:00:00Z"),
+      expiresAt: new Date("2026-08-02T00:00:00Z"),
     } as any);
 
     const formData = new FormData();
     formData.set("file", new File(["data"], "diagram.png", { type: "image/png" }));
-    const request = new NextRequest("http://localhost:6152/api/tasks/task-1/attachments", {
-      method: "POST",
-      body: formData,
-    });
-
-    const response = await POST(request, {
-      params: Promise.resolve({ taskId: "task-1" }),
-    });
+    const response = await POST(new NextRequest("http://localhost/api/tasks/task-1/attachments", {
+      method: "POST", body: formData,
+    }), { params: Promise.resolve({ taskId: "task-1" }) });
     const data = await extractJson(response);
 
-    expect(response.status).toBe(200);
-    expect(writeTaskAttachment).toHaveBeenCalledWith(
-      expect.objectContaining({
-        taskId: "task-1",
-        fileName: "diagram.png",
-        mimeType: "image/png",
-      }),
-    );
-    expect(data.attachments).toEqual([attachment]);
-    expect(db.task.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: "task-1" },
-        data: expect.objectContaining({
-          updatedAt: expect.any(Date),
-        }),
-      }),
-    );
-    expect(realtimeHub.broadcast).toHaveBeenCalledWith(
-      "user-1",
-      "proj-1",
-      expect.objectContaining({
-        type: "task_sdk_message",
-        payload: expect.objectContaining({
-          id: "msg-1",
-          attachments: [attachment],
-        }),
-      }),
-    );
-    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+    expect(response.status).toBe(201);
+    expect(data.attachment).toMatchObject({ id: "att-1", status: "uploaded", sha256: "a".repeat(64) });
+    expect(db.taskAttachment.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ taskId: "task-1", storageKey: "att-1--diagram.png" }),
+    }));
   });
 
-  it("routes user attachments to the runtime fire owner instead of a stale bound fire host", async () => {
-    const attachment = {
-      id: "att-1",
-      name: "diagram.png",
-      mimeType: "image/png",
-      sizeBytes: 4,
-      kind: "image",
-      downloadUrl: "/api/tasks/task-1/attachments/att-1",
-    };
-    vi.mocked(writeTaskAttachment).mockResolvedValue(attachment as any);
-    vi.mocked(db.task.findFirst).mockResolvedValue({
-      id: "task-1",
-      projectId: "proj-1",
-      agentHost: "daemon-a",
-      executionHost: "conductor-fire-runtime",
-    } as any);
-    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("conductor-fire-stale");
-    vi.mocked(db.message.create).mockResolvedValue({
-      id: "msg-1",
-      taskId: "task-1",
-      role: "user",
-      content: "see attached",
-      metadata: JSON.stringify({ attachments: [attachment] }),
-      createdAt: new Date("2026-03-10T12:00:00.000Z"),
-    } as any);
-
+  it("rejects video before writing it", async () => {
     const formData = new FormData();
-    formData.set("file", new File(["data"], "diagram.png", { type: "image/png" }));
-    formData.set("role", "user");
-    formData.set("content", "see attached");
-    const request = new NextRequest("http://localhost:6152/api/tasks/task-1/attachments", {
-      method: "POST",
-      body: formData,
-    });
-
-    const response = await POST(request, {
-      params: Promise.resolve({ taskId: "task-1" }),
-    });
-
-    expect(response.status).toBe(200);
-    expect(realtimeHub.broadcast).toHaveBeenCalledWith(
-      "user-1",
-      "proj-1",
-      expect.objectContaining({
-        type: "task_user_message",
-      }),
-    );
-    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentHost: "conductor-fire-runtime",
-        eventType: "task_user_message",
-      }),
-      expect.objectContaining({
-        agentHost: "conductor-fire-runtime",
-      }),
-    );
+    formData.set("file", new File(["video"], "clip.mp4", { type: "video/mp4" }));
+    const response = await POST(new NextRequest("http://localhost/api/tasks/task-1/attachments", {
+      method: "POST", body: formData,
+    }), { params: Promise.resolve({ taskId: "task-1" }) });
+    expect(response.status).toBe(415);
+    expect(writeTaskAttachmentStream).not.toHaveBeenCalled();
   });
 
-  it("rejects user attachments without a runtime fire owner", async () => {
-    const attachment = {
-      id: "att-1",
-      name: "diagram.png",
-      mimeType: "image/png",
-      sizeBytes: 4,
-      kind: "image",
-      downloadUrl: "/api/tasks/task-1/attachments/att-1",
-    };
-    vi.mocked(writeTaskAttachment).mockResolvedValue(attachment as any);
-    vi.mocked(db.task.findFirst).mockResolvedValue({
-      id: "task-1",
-      projectId: "proj-1",
-      agentHost: "daemon-a",
-      executionHost: null,
-    } as any);
-    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("conductor-fire-stale");
-    vi.mocked(db.message.create).mockResolvedValue({
-      id: "msg-1",
-      taskId: "task-1",
-      role: "user",
-      content: "see attached",
-      metadata: JSON.stringify({ attachments: [attachment] }),
-      createdAt: new Date("2026-03-10T12:00:00.000Z"),
-    } as any);
-
+  it("rejects a video extension even when the browser omits its MIME type", async () => {
     const formData = new FormData();
-    formData.set("file", new File(["data"], "diagram.png", { type: "image/png" }));
-    formData.set("role", "user");
-    formData.set("content", "see attached");
-    const request = new NextRequest("http://localhost:6152/api/tasks/task-1/attachments", {
-      method: "POST",
-      body: formData,
-    });
+    formData.set("file", new File(["video"], "clip.mkv"));
+    const response = await POST(new NextRequest("http://localhost/api/tasks/task-1/attachments", {
+      method: "POST", body: formData,
+    }), { params: Promise.resolve({ taskId: "task-1" }) });
+    expect(response.status).toBe(415);
+    expect(writeTaskAttachmentStream).not.toHaveBeenCalled();
+  });
 
-    const response = await POST(request, {
-      params: Promise.resolve({ taskId: "task-1" }),
+  it("removes the staged file when its database record cannot be created", async () => {
+    vi.mocked(writeTaskAttachmentStream).mockImplementation(async ({ stream }) => {
+      stream.resume();
+      return {
+      id: "att-orphan", name: "notes.txt", mimeType: "text/plain", sizeBytes: 4, kind: "file",
+      downloadUrl: "/api/tasks/task-1/attachments/att-orphan", storageKey: "att-orphan--notes.txt", sha256: "b".repeat(64),
+      } as any;
     });
-    const data = await extractJson(response);
+    vi.mocked(db.taskAttachment.create).mockRejectedValue(new Error("database unavailable"));
+    const formData = new FormData();
+    formData.set("file", new File(["data"], "notes.txt", { type: "text/plain" }));
 
-    expect(response.status).toBe(409);
-    expect(data).toEqual({
-      error: "Task missing active fire owner",
-      message: "The task is not connected to an active fire owner. Try again after it reconnects.",
-    });
-    expect(writeTaskAttachment).not.toHaveBeenCalled();
-    expect(db.message.create).not.toHaveBeenCalled();
-    expect(db.task.update).not.toHaveBeenCalled();
-    expect(realtimeHub.broadcast).not.toHaveBeenCalled();
-    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+    await expect(POST(new NextRequest("http://localhost/api/tasks/task-1/attachments", {
+      method: "POST", body: formData,
+    }), { params: Promise.resolve({ taskId: "task-1" }) })).rejects.toThrow("database unavailable");
+
+    expect(deleteTaskAttachmentByStorageKey).toHaveBeenCalledWith("task-1", "att-orphan--notes.txt");
   });
 
   it("streams a stored attachment back to an authenticated user", async () => {
-    const attachment = {
-      id: "att-1",
-      name: "diagram.png",
-      mimeType: "image/png",
+    vi.mocked(db.taskAttachment.findFirst).mockResolvedValue({
+      id: "att-1", taskId: "task-1", originalName: "diagram.png", mimeType: "image/png",
+      storageKey: "att-1--diagram.png", sha256: "a".repeat(64),
+    } as any);
+    const { Readable } = await import("node:stream");
+    vi.mocked(openTaskAttachmentStreamByStorageKey).mockResolvedValue({
+      stream: Readable.from(Buffer.from("data")) as any,
       sizeBytes: 4,
-      kind: "image",
-      downloadUrl: "/api/tasks/task-1/attachments/att-1",
-    };
-    vi.mocked(db.message.findMany).mockResolvedValue([
-      { metadata: JSON.stringify({ attachments: [attachment] }) },
-    ] as any);
-    vi.mocked(readTaskAttachment).mockResolvedValue(Buffer.from("data"));
-
-    const request = new NextRequest("http://localhost:6152/api/tasks/task-1/attachments/att-1");
-    const response = await GET_ATTACHMENT(request, {
-      params: Promise.resolve({ taskId: "task-1", attachmentId: "att-1" }),
     });
-
+    const response = await GET_ATTACHMENT(
+      new NextRequest("http://localhost/api/tasks/task-1/attachments/att-1"),
+      { params: Promise.resolve({ taskId: "task-1", attachmentId: "att-1" }) },
+    );
     expect(response.status).toBe(200);
-    expect(response.headers.get("Content-Type")).toBe("image/png");
-    expect(Buffer.from(await response.arrayBuffer()).toString("utf8")).toBe("data");
+    expect(response.headers.get("ETag")).toBe(`"${"a".repeat(64)}"`);
+    expect(Buffer.from(await response.arrayBuffer()).toString()).toBe("data");
+  });
+
+  it("forces active content to download without MIME sniffing", async () => {
+    vi.mocked(db.taskAttachment.findFirst).mockResolvedValue({
+      id: "att-html", taskId: "task-1", originalName: "page.html", mimeType: "text/html",
+      storageKey: "att-html--page.html", sha256: "b".repeat(64),
+    } as any);
+    const { Readable } = await import("node:stream");
+    vi.mocked(openTaskAttachmentStreamByStorageKey).mockResolvedValue({ stream: Readable.from("<script></script>") as any, sizeBytes: 17 });
+    const response = await GET_ATTACHMENT(new NextRequest("http://localhost/api/tasks/task-1/attachments/att-html"), {
+      params: Promise.resolve({ taskId: "task-1", attachmentId: "att-html" }),
+    });
+    expect(response.headers.get("Content-Type")).toBe("application/octet-stream");
+    expect(response.headers.get("Content-Disposition")).toMatch(/^attachment;/);
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
   });
 });

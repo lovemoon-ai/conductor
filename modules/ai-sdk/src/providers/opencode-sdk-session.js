@@ -1,6 +1,13 @@
 import { EventEmitter } from "node:events";
 
 import { OPENCODE_SDK_VARIANT as OPENCODE_PROVIDER_VARIANT } from "../built-in-backends.js";
+import { appendContextFilesToPrompt } from "../context-files.js";
+import { PROVIDER_MEDIA_CAPABILITIES, buildOpencodeParts } from "../media-adapters.js";
+import {
+  assertMediaCapabilities,
+  defaultPromptForMedia,
+  resolveTurnMedia,
+} from "../media-input.js";
 import { OpencodeServerTransport } from "../transports/opencode-server-transport.js";
 import {
   emitLog,
@@ -262,6 +269,7 @@ export class OpencodeSdkSession extends EventEmitter {
       resumeReady: Boolean(this.sessionId),
       manualResume: null,
       currentTurnStatus: this.getCurrentTurnStatus(),
+      capabilities: { media: PROVIDER_MEDIA_CAPABILITIES[OPENCODE_PROVIDER_VARIANT] },
       pid: this.transport.pid || undefined,
     };
   }
@@ -1306,13 +1314,19 @@ export class OpencodeSdkSession extends EventEmitter {
     return true;
   }
 
-  async runTurn(promptText, { useInitialImages = false, onProgress = null, jsonSchema = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested) {
       throw this.createSessionClosedError();
     }
 
-    const effectivePrompt = this.buildPrompt(promptText, { useInitialImages });
-    if (!effectivePrompt) {
+    const media = resolveTurnMedia(this.options, { useInitialImages, media: mediaInput });
+    assertMediaCapabilities(media, this.backend, PROVIDER_MEDIA_CAPABILITIES[OPENCODE_PROVIDER_VARIANT]);
+    const effectivePrompt = appendContextFilesToPrompt(
+      this.buildPrompt(promptText, { useInitialImages: false }) ||
+      (media.length ? defaultPromptForMedia(media) : ""),
+      contextFiles,
+    ).prompt;
+    if (!effectivePrompt && media.length === 0) {
       return buildEmptyTurnResult();
     }
 
@@ -1401,12 +1415,7 @@ export class OpencodeSdkSession extends EventEmitter {
                 format: jsonSchema && typeof jsonSchema === "object"
                   ? { type: "json_schema", schema: jsonSchema }
                   : undefined,
-                parts: [
-                  {
-                    type: "text",
-                    text: effectivePrompt,
-                  },
-                ],
+                parts: buildOpencodeParts(effectivePrompt, media),
               },
               {
                 throwOnError: true,

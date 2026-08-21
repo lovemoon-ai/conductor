@@ -51,6 +51,7 @@ export class SessionState {
   public lastMessageAt: Date;
   public status = 'ACTIVE';
   public pendingMessages: MessageRecord[] = [];
+  public readonly seenMessageIds = new Set<string>();
   public ackToken: string | null = null;
 
   constructor(
@@ -128,7 +129,9 @@ export class SessionManager {
       if (!session) {
         return;
       }
+      if (session.seenMessageIds.has(message.messageId)) return;
       const record = new MessageRecord(message);
+      session.seenMessageIds.add(record.messageId);
       session.pendingMessages.push(record);
       session.lastMessageAt = record.createdAt;
       this.ensureEvent(taskId).signal();

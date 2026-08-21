@@ -1,67 +1,18 @@
-import { Buffer } from "node:buffer";
+import path from "node:path";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import Busboy from "busboy";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
-import { realtimeHub } from "@/lib/realtime/hub";
-import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
-import { buildMessageResponse, getMessageAttachments } from "@/shared/utils/message-attachments";
-import { writeTaskAttachment } from "@/lib/tasks/task-file-storage";
+import { deleteTaskAttachmentByStorageKey, taskAttachmentTtlMs, writeTaskAttachmentStream } from "@/lib/tasks/task-file-storage";
 
 export const runtime = "nodejs";
 
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
-
-const isConductorFireHost = (host: unknown): host is string =>
-  typeof host === "string" && host.startsWith("conductor-fire-");
-
-const normalizeMessageRole = (value: unknown): "sdk" | "assistant" | "user" => {
-  if (typeof value !== "string") {
-    return "sdk";
-  }
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "assistant" || normalized === "user") {
-    return normalized;
-  }
-  return "sdk";
-};
-
-const normalizeOptionalString = (value: FormDataEntryValue | null): string => {
-  if (typeof value !== "string") {
-    return "";
-  }
-  return value.trim();
-};
-
-const normalizeHost = (value: unknown): string | null => {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const normalized = value.trim();
-  return normalized || null;
-};
-
-const resolveTaskUserMessageFireHost = (
-  task: { agentHost?: string | null; executionHost?: string | null },
-  boundHost: string | null,
-): string | null => {
-  const configuredAgentHost = normalizeHost(task.agentHost);
-  const executionHost = normalizeHost(task.executionHost);
-  const normalizedBoundHost = normalizeHost(boundHost);
-  const isManualFireTask = Boolean(configuredAgentHost && isConductorFireHost(configuredAgentHost));
-  const executionFireHost = executionHost && isConductorFireHost(executionHost) ? executionHost : null;
-  const configuredFireHost = configuredAgentHost && isConductorFireHost(configuredAgentHost) ? configuredAgentHost : null;
-  const boundFireHost =
-    normalizedBoundHost &&
-    isConductorFireHost(normalizedBoundHost) &&
-    (normalizedBoundHost === executionFireHost || normalizedBoundHost === configuredFireHost)
-      ? normalizedBoundHost
-      : null;
-
-  return isManualFireTask
-    ? boundFireHost || executionFireHost || configuredFireHost
-    : executionFireHost;
-};
+const MAX_MULTIPART_OVERHEAD_BYTES = 1024 * 1024;
+const VIDEO_EXTENSIONS = new Set([".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"]);
 
 export async function POST(
   request: NextRequest,
@@ -70,109 +21,115 @@ export async function POST(
   const userResult = await getActiveSubscriptionUser(request);
   if (userResult instanceof Response) return userResult;
   const user = userResult;
-
   const { taskId } = await params;
+
   const task = await db.task.findFirst({
     where: { id: taskId, project: { userId: user.id } },
+    select: { id: true, achievedAt: true },
   });
-  if (!task) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!task) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (task.achievedAt) {
+    return NextResponse.json({ error: "Archived tasks are read-only" }, { status: 409 });
   }
 
-  const formData = await request.formData();
-  const fileValue = formData.get("file");
-  if (!(fileValue instanceof File)) {
-    return NextResponse.json({ error: "file required" }, { status: 400 });
-  }
-  if (fileValue.size <= 0) {
-    return NextResponse.json({ error: "file is empty" }, { status: 400 });
-  }
-  if (fileValue.size > MAX_ATTACHMENT_BYTES) {
+  const declaredRequestBytes = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declaredRequestBytes) && declaredRequestBytes > MAX_ATTACHMENT_BYTES + MAX_MULTIPART_OVERHEAD_BYTES) {
     return NextResponse.json({ error: "file too large" }, { status: 413 });
   }
-
-  const role = normalizeMessageRole(formData.get("role"));
-  const content = normalizeOptionalString(formData.get("content"));
-  const targetHost =
-    role === "user"
-      ? resolveTaskUserMessageFireHost(task, realtimeHub.getTaskAgentHost(taskId))
-      : null;
-  if (role === "user" && !targetHost) {
-    return NextResponse.json(
-      {
-        error: "Task missing active fire owner",
-        message: "The task is not connected to an active fire owner. Try again after it reconnects.",
-      },
-      { status: 409 },
-    );
-  }
-
-  const bytes = Buffer.from(await fileValue.arrayBuffer());
-  const attachment = await writeTaskAttachment({
-    taskId,
-    fileName: fileValue.name,
-    bytes,
-    mimeType: fileValue.type,
-  });
-  const metadata = { attachments: [attachment] };
-
-  const [message] = await db.$transaction([
-    db.message.create({
-      data: {
-        taskId,
-        role,
-        content: content || `Attached file: ${attachment.name}`,
-        metadata: JSON.stringify(metadata),
-      },
-    }),
-    db.task.update({
-      where: { id: taskId },
-      data: { updatedAt: new Date() },
-    }),
-  ]);
-
-  realtimeHub.broadcast(user.id, task.projectId, {
-    type: role === "user" ? "task_user_message" : "task_sdk_message",
-    payload: {
-      ...buildMessageResponse(message),
-      task_id: message.taskId,
-      project_id: task.projectId,
-    },
-  });
-
-  if (role === "user") {
-    const requestId = message.id;
-
-    await enqueueAndAttemptAgentCommand(
-      {
-        userId: user.id,
-        agentHost: targetHost,
-        taskId: task.id,
-        eventType: "task_user_message",
-        requestId,
-        envelope: {
-          type: "task_user_message",
-          payload: {
-            request_id: requestId,
-            message_id: message.id,
-            task_id: message.taskId,
-            project_id: task.projectId,
-            role: "user",
-            content: message.content,
-            created_at: message.createdAt.toISOString(),
-            metadata,
-            attachments: getMessageAttachments(metadata),
-          },
+  if (!request.body) return NextResponse.json({ error: "file required" }, { status: 400 });
+  let stored;
+  try {
+    const contentType = request.headers.get("content-type");
+    if (!contentType) throw new Error("missing content type");
+    const parser = Busboy({
+      headers: { "content-type": contentType },
+      limits: { files: 1, fields: 0, fileSize: MAX_ATTACHMENT_BYTES + 1 },
+    });
+    stored = await new Promise<Awaited<ReturnType<typeof writeTaskAttachmentStream>>>((resolve, reject) => {
+      let upload: Promise<Awaited<ReturnType<typeof writeTaskAttachmentStream>>> | undefined;
+      let rejectedType: Error | undefined;
+      parser.on("file", (fieldName, stream, info) => {
+        if (fieldName !== "file" || upload) {
+          stream.resume();
+          return;
+        }
+        if (info.mimeType.startsWith("video/") || VIDEO_EXTENSIONS.has(path.extname(info.filename).toLowerCase())) {
+          rejectedType = Object.assign(new Error("video attachments are not supported"), { code: "ATTACHMENT_VIDEO" });
+          stream.resume();
+          return;
+        }
+        upload = writeTaskAttachmentStream({
+          taskId,
+          fileName: info.filename,
+          stream,
+          mimeType: info.mimeType,
+          maxBytes: MAX_ATTACHMENT_BYTES,
+        });
+        void upload.catch((error) => parser.destroy(error as Error));
+      });
+      parser.once("error", reject);
+      parser.once("filesLimit", () => reject(Object.assign(new Error("only one file is allowed"), { code: "ATTACHMENT_FILE_LIMIT" })));
+      parser.once("finish", () => {
+        if (rejectedType) reject(rejectedType);
+        else if (!upload) reject(Object.assign(new Error("file required"), { code: "ATTACHMENT_REQUIRED" }));
+        else upload.then(resolve, reject);
+      });
+      const source = Readable.from(request.body as unknown as AsyncIterable<Uint8Array>);
+      let requestBytes = 0;
+      const requestMeter = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          requestBytes += chunk.byteLength;
+          if (requestBytes > MAX_ATTACHMENT_BYTES + MAX_MULTIPART_OVERHEAD_BYTES) {
+            callback(Object.assign(new Error("request too large"), { code: "ATTACHMENT_TOO_LARGE" }));
+            return;
+          }
+          callback(null, chunk);
         },
+      });
+      void pipeline(source, requestMeter, parser).catch(reject);
+    });
+  } catch (error) {
+    const code = error instanceof Error && "code" in error ? String(error.code) : "";
+    if (code === "ATTACHMENT_TOO_LARGE") return NextResponse.json({ error: "file too large" }, { status: 413 });
+    if (code === "ATTACHMENT_EMPTY") return NextResponse.json({ error: "file is empty" }, { status: 400 });
+    if (code === "ATTACHMENT_VIDEO") return NextResponse.json({ error: "video attachments are not supported" }, { status: 415 });
+    if (code === "ATTACHMENT_REQUIRED") return NextResponse.json({ error: "file required" }, { status: 400 });
+    if (code === "ATTACHMENT_FILE_LIMIT") return NextResponse.json({ error: "upload one file per request" }, { status: 400 });
+    return NextResponse.json({ error: "invalid multipart form" }, { status: 400 });
+  }
+  let attachment;
+  try {
+    attachment = await db.taskAttachment.create({
+      data: {
+        id: stored.id,
+        taskId,
+        originalName: stored.name,
+        storageKey: stored.storageKey,
+        mimeType: stored.mimeType,
+        kind: stored.kind,
+        sizeBytes: stored.sizeBytes,
+        sha256: stored.sha256,
+        status: "uploaded",
+        expiresAt: new Date(Date.now() + taskAttachmentTtlMs()),
       },
-      {
-        agentHost: targetHost,
-        sendToAgentHost: ({ userId: targetUserId, agentHost: targetAgentHost, envelope }) =>
-          realtimeHub.sendToAgentHost(targetUserId, targetAgentHost, envelope),
-        resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),
-      },
-    );
+    });
+  } catch (error) {
+    await deleteTaskAttachmentByStorageKey(taskId, stored.storageKey).catch(() => undefined);
+    throw error;
   }
 
-  return NextResponse.json(buildMessageResponse(message));
+  return NextResponse.json({
+    attachment: {
+      id: attachment.id,
+      name: attachment.originalName,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+      kind: attachment.kind,
+      sha256: attachment.sha256,
+      status: attachment.status,
+      downloadUrl: `/api/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachment.id)}`,
+      createdAt: attachment.createdAt.toISOString(),
+      expiresAt: attachment.expiresAt?.toISOString(),
+    },
+  }, { status: 201 });
 }

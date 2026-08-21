@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { BackendApiError } from '../src/backend/index.js';
+import { AttachmentMaterializer } from '../src/attachments/index.js';
 import { ConductorClient } from '../src/client.js';
 import { ConductorConfig } from '../src/config/index.js';
 import { DurableUpstreamOutboxStore } from '../src/outbox/index.js';
@@ -1303,6 +1304,73 @@ describe('ConductorClient', () => {
     expect(replayBatch.messages).toEqual([]);
     expect(backendApi.commitAgentCommandAckCalls).toHaveLength(2);
     await replayClient.close();
+  });
+
+  test('durably ACKs attachment commands before download and preserves later message order', async () => {
+    let releaseDownload!: () => void;
+    const downloadGate = new Promise<void>((resolve) => { releaseDownload = resolve; });
+    const body = Buffer.from('context');
+    const attachmentMaterializer = new AttachmentMaterializer({
+      config: makeConfig(), projectPath, agentHost: 'conductor-fire-test-host-1',
+      fetchImpl: vi.fn(async (input) => {
+        if (String(input).endsWith('/materialized')) return new Response('{}', { status: 200 });
+        await downloadGate;
+        return new Response(body, { status: 200, headers: { 'content-length': String(body.length) } });
+      }) as typeof fetch,
+    });
+    const client = await ConductorClient.connect({
+      config: makeConfig(), projectPath, backendApi: backendApi as any, wsClient: wsClient as any,
+      sessionStore, agentHost: 'conductor-fire-test-host-1', attachmentMaterializer,
+    });
+    await client.createTaskSession({ project_id: 'proj1', task_title: 'Hello', task_id: 'task-ordered' });
+    const sha256 = (await import('node:crypto')).createHash('sha256').update(body).digest('hex');
+    await wsClient.emit({ type: 'task_user_message', payload: {
+      task_id: 'task-ordered', project_id: 'proj1', request_id: 'cmd-attachment', message_id: 'msg-attachment',
+      role: 'user', content: 'first', delivery_cursor: { created_at: '2026-08-01T00:00:00Z', request_id: 'cmd-attachment' },
+      attachments: [{ id: 'att-1', name: 'spec.txt', mimeType: 'text/plain', kind: 'file', sizeBytes: body.length, sha256, transferToken: 'token' }],
+    } });
+    expect(backendApi.commitAgentCommandAckCalls).toContainEqual(expect.objectContaining({ requestId: 'cmd-attachment' }));
+    const later = wsClient.emit({ type: 'task_user_message', payload: {
+      task_id: 'task-ordered', project_id: 'proj1', request_id: 'cmd-text', message_id: 'msg-text',
+      role: 'user', content: 'second', delivery_cursor: { created_at: '2026-08-01T00:00:01Z', request_id: 'cmd-text' },
+    } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    releaseDownload();
+    await later;
+    const batch = await client.receiveMessages('task-ordered');
+    expect(batch.messages.map((message) => message.content)).toEqual(['first', 'second']);
+    await client.close();
+  });
+
+  test('stops retrying and explains itself when an attachment is gone for good', async () => {
+    let downloadAttempts = 0;
+    const attachmentMaterializer = new AttachmentMaterializer({
+      config: makeConfig(), projectPath, agentHost: 'conductor-fire-test-host-1',
+      fetchImpl: vi.fn(async (input) => {
+        if (String(input).endsWith('/materialized')) return new Response('{}', { status: 200 });
+        downloadAttempts += 1;
+        // The retention sweep already released the bytes.
+        return new Response('{"error":"Attachment not found"}', { status: 404 });
+      }) as typeof fetch,
+    });
+    const client = await ConductorClient.connect({
+      config: makeConfig(), projectPath, backendApi: backendApi as any, wsClient: wsClient as any,
+      sessionStore, agentHost: 'conductor-fire-test-host-1', attachmentMaterializer,
+    });
+    await client.createTaskSession({ project_id: 'proj1', task_title: 'Hello', task_id: 'task-gone' });
+    await wsClient.emit({ type: 'task_user_message', payload: {
+      task_id: 'task-gone', project_id: 'proj1', request_id: 'cmd-gone', message_id: 'msg-gone',
+      role: 'user', content: 'look at this', delivery_cursor: { created_at: '2026-08-01T00:00:00Z', request_id: 'cmd-gone' },
+      attachments: [{ id: 'att-1', name: 'spec.txt', mimeType: 'text/plain', kind: 'file', sizeBytes: 7, sha256: 'a'.repeat(64), transferToken: 'token' }],
+    } });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // A 404 is not retried: one attempt, then the user is told what happened.
+    expect(downloadAttempts).toBe(1);
+    const reported = backendApi.commitSdkMessageCalls.find((message: any) => message.taskId === 'task-gone');
+    expect(reported?.content).toContain('no longer available');
+    expect(reported?.metadata?.attachment_delivery).toBe('failed');
+    await client.close();
   });
 
   test('match/bind/getLocal project path methods mirror prior behavior', async () => {

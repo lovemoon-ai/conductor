@@ -8,11 +8,13 @@ import {
 } from "@/lib/subscription/plan-limits";
 import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 import { projectTaskMessage } from "./task-event-projector";
+import { signAttachmentTransferToken } from "@/lib/tasks/attachment-transfer-token";
 
 type ConnectedAgent = {
   id: string;
   host: string;
   supportedBackends: string[];
+  capabilities?: string[];
 };
 
 export class TaskIngressError extends Error {
@@ -272,6 +274,7 @@ export async function appendUserMessageToTask(input: {
   role?: string | null;
   clientMessageId?: string | null;
   metadata?: Record<string, unknown> | null;
+  attachmentIds?: string[];
 }): Promise<{
   task: Awaited<ReturnType<typeof db.task.findFirst>>;
   message: Awaited<ReturnType<typeof db.message.create>>;
@@ -317,26 +320,148 @@ export async function appendUserMessageToTask(input: {
   }
 
   const clientMessageId = normalizeOptionalString(input.clientMessageId);
+  const attachmentIds = Array.from(new Set((input.attachmentIds ?? [])
+    .map((value) => normalizeOptionalString(value))
+    .filter((value): value is string => Boolean(value))));
+  if (attachmentIds.length > 20) {
+    throw new TaskIngressError("TOO_MANY_ATTACHMENTS", 400, "A message can contain at most 20 attachments", {
+      error: "Too many attachments",
+    });
+  }
+  if (attachmentIds.length > 0) {
+    const targetAgent = realtimeHub.getAgentsForUser(input.userId)
+      .find((agent) => agent.host === userMessageTargetHost);
+    const supportsAttachments = targetAgent?.capabilities
+      .some((capability) => capability.trim().toLowerCase() === "task_attachments_v1");
+    if (!supportsAttachments) {
+      throw new TaskIngressError("ATTACHMENTS_UNSUPPORTED_BY_AGENT", 409, "Connected agent does not support attachments", {
+        error: "Agent upgrade required",
+        message: "Upgrade and reconnect Conductor on the target machine before sending attachments.",
+      });
+    }
+  }
+  const attachmentBindingTime = new Date();
+  const attachments = attachmentIds.length
+    ? await db.taskAttachment.findMany({
+        where: {
+          id: { in: attachmentIds }, taskId: input.taskId, messageId: null,
+          status: "uploaded", expiresAt: { gt: attachmentBindingTime },
+        },
+      })
+    : [];
+  if (attachments.length !== attachmentIds.length) {
+    throw new TaskIngressError("INVALID_ATTACHMENTS", 409, "One or more attachments are missing or already bound", {
+      error: "Invalid attachments",
+    });
+  }
+  const orderedAttachments = attachmentIds.map((id) => attachments.find((entry) => entry.id === id)!);
+  const nativeImageTypes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+  if (normalizeBackendType((task as { backendType?: unknown }).backendType) === "chat-web"
+      && orderedAttachments.some((entry) => !nativeImageTypes.has(entry.mimeType.toLowerCase()))) {
+    throw new TaskIngressError("CONTEXT_FILES_UNSUPPORTED_BY_BACKEND", 409, "The selected backend does not support context files", {
+      error: "Context files unsupported",
+      message: "Chat Web does not support ordinary file context. Remove the file or select another backend.",
+    });
+  }
+  const imageBytes = orderedAttachments
+    .filter((entry) => nativeImageTypes.has(entry.mimeType.toLowerCase()))
+    .reduce((total, entry) => total + entry.sizeBytes, 0);
+  const contextBytes = orderedAttachments
+    .filter((entry) => !nativeImageTypes.has(entry.mimeType.toLowerCase()))
+    .reduce((total, entry) => total + entry.sizeBytes, 0);
+  if (orderedAttachments.some((entry) => nativeImageTypes.has(entry.mimeType.toLowerCase()) && entry.sizeBytes > 20 * 1024 * 1024)
+      || imageBytes > 100 * 1024 * 1024
+      || contextBytes > 200 * 1024 * 1024) {
+    throw new TaskIngressError("ATTACHMENT_LIMIT_EXCEEDED", 413, "Attachment size limit exceeded", {
+      error: "Attachment size limit exceeded",
+    });
+  }
+  const attachmentDeliveryMetadata = orderedAttachments.map((attachment) => ({
+    id: attachment.id,
+    name: attachment.originalName,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes,
+    kind: attachment.kind,
+    sha256: attachment.sha256,
+    status: "bound",
+    downloadUrl: `/api/tasks/${encodeURIComponent(input.taskId)}/attachments/${encodeURIComponent(attachment.id)}`,
+    createdAt: attachment.createdAt.toISOString(),
+    transferToken: signAttachmentTransferToken({
+      taskId: input.taskId,
+      attachmentId: attachment.id,
+      agentHost: userMessageTargetHost!,
+    }),
+  }));
+  const attachmentMetadata = attachmentDeliveryMetadata.map(({ transferToken: _transferToken, ...attachment }) => attachment);
+  const callerMetadata = input.metadata ? { ...input.metadata } : null;
+  if (callerMetadata) delete callerMetadata.attachments;
+  const finalMetadata = attachmentMetadata.length
+    ? { ...(callerMetadata ?? {}), attachments: attachmentMetadata }
+    : callerMetadata;
   const messageData = {
     taskId: input.taskId,
     role: input.role ?? "sdk",
     content: input.content,
-    metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+    metadata: finalMetadata ? JSON.stringify(finalMetadata) : null,
     ...(clientMessageId ? { clientMessageId } : {}),
   };
+
+  const buildUserMessageEnvelope = (created: { id: string; taskId: string; content: string; createdAt: Date }) => ({
+    type: "task_user_message",
+    payload: {
+      request_id: created.id,
+      message_id: created.id,
+      task_id: created.taskId,
+      project_id: task.projectId,
+      role: "user",
+      content: created.content,
+      created_at: created.createdAt.toISOString(),
+      metadata: finalMetadata ?? undefined,
+      attachments: attachmentDeliveryMetadata,
+      ...(attachmentDeliveryMetadata.length ? { required_capabilities: ["task_attachments_v1"] } : {}),
+    },
+  });
 
   let message: Awaited<ReturnType<typeof db.message.create>>;
   let createdMessage = true;
   try {
-    [message] = await db.$transaction([
-      db.message.create({
-        data: messageData,
-      }),
-      db.task.update({
-        where: { id: input.taskId },
-        data: { updatedAt: new Date() },
-      }),
-    ]);
+    message = await db.$transaction(async (tx) => {
+      const created = await tx.message.create({ data: messageData });
+      if (attachmentIds.length) {
+        const bound = await tx.taskAttachment.updateMany({
+          where: {
+            id: { in: attachmentIds }, taskId: input.taskId, messageId: null,
+            status: "uploaded", expiresAt: { gt: attachmentBindingTime },
+          },
+          data: { messageId: created.id, status: "bound", boundAt: new Date(), expiresAt: null },
+        });
+        if (bound.count !== attachmentIds.length) {
+          throw new TaskIngressError("ATTACHMENT_BIND_RACE", 409, "Attachments were bound by another message", {
+            error: "Attachment binding conflict",
+          });
+        }
+      }
+      await tx.task.update({ where: { id: input.taskId }, data: { updatedAt: new Date() } });
+      // Attachment binding and its downstream command are one atomic unit. If
+      // the outbox cannot be written, the transaction rolls back and the same
+      // uploaded attachment remains reusable by the client.
+      if (attachmentIds.length && normalizedInputRole === "user") {
+        await tx.agentOutbox.create({
+          data: {
+            userId: input.userId,
+            agentHost: userMessageTargetHost,
+            taskId: task.id,
+            eventType: "task_user_message",
+            requestId: created.id,
+            payloadJson: JSON.stringify(buildUserMessageEnvelope(created)),
+            status: "pending",
+            attemptCount: 0,
+            nextRetryAt: null,
+          },
+        });
+      }
+      return created;
+    });
   } catch (error) {
     if (!clientMessageId || !isUniqueConstraintError(error)) {
       throw error;
@@ -370,30 +495,27 @@ export async function appendUserMessageToTask(input: {
     const targetHost = userMessageTargetHost;
     const requestId = message.id;
 
-    await enqueueAndAttemptAgentCommand(
+    const delivery = enqueueAndAttemptAgentCommand(
       {
         userId: input.userId,
         agentHost: targetHost,
         taskId: task.id,
         eventType: "task_user_message",
         requestId,
-        envelope: {
-          type: "task_user_message",
-          payload: {
-            request_id: requestId,
-            message_id: message.id,
-            task_id: message.taskId,
-            project_id: task.projectId,
-            role: "user",
-            content: message.content,
-            created_at: message.createdAt.toISOString(),
-            metadata: input.metadata ?? undefined,
-            attachments: getMessageAttachments(input.metadata),
-          },
-        },
+        envelope: buildUserMessageEnvelope(message),
       },
       buildOutboxDeliveryOptions(targetHost),
     );
+    if (attachmentIds.length) {
+      // The durable row already committed with the message. A best-effort
+      // immediate delivery failure must not turn a successful atomic enqueue
+      // into an HTTP error that encourages the browser to duplicate the turn.
+      await delivery.catch((error) => {
+        console.warn(`[task-ingress] immediate attachment delivery failed for ${requestId}: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    } else {
+      await delivery;
+    }
   }
 
   return { task, message };

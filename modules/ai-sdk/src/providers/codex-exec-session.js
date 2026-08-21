@@ -7,6 +7,13 @@ import { EventEmitter } from "node:events";
 import readline from "node:readline";
 
 import { CODEX_EXEC_VARIANT as CODEX_EXEC_PROVIDER_VARIANT } from "../built-in-backends.js";
+import { appendContextFilesToPrompt } from "../context-files.js";
+import { PROVIDER_MEDIA_CAPABILITIES } from "../media-adapters.js";
+import {
+  assertMediaCapabilities,
+  defaultPromptForMedia,
+  resolveTurnMedia,
+} from "../media-input.js";
 import {
   emitLog,
   getBoundedEnvInt,
@@ -278,6 +285,7 @@ export class CodexExecSession extends EventEmitter {
       resumeReady: false,
       manualResume: null,
       currentTurnStatus: this.getCurrentTurnStatus(),
+      capabilities: { media: PROVIDER_MEDIA_CAPABILITIES[CODEX_EXEC_PROVIDER_VARIANT] },
       pid: this.currentTurn?.child?.pid || undefined,
     };
   }
@@ -393,7 +401,7 @@ export class CodexExecSession extends EventEmitter {
     return buildHistoryPrompt(this.history, promptText);
   }
 
-  buildExecArgs({ useInitialImages = false, schemaFilePath = "", lastMessageFilePath = "" } = {}) {
+  buildExecArgs({ media = [], schemaFilePath = "", lastMessageFilePath = "" } = {}) {
     const args = [...this.baseArgs];
     args.push("exec");
     args.push("--json");
@@ -409,11 +417,8 @@ export class CodexExecSession extends EventEmitter {
     if (typeof this.options.model === "string" && this.options.model.trim()) {
       args.push("--model", this.options.model.trim());
     }
-    const images = useInitialImages && Array.isArray(this.options.initialImages)
-      ? this.options.initialImages.filter((item) => typeof item === "string" && item.trim())
-      : [];
-    for (const imagePath of images) {
-      args.push("--image", imagePath);
+    for (const image of media.filter((item) => item.kind === "image")) {
+      args.push("--image", image.path);
     }
     return args;
   }
@@ -435,7 +440,7 @@ export class CodexExecSession extends EventEmitter {
     });
   }
 
-  async runTurn(promptText, { useInitialImages = false, onProgress = null, jsonSchema = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested || this.closed) {
       throw this.createSessionClosedError();
     }
@@ -445,12 +450,14 @@ export class CodexExecSession extends EventEmitter {
       });
     }
 
+    const media = resolveTurnMedia(this.options, { useInitialImages, media: mediaInput });
+    assertMediaCapabilities(media, this.backend, PROVIDER_MEDIA_CAPABILITIES[CODEX_EXEC_PROVIDER_VARIANT]);
     const effectivePrompt = this.buildPrompt(promptText);
-    const imagePaths = useInitialImages && Array.isArray(this.options.initialImages)
-      ? this.options.initialImages.filter((item) => typeof item === "string" && item.trim())
-      : [];
-    const stdinPrompt = effectivePrompt || (imagePaths.length > 0 ? "Analyze the attached image." : "");
-    if (!stdinPrompt && imagePaths.length === 0) {
+    const stdinPrompt = appendContextFilesToPrompt(
+      effectivePrompt || (media.length > 0 ? defaultPromptForMedia(media) : ""),
+      contextFiles,
+    ).prompt;
+    if (!stdinPrompt && media.length === 0) {
       return buildEmptyTurnResult();
     }
 
@@ -484,7 +491,7 @@ export class CodexExecSession extends EventEmitter {
       );
 
       const args = this.buildExecArgs({
-        useInitialImages,
+        media,
         schemaFilePath,
         lastMessageFilePath,
       });

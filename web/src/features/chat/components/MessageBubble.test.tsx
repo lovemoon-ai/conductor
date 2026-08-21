@@ -249,4 +249,92 @@ describe('MessageBubble', () => {
 
     expect(timestamp).toHaveClass('opacity-0');
   });
+
+  it('falls back to a placeholder when an expired image body can no longer be loaded', () => {
+    render(
+      <MessageBubble
+        message={makeMessage({
+          role: 'user',
+          attachments: [{
+            id: 'att-1',
+            name: 'shot.png',
+            kind: 'image',
+            mimeType: 'image/png',
+            sizeBytes: 1024,
+            downloadUrl: '/api/tasks/task-1/attachments/att-1',
+          }],
+        } as never)}
+      />,
+    );
+
+    const image = screen.getByAltText('shot.png');
+    expect(screen.queryByText('Preview no longer available')).toBeNull();
+
+    // The retention sweep released the bytes, so the request 404s.
+    fireEvent.error(image);
+
+    expect(screen.getByText('Preview no longer available')).toBeInTheDocument();
+    expect(screen.queryByAltText('shot.png')).toBeNull();
+    // Metadata stays visible so history still shows what was sent.
+    expect(screen.getByText('shot.png')).toBeInTheDocument();
+  });
+
+  it('marks a released file attachment instead of opening a dead download', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ status: 404 });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <MessageBubble
+        message={makeMessage({
+          role: 'user',
+          attachments: [{
+            id: 'att-1',
+            name: 'spec.md',
+            kind: 'file',
+            mimeType: 'text/markdown',
+            sizeBytes: 2048,
+            downloadUrl: '/api/tasks/task-1/attachments/att-1',
+          }],
+        } as never)}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('spec.md'));
+    await screen.findByText('No longer available');
+    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/task-1/attachments/att-1', { method: 'HEAD' });
+
+    vi.unstubAllGlobals();
+  });
+
+  it('leaves a file download alone when the probe cannot prove it is gone', async () => {
+    // A blocked or offline probe must not disable a working download.
+    const fetchMock = vi.fn().mockRejectedValue(new Error('offline'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <MessageBubble
+        message={makeMessage({
+          role: 'user',
+          attachments: [{
+            id: 'att-1',
+            name: 'spec.md',
+            kind: 'file',
+            mimeType: 'text/markdown',
+            sizeBytes: 2048,
+            downloadUrl: '/api/tasks/task-1/attachments/att-1',
+          }],
+        } as never)}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('spec.md'));
+    await Promise.resolve();
+    expect(screen.queryByText('No longer available')).toBeNull();
+    expect(screen.getByText('spec.md').closest('a')).toHaveAttribute(
+      'href',
+      '/api/tasks/task-1/attachments/att-1',
+    );
+
+    vi.unstubAllGlobals();
+  });
 });

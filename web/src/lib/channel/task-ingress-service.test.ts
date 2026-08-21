@@ -6,6 +6,8 @@ vi.mock('@/lib/db', () => ({
     project: { findFirst: vi.fn() },
     task: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
     message: { create: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
+    taskAttachment: { findMany: vi.fn(), updateMany: vi.fn() },
+    agentOutbox: { create: vi.fn() },
     $transaction: vi.fn(),
     user: { findUnique: vi.fn() },
     attachedTerminal: {
@@ -68,11 +70,12 @@ describe('task-ingress-service', () => {
       if (Array.isArray(operations)) {
         return Promise.all(operations);
       }
-      return operations;
+      return operations(db);
     });
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
-      { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'] },
-      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
+      { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'], capabilities: ['task_attachments_v1'] },
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: ['task_attachments_v1'] },
+      { id: 'fire-1', host: 'conductor-fire-runtime', supportedBackends: ['claude'], capabilities: ['task_attachments_v1'] },
     ] as any);
     vi.mocked(db.task.create).mockResolvedValue({
       id: 'task-1',
@@ -101,6 +104,9 @@ describe('task-ingress-service', () => {
       createdAt: new Date('2026-03-16T00:00:01.000Z'),
     } as any);
     vi.mocked(db.message.findFirst).mockResolvedValue(null as any);
+    vi.mocked(db.taskAttachment.findMany).mockResolvedValue([] as any);
+    vi.mocked(db.taskAttachment.updateMany).mockResolvedValue({ count: 0 } as any);
+    vi.mocked(db.agentOutbox.create).mockResolvedValue({ id: 'outbox-1' } as any);
     vi.mocked(db.task.update).mockResolvedValue({
       id: 'task-1',
       updatedAt: new Date('2026-03-16T00:00:01.000Z'),
@@ -242,6 +248,138 @@ describe('task-ingress-service', () => {
       expect.objectContaining({
         agentHost: 'conductor-fire-runtime',
       }),
+    );
+  });
+
+  it('binds ordered attachments atomically and includes their descriptors in the command', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1', projectId: 'proj-1', agentHost: 'conductor-fire-runtime', executionHost: 'conductor-fire-runtime',
+    } as any);
+    vi.mocked(db.taskAttachment.findMany).mockResolvedValue([
+      {
+        id: 'att-2', originalName: 'notes.md', mimeType: 'text/markdown', sizeBytes: 5,
+        kind: 'file', sha256: 'b'.repeat(64), createdAt: new Date('2026-08-01T00:00:02Z'),
+      },
+      {
+        id: 'att-1', originalName: 'diagram.png', mimeType: 'image/png', sizeBytes: 4,
+        kind: 'image', sha256: 'a'.repeat(64), createdAt: new Date('2026-08-01T00:00:01Z'),
+      },
+    ] as any);
+    vi.mocked(db.taskAttachment.updateMany).mockResolvedValue({ count: 2 } as any);
+
+    await appendUserMessageToTask({
+      userId: 'user-1', taskId: 'task-1', content: 'inspect these', role: 'user',
+      attachmentIds: ['att-1', 'att-2'],
+    });
+
+    const metadata = JSON.parse((vi.mocked(db.message.create).mock.calls[0][0] as any).data.metadata);
+    expect(metadata.attachments.map((entry: any) => entry.id)).toEqual(['att-1', 'att-2']);
+    expect(metadata.attachments.every((entry: any) => entry.transferToken === undefined)).toBe(true);
+    expect(db.taskAttachment.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ['att-1', 'att-2'] }, taskId: 'task-1', messageId: null, status: 'uploaded',
+        expiresAt: { gt: expect.any(Date) },
+      },
+      data: { messageId: 'msg-1', status: 'bound', boundAt: expect.any(Date), expiresAt: null },
+    });
+    expect(db.agentOutbox.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        requestId: 'msg-1',
+        eventType: 'task_user_message',
+        status: 'pending',
+      }),
+    });
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        envelope: expect.objectContaining({
+          payload: expect.objectContaining({
+            attachments: [
+              expect.objectContaining({ id: 'att-1', kind: 'image', sha256: 'a'.repeat(64) }),
+              expect.objectContaining({ id: 'att-2', kind: 'file', sha256: 'b'.repeat(64) }),
+            ],
+          }),
+        }),
+      }),
+      expect.any(Object),
+    );
+    const command = vi.mocked(enqueueAndAttemptAgentCommand).mock.calls[0][0] as any;
+    expect(command.envelope.payload.attachments.every((entry: any) => typeof entry.transferToken === 'string')).toBe(true);
+  });
+
+  it('does not bind expired staging attachments', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1', projectId: 'proj-1', agentHost: 'conductor-fire-runtime', executionHost: 'conductor-fire-runtime',
+    } as any);
+    vi.mocked(db.taskAttachment.findMany).mockResolvedValue([]);
+    await expect(appendUserMessageToTask({
+      userId: 'user-1', taskId: 'task-1', content: 'inspect', role: 'user', attachmentIds: ['expired'],
+    })).rejects.toMatchObject({ code: 'INVALID_ATTACHMENTS', status: 409 });
+    expect(db.taskAttachment.findMany).toHaveBeenCalledWith({ where: expect.objectContaining({
+      expiresAt: { gt: expect.any(Date) },
+    }) });
+  });
+
+  it('rejects ordinary context files before binding them for chat-web', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1', projectId: 'proj-1', backendType: 'chat-web',
+      agentHost: 'conductor-fire-runtime', executionHost: 'conductor-fire-runtime',
+    } as any);
+    vi.mocked(db.taskAttachment.findMany).mockResolvedValue([{
+      id: 'att-file', originalName: 'notes.md', mimeType: 'text/markdown', sizeBytes: 5,
+      kind: 'file', sha256: 'c'.repeat(64), createdAt: new Date(),
+    }] as any);
+    await expect(appendUserMessageToTask({
+      userId: 'user-1', taskId: 'task-1', content: 'inspect', role: 'user', attachmentIds: ['att-file'],
+    })).rejects.toMatchObject({ code: 'CONTEXT_FILES_UNSUPPORTED_BY_BACKEND', status: 409 });
+    expect(db.taskAttachment.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects attachments when the connected agent has not advertised support', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1', projectId: 'proj-1', agentHost: 'conductor-fire-runtime', executionHost: 'conductor-fire-runtime',
+    } as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([{
+      id: 'old-fire', host: 'conductor-fire-runtime', supportedBackends: ['claude'], capabilities: [],
+    }] as any);
+    await expect(appendUserMessageToTask({
+      userId: 'user-1', taskId: 'task-1', content: 'inspect', role: 'user', attachmentIds: ['att-1'],
+    })).rejects.toMatchObject({ code: 'ATTACHMENTS_UNSUPPORTED_BY_AGENT', status: 409 });
+    expect(db.taskAttachment.findMany).not.toHaveBeenCalled();
+  });
+
+  it('rolls back message creation when attachment binding loses a race', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1', projectId: 'proj-1', agentHost: 'conductor-fire-runtime', executionHost: 'conductor-fire-runtime',
+    } as any);
+    vi.mocked(db.taskAttachment.findMany).mockResolvedValue([{
+      id: 'att-1', originalName: 'notes.md', mimeType: 'text/markdown', sizeBytes: 5,
+      kind: 'file', sha256: 'b'.repeat(64), createdAt: new Date(),
+    }] as any);
+    vi.mocked(db.taskAttachment.updateMany).mockResolvedValue({ count: 0 } as any);
+
+    await expect(appendUserMessageToTask({
+      userId: 'user-1', taskId: 'task-1', content: 'inspect', role: 'user', attachmentIds: ['att-1'],
+    })).rejects.toMatchObject({ code: 'ATTACHMENT_BIND_RACE', status: 409 });
+    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+  });
+
+  it('strips caller-supplied attachment descriptors when no uploaded IDs are bound', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1', projectId: 'proj-1', agentHost: 'conductor-fire-runtime', executionHost: 'conductor-fire-runtime',
+    } as any);
+    await appendUserMessageToTask({
+      userId: 'user-1', taskId: 'task-1', content: 'spoof', role: 'user',
+      metadata: {
+        source: 'web',
+        attachments: [{ id: 'fake', sha256: 'a'.repeat(64), downloadUrl: 'https://attacker.test' }],
+      },
+    });
+
+    const metadata = JSON.parse((vi.mocked(db.message.create).mock.calls[0][0] as any).data.metadata);
+    expect(metadata).toEqual({ source: 'web' });
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ envelope: expect.objectContaining({ payload: expect.objectContaining({ attachments: [] }) }) }),
+      expect.any(Object),
     );
   });
 

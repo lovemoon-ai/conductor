@@ -1,6 +1,13 @@
 import { EventEmitter } from "node:events";
 
 import { CLAUDE_AGENT_SDK_VARIANT as CLAUDE_PROVIDER_VARIANT } from "../built-in-backends.js";
+import { appendContextFilesToPrompt } from "../context-files.js";
+import { PROVIDER_MEDIA_CAPABILITIES, buildClaudeContent } from "../media-adapters.js";
+import {
+  assertMediaCapabilities,
+  defaultPromptForMedia,
+  resolveTurnMedia,
+} from "../media-input.js";
 import {
   emitLog,
   extractLongFlagFromCommandLine,
@@ -19,6 +26,17 @@ const DEFAULT_SETTING_SOURCES = ["user", "project", "local"];
 
 function waitForever() {
   return new Promise(() => {});
+}
+
+async function* buildClaudeInput(promptText, media) {
+  yield {
+    type: "user",
+    message: {
+      role: "user",
+      content: buildClaudeContent(promptText, media),
+    },
+    parent_tool_use_id: null,
+  };
 }
 
 function createTurnError(message, extras = {}) {
@@ -157,7 +175,10 @@ export class ClaudeAgentSdkSession extends EventEmitter {
   // Capability advertised via getSnapshot().capabilities so worker proxies
   // can short-circuit runGoal without an IPC round trip. Claude exposes
   // native `/goal` slash command, so this is true.
-  static capabilities = Object.freeze({ goal: true });
+  static capabilities = Object.freeze({
+    goal: true,
+    media: PROVIDER_MEDIA_CAPABILITIES[CLAUDE_PROVIDER_VARIANT],
+  });
 
   getCapabilities() {
     return { ...ClaudeAgentSdkSession.capabilities };
@@ -824,12 +845,17 @@ export class ClaudeAgentSdkSession extends EventEmitter {
     return true;
   }
 
-  async runTurn(promptText, { useInitialImages = false, onProgress = null, jsonSchema = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested) {
       throw this.createSessionClosedError();
     }
 
-    const effectivePrompt = this.buildPrompt(promptText, { useInitialImages });
+    const media = resolveTurnMedia(this.options, { useInitialImages, media: mediaInput });
+    assertMediaCapabilities(media, this.backend, PROVIDER_MEDIA_CAPABILITIES[CLAUDE_PROVIDER_VARIANT]);
+    let effectivePrompt =
+      this.buildPrompt(promptText, { useInitialImages: false }) ||
+      (media.length ? defaultPromptForMedia(media) : "");
+    effectivePrompt = appendContextFilesToPrompt(effectivePrompt, contextFiles).prompt;
     if (!effectivePrompt) {
       return {
         text: "",
@@ -890,7 +916,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       );
 
       const query = sdkModule.query({
-        prompt: effectivePrompt,
+        prompt: media.length ? buildClaudeInput(effectivePrompt, media) : effectivePrompt,
         options: this.buildSdkOptions(abortController),
       });
       currentTurn.query = query;

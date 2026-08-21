@@ -1,6 +1,13 @@
 import { EventEmitter } from "node:events";
 
 import { CODEX_APP_SERVER_VARIANT } from "../built-in-backends.js";
+import { appendContextFilesToPrompt } from "../context-files.js";
+import { PROVIDER_MEDIA_CAPABILITIES, buildCodexAppServerInput } from "../media-adapters.js";
+import {
+  assertMediaCapabilities,
+  defaultPromptForMedia,
+  resolveTurnMedia,
+} from "../media-input.js";
 import { CodexAppServerTransport } from "../transports/codex-app-server-transport.js";
 import {
   TERMINAL_GOAL_STATUSES,
@@ -50,15 +57,6 @@ function extractSessionConfiguredValue(params, ...keys) {
     }
   }
   return undefined;
-}
-
-function buildTurnInput(promptText) {
-  return [
-    {
-      type: "text",
-      text: promptText,
-    },
-  ];
 }
 
 function injectJsonSchemaPrompt(promptText, jsonSchema) {
@@ -228,7 +226,10 @@ export class CodexAppServerSession extends EventEmitter {
    * Treat as read-only.
    * @type {Readonly<import("../shared.js").SessionCapabilities>}
    */
-  static capabilities = Object.freeze({ goal: true });
+  static capabilities = Object.freeze({
+    goal: true,
+    media: PROVIDER_MEDIA_CAPABILITIES[CODEX_APP_SERVER_VARIANT],
+  });
 
   /**
    * @returns {import("../shared.js").SessionCapabilities}
@@ -1143,12 +1144,17 @@ export class CodexAppServerSession extends EventEmitter {
     return false;
   }
 
-  async runTurn(promptText, { useInitialImages = false, jsonSchema = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, jsonSchema = null } = {}) {
     if (this.closeRequested) {
       throw this.createSessionClosedError();
     }
 
-    let effectivePrompt = this.buildPrompt(promptText, { useInitialImages });
+    const media = resolveTurnMedia(this.options, { useInitialImages, media: mediaInput });
+    assertMediaCapabilities(media, this.backend, PROVIDER_MEDIA_CAPABILITIES[CODEX_APP_SERVER_VARIANT]);
+    let effectivePrompt =
+      this.buildPrompt(promptText, { useInitialImages: false }) ||
+      (media.length ? defaultPromptForMedia(media) : "");
+    effectivePrompt = appendContextFilesToPrompt(effectivePrompt, contextFiles).prompt;
     if (jsonSchema && typeof jsonSchema === "object" && effectivePrompt) {
       effectivePrompt = injectJsonSchemaPrompt(effectivePrompt, jsonSchema);
     }
@@ -1200,7 +1206,7 @@ export class CodexAppServerSession extends EventEmitter {
         threadId: this.sessionId,
         cwd: this.cwd,
         approvalPolicy: "never",
-        input: buildTurnInput(effectivePrompt),
+        input: buildCodexAppServerInput(effectivePrompt, media),
       });
       const turnResult = await Promise.race([
         (async () => {
@@ -1640,4 +1646,3 @@ export class CodexAppServerSession extends EventEmitter {
     this.closed = true;
   }
 }
-

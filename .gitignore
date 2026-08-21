@@ -44,3 +44,4 @@ web/next-env.d.ts
 
 .codex
 tmp*
+.conductor/attachments/

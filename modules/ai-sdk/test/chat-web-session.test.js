@@ -217,6 +217,16 @@ describe("ChatWebSession", () => {
     await s.close();
   });
 
+  it("rejects context files instead of silently ignoring them", async () => {
+    const { mod } = createStubChatWebModule();
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod });
+    await assert.rejects(
+      () => s.runTurn("inspect", { contextFiles: [{ path: import.meta.filename }] }),
+      (error) => error?.reason === "unsupported_context_files",
+    );
+    await s.close();
+  });
+
   it("returns empty result with no send call for an empty prompt", async () => {
     const { mod, state } = createStubChatWebModule();
     const s = new ChatWebSession("chat-web", { chatWebModule: mod });

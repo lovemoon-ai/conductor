@@ -262,6 +262,7 @@ model Task {
   project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   issue    Issue?    @relation(fields: [issueId], references: [id], onDelete: SetNull)
   messages Message[]
+  attachments TaskAttachment[]
   ptySession PtySession?
   taskStatusEvents TaskStatusEvent[]
   channelConversations ChannelConversation[]
@@ -339,11 +340,39 @@ model Message {
   clientMessageId String?  @unique @map("client_message_id")
   createdAt       DateTime @default(now()) @map("created_at")
 
-  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  task        Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  attachments TaskAttachment[]
 
   @@index([taskId])
   @@index([clientMessageId])
   @@map("messages")
+}
+
+model TaskAttachment {
+  id               String    @id @default(uuid())
+  taskId           String    @map("task_id")
+  messageId        String?   @map("message_id")
+  originalName     String    @map("original_name")
+  storageKey       String    @unique @map("storage_key")
+  mimeType         String    @map("mime_type")
+  kind             String
+  sizeBytes        Int       @map("size_bytes")
+  sha256           String
+  status           String    @default("uploaded")
+  materializedHost String?   @map("materialized_host")
+  materializedAt   DateTime? @map("materialized_at")
+  boundAt          DateTime? @map("bound_at")
+  expiresAt        DateTime? @map("expires_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  task    Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  message Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, status])
+  @@index([messageId])
+  @@index([expiresAt])
+  @@map("task_attachments")
 }
 
 model TaskStatusEvent {

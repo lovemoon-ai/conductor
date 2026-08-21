@@ -2,13 +2,17 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { buildFireHostName } from './agent-host.js';
 import { BackendApiClient, BackendApiError } from './backend/index.js';
+import { AttachmentMaterializer } from './attachments/index.js';
 import { ConductorConfig, loadConfig } from './config/index.js';
 import { ProjectContext } from './context/index.js';
 import { getPlanLimitMessageFromError } from './limits/index.js';
 import { MessageRouter } from './message/index.js';
 import {
   DownstreamCommandCursor,
+  DownstreamInboxStore,
+  DurableDownstreamCommand,
   DownstreamCursorStore,
   DurableUpstreamEvent,
   DurableUpstreamEventType,
@@ -62,6 +66,8 @@ export interface ConductorClientConnectOptions {
   messageRouter?: MessageRouter;
   upstreamOutbox?: DurableUpstreamOutboxStore;
   downstreamCursorStore?: DownstreamCursorStore;
+  downstreamInboxStore?: DownstreamInboxStore;
+  attachmentMaterializer?: AttachmentMaterializer;
   agentHost?: string;
   extraHeaders?: Record<string, string>;
   onConnected?: (event: WebSocketConnectedEvent) => void;
@@ -84,6 +90,8 @@ interface ConductorClientInit {
   messageRouter: MessageRouter;
   upstreamOutbox: DurableUpstreamOutboxStore;
   downstreamCursorStore: DownstreamCursorStore;
+  downstreamInboxStore: DownstreamInboxStore;
+  attachmentMaterializer: AttachmentMaterializer;
   agentHost: string;
   onStopTask?: (event: StopTaskEvent) => Promise<void> | void;
   onInterruptTurn?: (event: InterruptTurnEvent) => Promise<boolean | void> | boolean | void;
@@ -91,6 +99,12 @@ interface ConductorClientInit {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleepWithSignal = (ms: number, signal: AbortSignal): Promise<void> => new Promise((resolve) => {
+  if (signal.aborted) return resolve();
+  const timer = setTimeout(resolve, Math.max(0, ms));
+  timer.unref?.();
+  signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+});
 
 export interface StopTaskEvent {
   taskId: string;
@@ -129,6 +143,8 @@ export class ConductorClient {
   private readonly messageRouter: MessageRouter;
   private upstreamOutbox: DurableUpstreamOutboxStore;
   private downstreamCursorStore: DownstreamCursorStore;
+  private downstreamInboxStore: DownstreamInboxStore;
+  private readonly attachmentMaterializer: AttachmentMaterializer;
   private readonly agentHost: string;
   private readonly onStopTask?: (event: StopTaskEvent) => Promise<void> | void;
   private readonly onInterruptTurn?: (event: InterruptTurnEvent) => Promise<boolean | void> | boolean | void;
@@ -138,6 +154,11 @@ export class ConductorClient {
   private durableOutboxFlushPromise: Promise<void> | null = null;
   private durableOutboxTimer: NodeJS.Timeout | null = null;
   private durableOutboxTimerDueAt: number | null = null;
+  private readonly downstreamTasks = new Map<string, Promise<void>>();
+  private readonly queuedDownstreamRequests = new Set<string>();
+  private readonly cancelledDownstreamTasks = new Set<string>();
+  private readonly downstreamWorkerAbort = new AbortController();
+  private downstreamClosing = false;
 
   constructor(init: ConductorClientInit) {
     this.config = init.config;
@@ -150,6 +171,8 @@ export class ConductorClient {
     this.messageRouter = init.messageRouter;
     this.upstreamOutbox = init.upstreamOutbox;
     this.downstreamCursorStore = init.downstreamCursorStore;
+    this.downstreamInboxStore = init.downstreamInboxStore;
+    this.attachmentMaterializer = init.attachmentMaterializer;
     this.agentHost = init.agentHost;
     this.onStopTask = init.onStopTask;
     this.onInterruptTurn = init.onInterruptTurn;
@@ -172,6 +195,13 @@ export class ConductorClient {
       options.upstreamOutbox ?? DurableUpstreamOutboxStore.forProjectPath(projectPath, deliveryScopeId);
     const downstreamCursorStore =
       options.downstreamCursorStore ?? DownstreamCursorStore.forProjectPath(projectPath, deliveryScopeId);
+    const downstreamInboxStore =
+      options.downstreamInboxStore ?? DownstreamInboxStore.forProjectPath(projectPath, deliveryScopeId);
+    const attachmentMaterializer = options.attachmentMaterializer ?? new AttachmentMaterializer({
+      config,
+      projectPath,
+      agentHost,
+    });
     const wsClient =
       options.wsClient ??
       new ConductorWebSocketClient(config, {
@@ -199,12 +229,22 @@ export class ConductorClient {
       messageRouter,
       upstreamOutbox,
       downstreamCursorStore,
+      downstreamInboxStore,
+      attachmentMaterializer,
       agentHost,
       onStopTask: options.onStopTask,
       onInterruptTurn: options.onInterruptTurn,
       onRefreshSession: options.onRefreshSession,
     });
-    await client.wsClient.connect();
+    client.replayDurableDownstreamInbox();
+    try {
+      await client.wsClient.connect();
+    } catch (error) {
+      client.downstreamClosing = true;
+      client.downstreamWorkerAbort.abort();
+      client.attachmentMaterializer.abortAll();
+      throw error;
+    }
     if (client.shouldAutoFlushDurableOutbox()) {
       void client.requestDurableOutboxFlush(true);
     }
@@ -215,6 +255,9 @@ export class ConductorClient {
     if (this.closed) {
       return;
     }
+    this.downstreamClosing = true;
+    this.downstreamWorkerAbort.abort();
+    this.attachmentMaterializer.abortAll();
     this.clearDurableOutboxTimer();
     await this.flushPendingUpstreamEvents({
       timeoutMs: 2_000,
@@ -772,13 +815,29 @@ export class ConductorClient {
 
     const command = this.extractDownstreamCommandContext(payload);
     if (command?.eventType === 'stop_task') {
+      this.cancelledDownstreamTasks.add(command.taskId);
       await this.handleStopTaskCommand(payload, command);
       return;
     }
 
     const alreadyApplied = command ? this.downstreamCursorStore.hasApplied(this.agentHost, command.cursor) : false;
     if (!alreadyApplied) {
-      await this.messageRouter.handleBackendEvent(payload);
+      if (command && this.attachmentMaterializer.validateEnvelopeForStaging(payload)) {
+        const durable = this.downstreamInboxStore.upsert({
+          requestId: command.requestId,
+          taskId: command.taskId,
+          cursor: command.cursor,
+          envelope: payload,
+        });
+        this.enqueueDurableDownstreamCommand(durable);
+        await this.maybeAckInboundCommand(payload, { accepted: true });
+        return;
+      }
+      if (command) {
+        await this.downstreamTasks.get(command.taskId);
+      }
+      const materializedPayload = await this.attachmentMaterializer.materializeEnvelope(payload);
+      await this.messageRouter.handleBackendEvent(materializedPayload);
       if (command) {
         this.downstreamCursorStore.advance(this.agentHost, command.cursor);
       }
@@ -787,6 +846,98 @@ export class ConductorClient {
     await this.maybeAckInboundCommand(payload, {
       accepted: true,
     });
+  }
+
+  private replayDurableDownstreamInbox(): void {
+    const entries = this.downstreamInboxStore.list().sort((left, right) => {
+      const byTime = Date.parse(left.cursor.createdAt) - Date.parse(right.cursor.createdAt);
+      return byTime || left.cursor.requestId.localeCompare(right.cursor.requestId);
+    });
+    for (const entry of entries) this.enqueueDurableDownstreamCommand(entry);
+  }
+
+  private enqueueDurableDownstreamCommand(entry: DurableDownstreamCommand): void {
+    if (this.queuedDownstreamRequests.has(entry.requestId)) return;
+    this.queuedDownstreamRequests.add(entry.requestId);
+    const previous = this.downstreamTasks.get(entry.taskId) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(async () => {
+      let attempt = entry.attemptCount;
+      while (!this.closed && !this.downstreamClosing) {
+        if (this.cancelledDownstreamTasks.has(entry.taskId)) {
+          this.downstreamInboxStore.remove(entry.requestId);
+          return;
+        }
+        const nextAttemptMs = Date.parse(entry.nextAttemptAt);
+        if (Number.isFinite(nextAttemptMs) && nextAttemptMs > Date.now()) {
+          await sleepWithSignal(nextAttemptMs - Date.now(), this.downstreamWorkerAbort.signal);
+        }
+        try {
+          const materialized = await this.attachmentMaterializer.materializeEnvelope(entry.envelope);
+          if (this.cancelledDownstreamTasks.has(entry.taskId)) {
+            this.downstreamInboxStore.remove(entry.requestId);
+            return;
+          }
+          // A shutdown after download must leave the already-ACKed command in
+          // the durable inbox so the next process can route it. Removing it
+          // here would make the Web outbox and the Daemon both forget it.
+          if (this.closed || this.downstreamClosing) return;
+          await this.messageRouter.handleBackendEvent(materialized);
+          this.downstreamCursorStore.advance(this.agentHost, entry.cursor);
+          this.downstreamInboxStore.remove(entry.requestId);
+          return;
+        } catch (error) {
+          if ((error as { permanent?: boolean } | null)?.permanent) {
+            const reported = await this.reportUnrecoverableAttachmentCommand(entry, error);
+            // Only drop the command once the user-facing explanation is durably
+            // queued; otherwise keep retrying so the failure cannot vanish.
+            if (reported) {
+              this.downstreamCursorStore.advance(this.agentHost, entry.cursor);
+              this.downstreamInboxStore.remove(entry.requestId);
+              return;
+            }
+          }
+          attempt += 1;
+          const delayMs = Math.min(1_000 * (2 ** Math.min(attempt, 5)), 30_000);
+          try {
+            this.downstreamInboxStore.markRetry(entry.requestId, delayMs);
+          } catch (persistError) {
+            console.warn(`[sdk] failed to persist downstream retry state for ${entry.requestId}: ${persistError instanceof Error ? persistError.message : String(persistError)}`);
+          }
+          console.warn(`[sdk] downstream attachment command ${entry.requestId} failed; retrying in ${delayMs}ms: ${error instanceof Error ? error.message : String(error)}`);
+          await sleepWithSignal(delayMs, this.downstreamWorkerAbort.signal);
+        }
+      }
+    }).catch((error) => {
+      console.warn(`[sdk] downstream worker ${entry.requestId} stopped unexpectedly: ${error instanceof Error ? error.message : String(error)}`);
+    }).finally(() => {
+      this.queuedDownstreamRequests.delete(entry.requestId);
+      if (this.downstreamTasks.get(entry.taskId) === current) this.downstreamTasks.delete(entry.taskId);
+    });
+    this.downstreamTasks.set(entry.taskId, current);
+  }
+
+  /**
+   * Tell the user why an attachment message will never run. Silently dropping
+   * it would leave a question in the chat that never gets an answer.
+   */
+  private async reportUnrecoverableAttachmentCommand(
+    entry: DurableDownstreamCommand,
+    error: unknown,
+  ): Promise<boolean> {
+    const reason = error instanceof Error ? error.message : String(error);
+    try {
+      await this.sendMessage(
+        entry.taskId,
+        `The attachments on this message are no longer available, so it could not be processed (${reason}). Please send them again.`,
+        { attachment_delivery: 'failed', reply_to: entry.requestId },
+      );
+      return true;
+    } catch (reportError) {
+      console.warn(
+        `[sdk] failed to report unrecoverable attachment command ${entry.requestId}: ${reportError instanceof Error ? reportError.message : String(reportError)}`,
+      );
+      return false;
+    }
   }
 
   private extractDownstreamCommandContext(payload: BackendEnvelope): {
@@ -1238,8 +1389,10 @@ export class ConductorClient {
 
     const currentUpstream = this.upstreamOutbox;
     const currentCursorStore = this.downstreamCursorStore;
+    const currentInboxStore = this.downstreamInboxStore;
     const nextUpstream = DurableUpstreamOutboxStore.forProjectPath(this.projectPath, nextScopeId);
     const nextCursorStore = DownstreamCursorStore.forProjectPath(this.projectPath, nextScopeId);
+    const nextInboxStore = DownstreamInboxStore.forProjectPath(this.projectPath, nextScopeId);
 
     for (const entry of currentUpstream.load()) {
       nextUpstream.upsert({
@@ -1251,12 +1404,17 @@ export class ConductorClient {
     }
 
     const currentCursor = currentCursorStore.get(this.agentHost);
-    if (currentCursor && !nextCursorStore.get(this.agentHost)) {
+    if (currentCursor) {
       nextCursorStore.advance(this.agentHost, currentCursor);
+    }
+    for (const entry of currentInboxStore.list()) {
+      nextInboxStore.import(entry);
+      currentInboxStore.remove(entry.requestId);
     }
 
     this.upstreamOutbox = nextUpstream;
     this.downstreamCursorStore = nextCursorStore;
+    this.downstreamInboxStore = nextInboxStore;
     this.deliveryScopeId = nextScopeId;
     void this.requestDurableOutboxFlush(true);
   }
@@ -1350,13 +1508,12 @@ function resolveAgentHost(env: Record<string, string | undefined>, explicit?: st
   if (typeof fromAgent === 'string' && fromAgent.trim()) {
     return fromAgent.trim();
   }
-  const fromDaemon = env.CONDUCTOR_DAEMON_NAME;
-  if (typeof fromDaemon === 'string' && fromDaemon.trim()) {
-    return fromDaemon.trim();
-  }
-  const pid = process.pid;
-  const host = env.HOSTNAME || env.COMPUTERNAME || 'unknown-host';
-  return `conductor-fire-${host}-${pid}`;
+  // CONDUCTOR_DAEMON_NAME is inherited from the daemon that spawned this fire,
+  // so it names the daemon, not this process. Returning it verbatim would make
+  // the fire impersonate its own daemon: same identity on the hub (mutual
+  // eviction) and no `conductor-fire-` prefix (wrong plan bucket, eligible for
+  // daemon task routing). Use it as the owner segment instead.
+  return buildFireHostName(env);
 }
 
 function normalizeDeliveryScopeId(scopeId: string): string {

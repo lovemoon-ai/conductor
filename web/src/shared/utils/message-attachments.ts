@@ -81,6 +81,8 @@ function normalizeAttachment(value: unknown): MessageAttachment | null {
   const kind = kindSource || attachmentKindFromMimeType(mimeType);
   const createdAt = normalizeIsoTimestamp(record.createdAt ?? record.created_at);
   const expiresAt = normalizeIsoTimestamp(record.expiresAt ?? record.expires_at);
+  const sha256 = typeof record.sha256 === "string" ? record.sha256.trim().toLowerCase() : undefined;
+  const status = typeof record.status === "string" ? record.status.trim() : undefined;
 
   if (!id || !name || !mimeType || !downloadUrl || !Number.isFinite(sizeBytes) || sizeBytes < 0) {
     return null;
@@ -102,6 +104,8 @@ function normalizeAttachment(value: unknown): MessageAttachment | null {
     downloadUrl,
     createdAt,
     expiresAt,
+    sha256,
+    status: status as MessageAttachment["status"],
   };
 }
 
