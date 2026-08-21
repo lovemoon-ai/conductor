@@ -1,3 +1,4 @@
+import { buildFireHostName } from '../agent-host.js';
 import { ConductorConfig } from '../config/index.js';
 
 export type WebSocketHandler = (payload: Record<string, any>) => Promise<void> | void;
@@ -551,9 +552,7 @@ type WebSocketModule = typeof import('ws');
 type NodeWebSocket = InstanceType<WebSocketModule['default']>;
 
 function defaultHostName(): string {
-  const pid = process.pid;
-  const host = process.env.HOSTNAME || process.env.COMPUTERNAME || 'unknown-host';
-  return `conductor-fire-${host}-${pid}`;
+  return buildFireHostName(process.env);
 }
 
 class WsAdapter implements WebSocketLike {

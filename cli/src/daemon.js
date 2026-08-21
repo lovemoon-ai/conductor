@@ -6219,6 +6219,10 @@ export function startDaemon(config = {}, deps = {}) {
         PWD: taskDir,
         CONDUCTOR_PROJECT_ID: projectId,
         CONDUCTOR_TASK_ID: taskId,
+        // Fire derives its own stable host identity from the owning daemon plus
+        // the task. Passing the resolved name keeps that identity meaningful
+        // even when the daemon was named through the config file.
+        CONDUCTOR_DAEMON_NAME: AGENT_NAME,
         CONDUCTOR_LAUNCHED_BY_DAEMON: "1",
         ...(cliCommand ? { CONDUCTOR_CLI_COMMAND: cliCommand } : {}),
       };
@@ -6921,6 +6925,7 @@ export function startDaemon(config = {}, deps = {}) {
       PWD: taskDir,
       CONDUCTOR_PROJECT_ID: normalizedProjectId,
       CONDUCTOR_TASK_ID: normalizedTargetTaskId,
+      CONDUCTOR_DAEMON_NAME: AGENT_NAME,
       CONDUCTOR_LAUNCHED_BY_DAEMON: "1",
       ...(cliCommand ? { CONDUCTOR_CLI_COMMAND: cliCommand } : {}),
     };

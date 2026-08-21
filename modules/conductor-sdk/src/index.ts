@@ -1,3 +1,4 @@
+export * from './agent-host.js';
 export * from './paths.js';
 export * from './config/index.js';
 export * from './backend/index.js';

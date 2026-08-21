@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { buildFireHostName } from './agent-host.js';
 import { BackendApiClient, BackendApiError } from './backend/index.js';
 import { AttachmentMaterializer } from './attachments/index.js';
 import { ConductorConfig, loadConfig } from './config/index.js';
@@ -1507,13 +1508,12 @@ function resolveAgentHost(env: Record<string, string | undefined>, explicit?: st
   if (typeof fromAgent === 'string' && fromAgent.trim()) {
     return fromAgent.trim();
   }
-  const fromDaemon = env.CONDUCTOR_DAEMON_NAME;
-  if (typeof fromDaemon === 'string' && fromDaemon.trim()) {
-    return fromDaemon.trim();
-  }
-  const pid = process.pid;
-  const host = env.HOSTNAME || env.COMPUTERNAME || 'unknown-host';
-  return `conductor-fire-${host}-${pid}`;
+  // CONDUCTOR_DAEMON_NAME is inherited from the daemon that spawned this fire,
+  // so it names the daemon, not this process. Returning it verbatim would make
+  // the fire impersonate its own daemon: same identity on the hub (mutual
+  // eviction) and no `conductor-fire-` prefix (wrong plan bucket, eligible for
+  // daemon task routing). Use it as the owner segment instead.
+  return buildFireHostName(env);
 }
 
 function normalizeDeliveryScopeId(scopeId: string): string {
