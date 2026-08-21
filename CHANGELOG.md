@@ -18,6 +18,33 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.9.0] - 2026-08-21
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.9.0`
+- `@love-moon/conductor-sdk` `0.9.0`
+- `@love-moon/ai-sdk` `0.9.0`
+- `@love-moon/app-sdk` `0.9.0`
+- `@love-moon/chat-web` `0.9.0`
+
+### Changes
+
+### Minor Changes
+
+- 3a499cc: Add `conductor remote-exec` for running a single command on another daemon's
+  host, over a new `remote_exec_request`/`remote_exec_response` daemon protocol
+  pair gated by a `remote_exec` capability. Supports `--workspace`, `--env`,
+  `--timeout` with automatic polling for long commands, `--kill-on-timeout`, and
+  ssh-style exit codes. Hosts can decline with `remote_exec: false` in the config.
+- a15b55d: Add per-turn multi-image and local context-file inputs, plus authenticated attachment materialization from Conductor Web to the executing daemon.
+
+### Patch Changes
+
+- Updated dependencies [a15b55d]
+  - @love-moon/ai-sdk@0.9.0
+  - @love-moon/conductor-sdk@0.9.0
+
 ## [0.8.0] - 2026-07-28
 
 ### Released packages

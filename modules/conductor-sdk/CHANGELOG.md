@@ -1,5 +1,11 @@
 # @love-moon/conductor-sdk
 
+## 0.9.0
+
+### Minor Changes
+
+- a15b55d: Add per-turn multi-image and local context-file inputs, plus authenticated attachment materialization from Conductor Web to the executing daemon.
+
 ## 0.8.0
 
 ### Minor Changes
