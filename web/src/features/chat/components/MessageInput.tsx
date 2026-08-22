@@ -4,6 +4,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import type { Message } from '@/shared/types';
 import { CatchphrasePopover } from '@/features/catchphrases/components/CatchphrasePopover';
 import { useChatStore } from '../store';
+import { compressImageIfNeeded } from '../image-compression';
 
 const SEND_BUTTON_SIZE_PX = 32;
 const COMPOSER_HORIZONTAL_PADDING_PX = 24;
@@ -556,18 +557,21 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
     handleSubmit();
   };
 
-  const handleFilesSelected = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    const incoming = Array.from(event.target.files ?? []);
+  const handleFilesSelected = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(event.target.files ?? []);
     event.target.value = '';
-    const invalidVideo = incoming.find((file) => {
+    const invalidVideo = picked.find((file) => {
       const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
       return file.type.startsWith('video/') || VIDEO_EXTENSIONS.has(extension);
     });
-    const oversized = incoming.find((file) => file.size > MAX_ATTACHMENT_BYTES);
     if (invalidVideo) {
       setFileError('Video attachments are not supported.');
       return;
     }
+    // Shrink oversized photos in the browser before they enter the upload
+    // pipeline, so previews, dedup and every network hop see the smaller file.
+    const incoming = await Promise.all(picked.map((file) => compressImageIfNeeded(file)));
+    const oversized = incoming.find((file) => file.size > MAX_ATTACHMENT_BYTES);
     const oversizedImage = incoming.find((file) => {
       const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
       return (NATIVE_IMAGE_TYPES.has(file.type.toLowerCase()) || NATIVE_IMAGE_EXTENSIONS.has(extension))

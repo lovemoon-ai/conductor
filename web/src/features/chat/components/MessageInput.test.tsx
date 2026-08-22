@@ -98,7 +98,8 @@ describe('MessageInput', () => {
     fireEvent.change(screen.getByTestId('message-input-file-picker'), {
       target: { files: [image, notes] },
     });
-    expect(screen.getByText('diagram.png')).toBeTruthy();
+    // File selection runs image compression asynchronously before the chips appear.
+    await screen.findByText('diagram.png');
     expect(screen.getByText('notes.md')).toBeTruthy();
     fireEvent.change(screen.getByTestId('message-input-textarea'), { target: { value: 'inspect' } });
     fireEvent.click(screen.getByTestId('message-input-send-button'));
@@ -119,12 +120,14 @@ describe('MessageInput', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it('rejects native images above 20 MB before upload', () => {
+  it('rejects native images above 20 MB before upload', async () => {
     render(<MessageInput taskId="task-large-image" onSend={vi.fn()} />);
     const image = new File(['x'], 'large.png', { type: '' });
     Object.defineProperty(image, 'size', { value: 20 * 1024 * 1024 + 1 });
     fireEvent.change(screen.getByTestId('message-input-file-picker'), { target: { files: [image] } });
-    expect(screen.getByText('large.png exceeds the 20 MB image limit.')).toBeTruthy();
+    // With no browser image encoder available the oversized image is not
+    // compressible, so the existing 20 MB guard still rejects it.
+    await screen.findByText('large.png exceeds the 20 MB image limit.');
     expect(screen.queryByTestId('message-input-files')).toBeNull();
   });
 
@@ -133,6 +136,7 @@ describe('MessageInput', () => {
     render(<MessageInput taskId="task-retry-files" onSend={onSend} />);
     const notes = new File(['notes'], 'notes.md', { type: 'text/markdown' });
     fireEvent.change(screen.getByTestId('message-input-file-picker'), { target: { files: [notes] } });
+    await screen.findByText('notes.md');
     fireEvent.click(screen.getByTestId('message-input-send-button'));
 
     await screen.findByText('Upload or send failed. Your files are still selected; please retry.');
