@@ -89,6 +89,43 @@ describe('MessageInput', () => {
     );
   });
 
+  it('reveals the attach and schedule actions from the swipe menu toggle', () => {
+    const onSend = vi.fn();
+    const onSchedule = vi.fn();
+    render(<MessageInput taskId="task-swipe" onSend={onSend} onSchedule={onSchedule} />);
+
+    const toggle = screen.getByTestId('message-input-actions-toggle');
+    // Closed by default: the revealed actions are not focusable.
+    expect(screen.getByTestId('message-input-attach-button')).toHaveAttribute('tabindex', '-1');
+    expect(screen.getByTestId('message-input-swipe-actions')).toHaveAttribute('aria-hidden', 'true');
+
+    fireEvent.click(toggle);
+
+    expect(screen.getByTestId('message-input-swipe-actions')).toHaveAttribute('aria-hidden', 'false');
+    expect(screen.getByTestId('message-input-attach-button')).toHaveAttribute('tabindex', '0');
+    expect(screen.getByTestId('message-input-schedule-button')).toHaveAttribute('tabindex', '0');
+  });
+
+  it('schedules the current draft from the swipe menu', () => {
+    const onSchedule = vi.fn();
+    render(<MessageInput taskId="task-schedule" onSend={vi.fn()} onSchedule={onSchedule} />);
+    fireEvent.change(screen.getByTestId('message-input-textarea'), { target: { value: 'ping me later' } });
+
+    fireEvent.click(screen.getByTestId('message-input-actions-toggle'));
+    fireEvent.click(screen.getByTestId('message-input-schedule-button'));
+
+    expect(onSchedule).toHaveBeenCalledWith('ping me later');
+    // The menu closes after the action fires.
+    expect(screen.getByTestId('message-input-swipe-actions')).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('omits the schedule action when scheduling is unavailable', () => {
+    render(<MessageInput taskId="task-no-schedule" onSend={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('message-input-actions-toggle'));
+    expect(screen.queryByTestId('message-input-schedule-button')).toBeNull();
+    expect(screen.getByTestId('message-input-attach-button')).toBeTruthy();
+  });
+
   it('selects and sends multiple files in their original order', async () => {
     const onSend = vi.fn().mockResolvedValue(undefined);
     render(<MessageInput taskId="task-files" onSend={onSend} />);

@@ -714,6 +714,12 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     setScheduledMessage(message);
   }, []);
 
+  const handleScheduleDraft = useCallback((draft: string) => {
+    // Schedule the current composer draft: a message with no persisted id so
+    // the dialog treats it as a fresh scheduled message, not a reschedule.
+    setScheduledMessage({ id: '', taskId, role: 'user', content: draft });
+  }, [taskId]);
+
   const refreshScheduledMessageSummary = useCallback(() => {
     void fetchTask(taskId);
     void fetchProjects();
@@ -1108,6 +1114,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
         ref={messageInputRef}
         taskId={taskId}
         onSend={handleSend}
+        onSchedule={handleScheduleDraft}
         onInsert={(content) => {
           void handleInsert(content);
         }}

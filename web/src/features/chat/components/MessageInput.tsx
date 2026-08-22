@@ -3,6 +3,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { Message } from '@/shared/types';
 import { CatchphrasePopover } from '@/features/catchphrases/components/CatchphrasePopover';
+import { useSwipeActions } from '@/shared/hooks/useSwipeActions';
 import { useChatStore } from '../store';
 import { compressImageIfNeeded } from '../image-compression';
 
@@ -11,6 +12,7 @@ const COMPOSER_HORIZONTAL_PADDING_PX = 24;
 const COMPOSER_GAP_PX = 8;
 const SEND_BUTTON_SAFETY_GAP_PX = 12;
 const INPUT_SCROLL_THRESHOLD_RATIO = 0.75;
+const SWIPE_ACTION_WIDTH_PX = 52;
 const MAX_ATTACHMENTS = 20;
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -31,6 +33,7 @@ const PLACEHOLDER_MESSAGES = [
 interface MessageInputProps {
   taskId: string;
   onSend: (content: string, files?: File[]) => Promise<void> | void;
+  onSchedule?: (draft: string) => void;
   onInsert?: (content: string) => void;
   onInterrupt?: () => void;
   disabled?: boolean;
@@ -138,6 +141,7 @@ const deriveSentHistoryFromMessages = (messages: Message[]): string[] => {
 const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(function MessageInputInner({
   taskId,
   onSend,
+  onSchedule,
   onInsert,
   onInterrupt,
   disabled,
@@ -155,6 +159,9 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [layoutState, setLayoutState] = useState(INITIAL_LAYOUT_STATE);
   const [isCatchphraseOpen, setIsCatchphraseOpen] = useState(false);
+  const swipeActionCount = onSchedule ? 2 : 1;
+  const composerSwipe = useSwipeActions({ maxOffset: swipeActionCount * SWIPE_ACTION_WIDTH_PX });
+  const { closeActions: closeComposerActions } = composerSwipe;
   const taskMessages = useChatStore((state) => state.messagesByTask[taskId]);
   const sentHistory = useMemo(
     () => deriveSentHistoryFromMessages(taskMessages ?? []),
@@ -598,6 +605,20 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
     setFileError(incoming.length + selectedFiles.length > MAX_ATTACHMENTS ? 'A message can contain at most 20 files.' : '');
   }, [selectedFiles.length]);
 
+  const attachDisabled = disabled || sendDisabled || isSubmitting || selectedFiles.length >= MAX_ATTACHMENTS;
+  const openAttachPicker = useCallback(() => {
+    closeComposerActions();
+    fileInputRef.current?.click();
+  }, [closeComposerActions]);
+  const scheduleDraft = useCallback(() => {
+    closeComposerActions();
+    onSchedule?.(content);
+  }, [closeComposerActions, onSchedule, content]);
+  const toggleComposerActions = useCallback(() => {
+    if (composerSwipe.isOpen) composerSwipe.closeActions();
+    else composerSwipe.openActions();
+  }, [composerSwipe]);
+
   return (
     <div className="relative border-t border-border bg-panel/95 px-4 py-3 backdrop-blur-sm md:px-6">
       <CatchphrasePopover
@@ -606,11 +627,60 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
         onPick={handleCatchphrasePick}
         onSend={handleCatchphraseSend}
       />
-      <div className="w-full">
+      <div className="relative w-full overflow-hidden rounded-2xl">
+        {/* Left-swipe menu: revealed behind the composer on its right edge. */}
+        <div
+          className="absolute inset-y-0 right-0 z-0 flex items-center gap-1 pr-1"
+          data-testid="message-input-swipe-actions"
+          aria-hidden={!composerSwipe.isOpen}
+        >
+          <button
+            type="button"
+            aria-label="Attach files"
+            title="Attach images or context files"
+            data-testid="message-input-attach-button"
+            tabIndex={composerSwipe.isOpen ? 0 : -1}
+            disabled={attachDisabled}
+            onClick={openAttachPicker}
+            style={{ width: SWIPE_ACTION_WIDTH_PX }}
+            className="flex h-10 flex-col items-center justify-center gap-0.5 rounded-xl text-muted transition-colors hover:bg-border/50 hover:text-ink disabled:opacity-40"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="size-4" aria-hidden="true">
+              <path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.9-8.9" />
+            </svg>
+            <span className="text-[10px] leading-none">Attach</span>
+          </button>
+          {onSchedule ? (
+            <button
+              type="button"
+              aria-label="Schedule this message"
+              title="Schedule this message"
+              data-testid="message-input-schedule-button"
+              tabIndex={composerSwipe.isOpen ? 0 : -1}
+              onClick={scheduleDraft}
+              style={{ width: SWIPE_ACTION_WIDTH_PX }}
+              className="flex h-10 flex-col items-center justify-center gap-0.5 rounded-xl text-muted transition-colors hover:bg-border/50 hover:text-ink"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="size-4" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 7v5l3 2" />
+                <path d="M17.5 3.5l3 3" />
+              </svg>
+              <span className="text-[10px] leading-none">Schedule</span>
+            </button>
+          ) : null}
+        </div>
         <div
           ref={composerRef}
           data-testid="message-input-composer"
-          className="w-full min-h-11 rounded-2xl border border-zinc-50 bg-paper p-3 transition-all dark:border-zinc-700/70 focus-within:border-accent focus-within:shadow-[0_0_0_4px_rgba(228,87,46,0.1)]"
+          style={composerSwipe.panelStyle}
+          onPointerDown={(event) => { if (event.pointerType !== 'mouse') composerSwipe.onPointerDown(event); }}
+          onPointerMove={(event) => { if (event.pointerType !== 'mouse') composerSwipe.onPointerMove(event); }}
+          onPointerUp={composerSwipe.onPointerUp}
+          onPointerCancel={composerSwipe.onPointerCancel}
+          // Opaque surface so the swipe-revealed actions stay fully hidden until
+          // the composer slides aside (bg-paper is not a generated utility here).
+          className="relative z-10 w-full min-h-11 rounded-2xl border border-zinc-50 bg-[var(--paper)] p-3 transition-all dark:border-zinc-700/70 focus-within:border-accent focus-within:shadow-[0_0_0_4px_rgba(228,87,46,0.1)]"
         >
           <input
             ref={fileInputRef}
@@ -642,15 +712,15 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
           <div className={isSendOnNextLine ? 'flex flex-col gap-2' : 'flex items-center gap-2'}>
             <button
               type="button"
-              aria-label="Attach files"
-              title="Attach images or context files"
-              data-testid="message-input-attach-button"
-              disabled={disabled || sendDisabled || isSubmitting || selectedFiles.length >= MAX_ATTACHMENTS}
-              onClick={() => fileInputRef.current?.click()}
-              className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-border/50 hover:text-ink disabled:opacity-40"
+              aria-label={composerSwipe.isOpen ? 'Hide actions' : 'Show actions'}
+              title="Attach files or schedule (swipe left)"
+              data-testid="message-input-actions-toggle"
+              aria-expanded={composerSwipe.isOpen}
+              onClick={toggleComposerActions}
+              className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-border/50 hover:text-ink"
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="size-4" aria-hidden="true">
-                <path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.9-8.9" />
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`size-4 transition-transform ${composerSwipe.isOpen ? 'rotate-180' : ''}`} aria-hidden="true">
+                <path d="M15 6l-6 6 6 6" />
               </svg>
             </button>
             <textarea
@@ -658,6 +728,7 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
               aria-label="Message input"
               value={content}
               onChange={(e) => updateContent(e.target.value)}
+              onFocus={() => { if (composerSwipe.isOpen) closeComposerActions(); }}
               onKeyDown={handleKeyDown}
               onDoubleClick={handleTextareaDoubleClick}
               onCompositionStart={() => { isComposingRef.current = true; }}

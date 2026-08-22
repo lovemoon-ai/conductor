@@ -173,7 +173,9 @@ export function ScheduledMessageDialog({
       const api = getApiClient();
       await api.post(`/tasks/${taskId}/scheduled-messages`, {
         content: trimmedMessageContent,
-        sourceMessageId: message?.id ?? null,
+        // A composer draft carries no persisted id, so it schedules with no
+        // source message rather than an empty one.
+        sourceMessageId: message?.id ? message.id : null,
         schedule,
       });
       pushToast({

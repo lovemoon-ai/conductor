@@ -38,6 +38,15 @@ export function useSwipeActions(options: UseSwipeActionsOptions) {
     didSwipeRef.current = false;
   }, [setOffsetValue]);
 
+  // Open the actions without a drag, e.g. from a pointer-less trigger button.
+  const openActions = useCallback(() => {
+    const normalizedMax = Math.max(0, maxOffset);
+    if (normalizedMax === 0) return;
+    setOffsetValue(normalizedMax);
+    setIsOpen(true);
+    didSwipeRef.current = false;
+  }, [maxOffset, setOffsetValue]);
+
   const endDrag = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     if (!draggingRef.current || pointerIdRef.current !== event.pointerId) {
       return;
@@ -134,6 +143,7 @@ export function useSwipeActions(options: UseSwipeActionsOptions) {
     onPointerUp,
     onPointerCancel,
     closeActions,
+    openActions,
     consumeTap,
   };
 }
