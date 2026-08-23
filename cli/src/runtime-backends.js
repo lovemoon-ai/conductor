@@ -366,6 +366,40 @@ function readConfigEnvValue(configFilePath, key) {
   }
 }
 
+// Read the top-level `disable_built_in_cli_list` config key: the mirror of
+// `allow_cli_list` for the command-optional built-in backends (copilot, dsh)
+// that are advertised WITHOUT any allow_cli_list entry. Listing a name here
+// suppresses that automatic advertising so an operator can opt out of a
+// built-in they don't want. Scoped to command-optional built-ins on purpose:
+// a stray external or PATH-CLI name (e.g. "codex") is a documented no-op,
+// since those never auto-advertise in the first place.
+function readDisabledBuiltInBackends(configFilePath) {
+  const targetPath = resolveConductorConfigPath(configFilePath);
+  try {
+    if (!targetPath || !fs.existsSync(targetPath)) {
+      return new Set();
+    }
+    const parsed = yaml.load(fs.readFileSync(targetPath, "utf8"));
+    const raw = parsed?.disable_built_in_cli_list;
+    if (!Array.isArray(raw)) {
+      return new Set();
+    }
+    return new Set(
+      raw
+        .map((value) => normalizeRuntimeBackendName(value))
+        .filter((value) => value && isCommandOptionalBuiltInRuntimeBackend(value)),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+export function isDisabledBuiltInRuntimeBackend(backend, options = {}) {
+  return readDisabledBuiltInBackends(options.configFilePath).has(
+    normalizeRuntimeBackendName(backend),
+  );
+}
+
 function resolveProviderModulePaths(options = {}) {
   return [
     ...listProviderModulePaths(process.env.AISDK_PROVIDER_PATH),
@@ -577,6 +611,21 @@ export async function filterRuntimeSupportedAllowCliList(allowCliList, options =
 }
 
 export async function resolveConfiguredRuntimeBackend(backend, allowCliList, options = {}) {
+  const resolved = await resolveConfiguredRuntimeBackendInner(backend, allowCliList, options);
+  if (!resolved?.runtimeBackend) {
+    return resolved;
+  }
+  // A disabled command-optional built-in (copilot/dsh via
+  // `disable_built_in_cli_list`) is never resolvable, whether it reached here
+  // through an explicit allow_cli_list entry or the command-optional fallback.
+  const disabled = readDisabledBuiltInBackends(options.configFilePath);
+  if (disabled.has(resolved.runtimeBackend) || disabled.has(resolved.requestedBackend)) {
+    return null;
+  }
+  return resolved;
+}
+
+async function resolveConfiguredRuntimeBackendInner(backend, allowCliList, options = {}) {
   const normalizedBackend = normalizeRuntimeBackendName(backend);
   if (!normalizedBackend || LEGACY_RUNTIME_BACKEND_ALIASES.has(normalizedBackend)) {
     return null;
@@ -682,8 +731,12 @@ export async function listAdvertisedBackends(allowCliList, options = {}) {
     runtimeBackendMap[backend] = backend;
   }
 
+  const disabledBuiltIns = readDisabledBuiltInBackends(options.configFilePath);
   const commandOptionalBuiltIns = BUILT_IN_RUNTIME_BACKENDS.filter(
-    (backend) => isCommandOptionalBuiltInRuntimeBackend(backend) && !runtimeBackendMap[backend],
+    (backend) =>
+      isCommandOptionalBuiltInRuntimeBackend(backend) &&
+      !runtimeBackendMap[backend] &&
+      !disabledBuiltIns.has(backend),
   );
   for (const backend of commandOptionalBuiltIns) {
     runtimeBackendMap[backend] = backend;

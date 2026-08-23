@@ -321,6 +321,16 @@ async function main() {
 
   lines.push(
     "",
+    "# Uncomment to disable built-in SDK backends that are otherwise advertised",
+    "# automatically (copilot, dsh). Listing a name here hides it from the",
+    "# daemon's supported backends without removing the shipped dependency.",
+    "# disable_built_in_cli_list:",
+    "#   - dsh",
+    "#   - copilot"
+  );
+
+  lines.push(
+    "",
     "# Uncomment to use custom envs, such as proxy.",
     "# envs:",
     "#   http_proxy: http://127.0.0.1:7890",

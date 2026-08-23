@@ -8,7 +8,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import yaml from "js-yaml";
-import { filterRuntimeSupportedAllowCliList, listAdvertisedBackends, resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
+import {
+  filterRuntimeSupportedAllowCliList,
+  isDisabledBuiltInRuntimeBackend,
+  listAdvertisedBackends,
+  resetRuntimeBackendCacheForTests,
+  resolveConfiguredRuntimeBackend,
+} from "../src/runtime-backends.js";
 
 import {
   applyWorkingDirectory,
@@ -203,6 +209,80 @@ describe("conductor-fire backends", () => {
     const allowCliList = await loadAllowCliList(configPath);
     const backends = Object.keys(allowCliList);
     assert.ok(backends.length > 0, "allow_cli_list is empty");
+  });
+
+  it("advertises copilot and dsh by default without a disable list", async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-disable-default-"));
+    const configPath = path.join(dir, "config.yaml");
+    fs.writeFileSync(configPath, "allow_cli_list: {}\n", "utf8");
+    t.after(() => {
+      fs.rmSync(dir, { recursive: true, force: true });
+      resetRuntimeBackendCacheForTests();
+    });
+    const advertised = await listAdvertisedBackends({}, { configFilePath: configPath });
+    assert.ok(advertised.supportedBackends.includes("copilot"));
+    assert.ok(advertised.supportedBackends.includes("dsh"));
+  });
+
+  it("hides a command-optional built-in listed in disable_built_in_cli_list", async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-disable-"));
+    const configPath = path.join(dir, "config.yaml");
+    fs.writeFileSync(configPath, "disable_built_in_cli_list:\n  - dsh\n", "utf8");
+    t.after(() => {
+      fs.rmSync(dir, { recursive: true, force: true });
+      resetRuntimeBackendCacheForTests();
+    });
+
+    const advertised = await listAdvertisedBackends({}, { configFilePath: configPath });
+    assert.ok(!advertised.supportedBackends.includes("dsh"), "dsh should be disabled");
+    assert.ok(advertised.supportedBackends.includes("copilot"), "copilot stays advertised");
+    assert.equal(advertised.runtimeBackendMap.dsh, undefined);
+  });
+
+  it("disables every command-optional built-in listed at once", async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-disable-all-"));
+    const configPath = path.join(dir, "config.yaml");
+    fs.writeFileSync(configPath, "disable_built_in_cli_list:\n  - dsh\n  - copilot\n", "utf8");
+    t.after(() => {
+      fs.rmSync(dir, { recursive: true, force: true });
+      resetRuntimeBackendCacheForTests();
+    });
+
+    const advertised = await listAdvertisedBackends({}, { configFilePath: configPath });
+    assert.ok(!advertised.supportedBackends.includes("dsh"));
+    assert.ok(!advertised.supportedBackends.includes("copilot"));
+  });
+
+  it("hides a disabled built-in even when it has an explicit allow_cli_list entry", async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-disable-explicit-"));
+    const configPath = path.join(dir, "config.yaml");
+    fs.writeFileSync(configPath, "disable_built_in_cli_list:\n  - dsh\n", "utf8");
+    t.after(() => {
+      fs.rmSync(dir, { recursive: true, force: true });
+      resetRuntimeBackendCacheForTests();
+    });
+
+    const advertised = await listAdvertisedBackends({ dsh: "dsh" }, { configFilePath: configPath });
+    assert.ok(!advertised.supportedBackends.includes("dsh"));
+    const resolved = await resolveConfiguredRuntimeBackend("dsh", { dsh: "dsh" }, { configFilePath: configPath });
+    assert.equal(resolved, null, "a disabled backend must not resolve for launch");
+  });
+
+  it("ignores non command-optional names in disable_built_in_cli_list", async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-disable-noop-"));
+    const configPath = path.join(dir, "config.yaml");
+    // codex is a PATH-CLI backend, never auto-advertised, so disabling it is a no-op.
+    fs.writeFileSync(configPath, "disable_built_in_cli_list:\n  - codex\n", "utf8");
+    t.after(() => {
+      fs.rmSync(dir, { recursive: true, force: true });
+      resetRuntimeBackendCacheForTests();
+    });
+
+    assert.equal(isDisabledBuiltInRuntimeBackend("codex", { configFilePath: configPath }), false);
+    assert.equal(isDisabledBuiltInRuntimeBackend("dsh", { configFilePath: configPath }), false);
+    const advertised = await listAdvertisedBackends({}, { configFilePath: configPath });
+    assert.ok(advertised.supportedBackends.includes("dsh"));
+    assert.ok(advertised.supportedBackends.includes("copilot"));
   });
 
   it("keeps configured codex aliases in the filtered allow_cli_list", async () => {
