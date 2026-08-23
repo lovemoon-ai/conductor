@@ -13,6 +13,7 @@ const COMPOSER_GAP_PX = 8;
 const SEND_BUTTON_SAFETY_GAP_PX = 12;
 const INPUT_SCROLL_THRESHOLD_RATIO = 0.75;
 const SWIPE_ACTION_WIDTH_PX = 52;
+const SWIPE_ACTION_GAP_PX = 4; // matches the reveal panel's gap-1 and pr-1
 const MAX_ATTACHMENTS = 20;
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -160,8 +161,13 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   const [layoutState, setLayoutState] = useState(INITIAL_LAYOUT_STATE);
   const [isCatchphraseOpen, setIsCatchphraseOpen] = useState(false);
   const swipeActionCount = onSchedule ? 2 : 1;
-  const composerSwipe = useSwipeActions({ maxOffset: swipeActionCount * SWIPE_ACTION_WIDTH_PX });
+  // Slide exactly as far as the reveal panel is wide: N buttons, the gaps
+  // between them, and the panel's trailing padding. Anything less leaves a
+  // sliver of the panel tucked under the composer's edge.
+  const swipeMenuWidth = swipeActionCount * SWIPE_ACTION_WIDTH_PX + swipeActionCount * SWIPE_ACTION_GAP_PX;
+  const composerSwipe = useSwipeActions({ maxOffset: swipeMenuWidth });
   const { closeActions: closeComposerActions } = composerSwipe;
+  const firstSwipeActionRef = useRef<HTMLButtonElement>(null);
   const taskMessages = useChatStore((state) => state.messagesByTask[taskId]);
   const sentHistory = useMemo(
     () => deriveSentHistoryFromMessages(taskMessages ?? []),
@@ -615,8 +621,14 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
     onSchedule?.(content);
   }, [closeComposerActions, onSchedule, content]);
   const toggleComposerActions = useCallback(() => {
-    if (composerSwipe.isOpen) composerSwipe.closeActions();
-    else composerSwipe.openActions();
+    if (composerSwipe.isOpen) {
+      composerSwipe.closeActions();
+    } else {
+      composerSwipe.openActions();
+      // Land keyboard focus on the revealed menu so it is operable without a
+      // pointer; a touch swipe never reaches here so focus is not stolen there.
+      requestAnimationFrame(() => firstSwipeActionRef.current?.focus());
+    }
   }, [composerSwipe]);
 
   return (
@@ -635,6 +647,7 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
           aria-hidden={!composerSwipe.isOpen}
         >
           <button
+            ref={firstSwipeActionRef}
             type="button"
             aria-label="Attach files"
             title="Attach images or context files"

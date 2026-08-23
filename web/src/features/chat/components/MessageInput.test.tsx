@@ -106,6 +106,14 @@ describe('MessageInput', () => {
     expect(screen.getByTestId('message-input-schedule-button')).toHaveAttribute('tabindex', '0');
   });
 
+  it('moves keyboard focus onto the revealed menu when opened via the toggle', async () => {
+    render(<MessageInput taskId="task-focus" onSend={vi.fn()} onSchedule={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('message-input-actions-toggle'));
+    // Focus is deferred to the next frame so keyboard users land on the menu
+    // instead of having to Shift+Tab back into it.
+    await waitFor(() => expect(screen.getByTestId('message-input-attach-button')).toHaveFocus());
+  });
+
   it('schedules the current draft from the swipe menu', () => {
     const onSchedule = vi.fn();
     render(<MessageInput taskId="task-schedule" onSend={vi.fn()} onSchedule={onSchedule} />);
