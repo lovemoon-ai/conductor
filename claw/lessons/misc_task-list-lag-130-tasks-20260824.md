@@ -22,7 +22,8 @@
 ## 修复
 1. 后端：预览查询改为**窗口函数**（`ROW_NUMBER() OVER (PARTITION BY task_id, role ORDER BY created_at DESC, id DESC)` 取 rn=1）只取每任务最新 user/assistant 各一条，`SUBSTR` 服务端截断到 200 字符。附 `try/catch` 回退到 Prisma-typed `findMany`（兼容 Postgres uuid 等方言差异）。实测（重量数据）：575ms→60ms、1.13MB→144KB。
 2. 前端 memo：`TaskItem` 的 `useTasksStore()` 换成 7 个 per-action 窄 selector（action 引用稳定），组件包 `React.memo`；`TaskList.toggleTaskSelection` 加 `useCallback` + 用 `useEffect` 维护的 `visibleTaskIdSetRef`，避免回调每次 WS 更新换引用而破坏 memo。实测：单任务更新重渲染 **162→1**。
-3. （未做，另起一轮）列表虚拟化：解决"切页那一下卡"的剩余成本。
+3. 前端渐进挂载（替代全虚拟化）：`TaskList` 初始只挂 24 行，`IntersectionObserver(root=null)` 探底后每批追加 24；行一旦挂载保持挂载。scope（项目/筛选/视图）切换用 value-stable key 重置窗口，切页 remount 自然重置。实测（159 任务）：初始渲染脚本 340ms→82ms、初始 DOM ~15k→~3.5k 节点、切页返回只挂 24、滚动经 IO 补齐到 159。选择/计数仍基于全量任务；不动拖拽/滑动/分组/tab 卡，零新依赖。
+   - 为何不用全虚拟化（`@tanstack/react-virtual`）：滚动容器在父组件、拖拽命中靠行几何、行变高——全虚拟化需重做这些且拖拽手势难自动回归，风险高。渐进挂载以极小改动拿到主要收益。
 
 ## 如何避免下次再犯
 - Zustand：列表项组件**永远用窄 selector**（`useStore(s => s.field)`），禁止 `useStore()` 无参全量订阅；长列表项默认 `React.memo`，并确保传入的回调/派生 props 引用稳定（`useCallback` + 必要时 ref）。

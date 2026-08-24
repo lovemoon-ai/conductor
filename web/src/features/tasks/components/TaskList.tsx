@@ -160,6 +160,14 @@ const prefersReducedMotion = (): boolean => {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 };
 
+// Progressive mounting window: how many rows to mount initially, and how many
+// to add each time the user scrolls near the end. Mounting all ~160 cards on
+// every page open / return is the dominant cost behind the "opening / switching
+// pages feels laggy" symptom (React mounts every TaskItem). Capping keeps it
+// O(a couple screens) instead of O(tasks); rows stay mounted once revealed.
+const INITIAL_MOUNT_ROWS = 24;
+const MOUNT_ROW_BATCH = 24;
+
 interface TaskListProps {
   viewMode: TaskListViewMode;
   activeTaskId?: string | null;
@@ -426,6 +434,54 @@ export function TaskList({
     () => buildTaskCardRows(visibleTasks, renderGroups),
     [visibleTasks, renderGroups],
   );
+
+  // Progressive mounting: render a growing window of rows instead of all at
+  // once. Rows already mounted stay mounted, so drag/swipe/scroll on revealed
+  // rows is unaffected.
+  const [mountedRowCount, setMountedRowCount] = useState(INITIAL_MOUNT_ROWS);
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+
+  // Reset the window when the list SCOPE changes (project / filter / view
+  // switch). Keyed on a value-stable string so a new WebSocket tasks-array
+  // reference for the *same* scope does not reset it (which would re-collapse
+  // and re-mount the list on every message).
+  const listScopeKey = `${
+    Array.isArray(projectFilter) ? projectFilter.join(",") : projectFilter ?? ""
+  }|${runningOnly}|${taskTypeFilter ?? ""}|${daemonHostFilter ?? ""}|${backendFilter ?? ""}|${viewMode}`;
+  useEffect(() => {
+    setMountedRowCount(INITIAL_MOUNT_ROWS);
+  }, [listScopeKey]);
+
+  const hasMoreRowsToMount = mountedRowCount < taskCardRows.length;
+  const visibleTaskCardRows = hasMoreRowsToMount
+    ? taskCardRows.slice(0, mountedRowCount)
+    : taskCardRows;
+
+  // Grow the window as the sentinel nears the viewport. `root: null` works even
+  // though the scroll container lives in the parent page: the sentinel's
+  // viewport position still changes as that container scrolls. If
+  // IntersectionObserver is unavailable, mount everything (correctness over
+  // perf).
+  useEffect(() => {
+    if (!hasMoreRowsToMount) {
+      return;
+    }
+    const sentinel = loadMoreSentinelRef.current;
+    if (!sentinel || typeof IntersectionObserver === "undefined") {
+      setMountedRowCount(taskCardRows.length);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setMountedRowCount((count) => Math.min(count + MOUNT_ROW_BATCH, taskCardRows.length));
+        }
+      },
+      { rootMargin: "600px 0px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMoreRowsToMount, mountedRowCount, taskCardRows.length]);
   const selectedTaskIdSet = useMemo(() => new Set(
     [...selectedTaskIds].filter((taskId) => visibleTaskIdSet.has(taskId)),
   ), [selectedTaskIds, visibleTaskIdSet]);
@@ -1363,7 +1419,7 @@ export function TaskList({
 
       {viewMode === 'graph' ? renderGraphCanvas() : (
         <div className={`space-y-3 ${draggingTaskId ? 'select-none' : ''}`}>
-          {taskCardRows.map((row) => {
+          {visibleTaskCardRows.map((row) => {
             if (row.type === 'task') {
               const task = row.task;
               const isDropTarget = dropTargetId === task.id;
@@ -1492,6 +1548,9 @@ export function TaskList({
               </div>
             );
           })}
+          {hasMoreRowsToMount ? (
+            <div ref={loadMoreSentinelRef} aria-hidden className="h-px w-full" />
+          ) : null}
         </div>
       )}
 
