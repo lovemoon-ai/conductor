@@ -13,6 +13,7 @@ export const DEFAULT_HOMEBREW_FORMULA = "lovemoon-ai/tap/conductor";
 const DEFAULT_UPDATE_WINDOW = { startMinutes: 120, endMinutes: 240 };
 const REQUEST_TIMEOUT_MS = 10_000;
 const INSTALL_METHOD_FILENAME = ".install-method";
+const GLOBAL_PACKAGE_MARKER = `${path.sep}lib${path.sep}node_modules${path.sep}`;
 
 function resolveTimeoutMs(value) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -137,6 +138,28 @@ export function resolveInstallMethod(options = {}) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Derive the npm global prefix that the currently running package was installed into.
+ *
+ * A global install always lands at `<prefix>/lib/node_modules/<package>`, so the prefix is
+ * whatever precedes that marker. Returns `null` for layouts that are not a global install
+ * (git checkout, project-local `node_modules`), where the caller should leave npm's own
+ * prefix resolution alone.
+ */
+export function resolveGlobalInstallPrefix(packageRoot) {
+  if (typeof packageRoot !== "string" || !packageRoot.trim()) {
+    return null;
+  }
+
+  const normalized = path.resolve(packageRoot);
+  const markerIndex = normalized.lastIndexOf(GLOBAL_PACKAGE_MARKER);
+  if (markerIndex <= 0) {
+    return null;
+  }
+
+  return normalized.slice(0, markerIndex);
 }
 
 export function buildUpgradeCommand(options = {}) {

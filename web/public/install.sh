@@ -265,7 +265,13 @@ setup_conductor_node() {
         ln -sfn "$NODE_INSTALL_DIR" "$NODE_LINK_DIR"
     fi
 
-    export npm_config_prefix="$CONDUCTOR_HOME"
+    # Deliberately do NOT pin an npm prefix here. The bundled npm defaults to its own Node
+    # install dir, and `conductor update` -- which never sees this script -- resolves the same
+    # default. Overriding it would only stay in effect for this process, so the two would
+    # disagree afterwards and install into separate trees. An npm_config_prefix inherited from
+    # the environment (or from an older install block in the user's rc) is unset for the same
+    # reason: it would silently retarget the install.
+    unset npm_config_prefix
     NPM_CMD="${NODE_LINK_DIR}/bin/npm"
     NODE_CMD="${NODE_LINK_DIR}/bin/node"
     USED_CONDUCTOR_NODE=1
@@ -337,6 +343,32 @@ install_conductor() {
     return 1
 }
 
+# Earlier installers pinned the npm prefix to ${CONDUCTOR_HOME}, so the CLI lived in
+# ${CONDUCTOR_HOME}/lib and was linked from ${CONDUCTOR_HOME}/bin. It now lives in the managed
+# Node dir. Drop the stale tree, and leave ${CONDUCTOR_HOME}/bin/conductor behind as a symlink
+# so old rc PATH entries, cached shell hashes and absolute references keep resolving to the
+# current build instead of a frozen one. The link points through the stable `node` symlink so
+# it survives a Node version bump.
+migrate_conductor_home_layout() {
+    if [ "$USED_CONDUCTOR_NODE" -ne 1 ]; then
+        return
+    fi
+
+    local legacy_package_dir="${CONDUCTOR_HOME}/lib/node_modules/@love-moon"
+    if [ -e "$legacy_package_dir" ]; then
+        log_info "Removing superseded install at ${legacy_package_dir}"
+        rm -rf "$legacy_package_dir"
+    fi
+
+    if [ ! -x "${NODE_LINK_DIR}/bin/conductor" ]; then
+        return
+    fi
+
+    mkdir -p "${CONDUCTOR_HOME}/bin"
+    ln -sfn "../node/bin/conductor" "${CONDUCTOR_HOME}/bin/conductor"
+    log_info "Compatibility symlink: ${CONDUCTOR_HOME}/bin/conductor -> ../node/bin/conductor"
+}
+
 resolve_rc_file() {
     if [ -n "$CONDUCTOR_INSTALL_RC_FILE" ]; then
         RC_FILE="$CONDUCTOR_INSTALL_RC_FILE"
@@ -403,8 +435,11 @@ build_path_export_line() {
     fi
 
     if [ "$USED_CONDUCTOR_NODE" -eq 1 ]; then
+        # conductor is installed into the managed Node dir, so node/bin already exposes it.
+        # ${CONDUCTOR_HOME}/bin only carries a backwards-compatibility symlink and does not
+        # need to be on PATH.
         node_path='$HOME/.conductor/node/bin'
-        conductor_bin_path='$HOME/.conductor/bin'
+        conductor_bin_path=''
     else
         if [ "$USE_LOCAL_NPM_PREFIX" -eq 1 ]; then
             node_path=""
@@ -590,6 +625,28 @@ EOF
     return 0
 }
 
+# True when the rc already carries a Conductor block that no longer matches what this installer
+# would write. Older blocks can export an npm_config_prefix that outlives the install and
+# retargets every later `npm install -g`, so a stale block is worth rewriting even when
+# `conductor` is already resolvable.
+rc_has_outdated_conductor_block() {
+    resolve_rc_file
+
+    if [ ! -f "$RC_FILE" ]; then
+        return 1
+    fi
+
+    if ! grep -Fq "$PATH_BLOCK_START" "$RC_FILE"; then
+        return 1
+    fi
+
+    if rc_contains_current_path_setup; then
+        return 1
+    fi
+
+    return 0
+}
+
 remove_existing_path_block() {
     if [ ! -f "$RC_FILE" ]; then
         return
@@ -662,7 +719,9 @@ offer_path_setup() {
     local path_status="$1"
     local prompt_status=0
 
-    if [ "$path_status" -ne 2 ] && [ "$USE_LOCAL_NPM_PREFIX" -ne 1 ]; then
+    if [ "$path_status" -ne 2 ] \
+        && [ "$USE_LOCAL_NPM_PREFIX" -ne 1 ] \
+        && ! rc_has_outdated_conductor_block; then
         return
     fi
 
@@ -714,6 +773,8 @@ main() {
         log_error "Failed to install Conductor CLI."
         exit 1
     fi
+
+    migrate_conductor_home_layout
 
     echo ""
     local path_status=0

@@ -9,6 +9,7 @@ import {
   parseUpdateWindow,
   isInUpdateWindow,
   isManagedInstallPath,
+  resolveGlobalInstallPrefix,
   resolveInstallMethod,
 } from "../src/version-check.js";
 
@@ -137,6 +138,49 @@ describe("isManagedInstallPath", () => {
       }),
       false,
     );
+  });
+});
+
+describe("resolveGlobalInstallPrefix", () => {
+  it("derives the prefix from a system npm install", () => {
+    assert.strictEqual(
+      resolveGlobalInstallPrefix("/usr/local/lib/node_modules/@love-moon/conductor-cli"),
+      "/usr/local",
+    );
+  });
+
+  it("derives the prefix from a Conductor-managed Node install", () => {
+    assert.strictEqual(
+      resolveGlobalInstallPrefix(
+        "/home/duino/.conductor/node-v23.11.0-linux-x64/lib/node_modules/@love-moon/conductor-cli",
+      ),
+      "/home/duino/.conductor/node-v23.11.0-linux-x64",
+    );
+  });
+
+  it("derives the prefix from the legacy ~/.conductor layout", () => {
+    assert.strictEqual(
+      resolveGlobalInstallPrefix("/home/duino/.conductor/lib/node_modules/@love-moon/conductor-cli"),
+      "/home/duino/.conductor",
+    );
+  });
+
+  it("returns null for a git checkout", () => {
+    assert.strictEqual(resolveGlobalInstallPrefix("/home/duino/ws/conductor/cli"), null);
+  });
+
+  it("returns null for a project-local node_modules install", () => {
+    assert.strictEqual(
+      resolveGlobalInstallPrefix("/home/duino/ws/app/node_modules/@love-moon/conductor-cli"),
+      null,
+    );
+  });
+
+  it("returns null for empty or non-string input", () => {
+    assert.strictEqual(resolveGlobalInstallPrefix(""), null);
+    assert.strictEqual(resolveGlobalInstallPrefix("   "), null);
+    assert.strictEqual(resolveGlobalInstallPrefix(undefined), null);
+    assert.strictEqual(resolveGlobalInstallPrefix(null), null);
   });
 });
 

@@ -17,6 +17,7 @@ import {
   fetchLatestVersion,
   isNewerVersion,
   detectPackageManager,
+  resolveGlobalInstallPrefix,
 } from "../src/version-check.js";
 import {
   buildPnpmAllowBuildArgs,
@@ -162,6 +163,18 @@ async function performUpdate() {
   });
   console.log(`   Using package manager: ${colorize(packageManager, "cyan")}`);
   console.log("");
+
+  // `npm install -g` targets whichever npm wins the PATH lookup, which is not necessarily the
+  // one that installed us -- a Conductor-managed Node, an nvm shim and a system npm all resolve
+  // to different prefixes. When they disagree the update lands in a tree nobody runs, so
+  // `conductor --version` keeps reporting the old build and the next update repeats the cycle.
+  // Pin every child command to the prefix the running package actually lives in.
+  const installPrefix = packageManager === "npm" ? resolveGlobalInstallPrefix(PKG_ROOT) : null;
+  if (installPrefix) {
+    process.env.npm_config_prefix = installPrefix;
+    console.log(`   Install prefix: ${colorize(installPrefix, "cyan")}`);
+    console.log("");
+  }
 
   if (packageManager === "pnpm") {
     console.log("   Preparing pnpm native dependency allowlist...");
