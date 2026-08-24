@@ -37,6 +37,7 @@
 - Change git email and user to below before commit and push
   - git config --global user.email 15711406152@163.com
   - git config --global user.name "dang217"
+  - Run `make info-git-prefix` to get ssh key used by git.
 - Follow the existing imperative, one-line commit style (`update app`, `add sdk`); keep the subject within 72 characters and describe what changed.
 - PRs must summarize intent, list the commands run (for example `cd web && pnpm test` and `cd modules/conductor-sdk && pnpm test`), link issues, and attach screenshots or logs for UI and infra work.
 - Flag schema changes or new environment variables so reviewers can apply DB or deploy steps before rollout.
