@@ -52,6 +52,7 @@ vi.mock("@/lib/subscription/service", async (importOriginal) => {
 vi.mock("@/lib/db", () => ({
   db: {
     $transaction: vi.fn(),
+    $queryRaw: vi.fn(),
     task: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
@@ -159,6 +160,7 @@ describe("/api/tasks", () => {
       lastPaymentAt: null,
     } as any);
     vi.mocked(db.message.findMany).mockResolvedValue([]);
+    vi.mocked(db.$queryRaw).mockResolvedValue([] as any);
     vi.mocked(db.task.update).mockResolvedValue({
       id: "task-updated",
       updatedAt: new Date("2024-01-03T00:00:00.000Z"),
@@ -219,21 +221,11 @@ describe("/api/tasks", () => {
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
       vi.mocked(db.task.findMany).mockResolvedValue(mockTasks as any);
       countActiveScheduledMessagesForTasksMock.mockResolvedValue(new Map([["task-1", 2]]));
-      vi.mocked(db.message.findMany).mockResolvedValue([
-        {
-          id: "msg-2",
-          taskId: "task-1",
-          role: "assistant",
-          content: "Assistant reply",
-          createdAt: new Date("2024-01-02T00:00:00.000Z"),
-        },
-        {
-          id: "msg-1",
-          taskId: "task-1",
-          role: "user",
-          content: "User prompt",
-          createdAt: new Date("2024-01-01T23:59:00.000Z"),
-        },
+      // Previews now come from a window-function raw query that returns only
+      // the latest user + assistant row per task (shape: task_id/role/content).
+      vi.mocked(db.$queryRaw).mockResolvedValue([
+        { task_id: "task-1", role: "assistant", content: "Assistant reply" },
+        { task_id: "task-1", role: "user", content: "User prompt" },
       ] as any);
 
       const token = createTestToken("user-1");
@@ -263,6 +255,41 @@ describe("/api/tasks", () => {
           last_output_seq: 9,
         }),
       );
+    });
+
+    it("falls back to a per-message scan when the raw preview query is rejected by the dialect", async () => {
+      // Guards buildTaskMessagePreviews' fallback path: if $queryRaw throws
+      // (e.g. Postgres uuid-vs-text on the IN list), previews must still be
+      // populated from db.message.findMany rather than 500-ing the whole list.
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.task.findMany).mockResolvedValue([
+        {
+          id: "task-1",
+          projectId: "proj-1",
+          title: "Task 1",
+          status: "pending",
+          metadata: null,
+          ptySession: null,
+          createdAt: new Date("2024-01-01"),
+          updatedAt: new Date("2024-01-01"),
+        },
+      ] as any);
+      vi.mocked(db.$queryRaw).mockRejectedValue(new Error("operator does not exist: uuid = text"));
+      vi.mocked(db.message.findMany).mockResolvedValue([
+        { taskId: "task-1", role: "assistant", content: "Fallback assistant" },
+        { taskId: "task-1", role: "user", content: "Fallback user" },
+      ] as any);
+
+      const response = await GET(createMockRequest({ token: createTestToken("user-1") }));
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data[0].last_user_message).toBe("Fallback user");
+      expect(data[0].last_assistant_message).toBe("Fallback assistant");
+      expect(db.message.findMany).toHaveBeenCalled();
+      warnSpy.mockRestore();
     });
 
     it("sorts refreshed task lists by latest activity so mobile returns keep new-message tasks on top", async () => {

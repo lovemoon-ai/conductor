@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -390,6 +391,17 @@ export function TaskList({
     : null;
   const allTaskIds = useMemo(() => visibleTasks.map((task) => task.id), [visibleTasks]);
   const visibleTaskIdSet = useMemo(() => new Set(allTaskIds), [allTaskIds]);
+  // Track the latest visible-id set in a ref so `toggleTaskSelection` can read
+  // it without listing it as a dependency. `visibleTaskIdSet` gets a new
+  // reference on every WebSocket update (the tasks array is replaced), so
+  // depending on it would give `onToggleSelect` a new identity each time and
+  // defeat the TaskItem memo for every card. The ref is updated in an effect
+  // (after commit) rather than during render, which is safe under concurrent
+  // rendering and only ever read at click time.
+  const visibleTaskIdSetRef = useRef(visibleTaskIdSet);
+  useEffect(() => {
+    visibleTaskIdSetRef.current = visibleTaskIdSet;
+  }, [visibleTaskIdSet]);
   const visibleTaskById = useMemo(
     () => new Map(visibleTasks.map((task) => [task.id, task] as const)),
     [visibleTasks],
@@ -668,12 +680,15 @@ export function TaskList({
     if (isTaskRow) itemWrapperRefs.current.delete(rowId);
   };
 
-  const toggleTaskSelection = (taskId: string) => {
+  // `useCallback` so the `onToggleSelect` prop stays referentially stable —
+  // otherwise every TaskList render hands each memoized TaskItem a new function
+  // and defeats the memo.
+  const toggleTaskSelection = useCallback((taskId: string) => {
     if (selectionActionBusy) {
       return;
     }
     setSelectedTaskIds((prev) => {
-      const next = new Set([...prev].filter((id) => visibleTaskIdSet.has(id)));
+      const next = new Set([...prev].filter((id) => visibleTaskIdSetRef.current.has(id)));
       if (next.has(taskId)) {
         next.delete(taskId);
       } else {
@@ -681,7 +696,7 @@ export function TaskList({
       }
       return next;
     });
-  };
+  }, [selectionActionBusy]);
 
   const toggleSelectAll = () => {
     if (allSelected) {

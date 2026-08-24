@@ -23,12 +23,18 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('../store', () => ({
-  useTasksStore: () => ({
-    updateTask: updateTaskMock,
-    restartTask: restartTaskMock,
-    deleteTask: deleteTaskMock,
-    markTaskRead: markTaskReadMock,
-  }),
+  // TaskItem now selects each action individually (useTasksStore(s => s.x)),
+  // so the mock must apply the selector to a state object rather than ignore it.
+  useTasksStore: (selector: (state: Record<string, unknown>) => unknown) =>
+    selector({
+      updateTask: updateTaskMock,
+      restartTask: restartTaskMock,
+      deleteTask: deleteTaskMock,
+      achieveTask: vi.fn(),
+      markTaskRead: markTaskReadMock,
+      fetchTask: vi.fn(),
+      setTaskSecondProject: vi.fn(),
+    }),
 }));
 
 vi.mock('@/features/projects', () => ({
@@ -1131,5 +1137,16 @@ describe('TaskItem', () => {
     );
 
     expect(screen.getByRole('button', { name: /inactive pane task/i })).toHaveClass('webapp-card-list-pane-idle');
+  });
+
+  it('stays wrapped in React.memo so one task update does not re-render every card', () => {
+    // Perf regression guard (list re-render storm): a single WebSocket task
+    // update replaces the tasks array and re-renders TaskList; memo keeps
+    // unchanged cards from re-rendering (measured 162 -> 1 renders per update).
+    // Unwrapping memo — or reverting TaskItem to a bare `useTasksStore()`
+    // full-store subscription — would silently bring the storm back.
+    expect((TaskItem as unknown as { $$typeof?: symbol }).$$typeof).toBe(
+      Symbol.for('react.memo'),
+    );
   });
 });

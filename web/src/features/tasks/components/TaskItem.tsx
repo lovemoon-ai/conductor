@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type {
   CSSProperties,
@@ -412,7 +412,7 @@ const TerminalIcon = () => (
   </svg>
 );
 
-export function TaskItem({
+function TaskItemComponent({
   task,
   isUnread,
   isSelected,
@@ -511,15 +511,19 @@ export function TaskItem({
   const dismissedStatusConfirmationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusBadgeRef = useRef<HTMLDivElement | null>(null);
 
-  const {
-    updateTask,
-    restartTask,
-    deleteTask,
-    achieveTask,
-    markTaskRead,
-    fetchTask,
-    setTaskSecondProject,
-  } = useTasksStore();
+  // Subscribe to each action individually (stable references) instead of the
+  // whole store. `useTasksStore()` with no selector re-renders this card on
+  // ANY store change — including `updateTaskInList` replacing the tasks array
+  // on every WebSocket message — which, across 100+ cards, is the re-render
+  // storm behind the list lag. Per-action selectors never change reference, so
+  // the card only re-renders when its own props/runtime slice change.
+  const updateTask = useTasksStore((state) => state.updateTask);
+  const restartTask = useTasksStore((state) => state.restartTask);
+  const deleteTask = useTasksStore((state) => state.deleteTask);
+  const achieveTask = useTasksStore((state) => state.achieveTask);
+  const markTaskRead = useTasksStore((state) => state.markTaskRead);
+  const fetchTask = useTasksStore((state) => state.fetchTask);
+  const setTaskSecondProject = useTasksStore((state) => state.setTaskSecondProject);
   const projects = useProjectsStore((state) => state.projects);
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
@@ -1769,3 +1773,9 @@ export function TaskItem({
     </div>
   );
 }
+
+// Memoized so a parent re-render (e.g. the tasks array getting a new reference
+// on every WebSocket message) skips cards whose props are unchanged. Props are
+// referentially stable per card: `task` keeps its ref via `upsertTask`, the
+// runtime slice is a per-task selector, and all callbacks are `useCallback`.
+export const TaskItem = memo(TaskItemComponent);

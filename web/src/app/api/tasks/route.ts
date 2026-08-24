@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
 import { realtimeHub } from "@/lib/realtime/hub";
@@ -93,31 +94,51 @@ const parseJsonField = (
   };
 };
 
+// Card previews only need the latest non-empty user + assistant message per
+// task. The previous implementation loaded EVERY user/assistant message's full
+// `content` for all task ids into memory just to keep the first two per task —
+// at ~130 tasks with long agent transcripts that meant tens of thousands of
+// rows and hundreds of MB hydrated per request.
+const PREVIEW_MAX_CHARS = 200;
+
+type TaskMessagePreview = { lastUserMessage: string | null; lastAssistantMessage: string | null };
+
+// Keep the first (newest) non-empty message per role; inputs arrive newest-first
+// so the `== null` guard makes the latest win. Truncated to keep the payload small.
+const applyPreviewRow = (
+  previews: Record<string, TaskMessagePreview>,
+  taskId: string,
+  role: string,
+  rawContent: string | null,
+): void => {
+  const target = previews[taskId];
+  if (!target) {
+    return;
+  }
+  const content =
+    typeof rawContent === "string" ? rawContent.trim().slice(0, PREVIEW_MAX_CHARS) : "";
+  if (!content) {
+    return;
+  }
+  if (role === "user") {
+    if (target.lastUserMessage == null) {
+      target.lastUserMessage = content;
+    }
+  } else if (role === "assistant") {
+    if (target.lastAssistantMessage == null) {
+      target.lastAssistantMessage = content;
+    }
+  }
+};
+
+// Warn once, not per request — on a dialect that always rejects the raw query
+// (e.g. Postgres) the fallback would otherwise spam the log every list load.
+let warnedPreviewFallback = false;
+
 const buildTaskMessagePreviews = async (
   taskIds: string[],
-): Promise<Record<string, { lastUserMessage: string | null; lastAssistantMessage: string | null }>> => {
-  if (taskIds.length === 0) {
-    return {};
-  }
-
-  const messages = await db.message.findMany({
-    where: {
-      taskId: { in: taskIds },
-      role: { in: ["user", "assistant"] },
-    },
-    select: {
-      taskId: true,
-      role: true,
-      content: true,
-      createdAt: true,
-    },
-    orderBy: [
-      { createdAt: "desc" },
-      { id: "desc" as const },
-    ],
-  });
-
-  const previews: Record<string, { lastUserMessage: string | null; lastAssistantMessage: string | null }> = {};
+): Promise<Record<string, TaskMessagePreview>> => {
+  const previews: Record<string, TaskMessagePreview> = {};
 
   for (const taskId of taskIds) {
     previews[taskId] = {
@@ -126,28 +147,61 @@ const buildTaskMessagePreviews = async (
     };
   }
 
+  if (taskIds.length === 0) {
+    return previews;
+  }
+
+  // Fast path: a window function returns exactly the <=2 rows we keep, truncated
+  // in-DB, instead of hydrating every message. Double-quoted identifiers +
+  // SUBSTR/ROW_NUMBER work on both SQLite (prod) and Postgres.
+  try {
+    const rows = await db.$queryRaw<Array<{ task_id: string; role: string; content: string | null }>>`
+      SELECT "task_id", "role", "content"
+      FROM (
+        SELECT
+          "task_id",
+          "role",
+          SUBSTR("content", 1, ${PREVIEW_MAX_CHARS}) AS "content",
+          ROW_NUMBER() OVER (
+            PARTITION BY "task_id", "role"
+            ORDER BY "created_at" DESC, "id" DESC
+          ) AS rn
+        FROM "messages"
+        WHERE "task_id" IN (${Prisma.join(taskIds)})
+          AND "role" IN ('user', 'assistant')
+          AND "content" IS NOT NULL
+          AND TRIM("content") <> ''
+      ) ranked
+      WHERE rn = 1
+    `;
+    for (const row of rows) {
+      applyPreviewRow(previews, row.task_id, row.role, row.content);
+    }
+    return previews;
+  } catch (error) {
+    // Fall back to a Prisma-typed query if the raw SQL is rejected on some
+    // dialect (e.g. Postgres uuid vs text bind params in the IN list). Slower
+    // (scans more rows) but correct — mirrors the schema-fallback pattern used
+    // by the main task-list query in this route.
+    if (!warnedPreviewFallback) {
+      warnedPreviewFallback = true;
+      console.warn(
+        "[tasks.GET.previews] window-function query failed; using per-message scan fallback.",
+        error,
+      );
+    }
+  }
+
+  const messages = await db.message.findMany({
+    where: {
+      taskId: { in: taskIds },
+      role: { in: ["user", "assistant"] },
+    },
+    select: { taskId: true, role: true, content: true },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
   for (const message of messages) {
-    const target = previews[message.taskId];
-    if (!target) {
-      continue;
-    }
-
-    const content = typeof message.content === "string" ? message.content.trim() : "";
-    if (!content) {
-      continue;
-    }
-
-    if (message.role === "user" && target.lastUserMessage == null) {
-      target.lastUserMessage = content;
-    }
-
-    if (message.role === "assistant" && target.lastAssistantMessage == null) {
-      target.lastAssistantMessage = content;
-    }
-
-    if (target.lastUserMessage && target.lastAssistantMessage) {
-      continue;
-    }
+    applyPreviewRow(previews, message.taskId, message.role, message.content);
   }
 
   return previews;
