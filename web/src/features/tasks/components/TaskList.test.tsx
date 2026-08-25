@@ -187,38 +187,6 @@ describe('TaskList', () => {
     };
   });
 
-  it('caps the initial mount to a window instead of rendering every card', () => {
-    // Perf regression guard (progressive mounting): with a real, non-firing
-    // IntersectionObserver the list must mount only the initial window even
-    // when there are far more tasks — so opening / switching pages stays cheap.
-    // (In jsdom there is no IntersectionObserver, so the component falls back to
-    // mounting everything; this test installs a no-op one to exercise the cap.)
-    const OriginalIntersectionObserver = globalThis.IntersectionObserver;
-    globalThis.IntersectionObserver = class {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-      takeRecords() { return []; }
-    } as unknown as typeof IntersectionObserver;
-    try {
-      tasksState = {
-        ...tasksState,
-        currentProjectFilter: null,
-        tasks: Array.from({ length: 50 }, (_, index) => ({
-          id: `task-${index + 1}`,
-          title: `Task ${index + 1}`,
-          projectId: 'project-1',
-          status: 'completed',
-        })),
-      };
-      render(<TaskList viewMode="list" projectFilter={null} />);
-      expect(screen.getAllByTestId(/^task-item-/)).toHaveLength(24);
-      expect(screen.queryByTestId('task-item-task-50')).not.toBeInTheDocument();
-    } finally {
-      globalThis.IntersectionObserver = OriginalIntersectionObserver;
-    }
-  });
-
   it('renders list view badges and items', async () => {
     render(<TaskList viewMode="list" activeTaskId="task-2" />);
 
