@@ -18,6 +18,43 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.10.0] - 2026-08-27
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.10.0`
+- `@love-moon/conductor-sdk` `0.10.0`
+- `@love-moon/ai-sdk` `0.10.0`
+- `@love-moon/app-sdk` `0.10.0`
+- `@love-moon/chat-web` `0.10.0`
+
+### Changes
+
+### Minor Changes
+
+- 43c4f87: Runtime health preflight and agent schedule access control. The daemon now
+  advertises positive backend runtime health (`x-conductor-runtime-health`) so the
+  backend can reject task creation with `503 runtime_unavailable` before any
+  timeline activity, and adds `disable_built_in_cli_list` to opt out of built-in
+  SDK backends. The SDK attributes agent-originated scheduled-message calls with
+  `X-Conductor-Actor: agent` so per-task `agent_schedule_access`
+  (full/read_only/blocked) can govern `conductor task schedule` from agents while
+  human/UI calls stay unrestricted.
+
+### Patch Changes
+
+- 43c4f87: Fix `conductor fire` and `conductor diagnose` with an explicit `--config-file`
+  resolving `agent_token`/`backend_url` from daemon-injected `CONDUCTOR_*` env
+  instead of the file. Fire could dial the file's websocket with the inherited
+  token and loop on `4002 invalid-token`; diagnose queried the wrong backend and
+  404'd. An explicit config file now wins over inherited env, matching the
+  daemon's behavior.
+- 43c4f87: Fix `conductor update` installing into the wrong npm prefix.
+- Updated dependencies [43c4f87]
+- Updated dependencies [43c4f87]
+  - @love-moon/ai-sdk@0.10.0
+  - @love-moon/conductor-sdk@0.10.0
+
 ## [0.9.0] - 2026-08-21
 
 ### Released packages

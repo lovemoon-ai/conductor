@@ -1,5 +1,13 @@
 # @love-moon/ai-sdk
 
+## 0.10.0
+
+### Minor Changes
+
+- 43c4f87: Add the `codex-app-server-session` provider, recover Codex oversized threads by
+  rolling onto a fresh provider thread with bounded recent history (one retry per
+  turn), and trim the dsh quota raw payload.
+
 ## 0.9.0
 
 ### Minor Changes
