@@ -66,3 +66,31 @@ export const copyToClipboard = async (value: string): Promise<boolean> => {
     return false;
   }
 };
+
+/**
+ * Read plain text from the system clipboard.
+ *
+ * Unlike copying, reading has no `execCommand` fallback — `execCommand('paste')`
+ * is blocked for security in every current browser, and `readText` itself is
+ * unimplemented for web content in Firefox. So this can genuinely be
+ * unavailable, and it also requires a secure context plus a user gesture
+ * (Chrome additionally prompts for the clipboard-read permission on first use).
+ *
+ * Returns the clipboard text, or `null` when reading is unsupported, blocked, or
+ * denied — never throws, so callers can fall back to "paste manually".
+ */
+export const readFromClipboard = async (): Promise<string | null> => {
+  if (typeof navigator === 'undefined' || typeof window === 'undefined') {
+    return null;
+  }
+
+  if (!window.isSecureContext || !navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+    return null;
+  }
+
+  try {
+    return await navigator.clipboard.readText();
+  } catch {
+    return null;
+  }
+};

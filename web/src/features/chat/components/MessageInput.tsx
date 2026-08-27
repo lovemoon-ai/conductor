@@ -3,6 +3,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { Message } from '@/shared/types';
 import { CatchphrasePopover } from '@/features/catchphrases/components/CatchphrasePopover';
+import { readFromClipboard } from '@/lib/clipboard';
 import { useSwipeActions } from '@/shared/hooks/useSwipeActions';
 import { useChatStore } from '../store';
 import { compressImageIfNeeded } from '../image-compression';
@@ -190,6 +191,8 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   // possible, a single click is deferred briefly so a second click (double
   // click) can be recognized as "insert" instead of "send".
   const sendClickTimerRef = useRef<number | null>(null);
+  // Synchronous re-entrancy guard for the clipboard quick-send (see handler).
+  const clipboardSendingRef = useRef(false);
 
   const updateContent = useCallback((nextContent: string) => {
     setContent(nextContent);
@@ -375,6 +378,50 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   const handleSubmit = () => {
     submitContent(content);
   };
+
+  // Desktop quick-action: read the system clipboard and send it as its own
+  // message in one click. Deliberately independent of the composer — it does
+  // not consume the current draft or selected files, so a half-typed message is
+  // never clobbered. Reading can genuinely fail (Firefox has no web `readText`,
+  // non-secure contexts, denied permission), so surface a manual-paste hint
+  // instead of failing silently.
+  const handleClipboardSend = useCallback(async () => {
+    // A synchronous ref guard, not `isSubmitting`: the clipboard read (which on
+    // first use includes Chrome's permission prompt) is awaited before we can
+    // flip `isSubmitting`, leaving a window where a second click — e.g. a reflex
+    // double-click, since the adjacent send button trains that gesture — would
+    // otherwise read and send twice.
+    if (disabled || sendDisabled || isSubmitting || clipboardSendingRef.current) {
+      return;
+    }
+    clipboardSendingRef.current = true;
+    try {
+      const text = await readFromClipboard();
+      if (text === null) {
+        setFileError('Could not read the clipboard — check browser permissions, or paste manually with ⌘/Ctrl+V.');
+        return;
+      }
+      const trimmed = text.trim();
+      if (!trimmed) {
+        setFileError('The clipboard is empty.');
+        return;
+      }
+      setIsSubmitting(true);
+      setFileError('');
+      try {
+        const sendResult = onSend(trimmed);
+        if (sendResult && typeof (sendResult as Promise<void>).then === 'function') {
+          await sendResult;
+        }
+      } catch {
+        setFileError('Send failed. Please retry.');
+      } finally {
+        setIsSubmitting(false);
+      }
+    } finally {
+      clipboardSendingRef.current = false;
+    }
+  }, [disabled, sendDisabled, isSubmitting, onSend]);
 
   // Insert the composer text into the in-flight turn (interrupt + run next).
   // Falls back to a normal send when insert isn't available so the action is
@@ -756,7 +803,24 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
                 isSendOnNextLine ? 'w-full' : 'w-full flex-1'
               }`}
             />
-            <div className={isSendOnNextLine ? 'flex w-full justify-end' : 'flex shrink-0'}>
+            <div className={isSendOnNextLine ? 'flex w-full items-center justify-end gap-2' : 'flex shrink-0 items-center gap-2'}>
+              {/* Desktop-only: one-click send of the system clipboard contents. */}
+              <button
+                type="button"
+                onClick={handleClipboardSend}
+                disabled={disabled || sendDisabled || isSubmitting}
+                data-testid="message-input-clipboard-send-button"
+                title="Send clipboard contents"
+                aria-label="Send clipboard contents"
+                className="hidden size-8 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-border/50 hover:text-ink disabled:opacity-40 md:flex"
+              >
+                {/* The send triangle with a bar on its left: "send, from the
+                    clipboard" — a deliberate variant of the main send icon. */}
+                <svg viewBox="0 0 20 20" fill="currentColor" className="size-3.5" aria-hidden="true">
+                  <rect x="2" y="4" width="2" height="12" rx="1" />
+                  <path d="M7 4l9 6-9 6z" />
+                </svg>
+              </button>
               <button type="button"
                 onClick={handleSendButtonClick}
                 disabled={!canSend}

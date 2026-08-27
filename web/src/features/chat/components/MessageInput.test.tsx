@@ -5,6 +5,12 @@ import { MessageInput, type MessageInputHandle } from './MessageInput';
 import { useChatStore } from '../store';
 import { useCatchphrasesStore, type Catchphrase } from '@/features/catchphrases/store';
 import type { Message } from '@/shared/types';
+import { readFromClipboard } from '@/lib/clipboard';
+
+vi.mock('@/lib/clipboard', () => ({
+  copyToClipboard: vi.fn(),
+  readFromClipboard: vi.fn(),
+}));
 
 const seedCatchphrases = (rows: Partial<Catchphrase>[]) => {
   const normalized: Catchphrase[] = rows.map((row, index) => ({
@@ -77,6 +83,7 @@ describe('MessageInput', () => {
     sessionStorage.clear();
     resetChatStore();
     resetCatchphrasesStore();
+    vi.mocked(readFromClipboard).mockReset();
     // The catchphrase popover fires `touch` (POST /api/.../touch) on pick/send
     // as a best-effort recency bump. In tests there's no server, so without a
     // stub we get ECONNREFUSED stderr noise. The store swallows the error
@@ -674,6 +681,78 @@ describe('MessageInput', () => {
     fireEvent.doubleClick(screen.getByTestId('message-input-textarea'));
 
     expect(screen.queryByTestId('message-input-interrupt-button')).not.toBeInTheDocument();
+  });
+
+  describe('clipboard quick-send (desktop)', () => {
+    it('reads the system clipboard and sends it in one click', async () => {
+      vi.mocked(readFromClipboard).mockResolvedValue('  pasted task  ');
+      const onSend = vi.fn().mockResolvedValue(undefined);
+      render(<MessageInput taskId="task-clip-send" onSend={onSend} />);
+
+      fireEvent.click(screen.getByTestId('message-input-clipboard-send-button'));
+
+      // Sends the trimmed clipboard text, independent of the composer draft.
+      await waitFor(() => expect(onSend).toHaveBeenCalledWith('pasted task'));
+    });
+
+    it('leaves the current draft untouched when sending the clipboard', async () => {
+      vi.mocked(readFromClipboard).mockResolvedValue('clip payload');
+      const onSend = vi.fn().mockResolvedValue(undefined);
+      render(<MessageInput taskId="task-clip-draft" onSend={onSend} />);
+      const textarea = screen.getByTestId('message-input-textarea') as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: 'half-typed draft' } });
+
+      fireEvent.click(screen.getByTestId('message-input-clipboard-send-button'));
+
+      await waitFor(() => expect(onSend).toHaveBeenCalledWith('clip payload'));
+      // The independent quick-action must not clobber the in-progress draft.
+      expect(textarea.value).toBe('half-typed draft');
+    });
+
+    it('does not double-send when the button is clicked twice before the read resolves', async () => {
+      // The read is awaited before `isSubmitting` flips, so a reflex double-click
+      // must be blocked by the synchronous ref guard, not by React state.
+      let resolveRead: (value: string) => void = () => {};
+      vi.mocked(readFromClipboard).mockReturnValue(
+        new Promise<string>((resolve) => { resolveRead = resolve; }),
+      );
+      const onSend = vi.fn().mockResolvedValue(undefined);
+      render(<MessageInput taskId="task-clip-double" onSend={onSend} />);
+
+      const button = screen.getByTestId('message-input-clipboard-send-button');
+      fireEvent.click(button);
+      fireEvent.click(button);
+      await act(async () => {
+        resolveRead('one payload');
+        await Promise.resolve();
+      });
+
+      await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+      expect(onSend).toHaveBeenCalledWith('one payload');
+    });
+
+    it('shows a manual-paste hint when the clipboard cannot be read', async () => {
+      // e.g. Firefox (no web readText), a non-secure context, or denied permission.
+      vi.mocked(readFromClipboard).mockResolvedValue(null);
+      const onSend = vi.fn();
+      render(<MessageInput taskId="task-clip-blocked" onSend={onSend} />);
+
+      fireEvent.click(screen.getByTestId('message-input-clipboard-send-button'));
+
+      await screen.findByText(/Could not read the clipboard/);
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it('does not send when the clipboard is empty', async () => {
+      vi.mocked(readFromClipboard).mockResolvedValue('   ');
+      const onSend = vi.fn();
+      render(<MessageInput taskId="task-clip-empty" onSend={onSend} />);
+
+      fireEvent.click(screen.getByTestId('message-input-clipboard-send-button'));
+
+      await screen.findByText('The clipboard is empty.');
+      expect(onSend).not.toHaveBeenCalled();
+    });
   });
 
   describe('catchphrase popover (RFC 0032)', () => {
