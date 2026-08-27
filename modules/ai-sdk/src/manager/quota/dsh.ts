@@ -163,6 +163,10 @@ export async function getDshQuota(options: DshQuotaOptions = {}): Promise<DshQuo
     }
     const payload = (await res.json()) as DeepSeekBalanceResponse;
     const { isAvailable, balances } = parseDshBalance(payload);
+    // No `raw` field: unlike the window-based providers whose parsing is
+    // lossy, `balances`/`isAvailable` already capture the whole balance
+    // response, so keeping the raw payload would only bloat the cache and the
+    // worker/WebSocket hop to the web client.
     const quota: DshQuota = {
       tool: "dsh",
       isAvailable,
@@ -170,7 +174,6 @@ export async function getDshQuota(options: DshQuotaOptions = {}): Promise<DshQuo
       balances,
       fetchedAt: Math.floor(Date.now() / 1000),
       source: "fresh",
-      raw: payload as Record<string, unknown>,
     };
     const entry = await writeCache(file, quota);
     return { ...quota, fetchedAt: entry.fetchedAt };

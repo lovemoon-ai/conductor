@@ -138,7 +138,6 @@ export interface DshQuota {
   balances: DshBalanceInfo[];
   fetchedAt: number;
   source: QuotaSource;
-  raw?: Record<string, unknown>;
   error?: string;
 }
 

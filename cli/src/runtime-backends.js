@@ -394,10 +394,16 @@ function readDisabledBuiltInBackends(configFilePath) {
   }
 }
 
+// Reuse a caller-provided disabled set when present (so a hot loop reads the
+// config file once), else read it now. Keeps every call site one line.
+function resolveDisabledBuiltIns(options = {}) {
+  return options.disabledBuiltIns instanceof Set
+    ? options.disabledBuiltIns
+    : readDisabledBuiltInBackends(options.configFilePath);
+}
+
 export function isDisabledBuiltInRuntimeBackend(backend, options = {}) {
-  return readDisabledBuiltInBackends(options.configFilePath).has(
-    normalizeRuntimeBackendName(backend),
-  );
+  return resolveDisabledBuiltIns(options).has(normalizeRuntimeBackendName(backend));
 }
 
 function resolveProviderModulePaths(options = {}) {
@@ -618,7 +624,7 @@ export async function resolveConfiguredRuntimeBackend(backend, allowCliList, opt
   // A disabled command-optional built-in (copilot/dsh via
   // `disable_built_in_cli_list`) is never resolvable, whether it reached here
   // through an explicit allow_cli_list entry or the command-optional fallback.
-  const disabled = readDisabledBuiltInBackends(options.configFilePath);
+  const disabled = resolveDisabledBuiltIns(options);
   if (disabled.has(resolved.runtimeBackend) || disabled.has(resolved.requestedBackend)) {
     return null;
   }
@@ -683,6 +689,9 @@ export async function listAdvertisedBackends(allowCliList, options = {}) {
         )
       : {};
   const configuredBackends = Object.keys(filteredAllowCliList);
+  // Read the disable list once and thread it through every per-backend
+  // resolve below, so this whole pass touches the config file a single time.
+  const resolveOptions = { ...options, disabledBuiltIns: readDisabledBuiltInBackends(options.configFilePath) };
   let runtimeBackends = [...BUILT_IN_RUNTIME_BACKENDS];
   let discoveryError = null;
   try {
@@ -696,7 +705,7 @@ export async function listAdvertisedBackends(allowCliList, options = {}) {
 
   for (const backend of configuredBackends) {
     try {
-      const configuredBackend = await resolveConfiguredRuntimeBackend(backend, filteredAllowCliList, options);
+      const configuredBackend = await resolveConfiguredRuntimeBackend(backend, filteredAllowCliList, resolveOptions);
       if (!configuredBackend?.runtimeBackend) {
         continue;
       }
@@ -731,12 +740,11 @@ export async function listAdvertisedBackends(allowCliList, options = {}) {
     runtimeBackendMap[backend] = backend;
   }
 
-  const disabledBuiltIns = readDisabledBuiltInBackends(options.configFilePath);
   const commandOptionalBuiltIns = BUILT_IN_RUNTIME_BACKENDS.filter(
     (backend) =>
       isCommandOptionalBuiltInRuntimeBackend(backend) &&
       !runtimeBackendMap[backend] &&
-      !disabledBuiltIns.has(backend),
+      !resolveOptions.disabledBuiltIns.has(backend),
   );
   for (const backend of commandOptionalBuiltIns) {
     runtimeBackendMap[backend] = backend;
