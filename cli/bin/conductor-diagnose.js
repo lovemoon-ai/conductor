@@ -6,6 +6,8 @@ import { hideBin } from "yargs/helpers";
 
 import { loadConfig } from "@love-moon/conductor-sdk";
 
+import { envForExplicitConfigFile } from "../src/config-env.js";
+
 const CLI_NAME = process.env.CONDUCTOR_CLI_NAME || "conductor diagnose";
 const DEFAULT_TIMEOUT_MS = 8000;
 
@@ -45,7 +47,7 @@ main().catch((error) => {
 });
 
 async function main() {
-  const config = loadConfig(args.configFile);
+  const config = loadConfig(args.configFile, { env: envForExplicitConfigFile(args.configFile) });
   const timeoutMs = normalizePositiveInt(args.timeoutMs, DEFAULT_TIMEOUT_MS);
   const baseUrl = String(config.backendUrl || "").replace(/\/+$/, "");
   const endpoint = `${baseUrl}/api/diagnostics/tasks/${encodeURIComponent(taskId)}`;

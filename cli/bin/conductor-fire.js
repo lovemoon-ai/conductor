@@ -583,6 +583,17 @@ export function createPendingRemoteInterruptQueue() {
 async function main() {
   syncPwdEnvWithProcessCwdForDaemonLaunch();
   const cliArgs = await parseCliArgs();
+  if (cliArgs.configFile) {
+    // An explicit --config-file must win over CONDUCTOR_* backend/token env
+    // injected by an owning daemon or session (same convention as
+    // envForExplicitConfigFile); otherwise fire dials the file's websocket
+    // with the inherited token and loops on 4002 invalid-token.
+    delete process.env.CONDUCTOR_AGENT_TOKEN;
+    delete process.env.CONDUCTOR_BACKEND_URL;
+    delete process.env.CONDUCTOR_WS_URL;
+    delete process.env.CONDUCTOR_BACKEND_WS_URL;
+    process.env.CONDUCTOR_CONFIG = cliArgs.configFile;
+  }
   let runtimeProjectPath = process.cwd();
   let backendSession = null;
 
