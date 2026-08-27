@@ -6,6 +6,11 @@ import {
   createScheduledMessageForTask,
   listScheduledMessagesForTask,
 } from "@/lib/tasks/scheduled-messages";
+import {
+  agentReadDenied,
+  agentWriteDenied,
+  resolveRequestScheduleAccess,
+} from "@/lib/tasks/agent-schedule-access";
 
 const positiveInteger = z.number().int().positive();
 
@@ -56,6 +61,17 @@ export async function GET(
   if (userResult instanceof Response) return userResult;
 
   const { taskId } = await params;
+
+  const access = await resolveRequestScheduleAccess({
+    request,
+    userId: userResult.id,
+    taskId,
+  });
+  if (access !== "not_agent") {
+    const denied = agentReadDenied(access);
+    if (denied) return NextResponse.json(denied, { status: 403 });
+  }
+
   try {
     const schedules = await listScheduledMessagesForTask({
       userId: userResult.id,
@@ -88,6 +104,16 @@ export async function POST(
       },
       { status: 400 },
     );
+  }
+
+  const access = await resolveRequestScheduleAccess({
+    request,
+    userId: userResult.id,
+    taskId,
+  });
+  if (access !== "not_agent") {
+    const denied = agentWriteDenied(access);
+    if (denied) return NextResponse.json(denied, { status: 403 });
   }
 
   try {

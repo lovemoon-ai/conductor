@@ -190,6 +190,7 @@ conductor task schedule delete <id> <schedule-id>
   - `--delay 10m` 或 `--at 2026-07-28T18:00:00+08:00` 创建一次性消息。
   - `--every 30m` 创建重复消息，可配 `--if-idle`、`--max-runs`、`--max-skips`、`--stop-at` 和 `--keep-when-task-stopped`。
   - `schedule list` 查看活动计划；`schedule delete` 删除一条活动计划。
+- **Agent 调度管控**：每个任务有 `agent_schedule_access`（`full` 默认 / `read_only` / `blocked`）。当 `schedule create|list|delete` 由 daemon 启动的 fire agent 发起时会被此设置约束（`read_only` 禁 create/delete，`blocked` 连 list 都 `403`）；人类 / UI 调用永远不受限。归属靠自动附带的 `X-Conductor-Actor: agent` 头。设置与语义详见 `reference/http-endpoints.md` §3。
 - `--metadata-json` 可附用户自定义 metadata，但 top-level `actor / cliVersion / invokedBy / sdkVersion` 会被服务端 strip。
 
 ### 8.1 `task create` 与 `fire` 的选择

@@ -55,6 +55,7 @@ import {
   stopTaskBeforeRelaunch,
 } from "@/lib/tasks/task-stop";
 import { persistIssueAiSession } from "@/lib/issues/persist-ai-session";
+import { parseAgentScheduleAccess } from "@/lib/tasks/agent-schedule-access";
 import {
   deletePtyTaskWithKill,
   findAttachedTerminalForAiTask,
@@ -474,6 +475,27 @@ export async function PATCH(
   if (hasMetadataField && metadataInput != null && parsedMetadataInput === null) {
     return NextResponse.json({ error: "metadata must be an object" }, { status: 400 });
   }
+  // Agent schedule access (full | read_only | blocked) is a governance setting
+  // stored in task metadata. Accept it as a first-class PATCH field so the app
+  // can tighten what an autonomous agent turn may do with scheduled messages.
+  const hasScheduleAccessField =
+    Object.prototype.hasOwnProperty.call(normalizedBody, "agent_schedule_access") ||
+    Object.prototype.hasOwnProperty.call(normalizedBody, "agentScheduleAccess");
+  const requestedScheduleAccess = hasScheduleAccessField
+    ? parseAgentScheduleAccess(
+        (normalizedBody as Record<string, unknown>).agent_schedule_access ??
+          (normalizedBody as Record<string, unknown>).agentScheduleAccess,
+      )
+    : undefined;
+  if (hasScheduleAccessField && requestedScheduleAccess === null) {
+    return NextResponse.json(
+      {
+        error: "invalid_agent_schedule_access",
+        message: "agent_schedule_access must be one of full, read_only, blocked",
+      },
+      { status: 400 },
+    );
+  }
   const nextBackendType =
     backendTypeInput !== undefined
       ? normalizeBackendType(backendTypeInput)
@@ -629,6 +651,16 @@ export async function PATCH(
   ) {
     stickyMetadataFields.attachedToAiTaskId = existingMetadataObject.attachedToAiTaskId;
   }
+  // Persist agent schedule access as a sticky field: a new value from this
+  // PATCH wins, otherwise preserve the existing setting so an unrelated
+  // metadata merge or a `metadata: null` wipe cannot silently reopen agent
+  // scheduling that a human previously restricted.
+  const effectiveScheduleAccess =
+    requestedScheduleAccess ??
+    parseAgentScheduleAccess(existingMetadataObject?.agentScheduleAccess);
+  if (effectiveScheduleAccess) {
+    stickyMetadataFields.agentScheduleAccess = effectiveScheduleAccess;
+  }
   // Defense-in-depth: strip `attachedToAiTaskId` from user-provided
   // metadata. Even though the sticky-spread-last logic below would
   // overwrite it for already-attached PTY tasks, a PATCH that *creates*
@@ -675,7 +707,12 @@ export async function PATCH(
             ...(parsedMetadataInput ?? {}),
             ...stickyMetadataFields,
           })
-      : existing.metadata;
+      : hasScheduleAccessField
+        ? JSON.stringify({
+            ...(existingMetadataObject ?? {}),
+            ...stickyMetadataFields,
+          })
+        : existing.metadata;
   const baseAiTaskUpdateData = {
     projectId: nextProjectId,
     title: normalizedBody.title ?? existing.title,

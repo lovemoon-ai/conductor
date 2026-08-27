@@ -2,6 +2,20 @@ import { ConductorConfig } from '../config/index.js';
 
 export type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
 
+/**
+ * Mark a request as originating from an autonomous agent turn. The daemon
+ * exports `CONDUCTOR_LAUNCHED_BY_DAEMON=1` into the fire process (and the shell
+ * commands it runs), so any scheduling call made while the AI is driving the
+ * turn is attributed to the agent. The backend uses this to enforce the
+ * per-task agent schedule access level; ordinary human/app calls omit it and
+ * are never restricted.
+ */
+function agentActorHeaders(): Record<string, string> {
+  const launchedByDaemon =
+    typeof process !== 'undefined' && process.env?.CONDUCTOR_LAUNCHED_BY_DAEMON === '1';
+  return launchedByDaemon ? { 'X-Conductor-Actor': 'agent' } : {};
+}
+
 export interface BackendClientOptions {
   fetchImpl?: FetchFn;
   timeoutMs?: number;
@@ -656,7 +670,9 @@ export class BackendApiClient {
   }
 
   async listScheduledMessages(taskId: string): Promise<Record<string, any>[]> {
-    const response = await this.request('GET', `/tasks/${taskId}/scheduled-messages`);
+    const response = await this.request('GET', `/tasks/${taskId}/scheduled-messages`, {
+      headers: agentActorHeaders(),
+    });
     const payload = await this.parseJson(response);
     if (payload && typeof payload === 'object' && Array.isArray((payload as any).schedules)) {
       return (payload as any).schedules as Record<string, any>[];
@@ -673,30 +689,33 @@ export class BackendApiClient {
   ): Promise<Record<string, any>> {
     const response = await this.request('POST', `/tasks/${taskId}/scheduled-messages`, {
       body: JSON.stringify(params),
+      headers: agentActorHeaders(),
     });
     return this.parseJson(response);
   }
 
   async deleteScheduledMessage(taskId: string, scheduleId: string): Promise<void> {
-    await this.request('DELETE', `/tasks/${taskId}/scheduled-messages/${scheduleId}`);
+    await this.request('DELETE', `/tasks/${taskId}/scheduled-messages/${scheduleId}`, {
+      headers: agentActorHeaders(),
+    });
   }
 
   private async request(
     method: string,
     pathname: string,
-    opts: { body?: any; query?: URLSearchParams } = {},
+    opts: { body?: any; query?: URLSearchParams; headers?: Record<string, string> } = {},
   ): Promise<Response> {
     const url = this.buildUrl(pathname, opts.query);
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timeout = controller ? setTimeout(() => controller.abort(), this.timeoutMs) : null;
     try {
-      let response = await this.sendRequest(url, method, opts.body, controller);
+      let response = await this.sendRequest(url, method, opts.body, controller, opts.headers);
       if (
         response.status === 404 &&
         this.shouldRetryWithApiPrefix(pathname, url)
       ) {
         const retryUrl = this.buildUrl(this.withApiPrefix(pathname), opts.query);
-        response = await this.sendRequest(retryUrl, method, opts.body, controller);
+        response = await this.sendRequest(retryUrl, method, opts.body, controller, opts.headers);
       }
       if (!response.ok) {
         const details = await this.safeJson(response);
@@ -737,6 +756,7 @@ export class BackendApiClient {
     method: string,
     body: any,
     controller: AbortController | null,
+    extraHeaders?: Record<string, string>,
   ): Promise<Response> {
     return this.fetchImpl(url.toString(), {
       method,
@@ -744,6 +764,7 @@ export class BackendApiClient {
         Authorization: `Bearer ${this.config.agentToken}`,
         Accept: 'application/json',
         ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(extraHeaders ?? {}),
       },
       body,
       signal: controller?.signal,

@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test } from 'vitest';
 
 import { BackendApiClient, BackendApiError, ProjectSummary } from '../src/backend/index.js';
 import { ConductorConfig } from '../src/config/index.js';
@@ -288,5 +288,60 @@ describe('BackendApiClient', () => {
         accepted: true,
       }),
     );
+  });
+});
+
+describe('BackendApiClient scheduled-message actor attribution', () => {
+  const previous = process.env.CONDUCTOR_LAUNCHED_BY_DAEMON;
+  afterEach(() => {
+    if (previous === undefined) {
+      delete process.env.CONDUCTOR_LAUNCHED_BY_DAEMON;
+    } else {
+      process.env.CONDUCTOR_LAUNCHED_BY_DAEMON = previous;
+    }
+  });
+
+  const okResponse = () =>
+    new Response(JSON.stringify({ id: 'sched-1', schedules: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  test('marks every schedule op with X-Conductor-Actor when launched by the daemon', async () => {
+    process.env.CONDUCTOR_LAUNCHED_BY_DAEMON = '1';
+    const seen: Array<Record<string, string> | undefined> = [];
+    const fetchImpl: FetchFn = async (_url, init) => {
+      seen.push(init?.headers as Record<string, string> | undefined);
+      return okResponse();
+    };
+    const client = new BackendApiClient(makeConfig(), { fetchImpl });
+    await client.createScheduledMessage('task-1', {
+      content: 'ping',
+      schedule: { mode: 'delay', amount: 5, unit: 'minute' },
+    });
+    await client.listScheduledMessages('task-1');
+    await client.deleteScheduledMessage('task-1', 'sched-1');
+
+    expect(seen).toHaveLength(3);
+    for (const headers of seen) {
+      expect(headers).toMatchObject({
+        Authorization: 'Bearer token',
+        'X-Conductor-Actor': 'agent',
+      });
+    }
+  });
+
+  test('omits the actor header for ordinary (non-daemon) callers', async () => {
+    delete process.env.CONDUCTOR_LAUNCHED_BY_DAEMON;
+    let headers: Record<string, string> | undefined;
+    const fetchImpl: FetchFn = async (_url, init) => {
+      headers = init?.headers as Record<string, string> | undefined;
+      return okResponse();
+    };
+    const client = new BackendApiClient(makeConfig(), { fetchImpl });
+    await client.listScheduledMessages('task-1');
+
+    expect(headers).toMatchObject({ Authorization: 'Bearer token' });
+    expect(headers && 'X-Conductor-Actor' in headers).toBe(false);
   });
 });

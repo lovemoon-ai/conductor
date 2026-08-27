@@ -168,6 +168,33 @@ export default function SettingsPage() {
           )}
         </section>
 
+        {/* Whole-history search entry */}
+        <section className="webapp-card p-5">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="size-10 rounded-lg bg-accent/10 flex items-center justify-center">
+              <svg className="size-5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <circle cx="11" cy="11" r="7" strokeWidth={2} />
+                <path strokeLinecap="round" strokeWidth={2} d="M20 20l-3.2-3.2" />
+              </svg>
+            </div>
+            <h3 className="font-semibold text-lg">Search</h3>
+          </div>
+          <p className="text-sm text-muted mb-4">
+            Search across every message in all of your tasks.
+          </p>
+          <button
+            type="button"
+            onClick={() => push('/app/search')}
+            className="flex items-center gap-2 px-4 py-2 bg-[var(--accent)] text-white rounded-full text-sm hover:opacity-90 transition-opacity"
+          >
+            <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+              <circle cx="11" cy="11" r="7" strokeWidth={2} />
+              <path strokeLinecap="round" strokeWidth={2} d="M20 20l-3.2-3.2" />
+            </svg>
+            Open search
+          </button>
+        </section>
+
         {/* Catchphrases (RFC 0032) */}
         <CatchphraseSettingsCard />
 

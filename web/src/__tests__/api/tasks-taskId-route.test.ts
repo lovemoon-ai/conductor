@@ -1210,6 +1210,81 @@ describe("/api/tasks/[taskId]", () => {
     expect(data.task_type).toBe("ai_task");
   });
 
+  it("persists agent_schedule_access into task metadata via PATCH", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-asa",
+      projectId: "proj-1",
+      title: "Task ASA",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: null,
+      sessionFilePath: null,
+      launchConfig: null,
+      metadata: null,
+      ptySession: null,
+      issueId: null,
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:00:00.000Z"),
+    } as any);
+    vi.mocked(db.task.update).mockResolvedValue({
+      id: "task-asa",
+      projectId: "proj-1",
+      title: "Task ASA",
+      status: "running",
+      taskType: "ai_task",
+      metadata: JSON.stringify({ agentScheduleAccess: "blocked" }),
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+    } as any);
+
+    const request = createMockRequest({
+      method: "PATCH",
+      token,
+      body: { agent_schedule_access: "blocked" },
+    });
+    const response = await PATCH(request, { params: Promise.resolve({ taskId: "task-asa" }) });
+
+    expect(response.status).toBe(200);
+    const updateData = vi.mocked(db.task.update).mock.calls.at(-1)?.[0] as any;
+    expect(JSON.parse(updateData.data.metadata)).toMatchObject({ agentScheduleAccess: "blocked" });
+  });
+
+  it("rejects an invalid agent_schedule_access value", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-asa2",
+      projectId: "proj-1",
+      title: "Task ASA2",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: null,
+      sessionFilePath: null,
+      launchConfig: null,
+      metadata: null,
+      ptySession: null,
+      issueId: null,
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:00:00.000Z"),
+    } as any);
+
+    const request = createMockRequest({
+      method: "PATCH",
+      token,
+      body: { agent_schedule_access: "nonsense" },
+    });
+    const response = await PATCH(request, { params: Promise.resolve({ taskId: "task-asa2" }) });
+
+    expect(response.status).toBe(400);
+    expect(db.task.update).not.toHaveBeenCalled();
+  });
+
   it("treats an empty PATCH body as a no-op instead of throwing", async () => {
     const token = createTestToken("user-1");
     vi.mocked(db.task.findFirst).mockResolvedValue({

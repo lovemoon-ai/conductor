@@ -353,6 +353,57 @@ function serializeRuntimeBackendMap(runtimeBackendMap) {
     .join(",");
 }
 
+// Backends whose install/auth health can be probed via the AI manager. Others
+// (external providers) are left out of the advertised health map so the web
+// runtime preflight fails open for them.
+const RUNTIME_HEALTH_TOOLS = new Set(["codex", "claude", "copilot", "kimi", "dsh"]);
+
+function runtimeHealthToolForBackend(backend, runtimeBackendMap) {
+  const normalized = String(backend || "").trim().toLowerCase();
+  if (RUNTIME_HEALTH_TOOLS.has(normalized)) {
+    return normalized;
+  }
+  const runtime = String(runtimeBackendMap?.[normalized] || "").trim().toLowerCase();
+  return RUNTIME_HEALTH_TOOLS.has(runtime) ? runtime : null;
+}
+
+function serializeRuntimeHealth(runtimeHealth) {
+  if (!runtimeHealth || typeof runtimeHealth !== "object") {
+    return "";
+  }
+  return Object.entries(runtimeHealth)
+    .filter(([backend, state]) => backend && state)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([backend, state]) => `${backend}=${state}`)
+    .join(",");
+}
+
+// Best-effort per-backend runtime health for the web runtime preflight. Only a
+// cheap install probe (which/--version) runs, once at startup. We advertise
+// only a POSITIVE `ready` confirmation: a supported backend whose default-name
+// `which` probe fails is very likely resolved via a custom or absolute path
+// (allow_cli_list, or a systemd PATH that differs from the login shell) and is
+// still runnable, so reporting it as "missing" would be an unreliable false
+// negative that could wrongly block task creation. Omitting it lets the web
+// preflight fail open for that backend.
+async function computeAdvertisedRuntimeHealth(manager, supportedBackends, runtimeBackendMap) {
+  if (!manager || typeof manager.checkInstallAll !== "function") {
+    return {};
+  }
+  const install = await manager.checkInstallAll();
+  const runtimeHealth = {};
+  for (const backend of supportedBackends || []) {
+    const tool = runtimeHealthToolForBackend(backend, runtimeBackendMap);
+    if (!tool) {
+      continue;
+    }
+    if (install?.[tool]?.installed) {
+      runtimeHealth[String(backend).trim().toLowerCase()] = "ready";
+    }
+  }
+  return runtimeHealth;
+}
+
 async function defaultCreatePty(command, args, options) {
   if (!nodePtySpawnPromise) {
     const spawnHelperInfo = ensureNodePtySpawnHelperExecutable();
@@ -3085,6 +3136,28 @@ export function startDaemon(config = {}, deps = {}) {
     if (typeof client?.setExtraHeaders === "function") {
       client.setExtraHeaders(extraHeaders);
     }
+
+    // Advertise best-effort runtime health so the backend can reject a task
+    // whose backend is configured but cannot start (CLI missing/not signed in)
+    // before creating any timeline activity. Fully additive and guarded: any
+    // failure just omits the header and the preflight fails open.
+    try {
+      const runtimeHealth = await computeAdvertisedRuntimeHealth(
+        aiManagerHandlers?.manager,
+        SUPPORTED_BACKENDS,
+        SUPPORTED_BACKEND_RUNTIME_MAP,
+      );
+      const serializedRuntimeHealth = serializeRuntimeHealth(runtimeHealth);
+      if (serializedRuntimeHealth) {
+        extraHeaders["x-conductor-runtime-health"] = serializedRuntimeHealth;
+        if (typeof client?.setExtraHeaders === "function") {
+          client.setExtraHeaders(extraHeaders);
+        }
+      }
+    } catch (error) {
+      logError(`Failed to probe runtime health: ${error?.message || error}`);
+    }
+
     if (daemonShuttingDown) {
       return;
     }

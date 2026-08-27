@@ -48,6 +48,7 @@ import {
   findAttachedTerminalsByAiTaskIds,
 } from "@/lib/tasks/attached-terminal";
 import { countActiveScheduledMessagesForTasks } from "@/lib/tasks/scheduled-messages";
+import { evaluateRuntimeHealth } from "@/lib/tasks/runtime-preflight";
 import { mergeRelatedTaskCardGroup } from "@/lib/user-preferences";
 import {
   buildAgentBootstrap,
@@ -786,6 +787,27 @@ export async function POST(request: NextRequest) {
           error: `Daemon ${agentHost} does not support backend ${requestedBackendType}`,
         },
         { status: 409 },
+      );
+    }
+    // Runtime health preflight: the backend may be advertised as supported yet
+    // unable to start a turn (CLI missing under the daemon env, not signed in,
+    // …). Reject before any task/timeline activity with an actionable message.
+    // Fail open when the daemon does not advertise health for this backend.
+    const runtimeProblem = evaluateRuntimeHealth({
+      agent: selectedAgent,
+      backend: workerBackendType ?? requestedBackendType,
+    });
+    if (runtimeProblem) {
+      return NextResponse.json(
+        {
+          error: "runtime_unavailable",
+          backend: runtimeProblem.backend,
+          daemon_host: runtimeProblem.daemonHost,
+          reason: runtimeProblem.reason,
+          message: runtimeProblem.message,
+          recovery: runtimeProblem.recovery,
+        },
+        { status: 503 },
       );
     }
   }

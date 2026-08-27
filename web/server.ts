@@ -20,6 +20,10 @@ import {
   startDailyReportDispatcher,
 } from "./src/lib/daily-reports/daily-report";
 import { ensureDailyReportSchema } from "./src/lib/daily-reports/schema";
+import {
+  ensureMessageSearchSchema,
+  backfillMessageSearchIndex,
+} from "./src/lib/search/message-search";
 import { realtimeHub } from "./src/lib/realtime/hub";
 import { db } from "./src/lib/db";
 import { backfillIssueAiSessionIfNeeded } from "./src/lib/issues/backfill-ai-session";
@@ -93,6 +97,32 @@ app.prepare().then(async () => {
     );
   });
   startDailyReportDispatcher();
+
+  // Whole-history search index (SQLite FTS5). Additive and best-effort: on a
+  // non-SQLite dialect or any failure the search API degrades to a LIKE scan,
+  // so a missing index must never crash startup. Backfill runs in the
+  // background because it scans existing messages once on first boot.
+  const messageSearchSchema = await ensureMessageSearchSchema();
+  if (messageSearchSchema.skippedReason === "error") {
+    console.warn(
+      `[search] failed to ensure FTS schema: ${messageSearchSchema.error}`,
+    );
+  }
+  if (messageSearchSchema.available) {
+    void backfillMessageSearchIndex()
+      .then((result) => {
+        if (!result.ok && result.error && result.error !== "fts-unavailable") {
+          console.warn(`[search] index backfill failed: ${result.error}`);
+        }
+      })
+      .catch((error) => {
+        console.warn(
+          `[search] unexpected index backfill failure: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+  }
 
   // Idempotent boot-time backfill of issue.ai_backend_type / ai_session_id
   // from any task that already carries those values. Required because

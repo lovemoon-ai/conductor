@@ -6,6 +6,14 @@ type Connection = {
   host?: string;
   supportedBackends?: string[];
   runtimeBackendMap?: Record<string, string>;
+  /**
+   * Optional per-backend runtime health advertised by the daemon
+   * (backend -> "ready" | "unauthenticated" | "missing" | "error"). Absent on
+   * daemons that do not advertise it, in which case the runtime preflight
+   * fails open. Distinct from `supportedBackends`, which only says the backend
+   * is configured, not that it can currently start a turn.
+   */
+  runtimeHealth?: Record<string, string>;
   capabilities?: string[];
   version?: string;
   send: (payload: unknown) => void;
@@ -329,6 +337,7 @@ export class RealtimeHub {
     host: string;
     supportedBackends: string[];
     runtimeBackendMap?: Record<string, string>;
+    runtimeHealth?: Record<string, string>;
     capabilities: string[];
     version?: string;
   }[] {
@@ -337,6 +346,7 @@ export class RealtimeHub {
       host: string;
       supportedBackends: string[];
       runtimeBackendMap?: Record<string, string>;
+      runtimeHealth?: Record<string, string>;
       capabilities: string[];
       version?: string;
     }[] = [];
@@ -348,6 +358,9 @@ export class RealtimeHub {
           supportedBackends: conn.supportedBackends || [],
           ...(conn.runtimeBackendMap && Object.keys(conn.runtimeBackendMap).length > 0
             ? { runtimeBackendMap: conn.runtimeBackendMap }
+            : {}),
+          ...(conn.runtimeHealth && Object.keys(conn.runtimeHealth).length > 0
+            ? { runtimeHealth: conn.runtimeHealth }
             : {}),
           capabilities: conn.capabilities || [],
           version: conn.version,

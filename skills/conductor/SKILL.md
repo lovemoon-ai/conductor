@@ -3,7 +3,9 @@ name: conductor
 description: >-
   Operate and explain the public Conductor CLI: bridge or resume local
   Codex/Claude sessions with `conductor fire`, create daemon-backed app tasks,
-  manage projects/issues/tasks and scheduled messages, upload files, configure
+  manage projects/issues/tasks and scheduled messages, upload files, search all
+  task history, generate LLM handoff digests, control what a running agent may
+  schedule, configure
   and diagnose daemons, connect Feishu channels with `conductor channel`, update
   the CLI, and run the OpenAI-compatible `conductor serve-ai` server. Use for requests involving any
   `conductor` command or moving terminal work into the Conductor app.
@@ -21,6 +23,7 @@ Reference docs in this skill:
 
 - `reference/serve-ai.md`: `conductor serve-ai` usage, config fallback, startup commands, and `response_format` / output schema examples.
 - `reference/entity-commands.md`: `conductor project|issue|task` — entity-oriented CRUD commands for AI / CI / scripting. Covers app-task creation, global flags (`--json`, `--dry-run`, `--project`), exit codes, project resolution priority, the `metadata.audit` audit boundary, idempotency via `--client-request-id`, and the core RFC 0025 scenarios.
+- `reference/http-endpoints.md`: additional HTTP API beyond the CLI — whole-history search (`GET /api/search`), LLM handoff digest (`POST /api/tasks/{id}/digest`), per-task agent schedule access control (`agent_schedule_access` via `GET/PUT /api/tasks/{id}/agent-schedule-access` or `PATCH /api/tasks/{id}`), plus the automatic runtime health preflight and Codex oversized-thread recovery. Agents call these with `CONDUCTOR_AGENT_TOKEN` against `CONDUCTOR_BACKEND_URL`.
 
 ## First Decide The Intent
 
@@ -67,6 +70,7 @@ Only run `conductor --help`, subcommand help, or read `~/.conductor/config.yaml`
 - `conductor channel connect feishu`: upload `channels.feishu` from the selected config file to the Conductor backend.
 - `conductor serve-ai`: expose configured local AI backends through an OpenAI-compatible HTTP server. See `reference/serve-ai.md`.
 - `conductor update`: check npm for a newer CLI version and install it.
+- HTTP-only helpers (no CLI subcommand): whole-history search `GET /api/search`, LLM handoff digest `POST /api/tasks/{id}/digest`, and per-task agent schedule access control (`agent_schedule_access`). See `reference/http-endpoints.md`.
 
 ## Core Workflows
 

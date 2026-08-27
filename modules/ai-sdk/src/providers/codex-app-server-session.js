@@ -29,6 +29,17 @@ const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
 const MIN_TURN_DEADLINE_MS = 30 * 1000;
 const MAX_TURN_DEADLINE_MS = 30 * 60 * 1000;
 
+// Oversized-thread recovery: when a Codex turn fails because the provider
+// thread outgrew the model context window (and remote compaction could not
+// recover it), roll the same logical chat onto a fresh thread seeded with this
+// many most-recent history entries and retry the prompt once.
+const RECOVERY_HISTORY_LIMIT = 12;
+// Matches the various ways Codex / the underlying model report a context-window
+// overflow. Kept broad but anchored on "context"/"token" wording so ordinary
+// failures are not misclassified as recoverable.
+const CONTEXT_OVERFLOW_PATTERN =
+  /context[ _-]?(?:length|window|limit)|context[ _-]?length[ _-]?exceeded|maximum[ _-]?context|exceed(?:s|ed)?[^.]{0,40}context|too many tokens|token[ _-]?limit|input[^.]{0,20}too long|prompt[^.]{0,20}too long/i;
+
 function waitForever() {
   return new Promise(() => {});
 }
@@ -276,6 +287,7 @@ export class CodexAppServerSession extends EventEmitter {
     this.currentTurn = null;
     this.bootPromise = null;
     this.booted = false;
+    this._contextRecoveryInFlight = false;
 
     this.goalMode = options.goalMode === true;
     this.currentGoal = null;
@@ -552,6 +564,58 @@ export class CodexAppServerSession extends EventEmitter {
       return undefined;
     }
     return Math.max(0, Math.min(100, Math.round((totalTokens / contextWindow) * 100)));
+  }
+
+  /**
+   * Whether a turn failure was caused by the provider thread outgrowing the
+   * model context window. Such failures are recoverable by rolling onto a fresh
+   * thread; ordinary failures (timeouts, closes, tool errors) are not.
+   *
+   * @param {any} error
+   * @returns {boolean}
+   */
+  isRecoverableContextOverflow(error) {
+    if (!error || error.reason === "session_closed" || error.reason === "turn_timeout") {
+      return false;
+    }
+    const parts = [];
+    if (typeof error.message === "string") parts.push(error.message);
+    if (typeof error.turnStatus === "string") parts.push(error.turnStatus);
+    const turnError = error.turnError;
+    if (typeof turnError === "string") {
+      parts.push(turnError);
+    } else if (turnError && typeof turnError === "object") {
+      for (const key of ["message", "code", "type", "reason"]) {
+        if (typeof turnError[key] === "string") parts.push(turnError[key]);
+      }
+      try {
+        parts.push(JSON.stringify(turnError));
+      } catch {
+        // Ignore non-serializable provider payloads.
+      }
+    }
+    return CONTEXT_OVERFLOW_PATTERN.test(parts.join(" | "));
+  }
+
+  /**
+   * Reset thread-bound state so the next {@link boot} starts a brand-new Codex
+   * thread, seeded with the most-recent {@link RECOVERY_HISTORY_LIMIT} history
+   * entries as a prompt preface. The oversized thread is abandoned (never
+   * resumed) so its context can no longer overflow.
+   */
+  rollOntoFreshThread() {
+    const recent = this.history.slice(-RECOVERY_HISTORY_LIMIT);
+    this.history = recent;
+    this.pendingHistorySeed = recent.length > 0;
+    this.sessionId = "";
+    this.threadPath = "";
+    this.nativeSessionId = "";
+    this.resumeSessionId = "";
+    this.manualResumeReady = false;
+    this.sessionInfo = null;
+    this.tokenUsage = null;
+    this.booted = false;
+    this.bootPromise = null;
   }
 
   normalizeWorkingStatusPayload(payload) {
@@ -1250,6 +1314,54 @@ export class CodexAppServerSession extends EventEmitter {
     } catch (error) {
       if (error?.reason === "turn_timeout") {
         await this.interruptCurrentTurn();
+      }
+      // Oversized-thread recovery: the provider thread outgrew the context
+      // window and remote compaction could not save it. Roll the same logical
+      // chat onto a fresh thread seeded with bounded recent history and retry
+      // the prompt exactly once, rather than surfacing a dead turn. The
+      // in-flight guard ensures a single retry: if the fresh thread also
+      // overflows, the recursive call skips recovery and fails normally.
+      if (
+        !this._contextRecoveryInFlight &&
+        !this.closeRequested &&
+        !currentTurn.goalMode &&
+        this.isRecoverableContextOverflow(error)
+      ) {
+        // Drop the user message pushed for the failed attempt; the retry
+        // re-adds it (and folds prior history in as a preface via buildPrompt).
+        if (
+          this.history.length > 0 &&
+          String(this.history[this.history.length - 1]?.role || "").toLowerCase() === "user"
+        ) {
+          this.history.pop();
+        }
+        if (this.currentTurn === currentTurn) {
+          this.currentTurn = null;
+        }
+        this._contextRecoveryInFlight = true;
+        // Release the outer turn's guards before recursing so their timers do
+        // not linger for the duration of the retry. Both cleanups are
+        // idempotent; the outer `finally` calls them again harmlessly.
+        closeGuard.cleanup();
+        turnTimeoutGuard.cleanup();
+        try {
+          this.rollOntoFreshThread();
+          this.trace("context overflow; rolling onto a fresh thread and retrying the turn");
+          await this.emitWorkingStatus({
+            phase: "working",
+            reply_in_progress: true,
+            status_line: "codex context full; retrying on a fresh thread",
+          });
+          this.emit("thread_recovered", { reason: "context_overflow", backend: this.backend });
+          return await this.runTurn(promptText, {
+            useInitialImages,
+            media: mediaInput,
+            contextFiles,
+            jsonSchema,
+          });
+        } finally {
+          this._contextRecoveryInFlight = false;
+        }
       }
       if (!this.closeRequested && error?.reason !== "session_closed") {
         await this.emitWorkingStatus({

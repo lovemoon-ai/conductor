@@ -987,6 +987,99 @@ describe("/api/tasks", () => {
       expect(db.task.create).not.toHaveBeenCalled();
     });
 
+    it("rejects with runtime_unavailable when the backend is unauthenticated on the daemon", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = {
+        id: "proj-bound",
+        name: "Bound Project",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/repo/bound",
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      // Backend is advertised as supported, but reported as configured-but-broken
+      // (a blocking health state, unlike the advisory `missing`).
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        {
+          id: "agent-1",
+          host: "daemon-1",
+          supportedBackends: ["claude"],
+          runtimeHealth: { claude: "unauthenticated" },
+          capabilities: [],
+        },
+      ] as any);
+
+      const token = createTestToken("user-1");
+      const response = await POST(createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          project_id: "proj-bound",
+          title: "Unhealthy Backend",
+          backend_type: "claude",
+        },
+      }));
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(503);
+      expect(data.error).toBe("runtime_unavailable");
+      expect(data.reason).toBe("unauthenticated");
+      expect(data.backend).toBe("claude");
+      expect(data.recovery).toBeTruthy();
+      expect(db.task.create).not.toHaveBeenCalled();
+    });
+
+    it("does NOT block task creation when the backend is only advisory `missing`", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = { id: "proj-1", name: "Project 1", userId: "user-1" };
+      const mockTask = {
+        id: "task-advisory",
+        projectId: "proj-1",
+        title: "Advisory Missing Backend",
+        status: "pending",
+        agentHost: null,
+        executionHost: null,
+        backendType: "claude",
+        sessionId: null,
+        sessionFilePath: null,
+        metadata: null,
+        createdAt: new Date("2024-01-02"),
+        updatedAt: new Date("2024-01-02"),
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(db.task.create).mockResolvedValue(mockTask as any);
+      vi.mocked(db.message.create).mockResolvedValue({
+        id: "msg-advisory",
+        createdAt: new Date("2024-01-03"),
+      } as any);
+      // Backend advertised as supported but only advisory `missing` — must not block.
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        {
+          id: "agent-daemon",
+          host: "daemon-1",
+          supportedBackends: ["claude"],
+          runtimeHealth: { claude: "missing" },
+          capabilities: [],
+        },
+      ]);
+
+      const token = createTestToken("user-1");
+      const response = await POST(createMockRequest({
+        method: "POST",
+        token,
+        body: { project_id: "proj-1", title: "Advisory Missing Backend", backend_type: "claude" },
+      }));
+
+      // `missing` is advisory: creation proceeds past the preflight (200, not 503).
+      expect(response.status).toBe(200);
+      expect(db.task.create).toHaveBeenCalled();
+    });
+
     it("rejects an agent that is not registered in project settings", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);

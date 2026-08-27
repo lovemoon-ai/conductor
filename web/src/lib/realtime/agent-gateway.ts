@@ -898,6 +898,31 @@ const extractRuntimeBackendMap = (req: IncomingMessage): Record<string, string> 
   return runtimeBackendMap;
 };
 
+const RUNTIME_HEALTH_STATES = new Set(["ready", "unauthenticated", "missing", "error"]);
+
+const extractRuntimeHealth = (req: IncomingMessage): Record<string, string> => {
+  const header = req.headers["x-conductor-runtime-health"];
+  const value = Array.isArray(header) ? header[0] : (header as string | undefined);
+  if (!value) {
+    return {};
+  }
+  const runtimeHealth: Record<string, string> = {};
+  for (const entry of value.split(",")) {
+    const trimmedEntry = entry.trim();
+    const separatorIndex = trimmedEntry.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+    const backend = trimmedEntry.slice(0, separatorIndex).trim().toLowerCase();
+    const state = trimmedEntry.slice(separatorIndex + 1).trim().toLowerCase();
+    if (!backend || !RUNTIME_HEALTH_STATES.has(state)) {
+      continue;
+    }
+    runtimeHealth[backend] = state;
+  }
+  return runtimeHealth;
+};
+
 const extractCapabilities = (req: IncomingMessage): string[] => {
   const header = req.headers["x-conductor-capabilities"];
   const value = Array.isArray(header) ? header[0] : (header as string | undefined);
@@ -1376,6 +1401,7 @@ export const setupAgentGateway = (): WebSocketServer => {
     const agentHost = extractHost(request) || request.socket.remoteAddress || "unknown-host";
     const supportedBackends = extractSupportedBackends(request);
     const runtimeBackendMap = extractRuntimeBackendMap(request);
+    const runtimeHealth = extractRuntimeHealth(request);
     const capabilities = extractCapabilities(request);
     const version = extractVersion(request);
 
@@ -1404,6 +1430,7 @@ export const setupAgentGateway = (): WebSocketServer => {
       host: agentHost,
       supportedBackends,
       runtimeBackendMap,
+      runtimeHealth,
       capabilities,
       version,
       send: (payload) => sendEnvelope(socket, payload as Record<string, unknown>),

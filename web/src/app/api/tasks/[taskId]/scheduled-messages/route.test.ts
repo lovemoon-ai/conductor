@@ -15,7 +15,12 @@ vi.mock("@/lib/tasks/scheduled-messages", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/db", () => ({
+  db: { task: { findFirst: vi.fn() } },
+}));
+
 const { getActiveSubscriptionUser } = await import("@/lib/auth/middleware");
+const { db } = await import("@/lib/db");
 const {
   ScheduledMessageError,
   createScheduledMessageForTask,
@@ -170,5 +175,91 @@ describe("/api/tasks/[taskId]/scheduled-messages", () => {
       userId: "user-1",
       taskId: "task-1",
     });
+  });
+});
+
+describe("/api/tasks/[taskId]/scheduled-messages agent access control", () => {
+  const AGENT = { "x-conductor-actor": "agent" };
+  const validBody = { content: "ping", schedule: { mode: "delay", amount: 5, unit: "minute" } };
+
+  const setAccess = (access: string) =>
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      metadata: JSON.stringify({ agentScheduleAccess: access }),
+    } as never);
+
+  const post = (headers: Record<string, string> = {}) =>
+    POST(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:6152/api/tasks/task-1/scheduled-messages",
+        headers,
+        body: validBody,
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+
+  const get = (headers: Record<string, string> = {}) =>
+    GET(
+      createMockRequest({
+        method: "GET",
+        url: "http://localhost:6152/api/tasks/task-1/scheduled-messages",
+        headers,
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getActiveSubscriptionUser).mockResolvedValue({
+      id: "user-1",
+      email: "test@example.com",
+      phone: null,
+    } as any);
+    vi.mocked(createScheduledMessageForTask).mockResolvedValue({ id: "sched-1" } as any);
+    vi.mocked(listScheduledMessagesForTask).mockResolvedValue([]);
+  });
+
+  it("blocks an agent create when access is blocked", async () => {
+    setAccess("blocked");
+    const res = await post(AGENT);
+    expect(res.status).toBe(403);
+    expect((await extractJson(res)).error).toBe("agent_schedule_forbidden");
+    expect(createScheduledMessageForTask).not.toHaveBeenCalled();
+  });
+
+  it("blocks an agent create when access is read_only", async () => {
+    setAccess("read_only");
+    const res = await post(AGENT);
+    expect(res.status).toBe(403);
+    expect(createScheduledMessageForTask).not.toHaveBeenCalled();
+  });
+
+  it("allows an agent create when access is full", async () => {
+    setAccess("full");
+    const res = await post(AGENT);
+    expect(res.status).toBe(201);
+    expect(createScheduledMessageForTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("never restricts a human (no actor header) even when blocked", async () => {
+    setAccess("blocked");
+    const res = await post();
+    expect(res.status).toBe(201);
+    expect(createScheduledMessageForTask).toHaveBeenCalledTimes(1);
+    expect(db.task.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("allows an agent list under read_only", async () => {
+    setAccess("read_only");
+    const res = await get(AGENT);
+    expect(res.status).toBe(200);
+    expect(listScheduledMessagesForTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks an agent list when blocked", async () => {
+    setAccess("blocked");
+    const res = await get(AGENT);
+    expect(res.status).toBe(403);
+    expect(listScheduledMessagesForTask).not.toHaveBeenCalled();
   });
 });
