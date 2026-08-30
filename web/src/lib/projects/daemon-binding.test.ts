@@ -132,6 +132,144 @@ describe("validateProjectBindingWithDaemon", () => {
     });
   });
 
+  it("does not ask the daemon to create the workspace by default", async () => {
+    realtimeHubMock.hasAgentHost.mockReturnValue(true);
+    realtimeHubMock.waitForProjectPathValidation.mockResolvedValue({
+      request_id: "req-3",
+      daemon_host: "daemon-a",
+      workspace_path: "/repo/alpha",
+      repo_root: null,
+      worktree_branch: null,
+      last_commit: null,
+      last_commit_at: null,
+      file_count: null,
+      error: null,
+      error_code: null,
+      validated_at: "2026-04-03T10:00:00.000Z",
+    });
+    realtimeHubMock.sendToAgentHost.mockReturnValue(true);
+
+    await validateProjectBindingWithDaemon({
+      userId: "user-1",
+      daemonHost: "daemon-a",
+      workspacePath: "/repo/alpha",
+      timeoutMs: 1000,
+    });
+
+    expect(realtimeHubMock.sendToAgentHost).toHaveBeenCalledWith(
+      "user-1",
+      "daemon-a",
+      expect.objectContaining({
+        payload: expect.objectContaining({ create_if_missing: false }),
+      }),
+    );
+  });
+
+  it("asks the daemon to create a missing workspace when createIfMissing is set", async () => {
+    realtimeHubMock.hasAgentHost.mockReturnValue(true);
+    realtimeHubMock.getAgentsForUser.mockReturnValue([
+      {
+        id: "agent-1",
+        host: "daemon-a",
+        supportedBackends: ["claude"],
+        capabilities: ["project_path_validation", "project_path_create"],
+      },
+    ]);
+    realtimeHubMock.waitForProjectPathValidation.mockResolvedValue({
+      request_id: "req-4",
+      daemon_host: "daemon-a",
+      workspace_path: "/repo/fresh",
+      repo_root: null,
+      worktree_branch: null,
+      last_commit: null,
+      last_commit_at: null,
+      file_count: null,
+      error: null,
+      error_code: null,
+      validated_at: "2026-04-03T10:00:00.000Z",
+    });
+    realtimeHubMock.sendToAgentHost.mockReturnValue(true);
+
+    const result = await validateProjectBindingWithDaemon({
+      userId: "user-1",
+      daemonHost: "daemon-a",
+      workspacePath: "/repo/fresh",
+      createIfMissing: true,
+      timeoutMs: 1000,
+    });
+
+    expect(result.workspacePath).toBe("/repo/fresh");
+    expect(realtimeHubMock.sendToAgentHost).toHaveBeenCalledWith(
+      "user-1",
+      "daemon-a",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          workspace_path: "/repo/fresh",
+          create_if_missing: true,
+        }),
+      }),
+    );
+  });
+
+  it("rejects createIfMissing when the daemon is too old to create directories", async () => {
+    realtimeHubMock.hasAgentHost.mockReturnValue(true);
+
+    await expect(
+      validateProjectBindingWithDaemon({
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/fresh",
+        createIfMissing: true,
+        timeoutMs: 1000,
+      }),
+    ).rejects.toMatchObject({
+      name: "ProjectBindingValidationError",
+      status: 409,
+      code: "daemon_upgrade_required",
+    });
+    expect(realtimeHubMock.sendToAgentHost).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a 400 when the daemon fails to create the workspace", async () => {
+    realtimeHubMock.hasAgentHost.mockReturnValue(true);
+    realtimeHubMock.getAgentsForUser.mockReturnValue([
+      {
+        id: "agent-1",
+        host: "daemon-a",
+        supportedBackends: ["claude"],
+        capabilities: ["project_path_validation", "project_path_create"],
+      },
+    ]);
+    realtimeHubMock.waitForProjectPathValidation.mockResolvedValue({
+      request_id: "req-5",
+      daemon_host: "daemon-a",
+      workspace_path: null,
+      repo_root: null,
+      worktree_branch: null,
+      last_commit: null,
+      last_commit_at: null,
+      file_count: null,
+      error: "Failed to create workspace path on daemon daemon-a: EACCES",
+      error_code: "workspace_create_failed",
+      validated_at: "2026-04-03T10:00:00.000Z",
+    });
+    realtimeHubMock.sendToAgentHost.mockReturnValue(true);
+
+    await expect(
+      validateProjectBindingWithDaemon({
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/root/nope",
+        createIfMissing: true,
+        timeoutMs: 1000,
+      }),
+    ).rejects.toMatchObject({
+      name: "ProjectBindingValidationError",
+      status: 400,
+      code: "workspace_create_failed",
+    });
+  });
+
   it("throws when the daemon is offline", async () => {
     realtimeHubMock.hasAgentHost.mockReturnValue(false);
 

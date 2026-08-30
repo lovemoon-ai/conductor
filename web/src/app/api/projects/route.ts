@@ -389,6 +389,9 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
   const binding = readProjectBindingInput(normalizedBody);
   const bindingConfirmed = isBindingConfirmed(normalizedBody);
   const isDefaultProject = normalizeBoolean(readField(normalizedBody, "is_default", "isDefault"));
+  const createWorkspaceIfMissing = normalizeBoolean(
+    readField(normalizedBody, "create_workspace_if_missing", "createWorkspaceIfMissing"),
+  );
   const metadataInput = readProjectMetadataInput(normalizedBody);
   if (metadataInput.error) {
     return NextResponse.json({ error: metadataInput.error }, { status: 400 });
@@ -436,6 +439,7 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
           userId: user.id,
           daemonHost: binding.daemonHost!,
           workspacePath: binding.workspacePath!,
+          createIfMissing: createWorkspaceIfMissing,
         });
         effectiveBinding = {
           daemonHost: validatedBinding.daemonHost,
@@ -452,7 +456,10 @@ export const POST = requireActiveSubscription(async (request: NextRequest, user)
         effectiveBindingCandidate = null;
       } catch (error) {
         if (error instanceof ProjectBindingValidationError) {
-          return NextResponse.json({ error: error.message }, { status: error.status });
+          return NextResponse.json(
+            { error: error.message, code: error.code },
+            { status: error.status },
+          );
         }
         throw error;
       }

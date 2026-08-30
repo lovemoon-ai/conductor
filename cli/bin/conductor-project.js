@@ -7,7 +7,7 @@
  *   list [--include-hidden]
  *   show [<id|name>]
  *   current
- *   create [--name <n>] [--workspace-path <p>] [--daemon-host <h>] [--default] [--client-request-id <key>]
+ *   create [--name <n>] [--workspace-path <p>] [--daemon-host <h>] [--create-workspace] [--default] [--client-request-id <key>]
  *   set-default <id|name>
  *   hide <id|name>
  *   unhide <id|name>
@@ -204,6 +204,7 @@ async function handleCreate(argv, deps) {
         ...(defaultName ? { name: defaultName } : {}),
         ...(workspacePath ? { workspacePath } : {}),
         ...(daemonHost ? { daemonHost } : {}),
+        ...(argv.createWorkspace ? { createWorkspaceIfMissing: true } : {}),
         metadata,
         ...(argv.clientRequestId ? { clientRequestId: String(argv.clientRequestId) } : {}),
       };
@@ -375,6 +376,7 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
           .option("name", { type: "string", describe: "Project name (defaults to basename of workspace path)" })
           .option("workspace-path", { type: "string", describe: "Workspace path (defaults to cwd)" })
           .option("daemon-host", { type: "string", describe: "Daemon hostname for binding" })
+          .option("create-workspace", { type: "boolean", default: false, describe: "Create the workspace path on the daemon if it does not exist" })
           .option("default", { type: "boolean", default: false, describe: "Create the user's default project" })
           .option("client-request-id", { type: "string", describe: "Idempotency key" }),
         async (argv) => {

@@ -536,6 +536,7 @@ describe("/api/projects", () => {
         userId: "user-1",
         daemonHost: "daemon-1",
         workspacePath: "/Users/duo/ws/conductor",
+        createIfMissing: false,
       });
       expect(db.project.create).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({
@@ -640,7 +641,94 @@ describe("/api/projects", () => {
 
       expect(response.status).toBe(400);
       expect(data.error).toBe("Workspace path does not exist on daemon daemon-1: /Users/duo/missing");
+      expect(data.code).toBe("workspace_not_found");
       expect(db.project.create).not.toHaveBeenCalled();
+    });
+
+    it("should not ask the daemon to create the workspace unless requested", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(validateProjectBindingWithDaemon).mockRejectedValue(
+        new ProjectBindingValidationError("nope", 400, "workspace_not_found"),
+      );
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          name: "Plain Project",
+          daemonHost: "daemon-1",
+          workspacePath: "/Users/duo/missing",
+        },
+      });
+      await POST(request);
+
+      expect(validateProjectBindingWithDaemon).toHaveBeenCalledWith(
+        expect.objectContaining({ createIfMissing: false }),
+      );
+    });
+
+    it("should forward createWorkspaceIfMissing to the daemon binding check", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = {
+        id: "proj-created",
+        name: "Fresh Project",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/Users/duo/ws/fresh",
+        repoRoot: null,
+        worktreeBranch: null,
+        lastCommit: null,
+        fileCount: null,
+        metadata: null,
+        createdAt: new Date("2024-01-02"),
+        updatedAt: new Date("2024-01-02"),
+      };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+      vi.mocked(db.project.create).mockResolvedValue(mockProject);
+      vi.mocked(validateProjectBindingWithDaemon).mockResolvedValue({
+        daemonHost: "daemon-1",
+        workspacePath: "/Users/duo/ws/fresh",
+        repoRoot: null,
+        worktreeBranch: null,
+        lastCommit: null,
+        lastCommitAt: null,
+        gitRemoteUrl: null,
+        fileCount: null,
+      });
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: {
+          name: "Fresh Project",
+          daemonHost: "daemon-1",
+          workspacePath: "/Users/duo/ws/fresh",
+          createWorkspaceIfMissing: true,
+        },
+      });
+      const response = await POST(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.id).toBe("proj-created");
+      expect(validateProjectBindingWithDaemon).toHaveBeenCalledWith(
+        expect.objectContaining({
+          daemonHost: "daemon-1",
+          workspacePath: "/Users/duo/ws/fresh",
+          createIfMissing: true,
+        }),
+      );
+      expect(db.project.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ workspacePath: "/Users/duo/ws/fresh" }),
+        }),
+      );
     });
 
     it("should create a pending project when given a binding candidate metadata", async () => {

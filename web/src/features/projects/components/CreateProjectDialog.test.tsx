@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
+import { ApiRequestError } from '@/shared/api/client';
 import { CreateProjectDialog } from './CreateProjectDialog';
 
 const createProjectMock = vi.fn();
@@ -101,5 +102,119 @@ describe('CreateProjectDialog', () => {
       });
     });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('offers to create the workspace directory when the daemon reports it missing', async () => {
+    createProjectMock.mockRejectedValueOnce(
+      new ApiRequestError(400, {
+        error: 'Workspace path does not exist on daemon daemon-a: /repo/fresh',
+        code: 'workspace_not_found',
+      }),
+    );
+    const onClose = vi.fn();
+
+    render(<CreateProjectDialog open onClose={onClose} />);
+
+    fireEvent.change(screen.getByLabelText('Workspace Path'), {
+      target: { value: '/repo/fresh' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Project' }));
+
+    // First attempt must not create anything on disk.
+    await waitFor(() => {
+      expect(createProjectMock).toHaveBeenCalledWith({
+        name: 'fresh',
+        daemonHost: 'daemon-a',
+        workspacePath: '/repo/fresh',
+      });
+    });
+    expect(onClose).not.toHaveBeenCalled();
+
+    const retry = await screen.findByRole('button', {
+      name: 'Create this directory and continue',
+    });
+    createProjectMock.mockResolvedValueOnce({ id: 'project-fresh' });
+    fireEvent.click(retry);
+
+    await waitFor(() => {
+      expect(createProjectMock).toHaveBeenLastCalledWith({
+        name: 'fresh',
+        daemonHost: 'daemon-a',
+        workspacePath: '/repo/fresh',
+        createWorkspaceIfMissing: true,
+      });
+    });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('hides the create-directory prompt once the path is edited', async () => {
+    createProjectMock.mockRejectedValueOnce(
+      new ApiRequestError(400, { error: 'missing', code: 'workspace_not_found' }),
+    );
+
+    render(<CreateProjectDialog open onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText('Workspace Path'), {
+      target: { value: '/repo/typo' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Project' }));
+
+    await screen.findByRole('button', { name: 'Create this directory and continue' });
+
+    fireEvent.change(screen.getByLabelText('Workspace Path'), {
+      target: { value: '/repo/correct' },
+    });
+
+    expect(
+      screen.queryByRole('button', { name: 'Create this directory and continue' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('hides the create-directory prompt when the daemon is switched', async () => {
+    agentsState = {
+      agents: [
+        { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['codex'], capabilities: [] },
+        { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['codex'], capabilities: [] },
+      ],
+    };
+    createProjectMock.mockRejectedValueOnce(
+      new ApiRequestError(400, { error: 'missing', code: 'workspace_not_found' }),
+    );
+
+    render(<CreateProjectDialog open onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText('Workspace Path'), {
+      target: { value: '/repo/only-on-a' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Project' }));
+
+    await screen.findByRole('button', { name: 'Create this directory and continue' });
+
+    // The "missing" verdict came from daemon-a; it says nothing about daemon-b.
+    fireEvent.change(screen.getByLabelText('Daemon Host'), {
+      target: { value: 'daemon-b' },
+    });
+
+    expect(
+      screen.queryByRole('button', { name: 'Create this directory and continue' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not offer directory creation for unrelated failures', async () => {
+    createProjectMock.mockRejectedValueOnce(
+      new ApiRequestError(409, { error: 'Daemon offline', code: 'daemon_offline' }),
+    );
+
+    render(<CreateProjectDialog open onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText('Workspace Path'), {
+      target: { value: '/repo/alpha' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Project' }));
+
+    await waitFor(() => expect(createProjectMock).toHaveBeenCalled());
+    expect(
+      screen.queryByRole('button', { name: 'Create this directory and continue' }),
+    ).not.toBeInTheDocument();
   });
 });

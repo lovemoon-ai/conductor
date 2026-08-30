@@ -155,6 +155,33 @@ describe("conductor project create", () => {
     assert.equal(data.request.body.name, "foo-bar");
   });
 
+  it("omits createWorkspaceIfMissing unless --create-workspace is passed", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi();
+    const code = await main(
+      ["create", "--workspace-path", "/tmp/plain", "--json", "--dry-run"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 0);
+    const data = JSON.parse(stdout.collect().trim());
+    assert.equal(data.request.body.createWorkspaceIfMissing, undefined);
+  });
+
+  it("sends createWorkspaceIfMissing when --create-workspace is passed", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi();
+    const code = await main(
+      ["create", "--workspace-path", "/tmp/fresh", "--create-workspace", "--json", "--dry-run"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 0);
+    const data = JSON.parse(stdout.collect().trim());
+    assert.equal(data.request.body.createWorkspaceIfMissing, true);
+    assert.equal(data.request.body.workspacePath, "/tmp/fresh");
+  });
+
   it("translates daemon-not-reachable errors into actionable hints", async () => {
     const stdout = makeStream();
     const stderr = makeStream();

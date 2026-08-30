@@ -7687,7 +7687,7 @@ describe("Daemon", () => {
       assert.ok(typeof handler === "function");
       assert.strictEqual(
         webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-        "project_path_validation,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,remote_exec,pty_task,terminal_snapshot",
+        "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,remote_exec,pty_task,terminal_snapshot",
       );
 
       handler({
@@ -7717,7 +7717,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,remote_exec,pty_task,terminal_snapshot",
+      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,remote_exec,pty_task,terminal_snapshot",
     );
 
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -7990,7 +7990,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,remote_exec",
+      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,remote_exec",
     );
 
     handler({
@@ -9677,6 +9677,182 @@ describe("Daemon", () => {
     ]);
     assert.ok(typeof events[0]?.payload?.validated_at === "string");
     assert.ok(projectSettingsTemplate.includes("  sync_branch: false"));
+
+    if (daemonInstance && typeof daemonInstance.close === "function") {
+      daemonInstance.close();
+    }
+  });
+
+  it("creates a missing workspace path only when create_if_missing is set", async () => {
+    const scenarios = [
+      { createIfMissing: false, requestId: "req-nocreate" },
+      { createIfMissing: true, requestId: "req-create" },
+    ];
+
+    for (const scenario of scenarios) {
+      let handler;
+      const events = [];
+      const madeDirs = [];
+      const existing = new Set();
+
+      const daemonInstance = startDaemon(
+        {
+          BACKEND_URL: "ws://localhost:0",
+          BACKEND_HTTP: "http://localhost:6152",
+          WORKSPACE_ROOT: "/tmp/test-ws-create-project-path",
+          CLI_PATH: "/tmp/cli.js",
+          DAEMON_NAME: "create-project-daemon",
+        },
+        {
+          spawn: () => ({
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          }),
+          mkdirSync: (targetPath) => {
+            madeDirs.push(targetPath);
+            existing.add(targetPath);
+          },
+          writeFileSync: () => {},
+          existsSync: (targetPath) => existing.has(targetPath),
+          statSync: () => ({ isDirectory: () => true }),
+          readFileSync: () => "",
+          unlinkSync: () => {},
+          renameSync: () => {},
+          createWriteStream: () => ({ write: () => {}, end: () => {} }),
+          fetch: async (url) => {
+            if (String(url).endsWith("/api/tasks")) {
+              return { ok: true, json: async () => [] };
+            }
+            return { ok: true, json: async () => ({}) };
+          },
+          resolveProjectSnapshot: (projectPath) => ({
+            projectRoot: projectPath,
+            repoRoot: null,
+            worktreeBranch: null,
+            lastCommit: null,
+            lastCommitAt: null,
+            gitRemoteUrl: null,
+            fileCount: 0,
+          }),
+          createWebSocketClient: () => ({
+            registerHandler: (h) => {
+              handler = h;
+            },
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async (payload) => {
+              events.push(payload);
+            },
+          }),
+        },
+      );
+
+      assert.ok(typeof handler === "function");
+
+      handler({
+        type: "validate_project_path",
+        payload: {
+          request_id: scenario.requestId,
+          workspace_path: "/tmp/brand-new-project",
+          create_if_missing: scenario.createIfMissing,
+        },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const payload = events.find((event) => event.type === "project_path_validated")?.payload;
+      assert.ok(payload, "expected a project_path_validated event");
+
+      if (scenario.createIfMissing) {
+        assert.ok(
+          madeDirs.includes("/tmp/brand-new-project"),
+          "expected the workspace directory to be created",
+        );
+        assert.strictEqual(payload.error, null);
+        assert.strictEqual(payload.error_code, null);
+        assert.strictEqual(payload.workspace_path, "/tmp/brand-new-project");
+      } else {
+        assert.ok(
+          !madeDirs.includes("/tmp/brand-new-project"),
+          "must not create the workspace directory without create_if_missing",
+        );
+        assert.strictEqual(payload.error_code, "workspace_not_found");
+      }
+
+      if (daemonInstance && typeof daemonInstance.close === "function") {
+        daemonInstance.close();
+      }
+    }
+  });
+
+  it("reports workspace_create_failed when the directory cannot be created", async () => {
+    let handler;
+    const events = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-create-project-path-fail",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "create-fail-daemon",
+      },
+      {
+        spawn: () => ({
+          on: () => {},
+          stdout: { on: () => {} },
+          stderr: { on: () => {} },
+        }),
+        mkdirSync: (targetPath) => {
+          if (targetPath === "/root/forbidden") {
+            throw new Error("EACCES: permission denied");
+          }
+        },
+        writeFileSync: () => {},
+        existsSync: () => false,
+        statSync: () => ({ isDirectory: () => true }),
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {} }),
+        fetch: async (url) => {
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        resolveProjectSnapshot: () => ({}),
+        createWebSocketClient: () => ({
+          registerHandler: (h) => {
+            handler = h;
+          },
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            events.push(payload);
+          },
+        }),
+      },
+    );
+
+    assert.ok(typeof handler === "function");
+
+    handler({
+      type: "validate_project_path",
+      payload: {
+        request_id: "req-create-fail",
+        workspace_path: "/root/forbidden",
+        create_if_missing: true,
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const payload = events.find((event) => event.type === "project_path_validated")?.payload;
+    assert.ok(payload, "expected a project_path_validated event");
+    assert.strictEqual(payload.error_code, "workspace_create_failed");
+    assert.ok(payload.error.includes("EACCES"));
 
     if (daemonInstance && typeof daemonInstance.close === "function") {
       daemonInstance.close();

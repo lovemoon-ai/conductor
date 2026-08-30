@@ -2,6 +2,7 @@
 
 import { useReducer, useRef, useState } from 'react';
 import { Dialog } from '@/components/common/Dialog';
+import { ApiRequestError } from '@/shared/api/client';
 import { useProjectsStore } from '../store';
 import { useAgentsStore } from '@/features/agents';
 
@@ -62,6 +63,9 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
   const [state, dispatch] = useReducer(createProjectDialogReducer, initialCreateProjectDialogState);
   const hasCustomNameRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Set when the daemon reports the workspace path is missing, so the user can
+  // confirm creating it instead of having a typo'd path silently materialize.
+  const [missingWorkspacePath, setMissingWorkspacePath] = useState<string | null>(null);
 
   const createProject = useProjectsStore((storeState) => storeState.createProject);
   const agents = useAgentsStore((storeState) => storeState.agents);
@@ -74,7 +78,15 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
       : state.daemonHost;
   const isSelectedDaemonOnline = daemons.some((daemon) => daemon.host === selectedDaemonHost.trim());
 
+  // "Missing" is a claim about one daemon's filesystem, so it must not survive a
+  // change to either the path or the daemon it was validated against.
+  const handleDaemonHostChange = (value: string) => {
+    setMissingWorkspacePath(null);
+    dispatch({ type: 'set-daemon-host', value });
+  };
+
   const handleWorkspacePathChange = (value: string) => {
+    setMissingWorkspacePath(null);
     dispatch({
       type: 'set-project-path',
       value,
@@ -87,8 +99,7 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
     hasCustomNameRef.current = true;
   };
 
-  const handleSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const submitCreate = async (createWorkspaceIfMissing: boolean) => {
     if (!state.name.trim()) return;
 
     setIsSubmitting(true);
@@ -99,6 +110,9 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
       if (trimmedDaemonHost && trimmedProjectPath && isSelectedDaemonOnline) {
         payload.daemonHost = trimmedDaemonHost;
         payload.workspacePath = trimmedProjectPath;
+        if (createWorkspaceIfMissing) {
+          payload.createWorkspaceIfMissing = true;
+        }
       } else if (trimmedDaemonHost && trimmedProjectPath) {
         payload.metadata = {
           bindingCandidate: {
@@ -110,12 +124,24 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
       await createProject(payload as any);
       onClose();
       dispatch({ type: 'reset' });
+      setMissingWorkspacePath(null);
       hasCustomNameRef.current = false;
-    } catch {
-      // Error handled by store
+    } catch (error) {
+      // Offer to create the directory instead of dead-ending on "does not exist".
+      if (error instanceof ApiRequestError && error.payload?.code === 'workspace_not_found') {
+        setMissingWorkspacePath(state.projectPath.trim());
+      } else {
+        setMissingWorkspacePath(null);
+      }
+      // Other errors are surfaced by the store.
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await submitCreate(false);
   };
 
   return (
@@ -131,7 +157,7 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
               type="text"
               aria-label="Daemon host"
               value={state.daemonHost}
-              onChange={(event) => dispatch({ type: 'set-daemon-host', value: event.target.value })}
+              onChange={(event) => handleDaemonHostChange(event.target.value)}
               className="w-full webapp-input"
             />
           ) : (
@@ -139,7 +165,7 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
               id="create-project-daemon-host"
               aria-label="Daemon host"
               value={selectedDaemonHost}
-              onChange={(event) => dispatch({ type: 'set-daemon-host', value: event.target.value })}
+              onChange={(event) => handleDaemonHostChange(event.target.value)}
               className="w-full webapp-input"
             >
               {daemons.map((daemon) => (
@@ -163,6 +189,25 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
             onChange={(event) => handleWorkspacePathChange(event.target.value)}
             className="w-full webapp-input"
           />
+          {missingWorkspacePath && (
+            <div
+              role="alert"
+              className="mt-2 rounded-lg border border-border bg-border/20 px-3 py-2.5 text-sm"
+            >
+              <p className="text-muted">
+                <span className="font-mono break-all text-ink">{missingWorkspacePath}</span>{' '}
+                does not exist on {selectedDaemonHost}.
+              </p>
+              <button
+                type="button"
+                onClick={() => submitCreate(true)}
+                disabled={isSubmitting}
+                className="mt-2 text-sm font-medium text-accent hover:underline disabled:opacity-50"
+              >
+                {isSubmitting ? 'Creating directory...' : 'Create this directory and continue'}
+              </button>
+            </div>
+          )}
         </div>
 
         <div>

@@ -7,6 +7,7 @@ import {
 
 const PROJECT_PATH_VALIDATION_TIMEOUT_MS = 5_000;
 const PROJECT_PATH_VALIDATION_CAPABILITY = "project_path_validation";
+const PROJECT_PATH_CREATE_CAPABILITY = "project_path_create";
 const PROJECT_AGENTS_TIMEOUT_MS = 2_000;
 const PROJECT_AGENTS_CAPABILITY = "project_agents_registry";
 
@@ -14,6 +15,7 @@ const INVALID_WORKSPACE_ERROR_CODES = new Set([
   "workspace_not_found",
   "workspace_not_directory",
   "workspace_validation_failed",
+  "workspace_create_failed",
 ]);
 
 export class ProjectBindingValidationError extends Error {
@@ -45,9 +47,11 @@ export async function validateProjectBindingWithDaemon(params: {
   userId: string;
   daemonHost: string;
   workspacePath: string;
+  createIfMissing?: boolean;
   timeoutMs?: number;
 }): Promise<ValidatedProjectBinding> {
   const { userId, daemonHost, workspacePath } = params;
+  const createIfMissing = params.createIfMissing === true;
   const timeoutMs = params.timeoutMs ?? PROJECT_PATH_VALIDATION_TIMEOUT_MS;
 
   if (!realtimeHub.hasAgentHost(daemonHost, userId)) {
@@ -73,6 +77,19 @@ export async function validateProjectBindingWithDaemon(params: {
       "daemon_upgrade_required",
     );
   }
+  if (
+    createIfMissing &&
+    daemonConnection &&
+    !daemonConnection.capabilities.some(
+      (capability) => capability.trim().toLowerCase() === PROJECT_PATH_CREATE_CAPABILITY,
+    )
+  ) {
+    throw new ProjectBindingValidationError(
+      `Daemon ${daemonHost} is online but cannot create workspace directories. Upgrade conductor daemon, or create ${workspacePath} manually.`,
+      409,
+      "daemon_upgrade_required",
+    );
+  }
 
   const requestId = randomUUID();
   const waitForValidation = realtimeHub.waitForProjectPathValidation(requestId, timeoutMs);
@@ -81,6 +98,7 @@ export async function validateProjectBindingWithDaemon(params: {
     payload: {
       request_id: requestId,
       workspace_path: workspacePath,
+      create_if_missing: createIfMissing,
     },
   });
   if (!sent) {

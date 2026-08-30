@@ -435,6 +435,8 @@ export interface CreateProjectInput {
   lastCommitAt?: string;
   fileCount?: number;
   bindingConfirmed?: boolean;
+  /** Ask the daemon to create `workspacePath` (recursively) if it does not exist yet. */
+  createWorkspaceIfMissing?: boolean;
 }
 
 export interface UpdateProjectInput {

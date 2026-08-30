@@ -3022,6 +3022,7 @@ export function startDaemon(config = {}, deps = {}) {
   };
   const advertisedCapabilities = [
     "project_path_validation",
+    "project_path_create",
     "project_agents_registry",
     "restart_daemon",
     "refresh_session_inplace",
@@ -5406,6 +5407,7 @@ export function startDaemon(config = {}, deps = {}) {
   async function handleValidateProjectPath(payload) {
     const requestId = payload?.request_id ? String(payload.request_id).trim() : "";
     const rawWorkspacePath = payload?.workspace_path ? String(payload.workspace_path).trim() : "";
+    const createIfMissing = payload?.create_if_missing === true;
     const validatedAt = new Date().toISOString();
 
     if (!requestId || !rawWorkspacePath) {
@@ -5429,7 +5431,22 @@ export function startDaemon(config = {}, deps = {}) {
 
     try {
       const resolvedPath = path.resolve(rawWorkspacePath);
-      if (!existsSyncFn(resolvedPath)) {
+      let createError = null;
+      if (createIfMissing && !existsSyncFn(resolvedPath)) {
+        try {
+          mkdirSyncFn(resolvedPath, { recursive: true });
+          log(`Created workspace path on request: ${resolvedPath}`);
+        } catch (error) {
+          createError = error;
+        }
+      }
+      if (createError) {
+        result = {
+          ...result,
+          error: `Failed to create workspace path on daemon ${AGENT_NAME}: ${createError?.message || createError}`,
+          errorCode: "workspace_create_failed",
+        };
+      } else if (!existsSyncFn(resolvedPath)) {
         result = {
           ...result,
           error: `Workspace path does not exist on daemon ${AGENT_NAME}: ${rawWorkspacePath}`,
