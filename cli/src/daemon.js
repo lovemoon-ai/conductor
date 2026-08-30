@@ -38,6 +38,7 @@ import {
 import { resolveResumeContext } from "./fire/resume.js";
 import {
   filterRuntimeSupportedAllowCliList,
+  inferBuiltInRuntimeBackendFromCommand,
   listAdvertisedBackends,
   resolveConfiguredRuntimeBackend,
   isBuiltInRuntimeBackend,
@@ -46,6 +47,7 @@ import {
   normalizeRuntimeBackendAlias,
   normalizeRuntimeBackendName,
 } from "./runtime-backends.js";
+import { resolveClaudeCommandForRoot } from "@love-moon/ai-sdk";
 import {
   PACKAGE_NAME,
   buildUpgradeCommand,
@@ -493,6 +495,18 @@ export function ensureNodePtySpawnHelperExecutable(deps = {}) {
   return { helperPath, updated: true };
 }
 
+// A tool-preset PTY task runs the configured allow_cli_list command through a
+// login shell, bypassing ai-sdk entirely. claude refuses to start as root with
+// `--dangerously-skip-permissions`, so rewrite the command the same way the
+// ai-sdk session rewrites its permission mode — one shared root check, so the
+// two paths cannot drift.
+export function resolvePtyToolPresetCommand(cliCommand, env = process.env) {
+  if (inferBuiltInRuntimeBackendFromCommand(cliCommand) !== "claude") {
+    return cliCommand;
+  }
+  return resolveClaudeCommandForRoot(cliCommand, env);
+}
+
 export function isSafeTaskWorktreeRoot(projectWorkspacePath, worktreeRoot) {
   const normalizedWorkspacePath =
     typeof projectWorkspacePath === "string" ? projectWorkspacePath.trim() : "";
@@ -771,6 +785,106 @@ function buildPtyTaskEnv(baseEnv = process.env, launchEnv = {}) {
     ...taskLaunchEnv,
   };
 }
+
+// Module-level so the PTY launch wiring is directly testable: the tool-preset
+// branch has to hand the *child's* env to the root check, and that seam is
+// exactly where a bug hid before (the check read the daemon's own process.env,
+// silently ignoring a per-task IS_SANDBOX=1 opt-out).
+export function buildPtyLaunchSpec(launchConfig, fallbackCwd, deps = {}) {
+  const allowCliList = deps.allowCliList || {};
+  const supportedBackends = Array.isArray(deps.supportedBackends) ? deps.supportedBackends : [];
+  const existsSyncFn = deps.existsSync || fs.existsSync;
+  const baseEnv = deps.baseEnv || process.env;
+  const log = typeof deps.log === "function" ? deps.log : () => {};
+  const normalizedLaunchConfig = normalizeLaunchConfig(launchConfig);
+  const entrypointType =
+    normalizeOptionalString(normalizedLaunchConfig.entrypoint_type) ||
+    normalizeOptionalString(normalizedLaunchConfig.entrypointType) ||
+    (normalizeOptionalString(normalizedLaunchConfig.tool_preset) ||
+    normalizeOptionalString(normalizedLaunchConfig.toolPreset)
+      ? "tool_preset"
+      : "shell");
+  const preferredShell = resolveDefaultPtyShell({
+    explicitShell: normalizedLaunchConfig.shell,
+    envShell: process.env.SHELL,
+    comspec: process.env.COMSPEC,
+    platform: process.platform,
+    existsSync: existsSyncFn,
+  });
+  const cwd =
+    normalizeOptionalString(normalizedLaunchConfig.cwd) ||
+    fallbackCwd;
+  const env = normalizeTerminalEnv(normalizedLaunchConfig.env);
+  const cols = normalizePositiveInt(
+    normalizedLaunchConfig.cols ?? normalizedLaunchConfig.columns,
+    DEFAULT_TERMINAL_COLS,
+  );
+  const rows = normalizePositiveInt(
+    normalizedLaunchConfig.rows,
+    DEFAULT_TERMINAL_ROWS,
+  );
+
+  if (entrypointType === "tool_preset") {
+    const toolPreset =
+      normalizeOptionalString(normalizedLaunchConfig.tool_preset) ||
+      normalizeOptionalString(normalizedLaunchConfig.toolPreset) ||
+      supportedBackends[0] ||
+      "codex";
+    const cliCommand = allowCliList[toolPreset];
+    if (!cliCommand) {
+      throw new Error(`Unsupported tool preset: ${toolPreset}`);
+    }
+    const launchCommand = resolvePtyToolPresetCommand(cliCommand, buildPtyTaskEnv(baseEnv, env));
+    if (launchCommand !== cliCommand) {
+      log(`[pty] Adjusted ${toolPreset} command for root: ${launchCommand}`);
+    }
+    return {
+      entrypointType,
+      toolPreset,
+      command: preferredShell,
+      args: ["-lc", launchCommand],
+      shell: preferredShell,
+      cwd,
+      env,
+      cols,
+      rows,
+    };
+  }
+
+  if (entrypointType === "custom") {
+    const command = normalizeOptionalString(normalizedLaunchConfig.command);
+    if (!command) {
+      throw new Error("launch_config.command is required for custom entrypoint");
+    }
+    const args = Array.isArray(normalizedLaunchConfig.args)
+      ? normalizedLaunchConfig.args.filter((value) => typeof value === "string")
+      : [];
+    return {
+      entrypointType,
+      toolPreset: null,
+      command,
+      args,
+      shell: preferredShell,
+      cwd,
+      env,
+      cols,
+      rows,
+    };
+  }
+
+  return {
+    entrypointType: "shell",
+    toolPreset: null,
+    command: preferredShell,
+    args: ["-l"],
+    shell: preferredShell,
+    cwd,
+    env,
+    cols,
+    rows,
+  };
+}
+
 
 export function startDaemon(config = {}, deps = {}) {
   const exitFn = deps.exit || process.exit;
@@ -4316,89 +4430,12 @@ export function startDaemon(config = {}, deps = {}) {
   }
 
   function resolvePtyLaunchSpec(launchConfig, fallbackCwd) {
-    const normalizedLaunchConfig = normalizeLaunchConfig(launchConfig);
-    const entrypointType =
-      normalizeOptionalString(normalizedLaunchConfig.entrypoint_type) ||
-      normalizeOptionalString(normalizedLaunchConfig.entrypointType) ||
-      (normalizeOptionalString(normalizedLaunchConfig.tool_preset) ||
-      normalizeOptionalString(normalizedLaunchConfig.toolPreset)
-        ? "tool_preset"
-        : "shell");
-    const preferredShell = resolveDefaultPtyShell({
-      explicitShell: normalizedLaunchConfig.shell,
-      envShell: process.env.SHELL,
-      comspec: process.env.COMSPEC,
-      platform: process.platform,
+    return buildPtyLaunchSpec(launchConfig, fallbackCwd, {
+      allowCliList: ALLOW_CLI_LIST,
+      supportedBackends: SUPPORTED_BACKENDS,
       existsSync: existsSyncFn,
+      log,
     });
-    const cwd =
-      normalizeOptionalString(normalizedLaunchConfig.cwd) ||
-      fallbackCwd;
-    const env = normalizeTerminalEnv(normalizedLaunchConfig.env);
-    const cols = normalizePositiveInt(
-      normalizedLaunchConfig.cols ?? normalizedLaunchConfig.columns,
-      DEFAULT_TERMINAL_COLS,
-    );
-    const rows = normalizePositiveInt(
-      normalizedLaunchConfig.rows,
-      DEFAULT_TERMINAL_ROWS,
-    );
-
-    if (entrypointType === "tool_preset") {
-      const toolPreset =
-        normalizeOptionalString(normalizedLaunchConfig.tool_preset) ||
-        normalizeOptionalString(normalizedLaunchConfig.toolPreset) ||
-        SUPPORTED_BACKENDS[0] ||
-        "codex";
-      const cliCommand = ALLOW_CLI_LIST[toolPreset];
-      if (!cliCommand) {
-        throw new Error(`Unsupported tool preset: ${toolPreset}`);
-      }
-      return {
-        entrypointType,
-        toolPreset,
-        command: preferredShell,
-        args: ["-lc", cliCommand],
-        shell: preferredShell,
-        cwd,
-        env,
-        cols,
-        rows,
-      };
-    }
-
-    if (entrypointType === "custom") {
-      const command = normalizeOptionalString(normalizedLaunchConfig.command);
-      if (!command) {
-        throw new Error("launch_config.command is required for custom entrypoint");
-      }
-      const args = Array.isArray(normalizedLaunchConfig.args)
-        ? normalizedLaunchConfig.args.filter((value) => typeof value === "string")
-        : [];
-      return {
-        entrypointType,
-        toolPreset: null,
-        command,
-        args,
-        shell: preferredShell,
-        cwd,
-        env,
-        cols,
-        rows,
-      };
-    }
-
-    return {
-      entrypointType: "shell",
-      toolPreset: null,
-      command: preferredShell,
-      args: ["-l"],
-      shell: preferredShell,
-      cwd,
-      env,
-      cols,
-      rows,
-    };
   }
 
   function getTerminalChunkByteLength(data) {
