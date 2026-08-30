@@ -1133,7 +1133,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
         taskId={taskId}
         message={scheduledMessage}
         onClose={() => setScheduledMessage(null)}
-        onCreated={refreshScheduledMessageSummary}
+        onChanged={refreshScheduledMessageSummary}
       />
     </div>
   );

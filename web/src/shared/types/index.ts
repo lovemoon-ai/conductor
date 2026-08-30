@@ -228,6 +228,37 @@ export interface Task {
 }
 
 /**
+ * A scheduled (delayed / recurring) message attached to a task, as returned by
+ * `/api/tasks/:taskId/scheduled-messages`.
+ */
+export interface ScheduledMessageSummary {
+  id: string;
+  taskId: string;
+  sourceMessageId?: string | null;
+  content: string;
+  /** `once_delay` | `once_at` | `interval` */
+  kind: string;
+  /** `none` | `ai_idle` */
+  condition: string;
+  intervalMs?: number | null;
+  timezone?: string | null;
+  /** `active` | `sending` | `sent` | `completed` | `canceled` | `failed` */
+  status: string;
+  nextRunAt: string;
+  runCount: number;
+  skipCount: number;
+  failureCount: number;
+  maxRuns?: number | null;
+  maxSkips?: number | null;
+  stopAt?: string | null;
+  stopWhenTaskNotRunning: boolean;
+  lastRunAt?: string | null;
+  lastError?: string | null;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+/**
  * A row in the Achieved-task manager: a packed task surfaced for search and
  * retrieval. Carries a matched transcript snippet and its origin project.
  */

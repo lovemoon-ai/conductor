@@ -174,6 +174,54 @@ describe("/api/tasks/[taskId]/scheduled-messages", () => {
     expect(listScheduledMessagesForTask).toHaveBeenCalledWith({
       userId: "user-1",
       taskId: "task-1",
+      status: null,
+      keyword: null,
+    });
+  });
+
+  it("rejects an unknown status filter instead of silently matching nothing", async () => {
+    const response = await GET(
+      createMockRequest({
+        method: "GET",
+        url: "http://localhost:6152/api/tasks/task-1/scheduled-messages?status=complete",
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+
+    expect(response.status).toBe(400);
+    expect(listScheduledMessagesForTask).not.toHaveBeenCalled();
+  });
+
+  it("accepts `sent`, the terminal status of a one-off send", async () => {
+    const response = await GET(
+      createMockRequest({
+        method: "GET",
+        url: "http://localhost:6152/api/tasks/task-1/scheduled-messages?status=sent",
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(listScheduledMessagesForTask).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "sent" }),
+    );
+  });
+
+  it("passes the status and keyword filters through to the query", async () => {
+    const response = await GET(
+      createMockRequest({
+        method: "GET",
+        url: "http://localhost:6152/api/tasks/task-1/scheduled-messages?status=active&q=deploy",
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(listScheduledMessagesForTask).toHaveBeenCalledWith({
+      userId: "user-1",
+      taskId: "task-1",
+      status: "active",
+      keyword: "deploy",
     });
   });
 });

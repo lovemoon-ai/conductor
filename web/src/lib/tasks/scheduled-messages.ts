@@ -35,6 +35,15 @@ export type CreateScheduledMessageInput = {
   now?: Date;
 };
 
+export type UpdateScheduledMessageInput = {
+  userId: string;
+  taskId: string;
+  scheduleId: string;
+  content?: string | null;
+  schedule?: ScheduledMessageMode | null;
+  now?: Date;
+};
+
 export type ScheduledMessageResponse = {
   id: string;
   userId: string;
@@ -344,6 +353,15 @@ export async function createScheduledMessageForTask(
 export async function listScheduledMessagesForTask(input: {
   userId: string;
   taskId: string;
+  /** Restrict to a single lifecycle status. `all` (or omitted) returns every row. */
+  status?: string | null;
+  /**
+   * Substring match against the scheduled message content. Matching is
+   * case-insensitive for ASCII because SQLite's LIKE is; Prisma's
+   * `mode: "insensitive"` is unsupported on SQLite, so moving this schema to
+   * PostgreSQL would turn the filter case-sensitive and needs that flag added.
+   */
+  keyword?: string | null;
 }): Promise<ScheduledMessageResponse[]> {
   const task = await db.task.findFirst({
     where: { id: input.taskId, project: { userId: input.userId } },
@@ -352,12 +370,128 @@ export async function listScheduledMessagesForTask(input: {
   if (!task) {
     throw new ScheduledMessageError("not_found", 404, "Not found", { error: "Not found" });
   }
+  const status = input.status?.trim();
+  const keyword = input.keyword?.trim();
   const rows = await db.scheduledMessage.findMany({
-    where: { userId: input.userId, taskId: input.taskId },
+    where: {
+      userId: input.userId,
+      taskId: input.taskId,
+      ...(status && status !== "all" ? { status } : {}),
+      ...(keyword ? { content: { contains: keyword } } : {}),
+    },
     orderBy: [{ status: "asc" }, { nextRunAt: "asc" }],
     take: 100,
   });
   return rows.map(buildScheduledMessageResponse);
+}
+
+/**
+ * Edits an already-scheduled message. Only `active` rows are editable: a row
+ * the dispatcher already claimed (`sending`) or finished must not be rewritten
+ * underneath it, so the status guard lives in the same `updateMany` that writes
+ * the new values.
+ */
+export async function updateScheduledMessageForTask(
+  input: UpdateScheduledMessageInput,
+): Promise<ScheduledMessageResponse | null> {
+  const existing = await db.scheduledMessage.findFirst({
+    where: { id: input.scheduleId, userId: input.userId, taskId: input.taskId },
+    select: { id: true, status: true },
+  });
+  if (!existing) {
+    return null;
+  }
+
+  const data: Record<string, unknown> = {};
+
+  if (input.content != null) {
+    const content = input.content.trim();
+    if (!content) {
+      throw new ScheduledMessageError("content_required", 400, "content required");
+    }
+    data.content = content;
+  }
+
+  if (input.schedule) {
+    const scheduleData = resolveCreateData(input.schedule, input.now ?? new Date());
+    data.kind = scheduleData.kind;
+    data.condition = scheduleData.condition;
+    data.intervalMs = scheduleData.intervalMs;
+    data.timezone = scheduleData.timezone;
+    data.nextRunAt = scheduleData.nextRunAt;
+    data.maxRuns = scheduleData.maxRuns;
+    data.maxSkips = scheduleData.maxSkips;
+    data.stopAt = scheduleData.stopAt;
+    data.stopWhenTaskNotRunning = scheduleData.stopWhenTaskNotRunning;
+    // A rescheduled row starts over from the new plan, so stale run bookkeeping
+    // would otherwise trip the maxRuns/maxSkips stop conditions immediately.
+    data.runCount = 0;
+    data.skipCount = 0;
+    data.failureCount = 0;
+    data.lastError = null;
+  }
+
+  if (Object.keys(data).length === 0) {
+    throw new ScheduledMessageError("invalid_request", 400, "Nothing to update");
+  }
+
+  const updated = await db.scheduledMessage.updateMany({
+    where: {
+      id: input.scheduleId,
+      userId: input.userId,
+      taskId: input.taskId,
+      status: "active",
+    },
+    data,
+  });
+  if (updated.count === 0) {
+    throw new ScheduledMessageError(
+      "schedule_not_editable",
+      409,
+      "Only active scheduled messages can be edited",
+    );
+  }
+
+  const row = await db.scheduledMessage.findUnique({ where: { id: input.scheduleId } });
+  return row ? buildScheduledMessageResponse(row) : null;
+}
+
+/**
+ * Current status of one row, or null when it does not exist. Lets a failed
+ * remove tell "the dispatcher is mid-send" apart from "already gone" instead of
+ * reporting both as a 404.
+ */
+export async function getScheduledMessageStatusForTask(input: {
+  userId: string;
+  taskId: string;
+  scheduleId: string;
+}): Promise<string | null> {
+  const row = await db.scheduledMessage.findFirst({
+    where: { id: input.scheduleId, userId: input.userId, taskId: input.taskId },
+    select: { status: true },
+  });
+  return row?.status ?? null;
+}
+
+/**
+ * Removes a finished row (completed/canceled/failed/sent) from history. Active
+ * and in-flight (`sending`) rows are never hard-deleted -- those go through
+ * `cancelScheduledMessageForTask` so the dispatcher keeps a consistent view.
+ */
+export async function deleteScheduledMessageForTask(input: {
+  userId: string;
+  taskId: string;
+  scheduleId: string;
+}): Promise<boolean> {
+  const result = await db.scheduledMessage.deleteMany({
+    where: {
+      id: input.scheduleId,
+      userId: input.userId,
+      taskId: input.taskId,
+      status: { notIn: ["active", "sending"] },
+    },
+  });
+  return result.count > 0;
 }
 
 export async function cancelScheduledMessageForTask(input: {

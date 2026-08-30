@@ -11,33 +11,15 @@ import {
   agentWriteDenied,
   resolveRequestScheduleAccess,
 } from "@/lib/tasks/agent-schedule-access";
+import {
+  scheduleSchema,
+  scheduledMessageStatusFilterSchema,
+} from "@/lib/tasks/scheduled-message-schema";
 
-const positiveInteger = z.number().int().positive();
-
-const scheduleSchema = z.discriminatedUnion("mode", [
-  z.object({
-    mode: z.literal("delay"),
-    amount: positiveInteger,
-    unit: z.enum(["minute", "hour"]),
-  }),
-  z.object({
-    mode: z.literal("at"),
-    sendAt: z.string().min(1),
-    timezone: z.string().trim().min(1).optional().nullable(),
-  }),
-  z.object({
-    mode: z.literal("interval"),
-    every: positiveInteger,
-    unit: z.enum(["minute", "hour"]),
-    condition: z.enum(["none", "ai_idle"]).optional(),
-    stop: z.object({
-      maxRuns: positiveInteger.optional().nullable(),
-      maxSkips: positiveInteger.optional().nullable(),
-      stopAt: z.string().min(1).optional().nullable(),
-      stopWhenTaskNotRunning: z.boolean().optional().nullable(),
-    }).optional().nullable(),
-  }),
-]);
+const listQuerySchema = z.object({
+  status: scheduledMessageStatusFilterSchema.nullish(),
+  q: z.string().nullish(),
+});
 
 const createScheduledMessageSchema = z.object({
   content: z.string().min(1),
@@ -72,10 +54,29 @@ export async function GET(
     if (denied) return NextResponse.json(denied, { status: 403 });
   }
 
+  const searchParams = request.nextUrl.searchParams;
+  // An unknown status would otherwise reach Prisma and quietly match nothing,
+  // which reads as "no schedules" instead of "you sent a typo".
+  const query = listQuerySchema.safeParse({
+    status: searchParams.get("status"),
+    q: searchParams.get("q"),
+  });
+  if (!query.success) {
+    return NextResponse.json(
+      {
+        error: "invalid_request",
+        message: query.error.issues[0]?.message ?? "Invalid scheduled message filter",
+      },
+      { status: 400 },
+    );
+  }
+
   try {
     const schedules = await listScheduledMessagesForTask({
       userId: userResult.id,
       taskId,
+      status: query.data.status,
+      keyword: query.data.q,
     });
     return NextResponse.json({ schedules });
   } catch (error) {
