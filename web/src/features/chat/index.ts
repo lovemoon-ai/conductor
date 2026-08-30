@@ -3,5 +3,7 @@ export { ChatView } from './components/ChatView';
 export { MessageBubble } from './components/MessageBubble';
 export { MessageInput } from './components/MessageInput';
 export { ScheduledMessageDialog } from './components/ScheduledMessageDialog';
+export { ScheduledMessageForm } from './components/ScheduledMessageForm';
+export { ScheduledMessageList } from './components/ScheduledMessageList';
 export { MarkdownRenderer } from './components/MarkdownRenderer';
 export { MermaidDiagram } from './components/MermaidDiagram';

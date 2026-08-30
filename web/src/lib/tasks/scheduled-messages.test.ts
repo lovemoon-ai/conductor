@@ -7,6 +7,8 @@ vi.mock("@/lib/db", () => ({
     },
     scheduledMessage: {
       create: vi.fn(),
+      deleteMany: vi.fn(),
+      findFirst: vi.fn(),
       findMany: vi.fn(),
       findUnique: vi.fn(),
       update: vi.fn(),
@@ -31,8 +33,12 @@ const { appendUserMessageToTask } = await import("@/lib/channel/task-ingress-ser
 const {
   cancelScheduledMessageForTask,
   createScheduledMessageForTask,
+  deleteScheduledMessageForTask,
+  getScheduledMessageStatusForTask,
+  listScheduledMessagesForTask,
   persistTaskRuntimeState,
   processDueScheduledMessages,
+  updateScheduledMessageForTask,
 } = await import("./scheduled-messages");
 
 const date = (value: string) => new Date(value);
@@ -311,5 +317,143 @@ describe("scheduled messages", () => {
         sessionId: "session-1",
       }),
     });
+  });
+
+  it("filters the list query by status and content keyword", async () => {
+    (db.scheduledMessage.findMany as any).mockResolvedValue([]);
+
+    await listScheduledMessagesForTask({
+      userId: "user-1",
+      taskId: "task-1",
+      status: "active",
+      keyword: " deploy ",
+    });
+
+    expect(db.scheduledMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId: "user-1",
+          taskId: "task-1",
+          status: "active",
+          content: { contains: "deploy" },
+        },
+      }),
+    );
+  });
+
+  it("ignores the `all` status so the list stays unfiltered", async () => {
+    (db.scheduledMessage.findMany as any).mockResolvedValue([]);
+
+    await listScheduledMessagesForTask({ userId: "user-1", taskId: "task-1", status: "all" });
+
+    expect(db.scheduledMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: "user-1", taskId: "task-1" } }),
+    );
+  });
+
+  it("reschedules an active row and resets its run bookkeeping", async () => {
+    (db.scheduledMessage.findFirst as any).mockResolvedValue({ id: "sched-1", status: "active" });
+    (db.scheduledMessage.updateMany as any).mockResolvedValue({ count: 1 });
+    (db.scheduledMessage.findUnique as any).mockResolvedValue(
+      makeScheduledRow({ content: "updated", intervalMs: 2 * 60 * 60_000 }),
+    );
+
+    const updated = await updateScheduledMessageForTask({
+      userId: "user-1",
+      taskId: "task-1",
+      scheduleId: "sched-1",
+      content: "updated",
+      schedule: { mode: "interval", every: 2, unit: "hour" },
+      now: date("2026-06-07T10:00:00.000Z"),
+    });
+
+    expect(db.scheduledMessage.updateMany).toHaveBeenCalledWith({
+      where: { id: "sched-1", userId: "user-1", taskId: "task-1", status: "active" },
+      data: expect.objectContaining({
+        content: "updated",
+        kind: "interval",
+        intervalMs: 2 * 60 * 60_000,
+        nextRunAt: date("2026-06-07T12:00:00.000Z"),
+        runCount: 0,
+        skipCount: 0,
+        failureCount: 0,
+        lastError: null,
+      }),
+    });
+    expect(updated?.content).toBe("updated");
+  });
+
+  it("refuses to edit a row the dispatcher already claimed", async () => {
+    (db.scheduledMessage.findFirst as any).mockResolvedValue({ id: "sched-1", status: "sending" });
+    (db.scheduledMessage.updateMany as any).mockResolvedValue({ count: 0 });
+
+    await expect(
+      updateScheduledMessageForTask({
+        userId: "user-1",
+        taskId: "task-1",
+        scheduleId: "sched-1",
+        content: "updated",
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "schedule_not_editable" });
+  });
+
+  it("returns null when editing a schedule that does not exist", async () => {
+    (db.scheduledMessage.findFirst as any).mockResolvedValue(null);
+
+    await expect(
+      updateScheduledMessageForTask({
+        userId: "user-1",
+        taskId: "task-1",
+        scheduleId: "missing",
+        content: "updated",
+      }),
+    ).resolves.toBeNull();
+    expect(db.scheduledMessage.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("hard-deletes only finished rows so in-flight sends stay intact", async () => {
+    (db.scheduledMessage.deleteMany as any).mockResolvedValue({ count: 1 });
+
+    await expect(
+      deleteScheduledMessageForTask({ userId: "user-1", taskId: "task-1", scheduleId: "sched-1" }),
+    ).resolves.toBe(true);
+
+    expect(db.scheduledMessage.deleteMany).toHaveBeenCalledWith({
+      where: {
+        id: "sched-1",
+        userId: "user-1",
+        taskId: "task-1",
+        status: { notIn: ["active", "sending"] },
+      },
+    });
+  });
+
+  it("reports the status of an in-flight row so a refused removal can say why", async () => {
+    (db.scheduledMessage.findFirst as any).mockResolvedValue({ status: "sending" });
+
+    await expect(
+      getScheduledMessageStatusForTask({
+        userId: "user-1",
+        taskId: "task-1",
+        scheduleId: "sched-1",
+      }),
+    ).resolves.toBe("sending");
+
+    expect(db.scheduledMessage.findFirst).toHaveBeenCalledWith({
+      where: { id: "sched-1", userId: "user-1", taskId: "task-1" },
+      select: { status: true },
+    });
+  });
+
+  it("reports null for a row that is genuinely gone", async () => {
+    (db.scheduledMessage.findFirst as any).mockResolvedValue(null);
+
+    await expect(
+      getScheduledMessageStatusForTask({
+        userId: "user-1",
+        taskId: "task-1",
+        scheduleId: "missing",
+      }),
+    ).resolves.toBeNull();
   });
 });
