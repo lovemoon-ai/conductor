@@ -675,6 +675,12 @@ function parseTaskWorktreeLaunchConfig(launchConfig) {
     projectRepoRoot,
     projectWorkspacePath,
     projectRelativePath,
+    // Reuse-only members (reviewers in a multi-agent group) share the owner's
+    // worktree but must never run `git worktree add` themselves.
+    worktreeReuseOnly: normalizeBooleanFlag(
+      normalizedLaunchConfig.worktreeReuseOnly ??
+        normalizedLaunchConfig.worktree_reuse_only,
+    ),
   };
 }
 
@@ -2453,6 +2459,79 @@ export function startDaemon(config = {}, deps = {}) {
     });
   }
 
+  // In-flight worktree preparations keyed on the on-disk root. Group members
+  // (worker + reviewers) start almost simultaneously and would otherwise all
+  // pass the `.git` existence check below and race on `git worktree add -b`
+  // for the same branch: one wins and the losers fail with
+  // "Failed to prepare git worktree". Serializing per root also benefits the
+  // pre-existing fork/branch sharing path.
+  const taskWorktreePreparations = new Map();
+
+  // Readiness marker, written by the owner only after the worktree is FULLY
+  // prepared. `.git` alone is not a readiness signal: it appears the moment
+  // `git worktree add` returns, while submodules and symlinks are still
+  // pending. An owner that dies in between (e.g. submodule sync hits its
+  // timeout) would otherwise leave `.git` behind and let reuse-only members
+  // walk into a half-built directory.
+  //
+  // It lives NEXT TO the worktree, not inside it: an untracked file inside
+  // would make `git status --porcelain` report the worktree as dirty and block
+  // non-forced cleanup.
+  function taskWorktreeReadyMarkerPath(worktreeRoot) {
+    return `${worktreeRoot}.ready`;
+  }
+
+  function removeTaskWorktreeReadyMarker(worktreeRoot) {
+    const markerPath = taskWorktreeReadyMarkerPath(worktreeRoot);
+    if (!existsSyncFn(markerPath)) {
+      return;
+    }
+    try {
+      unlinkSyncFn(markerPath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        logError(
+          `[worktree] failed to clear ready marker for ${worktreeRoot}: ${error?.message || error}`,
+        );
+      }
+    }
+  }
+
+  // Both must hold. Requiring `.git` too means a marker left behind by a
+  // worktree that was removed outside our cleanup path cannot fake readiness.
+  function isTaskWorktreeReady(worktreeRoot, gitMarkerPath) {
+    return (
+      existsSyncFn(gitMarkerPath) &&
+      existsSyncFn(taskWorktreeReadyMarkerPath(worktreeRoot))
+    );
+  }
+
+  async function waitForSharedTaskWorktree({ taskId, worktreeRoot, gitMarkerPath }) {
+    const deadline = Date.now() + TASK_WORKTREE_REUSE_WAIT_TIMEOUT_MS;
+    for (;;) {
+      // When the owner is preparing in this same daemon process we await the
+      // whole preparation (worktree add + submodules + symlinks). Polling the
+      // marker additionally covers an owner that already finished, or one
+      // running in a different process.
+      const inflight = taskWorktreePreparations.get(worktreeRoot);
+      if (inflight) {
+        await inflight;
+      }
+      if (isTaskWorktreeReady(worktreeRoot, gitMarkerPath)) {
+        return;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Timed out waiting for shared git worktree ${worktreeRoot} for ${taskId}. ` +
+            `Its owner task may have failed midway through preparation.`,
+        );
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, TASK_WORKTREE_REUSE_POLL_INTERVAL_MS),
+      );
+    }
+  }
+
   async function ensureTaskWorktree({ taskId, projectId, launchConfig }) {
     const worktreeConfig = parseTaskWorktreeLaunchConfig(launchConfig);
     if (!worktreeConfig) {
@@ -2465,7 +2544,50 @@ export function startDaemon(config = {}, deps = {}) {
     );
     const finalCwd = resolveTaskWorktreeCwd(worktreeRoot, worktreeConfig.projectRelativePath);
     const gitMarkerPath = path.join(worktreeRoot, ".git");
+
+    if (worktreeConfig.worktreeReuseOnly) {
+      await waitForSharedTaskWorktree({ taskId, worktreeRoot, gitMarkerPath });
+      mkdirSyncFn(finalCwd, { recursive: true });
+      return finalCwd;
+    }
+
+    const inflight = taskWorktreePreparations.get(worktreeRoot);
+    if (inflight) {
+      await inflight;
+    }
+    // Prepare when we are the first owner here, or when the preparation we
+    // waited on did not leave a fully-prepared worktree (then we take over).
+    if (!inflight || !isTaskWorktreeReady(worktreeRoot, gitMarkerPath)) {
+      const preparation = prepareTaskWorktree({
+        taskId,
+        worktreeConfig,
+        worktreeRoot,
+        gitMarkerPath,
+        finalCwd,
+      });
+      // Waiters must never inherit our rejection; they re-check `.git` instead.
+      taskWorktreePreparations.set(worktreeRoot, preparation.catch(() => {}));
+      try {
+        await preparation;
+      } finally {
+        taskWorktreePreparations.delete(worktreeRoot);
+      }
+    }
+    return finalCwd;
+  }
+
+  async function prepareTaskWorktree({
+    taskId,
+    worktreeConfig,
+    worktreeRoot,
+    gitMarkerPath,
+    finalCwd,
+  }) {
     if (!existsSyncFn(gitMarkerPath)) {
+      // A worktree removed outside our cleanup path can leave a stale marker
+      // behind. Clear it before recreating, so a reuse-only member cannot read
+      // "ready" while `git worktree add` is still running.
+      removeTaskWorktreeReadyMarker(worktreeRoot);
       const { syncBranch } = readProjectWorktreeSettings(worktreeConfig.projectWorkspacePath);
       if (syncBranch) {
         try {
@@ -2563,7 +2685,8 @@ export function startDaemon(config = {}, deps = {}) {
       projectWorkspacePath: worktreeConfig.projectWorkspacePath,
       finalCwd,
     });
-    return finalCwd;
+    // Publish readiness last: every step above has to have succeeded.
+    writeFileSyncFn(taskWorktreeReadyMarkerPath(worktreeRoot), "");
   }
 
   const RTC_MODULE_CANDIDATES = resolveRtcModuleCandidates(process.env.CONDUCTOR_PTY_RTC_MODULES);
@@ -2595,6 +2718,17 @@ export function startDaemon(config = {}, deps = {}) {
   const WORKTREE_SUBMODULE_SYNC_TIMEOUT_MS = parsePositiveInt(
     process.env.CONDUCTOR_WORKTREE_SUBMODULE_SYNC_TIMEOUT_MS,
     120_000,
+  );
+  // A reuse-only member waits for the owner to create the shared worktree.
+  // The bound has to cover a cold clone's submodule sync, hence the generous
+  // default; it only ever elapses when the owner never starts or hard-fails.
+  const TASK_WORKTREE_REUSE_WAIT_TIMEOUT_MS = parsePositiveInt(
+    process.env.CONDUCTOR_WORKTREE_REUSE_WAIT_TIMEOUT_MS,
+    180_000,
+  );
+  const TASK_WORKTREE_REUSE_POLL_INTERVAL_MS = parsePositiveInt(
+    process.env.CONDUCTOR_WORKTREE_REUSE_POLL_INTERVAL_MS,
+    250,
   );
   const SHUTDOWN_STATUS_REPORT_TIMEOUT_MS = parsePositiveInt(
     process.env.CONDUCTOR_SHUTDOWN_STATUS_REPORT_TIMEOUT_MS,
@@ -4913,6 +5047,10 @@ export function startDaemon(config = {}, deps = {}) {
           { cwd: worktreeConfig.projectRepoRoot },
         );
       }
+      // The marker lives outside the worktree, so `git worktree remove` does
+      // not take it with the directory. Leaving it behind would let a worktree
+      // later recreated on this path look ready before it is prepared.
+      removeTaskWorktreeReadyMarker(worktreeRoot);
 
       await reportTaskWorktreeCleanupResult({
         requestId,

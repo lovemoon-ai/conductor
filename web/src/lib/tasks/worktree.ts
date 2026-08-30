@@ -17,6 +17,14 @@ type TaskWorktreeLaunchConfig = {
   projectRepoRoot: string;
   projectWorkspacePath: string;
   projectRelativePath: string;
+  /**
+   * A reuse-only member shares an existing worktree but must never create it.
+   * The daemon waits for the owner's `git worktree add` instead of racing it
+   * on the same branch. Carrying the *full* worktree identity (rather than a
+   * bare `cwd`) is what keeps `hasSameTaskWorktreeRoot` able to see this task
+   * as a sibling, so teardown will not delete the directory out from under it.
+   */
+  worktreeReuseOnly?: true;
 };
 
 const TASK_WORKTREE_CLEANUP_TIMEOUT_MS = 15_000;
@@ -58,6 +66,8 @@ const omitWorktreeFields = (launchConfig: JsonObject | null): JsonObject => {
   delete next.project_workspace_path;
   delete next.projectRelativePath;
   delete next.project_relative_path;
+  delete next.worktreeReuseOnly;
+  delete next.worktree_reuse_only;
   return next;
 };
 
@@ -414,11 +424,18 @@ export const parseTaskWorktreeLaunchConfig = (
     projectRepoRoot,
     projectWorkspacePath,
     projectRelativePath,
+    ...(normalizeBoolean(
+      normalizedLaunchConfig?.worktreeReuseOnly ??
+        normalizedLaunchConfig?.worktree_reuse_only,
+    )
+      ? { worktreeReuseOnly: true as const }
+      : {}),
   };
 };
 
 export const inheritTaskWorktreeLaunchConfig = (
   launchConfig: unknown,
+  options?: { reuseOnly?: boolean },
 ): JsonObject | null => {
   const parsed = parseTaskWorktreeLaunchConfig(launchConfig);
   if (!parsed) {
@@ -433,5 +450,11 @@ export const inheritTaskWorktreeLaunchConfig = (
     projectRepoRoot: parsed.projectRepoRoot,
     projectWorkspacePath: parsed.projectWorkspacePath,
     projectRelativePath: parsed.projectRelativePath,
+    // Sticky: a task that was reuse-only must stay reuse-only across restarts.
+    // Dropping the flag here would silently promote a restarted reviewer back
+    // into a worktree owner that runs `git worktree add -b`.
+    ...(options?.reuseOnly || parsed.worktreeReuseOnly
+      ? { worktreeReuseOnly: true }
+      : {}),
   };
 };

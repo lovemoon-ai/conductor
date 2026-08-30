@@ -17,6 +17,7 @@ import {
 } from "@/lib/tasks/task-config";
 import {
   buildTaskWorktreeLaunchConfig,
+  inheritTaskWorktreeLaunchConfig,
   isTaskWorktreeRequested,
 } from "@/lib/tasks/worktree";
 import {
@@ -1022,6 +1023,20 @@ export async function POST(request: NextRequest) {
   // creation, so each is wrapped fail-soft.
   const reviewerTaskIds: string[] = [];
   if (taskType === "ai_task" && task && groupId && reviewerSpecs.length > 0) {
+    // Every member of a group must run in the *same* working directory: the
+    // worker's worktree when `worktree` was requested, otherwise the project
+    // workspace root. Reuse the worker's resolved worktree fields verbatim so
+    // the daemon's `buildTaskWorktreeRoot` (keyed on worktreeBranch) lands all
+    // siblings in one folder — the same sharing branch/fork tasks rely on.
+    //
+    // `reuseOnly` marks reviewers as non-owners: the worker creates the branch,
+    // reviewers wait for it. Without this every member would race on the same
+    // `git worktree add -b`. They still carry the full worktree identity so
+    // teardown's `hasSameTaskWorktreeRoot` sibling guard can see them and skip
+    // cleanup while a reviewer is still running.
+    const sharedWorktreeLaunchConfig = inheritTaskWorktreeLaunchConfig(launchConfig, {
+      reuseOnly: true,
+    });
     for (const spec of reviewerSpecs) {
       const reviewerBackendType = spec.backend ?? workerBackendType;
       const reviewerInitialContent = buildAgentBootstrap({
@@ -1031,8 +1046,10 @@ export async function POST(request: NextRequest) {
       });
       const reviewerLaunchConfig: JsonObject = {
         ...(reviewerBackendType ? { backendType: reviewerBackendType } : {}),
-        ...(projectWorkspacePath ? { cwd: projectWorkspacePath } : {}),
-        ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
+        ...(sharedWorktreeLaunchConfig ?? {
+          ...(projectWorkspacePath ? { cwd: projectWorkspacePath } : {}),
+          ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
+        }),
         initialContent: reviewerInitialContent,
       };
       try {

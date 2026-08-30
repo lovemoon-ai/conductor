@@ -106,6 +106,41 @@ describe("resolveTaskWorktreeCwdFromLaunchConfig", () => {
     );
   });
 
+  // Regression: restart goes through inheritTaskWorktreeLaunchConfig WITHOUT
+  // options (see api/tasks/[taskId]/restart/route.ts and lib/tasks/
+  // inplace-restart.ts). If the flag were only written when the caller asks
+  // for it, restarting a reviewer would silently promote it back into a
+  // worktree owner that runs `git worktree add -b` against the branch its
+  // still-running worker owns.
+  it("inheritTaskWorktreeLaunchConfig keeps reuse-only across a restart", () => {
+    const reviewer = {
+      worktree: true,
+      worktreeId: "task-worker",
+      worktreeBranch: "shared-branch",
+      worktreeBaseRef: "main",
+      projectRepoRoot: "/repo",
+      projectWorkspacePath: "/repo",
+      projectRelativePath: ".",
+      worktreeReuseOnly: true,
+    };
+
+    // No options: exactly how both restart paths call it.
+    expect(inheritTaskWorktreeLaunchConfig(reviewer)?.worktreeReuseOnly).toBe(true);
+    // Snake_case alias, as the daemon may round-trip it.
+    expect(
+      inheritTaskWorktreeLaunchConfig({
+        ...reviewer,
+        worktreeReuseOnly: undefined,
+        worktree_reuse_only: true,
+      })?.worktreeReuseOnly,
+    ).toBe(true);
+    // An owner must NOT acquire the flag.
+    expect(
+      inheritTaskWorktreeLaunchConfig({ ...reviewer, worktreeReuseOnly: false })
+        ?.worktreeReuseOnly,
+    ).toBeUndefined();
+  });
+
   it("inheritTaskWorktreeLaunchConfig accepts snake_case fields written by the daemon", () => {
     // Both web and daemon parsers tolerate snake_case aliases (see
     // parseTaskWorktreeLaunchConfig). The inheritance helper sits on top of

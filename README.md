@@ -67,6 +67,25 @@ Project-scoped `.conductor/settings.yaml`, `.conductor/worktrees/`, Fire task
 markers, and durable project state remain inside each project and are not
 relocated.
 
+### Task worktree timeouts
+
+When a task is created with several agents and `worktree` enabled, all of its
+tasks share one worktree. The first agent creates it; the others wait for it
+rather than racing to create the same branch. Both waits are bounded and can be
+tuned per daemon:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CONDUCTOR_WORKTREE_REUSE_WAIT_TIMEOUT_MS` | `180000` (3 min) | How long a waiting task will wait for the shared worktree to be fully prepared. |
+| `CONDUCTOR_WORKTREE_REUSE_POLL_INTERVAL_MS` | `250` | How often it re-checks while waiting. |
+
+The default ceiling has to cover a cold checkout plus submodule sync. On a large
+repository — or a slow network — the waiting tasks can hit it and fail to start
+with `Timed out waiting for shared git worktree ...`; raise
+`CONDUCTOR_WORKTREE_REUSE_WAIT_TIMEOUT_MS` on that daemon if so. The same error
+also appears when the creating task itself failed midway through preparation,
+in which case the fix is to look at that task, not the timeout.
+
 ## Packages
 
 - `web/` — Next.js app and API server

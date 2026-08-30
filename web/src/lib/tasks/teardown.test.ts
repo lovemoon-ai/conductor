@@ -155,6 +155,80 @@ describe("teardownTaskRuntime", () => {
     });
   });
 
+  // Regression: a reviewer sharing the worker's worktree must be visible to the
+  // sibling guard. If reviewers only carried a bare `cwd`,
+  // parseTaskWorktreeLaunchConfig would return null for them,
+  // hasSameTaskWorktreeRoot would report "not shared", and archiving the worker
+  // would enqueue a force cleanup that deletes the directory the reviewer is
+  // still running in.
+  it("keeps the shared worktree while a reuse-only reviewer is still active", async () => {
+    const actualWorktree =
+      await vi.importActual<typeof import("./worktree")>("./worktree");
+    const workerLaunchConfig = actualWorktree.buildTaskWorktreeLaunchConfig({
+      launchConfig: null,
+      worktreeId: "ai-1",
+      projectRepoRoot: "/repo",
+      projectWorkspacePath: "/repo",
+    });
+    const reviewerLaunchConfig = actualWorktree.inheritTaskWorktreeLaunchConfig(
+      workerLaunchConfig,
+      { reuseOnly: true },
+    );
+    expect(reviewerLaunchConfig?.worktreeReuseOnly).toBe(true);
+
+    vi.mocked(parseTaskWorktreeLaunchConfig).mockImplementation(
+      actualWorktree.parseTaskWorktreeLaunchConfig,
+    );
+    vi.mocked(hasSameTaskWorktreeRoot).mockImplementation(
+      actualWorktree.hasSameTaskWorktreeRoot,
+    );
+    vi.mocked(resolveTaskWorktreeCleanupHost).mockReturnValue("daemon-a");
+    vi.mocked(db.task.findMany).mockResolvedValue([
+      { id: "ai-reviewer", launchConfig: JSON.stringify(reviewerLaunchConfig) },
+    ] as any);
+
+    await teardownTaskRuntime({
+      userId: "user-1",
+      task: { ...baseTask, launchConfig: JSON.stringify(workerLaunchConfig) },
+      reason: "achieved_by_user",
+      archivePatch,
+    });
+
+    expect(db.agentOutbox.create).not.toHaveBeenCalled();
+  });
+
+  it("cleans up the shared worktree once the last reviewer is archived", async () => {
+    const actualWorktree =
+      await vi.importActual<typeof import("./worktree")>("./worktree");
+    const workerLaunchConfig = actualWorktree.buildTaskWorktreeLaunchConfig({
+      launchConfig: null,
+      worktreeId: "ai-1",
+      projectRepoRoot: "/repo",
+      projectWorkspacePath: "/repo",
+    });
+
+    vi.mocked(parseTaskWorktreeLaunchConfig).mockImplementation(
+      actualWorktree.parseTaskWorktreeLaunchConfig,
+    );
+    vi.mocked(hasSameTaskWorktreeRoot).mockImplementation(
+      actualWorktree.hasSameTaskWorktreeRoot,
+    );
+    vi.mocked(resolveTaskWorktreeCleanupHost).mockReturnValue("daemon-a");
+    vi.mocked(buildTaskWorktreeCleanupOutboxData).mockReturnValue({
+      eventType: "cleanup_task_worktree",
+    } as any);
+    vi.mocked(db.task.findMany).mockResolvedValue([] as any);
+
+    await teardownTaskRuntime({
+      userId: "user-1",
+      task: { ...baseTask, launchConfig: JSON.stringify(workerLaunchConfig) },
+      reason: "achieved_by_user",
+      archivePatch,
+    });
+
+    expect(db.agentOutbox.create).toHaveBeenCalledTimes(1);
+  });
+
   it("rechecks worktree usage after archiving when a sibling initially blocks cleanup", async () => {
     vi.mocked(parseTaskWorktreeLaunchConfig).mockReturnValue({ root: "/tmp/wt" } as any);
     vi.mocked(resolveTaskWorktreeCleanupHost).mockReturnValue("daemon-a");
