@@ -2098,6 +2098,211 @@ describe("Daemon", () => {
     }, 500);
   });
 
+  it("waits for the owner instead of creating the branch when worktreeReuseOnly is set", (t, done) => {
+    const previousPwd = process.env.PWD;
+    process.env.PWD = "/tmp/daemon-start";
+    t.after(() => restoreEnv("PWD", previousPwd));
+
+    const worktreeRoot = "/tmp/repo/packages/app/.conductor/worktrees/shared-branch";
+    const finalCwd = `${worktreeRoot}/packages/app`;
+    const taskPayload = {
+      task_id: "task-reviewer",
+      project_id: "proj-git",
+      backend_type: "codex",
+      launch_config: {
+        worktree: true,
+        // Same identity as the owner (so teardown still sees a shared root),
+        // but this member must never run `git worktree add`.
+        worktreeId: "task-worker",
+        worktreeBranch: "shared-branch",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/tmp/repo",
+        projectWorkspacePath: "/tmp/repo/packages/app",
+        projectRelativePath: "packages/app",
+        worktreeReuseOnly: true,
+      },
+    };
+
+    // The worktree does NOT exist when the reviewer starts — this is the real
+    // race. Without the reuse-only guard the reviewer would sail past the
+    // `.git` check and run `git worktree add -b shared-branch` against the
+    // branch its owner is creating at the same moment.
+    // `.git` lands first (as `git worktree add` returns), the ready marker only
+    // once the owner has finished submodules + symlinks. A reuse-only member
+    // must wait for the marker, not for `.git`.
+    let ownerCreatedWorktree = false;
+    let ownerFinished = false;
+    const addTimer = setTimeout(() => {
+      ownerCreatedWorktree = true;
+    }, 80);
+    const readyTimer = setTimeout(() => {
+      ownerFinished = true;
+    }, 200);
+    t.after(() => {
+      clearTimeout(addTimer);
+      clearTimeout(readyTimer);
+    });
+
+    const spawnCalls = [];
+    const mockSpawn = (cmd, args, opts) => {
+      spawnCalls.push({ cmd, args, opts });
+      if (cmd === "git") {
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.kill = () => {};
+        setImmediate(() => child.emit("close", 0));
+        return child;
+      }
+      return {
+        pid: 24685,
+        on: () => {},
+        stdout: { on: () => {} },
+        stderr: { on: () => {} },
+      };
+    };
+
+    wss.once("connection", (ws) => {
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree-reuse",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree-reuse",
+      },
+      {
+        spawn: mockSpawn,
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: (filePath) => {
+          if (filePath === path.join(worktreeRoot, ".git")) {
+            return ownerCreatedWorktree;
+          }
+          if (filePath === `${worktreeRoot}.ready`) {
+            return ownerFinished;
+          }
+          return false;
+        },
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {} }),
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+      },
+    );
+
+    setTimeout(() => {
+      const gitCalls = spawnCalls.filter((call) => call.cmd === "git");
+      assert.deepStrictEqual(
+        gitCalls.map((call) => call.args),
+        [],
+        "reuse-only member must not run any git command",
+      );
+      // It still has to land in the shared worktree once the owner is done.
+      const runtimeCalls = spawnCalls.filter((call) => call.cmd === process.execPath);
+      assert.strictEqual(runtimeCalls.length, 1);
+      assert.strictEqual(runtimeCalls[0].opts.cwd, finalCwd);
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 1500);
+  });
+
+  it("does not start a reuse-only task in a half-prepared worktree", (t, done) => {
+    const previousPwd = process.env.PWD;
+    process.env.PWD = "/tmp/daemon-start";
+    t.after(() => restoreEnv("PWD", previousPwd));
+    const previousWait = process.env.CONDUCTOR_WORKTREE_REUSE_WAIT_TIMEOUT_MS;
+    const previousPoll = process.env.CONDUCTOR_WORKTREE_REUSE_POLL_INTERVAL_MS;
+    process.env.CONDUCTOR_WORKTREE_REUSE_WAIT_TIMEOUT_MS = "300";
+    process.env.CONDUCTOR_WORKTREE_REUSE_POLL_INTERVAL_MS = "50";
+    t.after(() => {
+      restoreEnv("CONDUCTOR_WORKTREE_REUSE_WAIT_TIMEOUT_MS", previousWait);
+      restoreEnv("CONDUCTOR_WORKTREE_REUSE_POLL_INTERVAL_MS", previousPoll);
+    });
+
+    const worktreeRoot = "/tmp/repo/packages/app/.conductor/worktrees/half-built";
+    const taskPayload = {
+      task_id: "task-reviewer-half",
+      project_id: "proj-git",
+      backend_type: "codex",
+      launch_config: {
+        worktree: true,
+        worktreeId: "task-worker",
+        worktreeBranch: "half-built",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/tmp/repo",
+        projectWorkspacePath: "/tmp/repo/packages/app",
+        projectRelativePath: "packages/app",
+        worktreeReuseOnly: true,
+      },
+    };
+
+    const spawnCalls = [];
+    const mockSpawn = (cmd, args, opts) => {
+      spawnCalls.push({ cmd, args, opts });
+      if (cmd === "git") {
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.kill = () => {};
+        setImmediate(() => child.emit("close", 0));
+        return child;
+      }
+      return {
+        pid: 24686,
+        on: () => {},
+        stdout: { on: () => {} },
+        stderr: { on: () => {} },
+      };
+    };
+
+    wss.once("connection", (ws) => {
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-worktree-half",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-worktree-half",
+      },
+      {
+        spawn: mockSpawn,
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        // The owner created the worktree then died before finishing: `.git`
+        // exists, the ready marker never appears.
+        existsSync: (filePath) => filePath === path.join(worktreeRoot, ".git"),
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {} }),
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+      },
+    );
+
+    setTimeout(() => {
+      // It must neither adopt the half-built tree nor try to build it itself.
+      assert.deepStrictEqual(
+        spawnCalls.map((call) => call.cmd),
+        [],
+        "reuse-only task must not launch in a half-prepared worktree",
+      );
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 1200);
+  });
+
   it("syncs git submodules automatically when a task worktree has .gitmodules", (t, done) => {
     const taskPayload = {
       task_id: "task-worktree-submodules",
