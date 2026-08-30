@@ -1250,6 +1250,84 @@ describe("/api/tasks", () => {
       );
     });
 
+    // The prompt reaches the agent on BOTH paths. With no `agents` field there
+    // is no group bootstrap to wrap it in, so it must arrive verbatim as the
+    // task's opening message — that is what makes a single agent start working.
+    it("delivers initial_content verbatim as the opening message without an agent group", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-agents",
+        name: "Agents Project",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/agents",
+        repoRoot: "/repo/agents",
+        worktreeBranch: "main",
+      } as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "daemon-1", host: "daemon-a", supportedBackends: ["claude"], capabilities: [] },
+      ] as any);
+      vi.mocked(db.task.create).mockResolvedValueOnce({
+        id: "task-solo",
+        projectId: "proj-agents",
+        secondProjectId: null,
+        issueId: null,
+        title: "Solo",
+        taskType: "ai_task",
+        status: "init",
+        agentHost: "daemon-a",
+        executionHost: "daemon-a",
+        backendType: "claude",
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: null,
+        createdAt: new Date("2026-07-28T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-28T00:00:00.000Z"),
+      } as any);
+      vi.mocked(db.message.create).mockResolvedValue({
+        id: "message-solo",
+        createdAt: new Date("2026-07-28T00:00:01.000Z"),
+      } as any);
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {
+            project_id: "proj-agents",
+            title: "Solo",
+            backend_type: "claude",
+            initial_content: "Add retries to the upload client.",
+          },
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(db.task.create).toHaveBeenCalledTimes(1);
+
+      const taskData = vi.mocked(db.task.create).mock.calls[0][0].data as any;
+      const metadata = JSON.parse(taskData.metadata);
+      expect(metadata.initialContent).toBe("Add retries to the upload client.");
+      // No group => no "[conductor:agent] ..." bootstrap wrapper.
+      expect(metadata.initialContent).not.toContain("[conductor:agent]");
+      expect(JSON.parse(taskData.launchConfig).initialContent).toBe(
+        "Add retries to the upload client.",
+      );
+
+      // And it is actually delivered as the first message, which is what makes
+      // the agent start working rather than idling.
+      expect(db.message.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            role: "user",
+            content: "Add retries to the upload client.",
+          }),
+        }),
+      );
+    });
+
     it("puts every group member in the same worktree when worktree is requested", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const makeTask = (params: { id: string; title: string; backendType: string }) => ({

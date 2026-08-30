@@ -253,6 +253,74 @@ describe('CreateTaskDialog', () => {
     });
   });
 
+  // Without a prompt the worker's bootstrap is just "read your agent doc", so a
+  // freshly created group has nothing to act on and sits idle. The dialog had
+  // no prompt field at all, so the API's initial_content was never populated
+  // from the UI.
+  it('sends the prompt as initialContent so the group has something to start on', async () => {
+    createTaskMock.mockResolvedValueOnce({ id: 'task-group-prompted' });
+    render(<CreateTaskDialog open onClose={() => {}} />);
+
+    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+      target: { value: 'Build with review' },
+    });
+    fireEvent.change(screen.getByLabelText('Task prompt'), {
+      target: { value: '  Add retries to the upload client.  ' },
+    });
+    fireEvent.change(await screen.findByLabelText('Worker agent'), {
+      target: { value: 'feature-dev' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agents: [{ name: 'feature-dev' }],
+          initialContent: 'Add retries to the upload client.',
+        }),
+      );
+    });
+  });
+
+  // The prompt is offered for every AI task, not just groups: with no agent
+  // group it is simply the task's opening message and the single agent runs it.
+  it('sends the prompt for a plain AI task with no agent group', async () => {
+    createTaskMock.mockResolvedValueOnce({ id: 'task-plain-prompted' });
+    render(<CreateTaskDialog open onClose={() => {}} />);
+
+    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+      target: { value: 'Plain task' },
+    });
+    fireEvent.change(screen.getByLabelText('Task prompt'), {
+      target: { value: 'Add retries to the upload client.' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalled();
+    });
+    const payload = createTaskMock.mock.calls[0][0];
+    expect(payload.initialContent).toBe('Add retries to the upload client.');
+    expect(payload).not.toHaveProperty('agents');
+  });
+
+  it('omits initialContent when the prompt is left empty', async () => {
+    createTaskMock.mockResolvedValueOnce({ id: 'task-no-prompt' });
+    render(<CreateTaskDialog open onClose={() => {}} />);
+
+    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+      target: { value: 'No prompt' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalled();
+    });
+    expect(createTaskMock.mock.calls[0][0]).not.toHaveProperty('initialContent');
+  });
+
   it('drops the group (no agents) when the worker agent is cleared', async () => {
     createTaskMock.mockResolvedValueOnce({ id: 'task-plain-after-clear' });
     render(<CreateTaskDialog open onClose={() => {}} />);

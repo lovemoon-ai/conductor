@@ -97,6 +97,13 @@ const MAX_REVIEWER_ROWS = 7;
 
 interface CreateTaskDialogFormState {
   title: string;
+  /**
+   * The task's opening prompt. For a multi-agent group this becomes the worker
+   * (first agent) bootstrap's `--- Task ---` section, which is what actually
+   * gives the group something to do; without it the worker starts with only
+   * "read your agent doc" and the group sits idle.
+   */
+  initialContent: string;
   projectId: string;
   taskType: TaskType;
   createWorktree: boolean;
@@ -110,6 +117,7 @@ interface CreateTaskDialogFormState {
 type CreateTaskDialogAction =
   | { type: 'reset' }
   | { type: 'set-title'; title: string }
+  | { type: 'set-initial-content'; initialContent: string }
   | { type: 'set-project'; projectId: string }
   | { type: 'set-task-type'; taskType: TaskType }
   | { type: 'set-create-worktree'; createWorktree: boolean }
@@ -125,6 +133,7 @@ type CreateTaskDialogAction =
 
 const initialCreateTaskDialogFormState: CreateTaskDialogFormState = {
   title: '',
+  initialContent: '',
   projectId: '',
   taskType: 'ai_task',
   createWorktree: false,
@@ -144,6 +153,8 @@ function createTaskDialogReducer(
       return initialCreateTaskDialogFormState;
     case 'set-title':
       return { ...state, title: action.title, submitError: null };
+    case 'set-initial-content':
+      return { ...state, initialContent: action.initialContent, submitError: null };
     case 'set-project':
       return {
         ...state,
@@ -244,6 +255,7 @@ export function CreateTaskDialog({
   const [form, dispatch] = useReducer(createTaskDialogReducer, initialCreateTaskDialogFormState);
   const {
     title,
+    initialContent,
     projectId: requestedProjectId,
     taskType,
     createWorktree: requestedCreateWorktree,
@@ -253,6 +265,8 @@ export function CreateTaskDialog({
     reviewers,
     submitError,
   } = form;
+  // Named worker agent, if any — used to make the prompt hint concrete.
+  const trimmedWorkerAgentForHint = workerAgent.trim();
   const [isSubmitting, setIsSubmitting] = useState(false);
   // RFC 0033: agents registered in the selected project's .conductor/settings.yaml.
   const [availableAgents, setAvailableAgents] = useState<AgentRegistryOption[]>([]);
@@ -464,6 +478,7 @@ export function CreateTaskDialog({
     // worker; the rest are reviewers. Only sent when a worker agent is named
     // (reviewer inputs are hidden until then), so clearing the worker drops the
     // whole group and falls back to a plain task.
+    const trimmedInitialContent = initialContent.trim();
     const trimmedWorkerAgent = workerAgent.trim();
     let agents: CreateTaskInput['agents'];
     if (taskType === 'ai_task' && trimmedWorkerAgent) {
@@ -486,6 +501,9 @@ export function CreateTaskDialog({
         agentHost: agentHost || undefined,
         backendType: taskType === 'ai_task' ? backendType || undefined : undefined,
         ...(agents ? { agents } : {}),
+        ...(taskType === 'ai_task' && trimmedInitialContent
+          ? { initialContent: trimmedInitialContent }
+          : {}),
         launchConfig:
           taskType === 'pty_task'
             ? {
@@ -570,6 +588,32 @@ export function CreateTaskDialog({
             </select>
           </div>
         </div>
+
+        {taskType === 'ai_task' ? (
+          <div>
+            <div className="mb-2 flex items-center gap-2">
+              <label htmlFor="create-task-prompt" className="block text-sm font-medium">
+                Prompt <span className="font-normal text-muted">(optional)</span>
+              </label>
+              <HelpTip label="task prompt">
+                {trimmedWorkerAgentForHint
+                  ? `Sent as the opening message to "${trimmedWorkerAgentForHint}", the first agent. Reviewers find the work through \`conductor task group\` — give the first agent enough here and the group starts on its own.`
+                  : 'Sent as the opening message when the task starts. Leave empty to start the task and type in the chat instead.'}
+              </HelpTip>
+            </div>
+            <textarea
+              id="create-task-prompt"
+              aria-label="Task prompt"
+              value={initialContent}
+              onChange={(e) => {
+                dispatch({ type: 'set-initial-content', initialContent: e.target.value });
+              }}
+              rows={4}
+              placeholder="Describe the work in enough detail for the agent to start without you."
+              className="webapp-input w-full resize-y"
+            />
+          </div>
+        ) : null}
 
         <div>
           <span className="mb-2 block text-sm font-medium">Task Type</span>
