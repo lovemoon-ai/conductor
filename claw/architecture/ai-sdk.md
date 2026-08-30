@@ -168,6 +168,24 @@ The division of labor is as follows:
 
 This is the provider layer currently closest to the goals of the RFC.
 
+- `ClaudeAgentSdkSession`
+  - Permission mode defaults to `bypassPermissions`. A configured
+    `claude --permission-mode <mode>` entry in `allow_cli_list` overrides it
+    (lifted out of the command string like `--effort`).
+  - claude refuses `bypassPermissions` / `--dangerously-skip-permissions` when
+    the process runs as root, so the session auto-downgrades to `acceptEdits`
+    (auto mode) there. `isClaudeRootPermissionRestricted()` mirrors claude's own
+    gate: `IS_SANDBOX === "1"` (strict) or a truthy `CLAUDE_CODE_BUBBLEWRAP`
+    keeps full bypass.
+  - The daemon's tool-preset PTY path shells out to the raw `allow_cli_list`
+    command and never constructs this session, so it applies the same root check
+    via `resolveClaudeCommandForRoot()` (exported from ai-sdk, used by
+    `resolvePtyToolPresetCommand` in the daemon and by `conductor config` when
+    it writes the default entry). One root check, three call sites.
+  - An unrecognized mode still falls back to the default (never fatal), but the
+    session logs `WARN unknown permission mode ...` at boot so the typo is
+    visible instead of silently ignored.
+
 ## 3. Current runtime topology
 
 The default path is as follows:

@@ -14,7 +14,9 @@ import {
   isSafeTaskWorktreeRoot,
   probePtyTaskCapability,
   resolveDaemonLogPaths,
+  buildPtyLaunchSpec,
   resolveDefaultPtyShell,
+  resolvePtyToolPresetCommand,
   startDaemon,
 } from "../src/daemon.js";
 import { resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
@@ -11464,5 +11466,113 @@ describe("Daemon", () => {
       assert.ok(ack, "expected rejection ack while shutting down");
       assert.strictEqual(ack.payload.accepted, false);
     });
+  });
+});
+
+// A tool-preset PTY task shells out to the raw allow_cli_list command, so it
+// never touches ai-sdk's permission policy. claude exits 1 as root with
+// `--dangerously-skip-permissions`, which used to make terminal tasks
+// unusable on root boxes even after the SDK path was fixed.
+describe("pty tool preset command", () => {
+  const asRoot = (fn) => {
+    const original = process.getuid;
+    process.getuid = () => 0;
+    try {
+      return fn();
+    } finally {
+      process.getuid = original;
+    }
+  };
+
+  it("keeps the configured claude command as-is when not root", () => {
+    const command = "claude --dangerously-skip-permissions";
+    assert.strictEqual(resolvePtyToolPresetCommand(command, {}), command);
+  });
+
+  it("drops --dangerously-skip-permissions from the claude PTY command as root", () => {
+    const launchCommand = asRoot(() =>
+      resolvePtyToolPresetCommand("claude --dangerously-skip-permissions", {}),
+    );
+    assert.ok(!launchCommand.includes("--dangerously-skip-permissions"), launchCommand);
+    assert.strictEqual(launchCommand, "claude --permission-mode acceptEdits");
+  });
+
+  it("leaves non-claude presets alone as root", () => {
+    const command = "codex --dangerously-bypass-approvals-and-sandbox";
+    assert.strictEqual(asRoot(() => resolvePtyToolPresetCommand(command, {})), command);
+  });
+
+  it("respects IS_SANDBOX=1 for the claude PTY command as root", () => {
+    const command = "claude --dangerously-skip-permissions";
+    assert.strictEqual(asRoot(() => resolvePtyToolPresetCommand(command, { IS_SANDBOX: "1" })), command);
+  });
+});
+
+// The helper tests above only prove the helper. They passed while the real
+// call site was still handing the guard the *daemon's* process.env instead of
+// the child's, so a per-task IS_SANDBOX=1 opt-out was silently ignored. These
+// go through buildPtyLaunchSpec, the seam that actually builds the argv.
+describe("pty launch spec permission wiring", () => {
+  const asRoot = (fn) => {
+    const original = process.getuid;
+    process.getuid = () => 0;
+    try {
+      return fn();
+    } finally {
+      process.getuid = original;
+    }
+  };
+
+  const buildClaudeSpec = (launchEnv, baseEnv = {}) =>
+    buildPtyLaunchSpec(
+      { entrypoint_type: "tool_preset", tool_preset: "claude", env: launchEnv },
+      "/tmp/pty-cwd",
+      {
+        allowCliList: { claude: "claude --dangerously-skip-permissions" },
+        supportedBackends: ["claude"],
+        existsSync: () => true,
+        baseEnv,
+      },
+    );
+
+  it("keeps --dangerously-skip-permissions in the argv when not root", () => {
+    const spec = buildClaudeSpec({});
+    assert.deepStrictEqual(spec.args, ["-lc", "claude --dangerously-skip-permissions"]);
+  });
+
+  it("strips --dangerously-skip-permissions from the argv as root", () => {
+    const spec = asRoot(() => buildClaudeSpec({}));
+    assert.deepStrictEqual(spec.args, ["-lc", "claude --permission-mode acceptEdits"]);
+  });
+
+  it("honors IS_SANDBOX=1 coming from launch_config.env, not just the daemon env", () => {
+    const spec = asRoot(() => buildClaudeSpec({ IS_SANDBOX: "1" }));
+    assert.deepStrictEqual(spec.args, ["-lc", "claude --dangerously-skip-permissions"]);
+  });
+
+  it("honors IS_SANDBOX=1 inherited from the daemon env", () => {
+    const spec = asRoot(() => buildClaudeSpec({}, { IS_SANDBOX: "1" }));
+    assert.deepStrictEqual(spec.args, ["-lc", "claude --dangerously-skip-permissions"]);
+  });
+
+  it("lets launch_config.env override an inherited IS_SANDBOX, matching the spawned env", () => {
+    const spec = asRoot(() => buildClaudeSpec({ IS_SANDBOX: "0" }, { IS_SANDBOX: "1" }));
+    assert.deepStrictEqual(spec.args, ["-lc", "claude --permission-mode acceptEdits"]);
+  });
+
+  it("leaves a non-claude preset argv alone as root", () => {
+    const spec = asRoot(() =>
+      buildPtyLaunchSpec(
+        { entrypoint_type: "tool_preset", tool_preset: "codex" },
+        "/tmp/pty-cwd",
+        {
+          allowCliList: { codex: "codex --dangerously-bypass-approvals-and-sandbox" },
+          supportedBackends: ["codex"],
+          existsSync: () => true,
+          baseEnv: {},
+        },
+      ),
+    );
+    assert.deepStrictEqual(spec.args, ["-lc", "codex --dangerously-bypass-approvals-and-sandbox"]);
   });
 });

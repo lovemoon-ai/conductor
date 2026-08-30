@@ -2,6 +2,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { ClaudeAgentSdkSession } from "../src/session-factory.js";
+import {
+  resolveClaudeCommandForRoot,
+  resolveClaudePermissionPolicy,
+} from "../src/providers/claude-agent-sdk-session.js";
 
 describe("claude agent-sdk session", () => {
   it("exposes optional modelProvider metadata", async () => {
@@ -379,5 +383,202 @@ describe("claude agent-sdk session", () => {
       commandLine: "claude --model fable",
     });
     assert.equal(session.options.effort, undefined);
+  });
+
+  it("lifts --permission-mode out of the configured commandLine", () => {
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      commandLine: "claude --permission-mode acceptEdits",
+    });
+    const sdkOptions = session.buildSdkOptions(new AbortController());
+    assert.equal(sdkOptions.permissionMode, "acceptEdits");
+    assert.equal(sdkOptions.allowDangerouslySkipPermissions, undefined);
+  });
+
+  it("warns and falls back to the default when the configured mode is unknown", () => {
+    const logs = [];
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: (line) => logs.push(String(line)) },
+      commandLine: "claude --permission-mode auto",
+    });
+    const sdkOptions = session.buildSdkOptions(new AbortController());
+    assert.equal(sdkOptions.permissionMode, "bypassPermissions");
+    const warning = logs.find((line) => line.includes("WARN unknown permission mode"));
+    assert.ok(warning, `expected a warning, got: ${logs.join(" | ")}`);
+    assert.match(warning, /"auto"/);
+    assert.match(warning, /valid: default, acceptEdits, bypassPermissions, plan, dontAsk/);
+  });
+
+  it("stays quiet when the configured mode is valid", () => {
+    const logs = [];
+    new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: (line) => logs.push(String(line)) },
+      commandLine: "claude --permission-mode acceptEdits",
+    });
+    assert.equal(logs.filter((line) => line.includes("permission mode")).length, 0);
+  });
+
+  it("prefers explicit options.permissionMode over commandLine-derived mode", () => {
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      permissionMode: "plan",
+      commandLine: "claude --permission-mode acceptEdits",
+    });
+    assert.equal(session.options.permissionMode, "plan");
+  });
+});
+
+describe("claude permission policy", () => {
+  const asRoot = (fn) => {
+    const original = process.getuid;
+    process.getuid = () => 0;
+    try {
+      return fn();
+    } finally {
+      process.getuid = original;
+    }
+  };
+
+  it("keeps bypassPermissions by default for non-root", () => {
+    const policy = resolveClaudePermissionPolicy({}, {});
+    assert.equal(policy.permissionMode, "bypassPermissions");
+    assert.equal(policy.allowDangerouslySkipPermissions, true);
+    assert.equal(policy.downgradedFrom, "");
+    assert.equal(policy.invalidMode, "");
+  });
+
+  it("reports an unknown mode without failing the session", () => {
+    const policy = resolveClaudePermissionPolicy({ permissionMode: "auto" }, {});
+    assert.equal(policy.invalidMode, "auto");
+    assert.equal(policy.permissionMode, "bypassPermissions");
+  });
+
+  it("reports an unknown mode as root too, after the root fallback", () => {
+    const policy = asRoot(() => resolveClaudePermissionPolicy({ permissionMode: "auto" }, {}));
+    assert.equal(policy.invalidMode, "auto");
+    assert.equal(policy.permissionMode, "acceptEdits");
+  });
+
+  it("downgrades bypassPermissions to acceptEdits when running as root", () => {
+    const policy = asRoot(() => resolveClaudePermissionPolicy({}, {}));
+    assert.equal(policy.permissionMode, "acceptEdits");
+    assert.equal(policy.allowDangerouslySkipPermissions, false);
+    assert.equal(policy.downgradedFrom, "bypassPermissions");
+  });
+
+  it("never forces --dangerously-skip-permissions as root", () => {
+    const policy = asRoot(() =>
+      resolveClaudePermissionPolicy({ permissionMode: "plan", allowDangerouslySkipPermissions: true }, {}),
+    );
+    assert.equal(policy.permissionMode, "plan");
+    assert.equal(policy.allowDangerouslySkipPermissions, false);
+    assert.equal(policy.downgradedFrom, "");
+  });
+
+  it("keeps bypassPermissions as root when IS_SANDBOX is set", () => {
+    const policy = asRoot(() => resolveClaudePermissionPolicy({}, { IS_SANDBOX: "1" }));
+    assert.equal(policy.permissionMode, "bypassPermissions");
+    assert.equal(policy.allowDangerouslySkipPermissions, true);
+    assert.equal(policy.downgradedFrom, "");
+  });
+
+  // claude's root gate compares IS_SANDBOX with a strict === "1". Accepting
+  // "true"/"yes" here would keep bypassPermissions and let claude exit(1).
+  it("still downgrades as root for IS_SANDBOX values claude does not accept", () => {
+    for (const value of ["true", "yes", "on", "0", ""]) {
+      const policy = asRoot(() => resolveClaudePermissionPolicy({}, { IS_SANDBOX: value }));
+      assert.equal(policy.permissionMode, "acceptEdits", `IS_SANDBOX=${JSON.stringify(value)}`);
+    }
+  });
+
+  // CLAUDE_CODE_BUBBLEWRAP is the other half of the gate, and it *does* go
+  // through claude's loose truthy parser.
+  it("keeps bypassPermissions as root under CLAUDE_CODE_BUBBLEWRAP", () => {
+    for (const value of ["1", "true", "YES", " on "]) {
+      const policy = asRoot(() => resolveClaudePermissionPolicy({}, { CLAUDE_CODE_BUBBLEWRAP: value }));
+      assert.equal(policy.permissionMode, "bypassPermissions", `CLAUDE_CODE_BUBBLEWRAP=${value}`);
+    }
+    const off = asRoot(() => resolveClaudePermissionPolicy({}, { CLAUDE_CODE_BUBBLEWRAP: "0" }));
+    assert.equal(off.permissionMode, "acceptEdits");
+  });
+
+  it("honors an explicit permission mode as root without downgrading", () => {
+    const policy = asRoot(() => resolveClaudePermissionPolicy({ permissionMode: "acceptEdits" }, {}));
+    assert.equal(policy.permissionMode, "acceptEdits");
+    assert.equal(policy.downgradedFrom, "");
+  });
+});
+
+describe("claude command line root fallback", () => {
+  const asRoot = (fn) => {
+    const original = process.getuid;
+    process.getuid = () => 0;
+    try {
+      return fn();
+    } finally {
+      process.getuid = original;
+    }
+  };
+
+  it("leaves the command untouched when not running as root", () => {
+    const command = "claude --dangerously-skip-permissions";
+    assert.equal(resolveClaudeCommandForRoot(command, {}), command);
+  });
+
+  it("swaps --dangerously-skip-permissions for auto mode as root", () => {
+    const result = asRoot(() => resolveClaudeCommandForRoot("claude --dangerously-skip-permissions", {}));
+    assert.equal(result, "claude --permission-mode acceptEdits");
+  });
+
+  it("preserves unrelated flags while stripping the dangerous one", () => {
+    const result = asRoot(() =>
+      resolveClaudeCommandForRoot("claude --dangerously-skip-permissions --model fable --effort low", {}),
+    );
+    assert.equal(result, "claude --model fable --effort low --permission-mode acceptEdits");
+  });
+
+  it("rewrites an explicit bypassPermissions mode as root", () => {
+    assert.equal(
+      asRoot(() => resolveClaudeCommandForRoot("claude --permission-mode bypassPermissions", {})),
+      "claude --permission-mode acceptEdits",
+    );
+    assert.equal(
+      asRoot(() => resolveClaudeCommandForRoot("claude --permission-mode=bypassPermissions", {})),
+      "claude --permission-mode=acceptEdits",
+    );
+  });
+
+  it("honors a root-safe mode the user already configured", () => {
+    const command = "claude --permission-mode plan";
+    assert.equal(asRoot(() => resolveClaudeCommandForRoot(command, {})), command);
+  });
+
+  it("keeps the dangerous flag as root when IS_SANDBOX=1", () => {
+    const command = "claude --dangerously-skip-permissions";
+    assert.equal(asRoot(() => resolveClaudeCommandForRoot(command, { IS_SANDBOX: "1" })), command);
+  });
+
+  it("repairs a valueless --permission-mode instead of doubling the flag", () => {
+    assert.equal(
+      asRoot(() => resolveClaudeCommandForRoot("claude --permission-mode", {})),
+      "claude --permission-mode acceptEdits",
+    );
+    assert.equal(
+      asRoot(() => resolveClaudeCommandForRoot("claude --permission-mode=", {})),
+      "claude --permission-mode acceptEdits",
+    );
+    assert.equal(
+      asRoot(() => resolveClaudeCommandForRoot("claude --permission-mode --model fable", {})),
+      "claude --model fable --permission-mode acceptEdits",
+    );
+  });
+
+  it("tolerates empty and non-string command lines", () => {
+    assert.equal(asRoot(() => resolveClaudeCommandForRoot("", {})), "");
+    assert.equal(asRoot(() => resolveClaudeCommandForRoot(undefined, {})), "");
   });
 });

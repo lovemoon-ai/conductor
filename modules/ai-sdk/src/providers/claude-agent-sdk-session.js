@@ -23,6 +23,10 @@ const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
 const MIN_TURN_DEADLINE_MS = 30 * 1000;
 const MAX_TURN_DEADLINE_MS = 30 * 60 * 1000;
 const DEFAULT_SETTING_SOURCES = ["user", "project", "local"];
+const PERMISSION_MODES = new Set(["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"]);
+const DEFAULT_PERMISSION_MODE = "bypassPermissions";
+// Auto ("accept edits") mode: the strongest mode claude allows as root.
+const ROOT_PERMISSION_MODE = "acceptEdits";
 
 function waitForever() {
   return new Promise(() => {});
@@ -72,16 +76,90 @@ function normalizeSettingSources(value) {
 
 function normalizePermissionMode(value) {
   const normalized = typeof value === "string" ? value.trim() : "";
-  switch (normalized) {
-    case "default":
-    case "acceptEdits":
-    case "bypassPermissions":
-    case "plan":
-    case "dontAsk":
-      return normalized;
-    default:
-      return "bypassPermissions";
+  return PERMISSION_MODES.has(normalized) ? normalized : DEFAULT_PERMISSION_MODE;
+}
+
+// Mirrors claude's own root gate byte for byte:
+//
+//   permissionMode === "bypassPermissions" || dangerouslySkipPermissions
+//     ? getuid() === 0 && process.env.IS_SANDBOX !== "1" && !CLAUDE_CODE_BUBBLEWRAP
+//       -> "--dangerously-skip-permissions cannot be used with root/sudo
+//           privileges for security reasons" + exit(1)
+//
+// Two different env idioms in that one line, and both are load-bearing:
+// IS_SANDBOX is a *strict* `=== "1"` compare, while CLAUDE_CODE_BUBBLEWRAP goes
+// through claude's loose truthy parser (`1|true|yes|on`, trimmed+lowercased).
+// Do not "helpfully" accept IS_SANDBOX=true here — being more permissive than
+// the gate keeps bypassPermissions and just moves the failure into claude,
+// which is the exact bug we are fixing.
+export function isClaudeRootPermissionRestricted(env = process.env) {
+  if (typeof process.getuid !== "function" || process.getuid() !== 0) {
+    return false;
   }
+  if (env?.IS_SANDBOX === "1") {
+    return false;
+  }
+  const bubblewrap = String(env?.CLAUDE_CODE_BUBBLEWRAP ?? "").trim().toLowerCase();
+  return !["1", "true", "yes", "on"].includes(bubblewrap);
+}
+
+// Root installs (docker, CI, bare VPS) would otherwise fail every turn, so fall
+// back to the closest usable mode instead of dying.
+export function resolveClaudePermissionPolicy(options = {}, env = process.env) {
+  const requested = normalizePermissionMode(options.permissionMode);
+  // A configured value we don't recognize still falls back to the default (a
+  // typo must never take the session down), but the caller reports it so the
+  // user finds out their config line is doing nothing.
+  const rawMode = typeof options.permissionMode === "string" ? options.permissionMode.trim() : "";
+  const invalidMode = rawMode && !PERMISSION_MODES.has(rawMode) ? rawMode : "";
+  if (!isClaudeRootPermissionRestricted(env)) {
+    return {
+      permissionMode: requested,
+      allowDangerouslySkipPermissions:
+        requested === DEFAULT_PERMISSION_MODE || options.allowDangerouslySkipPermissions === true,
+      downgradedFrom: "",
+      invalidMode,
+    };
+  }
+  const permissionMode = requested === DEFAULT_PERMISSION_MODE ? ROOT_PERMISSION_MODE : requested;
+  return {
+    permissionMode,
+    allowDangerouslySkipPermissions: false,
+    downgradedFrom: permissionMode === requested ? "" : requested,
+    invalidMode,
+  };
+}
+
+// The PTY / tool-preset path in the daemon hands a configured allow_cli_list
+// command straight to a shell, so it never reaches the session class above and
+// never sees resolveClaudePermissionPolicy. Rewrite the command string there
+// too, or a root box keeps failing in terminal tasks after the SDK path is fixed.
+export function resolveClaudeCommandForRoot(commandLine, env = process.env) {
+  const command = typeof commandLine === "string" ? commandLine : "";
+  if (!command.trim() || !isClaudeRootPermissionRestricted(env)) {
+    return command;
+  }
+  // Also drop a valueless `--permission-mode` (end of string, or immediately
+  // followed by another flag). Without this the append branch below would emit
+  // `--permission-mode --permission-mode acceptEdits`, and claude reads the
+  // flag name as the mode and `acceptEdits` as a positional prompt.
+  const stripped = command
+    .replace(/\s*--dangerously-skip-permissions(?=\s|$)/g, "")
+    .replace(/\s*--permission-mode=(?=\s|$)/g, "")
+    .replace(/\s*--permission-mode(?=\s+-|\s*$)/g, "")
+    .trim();
+  const configuredMode = extractLongFlagFromCommandLine(stripped, "permission-mode");
+  if (!configuredMode) {
+    return `${stripped} --permission-mode ${ROOT_PERMISSION_MODE}`;
+  }
+  if (configuredMode === DEFAULT_PERMISSION_MODE) {
+    return stripped.replace(
+      /(--permission-mode[=\s]+)bypassPermissions(?=\s|$)/,
+      `$1${ROOT_PERMISSION_MODE}`,
+    );
+  }
+  // Any other configured mode is already root-safe; leave it verbatim.
+  return stripped;
 }
 
 function normalizeText(value) {
@@ -198,6 +276,14 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         options = { ...options, effort: effortFromCommandLine };
       }
     }
+    // Same for `--permission-mode`, so `claude --permission-mode acceptEdits`
+    // in allow_cli_list picks the mode without new plumbing.
+    if (options.permissionMode === undefined && typeof options.commandLine === "string") {
+      const modeFromCommandLine = extractLongFlagFromCommandLine(options.commandLine, "permission-mode");
+      if (modeFromCommandLine) {
+        options = { ...options, permissionMode: modeFromCommandLine };
+      }
+    }
     this.options = options;
     this.logger = normalizeLogger(options.logger);
     this.cwd =
@@ -245,6 +331,23 @@ export class ClaudeAgentSdkSession extends EventEmitter {
     };
     if (!this.env.CLAUDE_AGENT_SDK_CLIENT_APP) {
       this.env.CLAUDE_AGENT_SDK_CLIENT_APP = "conductor-ai-sdk/0.0.0";
+    }
+
+    // Resolved once at boot (options and env are both fixed by now) so the
+    // config warning lands at session start instead of once per turn.
+    this.permissionPolicy = resolveClaudePermissionPolicy(this.options, { ...process.env, ...this.env });
+    if (this.permissionPolicy.invalidMode) {
+      this.trace(
+        `WARN unknown permission mode ${JSON.stringify(this.permissionPolicy.invalidMode)} in config; `
+          + `using ${this.permissionPolicy.permissionMode} instead `
+          + `(valid: ${[...PERMISSION_MODES].join(", ")})`,
+      );
+    }
+    if (this.permissionPolicy.downgradedFrom) {
+      this.trace(
+        `permission mode ${this.permissionPolicy.downgradedFrom} -> ${this.permissionPolicy.permissionMode} `
+          + `(claude rejects ${this.permissionPolicy.downgradedFrom} as root; set IS_SANDBOX=1 to keep it)`,
+      );
     }
   }
 
@@ -614,7 +717,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
   }
 
   buildSdkOptions(abortController) {
-    const permissionMode = normalizePermissionMode(this.options.permissionMode);
+    const { permissionMode } = this.permissionPolicy;
     const options = {
       abortController,
       cwd: this.cwd,
@@ -627,7 +730,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       persistSession: this.options.persistSession !== false,
     };
 
-    if (permissionMode === "bypassPermissions" || this.options.allowDangerouslySkipPermissions === true) {
+    if (this.permissionPolicy.allowDangerouslySkipPermissions) {
       options.allowDangerouslySkipPermissions = true;
     }
     if (this.sessionId) {

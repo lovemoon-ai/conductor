@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import yargs from "yargs/yargs";
 import { hideBin } from "yargs/helpers";
 import { RUNTIME_SUPPORTED_BACKENDS } from "../src/runtime-backends.js";
+import { isClaudeRootPermissionRestricted } from "@love-moon/ai-sdk";
 import { resolveConductorConfigPath } from "../src/conductor-paths.js";
 
 const CONFIG_FILE = resolveConductorConfigPath();
@@ -21,7 +22,12 @@ const packageJson = JSON.parse(
 const DEFAULT_CLIs = {
   claude: {
     command: "claude",
-    execArgs: "--dangerously-skip-permissions",
+    // claude exits 1 with `--dangerously-skip-permissions` under root, so never
+    // write a flag the user's own machine cannot run. Same root check the
+    // daemon and the ai-sdk session use.
+    execArgs: isClaudeRootPermissionRestricted()
+      ? "--permission-mode acceptEdits"
+      : "--dangerously-skip-permissions",
     description: "Anthropic Claude CLI"
   },
   codex: {
