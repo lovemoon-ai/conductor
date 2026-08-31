@@ -38,6 +38,9 @@ importers:
       '@deepseek-ai/dsh-sdk-jsonrpc-server':
         specifier: 0.1.0-rc.6
         version: 0.1.0-rc.6(20740487eda83f3c36d9315067b2a0bd)
+      '@deepseek-ai/dsh-sdk-protocol':
+        specifier: 0.1.0-rc.6
+        version: 0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1))(@deepseek-ai/dsh-llm@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-attachment@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-brand@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-brand@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1))(@deepseek-ai/dsh-timeout@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1))))(@deepseek-ai/dsh-session@0.1.0-rc.6(6fd26f59436a18b115f326d6060415e6))(@deepseek-ai/dsh-subagent@0.1.0-rc.6(a7cc6847381c4d1cb9794dbbec4d2c16))
       '@deepseek-ai/dsh-session-checkpoint-policy':
         specifier: 0.1.0-rc.6
         version: 0.1.0-rc.6(7e2879af4ab6174d0061cf8aecc8592b)
@@ -47,6 +50,9 @@ importers:
       '@deepseek-ai/dsh-subagent':
         specifier: 0.1.0-rc.6
         version: 0.1.0-rc.6(a7cc6847381c4d1cb9794dbbec4d2c16)
+      '@deepseek-ai/dsh-subagent-in-process-driver':
+        specifier: 0.1.0-rc.6
+        version: 0.1.0-rc.6(c33308c0baac12876082c9caae70a21f)
       '@deepseek-ai/dsh-subagent-spawn-in-process':
         specifier: 0.1.0-rc.6
         version: 0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1))(@deepseek-ai/dsh-subagent-in-process-driver@0.1.0-rc.6(c33308c0baac12876082c9caae70a21f))(@deepseek-ai/dsh-subagent@0.1.0-rc.6(a7cc6847381c4d1cb9794dbbec4d2c16))
@@ -92,8 +98,8 @@ importers:
         version: 5.9.3
     optionalDependencies:
       '@love-moon/chat-web':
-        specifier: ^0.8.0
-        version: 0.8.0
+        specifier: ^0.10.0
+        version: 0.10.0
 
 packages:
 
@@ -1159,8 +1165,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@love-moon/chat-web@0.8.0':
-    resolution: {integrity: sha512-+dFKup6C57GVi+ptHUrWXChIoi4QVwmaePBIvg+vqGZ91P42Er+QrZx3SC4rJ6DdWY0fxUEkfAARp9DY7YNeXA==}
+  '@love-moon/chat-web@0.10.0':
+    resolution: {integrity: sha512-PczcqwQcbZhWz2wE42qsqEA8/2Tszzws+36PEJ9cQtdEZt1pJe4LT2428F/n2OF+2rIjtLaXIiN2lGM0/J24mg==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -1699,7 +1705,7 @@ snapshots:
       '@deepseek-ai/cordis': 4.0.1(@deepseek-ai/cordis-plugin-include@1.0.6)(@deepseek-ai/cordis-plugin-loader@1.0.2)
       '@deepseek-ai/cordis-plugin-loader': 1.0.2(@deepseek-ai/cordis@4.0.1)
       '@deepseek-ai/cosmokit': 1.8.2
-      js-yaml: 4.1.1
+      js-yaml: 4.3.1
 
   '@deepseek-ai/cordis-plugin-loader@1.0.2(@deepseek-ai/cordis@4.0.1)':
     dependencies:
@@ -2516,7 +2522,7 @@ snapshots:
   '@koromix/koffi-win32-x64@3.1.5':
     optional: true
 
-  '@love-moon/chat-web@0.8.0':
+  '@love-moon/chat-web@0.10.0':
     dependencies:
       playwright: 1.60.0
     optional: true
