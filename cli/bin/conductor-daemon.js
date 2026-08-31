@@ -14,6 +14,12 @@ import {
   resolveConductorConfigPath,
   resolveConductorHome,
 } from "../src/conductor-paths.js";
+import {
+  DAEMON_LOCK_FILE_NAME,
+  buildDaemonInstanceIdentity,
+  describeForceRestartRefusal,
+  parseDaemonLockState,
+} from "../src/daemon-lock.js";
 
 const argv = hideBin(process.argv);
 
@@ -109,39 +115,33 @@ function expandHomePath(inputPath, homeDir) {
   return inputPath;
 }
 
-function resolveWorkspaceRoot(configFilePath) {
-  const userConfig = loadUserConfig(configFilePath);
+function resolveWorkspaceRoot(userConfig) {
   const home = process.env.HOME || os.homedir() || "/tmp";
   const workspaceRoot = process.env.CONDUCTOR_WS || userConfig.workspace || path.join(home, "ws");
   return expandHomePath(workspaceRoot, home);
 }
 
-function findRunningDaemonPid(workspaceRoot) {
-  const lockFile = path.join(workspaceRoot, "daemon.pid");
-  if (!fs.existsSync(lockFile)) {
-    return null;
-  }
+function readDaemonLockState(workspaceRoot) {
+  const lockFile = path.join(workspaceRoot, DAEMON_LOCK_FILE_NAME);
   try {
-    const pid = parseInt(fs.readFileSync(lockFile, "utf8"), 10);
-    if (Number.isNaN(pid)) {
-      return null;
-    }
-    process.kill(pid, 0);
-    return pid;
-  } catch (err) {
-    if (err && err.code === "ESRCH") {
-      return null;
-    }
-    return pidFromLockFile(lockFile);
+    return parseDaemonLockState(fs.readFileSync(lockFile, "utf8"));
+  } catch (_err) {
+    return null;
   }
 }
 
-function pidFromLockFile(lockFile) {
-  try {
-    const pid = parseInt(fs.readFileSync(lockFile, "utf8"), 10);
-    return Number.isNaN(pid) ? null : pid;
-  } catch (_err) {
+function findRunningDaemonPid(lockState) {
+  const pid = lockState?.pid;
+  if (!pid) {
     return null;
+  }
+  try {
+    process.kill(pid, 0);
+    return pid;
+  } catch (err) {
+    // EPERM means the process exists but is owned by another OS user, which is
+    // still "running" for our purposes.
+    return err && err.code === "ESRCH" ? null : pid;
   }
 }
 
@@ -181,13 +181,37 @@ const effectiveConfigFile = args.configFile
   : undefined;
 
 if (args.nohup) {
-  const workspaceRoot = resolveWorkspaceRoot(effectiveConfigFile);
-  const runningPid = findRunningDaemonPid(workspaceRoot);
-  if (runningPid && !args.force) {
-    process.stderr.write(
-      `${CLI_NAME} detected an existing daemon (PID ${runningPid}). Use --force to restart.\n`,
-    );
-    process.exit(1);
+  const userConfig = loadUserConfig(effectiveConfigFile);
+  const workspaceRoot = resolveWorkspaceRoot(userConfig);
+  const lockState = readDaemonLockState(workspaceRoot);
+  const runningPid = findRunningDaemonPid(lockState);
+  if (runningPid) {
+    if (!args.force) {
+      process.stderr.write(
+        `${CLI_NAME} detected an existing daemon (PID ${runningPid}). Use --force to restart.\n`,
+      );
+      process.exit(1);
+    }
+    const identity = buildDaemonInstanceIdentity({
+      conductorHome: materializedConductorPathEnv.CONDUCTOR_HOME,
+      configPath: materializedConductorPathEnv.CONDUCTOR_CONFIG,
+      workspaceRoot,
+      daemonName:
+        (typeof userConfig.daemon_name === "string" && userConfig.daemon_name.trim()) ||
+        process.env.CONDUCTOR_DAEMON_NAME ||
+        os.hostname(),
+    });
+    // Mirrors the ownership gate in src/daemon.js so --nohup --force fails in
+    // the foreground (where the user sees it) instead of inside a detached log.
+    const ownershipError = describeForceRestartRefusal({
+      lockState,
+      identity,
+      lockFile: path.join(workspaceRoot, DAEMON_LOCK_FILE_NAME),
+    });
+    if (ownershipError) {
+      process.stderr.write(`${CLI_NAME} ${ownershipError}\n`);
+      process.exit(1);
+    }
   }
 
   const logsDir = path.join(resolveConductorHome(), "logs");

@@ -323,6 +323,10 @@ export interface Agent {
   runtimeBackendMap?: Record<string, string>;
   capabilities?: string[];
   version?: string;
+  /** RFC 0035: this daemon runs on someone else's machine. */
+  shared?: boolean;
+  /** Who lent it, when `shared`. Never a raw email/phone. */
+  ownerLabel?: string | null;
 }
 
 // WebSocket Types

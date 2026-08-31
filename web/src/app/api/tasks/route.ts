@@ -967,8 +967,8 @@ export async function POST(request: NextRequest) {
       task: task as { id: string; projectId: string; title: string },
       ptySessionId: ptySession.id,
       launchConfig,
-      bindTaskToAgent: (taskId, boundAgentHost) =>
-        realtimeHub.bindTaskToAgent(taskId, boundAgentHost),
+      bindTaskToAgent: (taskId, boundAgentHost, boundUserId) =>
+        realtimeHub.bindTaskToAgent(taskId, boundAgentHost, boundUserId),
       sendToAgentHost: ({ userId: targetUserId, agentHost: targetHost, envelope }) =>
         realtimeHub.sendToAgentHost(targetUserId, targetHost, envelope),
       resolveTaskHost: (taskId) => realtimeHub.getTaskAgentHost(taskId),

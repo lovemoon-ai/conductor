@@ -349,7 +349,7 @@ describe("getOrIssueConnectedAppToken", () => {
     const value = await getOrIssueConnectedAppToken("user-1", TEST_CLIENT_ID);
     expect(value).toBe("existing-token-value");
     expect(mockDb.userToken.findFirst).toHaveBeenCalledWith({
-      where: { userId: "user-1", name: connectedAppTokenName(TEST_CLIENT_ID), revokedAt: null },
+      where: { userId: "user-1", name: connectedAppTokenName(TEST_CLIENT_ID), revokedAt: null, scope: "full" },
       orderBy: { createdAt: "desc" },
     });
     expect(mockDb.userToken.create).not.toHaveBeenCalled();

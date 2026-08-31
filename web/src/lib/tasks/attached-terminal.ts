@@ -197,7 +197,7 @@ export const deletePtyTaskWithKill = async (args: {
   if (needsStop && stopTargetHost) {
     const requestId = randomUUID();
     const ackPromise = realtimeHub.waitForTaskStopAck(ptyTaskId, requestId, 2500);
-    realtimeHub.bindTaskToAgent(ptyTaskId, stopTargetHost);
+    realtimeHub.bindTaskToAgent(ptyTaskId, stopTargetHost, userId);
     let delivered = false;
     try {
       ({ delivered } = await enqueueAndAttemptAgentCommand(
@@ -433,7 +433,7 @@ export const dispatchAttachedTerminalCreation = async (args: {
     task: args.ptyTask,
     ptySessionId: args.ptySessionId,
     launchConfig: args.launchConfig,
-    bindTaskToAgent: (taskId, host) => realtimeHub.bindTaskToAgent(taskId, host),
+    bindTaskToAgent: (taskId, host, boundUserId) => realtimeHub.bindTaskToAgent(taskId, host, boundUserId),
     sendToAgentHost: ({ userId: targetUserId, agentHost: targetHost, envelope }) =>
       realtimeHub.sendToAgentHost(targetUserId, targetHost, envelope),
     resolveTaskHost: (taskId) => realtimeHub.getTaskAgentHost(taskId),

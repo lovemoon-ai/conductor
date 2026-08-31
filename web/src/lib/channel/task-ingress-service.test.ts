@@ -163,7 +163,7 @@ describe('task-ingress-service', () => {
         }),
       }),
     );
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith('task-1', 'daemon-a');
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith('task-1', 'daemon-a', 'user-1');
     expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 'user-1',

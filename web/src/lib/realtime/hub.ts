@@ -193,6 +193,17 @@ type HostScopedWaiter = {
   expectedAgentHost: string;
 };
 
+/**
+ * A task's live agent binding. The owner is stored alongside the host because
+ * daemons default to `os.hostname()`, so the same host string (e.g.
+ * `MacBook-Pro.local`) routinely belongs to several tenants at once. Every
+ * host-keyed lookup must therefore be filtered by owner.
+ */
+type TaskAgentBinding = {
+  host: string;
+  userId: string;
+};
+
 type TerminalDetachResult = {
   detachedTaskIds: string[];
   releasedWriterTaskIds: string[];
@@ -206,7 +217,7 @@ const globalForHub = globalThis as unknown as { realtimeHub?: RealtimeHub };
 
 export class RealtimeHub {
   private connections = new Map<string, Connection>();
-  private taskToAgent = new Map<string, string>();
+  private taskToAgent = new Map<string, TaskAgentBinding>();
   private agentDisconnectAt = new Map<string, number>();
   private stopAckWaiters = new Map<string, StopAckWaiter>();
   private agentCommandAckWaiters = new Map<string, AgentCommandAckWaiter>();
@@ -246,8 +257,10 @@ export class RealtimeHub {
     // Remove stale task bindings when an agent disconnects.
     if (conn?.kind === "agent" && conn.host) {
       this.agentDisconnectAt.set(this.agentKey(conn.userId, conn.host), Date.now());
-      for (const [taskId, agentHost] of this.taskToAgent.entries()) {
-        if (agentHost === conn.host) {
+      // Scope the eviction to this connection's owner: another tenant's
+      // daemon can share the host name, and its bindings must survive.
+      for (const [taskId, binding] of this.taskToAgent.entries()) {
+        if (binding.host === conn.host && binding.userId === conn.userId) {
           this.taskToAgent.delete(taskId);
         }
       }
@@ -370,12 +383,12 @@ export class RealtimeHub {
     return agents;
   }
 
-  bindTaskToAgent(taskId: string, agentHost: string) {
-    this.taskToAgent.set(taskId, agentHost);
+  bindTaskToAgent(taskId: string, agentHost: string, userId: string) {
+    this.taskToAgent.set(taskId, { host: agentHost, userId });
   }
 
   getTaskAgentHost(taskId: string): string | null {
-    return this.taskToAgent.get(taskId) ?? null;
+    return this.taskToAgent.get(taskId)?.host ?? null;
   }
 
   unbindTask(taskId: string) {
@@ -571,10 +584,16 @@ export class RealtimeHub {
     return sentCount;
   }
 
-  sendToAgent(taskId: string, payload: unknown): boolean {
-    const agentHost = this.taskToAgent.get(taskId);
-    if (!agentHost) return false;
-    const conn = this.findAgentConnectionByHost(agentHost);
+  /**
+   * Route a payload to the agent currently bound to `taskId`. `taskToAgent`
+   * only stores a bare host string, and daemons default to `os.hostname()`, so
+   * two tenants routinely share a host name (`MacBook-Pro.local`). The owning
+   * `userId` is required so the lookup cannot land on another tenant's socket.
+   */
+  sendToAgent(userId: string, taskId: string, payload: unknown): boolean {
+    const binding = this.taskToAgent.get(taskId);
+    if (!binding || binding.userId !== userId) return false;
+    const conn = this.findAgentConnectionByHost(binding.host, userId);
     if (!conn) return false;
     conn.send(payload);
     return true;
@@ -1033,9 +1052,10 @@ export class RealtimeHub {
     for (const conn of this.connections.values()) {
       if (conn.kind !== "agent") continue;
       if (conn.host !== host) continue;
-      // `undefined` means "any owner" (the task-id routing path). An empty
-      // string must NOT silently mean that too, or a blank userId would
-      // disable tenant filtering entirely.
+      // `undefined` means "any owner". No caller uses that mode today (the
+      // task-id routing path in `sendToAgent` now passes the owning userId).
+      // An empty string must NOT silently mean "any owner" either, or a blank
+      // userId would disable tenant filtering entirely.
       if (userId !== undefined && conn.userId !== userId) continue;
       return conn;
     }
@@ -1047,14 +1067,19 @@ export class RealtimeHub {
    * This prevents tasks from getting stuck in 'init' state after server restart.
    */
   async restoreTaskBindingsFromDb(
-    fetchActiveTasks: () => Promise<Array<{ id: string; agentHost: string | null }>>,
+    fetchActiveTasks: () => Promise<
+      Array<{ id: string; agentHost: string | null; userId: string | null }>
+    >,
   ): Promise<number> {
     try {
       const tasks = await fetchActiveTasks();
       let restoredCount = 0;
       for (const task of tasks) {
-        if (task.agentHost) {
-          this.taskToAgent.set(task.id, task.agentHost);
+        // A binding without an owner cannot be routed or evicted safely, so
+        // skip it rather than seeding an ownerless entry that host-keyed
+        // lookups would resolve to whichever tenant matched first.
+        if (task.agentHost && task.userId) {
+          this.taskToAgent.set(task.id, { host: task.agentHost, userId: task.userId });
           restoredCount++;
         }
       }

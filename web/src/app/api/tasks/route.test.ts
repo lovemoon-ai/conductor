@@ -2031,7 +2031,7 @@ describe("/api/tasks", () => {
       // Fire host should NOT trigger create_task outbox command
       expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
       // But the task should still be bound in realtime hub
-      expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-fire-daemon", "conductor-fire-host-1");
+      expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-fire-daemon", "conductor-fire-host-1", "user-1");
     });
 
     it("should accept camelCase fields and map metadata", async () => {
@@ -2803,7 +2803,7 @@ describe("/api/tasks", () => {
         }),
       });
       expect(db.message.create).not.toHaveBeenCalled();
-      expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-1", "daemon-1");
+      expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-1", "daemon-1", "user-1");
       expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
         expect.objectContaining({
           userId: "user-1",

@@ -69,7 +69,31 @@ import {
   maskErrorForLogs,
   redactSecretsForLogs,
 } from "./handoff-log-mask.js";
+import {
+  DAEMON_LOCK_FILE_NAME,
+  FORCE_KILL_UNKNOWN_OWNER_ENV_VAR,
+  buildDaemonInstanceIdentity,
+  compareDaemonLockIdentity,
+  describeDaemonLockOwner,
+  describeForceRestartRefusal,
+  parseDaemonLockState,
+  serializeDaemonLock,
+} from "./daemon-lock.js";
 import { StringDecoder } from "node:string_decoder";
+import {
+  MAX_GUEST_DAEMONS,
+  buildGuestConfigYaml,
+  buildGuestEnv,
+  filterGuestCapabilities,
+  isGuestAiManagerActionAllowed,
+  isGuestRestartAllowed,
+  isPathInsideGuestRoot,
+  nextRestartDelayMs,
+  reconcileGuests,
+  startOrphanWatchdog,
+  resolveGuestPaths,
+  writeGuestConfig,
+} from "./guest-daemon.js";
 
 dotenv.config();
 
@@ -78,6 +102,10 @@ const __dirname = path.dirname(__filename);
 const PACKAGE_ROOT = path.join(__dirname, "..");
 const moduleRequire = createRequire(import.meta.url);
 const CLI_PATH = path.resolve(PACKAGE_ROOT, "bin", "conductor-fire.js");
+// RFC 0035: the launcher a guest daemon child is spawned with. Same binary as
+// the host daemon, so guests always match the installed version and there is
+// no second update path to keep in sync.
+const DAEMON_LAUNCHER_PATH = path.resolve(PACKAGE_ROOT, "bin", "conductor-daemon.js");
 const CLI_VERSION = (() => {
   try {
     return JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, "package.json"), "utf-8")).version;
@@ -1001,6 +1029,24 @@ export function startDaemon(config = {}, deps = {}) {
   // warning and silently fall back to direct spawn rather than failing every
   // create_task with ENOENT.
   const FIRE_TMUX_MODE_ENABLED = getFireTmuxModeEnabled(userConfig);
+  // RFC 0035: a guest daemon runs on someone else's machine as a different
+  // account. It keeps the ordinary daemon code path but drops the capabilities
+  // that would mutate state the machine's OWNER depends on.
+  const IS_GUEST_DAEMON =
+    userConfig.conductor_guest === true ||
+    fileConfig?.conductorGuest === true ||
+    Boolean(normalizeOptionalString(process.env.CONDUCTOR_GUEST_SHARE_ID));
+  // Only set when the share carries an explicit `workspaceRoot`, i.e. the owner
+  // deliberately scoped where the guest should work. Absent that, a guest binds
+  // projects wherever any other daemon could -- inventing a confinement the
+  // owner never asked for would make the guest gratuitously less capable, and
+  // it was never a security boundary anyway (the grantee's agent runs a shell).
+  const GUEST_ROOT = normalizeOptionalString(process.env.CONDUCTOR_GUEST_ROOT);
+  // A guest resolves `remote_exec` from its own config exactly like any other
+  // daemon. It is not withheld: the grantee already has a shell here through
+  // AI tasks and `pty_task`'s custom entrypoint, so blocking the scriptable
+  // path would cost function without removing reach (RFC 0034 makes the same
+  // argument). An owner who wants it off can set `remote_exec: false`.
   const remoteExecEnabled = getRemoteExecEnabled(userConfig);
 
   // Get allow_cli_list from config
@@ -1031,6 +1077,17 @@ export function startDaemon(config = {}, deps = {}) {
       readFileSync: deps.readFileSync || fs.readFileSync,
     }));
   const skipPidLockCheck = parseBooleanEnv(process.env.CONDUCTOR_TUI_DEBUG);
+  // Fingerprint of *this* daemon instance, persisted into daemon.pid so that a
+  // later `--force` can tell "restart myself" apart from "kill whoever happens
+  // to hold the lock". WORKSPACE_ROOT defaults to $HOME/ws, so unrelated
+  // instances collide on the same lock file by default.
+  const daemonInstanceIdentity = buildDaemonInstanceIdentity({
+    conductorHome: materializedConductorPathEnv.CONDUCTOR_HOME,
+    configPath: effectiveConfigPath,
+    workspaceRoot: WORKSPACE_ROOT,
+    daemonName: AGENT_NAME,
+    backendUrl: BACKEND_HTTP,
+  });
   const lockHandoffToken =
     normalizeOptionalString(config.LOCK_HANDOFF_TOKEN) ||
     normalizeOptionalString(process.env.CONDUCTOR_LOCK_HANDOFF_TOKEN);
@@ -2885,36 +2942,7 @@ export function startDaemon(config = {}, deps = {}) {
     DEFAULT_TERMINAL_RESUME_SNAPSHOT_MAX_BYTES,
   );
 
-  const readLockState = () => {
-    const raw = String(readFileSyncFn(LOCK_FILE, "utf-8") || "").trim();
-    if (!raw) {
-      return null;
-    }
-
-    const pid = Number.parseInt(raw, 10);
-    if (!Number.isNaN(pid) && pid > 0) {
-      return {
-        pid,
-        handoffFromPid: null,
-        handoffToken: null,
-        handoffExpiresAt: null,
-      };
-    }
-
-    try {
-      const parsed = JSON.parse(raw);
-      const parsedPid = normalizePositiveInt(parsed?.pid, null);
-      const parsedHandoffFromPid = normalizePositiveInt(parsed?.handoff_from_pid, null);
-      return {
-        pid: parsedPid ?? parsedHandoffFromPid,
-        handoffFromPid: parsedHandoffFromPid,
-        handoffToken: normalizeOptionalString(parsed?.handoff_token),
-        handoffExpiresAt: normalizePositiveInt(parsed?.handoff_expires_at, null),
-      };
-    } catch {
-      return null;
-    }
-  };
+  const readLockState = () => parseDaemonLockState(readFileSyncFn(LOCK_FILE, "utf-8"));
 
   const hasMatchingLockHandoff = (lockState) => {
     if (!lockState || !lockHandoffToken || !lockHandoffFromPid) {
@@ -2953,7 +2981,7 @@ export function startDaemon(config = {}, deps = {}) {
     return exitAndReturn(1);
   }
 
-  const LOCK_FILE = path.join(WORKSPACE_ROOT, "daemon.pid");
+  const LOCK_FILE = path.join(WORKSPACE_ROOT, DAEMON_LOCK_FILE_NAME);
   try {
     if (skipPidLockCheck) {
       log("CONDUCTOR_TUI_DEBUG enabled; skipping daemon PID lock enforcement");
@@ -2970,6 +2998,21 @@ export function startDaemon(config = {}, deps = {}) {
               const alive = isProcessAlive(pid);
               if (alive) {
                 if (config.FORCE) {
+                  const forceRefusal = describeForceRestartRefusal({
+                    lockState,
+                    identity: daemonInstanceIdentity,
+                    lockFile: LOCK_FILE,
+                    env: process.env,
+                  });
+                  if (forceRefusal) {
+                    logError(forceRefusal);
+                    return exitAndReturn(1);
+                  }
+                  if (compareDaemonLockIdentity(lockState, daemonInstanceIdentity) === "unknown") {
+                    log(
+                      `${FORCE_KILL_UNKNOWN_OWNER_ENV_VAR} is set: stopping PID ${pid} even though the lock file carries no instance identity`,
+                    );
+                  }
                   log(`Force enabled: stopping existing daemon PID ${pid}`);
                   let alreadyExited = false;
                   try {
@@ -3011,7 +3054,9 @@ export function startDaemon(config = {}, deps = {}) {
                     unlinkSyncFn(LOCK_FILE);
                   }
                 } else {
-                  logError(`Daemon already running with PID ${pid}`);
+                  logError(
+                    `Daemon already running with PID ${pid} — ${describeDaemonLockOwner(lockState)}. Use --force to restart it.`,
+                  );
                   return exitAndReturn(1);
                 }
               } else {
@@ -3032,7 +3077,10 @@ export function startDaemon(config = {}, deps = {}) {
           unlinkSyncFn(LOCK_FILE);
         }
       }
-      writeFileSyncFn(LOCK_FILE, process.pid.toString());
+      writeFileSyncFn(
+        LOCK_FILE,
+        serializeDaemonLock({ pid: process.pid, identity: daemonInstanceIdentity }),
+      );
     }
   } catch (err) {
     logError("Failed to acquire lock:", err);
@@ -3059,13 +3107,15 @@ export function startDaemon(config = {}, deps = {}) {
     if (skipPidLockCheck) {
       return;
     }
+    // Keeps the instance identity attached while the handoff window is open so
+    // an unrelated instance racing a `--force` during a restart still sees who
+    // owns the lock.
     writeFileSyncFn(
       LOCK_FILE,
-      JSON.stringify({
+      serializeDaemonLock({
         pid: handoffFromPid,
-        handoff_from_pid: handoffFromPid,
-        handoff_token: handoffToken,
-        handoff_expires_at: handoffExpiresAt,
+        identity: daemonInstanceIdentity,
+        handoff: { handoffFromPid, handoffToken, handoffExpiresAt },
       }),
     );
   };
@@ -3142,6 +3192,18 @@ export function startDaemon(config = {}, deps = {}) {
     removeProcessListener("uncaughtException", onUncaughtException);
     removeProcessListener("unhandledRejection", onUnhandledRejection);
   };
+
+  // RFC 0035: never leave guest daemons orphaned. They are children of this
+  // process, so without this they would survive the host daemon and keep
+  // serving a share the owner believes is stopped.
+  const stopGuestsOnExit = () => {
+    try {
+      stopAllGuestDaemons("host daemon exiting");
+    } catch {
+      // best effort during shutdown
+    }
+  };
+  process.on("exit", stopGuestsOnExit);
 
   process.on("exit", cleanupLock);
   process.on("SIGINT", onSigInt);
@@ -3285,8 +3347,29 @@ export function startDaemon(config = {}, deps = {}) {
   if (ptyTaskCapabilityEnabled) {
     advertisedCapabilities.push("pty_task", "terminal_snapshot");
   }
-  if (advertisedCapabilities.length > 0) {
-    extraHeaders["x-conductor-capabilities"] = advertisedCapabilities.join(",");
+  // RFC 0035: strip capabilities a guest must never offer. `ai_manager` stays
+  // advertised on purpose -- the grantee needs to see how much AI quota is left
+  // on the borrowed machine -- but its `switch_account` action is refused at
+  // dispatch, because that one rewrites `~/.codex/auth.json` and would change
+  // the machine owner's own active account.
+  const effectiveCapabilities = IS_GUEST_DAEMON
+    ? filterGuestCapabilities(advertisedCapabilities)
+    : advertisedCapabilities;
+  if (IS_GUEST_DAEMON) {
+    log(
+      `[guest] Running as a shared guest daemon; capabilities=${effectiveCapabilities.join(",")}` +
+        (GUEST_ROOT ? `, root=${GUEST_ROOT}` : "")
+    );
+    // If the host daemon is SIGKILLed, nothing else would stop this process.
+    startOrphanWatchdog({
+      onOrphaned: () => {
+        logError("[guest] Host daemon is gone; shutting down to avoid an orphaned share");
+        exitAndReturn(0);
+      },
+    });
+  }
+  if (effectiveCapabilities.length > 0) {
+    extraHeaders["x-conductor-capabilities"] = effectiveCapabilities.join(",");
   }
   const aiManagerHandlers = createAiManagerHandlers({ configPath: effectiveConfigPath });
   const customCommandHandlers = createCustomCommandHandlers({ configPath: effectiveConfigPath });
@@ -3422,6 +3505,12 @@ export function startDaemon(config = {}, deps = {}) {
       logError(`Failed to connect: ${err}`);
     });
 
+    // RFC 0035: keep one child daemon per accepted share. A guest never
+    // supervises anything itself, or a share chain could nest.
+    if (!IS_GUEST_DAEMON) {
+      void reconcileGuestDaemons();
+    }
+
     if (!AUTO_UPDATE_ENABLED && autoUpdateSupportedInstall === false) {
       if (installMethod === "homebrew") {
         log(`[auto-update] Disabled for Homebrew install; use ${buildUpgradeCommand({ env: process.env })}`);
@@ -3432,6 +3521,9 @@ export function startDaemon(config = {}, deps = {}) {
 
     const runMaintenanceTick = async () => {
       void runDaemonWatchdog();
+      if (!IS_GUEST_DAEMON) {
+        void reconcileGuestDaemons();
+      }
       try {
         await checkForUpdate();
       } catch {
@@ -3932,6 +4024,165 @@ export function startDaemon(config = {}, deps = {}) {
     await restartDaemonProcess("auto-update");
   }
 
+  // ---------------------------------------------------------------------
+  // RFC 0035: guest daemon supervision.
+  //
+  // For each share the backend reports as active, run one child
+  // `conductor daemon` that authenticates as the grantee. The child is an
+  // ordinary daemon in every respect; what makes it a guest is its isolated
+  // CONDUCTOR_HOME/CONDUCTOR_WS and the grantee's scoped token.
+  // ---------------------------------------------------------------------
+  /** shareId -> { child, guestHost, restartTimer, stopping } */
+  const guestDaemons = new Map();
+  // Failure counts must outlive the entry they describe. The restart path
+  // deletes the entry and re-asks the backend (so a share revoked during
+  // backoff stays dead), which means a per-entry counter resets to 0 on every
+  // respawn and the exponential backoff degrades into a permanent 10s loop.
+  const guestFailureCounts = new Map();
+  let guestReconcileInFlight = false;
+
+  function stopGuestDaemon(shareId, reason) {
+    const entry = guestDaemons.get(shareId);
+    if (!entry) return;
+    entry.stopping = true;
+    if (entry.restartTimer) clearTimeout(entry.restartTimer);
+    guestDaemons.delete(shareId);
+    guestFailureCounts.delete(shareId);
+    if (entry.child && entry.child.exitCode === null && !entry.child.killed) {
+      log(`[guest] Stopping guest ${entry.guestHost} (${reason})`);
+      try {
+        entry.child.kill("SIGTERM");
+      } catch {
+        // already gone
+      }
+    }
+  }
+
+  function stopAllGuestDaemons(reason) {
+    for (const shareId of [...guestDaemons.keys()]) {
+      stopGuestDaemon(shareId, reason);
+    }
+  }
+
+  function spawnGuestDaemon(share) {
+    const paths = resolveGuestPaths(share.id, share.workspaceRoot, homeDir);
+    try {
+      writeGuestConfig(
+        paths,
+        buildGuestConfigYaml({
+          agentToken: share.agentToken,
+          backendUrl: BACKEND_HTTP,
+          guestHost: share.guestHost,
+          workspace: paths.workspace,
+          allowCliList: RAW_ALLOW_CLI_LIST,
+        })
+      );
+    } catch (error) {
+      logError(`[guest] Failed to materialize config for ${share.guestHost}: ${error?.message || error}`);
+      return;
+    }
+
+    const env = buildGuestEnv(process.env, paths, {
+      shareId: share.id,
+      explicitRoot: Boolean(share.workspaceRoot),
+    });
+    const child = spawn(
+      process.execPath,
+      [DAEMON_LAUNCHER_PATH, "--config-file", paths.configPath],
+      { env, stdio: "ignore", detached: false }
+    );
+
+    const entry = {
+      child,
+      guestHost: share.guestHost,
+      restartTimer: null,
+      stopping: false,
+    };
+    guestDaemons.set(share.id, entry);
+    log(`[guest] Started guest ${share.guestHost} for ${share.granteeLabel || "grantee"} (pid=${child.pid})`);
+
+    child.on("exit", (code, signal) => {
+      const current = guestDaemons.get(share.id);
+      // Either we asked it to stop, or a newer entry already replaced it.
+      if (!current || current.child !== child || current.stopping) return;
+      const failures = (guestFailureCounts.get(share.id) || 0) + 1;
+      guestFailureCounts.set(share.id, failures);
+      const delay = nextRestartDelayMs(failures);
+      log(
+        `[guest] Guest ${share.guestHost} exited (code=${code}, signal=${signal}); ` +
+          `restarting in ${Math.round(delay / 1000)}s (failure ${failures})`
+      );
+      current.restartTimer = setTimeout(() => {
+        // Don't resurrect from a stale timer: re-check with the backend
+        // instead, so a share revoked while we were backing off stays dead.
+        guestDaemons.delete(share.id);
+        void reconcileGuestDaemons();
+      }, delay);
+      if (typeof current.restartTimer.unref === "function") current.restartTimer.unref();
+    });
+
+    child.on("error", (error) => {
+      // Node emits `error` without `exit` for e.g. ENOENT. Without this the
+      // entry would sit in the map forever: reconcile counts it as running, so
+      // it is never retried and never started.
+      logError(`[guest] Guest ${share.guestHost} failed to spawn: ${error?.message || error}`);
+      const current = guestDaemons.get(share.id);
+      if (!current || current.child !== child || current.stopping) return;
+      const failures = (guestFailureCounts.get(share.id) || 0) + 1;
+      guestFailureCounts.set(share.id, failures);
+      guestDaemons.delete(share.id);
+      const timer = setTimeout(() => void reconcileGuestDaemons(), nextRestartDelayMs(failures));
+      if (typeof timer.unref === "function") timer.unref();
+    });
+  }
+
+  async function fetchActiveShares() {
+    const url = `${BACKEND_HTTP}/api/daemon-shares/mine?daemonHost=${encodeURIComponent(AGENT_NAME)}`;
+    // Without a deadline a hung backend pins `guestReconcileInFlight` for
+    // undici's 300s default, and nothing else clears it -- the supervisor goes
+    // silently deaf for five minutes.
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${AGENT_TOKEN}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+      // A backend that predates this feature returns 404; that is not an error
+      // worth logging on every maintenance tick.
+      if (response.status === 404) return null;
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const body = await response.json();
+    return Array.isArray(body?.shares) ? body.shares : [];
+  }
+
+  async function reconcileGuestDaemons() {
+    if (guestReconcileInFlight || daemonShuttingDown) return;
+    guestReconcileInFlight = true;
+    try {
+      const shares = await fetchActiveShares();
+      if (shares === null) return;
+      const running = new Set(guestDaemons.keys());
+      const { start, stop, skipped } = reconcileGuests(shares, running, MAX_GUEST_DAEMONS);
+      for (const shareId of stop) {
+        stopGuestDaemon(shareId, "share no longer active");
+      }
+      for (const share of start) {
+        spawnGuestDaemon(share);
+      }
+      if (skipped > 0) {
+        // Never drop guests silently -- a share that looks accepted in the UI
+        // but never runs is the hardest kind of bug to report.
+        log(
+          `[guest] ${skipped} share(s) not started: at the ${MAX_GUEST_DAEMONS}-guest limit for this daemon`
+        );
+      }
+    } catch (error) {
+      logError(`[guest] Failed to reconcile guest daemons: ${error?.message || error}`);
+    } finally {
+      guestReconcileInFlight = false;
+    }
+  }
+
   async function handleRestartDaemon(payload) {
     const requestId = payload?.request_id ? String(payload.request_id) : "";
     const targetVersionRaw = payload?.target_version
@@ -3949,6 +4200,22 @@ export function startDaemon(config = {}, deps = {}) {
     }
     if (autoUpdateInProgress) {
       log(`[restart_daemon] Ignored (${requestId}): restart already in progress`);
+      sendAgentCommandAck({
+        requestId,
+        eventType: "restart_daemon",
+        accepted: false,
+      }).catch(() => {});
+      return;
+    }
+
+    // RFC 0035: a versioned restart runs a *global* `npm install -g`, which
+    // would swap the CLI binary out from under the machine owner's own daemon
+    // and every one of their fire processes. A guest may restart itself, but
+    // it may not change the machine's installed version.
+    if (IS_GUEST_DAEMON && !isGuestRestartAllowed(payload)) {
+      log(
+        `[restart_daemon] Refused (${requestId}): guest daemons cannot install version ${targetVersionRaw}`
+      );
       sendAgentCommandAck({
         requestId,
         eventType: "restart_daemon",
@@ -5460,6 +5727,26 @@ export function startDaemon(config = {}, deps = {}) {
       return;
     }
     if (event.type === "ai_manager_request") {
+      // RFC 0035: reads are fine and genuinely useful to a guest (it needs to
+      // know how much quota the borrowed machine has left). `switch_account` is
+      // not: `AiManager` resolves the codex auth path from `homedir()`, so a
+      // guest switching accounts renames over `~/.codex/auth.json` and changes
+      // the machine owner's own daemon, running fires, and interactive `codex`.
+      const aiAction = event.payload?.action;
+      if (IS_GUEST_DAEMON && !isGuestAiManagerActionAllowed(aiAction)) {
+        log(`[guest] Refused ai_manager action '${aiAction}' on a shared daemon`);
+        client
+          .send({
+            type: "ai_manager_response",
+            payload: {
+              request_id: event.payload?.request_id,
+              error: "Account switching is disabled on a shared daemon",
+              error_code: "guest_forbidden",
+            },
+          })
+          .catch(() => {});
+        return;
+      }
       handleAiManagerRequest(client, aiManagerHandlers, event.payload).catch((error) => {
         logError(`Unhandled ai_manager_request failure: ${error?.message || error}`);
       });
@@ -5590,6 +5877,27 @@ export function startDaemon(config = {}, deps = {}) {
       return;
     }
 
+    // RFC 0035: keep a guest inside the directory its owner set aside. This is
+    // misuse prevention, not a security boundary -- the guest's AI agent runs a
+    // shell and can reach anything the OS user can. It matters because neither
+    // handler is otherwise bounded: this one will `mkdirSync(recursive)` any
+    // absolute path it is handed.
+    if (IS_GUEST_DAEMON && GUEST_ROOT && !isPathInsideGuestRoot(rawWorkspacePath, GUEST_ROOT)) {
+      await client.sendJson({
+        type: "project_path_validated",
+        payload: {
+          request_id: requestId,
+          daemon_host: AGENT_NAME,
+          workspace_path: rawWorkspacePath,
+          error: `Path is outside the shared workspace root (${GUEST_ROOT})`,
+          error_code: "outside_guest_root",
+          validated_at: new Date().toISOString(),
+        },
+      });
+      return;
+    }
+
+
     let result = {
       workspacePath: null,
       repoRoot: null,
@@ -5713,6 +6021,27 @@ export function startDaemon(config = {}, deps = {}) {
       logError(`Invalid get_project_agents payload: ${JSON.stringify(payload)}`);
       return;
     }
+
+    // RFC 0035: keep a guest inside the directory its owner set aside. This is
+    // misuse prevention, not a security boundary -- the guest's AI agent runs a
+    // shell and can reach anything the OS user can. It matters because neither
+    // handler is otherwise bounded: this one will `mkdirSync(recursive)` any
+    // absolute path it is handed.
+    if (IS_GUEST_DAEMON && GUEST_ROOT && !isPathInsideGuestRoot(rawWorkspacePath, GUEST_ROOT)) {
+      await client.sendJson({
+        type: "project_agents_resolved",
+        payload: {
+          request_id: requestId,
+          daemon_host: AGENT_NAME,
+          workspace_path: rawWorkspacePath,
+          error: `Path is outside the shared workspace root (${GUEST_ROOT})`,
+          error_code: "outside_guest_root",
+          resolved_at: new Date().toISOString(),
+        },
+      });
+      return;
+    }
+
 
     let result = {
       workspacePath: null,

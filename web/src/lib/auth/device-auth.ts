@@ -156,7 +156,7 @@ async function markExpiredIfNeeded(session: {
 
 async function getLatestActiveTokenRecord(userId: string) {
   return userTokens.findFirst({
-    where: { userId, revokedAt: null },
+    where: { userId, revokedAt: null, scope: "full" },
     orderBy: { createdAt: "desc" },
   });
 }
@@ -284,8 +284,11 @@ export async function approveDeviceAuthorization(userCode: string, userId: strin
       throw new Error("Device authorization already approved by another account");
     }
 
+    // Only ever reuse a full-access token: a `daemon_share` token belongs to one
+    // shared daemon on someone else's machine, and this hands the value to a
+    // brand-new device.
     let tokenRecord = await tx.userToken.findFirst({
-      where: { userId, revokedAt: null },
+      where: { userId, revokedAt: null, scope: "full" },
       orderBy: { createdAt: "desc" },
     });
     if (!tokenRecord) {
@@ -366,7 +369,7 @@ export async function pollDeviceAuthorization(deviceCode: string): Promise<Devic
       })
     : null;
 
-  if (!tokenRecord?.tokenValue || tokenRecord.revokedAt) {
+  if (!tokenRecord?.tokenValue || tokenRecord.revokedAt || tokenRecord.scope !== "full") {
     throw new Error("Authorized device token is unavailable");
   }
 

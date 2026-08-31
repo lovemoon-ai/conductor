@@ -47,6 +47,8 @@ model User {
   scheduledMessages ScheduledMessage[]
   dailyReportSetting DailyReportSetting?
   dailyReportRuns DailyReportRun[]
+  ownedDaemonShares DaemonShare[] @relation("DaemonShareOwner")
+  grantedDaemonShares DaemonShare[] @relation("DaemonShareGrantee")
 
   @@unique([provider, providerId])
   @@index([email])
@@ -56,22 +58,63 @@ model User {
 }
 
 model UserToken {
-  id          String    @id @default(uuid())
-  userId      String    @map("user_id")
-  name        String?
-  tokenHash   String    @map("token_hash")
-  tokenSalt   String    @map("token_salt")
-  tokenPrefix String    @map("token_prefix")
-  tokenValue  String?   @map("token_value")
-  lastUsedAt  DateTime? @map("last_used_at")
-  revokedAt   DateTime? @map("revoked_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  id            String    @id @default(uuid())
+  userId        String    @map("user_id")
+  name          String?
+  tokenHash     String    @map("token_hash")
+  tokenSalt     String    @map("token_salt")
+  tokenPrefix   String    @map("token_prefix")
+  tokenValue    String?   @map("token_value")
+  // RFC 0035: "full" | "daemon_share". `daemonShareId` points at a future
+  // `DaemonShare` row; plain column for now because that model does not exist yet.
+  scope         String    @default("full")
+  daemonShareId String?   @map("daemon_share_id")
+  lastUsedAt    DateTime? @map("last_used_at")
+  revokedAt     DateTime? @map("revoked_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([tokenPrefix])
   @@map("user_tokens")
+}
+
+/// RFC 0035: one grant of "user A's daemon may be used by user B".
+/// The guest daemon runs on A's machine but authenticates as B, so B's tasks
+/// are ordinary rows under B's own projects and every existing ownership check
+/// passes unchanged. `guestHost` is the daemon name B sees; it only has to be
+/// unique inside B's namespace (the realtime hub keys connections by
+/// (userId, host), so two accounts may hold the same host name).
+model DaemonShare {
+  id              String    @id @default(uuid())
+  ownerUserId     String    @map("owner_user_id")
+  ownerDaemonHost String    @map("owner_daemon_host")
+  granteeUserId   String?   @map("grantee_user_id")
+  guestHost       String?   @map("guest_host")
+  inviteToken     String    @unique @map("invite_token")
+  workspaceRoot   String?   @map("workspace_root")
+  tokenId         String?   @map("token_id")
+  /// Plaintext of the scoped token, delivered to the OWNER's daemon via
+  /// GET /api/daemon-shares/mine so it can launch the guest process. The
+  /// grantee's `user_tokens.tokenValue` stays NULL for scoped tokens; the
+  /// share row owns delivery, the token row owns the credential. Same
+  /// plaintext-at-rest posture `user_tokens.tokenValue` already has for full
+  /// tokens. Nulled on revoke.
+  agentToken      String?   @map("agent_token")
+  status          String    @default("pending")
+  acceptedAt      DateTime? @map("accepted_at")
+  revokedAt       DateTime? @map("revoked_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  owner   User  @relation("DaemonShareOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  grantee User? @relation("DaemonShareGrantee", fields: [granteeUserId], references: [id], onDelete: Cascade)
+
+  @@unique([granteeUserId, guestHost])
+  @@index([ownerUserId, ownerDaemonHost])
+  @@index([granteeUserId, status])
+  @@map("daemon_shares")
 }
 
 model UserPreference {

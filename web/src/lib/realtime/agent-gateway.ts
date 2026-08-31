@@ -9,6 +9,11 @@ import {
 } from "./hub";
 import { normalizeProjectAgentsRegistry } from "../projects/project-settings-yaml";
 import { authenticateToken } from "../auth/service";
+import {
+  isDaemonShareUser,
+  isShareHostAllowed,
+  resolveActiveShareForToken,
+} from "@/lib/daemon-share/scope";
 import { randomUUID } from "crypto";
 import { db } from "../db";
 import {
@@ -400,7 +405,7 @@ export const bindActiveTasksFromResume = async (
     );
   });
   for (const task of tasksToBind) {
-    realtimeHub.bindTaskToAgent(task.id, agentHost);
+    realtimeHub.bindTaskToAgent(task.id, agentHost, userId);
   }
   if (tasksToBind.length > 0) {
     const taskIds = tasksToBind.map((task) => task.id);
@@ -574,7 +579,7 @@ export const processAgentAliveTasks = async (args: {
         // channel, so rebind to it. Manual-fire tasks (agentHost = daemon,
         // executionHost = fire) deliberately skip this rebind: their
         // sdk_message envelopes must keep flowing into the fire ws.
-        realtimeHub.bindTaskToAgent(task.id, args.agentHost);
+        realtimeHub.bindTaskToAgent(task.id, args.agentHost, args.userId);
       }
       realtimeHub.broadcast(args.userId, task.projectId, {
         type: "task_status_update",
@@ -838,7 +843,7 @@ export const ensureAgentOwnsTask = async (
       assignedHost === agentHost &&
       !isConductorFireHost(boundHost);
     if ((allowFireHostClaim || allowFireHostRebind) && !isConductorFireHost(boundHost)) {
-      realtimeHub.bindTaskToAgent(task.id, agentHost);
+      realtimeHub.bindTaskToAgent(task.id, agentHost, userId);
       await persistTaskExecutionHost(userId, task.id, agentHost);
       return;
     }
@@ -846,7 +851,7 @@ export const ensureAgentOwnsTask = async (
     throw new Error(`Task ${task.id} is already handled by active ${ownerKind} ${boundHost}`);
   }
 
-  realtimeHub.bindTaskToAgent(task.id, agentHost);
+  realtimeHub.bindTaskToAgent(task.id, agentHost, userId);
   await persistTaskExecutionHost(userId, task.id, agentHost);
 };
 
@@ -1405,6 +1410,23 @@ export const setupAgentGateway = (): WebSocketServer => {
     const capabilities = extractCapabilities(request);
     const version = extractVersion(request);
 
+    // RFC 0035: pin a `daemon_share` token to its own guest host BEFORE the
+    // takeover block below. `agentHost` is client-asserted, and takeover evicts
+    // whoever already holds the name -- so checking this later would still let
+    // a share token kick the grantee's real daemon offline on the way to being
+    // rejected.
+    if (isDaemonShareUser(user)) {
+      const binding = await resolveActiveShareForToken(token, user.id);
+      if (!binding || !isShareHostAllowed(binding, agentHost)) {
+        sendEnvelope(socket, {
+          type: "error",
+          payload: { message: "Token is not valid for this daemon host" },
+        });
+        socket.close(4003, "share-host-mismatch");
+        return;
+      }
+    }
+
     if (realtimeHub.hasAgentHost(agentHost, user.id)) {
       const replacedCount = realtimeHub.takeOverAgentHost(agentHost, user.id);
       console.warn(
@@ -1519,7 +1541,7 @@ export const setupAgentGateway = (): WebSocketServer => {
                 },
               });
             }
-            realtimeHub.bindTaskToAgent(task.id, agentHost);
+            realtimeHub.bindTaskToAgent(task.id, agentHost, user.id);
             sendEnvelope(socket, { type: "task_created", payload: { task_id: task.id } });
             break;
           }

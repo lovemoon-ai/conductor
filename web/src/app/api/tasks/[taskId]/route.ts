@@ -811,8 +811,8 @@ export async function PATCH(
         },
         ptySessionId: ptySession.id,
         launchConfig: nextLaunchConfig,
-        bindTaskToAgent: (boundTaskId, boundAgentHost) =>
-          realtimeHub.bindTaskToAgent(boundTaskId, boundAgentHost),
+        bindTaskToAgent: (boundTaskId, boundAgentHost, boundUserId) =>
+          realtimeHub.bindTaskToAgent(boundTaskId, boundAgentHost, boundUserId),
         sendToAgentHost: ({ userId: targetUserId, agentHost: targetHost, envelope }) =>
           realtimeHub.sendToAgentHost(targetUserId, targetHost, envelope),
         resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),
@@ -829,7 +829,7 @@ export async function PATCH(
   } else {
     try {
       if (shouldStopTask && stopTargetHost && stopTaskRequestId && stopTaskEnvelope) {
-        realtimeHub.bindTaskToAgent(taskId, stopTargetHost);
+        realtimeHub.bindTaskToAgent(taskId, stopTargetHost, user.id);
         const runStopTaskUpdateTransaction = async (
           mode: "full" | "issueId" | "legacy",
           persistOutbox: boolean,
@@ -1316,7 +1316,7 @@ export async function DELETE(
     // directory whenever the daemon reconnects.
     const requestId = randomUUID();
     const ackPromise = realtimeHub.waitForTaskStopAck(taskId, requestId, 2500);
-    realtimeHub.bindTaskToAgent(taskId, stopTargetHost);
+    realtimeHub.bindTaskToAgent(taskId, stopTargetHost, user.id);
     let delivered = false;
     try {
       ({ delivered } = await enqueueAndAttemptAgentCommand(

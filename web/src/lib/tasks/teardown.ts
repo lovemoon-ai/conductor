@@ -157,7 +157,7 @@ export async function teardownTaskRuntime(args: {
   if (needsStop && stopTargetHost) {
     const requestId = randomUUID();
     const ackPromise = realtimeHub.waitForTaskStopAck(taskId, requestId, 2500);
-    realtimeHub.bindTaskToAgent(taskId, stopTargetHost);
+    realtimeHub.bindTaskToAgent(taskId, stopTargetHost, userId);
     let delivered = false;
     try {
       ({ delivered } = await enqueueAndAttemptAgentCommand(

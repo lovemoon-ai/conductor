@@ -20,6 +20,28 @@ import {
   startDaemon,
 } from "../src/daemon.js";
 import { resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
+import {
+  buildDaemonInstanceIdentity,
+  parseDaemonLockState,
+  serializeDaemonLock,
+} from "../src/daemon-lock.js";
+import { resolveConductorConfigPath, resolveConductorHome } from "../src/conductor-paths.js";
+
+// Builds the identity-bearing daemon.pid contents that the current process
+// would write for `workspaceRoot`, so lock-ownership stubs stay in sync with
+// the fingerprint startDaemon computes for itself.
+function selfOwnedLockFile(pid, workspaceRoot, handoff) {
+  const identity = buildDaemonInstanceIdentity({
+    conductorHome: resolveConductorHome(),
+    configPath: resolveConductorConfigPath(),
+    workspaceRoot,
+  });
+  return serializeDaemonLock({ pid, identity, handoff });
+}
+
+function lockFilePid(contents) {
+  return parseDaemonLockState(contents)?.pid ?? null;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -792,7 +814,7 @@ describe("Daemon", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     assert.strictEqual(exitCode, null);
-    assert.strictEqual(writeCalls.at(-1), String(process.pid));
+    assert.strictEqual(lockFilePid(writeCalls.at(-1)), process.pid);
     assert.deepStrictEqual(killCalls, []);
   });
 
@@ -5044,7 +5066,7 @@ describe("Daemon", () => {
           writeCalled = true;
         },
         existsSync: (filePath) => filePath.endsWith("daemon.pid"),
-        readFileSync: () => "456",
+        readFileSync: () => selfOwnedLockFile(456, "/tmp/test-ws-lock-force"),
         unlinkSync: () => {
           unlinkCalled = true;
         },
@@ -5096,7 +5118,7 @@ describe("Daemon", () => {
           }),
           mkdirSync: () => {},
           writeFileSync: (_filePath, contents) => {
-            if (String(contents) === String(process.pid)) {
+            if (lockFilePid(contents) === process.pid) {
               writeCalled = true;
             }
           },
@@ -5106,7 +5128,7 @@ describe("Daemon", () => {
             }
             return shutdownCompletesAt === null || Date.now() < shutdownCompletesAt;
           },
-          readFileSync: () => "456",
+          readFileSync: () => selfOwnedLockFile(456, "/tmp/test-ws-lock-force-wait"),
           unlinkSync: () => {
             unlinkCalled = true;
           },
@@ -5179,12 +5201,12 @@ describe("Daemon", () => {
           }),
           mkdirSync: () => {},
           writeFileSync: (_filePath, contents) => {
-            if (String(contents) === String(process.pid)) {
+            if (lockFilePid(contents) === process.pid) {
               writeCalled = true;
             }
           },
           existsSync: (filePath) => filePath.endsWith("daemon.pid"),
-          readFileSync: () => "789",
+          readFileSync: () => selfOwnedLockFile(789, "/tmp/test-ws-lock-force-sigkill"),
           unlinkSync: () => {
             unlinkCalled = true;
           },

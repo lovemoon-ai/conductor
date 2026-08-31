@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { authenticateToken } from "@/lib/auth/service";
 import {
+  isDaemonShareUser,
+  isShareHostAllowed,
+  resolveActiveShareForToken,
+} from "@/lib/daemon-share/scope";
+import {
   commitAgentCommandAck,
   commitSdkMessage,
   commitTaskStopAck,
@@ -82,6 +87,20 @@ export async function POST(request: NextRequest) {
   }
 
   const { agent_host: agentHost, events } = parsed.data;
+
+  // RFC 0035: `agent_host` comes straight from the body and is never checked
+  // against the credential. For a share token that is the whole attack:
+  // `ensureAgentOwnsTaskRecord` accepts any host equal to the task's assigned
+  // host, so an unpinned token could impersonate the grantee's real daemon --
+  // appending fabricated `sdk` messages to a live transcript, flipping task
+  // status, and rewriting `executionHost` to steer routing. Pin it to the
+  // share's own guest host (or one of its fire hosts).
+  if (isDaemonShareUser(user)) {
+    const binding = await resolveActiveShareForToken(token, user.id);
+    if (!binding || !isShareHostAllowed(binding, agentHost)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+  }
   // Process events sequentially to preserve causal ordering within a batch
   // (e.g. messages must be committed before the final status update).
   const results = [];

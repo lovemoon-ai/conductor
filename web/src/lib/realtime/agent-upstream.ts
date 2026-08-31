@@ -264,7 +264,7 @@ async function ensureAgentOwnsTaskRecord(
       assignedHost === agentHost &&
       !isConductorFireHost(boundHost);
     if ((allowFireHostClaim || allowFireHostRebind) && !isConductorFireHost(boundHost)) {
-      realtimeHub.bindTaskToAgent(task.id, agentHost);
+      realtimeHub.bindTaskToAgent(task.id, agentHost, userId);
       await persistTaskExecutionHost(userId, task.id, agentHost);
       return;
     }
@@ -272,7 +272,7 @@ async function ensureAgentOwnsTaskRecord(
     throw new Error(`Task ${task.id} is already handled by active ${ownerKind} ${boundHost}`);
   }
 
-  realtimeHub.bindTaskToAgent(task.id, agentHost);
+  realtimeHub.bindTaskToAgent(task.id, agentHost, userId);
   await persistTaskExecutionHost(userId, task.id, agentHost);
 }
 

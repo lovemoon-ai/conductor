@@ -393,7 +393,7 @@ describe("/api/agent/events", () => {
         duplicate: false,
       }),
     ]);
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-1", "conductor-fire-debug-123");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-1", "conductor-fire-debug-123", "user-1");
     expect(db.task.updateMany).toHaveBeenCalledWith({
       where: {
         id: "task-1",
@@ -468,7 +468,7 @@ describe("/api/agent/events", () => {
         duplicate: false,
       }),
     ]);
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-1", "conductor-fire-debug-123");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-1", "conductor-fire-debug-123", "user-1");
     expect(db.task.updateMany).toHaveBeenCalledWith({
       where: {
         id: "task-1",

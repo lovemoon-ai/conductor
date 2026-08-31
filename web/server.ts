@@ -78,9 +78,15 @@ app.prepare().then(async () => {
         status: { in: ["init", "running"] },
         agentHost: { not: null },
       },
-      select: { id: true, agentHost: true },
+      // The owning user comes along so the restored binding is tenant-scoped:
+      // several users can have a daemon on the same host name.
+      select: { id: true, agentHost: true, project: { select: { userId: true } } },
     });
-    return tasks;
+    return tasks.map((task) => ({
+      id: task.id,
+      agentHost: task.agentHost,
+      userId: task.project?.userId ?? null,
+    }));
   });
   startScheduledMessageDispatcher();
   const dailyReportSchema = await ensureDailyReportSchema();
