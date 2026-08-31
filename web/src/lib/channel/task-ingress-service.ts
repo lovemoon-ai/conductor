@@ -238,7 +238,7 @@ export async function createTaskForUser(input: {
   }
 
   if (agentHost) {
-    realtimeHub.bindTaskToAgent(task.id, agentHost);
+    realtimeHub.bindTaskToAgent(task.id, agentHost, input.userId);
     const requestId = randomUUID();
     await enqueueAndAttemptAgentCommand(
       {

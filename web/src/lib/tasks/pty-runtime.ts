@@ -219,7 +219,7 @@ export async function dispatchPtyTaskCreation(args: {
   task: { id: string; projectId: string; title: string };
   ptySessionId: string;
   launchConfig: JsonObject | null;
-  bindTaskToAgent: (taskId: string, agentHost: string) => void;
+  bindTaskToAgent: (taskId: string, agentHost: string, userId: string) => void;
   sendToAgentHost: (args: {
     userId: string;
     agentHost: string;
@@ -227,7 +227,7 @@ export async function dispatchPtyTaskCreation(args: {
   }) => boolean;
   resolveTaskHost: (taskId: string) => string | null;
 }) {
-  args.bindTaskToAgent(args.task.id, args.agentHost);
+  args.bindTaskToAgent(args.task.id, args.agentHost, args.userId);
   const requestId = randomUUID();
   await enqueueAndAttemptAgentCommand(
     {

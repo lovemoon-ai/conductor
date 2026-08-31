@@ -678,7 +678,7 @@ export async function POST(
             },
             sourceTask.issueId ?? null,
           );
-          realtimeHub.bindTaskToAgent(sourceTask.id, boundReclaimHost);
+          realtimeHub.bindTaskToAgent(sourceTask.id, boundReclaimHost, user.id);
           return NextResponse.json({
             mode: "reclaim",
             source_task_id: sourceTask.id,
@@ -791,7 +791,7 @@ export async function POST(
       });
     }
 
-    realtimeHub.bindTaskToAgent(sourceTask.id, restartAgentHost);
+    realtimeHub.bindTaskToAgent(sourceTask.id, restartAgentHost, user.id);
     await deliverAgentOutboxForHost({
       userId: user.id,
       agentHost: restartAgentHost,
@@ -1014,7 +1014,7 @@ export async function POST(
     return { task, restartOutboxRow };
   });
 
-  realtimeHub.bindTaskToAgent(successorTaskId, restartAgentHost);
+  realtimeHub.bindTaskToAgent(successorTaskId, restartAgentHost, user.id);
   await deliverAgentOutboxRow(restartOutboxRow, {
     userId: user.id,
     agentHost: restartAgentHost,

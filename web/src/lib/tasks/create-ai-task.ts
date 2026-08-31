@@ -389,7 +389,7 @@ export async function finalizeAiTaskCreation(
     return;
   }
 
-  realtimeHub.bindTaskToAgent(args.task.id, args.agentHost);
+  realtimeHub.bindTaskToAgent(args.task.id, args.agentHost, args.userId);
   if (isConductorFireHost(args.agentHost)) {
     return;
   }

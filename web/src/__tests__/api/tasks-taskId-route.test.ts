@@ -480,7 +480,7 @@ describe("/api/tasks/[taskId]", () => {
     const response = await DELETE(request, { params: Promise.resolve({ taskId: "task-1" }) });
 
     expect(response.status).toBe(204);
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-1", "daemon-a");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-1", "daemon-a", "user-1");
     expect(db.taskDiagnosticsSnapshot.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         userId: "user-1",
@@ -1528,7 +1528,7 @@ describe("/api/tasks/[taskId]", () => {
     const data = await extractJson(response);
 
     expect(response.status).toBe(200);
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-stop-1", "daemon-a");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-stop-1", "daemon-a", "user-1");
     expect(db.task.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: "task-stop-1" },
@@ -1633,6 +1633,7 @@ describe("/api/tasks/[taskId]", () => {
     expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith(
       "task-stop-fire-1",
       "conductor-fire-unknown-host-21937",
+      "user-1",
     );
     expect(db.task.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2178,7 +2179,7 @@ describe("/api/tasks/[taskId]", () => {
         shell: "/bin/zsh",
       }),
     });
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-2", "daemon-a");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-2", "daemon-a", "user-1");
     expect(enqueueAndAttemptAgentCommand).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
@@ -3145,7 +3146,7 @@ describe("/api/tasks/[taskId]", () => {
         }),
       }),
     );
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-stop-fail-1", "daemon-a");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-stop-fail-1", "daemon-a", "user-1");
     expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledTimes(1);
     expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-pty-stop-fail-1");
     expect(realtimeHub.cancelTaskStopAck).toHaveBeenCalledWith(
@@ -3326,7 +3327,7 @@ describe("/api/tasks/[taskId]", () => {
     expect(response.status).toBe(409);
     expect(data.error).toContain("Failed to stop");
     expect(db.$transaction).toHaveBeenCalledTimes(2);
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-stop-throw-1", "daemon-a");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-stop-throw-1", "daemon-a", "user-1");
     expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-pty-stop-throw-1");
     expect(realtimeHub.cancelTaskStopAck).toHaveBeenCalledWith(
       "task-pty-stop-throw-1",

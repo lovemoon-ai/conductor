@@ -278,7 +278,7 @@ export const finalizeInplaceTaskRestart = async (args: {
   taskId: string;
   restartAgentHost: string;
 }) => {
-  realtimeHub.bindTaskToAgent(args.taskId, args.restartAgentHost);
+  realtimeHub.bindTaskToAgent(args.taskId, args.restartAgentHost, args.userId);
   await deliverAgentOutboxForHost({
     userId: args.userId,
     agentHost: args.restartAgentHost,

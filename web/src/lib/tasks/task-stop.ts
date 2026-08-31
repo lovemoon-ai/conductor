@@ -142,10 +142,10 @@ export const stopTaskBeforeRelaunch = async (args: {
     args.taskId,
     STOP_TASK_FINAL_STATUS_TIMEOUT_MS,
   );
-  realtimeHub.bindTaskToAgent(args.taskId, args.stopTargetHost);
+  realtimeHub.bindTaskToAgent(args.taskId, args.stopTargetHost, args.userId);
   const restoreTaskBinding = () => {
     if (previousBoundHost) {
-      realtimeHub.bindTaskToAgent(args.taskId, previousBoundHost);
+      realtimeHub.bindTaskToAgent(args.taskId, previousBoundHost, args.userId);
       return;
     }
     realtimeHub.unbindTask(args.taskId);

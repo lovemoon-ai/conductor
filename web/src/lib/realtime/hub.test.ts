@@ -176,7 +176,7 @@ describe('RealtimeHub connected agents metadata', () => {
       send: vi.fn(),
       close,
     });
-    hub.bindTaskToAgent('task-1', 'daemon-a');
+    hub.bindTaskToAgent('task-1', 'daemon-a', 'user-1');
 
     expect(hub.takeOverAgentHost('daemon-a', 'user-1')).toBe(1);
     expect(close).toHaveBeenCalledTimes(1);
@@ -204,10 +204,10 @@ describe('RealtimeHub connected agents metadata', () => {
     });
 
     registerFire('fire-old');
-    hub.bindTaskToAgent('task-1', host);
+    hub.bindTaskToAgent('task-1', host, 'user-1');
     expect(hub.takeOverAgentHost(host, 'user-1')).toBe(1);
     registerFire('fire-new');
-    hub.bindTaskToAgent('task-1', host);
+    hub.bindTaskToAgent('task-1', host, 'user-1');
 
     // The replaced socket's close event arrives only now.
     hub.unregister('fire-old');
@@ -514,5 +514,167 @@ describe('RealtimeHub agent command ack waiter', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('RealtimeHub task-id routing is scoped to the task owner', () => {
+  const registerAgent = (
+    hub: RealtimeHub,
+    args: { id: string; userId: string; host: string },
+  ) => {
+    const send = vi.fn();
+    hub.register({
+      id: args.id,
+      kind: 'agent',
+      userId: args.userId,
+      projectIds: ['*'],
+      host: args.host,
+      supportedBackends: ['claude'],
+      capabilities: ['pty_task'],
+      send,
+      close: vi.fn(),
+    });
+    return send;
+  };
+
+  it('delivers to the owning tenant when two users share a daemon host name', () => {
+    // `os.hostname()` is the daemon's default name, so two accounts commonly
+    // both run a daemon called `MacBook-Pro.local`. `taskToAgent` only stores
+    // the bare host, so an unscoped lookup would return whichever connection
+    // Map iteration happens to reach first.
+    const hub = new RealtimeHub();
+    const sharedHost = 'MacBook-Pro.local';
+    // Registered first, so it wins Map iteration order for the shared host.
+    const strangerSend = registerAgent(hub, { id: 'agent-user-1', userId: 'user-1', host: sharedHost });
+    const ownerSend = registerAgent(hub, { id: 'agent-user-2', userId: 'user-2', host: sharedHost });
+
+    hub.bindTaskToAgent('task-pty-owned-by-user-2', sharedHost, 'user-2');
+
+    const envelope = { type: 'terminal_input', payload: { data: 'secret-keystrokes' } };
+    expect(hub.sendToAgent('user-2', 'task-pty-owned-by-user-2', envelope)).toBe(true);
+    expect(ownerSend).toHaveBeenCalledWith(envelope);
+    expect(strangerSend).not.toHaveBeenCalled();
+  });
+
+  it('refuses to deliver when only another tenant serves the bound host', () => {
+    const hub = new RealtimeHub();
+    const sharedHost = 'MacBook-Pro.local';
+    const strangerSend = registerAgent(hub, { id: 'agent-user-1', userId: 'user-1', host: sharedHost });
+
+    hub.bindTaskToAgent('task-pty-owned-by-user-2', sharedHost, 'user-2');
+
+    expect(hub.sendToAgent('user-2', 'task-pty-owned-by-user-2', { type: 'terminal_input' })).toBe(false);
+    expect(strangerSend).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a blank userId as "any owner"', () => {
+    const hub = new RealtimeHub();
+    const send = registerAgent(hub, { id: 'agent-user-1', userId: 'user-1', host: 'daemon-a' });
+
+    hub.bindTaskToAgent('task-1', 'daemon-a', 'user-1');
+
+    expect(hub.sendToAgent('', 'task-1', { type: 'terminal_input' })).toBe(false);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('still routes fire-owned tasks to the fire host under the same user', () => {
+    // A fire connects as its own agent under the same account as the daemon,
+    // so owner scoping must not collapse the two hosts together.
+    const hub = new RealtimeHub();
+    const daemonSend = registerAgent(hub, { id: 'agent-daemon', userId: 'user-1', host: 'MacBook-Pro.local' });
+    const fireSend = registerAgent(hub, {
+      id: 'agent-fire',
+      userId: 'user-1',
+      host: 'conductor-fire-MacBook-Pro.local-task-1',
+    });
+
+    hub.bindTaskToAgent('task-1', 'conductor-fire-MacBook-Pro.local-task-1', 'user-1');
+
+    const envelope = { type: 'terminal_resize', payload: { cols: 80, rows: 24 } };
+    expect(hub.sendToAgent('user-1', 'task-1', envelope)).toBe(true);
+    expect(fireSend).toHaveBeenCalledWith(envelope);
+    expect(daemonSend).not.toHaveBeenCalled();
+  });
+
+  it('returns false when the task has no binding at all', () => {
+    const hub = new RealtimeHub();
+    registerAgent(hub, { id: 'agent-daemon', userId: 'user-1', host: 'daemon-a' });
+
+    expect(hub.sendToAgent('user-1', 'unbound-task', { type: 'terminal_input' })).toBe(false);
+  });
+});
+
+describe('RealtimeHub unbinds tasks scoped to the disconnecting agent owner', () => {
+  const registerAgent = (
+    hub: RealtimeHub,
+    args: { id: string; userId: string; host: string },
+  ) => {
+    const send = vi.fn();
+    hub.register({
+      id: args.id,
+      kind: 'agent',
+      userId: args.userId,
+      projectIds: ['*'],
+      host: args.host,
+      supportedBackends: ['claude'],
+      capabilities: ['pty_task'],
+      send,
+      close: vi.fn(),
+    });
+    return send;
+  };
+
+  it("keeps another tenant's binding when a same-named daemon disconnects", () => {
+    // A and B both run a daemon called `MacBook-Pro.local`. Evicting bindings
+    // by bare host would drop B's live task when A merely goes offline.
+    const hub = new RealtimeHub();
+    const sharedHost = 'MacBook-Pro.local';
+    registerAgent(hub, { id: 'agent-a', userId: 'user-a', host: sharedHost });
+    const bSend = registerAgent(hub, { id: 'agent-b', userId: 'user-b', host: sharedHost });
+
+    hub.bindTaskToAgent('task-owned-by-b', sharedHost, 'user-b');
+
+    hub.unregister('agent-a');
+
+    expect(hub.getTaskAgentHost('task-owned-by-b')).toBe(sharedHost);
+    const envelope = { type: 'terminal_input', payload: { data: 'ls' } };
+    expect(hub.sendToAgent('user-b', 'task-owned-by-b', envelope)).toBe(true);
+    expect(bSend).toHaveBeenCalledWith(envelope);
+  });
+
+  it('still evicts the disconnecting owner’s own bindings', () => {
+    const hub = new RealtimeHub();
+    const sharedHost = 'MacBook-Pro.local';
+    registerAgent(hub, { id: 'agent-a', userId: 'user-a', host: sharedHost });
+    registerAgent(hub, { id: 'agent-b', userId: 'user-b', host: sharedHost });
+
+    hub.bindTaskToAgent('task-owned-by-a', sharedHost, 'user-a');
+    hub.bindTaskToAgent('task-owned-by-b', sharedHost, 'user-b');
+
+    hub.unregister('agent-a');
+
+    expect(hub.getTaskAgentHost('task-owned-by-a')).toBeNull();
+    expect(hub.getTaskAgentHost('task-owned-by-b')).toBe(sharedHost);
+  });
+
+  it('restores bindings from the database with their owning user', async () => {
+    const hub = new RealtimeHub();
+    const sharedHost = 'MacBook-Pro.local';
+    registerAgent(hub, { id: 'agent-a', userId: 'user-a', host: sharedHost });
+    const bSend = registerAgent(hub, { id: 'agent-b', userId: 'user-b', host: sharedHost });
+
+    const restored = await hub.restoreTaskBindingsFromDb(async () => [
+      { id: 'task-owned-by-b', agentHost: sharedHost, userId: 'user-b' },
+      // An unowned row cannot be routed or evicted safely, so it is skipped.
+      { id: 'task-without-owner', agentHost: sharedHost, userId: null },
+    ]);
+
+    expect(restored).toBe(1);
+    const envelope = { type: 'terminal_input', payload: { data: 'ls' } };
+    expect(hub.sendToAgent('user-b', 'task-owned-by-b', envelope)).toBe(true);
+    expect(bSend).toHaveBeenCalledWith(envelope);
+    // The boot-restored binding must not be routable by the same-named foreign daemon.
+    expect(hub.sendToAgent('user-a', 'task-owned-by-b', envelope)).toBe(false);
+    expect(hub.sendToAgent('user-b', 'task-without-owner', envelope)).toBe(false);
   });
 });
