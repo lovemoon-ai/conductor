@@ -15,6 +15,7 @@ import {
   setActiveTaskCardTab,
   setTaskCardTabLabel,
   taskCardTabLabel,
+  toSyncedTaskCardGroups,
   type TaskCardGroup,
 } from './task-card-groups';
 
@@ -97,6 +98,28 @@ describe('task-card-groups', () => {
       const next = addTaskToGroup(groups, 'g1', 'c');
       expect(next[0].taskIds).toEqual(['a', 'b', 'c']);
       expect(next[0].activeIndex).toBe(2);
+    });
+
+    // How a multi-agent group gets named tabs: the server merges worker +
+    // reviewer, then labels both with their agent names. Without the labels the
+    // strip falls back to ordinals ("1", "2"), which says nothing about who is
+    // who. The labels must survive the round-trip through the synced shape.
+    it('keeps agent tab labels through merge and sync', () => {
+      let groups = mergeTaskIntoSourceCardGroup([], 'branch-group', 'task-worker', 'task-reviewer');
+      const mergedId = groups[0].id;
+      groups = setTaskCardTabLabel(groups, mergedId, 'task-worker', 'feature-dev');
+      groups = setTaskCardTabLabel(groups, mergedId, 'task-reviewer', 'code-reviewer');
+
+      const synced = toSyncedTaskCardGroups(groups);
+      expect(synced[0].labels).toEqual({
+        'task-worker': 'feature-dev',
+        'task-reviewer': 'code-reviewer',
+      });
+
+      const [rendered] = projectTaskCardGroups(groups, (id) =>
+        id === 'task-worker' || id === 'task-reviewer');
+      expect(taskCardTabLabel(rendered, 'task-worker')).toBe('feature-dev');
+      expect(taskCardTabLabel(rendered, 'task-reviewer')).toBe('code-reviewer');
     });
 
     it('groups a related task with its source task', () => {

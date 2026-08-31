@@ -1399,17 +1399,21 @@ describe("/api/tasks", () => {
       expect(response.status).toBe(200);
       // Every reviewer is merged against the worker, so all three land in one card.
       expect(mergeRelatedTaskCardGroupMock).toHaveBeenCalledTimes(2);
+      // Each tab is titled with its agent, so the strip reads
+      // "feature-dev | code-reviewer | qa" rather than the default "1 | 2 | 3".
       expect(mergeRelatedTaskCardGroupMock).toHaveBeenNthCalledWith(
         1,
         "user-1",
         "task-worker",
         "task-reviewer",
+        { source: "feature-dev", related: "code-reviewer" },
       );
       expect(mergeRelatedTaskCardGroupMock).toHaveBeenNthCalledWith(
         2,
         "user-1",
         "task-worker",
         "task-qa",
+        { source: "feature-dev", related: "qa" },
       );
       // The client applies this directly; without it the grouping only shows up
       // after a full refetch.
