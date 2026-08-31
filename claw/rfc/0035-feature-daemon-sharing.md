@@ -279,7 +279,7 @@ daemon 共享把「一台机器承载多个用户身份」变成常态，正好�
 ### 流程
 
 ```
-A: Web 上 Settings → Connected Daemons → 某台 daemon 点「Share」
+A: Web 上 Settings → Connected Daemons → 点进某台 daemon → Sharing 卡片点「Share」
      → POST /api/daemon-shares          → 邀请链接 /app/daemon-share/<inviteToken>
 B: 打开链接（需登录）→ 接受
      → POST /api/daemon-shares/:token/accept
@@ -304,7 +304,8 @@ B: 刷新 → GET /api/agents 里出现 alice-mbp@alice（带「共享」徽标�
 ### daemon 侧改动（Option C 的全部工作量）
 
 1. ~~`conductor daemon share` 子命令组~~ —— **不做**。入口是前端，与项目分享一致：
-   机主在 Settings 的 daemon 卡片上点 Share（创建 + 复制链接），受邀方打开链接接受。
+   机主点进那台 daemon 的页面，在 Sharing 卡片上点 Share（创建 + 复制链接），
+   受邀方打开链接接受。
    CLI 只负责 supervisor，不提供分享管理命令。
 2. supervisor：读 `GET /api/daemon-shares/mine`，对每个 active share 维护一个子进程，
    带退避重启；主 daemon 退出时一并清理；`share.status != active` 时 SIGTERM。
@@ -362,7 +363,10 @@ supervisor 的职责：
 
 ### A 侧的 UX
 
-- Settings 的 daemon 卡片：「共享给同事」按钮 → 生成邀请链接；列出已共享给谁 + 撤销。
+- 共享操作放在**单台 daemon 自己的页面**（`/app/ai-manager?agentHost=…`）的 Sharing 卡片上：
+  「Share」按钮 → 生成并复制邀请链接；列出已共享给谁 + 重新复制未接受的链接 + 撤销。
+- **不放在 Settings 一级页**。一级页是机器列表，是导航；共享是某一台机器的属性。
+  一级页只保留一个只读徽标：这台机器是别人借给你的（`shared` + `ownerLabel`）。
 - 入口在前端，不在 CLI（见 Phase 2 第 1 条）。
 - 一个 guest 在跑什么，A **看不到内容**（task 是 B 的），但看得到「有几个 guest、在跑几个 task」
   —— 这是 A 判断自己机器为什么变卡的必要信息。
@@ -543,7 +547,7 @@ A 的 fire 和 B 的 fire 同时刷新同一份 OAuth 凭据时会不会互相�
 - `daemon_share_updated` WS 推送（可选，Phase 2 先用重连时拉取兜底）。
 
 **Phase 3 — UI**
-- A：daemon 卡片的共享入口 + 成员列表 + 撤销。
+- A：单台 daemon 页面的 Sharing 卡片 —— 共享入口 + 成员列表 + 撤销（不在 Settings 一级页）。
 - B：邀请页 `/app/daemon-share/[token]`、daemon 选择器徽标（`shared: true` + `ownerLabel`）。
 
 **Phase 4 — 打磨**

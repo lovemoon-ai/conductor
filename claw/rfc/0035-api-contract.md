@@ -2,7 +2,8 @@
 
 这份文件是 Phase 1/2/3 并行开发的唯一接口真相源。**改这里之前先说一声**，
 三个方向（backend routes / scope enforcement / CLI guest supervisor）都按它对齐。
-分享的创建与撤销**只有前端入口**（Settings 的 daemon 卡片），没有 CLI 子命令。
+分享的创建与撤销**只有前端入口**（Settings → 点进某台 daemon 的页面 → Sharing 卡片），
+没有 CLI 子命令。Settings 一级页只是机器列表，不放共享操作。
 
 Schema 与 migration 已落地：
 - `web/prisma/schema.prisma` + `schema.postgres.prisma` 的 `model DaemonShare`

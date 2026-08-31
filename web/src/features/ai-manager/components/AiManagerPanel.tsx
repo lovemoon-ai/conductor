@@ -9,6 +9,7 @@ import { useAiManagerStore } from '../store';
 import type { ExternalQuota, ExternalQuotaList, StatusResponse, Tool } from '../types';
 import { CodexAccountSwitcher } from './CodexAccountSwitcher';
 import { CustomCommandsPanel } from './CustomCommandsPanel';
+import { DaemonSharingCard } from '@/features/daemon-shares';
 import { QuotaBar } from './QuotaBar';
 import { ToolStatusRow } from './ToolStatusRow';
 
@@ -509,6 +510,12 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
       </SectionCard>
 
       <CustomCommandsPanel agentHost={host} supported={supportsCustomCommands} />
+
+      <DaemonSharingCard
+        agentHost={host}
+        shared={selectedDaemon?.shared}
+        ownerLabel={selectedDaemon?.ownerLabel}
+      />
 
       <SectionCard title="Danger zone">
         <div className="flex justify-end">

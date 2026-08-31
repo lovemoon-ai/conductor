@@ -8,9 +8,6 @@ import { SETTINGS_ROOT_PATH, useSettingsNavStore } from '@/features/settings';
 import { CatchphraseSettingsCard } from '@/features/catchphrases';
 import { DailyReportSettingsCard } from '@/features/daily-reports';
 import { AchievedTaskSettingsCard } from '@/features/achieved-tasks';
-import { useDaemonSharesStore } from '@/features/daemon-shares';
-import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
-import { copyToClipboard } from '@/lib/clipboard';
 
 const BUILD_TIME_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'Asia/Shanghai',
@@ -38,10 +35,6 @@ function formatBuildTimeInBeijing(rawBuildTime: string) {
 
 export default function SettingsPage() {
   const { agents, fetchAgents, error: agentsError, errorStatus: agentsErrorStatus } = useAgentsStore();
-  const { shares, fetchShares, createShare, revokeShare, maxSharesPerDaemon } = useDaemonSharesStore();
-  const { pushToast } = useToast();
-  const { confirm } = useConfirm();
-  const [busyHost, setBusyHost] = useState<string | null>(null);
   const { push } = useRouter();
   const setLastSettingsPath = useSettingsNavStore((state) => state.setLastPath);
   const buildTime = process.env.NEXT_PUBLIC_BUILD_TIME || 'unknown';
@@ -64,8 +57,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     fetchAgents();
-    fetchShares();
-  }, [fetchAgents, fetchShares]);
+  }, [fetchAgents]);
 
   useEffect(() => {
     let cancelled = false;
@@ -102,68 +94,6 @@ export default function SettingsPage() {
 
   const visibleDaemons = agents.filter((agent) => !agent.host.startsWith('conductor-fire-'));
   const isDaemonAuthError = agentsErrorStatus === 401;
-  const sharesByHost = new Map<string, typeof shares>();
-  for (const share of shares) {
-    sharesByHost.set(share.ownerDaemonHost, [
-      ...(sharesByHost.get(share.ownerDaemonHost) ?? []),
-      share,
-    ]);
-  }
-
-  // Same shape as ProjectItem's invite flow: create if needed, copy the link,
-  // tell the user either way. Prefer the server-built URL so a reverse proxy or
-  // a separate API host stays consistent.
-  const handleShareDaemon = async (host: string) => {
-    if (busyHost) return;
-    setBusyHost(host);
-    try {
-      const share = await createShare(host);
-      const inviteUrl = share.inviteUrl?.trim()
-        || (typeof window !== 'undefined' && share.inviteToken
-          ? `${window.location.origin}/app/daemon-share/${encodeURIComponent(share.inviteToken)}`
-          : null);
-      const copied = inviteUrl ? await copyToClipboard(inviteUrl) : false;
-      pushToast(copied
-        ? {
-          title: 'Share link copied',
-          description: `Send it to the colleague who should use ${host}.`,
-          variant: 'success',
-        }
-        : {
-          title: 'Share link created',
-          description: inviteUrl ?? 'Reload settings to copy the link.',
-          variant: 'success',
-        });
-    } catch (error) {
-      pushToast({
-        title: 'Failed to create share link',
-        description: error instanceof Error ? error.message : 'Try again later.',
-        variant: 'error',
-      });
-    } finally {
-      setBusyHost(null);
-    }
-  };
-
-  const handleRevokeShare = async (shareId: string, who: string) => {
-    const accepted = await confirm({
-      title: 'Stop sharing?',
-      description: `${who} will lose access to this machine immediately, and anything running there stops.`,
-      confirmLabel: 'Stop sharing',
-      tone: 'danger',
-    });
-    if (!accepted) return;
-    try {
-      await revokeShare(shareId);
-      pushToast({ title: 'Sharing stopped', variant: 'success' });
-    } catch (error) {
-      pushToast({
-        title: 'Failed to stop sharing',
-        description: error instanceof Error ? error.message : 'Try again later.',
-        variant: 'error',
-      });
-    }
-  };
 
   const exitToHome = () => {
     push('/');
@@ -212,7 +142,6 @@ export default function SettingsPage() {
           ) : (
             <div className="space-y-2">
               {visibleDaemons.map((agent) => {
-                const hostShares = sharesByHost.get(agent.host) ?? [];
                 return (
                   <div
                     key={agent.id}
@@ -227,16 +156,11 @@ export default function SettingsPage() {
                       <div className="size-2 bg-success rounded-full animate-pulse shrink-0" />
                       <div className="min-w-0 flex-1">
                         <p className="font-medium text-sm truncate">{agent.host}</p>
+                        {/* Whose machine this is, not what you can do with it --
+                            the sharing controls live on the daemon's own page. */}
                         {agent.shared && (
                           <p className="text-xs text-muted truncate">
                             Shared by {agent.ownerLabel ?? 'a colleague'} — runs on their machine
-                          </p>
-                        )}
-                        {hostShares.length > 0 && (
-                          <p className="text-xs text-muted truncate">
-                            Shared with {hostShares
-                              .map((share) => share.granteeLabel ?? 'pending invite')
-                              .join(', ')} ({hostShares.length}/{maxSharesPerDaemon})
                           </p>
                         )}
                       </div>
@@ -244,43 +168,9 @@ export default function SettingsPage() {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                       </svg>
                     </button>
-                    {/* A borrowed machine is someone else's to lend, so the
-                        owner-side action only appears on your own daemons. */}
-                    {!agent.shared && (
-                      <button
-                        type="button"
-                        onClick={() => handleShareDaemon(agent.host)}
-                        disabled={busyHost === agent.host || hostShares.length >= maxSharesPerDaemon}
-                        aria-label={`Share ${agent.host} with a colleague`}
-                        className="shrink-0 px-3 py-1.5 text-xs rounded-full border border-border hover:bg-[var(--accent)]/10 disabled:opacity-40"
-                      >
-                        {busyHost === agent.host ? 'Sharing…' : 'Share'}
-                      </button>
-                    )}
                   </div>
                 );
               })}
-              {shares.length > 0 && (
-                <div className="pt-2 space-y-1">
-                  {shares.map((share) => (
-                    <div
-                      key={share.id}
-                      className="flex items-center gap-2 px-3 py-2 text-xs text-muted"
-                    >
-                      <span className="min-w-0 flex-1 truncate">
-                        {share.ownerDaemonHost} → {share.granteeLabel ?? 'invite not accepted yet'}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => handleRevokeShare(share.id, share.granteeLabel ?? 'The invited person')}
-                        className="shrink-0 text-danger hover:underline"
-                      >
-                        Stop sharing
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           )}
         </section>
