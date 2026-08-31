@@ -66,10 +66,29 @@ describe("app-gateway terminal attach delivery", () => {
     });
 
     expect(delivered).toBe(true);
-    expect(realtimeHub.sendToAgent).toHaveBeenCalledWith("task-pty-1", envelope);
+    expect(realtimeHub.sendToAgent).toHaveBeenCalledWith("user-1", "task-pty-1", envelope);
     expect(realtimeHub.hasAgentHost).toHaveBeenCalledWith("daemon-reconnected", "user-1");
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-1", "daemon-reconnected");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-1", "daemon-reconnected", "user-1");
     expect(realtimeHub.sendToAgentHost).toHaveBeenCalledWith("user-1", "daemon-reconnected", envelope);
+  });
+
+  it("routes the attach envelope with the owning userId so a shared host name cannot cross tenants", () => {
+    const envelope = { type: "terminal_attach", payload: { task_id: "task-pty-2" } };
+
+    vi.mocked(realtimeHub.sendToAgent).mockReturnValue(true);
+
+    const delivered = deliverTerminalAttachEnvelope({
+      userId: "user-2",
+      taskId: "task-pty-2",
+      executionHost: "MacBook-Pro.local",
+      agentHost: "MacBook-Pro.local",
+      envelope,
+    });
+
+    expect(delivered).toBe(true);
+    expect(realtimeHub.sendToAgent).toHaveBeenCalledWith("user-2", "task-pty-2", envelope);
+    expect(realtimeHub.sendToAgentHost).not.toHaveBeenCalled();
+    expect(realtimeHub.bindTaskToAgent).not.toHaveBeenCalled();
   });
 
 

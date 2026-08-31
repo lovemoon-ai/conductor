@@ -2,6 +2,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage } from "http";
 import { realtimeHub } from "./hub";
 import { authenticateToken } from "../auth/service";
+import { isDaemonShareUser } from "@/lib/daemon-share/scope";
 import { randomUUID } from "crypto";
 import { db } from "../db";
 import { isMissingPtySchemaError } from "@/lib/tasks/pty-compat";
@@ -116,11 +117,11 @@ export const deliverTerminalAttachEnvelope = (args: {
   executionHost?: string | null;
   envelope: Record<string, unknown>;
 }): boolean => {
-  let delivered = realtimeHub.sendToAgent(args.taskId, args.envelope);
+  let delivered = realtimeHub.sendToAgent(args.userId, args.taskId, args.envelope);
   if (!delivered) {
     const fallbackHost = args.executionHost || args.agentHost;
     if (fallbackHost && realtimeHub.hasAgentHost(fallbackHost, args.userId)) {
-      realtimeHub.bindTaskToAgent(args.taskId, fallbackHost);
+      realtimeHub.bindTaskToAgent(args.taskId, fallbackHost, args.userId);
       delivered = realtimeHub.sendToAgentHost(args.userId, fallbackHost, args.envelope);
     }
   }
@@ -292,8 +293,8 @@ const emitPtyTransportSessions = (
   }
 };
 
-const revokePtyDirectTransport = (taskId: string, connectionId: string, reason: string) => {
-  realtimeHub.sendToAgent(taskId, {
+const revokePtyDirectTransport = (userId: string, taskId: string, connectionId: string, reason: string) => {
+  realtimeHub.sendToAgent(userId, taskId, {
     type: "pty_transport_signal",
     payload: {
       task_id: taskId,
@@ -316,6 +317,15 @@ export const setupAppGateway = (): WebSocketServer => {
     }
 
     const user = await authenticateToken(token);
+    // RFC 0035: a daemon-share credential is for running one guest daemon, not
+    // for driving the grantee's UI. `/ws/app` registers with projectIds ["*"]
+    // and `terminal_attach` can seize the writer slot on any of the grantee's
+    // pty tasks -- i.e. keystrokes into a live shell on their own machine.
+    // `getAuthUser` is not in this path, so the check has to be here.
+    if (user && isDaemonShareUser(user)) {
+      socket.close(4003, "share-token-not-allowed");
+      return;
+    }
     if (!user) {
       sendEnvelope(socket, { type: "error", payload: { message: "Invalid token" } });
       socket.close(4002, "invalid-token");
@@ -396,7 +406,7 @@ export const setupAppGateway = (): WebSocketServer => {
                 requestedConnectionId: connectionId,
               })
             ) {
-              revokePtyDirectTransport(task.id, previousWriterConnectionId, "writer_taken_over");
+              revokePtyDirectTransport(user.id, task.id, previousWriterConnectionId, "writer_taken_over");
             }
           } else {
             realtimeHub.releaseTerminalWriter(task.id, connectionId);
@@ -486,12 +496,12 @@ export const setupAppGateway = (): WebSocketServer => {
                 requestedConnectionId: connectionId,
               })
             ) {
-              revokePtyDirectTransport(taskId, previousWriterConnectionId, "writer_taken_over");
+              revokePtyDirectTransport(user.id, taskId, previousWriterConnectionId, "writer_taken_over");
             }
           } else {
             const released = realtimeHub.releaseTerminalWriter(taskId, connectionId);
             if (released) {
-              revokePtyDirectTransport(taskId, connectionId, "writer_released");
+              revokePtyDirectTransport(user.id, taskId, connectionId, "writer_released");
             }
           }
           emitPtyTransportSessions(taskId, {
@@ -519,6 +529,7 @@ export const setupAppGateway = (): WebSocketServer => {
           }
 
           const delivered = realtimeHub.sendToAgent(
+            user.id,
             taskId,
             buildForwardPtyTransportSignalEnvelope(data.payload, taskId, connectionId),
           );
@@ -555,7 +566,7 @@ export const setupAppGateway = (): WebSocketServer => {
             const releasedWriterTaskIds = new Set(result.releasedWriterTaskIds);
             clearPtyTransportSessionIds(taskId, connectionId);
             if (releasedWriterTaskIds.has(taskId)) {
-              revokePtyDirectTransport(taskId, connectionId, "writer_detached");
+              revokePtyDirectTransport(user.id, taskId, connectionId, "writer_detached");
             }
             emitPtyTransportSessions(taskId);
             emitTerminalAccessState(user.id, taskId);
@@ -564,7 +575,7 @@ export const setupAppGateway = (): WebSocketServer => {
             return;
           }
 
-          const delivered = realtimeHub.sendToAgent(taskId, buildForwardTerminalEnvelope(data.type, data.payload, taskId));
+          const delivered = realtimeHub.sendToAgent(user.id, taskId, buildForwardTerminalEnvelope(data.type, data.payload, taskId));
           if (!delivered && data.type !== "terminal_detach") {
             sendTerminalError(socket, taskId, `Agent for PTY task ${taskId} is offline`);
           }
@@ -594,7 +605,7 @@ export const setupAppGateway = (): WebSocketServer => {
       for (const taskId of unregisterResult.detachedTaskIds) {
         clearPtyTransportSessionIds(taskId, connectionId);
         if (releasedWriterTaskIds.has(taskId)) {
-          revokePtyDirectTransport(taskId, connectionId, "writer_disconnected");
+          revokePtyDirectTransport(user.id, taskId, connectionId, "writer_disconnected");
         }
         emitPtyTransportSessions(taskId);
         emitTerminalAccessState(user.id, taskId);

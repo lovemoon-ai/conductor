@@ -2,6 +2,7 @@ import type { IncomingMessage } from "http";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 
 import { authenticateToken } from "@/lib/auth/service";
+import { isDaemonShareUser } from "@/lib/daemon-share/scope";
 import {
   DEFAULT_SPEECH_SAMPLE_RATE,
   normalizeSpeechSampleRate,
@@ -71,6 +72,12 @@ export const setupSpeechGateway = (): WebSocketServer => {
     }
 
     const user = await authenticateToken(token);
+    // RFC 0035: same reasoning as /ws/app -- a share token has no business
+    // spending the grantee's transcription quota.
+    if (user && isDaemonShareUser(user)) {
+      socket.close(4003, "share-token-not-allowed");
+      return;
+    }
     if (!user) {
       sendEnvelope(socket, { type: "error", payload: { message: "Invalid token" } });
       socket.close(4002, "invalid-token");

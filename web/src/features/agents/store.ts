@@ -39,6 +39,8 @@ export const normalizeAgent = (raw: unknown): Agent | null => {
       pickStringRecord(record.runtimeBackendMap) ?? pickStringRecord(record.runtime_backend_map),
     capabilities: pickStringArray(record.capabilities),
     version: pickString(record.version),
+    shared: record.shared === true,
+    ownerLabel: pickString(record.ownerLabel) ?? pickString(record.owner_label) ?? null,
   };
 };
 

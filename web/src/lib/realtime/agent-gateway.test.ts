@@ -308,8 +308,8 @@ describe("agent-gateway ownership handling", () => {
     ]);
 
     expect(boundCount).toBe(2);
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenNthCalledWith(1, "task-daemon-owned", "daemon-a");
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenNthCalledWith(2, "task-pending-owned", "daemon-a");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenNthCalledWith(1, "task-daemon-owned", "daemon-a", "user-1");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenNthCalledWith(2, "task-pending-owned", "daemon-a", "user-1");
     expect(db.task.updateMany).toHaveBeenCalledWith({
       where: {
         id: { in: ["task-daemon-owned", "task-pending-owned"] },
@@ -370,7 +370,7 @@ describe("agent-gateway ownership handling", () => {
         }),
       }),
     );
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-legacy-1", "daemon-a");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-legacy-1", "daemon-a", "user-1");
     expect(db.task.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.not.objectContaining({ achievedAt: expect.anything() }),
@@ -403,7 +403,7 @@ describe("agent-gateway ownership handling", () => {
 
     expect(boundCount).toBe(1);
     expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledTimes(1);
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-ai-1", "conductor-fire-mac-1");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-ai-1", "conductor-fire-mac-1", "user-1");
     expect(db.task.updateMany).toHaveBeenCalledWith({
       where: {
         id: { in: ["task-ai-1"] },
@@ -449,7 +449,7 @@ describe("agent-gateway ownership handling", () => {
       ),
     ).resolves.toBeUndefined();
 
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-ai-1", "conductor-fire-mac-1");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-ai-1", "conductor-fire-mac-1", "user-1");
     expect(db.task.updateMany).toHaveBeenCalledWith({
       where: {
         id: "task-ai-1",
@@ -480,7 +480,7 @@ describe("agent-gateway ownership handling", () => {
       ),
     ).resolves.toBeUndefined();
 
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-ai-1", "conductor-fire-mac-1");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-ai-1", "conductor-fire-mac-1", "user-1");
     expect(db.task.updateMany).toHaveBeenCalledWith({
       where: {
         id: "task-ai-1",
@@ -702,7 +702,7 @@ describe("agent-gateway ownership handling", () => {
       },
     });
 
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-2", "daemon-a");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-2", "daemon-a", "user-1");
     expect(realtimeHub.recordTerminalLatencySample).toHaveBeenCalledWith("task-pty-2", {
       client_input_seq: 3,
       client_sent_at: "2026-03-17T01:00:00.000Z",
@@ -750,7 +750,7 @@ describe("agent-gateway ownership handling", () => {
       },
     });
 
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-snapshot", "daemon-a");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-pty-snapshot", "daemon-a", "user-1");
     expect(realtimeHub.sendToConnection).toHaveBeenCalledWith("conn-app-1", {
       type: "terminal_snapshot",
       payload: {
@@ -1317,7 +1317,7 @@ describe("processAgentAliveTasks", () => {
         // Critically: no executionHost / agentHost writes.
       },
     });
-    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-d1", "daemon-Y");
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-d1", "daemon-Y", "user-1");
     expect(db.task.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ achievedAt: null }),
