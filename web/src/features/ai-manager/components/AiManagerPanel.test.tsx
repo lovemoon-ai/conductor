@@ -12,6 +12,7 @@ const fetchQuotaMock = vi.fn();
 const confirmMock = vi.fn();
 const pushToastMock = vi.fn();
 const apiPostMock = vi.fn();
+const apiGetMock = vi.fn();
 
 let agentsState = {
   agents: [] as Array<{
@@ -55,6 +56,7 @@ vi.mock('@/components/common/FeedbackProvider', () => ({
 vi.mock('@/shared/api/client', () => ({
   getApiClient: () => ({
     post: apiPostMock,
+    get: apiGetMock,
   }),
 }));
 
@@ -123,6 +125,7 @@ describe('AiManagerPanel', () => {
     fetchQuotaMock.mockResolvedValue(undefined);
     confirmMock.mockResolvedValue(true);
     apiPostMock.mockResolvedValue({});
+    apiGetMock.mockResolvedValue({ runId: null, status: 'idle' });
     agentsState = {
       agents: [],
       fetchAgents: fetchAgentsMock,
@@ -167,6 +170,32 @@ describe('AiManagerPanel', () => {
       title: 'Restart requested',
       variant: 'success',
     }));
+  });
+
+  it('offers Update daemon in the danger zone only when the daemon supports it', async () => {
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-a',
+        supportedBackends: ['codex'],
+        capabilities: ['restart_daemon', 'update_daemon'],
+      },
+    ];
+    aiManagerState.selectedHost = 'daemon-a';
+
+    const { rerender } = render(<AiManagerPanel initialAgentHost="daemon-a" />);
+    expect(await screen.findByLabelText('Update daemon on daemon-a')).toBeInTheDocument();
+
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-a',
+        supportedBackends: ['codex'],
+        capabilities: ['restart_daemon'],
+      },
+    ];
+    rerender(<AiManagerPanel initialAgentHost="daemon-a" />);
+    expect(screen.queryByLabelText('Update daemon on daemon-a')).not.toBeInTheDocument();
   });
 
   it('disables the restart card action when the daemon lacks restart capability', () => {

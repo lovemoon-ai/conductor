@@ -227,3 +227,21 @@ export interface CustomCommandRunStatus {
   startedAt: string;
   finishedAt?: string | null;
 }
+
+export type DaemonUpdateStatusValue = 'idle' | 'running' | 'completed' | 'failed';
+
+export interface DaemonUpdateStatus {
+  runId: string | null;
+  status: DaemonUpdateStatusValue;
+  phase?: string;
+  message?: string;
+  fromVersion?: string | null;
+  toVersion?: string | null;
+  error?: string | null;
+  logPath?: string | null;
+  daemonRestarted?: boolean;
+  startedAt?: string;
+  updatedAt?: string;
+  finishedAt?: string | null;
+  log?: string;
+}

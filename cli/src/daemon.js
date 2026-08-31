@@ -35,6 +35,12 @@ import {
   createRemoteExecHandlers,
   handleRemoteExecRequest,
 } from "./remote-exec-handlers.js";
+import {
+  UPDATE_DAEMON_CAPABILITY,
+  createDaemonUpdateHandlers,
+  handleUpdateDaemonRequest,
+  resolveDaemonUpdatePaths,
+} from "./daemon-update.js";
 import { resolveResumeContext } from "./fire/resume.js";
 import {
   filterRuntimeSupportedAllowCliList,
@@ -106,6 +112,7 @@ const CLI_PATH = path.resolve(PACKAGE_ROOT, "bin", "conductor-fire.js");
 // the host daemon, so guests always match the installed version and there is
 // no second update path to keep in sync.
 const DAEMON_LAUNCHER_PATH = path.resolve(PACKAGE_ROOT, "bin", "conductor-daemon.js");
+const DAEMON_UPDATE_SCRIPT_PATH = path.resolve(PACKAGE_ROOT, "bin", "conductor-daemon-update.js");
 const CLI_VERSION = (() => {
   try {
     return JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, "package.json"), "utf-8")).version;
@@ -3338,6 +3345,7 @@ export function startDaemon(config = {}, deps = {}) {
     "refresh_session_inplace",
     "task_attachments_v1",
     CUSTOM_COMMANDS_CAPABILITY,
+    UPDATE_DAEMON_CAPABILITY,
   ];
   if (remoteExecEnabled) {
     advertisedCapabilities.push(REMOTE_EXEC_CAPABILITY);
@@ -3371,8 +3379,43 @@ export function startDaemon(config = {}, deps = {}) {
   if (effectiveCapabilities.length > 0) {
     extraHeaders["x-conductor-capabilities"] = effectiveCapabilities.join(",");
   }
+  // Built-in "Update Daemon" is a global `npm install -g` followed by a
+  // restart. Refuse up front — with a reason the UI can show — wherever that
+  // is the wrong way to upgrade this install.
+  function resolveDaemonUpdateRefusal() {
+    if (IS_GUEST_DAEMON) {
+      return "a shared guest daemon cannot install a new CLI version on the host machine";
+    }
+    if (installMethod === "homebrew") {
+      return `conductor was installed with Homebrew; run \`${buildUpgradeCommand({ env: process.env })}\` on ${AGENT_NAME} instead`;
+    }
+    if (!autoUpdateSupportedInstall) {
+      return `conductor runs from ${installedPackageRoot}, which is not a global install; upgrade it the same way it was installed`;
+    }
+    return null;
+  }
+
   const aiManagerHandlers = (deps.createAiManagerHandlers || createAiManagerHandlers)({ configPath: effectiveConfigPath });
   const customCommandHandlers = createCustomCommandHandlers({ configPath: effectiveConfigPath });
+  const daemonUpdatePaths = resolveDaemonUpdatePaths(process.env);
+  const daemonUpdateHandlers = createDaemonUpdateHandlers({
+    statusPath: daemonUpdatePaths.statusPath,
+    logPath: daemonUpdatePaths.logPath,
+    updaterScript: DAEMON_UPDATE_SCRIPT_PATH,
+    refuseReason: resolveDaemonUpdateRefusal(),
+    env: { ...process.env, ...materializedConductorPathEnv },
+    updaterParams: {
+      packageRoot: installedPackageRoot,
+      launcherScript: restartLauncherScript,
+      launcherArgs: restartLauncherArgs,
+      versionCheckScript,
+      versionCheckArgs,
+      daemonPid: process.pid,
+      lockFile: LOCK_FILE,
+      daemonLogPath: resolveDaemonLogPaths().logPath,
+      currentVersion: cliVersion,
+    },
+  });
   const remoteExecHandlers = remoteExecEnabled
     ? createRemoteExecHandlers({ defaultWorkspace: homeDir })
     : null;
@@ -5793,6 +5836,14 @@ export function startDaemon(config = {}, deps = {}) {
     if (event.type === "restart_daemon") {
       void handleRestartDaemon(event.payload).catch((error) => {
         logError(`Unhandled restart_daemon failure: ${error?.message || error}`);
+      });
+    }
+    if (event.type === "update_daemon_request") {
+      if (event?.payload?.action === "start") {
+        log(`[update_daemon] Update requested (current=${cliVersion}); log: ${daemonUpdatePaths.logPath}`);
+      }
+      handleUpdateDaemonRequest(client, daemonUpdateHandlers, event.payload).catch((error) => {
+        logError(`Unhandled update_daemon_request failure: ${error?.message || error}`);
       });
     }
   }

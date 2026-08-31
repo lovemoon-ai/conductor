@@ -2,6 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { UPDATE_DAEMON_CAPABILITY } from "./daemon-update.js";
+
 /**
  * RFC 0035 — guest daemon supervision.
  *
@@ -200,7 +202,12 @@ export function nextRestartDelayMs(failureCount) {
  * That is a different axis, handled per-action below, not by withholding
  * capabilities.
  */
-export const GUEST_BLOCKED_CAPABILITIES = new Set();
+export const GUEST_BLOCKED_CAPABILITIES = new Set([
+  // `update_daemon` is the one capability that is *only* owner-state mutation:
+  // a global `npm install -g` plus a restart of the owner's daemon. There is no
+  // read-only half to keep, so it is withheld rather than refused per-action.
+  UPDATE_DAEMON_CAPABILITY,
+]);
 
 export function filterGuestCapabilities(capabilities) {
   return (capabilities || []).filter((cap) => !GUEST_BLOCKED_CAPABILITIES.has(cap));

@@ -283,6 +283,15 @@ type AgentEvent =
       };
     }
   | {
+      type: "update_daemon_response";
+      payload: {
+        request_id?: string;
+        action?: string;
+        result?: unknown;
+        error?: string | null;
+      };
+    }
+  | {
       type: "remote_exec_response";
       payload: {
         request_id?: string;
@@ -1958,6 +1967,24 @@ export const setupAgentGateway = (): WebSocketServer => {
               break;
             }
             realtimeHub.resolveCustomCommandsResponse(
+              {
+                request_id: requestId,
+                action: normalizeOptionalString(event.payload.action) || "",
+                result: event.payload.result,
+                error: normalizeOptionalString(event.payload.error),
+              },
+              user.id,
+              agentHost,
+            );
+            break;
+          }
+          case "update_daemon_response": {
+            const requestId = normalizeOptionalString(event.payload.request_id);
+            if (!requestId) {
+              sendEnvelope(socket, { type: "error", payload: { message: "update_daemon_response requires request_id" } });
+              break;
+            }
+            realtimeHub.resolveUpdateDaemonResponse(
               {
                 request_id: requestId,
                 action: normalizeOptionalString(event.payload.action) || "",
