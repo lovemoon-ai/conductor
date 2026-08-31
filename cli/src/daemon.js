@@ -3371,7 +3371,7 @@ export function startDaemon(config = {}, deps = {}) {
   if (effectiveCapabilities.length > 0) {
     extraHeaders["x-conductor-capabilities"] = effectiveCapabilities.join(",");
   }
-  const aiManagerHandlers = createAiManagerHandlers({ configPath: effectiveConfigPath });
+  const aiManagerHandlers = (deps.createAiManagerHandlers || createAiManagerHandlers)({ configPath: effectiveConfigPath });
   const customCommandHandlers = createCustomCommandHandlers({ configPath: effectiveConfigPath });
   const remoteExecHandlers = remoteExecEnabled
     ? createRemoteExecHandlers({ defaultWorkspace: homeDir })

@@ -17,8 +17,19 @@ import {
   buildPtyLaunchSpec,
   resolveDefaultPtyShell,
   resolvePtyToolPresetCommand,
-  startDaemon,
+  startDaemon as startDaemonReal,
 } from "../src/daemon.js";
+
+// The real AI manager probes installed CLIs (which/--version) with real child
+// processes during daemon startup, which both escapes the per-test spawn mocks
+// and delays the async startup path past the tight timing windows the
+// watchdog/auto-update tests rely on. Default every test to an instant stub;
+// individual tests can still override via their own deps.
+const startDaemon = (config, deps = {}) =>
+  startDaemonReal(config, {
+    createAiManagerHandlers: () => ({ manager: { checkInstallAll: async () => ({}) } }),
+    ...deps,
+  });
 import { resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
 import {
   buildDaemonInstanceIdentity,
