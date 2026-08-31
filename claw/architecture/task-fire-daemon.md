@@ -539,6 +539,36 @@ owner lease / epoch 现在还没有。
 - `realtimeHub.taskToAgent`
 - `agent_resume`
 
+### 13.5 不要拿单进程内存当 task 存活判定（当前仍是缺陷）
+
+daemon 有两处会把 task 判成 stale 并 PATCH `killed`，**都只看单进程内存**
+（`activeTaskProcesses` / `activePtySessions`），不查真实执行载体：
+
+- `recoverStaleTasks()` —— daemon **启动**路径，无宽限期，启动即无条件杀光所有
+  `agent_host` 匹配的 running task
+- `reconcileAssignedTasks()` —— WS **重连**路径，有 60s 宽限期
+
+但 `fire_tmux_mode` 下 daemon 关闭时是**故意**保留 tmux Fire 的
+（`leaving tmux-detached Fire task ... running`），新进程的内存表必然为空。于是
+daemon 重启会杀掉上一个 daemon 刻意保留的 Fire —— 启动路径正是这个场景的主场景。
+
+这个缺陷复发过三次（20260723 / 20260731 / 20260831）。**截至本次记录仍未修复。**
+方案与验证结论见
+`claw/tasks/todo/008_P1_2d_daemon-adopt-tmux-fires-on-startup.md`。
+
+### 13.6 §2.2 同样适用于"两个 daemon"，不只是 daemon vs fire
+
+两个 daemon 用同一个 `daemonName` 连同一后端时，后端每个 agent 只保留一条 WS，
+新连接顶掉旧连接，被顶掉的重连再顶回去 —— 形成秒级乒乓风暴
+（`close_code=1005`、`last_presence_at=never`）。叠加 13.5 的内存式判定，
+"重复上线"会被直接放大成"批量误杀"。
+
+排查指纹：日志里 `localActive=0 markedKilled=N` 与 `backendAssigned=0 localActive=N`
+两种视角交替出现。确认手段是 `lsof -nP -p <pid> -a -i` 数有几个进程连着生产，
+再 `ps eww` 看它们的 `CONDUCTOR_*` 环境。
+
+详见 `claw/lessons/stable_test-spawned-rogue-prod-daemon-mass-kill-20260831.md`。
+
 ## 14. 代码锚点
 
 下面这些文件是当前模型的关键实现点：
