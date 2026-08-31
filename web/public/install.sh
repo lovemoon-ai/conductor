@@ -22,7 +22,6 @@ NPM_GLOBAL_PREFIX=""
 GLOBAL_BIN_DIR=""
 RC_FILE=""
 RC_SHELL=""
-USE_LOCAL_NPM_PREFIX=0
 PATH_BLOCK_START="# >>> conductor install >>>"
 PATH_BLOCK_END="# <<< conductor install <<<"
 
@@ -126,11 +125,7 @@ refresh_runtime_paths() {
     fi
 
     if [ -n "$NPM_CMD" ] && [ -x "$NPM_CMD" ]; then
-        if [ "$USE_LOCAL_NPM_PREFIX" -eq 1 ] && [ -n "${npm_config_prefix:-}" ]; then
-            NPM_GLOBAL_PREFIX="$npm_config_prefix"
-        else
-            NPM_GLOBAL_PREFIX=$("$NPM_CMD" config get prefix 2>/dev/null || true)
-        fi
+        NPM_GLOBAL_PREFIX=$("$NPM_CMD" config get prefix 2>/dev/null || true)
         if [ -n "$NPM_GLOBAL_PREFIX" ]; then
             GLOBAL_BIN_DIR="${NPM_GLOBAL_PREFIX}/bin"
         else
@@ -161,6 +156,12 @@ check_npm() {
         NPM_CMD="$(command -v npm)"
         NODE_CMD="$(command -v node)"
         refresh_runtime_paths
+        # An earlier run may already have put the managed Node on PATH, in which case this npm is
+        # the managed one. Recognise it, so the rc block keeps pointing at the stable
+        # ${CONDUCTOR_HOME}/node symlink rather than this run's versioned directory.
+        if is_conductor_managed_prefix "$NPM_GLOBAL_PREFIX"; then
+            USED_CONDUCTOR_NODE=1
+        fi
         log_info "Found npm: $("$NPM_CMD" --version)"
         log_info "Node path: $NODE_CMD"
         log_info "npm path: $NPM_CMD"
@@ -183,26 +184,63 @@ is_system_npm_prefix() {
     esac
 }
 
-configure_local_npm_prefix() {
-    mkdir -p "$CONDUCTOR_HOME"
-    export npm_config_prefix="$CONDUCTOR_HOME"
-    USE_LOCAL_NPM_PREFIX=1
-    INSTALL_USE_SUDO=""
-    NPM_GLOBAL_PREFIX="$CONDUCTOR_HOME"
-    GLOBAL_BIN_DIR="${CONDUCTOR_HOME}/bin"
-    refresh_runtime_paths
-    log_info "Using local npm prefix: ${CONDUCTOR_HOME}"
-}
+normalize_dir() {
+    local dir="${1%/}"
 
-maybe_switch_to_local_npm_prefix() {
-    local npm_prefix="$1"
-    local prompt_status=0
-
-    if [ "$OS" != "linux" ] || [ "$USED_CONDUCTOR_NODE" -eq 1 ]; then
+    if [ -d "$dir" ]; then
+        (cd "$dir" && pwd -P)
         return
     fi
 
-    if ! is_system_npm_prefix "$npm_prefix"; then
+    printf '%s' "$dir"
+}
+
+# The superseded layout: an npm prefix pinned straight at ${CONDUCTOR_HOME}, which installs the CLI
+# into ${CONDUCTOR_HOME}/lib and links it from ${CONDUCTOR_HOME}/bin. Reached today only through an
+# `npm_config_prefix` left behind in the user's rc by an older installer.
+is_legacy_conductor_prefix() {
+    [ -n "$1" ] && [ "$(normalize_dir "$1")" = "$(normalize_dir "$CONDUCTOR_HOME")" ]
+}
+
+# The current layout: the prefix is the managed Node install dir under ${CONDUCTOR_HOME}.
+is_conductor_managed_prefix() {
+    local prefix
+    local home
+
+    [ -n "$1" ] || return 1
+    prefix=$(normalize_dir "$1")
+    home=$(normalize_dir "$CONDUCTOR_HOME")
+
+    case "$prefix" in
+        "${home}"/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# `conductor update` re-derives its target from the prefix the running package sits in, so a
+# user-local install has to land where the updater will look. The Conductor-managed Node dir is
+# that place: both sides resolve it as the bundled npm's own default, with no state to keep in
+# sync. Anything that would otherwise install into a root-owned system prefix or into the
+# superseded ${CONDUCTOR_HOME}/{bin,lib} tree is redirected there.
+maybe_switch_to_conductor_node() {
+    local npm_prefix="$1"
+    local prompt_status=0
+
+    if [ "$USED_CONDUCTOR_NODE" -eq 1 ]; then
+        return
+    fi
+
+    if is_legacy_conductor_prefix "$npm_prefix"; then
+        log_warn "npm global prefix points at the superseded layout: ${npm_prefix}"
+        setup_conductor_node
+        return
+    fi
+
+    if [ "$OS" != "linux" ] || ! is_system_npm_prefix "$npm_prefix"; then
         return
     fi
 
@@ -215,22 +253,20 @@ maybe_switch_to_local_npm_prefix() {
         prompt_status=$?
     fi
 
-    if [ "$prompt_status" -eq 0 ]; then
-        configure_local_npm_prefix
+    if [ "$prompt_status" -eq 1 ]; then
+        log_warn "Continuing with the system npm prefix at your request."
         return
     fi
 
     if [ "$prompt_status" -eq 2 ]; then
-        log_warn "No interactive terminal available. Falling back to local npm prefix."
-        configure_local_npm_prefix
-        return
+        log_warn "No interactive terminal available. Falling back to ${CONDUCTOR_HOME}."
     fi
 
-    log_warn "Continuing with the system npm prefix at your request."
+    setup_conductor_node
 }
 
 setup_conductor_node() {
-    log_info "npm not found. Setting up Conductor-managed Node.js in ${CONDUCTOR_HOME}..."
+    log_info "Setting up Conductor-managed Node.js in ${CONDUCTOR_HOME}..."
 
     mkdir -p "$CONDUCTOR_HOME"
 
@@ -285,19 +321,14 @@ setup_conductor_node() {
 install_conductor() {
     log_info "Installing ${PACKAGE_NAME}..."
 
-    local npm_prefix
-    if [ "$USE_LOCAL_NPM_PREFIX" -eq 1 ] && [ -n "${npm_config_prefix:-}" ]; then
-        npm_prefix="$npm_config_prefix"
-    else
-        npm_prefix=$("$NPM_CMD" config get prefix)
-        maybe_switch_to_local_npm_prefix "$npm_prefix"
-        if [ "$USE_LOCAL_NPM_PREFIX" -eq 1 ] && [ -n "${npm_config_prefix:-}" ]; then
-            npm_prefix="$npm_config_prefix"
-        fi
-    fi
-    NPM_GLOBAL_PREFIX="$npm_prefix"
-    GLOBAL_BIN_DIR="${NPM_GLOBAL_PREFIX}/bin"
+    maybe_switch_to_conductor_node "$NPM_GLOBAL_PREFIX"
     refresh_runtime_paths
+
+    local npm_prefix="$NPM_GLOBAL_PREFIX"
+    if [ -z "$npm_prefix" ]; then
+        log_error "Could not determine the npm global prefix from ${NPM_CMD}"
+        return 1
+    fi
 
     if [ ! -w "$npm_prefix" ] && [ "$EUID" -ne 0 ]; then
         log_warn "No write permission to $npm_prefix. Attempting to use sudo..."
@@ -358,6 +389,7 @@ migrate_conductor_home_layout() {
     if [ -e "$legacy_package_dir" ]; then
         log_info "Removing superseded install at ${legacy_package_dir}"
         rm -rf "$legacy_package_dir"
+        rmdir "${CONDUCTOR_HOME}/lib/node_modules" "${CONDUCTOR_HOME}/lib" 2>/dev/null || true
     fi
 
     if [ ! -x "${NODE_LINK_DIR}/bin/conductor" ]; then
@@ -441,13 +473,8 @@ build_path_export_line() {
         node_path='$HOME/.conductor/node/bin'
         conductor_bin_path=''
     else
-        if [ "$USE_LOCAL_NPM_PREFIX" -eq 1 ]; then
-            node_path=""
-            conductor_bin_path='$HOME/.conductor/bin'
-        else
-            node_path="$NODE_BIN_DIR"
-            conductor_bin_path="$GLOBAL_BIN_DIR"
-        fi
+        node_path="$NODE_BIN_DIR"
+        conductor_bin_path="$GLOBAL_BIN_DIR"
     fi
 
     if [ "$RC_SHELL" = "fish" ]; then
@@ -484,33 +511,13 @@ build_path_export_line() {
     printf 'export PATH="%s$PATH"' "$segments"
 }
 
-build_npm_prefix_export_line() {
-    if [ "$USE_LOCAL_NPM_PREFIX" -ne 1 ]; then
-        return
-    fi
-
-    if [ -z "$RC_FILE" ] || [ -z "$RC_SHELL" ]; then
-        resolve_rc_file
-    fi
-
-    if [ "$RC_SHELL" = "fish" ]; then
-        printf 'set -gx npm_config_prefix "$HOME/.conductor"'
-        return
-    fi
-
-    printf 'export npm_config_prefix="$HOME/.conductor"'
-}
-
+# Deliberately PATH-only: an `npm_config_prefix` written here would outlive the install and
+# silently retarget every later `npm install -g`, Conductor's or not.
 build_shell_setup_block() {
-    local prefix_line=""
     local path_line=""
 
-    prefix_line=$(build_npm_prefix_export_line)
     path_line=$(build_path_export_line)
 
-    if [ -n "$prefix_line" ]; then
-        printf '%s\n' "$prefix_line"
-    fi
     if [ -n "$path_line" ]; then
         printf '%s\n' "$path_line"
     fi
@@ -596,33 +603,42 @@ verify_node_pty() {
     return 1
 }
 
-rc_contains_current_path_setup() {
+# Print the installer block's body, dropping comments and blank lines.
+extract_conductor_block() {
     if [ ! -f "$RC_FILE" ]; then
+        return
+    fi
+
+    awk -v start="$PATH_BLOCK_START" -v end="$PATH_BLOCK_END" '
+        $0 == start { inside = 1; next }
+        $0 == end { inside = 0; next }
+        inside && $0 !~ /^[[:space:]]*(#|$)/ { print }
+    ' "$RC_FILE"
+}
+
+# Compares the block body against what this installer would write, and only that body: a file-wide
+# search would accept a rc where the user hand-pasted the new PATH line outside the markers while a
+# stale block -- npm_config_prefix export and all -- sits untouched inside them. Matching every new
+# line is also not enough on its own; what matters is that no old line survived, so this is an
+# equality test rather than a containment test.
+rc_contains_current_path_setup() {
+    local expected
+    local actual
+
+    expected=$(build_shell_setup_block)
+    if [ -z "$expected" ]; then
         return 1
     fi
 
-    local block
-    block=$(build_shell_setup_block)
-    if [ -z "$block" ]; then
-        return 1
-    fi
-
-    if ! grep -Fq "$PATH_BLOCK_START" "$RC_FILE" \
+    if [ ! -f "$RC_FILE" ] \
+        || ! grep -Fq "$PATH_BLOCK_START" "$RC_FILE" \
         || ! grep -Fq "$PATH_BLOCK_END" "$RC_FILE"; then
         return 1
     fi
 
-    local line
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        if ! grep -Fq "$line" "$RC_FILE"; then
-            return 1
-        fi
-    done <<EOF
-$block
-EOF
+    actual=$(extract_conductor_block)
 
-    return 0
+    [ "$actual" = "$expected" ]
 }
 
 # True when the rc already carries a Conductor block that no longer matches what this installer
@@ -711,7 +727,12 @@ print_manual_path_instructions() {
     fi
 
     resolve_rc_file
-    log_info "Add the following lines to ${RC_FILE}:"
+    if rc_has_outdated_conductor_block; then
+        log_warn "Replace the '${PATH_BLOCK_START}' block in ${RC_FILE} with the lines below."
+        log_warn "Leaving its npm_config_prefix export in place would retarget every 'npm install -g'."
+    else
+        log_info "Add the following lines to ${RC_FILE}:"
+    fi
     printf '%s\n' "$block"
 }
 
@@ -719,9 +740,7 @@ offer_path_setup() {
     local path_status="$1"
     local prompt_status=0
 
-    if [ "$path_status" -ne 2 ] \
-        && [ "$USE_LOCAL_NPM_PREFIX" -ne 1 ] \
-        && ! rc_has_outdated_conductor_block; then
+    if [ "$path_status" -ne 2 ] && ! rc_has_outdated_conductor_block; then
         return
     fi
 
@@ -742,6 +761,13 @@ offer_path_setup() {
         write_path_to_rc
         log_info "Wrote Conductor shell setup to ${RC_FILE}"
         log_info "Run 'source ${RC_FILE}' or open a new shell to use it"
+        # Only the text between the markers is ours to rewrite. An npm_config_prefix elsewhere in
+        # the rc -- hand-copied, or left by an installer old enough to predate the markers -- still
+        # retargets every `npm install -g`, so flag it instead of leaving it silently in place.
+        if grep -q 'npm_config_prefix' "$RC_FILE"; then
+            log_warn "${RC_FILE} still sets npm_config_prefix outside the Conductor block."
+            log_warn "Remove it unless you set it deliberately; it retargets every 'npm install -g'."
+        fi
         return
     fi
 
@@ -763,6 +789,7 @@ main() {
     if check_npm; then
         log_info "Using system npm"
     else
+        log_info "npm not found."
         setup_conductor_node
     fi
 
