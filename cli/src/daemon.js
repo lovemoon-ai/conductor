@@ -24,6 +24,13 @@ import {
   resolveConductorConfigPath,
   resolveConductorHome,
 } from "./conductor-paths.js";
+import {
+  deleteFireSessionRecord,
+  pruneFireSessionRecords,
+  readFireSessionRecord,
+  resolveFireSessionRegistryDir,
+  writeFireSessionRecord,
+} from "./fire-session-registry.js";
 import { createAiManagerHandlers, handleAiManagerRequest } from "./ai-manager-handlers.js";
 import {
   CUSTOM_COMMANDS_CAPABILITY,
@@ -1194,6 +1201,16 @@ export function startDaemon(config = {}, deps = {}) {
     log("Fire tmux mode enabled: each Fire process will run in a detached tmux session");
   }
 
+  // Shared by every Fire tmux session name. Also the discriminator that lets
+  // startup adoption tell our sessions apart from the user's own tmux work.
+  const FIRE_TMUX_SESSION_NAMESPACE = "conductor-fire-";
+
+  // Where the per-session hand-off records live. See fire-session-registry.js
+  // for why a fresh daemon cannot reconstruct them from the session alone.
+  const FIRE_SESSION_REGISTRY_DIR = resolveFireSessionRegistryDir(
+    materializedConductorPathEnv.CONDUCTOR_HOME,
+  );
+
   // Single-quote a value so it can be embedded inside a `bash -c '...'`
   // command. Embedded single-quotes are escaped via the standard `'\\''`
   // sequence.
@@ -1218,7 +1235,7 @@ export function startDaemon(config = {}, deps = {}) {
       .replace(/[^a-zA-Z0-9_-]/g, "_")
       .replace(/^_+|_+$/g, "")
       .slice(0, 32) || "task";
-    return `conductor-fire-${safe}-`;
+    return `${FIRE_TMUX_SESSION_NAMESPACE}${safe}-`;
   }
 
   // Build a unique tmux session name for a Fire spawn.
@@ -1761,7 +1778,14 @@ export function startDaemon(config = {}, deps = {}) {
     // would be misread as "died hard" — reporting every clean finish as
     // KILLED. Staying silent restores the old blind spot for this task only,
     // which is strictly better than manufacturing a wrong cause of death.
-    if (!record.logPath) {
+    //
+    // The one exception is a Fire adopted without a hand-off record. There
+    // the silence is not a blind spot we are preserving but one we would be
+    // creating: nothing else watches an adopted session, so staying quiet
+    // parks the task at `running` forever. Speak, and let the backend
+    // pre-check below stop us from downgrading a status fire already
+    // published for itself.
+    if (!record.logPath && !record.adoptedWithoutMetadata) {
       logError(
         `Cannot classify the end of task ${taskId}: no log path on the active record, so no exit marker exists`,
       );
@@ -1774,7 +1798,7 @@ export function startDaemon(config = {}, deps = {}) {
     // that absence as "no exit marker" would report a green task as KILLED
     // with an invented "killed or OOM" cause. An empty-but-present file is
     // different: the fire really did die before writing anything.
-    if (readLogFileSize(record.logPath) === null) {
+    if (!record.adoptedWithoutMetadata && readLogFileSize(record.logPath) === null) {
       logError(
         `Cannot classify the end of task ${taskId}: log file ${record.logPath} is missing, ` +
           `so the absence of an exit marker proves nothing`,
@@ -1782,7 +1806,9 @@ export function startDaemon(config = {}, deps = {}) {
       return;
     }
 
-    const rawTail = readLogTailRaw(record.logPath, { minOffset: record.logStartOffset || 0 });
+    const rawTail = record.adoptedWithoutMetadata
+      ? ""
+      : readLogTailRaw(record.logPath, { minOffset: record.logStartOffset || 0 });
     // Search the file for the marker rather than hoping it is still inside
     // the tail window — see `findFireExitCode` for why a shared log makes the
     // tail unreliable. The tail is still what feeds the human-readable
@@ -1806,8 +1832,9 @@ export function startDaemon(config = {}, deps = {}) {
     // `latest_status_summary` with a word that says nothing. Naming *how* we
     // found out keeps the event worth its row: it tells the next reader that
     // fire never published its own status.
-    const baseSummary =
-      exitCode === null
+    const baseSummary = record.adoptedWithoutMetadata
+      ? "fire tmux session ended; it was adopted from a previous daemon without a hand-off record, so the exit could not be classified"
+      : exitCode === null
         ? "fire tmux session disappeared without an exit marker (killed or OOM)"
         : exitCode === 0
           ? "completed; detected by the daemon after the tmux session ended (fire never reported it)"
@@ -1818,6 +1845,19 @@ export function startDaemon(config = {}, deps = {}) {
     // Ask the backend before overwriting anything: fire normally reports its
     // own terminal status and we must not downgrade a success.
     const backendStatus = await fetchBackendTaskStatus(taskId);
+    // For a record adopted without metadata there is no exit marker to read,
+    // so the verdict below is unconditionally KILLED and this probe is the
+    // ONLY thing standing between a task that finished cleanly and a
+    // fabricated failure. `fetchBackendTaskStatus` returns null both for "not
+    // terminal" and for "could not ask", so a backend blip during a daemon
+    // upgrade would mark a green task killed. Require a real answer.
+    if (!backendStatus && record.adoptedWithoutMetadata) {
+      logError(
+        `Cannot classify the end of adopted task ${taskId}: the backend did not answer, ` +
+          `and without a hand-off record its exit code is unknowable. Staying silent.`,
+      );
+      return;
+    }
     if (backendStatus && TERMINAL_BACKEND_TASK_STATUSES.has(backendStatus)) {
       log(
         `Tmux session ${record.tmuxSession} for task ${taskId} ended; backend already ${backendStatus}, no report needed`,
@@ -1932,6 +1972,7 @@ export function startDaemon(config = {}, deps = {}) {
           record.stopForceKillTimer = null;
         }
         activeTaskProcesses.delete(taskId);
+        forgetFireSessionRecord(record);
         // Report *after* dropping the local entry so a slow backend round
         // trip can't make a concurrent stop_task wait on us.
         await reportDeadTmuxSessionStatus(taskId, record);
@@ -1963,22 +2004,27 @@ export function startDaemon(config = {}, deps = {}) {
     }
   }
 
-  // List every tmux session name visible to the current user. Returns `[]`
-  // on any spawn error, non-zero exit, or timeout (e.g. tmux not available
-  // or the server not running). Subject to TMUX_PROBE_TIMEOUT_MS.
+  // List every tmux session name visible to the current user.
+  //
+  // Returns `{ sessions, conclusive }`. The flag is not decoration: "tmux says
+  // there are no sessions" and "we could not ask tmux" are the same empty
+  // array, and callers that kill on the strength of an empty list would turn
+  // one flaky probe into a mass kill of live Fires — the very regression the
+  // adoption path exists to prevent. `probeTmuxSession` draws the same
+  // distinction for the same reason. Subject to TMUX_PROBE_TIMEOUT_MS.
   function listAllTmuxSessions() {
     return new Promise((resolve) => {
       let settled = false;
       let stdout = "";
       let timer = null;
-      const settle = (lines) => {
+      const settle = (lines, conclusive) => {
         if (settled) return;
         settled = true;
         if (timer) {
           clearTimeout(timer);
           timer = null;
         }
-        resolve(lines);
+        resolve({ sessions: lines, conclusive });
       };
       try {
         const probe = spawnFn("tmux", ["list-sessions", "-F", "#{session_name}"], {
@@ -1996,14 +2042,16 @@ export function startDaemon(config = {}, deps = {}) {
                 .split("\n")
                 .map((s) => s.trim())
                 .filter(Boolean),
+              true,
             );
           } else {
-            // Non-zero exit usually means "no server running" or "no
-            // sessions" — both fine, just return empty.
-            settle([]);
+            // Non-zero exit means "no server running" / "no sessions". tmux
+            // answered, so this is a real, conclusive empty list.
+            settle([], true);
           }
         });
-        probe.on("error", () => settle([]));
+        // Could not run tmux at all — no information either way.
+        probe.on("error", () => settle([], false));
         timer = setTimeout(() => {
           try {
             if (typeof probe.kill === "function") {
@@ -2013,13 +2061,13 @@ export function startDaemon(config = {}, deps = {}) {
             // ignore; we already settled
           }
           logError(`tmux list-sessions probe timed out after ${TMUX_PROBE_TIMEOUT_MS}ms`);
-          settle([]);
+          settle([], false);
         }, TMUX_PROBE_TIMEOUT_MS);
         if (typeof timer.unref === "function") {
           timer.unref();
         }
       } catch {
-        settle([]);
+        settle([], false);
       }
     });
   }
@@ -2034,16 +2082,287 @@ export function startDaemon(config = {}, deps = {}) {
   async function killTmuxSessionsForDeletedTask(taskId) {
     if (!FIRE_TMUX_MODE_ACTIVE || !taskId) return 0;
     const prefix = buildFireTmuxSessionPrefix(taskId);
-    const sessions = await listAllTmuxSessions();
+    const { sessions } = await listAllTmuxSessions();
     let killed = 0;
     for (const name of sessions) {
       if (name.startsWith(prefix)) {
         log(`Killing orphaned tmux session ${name} for deleted task ${taskId}`);
         killFireTmuxSession(name);
+        forgetFireSessionRecord({ tmuxSession: name });
         killed += 1;
       }
     }
     return killed;
+  }
+
+  // --- tmux Fire hand-off across daemon restarts ---------------------------
+  //
+  // Shutdown in tmux mode deliberately leaves Fires running, but a fresh
+  // daemon starts with an empty `activeTaskProcesses` by definition. Both
+  // stale-task sweeps decide "this task is dead" from that map alone, so
+  // without the adoption path below every survivor of the hand-off is
+  // PATCHed to `killed` seconds after the new daemon connects — destroying
+  // the exact work the hand-off exists to preserve. Regression history:
+  // 2026-07-23, 2026-07-31, 2026-08-31.
+
+  // Persist what a successor daemon needs to adopt this session. Best-effort:
+  // failing here costs post-restart fidelity, never the running Fire.
+  function rememberFireSessionRecord(taskId, record) {
+    if (!FIRE_TMUX_MODE_ACTIVE || !record?.tmuxSession) return;
+    try {
+      writeFireSessionRecord(FIRE_SESSION_REGISTRY_DIR, {
+        taskId,
+        projectId: record.projectId,
+        tmuxSession: record.tmuxSession,
+        logPath: record.logPath,
+        logStartOffset: record.logStartOffset,
+        exitMarkerToken: record.exitMarkerToken,
+        spawnedAtMs: record.spawnedAtMs,
+        daemonName: AGENT_NAME,
+      });
+    } catch (error) {
+      logError(
+        `Failed to persist tmux hand-off record for task ${taskId}: ${error?.message || error}`,
+      );
+    }
+  }
+
+  // Drop the hand-off record once the session it describes is provably gone.
+  // `pruneFireSessionRecords` at startup is the backstop for the paths that
+  // never get to run (SIGKILL, power loss).
+  function forgetFireSessionRecord(record) {
+    if (!record?.tmuxSession) return;
+    try {
+      deleteFireSessionRecord(FIRE_SESSION_REGISTRY_DIR, record.tmuxSession);
+    } catch {
+      // best effort; the startup prune will collect it
+    }
+  }
+
+  function readFireSessionRecordSafe(sessionName) {
+    try {
+      return readFireSessionRecord(FIRE_SESSION_REGISTRY_DIR, sessionName);
+    } catch {
+      return null;
+    }
+  }
+
+  // A session can outlive the Fire inside it (a wrapper shell that never
+  // exited, a pane held open by `remain-on-exit`). Adopting one of those is
+  // worse than killing it: the reaper only ever speaks when a session
+  // disappears, so the task would sit at `running` with nobody left to report
+  // its death. The hand-off record's exit marker is the only evidence that
+  // distinguishes the two, which is why this can only be checked for sessions
+  // we have a record for. Returns the fire's exit code, or null when it is
+  // still running (or when we cannot tell).
+  function readAdoptedFireExitCode(sidecar) {
+    if (!sidecar?.logPath || !sidecar?.exitMarkerToken) return null;
+    return findFireExitCode(sidecar.logPath, {
+      minOffset: sidecar.logStartOffset,
+      markerToken: sidecar.exitMarkerToken,
+    });
+  }
+
+  // `FIRE_TMUX_MODE_ACTIVE` is a one-shot startup snapshot (`tmux -V` via
+  // spawnSync). If that probe failed transiently — fork pressure, a PATH blip
+  // — this process spends its ENTIRE life believing tmux is absent, so both
+  // stale sweeps would skip the tmux lookup entirely and kill every Fire the
+  // previous daemon left in a tmux server that is running perfectly well.
+  // That is the same mass kill by a different door.
+  //
+  // Re-probe before killing. We deliberately do NOT adopt in this state: this
+  // process spawns fires directly and never started the tmux liveness reaper,
+  // so an adopted record would have no watcher. Declining to destroy is
+  // enough — the next restart with a healthy probe adopts them properly.
+  function tmuxFiresMayExistUnseen() {
+    return FIRE_TMUX_MODE_ENABLED && !FIRE_TMUX_MODE_ACTIVE && isTmuxAvailable();
+  }
+
+  // Sessions already identified as orphaned shells and killed. `tmux
+  // kill-session` is asynchronous, so a sweep running moments later still
+  // sees the name in `list-sessions` — and by then the hand-off record is
+  // gone, which would make it look like a live Fire with no metadata and put
+  // the task straight back to `running`.
+  const retiredOrphanFireSessions = new Set();
+
+  // Shared by both adoption entry points: kill the shell, drop the record and
+  // report "not alive" so the caller falls through to its normal dead-task
+  // handling.
+  function retireOrphanedFireSession(sessionName, taskId, exitCode) {
+    retiredOrphanFireSessions.add(sessionName);
+    log(
+      `Tmux session ${sessionName} outlived its Fire for task ${taskId} ` +
+        `(exit marker code=${exitCode}); killing the orphaned shell`,
+    );
+    killFireTmuxSession(sessionName);
+    forgetFireSessionRecord({ tmuxSession: sessionName });
+  }
+
+  // Build an `activeTaskProcesses` entry for a tmux session this daemon did
+  // not spawn. `child` is deliberately absent: the `tmux new-session` client
+  // belonged to the previous daemon and exited long ago.
+  //
+  // This is the one record shape where a truthy `child` does NOT mean "a fire
+  // is running here" — so any code asking that question must go through
+  // `recordHasLiveFire`, never `record.child`. Getting it wrong is not
+  // cosmetic: the restart/create gates read as "nothing running" and spawn a
+  // second fire into a worktree that already has one.
+  function buildAdoptedTmuxRecord({ sessionName, projectId, sidecar }) {
+    return {
+      child: null,
+      projectId: sidecar?.projectId || String(projectId || ""),
+      logPath: sidecar?.logPath || "",
+      logStartOffset: Number(sidecar?.logStartOffset) || 0,
+      exitMarkerToken: sidecar?.exitMarkerToken || "",
+      // Without a record we have no real spawn time. Anchoring at "now" costs
+      // one reaper grace period of delay and is far safer than a 0, which
+      // would make the record instantly reapable.
+      spawnedAtMs: Number(sidecar?.spawnedAtMs) || Date.now(),
+      stopForceKillTimer: null,
+      managedByFireBridge: true,
+      tmuxSession: sessionName,
+      tmuxMode: true,
+      adopted: true,
+      // No record => no logPath and no marker nonce, so the reaper cannot
+      // classify this fire's exit from evidence. Flagged so it reports an
+      // honest KILLED instead of taking the "cannot classify" silent exit,
+      // which would strand the task at `running` with nobody left to speak
+      // for it.
+      adoptedWithoutMetadata: !sidecar,
+    };
+  }
+
+  // Adopt the live tmux Fire belonging to `task`, if there is one. Returns
+  // true when the task must NOT be treated as stale. Called from both kill
+  // paths, which is also the only place a session whose hand-off record is
+  // missing can be adopted at all: the task id is not recoverable from a
+  // session name, but the backend just told us which ids to look for.
+  function adoptLiveTmuxFireForTask(task, sessionNames) {
+    const taskId = String(task?.id || "");
+    if (!taskId) return false;
+    if (activeTaskProcesses.has(taskId) || activePtySessions.has(taskId)) return true;
+    if (!FIRE_TMUX_MODE_ACTIVE) return false;
+    const prefix = buildFireTmuxSessionPrefix(taskId);
+    const candidates = (sessionNames || []).filter(
+      (name) => name.startsWith(prefix) && !retiredOrphanFireSessions.has(name),
+    );
+    if (candidates.length === 0) return false;
+    // Session names truncate the task id to 32 chars, so a record could in
+    // principle have been filed for a different task sharing that prefix.
+    // Trust it only when it names the task we are actually rescuing.
+    const recordFor = (name) => {
+      const stored = readFireSessionRecordSafe(name);
+      return stored && stored.taskId === taskId ? stored : null;
+    };
+    // With more than one candidate (an abandoned session left beside a
+    // respawn) prefer the one we have a record for: adopting blind would pick
+    // by tmux's list order and could watch the wrong session's exit marker.
+    const sessionName = candidates.find((name) => recordFor(name)) || candidates[0];
+    const sidecar = recordFor(sessionName);
+    const exitCode = readAdoptedFireExitCode(sidecar);
+    if (exitCode !== null) {
+      retireOrphanedFireSession(sessionName, taskId, exitCode);
+      return false;
+    }
+    activeTaskProcesses.set(
+      taskId,
+      buildAdoptedTmuxRecord({ sessionName, projectId: task?.project_id, sidecar }),
+    );
+    log(
+      `Task ${taskId} still has a live tmux Fire (session=${sessionName}); adopted instead of killed` +
+        (sidecar ? "" : " — no hand-off record, so its exit can only be classified as killed"),
+    );
+    return true;
+  }
+
+  // Resolves once the startup adoption pass has finished. Both stale sweeps
+  // await it so they can never judge a task before its Fire has had the
+  // chance to be reclaimed.
+  let adoptOrphanedTmuxFiresPromise = null;
+
+  // Startup pass: adopt every Fire session the previous daemon left behind,
+  // then discard hand-off records whose session is gone.
+  async function adoptOrphanedTmuxFires() {
+    if (!FIRE_TMUX_MODE_ACTIVE) return 0;
+    const { sessions, conclusive } = await listAllTmuxSessions();
+    if (!conclusive) {
+      // We could not ask tmux. Adopting nothing is survivable — both stale
+      // sweeps re-probe and adopt whatever they find. Pruning is not: the
+      // prune below deletes every record whose session is absent from this
+      // list, so running it on a blind listing would wipe the
+      // `exitMarkerToken`s of every live Fire on the host, permanently
+      // downgrading them all to `adoptedWithoutMetadata`.
+      logError(
+        "Could not list tmux sessions for Fire adoption; adopting nothing and keeping every hand-off record",
+      );
+      return 0;
+    }
+
+    let adopted = 0;
+    for (const sessionName of sessions) {
+      if (!sessionName.startsWith(FIRE_TMUX_SESSION_NAMESPACE)) continue;
+      if (retiredOrphanFireSessions.has(sessionName)) continue;
+      const sidecar = readFireSessionRecordSafe(sessionName);
+      // No record: we cannot learn the task id from the session name (it is
+      // truncated to 32 chars). Leave it — the kill paths adopt it later,
+      // once the backend supplies the id.
+      if (!sidecar) continue;
+
+      if (pendingTaskStarts.has(sidecar.taskId)) {
+        // A `create_task` for this task is mid-flight and will install its own
+        // record when the spawn completes. Adopting now just gets overwritten
+        // moments later, which is how a session ends up orphaned with its
+        // record still on disk.
+        continue;
+      }
+
+      const tracked = activeTaskProcesses.get(sidecar.taskId);
+      if (tracked) {
+        // A `create_task`/`restart_task` redelivered into the adoption window
+        // can spawn a second session for the same task before we get here.
+        // Keeping both records is the dangerous part: on the NEXT restart
+        // adoption would pick between them by tmux's arbitrary list order and
+        // could end up watching the abandoned session's exit marker while the
+        // live fire's death goes unreported. Drop the loser's record so the
+        // task has exactly one, and say so loudly — two fires in one worktree
+        // is a real problem, just not one we can safely resolve by killing.
+        if (tracked.tmuxSession !== sessionName) {
+          logError(
+            `Task ${sidecar.taskId} has a second tmux session ${sessionName} besides the tracked ` +
+              `${tracked.tmuxSession || "(none)"}; discarding its hand-off record. Two fires may be ` +
+              `sharing one worktree — inspect and kill the stale session manually.`,
+          );
+          forgetFireSessionRecord({ tmuxSession: sessionName });
+        }
+        continue;
+      }
+
+      const exitCode = readAdoptedFireExitCode(sidecar);
+      if (exitCode !== null) {
+        retireOrphanedFireSession(sessionName, sidecar.taskId, exitCode);
+        continue;
+      }
+
+      activeTaskProcesses.set(
+        sidecar.taskId,
+        buildAdoptedTmuxRecord({ sessionName, projectId: sidecar.projectId, sidecar }),
+      );
+      adopted += 1;
+      log(
+        `Adopted tmux Fire task ${sidecar.taskId} (session=${sessionName}) left running by a previous daemon`,
+      );
+    }
+
+    try {
+      pruneFireSessionRecords(FIRE_SESSION_REGISTRY_DIR, sessions);
+    } catch (error) {
+      logError(`Failed to prune tmux hand-off records: ${error?.message || error}`);
+    }
+
+    if (adopted > 0) {
+      log(`Adopted ${adopted} tmux Fire task(s) from a previous daemon`);
+    }
+    return adopted;
   }
   // -------------------------------------------------------------------------
 
@@ -3544,6 +3863,16 @@ export function startDaemon(config = {}, deps = {}) {
     log(`Daemon Name: ${AGENT_NAME}`);
     log(`Supported Backends: ${SUPPORTED_BACKENDS.join(", ")}`);
 
+    // Reclaim the Fires the previous daemon left running. Started here rather
+    // than awaited: connecting must not wait on a wedged tmux server. Both
+    // stale sweeps await `adoptOrphanedTmuxFiresPromise` before judging
+    // anything, which is the ordering that actually matters — they decide
+    // liveness from `activeTaskProcesses`, so a survivor not yet adopted when
+    // they run is a survivor that gets killed.
+    adoptOrphanedTmuxFiresPromise = adoptOrphanedTmuxFires().catch((error) => {
+      logError(`adoptOrphanedTmuxFires failed: ${error?.message || error}`);
+    });
+
     client.connect().catch((err) => {
       logError(`Failed to connect: ${err}`);
     });
@@ -4327,6 +4656,8 @@ export function startDaemon(config = {}, deps = {}) {
 
   async function recoverStaleTasks() {
     try {
+      // Never judge a task before startup adoption has had its say.
+      await adoptOrphanedTmuxFiresPromise;
       const response = await fetchFn(`${BACKEND_HTTP}/api/tasks`, {
         method: "GET",
         headers: {
@@ -4359,8 +4690,48 @@ export function startDaemon(config = {}, deps = {}) {
         return;
       }
 
+      // Startup is the main case the tmux hand-off exists for: the previous
+      // daemon deliberately left its Fires running and this fresh process has
+      // an empty `activeTaskProcesses` by definition, so "not in memory"
+      // proves nothing here. `adoptOrphanedTmuxFires` has already claimed
+      // every session with a hand-off record; this second pass catches the
+      // ones without a record, which only become identifiable now that the
+      // backend has told us which task ids to look for.
+      if (tmuxFiresMayExistUnseen()) {
+        logError(
+          `tmux is reachable but this daemon started without tmux mode active; skipping stale ` +
+            `recovery for ${staleTasks.length} task(s) rather than killing Fires it cannot see`,
+        );
+        return;
+      }
+      const tmuxSessions = FIRE_TMUX_MODE_ACTIVE ? await listAllTmuxSessions() : null;
+      if (tmuxSessions && !tmuxSessions.conclusive) {
+        // An unanswerable `tmux list-sessions` is not evidence that nothing is
+        // running — and this is the one sweep with no second chance, since it
+        // runs once per process. Killing on a blind probe is precisely how a
+        // single wedged tmux server reproduces the 2026-08-31 mass kill.
+        logError(
+          `Could not list tmux sessions; skipping stale recovery for ${staleTasks.length} task(s) rather than killing on a blind probe`,
+        );
+        return;
+      }
+      const deadTasks = staleTasks.filter((task) => {
+        // A spawn already in flight has no record yet either; killing it
+        // would shoot down a Fire this daemon is in the middle of starting.
+        if (pendingTaskStarts.has(String(task?.id || ""))) return false;
+        return !adoptLiveTmuxFireForTask(task, tmuxSessions?.sessions || []);
+      });
+
+      if (deadTasks.length === 0) {
+        return;
+      }
+
+      // Count what the backend actually accepted, not what we attempted: a
+      // 409/500 leaves the task running, and reporting it as recovered has
+      // repeatedly sent readers of this log looking in the wrong place.
+      let killedCount = 0;
       await Promise.all(
-        staleTasks.map(async (task) => {
+        deadTasks.map(async (task) => {
           const taskId = task?.id;
           if (!taskId) return;
           const patchResp = await fetchFn(`${BACKEND_HTTP}/api/tasks/${taskId}`, {
@@ -4375,12 +4746,13 @@ export function startDaemon(config = {}, deps = {}) {
           if (!patchResp.ok) {
             logError(`Failed to mark stale task ${taskId} as killed: HTTP ${patchResp.status}`);
           } else {
+            killedCount += 1;
             markBackendHttpSuccess();
           }
         }),
       );
 
-      log(`Recovered ${staleTasks.length} stale task(s) to killed`);
+      log(`Recovered ${killedCount}/${deadTasks.length} stale task(s) to killed`);
     } catch (error) {
       logError(`recoverStaleTasks error: ${error?.message || error}`);
     }
@@ -4392,6 +4764,7 @@ export function startDaemon(config = {}, deps = {}) {
 
   async function reconcileAssignedTasks() {
     try {
+      await adoptOrphanedTmuxFiresPromise;
       const response = await fetchFn(`${BACKEND_HTTP}/api/tasks`, {
         method: "GET",
         headers: {
@@ -4426,10 +4799,36 @@ export function startDaemon(config = {}, deps = {}) {
       });
 
       let killedCount = 0;
+      // Shutdown deliberately leaves tmux-detached Fires running, and a ws
+      // reconnect does not repopulate `activeTaskProcesses`, so this map
+      // under-reports what is still alive on this host. Ask tmux.
+      if (assigned.length && tmuxFiresMayExistUnseen()) {
+        logError(
+          `tmux is reachable but this daemon started without tmux mode active; skipping reconcile ` +
+            `for ${assigned.length} assigned task(s)`,
+        );
+        return;
+      }
+      const tmuxSessions =
+        FIRE_TMUX_MODE_ACTIVE && assigned.length ? await listAllTmuxSessions() : null;
+      if (tmuxSessions && !tmuxSessions.conclusive) {
+        // Same rule as the startup sweep. Here we do get another chance on the
+        // next reconnect, which is all the more reason not to guess.
+        logError(
+          `Could not list tmux sessions; skipping reconcile for ${assigned.length} assigned task(s)`,
+        );
+        return;
+      }
       for (const task of assigned) {
         const taskId = String(task?.id || "");
         if (!taskId) continue;
-        if (localTaskIds.has(taskId)) {
+        if (localTaskIds.has(taskId) || pendingTaskStarts.has(taskId)) {
+          continue;
+        }
+        // Adopts on the spot rather than merely skipping: a survivor that
+        // dodges the kill but gains no watcher would sit at `running`
+        // forever, because nothing else reports a tmux Fire's death.
+        if (adoptLiveTmuxFireForTask(task, tmuxSessions?.sessions || [])) {
           continue;
         }
         const patchResp = await fetchFn(`${BACKEND_HTTP}/api/tasks/${taskId}`, {
@@ -4465,7 +4864,12 @@ export function startDaemon(config = {}, deps = {}) {
   // half-close). Fires raise their own ws to backend independently — this is
   // the daemon's *own* belief about which tasks it is hosting. The backend
   // arbitrates between this push and the persisted task state.
-  function pushAgentAliveTasks(reason) {
+  async function pushAgentAliveTasks(reason) {
+    // Adoption may still be running when the ws handshake completes. This is
+    // the only channel that revokes a `killed_reason=daemon_disconnected`
+    // flag, so pushing before the adopted tasks are in the map would leave
+    // them showing as killed in the UI even though this daemon rescued them.
+    await adoptOrphanedTmuxFiresPromise;
     const aliveTaskIds = getActiveTaskIds();
     if (aliveTaskIds.length === 0) {
       return Promise.resolve();
@@ -6213,6 +6617,7 @@ export function startDaemon(config = {}, deps = {}) {
       }
 
       activeTaskProcesses.delete(taskId);
+      forgetFireSessionRecord(processRecord);
       return true;
     }
 
@@ -6285,6 +6690,15 @@ export function startDaemon(config = {}, deps = {}) {
 
   function shouldDaemonReportFireChildTerminalStatus(record) {
     return Boolean(record?.forceDaemonTerminalStatusReport) || !Boolean(record?.managedByFireBridge);
+  }
+
+  // "Does this record stand for a live fire?" `child` alone is not the answer:
+  // an ADOPTED tmux record has none — the `tmux new-session` client belonged
+  // to the daemon that spawned it — while the fire it points at is very much
+  // alive. Every already-active gate must ask this instead, or it will spawn
+  // a second fire into a worktree that already has one.
+  function recordHasLiveFire(record) {
+    return Boolean(record?.child) || Boolean(record?.tmuxMode && record?.tmuxSession);
   }
 
   // RFC 0029: confirm that a task the backend believes is dead is actually
@@ -6385,6 +6799,7 @@ export function startDaemon(config = {}, deps = {}) {
             entry.stopForceKillTimer = null;
           }
           activeTaskProcesses.delete(taskId);
+          forgetFireSessionRecord(entry);
         }
         entry = undefined;
       }
@@ -6442,7 +6857,12 @@ export function startDaemon(config = {}, deps = {}) {
 
     const processRecord = activeTaskProcesses.get(taskId);
     const ptyRecord = activePtySessions.get(taskId);
-    if ((!processRecord || !processRecord.child) && !ptyRecord) {
+    // `recordHasLiveFire`, not `child`: an adopted tmux record has no child,
+    // and reading it as "nothing to stop" would report the task KILLED to the
+    // backend while leaving the fire running in its session, still writing to
+    // the worktree. Nothing would ever notice — the reaper only speaks when a
+    // session disappears.
+    if (!recordHasLiveFire(processRecord) && !ptyRecord) {
       log(`Stop requested for task ${taskId}, but no active process found`);
       sendStopAck(false);
       // "Nothing to stop" IS the terminal answer, and the server cannot infer
@@ -6820,9 +7240,12 @@ export function startDaemon(config = {}, deps = {}) {
     }
 
     const existingTaskRecord = activeTaskProcesses.get(taskId);
-    if (existingTaskRecord?.child || pendingTaskStarts.has(taskId)) {
+    if (recordHasLiveFire(existingTaskRecord) || pendingTaskStarts.has(taskId)) {
       log(
-        `Duplicate create_task ignored for ${taskId}: task already active (pid=${existingTaskRecord?.child?.pid ?? "unknown"})`,
+        `Duplicate create_task ignored for ${taskId}: task already active (` +
+          `${existingTaskRecord?.tmuxSession
+            ? `tmux=${existingTaskRecord.tmuxSession}`
+            : `pid=${existingTaskRecord?.child?.pid ?? "unknown"}`})`,
       );
       sendAgentCommandAck({
         requestId,
@@ -7026,7 +7449,7 @@ export function startDaemon(config = {}, deps = {}) {
       const outputCapture = createChildOutputCapture({ logPath, logStartOffset });
       const spawnedAtMs = Date.now();
 
-      activeTaskProcesses.set(taskId, {
+      const activeProcessRecord = {
         child,
         projectId,
         logPath,
@@ -7044,7 +7467,12 @@ export function startDaemon(config = {}, deps = {}) {
         managedByFireBridge: true,
         tmuxSession: tmuxSession || null,
         tmuxMode: Boolean(tmuxSession),
-      });
+      };
+      activeTaskProcesses.set(taskId, activeProcessRecord);
+      // Mirror the parts of the record that only exist in this process's
+      // memory, so a successor daemon can adopt this Fire instead of
+      // mistaking the hand-off for a dead task.
+      rememberFireSessionRecord(taskId, activeProcessRecord);
 
       client
         .sendJson({
@@ -7150,6 +7578,7 @@ export function startDaemon(config = {}, deps = {}) {
           clearTimeout(active.stopForceKillTimer);
         }
         activeTaskProcesses.delete(taskId);
+        forgetFireSessionRecord(active);
         const suppressExitStatusReport = suppressedExitStatusReports.has(taskId);
         suppressedExitStatusReports.delete(taskId);
         if (logStream) {
@@ -7340,12 +7769,17 @@ export function startDaemon(config = {}, deps = {}) {
           activeTarget.stopForceKillTimer = null;
         }
         activeTaskProcesses.delete(normalizedTargetTaskId);
+        forgetFireSessionRecord(activeTarget);
         activeTarget = undefined;
       }
     }
 
+    // The probe above already cleared the record if the session was
+    // conclusively gone, so a surviving tmuxMode entry means a live session.
+    const targetHasLiveFire = recordHasLiveFire(activeTarget);
+
     if (isRefreshSessionInplace) {
-      if (!activeTarget?.child) {
+      if (!targetHasLiveFire) {
         reportRestartFailure({
           taskId: normalizedTargetTaskId,
           projectId: normalizedProjectId,
@@ -7356,7 +7790,7 @@ export function startDaemon(config = {}, deps = {}) {
         });
         return;
       }
-    } else if (activeTarget?.child) {
+    } else if (targetHasLiveFire) {
       // tmux-mode failures point at the tmux session, not a meaningless pid.
       const description = activeTarget.tmuxMode
         ? `task already active in tmux session ${activeTarget.tmuxSession || "(unknown)"} — stop the task before restarting`
@@ -7741,6 +8175,9 @@ export function startDaemon(config = {}, deps = {}) {
       tmuxMode: Boolean(tmuxSession),
     };
     activeTaskProcesses.set(normalizedTargetTaskId, activeProcessRecord);
+    // See the create_task path: this is the only copy of `exitMarkerToken`
+    // that survives the current process.
+    rememberFireSessionRecord(normalizedTargetTaskId, activeProcessRecord);
 
     // In tmux mode the Fire process writes directly to logPath via shell
     // redirection inside the tmux session, so the daemon does not pipe
@@ -7831,6 +8268,7 @@ export function startDaemon(config = {}, deps = {}) {
         clearTimeout(active.stopForceKillTimer);
       }
       activeTaskProcesses.delete(normalizedTargetTaskId);
+      forgetFireSessionRecord(active);
       const suppressExitStatusReport = suppressedExitStatusReports.has(normalizedTargetTaskId);
       suppressedExitStatusReports.delete(normalizedTargetTaskId);
       if (logStream) {

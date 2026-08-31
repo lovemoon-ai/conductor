@@ -17,6 +17,7 @@ import {
 } from "../src/daemon-lock.js";
 import { resolveConductorConfigPath, resolveConductorHome } from "../src/conductor-paths.js";
 import { startDaemon } from "../src/daemon.js";
+import { PRODUCTION_IDENTITY_ENV_KEYS, buildSandboxedEnv } from "./helpers/sandboxed-env.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DAEMON_BIN = path.resolve(__dirname, "..", "bin", "conductor-daemon.js");
@@ -391,11 +392,45 @@ describe("daemon --force lock ownership", () => {
   });
 });
 
+describe("test sandbox for spawned conductor binaries", () => {
+  // Guards the sandbox itself. The 2026-08-31 leak happened because the test
+  // set CONDUCTOR_HOME and assumed that was isolation, while the ambient
+  // CONDUCTOR_CONFIG (higher precedence) quietly won.
+  it("strips every production identity variable a Conductor task shell exports", () => {
+    const taskShellEnv = {
+      PATH: "/usr/bin",
+      HOME: "/Users/dev",
+      ...Object.fromEntries(PRODUCTION_IDENTITY_ENV_KEYS.map((key) => [key, `real-${key}`])),
+    };
+
+    const env = buildSandboxedEnv(
+      { CONDUCTOR_HOME: "/tmp/sandbox/home", CONDUCTOR_WS: "/tmp/sandbox/ws", HOME: "/tmp/sandbox" },
+      taskShellEnv,
+    );
+
+    for (const key of PRODUCTION_IDENTITY_ENV_KEYS) {
+      assert.ok(
+        env[key] === undefined || !String(env[key]).startsWith("real-"),
+        `${key} must not reach a spawned binary just because the ambient shell had it`,
+      );
+    }
+    assert.strictEqual(env.CONDUCTOR_HOME, "/tmp/sandbox/home");
+    assert.strictEqual(env.HOME, "/tmp/sandbox");
+    assert.strictEqual(env.PATH, "/usr/bin");
+  });
+});
+
 describe("conductor-daemon --nohup preflight", () => {
+  // This spawns the real daemon binary. `{ ...process.env }` here is what
+  // leaked three production daemons onto a developer's machine on 2026-08-31
+  // (see helpers/sandboxed-env.js): running inside a Conductor task shell,
+  // the child inherited CONDUCTOR_CONFIG + a live agent token, and
+  // CONDUCTOR_CONFIG outranks the sandbox's CONDUCTOR_HOME. Nothing reaches
+  // the child now unless it is named.
   const runPreflight = (args, env) =>
     new Promise((resolve) => {
       const child = spawn(process.execPath, [DAEMON_BIN, ...args], {
-        env: { ...process.env, ...env },
+        env: buildSandboxedEnv(env),
         stdio: ["ignore", "pipe", "pipe"],
       });
       let stdout = "";
@@ -427,7 +462,14 @@ describe("conductor-daemon --nohup preflight", () => {
         lockBuilder({ pid: victim.pid, workspaceRoot, conductorHome }),
       );
       const result = await fn({
-        env: { CONDUCTOR_WS: workspaceRoot, CONDUCTOR_HOME: conductorHome },
+        env: {
+          CONDUCTOR_WS: workspaceRoot,
+          CONDUCTOR_HOME: conductorHome,
+          // Last-resort floor: resolveConductorHome falls back to
+          // $HOME/.conductor, so a bug that drops CONDUCTOR_HOME must still
+          // not land on the developer's real home.
+          HOME: root,
+        },
         victim,
         workspaceRoot,
         conductorHome,
@@ -437,9 +479,59 @@ describe("conductor-daemon --nohup preflight", () => {
       return result;
     } finally {
       victim.kill("SIGKILL");
+      // Reap anything the preflight daemonized. Every one of these cases is
+      // supposed to REFUSE to start, so a daemon here is itself the bug —
+      // and in 2026-08-31 the leaked daemons outlived `fs.rmSync(root)`,
+      // which they simply recreated. Kill first, then fail loudly.
+      const leakedPid = await waitForLeakedDaemonPid(workspaceRoot, victim.pid);
+      if (leakedPid !== null) {
+        try {
+          process.kill(leakedPid, "SIGKILL");
+        } catch {
+          // already gone
+        }
+      }
       fs.rmSync(root, { recursive: true, force: true });
+      assert.strictEqual(
+        leakedPid,
+        null,
+        `preflight leaked a daemon (PID ${leakedPid}); it must refuse to start, not daemonize`,
+      );
     }
   };
+
+  // A leaked daemon daemonizes: the process we spawned exits immediately and
+  // the survivor writes its lock a moment later, so checking once right after
+  // `close` reliably reports "clean" for a leak that is about to appear.
+  // Poll instead — a passing run pays this once per case.
+  async function waitForLeakedDaemonPid(workspaceRoot, victimPid, timeoutMs = 1500) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const pid = readLeakedDaemonPid(workspaceRoot, victimPid);
+      if (pid !== null) return pid;
+      if (Date.now() >= deadline) return null;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+
+  // The lock file is the daemon's own announcement that it started: the
+  // fixture writes it with the victim's pid, so any *other* live pid in it
+  // was put there by a process the preflight spawned.
+  function readLeakedDaemonPid(workspaceRoot, victimPid) {
+    let pid;
+    try {
+      pid = parseDaemonLockState(fs.readFileSync(path.join(workspaceRoot, "daemon.pid"), "utf8"))?.pid;
+    } catch {
+      return null;
+    }
+    if (!pid || pid === victimPid || pid === process.pid) return null;
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return null; // recorded but dead — nothing leaked
+    }
+    return pid;
+  }
 
   it("detects an identity-bearing lock without --force instead of starting a second daemon", async () => {
     await withFixture(

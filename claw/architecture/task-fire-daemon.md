@@ -539,29 +539,51 @@ owner lease / epoch 现在还没有。
 - `realtimeHub.taskToAgent`
 - `agent_resume`
 
-### 13.5 不要拿单进程内存当 task 存活判定（当前仍是缺陷）
+### 13.5 不要拿单进程内存当 task 存活判定（已修复，机制见下）
 
-daemon 有两处会把 task 判成 stale 并 PATCH `killed`，**都只看单进程内存**
-（`activeTaskProcesses` / `activePtySessions`），不查真实执行载体：
+daemon 有两处会把 task 判成 stale 并 PATCH `killed`：
 
-- `recoverStaleTasks()` —— daemon **启动**路径，无宽限期，启动即无条件杀光所有
-  `agent_host` 匹配的 running task
+- `recoverStaleTasks()` —— daemon **启动**路径，无宽限期
 - `reconcileAssignedTasks()` —— WS **重连**路径，有 60s 宽限期
 
-但 `fire_tmux_mode` 下 daemon 关闭时是**故意**保留 tmux Fire 的
-（`leaving tmux-detached Fire task ... running`），新进程的内存表必然为空。于是
-daemon 重启会杀掉上一个 daemon 刻意保留的 Fire —— 启动路径正是这个场景的主场景。
+历史上两处都**只看单进程内存**（`activeTaskProcesses` / `activePtySessions`），
+不查真实执行载体。但 `fire_tmux_mode` 下 daemon 关闭时是**故意**保留 tmux Fire 的
+（`leaving tmux-detached Fire task ... running`），新进程的内存表必然为空 ——
+于是 daemon 重启会杀掉上一个 daemon 刻意保留的 Fire。复发三次
+（20260723 / 20260731 / 20260831）。
 
-这个缺陷复发过三次（20260723 / 20260731 / 20260831）。**截至本次记录仍未修复。**
-方案与验证结论见
-`claw/tasks/todo/008_P1_2d_daemon-adopt-tmux-fires-on-startup.md`。
+现在的模型是**认领（adopt）而不是跳过**：
+
+1. spawn 每个 tmux Fire 时，把 reaper 判定终态所需的字段落盘成一份
+   **hand-off record**：`$CONDUCTOR_HOME/daemon/fire-sessions/<session>.json`
+   （`cli/src/fire-session-registry.js`）。关键是 `exitMarkerToken` —— 它是
+   per-spawn 随机 nonce，跨进程不可复现，不落盘就永远读不回退出码。
+   记录以 **tmux session 名**为 key，因为 session 名是继任 daemon 唯一能枚举的
+   标识；**session 名不能反解出 task id**（`buildFireTmuxSessionPrefix` 把 task id
+   截断到 32 字符，短于 UUID）。
+2. 启动时 `adoptOrphanedTmuxFires()` 枚举 `conductor-fire-*` 会话，按记录重建
+   record 并注册回 `activeTaskProcesses`，于是 liveness reaper 照常盯着它。
+   这一步在 `client.connect()` **之前**发起，两处 stale 判定都 `await`
+   同一个 promise 后才动手。
+3. 两处判定路径还会各自查一次 tmux，并对没有 hand-off record 的会话**就地认领**
+   （降级模式：只有后端此刻才告诉我们 task id）。降级 record 标
+   `adoptedWithoutMetadata`，会话消失时如实上报 KILLED——沉默会让任务永远卡在
+   `running`，因为除了 reaper 没人盯着被认领的会话。
+4. 会话还活着但记录里的 exit marker 已写出 = **壳活 fire 已死**的孤儿会话：
+   杀掉壳、删记录，让正常 stale 流程上报终态。认领它反而会让任务永久 `running`。
+
+护栏：整条路径由 `FIRE_TMUX_MODE_ACTIVE` 把关，非 tmux 部署行为不变。
+回归测试 `cli/test/daemon-tmux-adoption.test.js` 固化了三个场景（会话存活 /
+无会话 / 孤儿会话）× 两条 kill 路径 —— **只修 `reconcileAssignedTasks` 一处会被
+测试抓住**，这正是前几次差点漏掉的地方。
 
 ### 13.6 §2.2 同样适用于"两个 daemon"，不只是 daemon vs fire
 
 两个 daemon 用同一个 `daemonName` 连同一后端时，后端每个 agent 只保留一条 WS，
 新连接顶掉旧连接，被顶掉的重连再顶回去 —— 形成秒级乒乓风暴
-（`close_code=1005`、`last_presence_at=never`）。叠加 13.5 的内存式判定，
-"重复上线"会被直接放大成"批量误杀"。
+（`close_code=1005`、`last_presence_at=never`）。叠加 13.5 修复前的内存式判定，
+"重复上线"会被直接放大成"批量误杀"。13.5 的认领机制消掉了放大器，但
+**顶号本身仍未治理**：后端对同名 `daemonName` 重复上线依旧静默顶号，需单独立项。
 
 排查指纹：日志里 `localActive=0 markedKilled=N` 与 `backendAssigned=0 localActive=N`
 两种视角交替出现。确认手段是 `lsof -nP -p <pid> -a -i` 数有几个进程连着生产，
@@ -575,6 +597,9 @@ daemon 重启会杀掉上一个 daemon 刻意保留的 Fire —— 启动路径�
 
 - daemon host 解析：
   `cli/src/daemon.js`
+- tmux Fire 跨 daemon 认领 + hand-off record：
+  `cli/src/daemon.js`（`adoptOrphanedTmuxFires` / `adoptLiveTmuxFireForTask`）
+  `cli/src/fire-session-registry.js`
 - fire host 解析：
   `modules/conductor-sdk/src/client.ts`
 - manual fire 创建 task：

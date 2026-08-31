@@ -77,18 +77,18 @@ daemon 关闭时**故意**保留 tmux Fire（`leaving tmux-detached Fire task ..
 
 已两次记录为建议项，均未进入实现。本次是第三次复发。
 
-## 修复状态：尚未落地
+## 修复状态：已落地（2026-09-01）
 
-**本次只提交文档，代码修复全部回退，留待单独评估。**
-方案、已验证的补丁全文、E2E 结论都记在
-`claw/tasks/todo/008_P1_2d_daemon-adopt-tmux-fires-on-startup.md`。
-
-待修的三处：
+三处全部修完，详见
+`claw/lessons/stable_daemon-adopt-tmux-fires-on-startup-20260901.md`。
+下面保留原始待修清单作为对照：
 
 1. `cli/src/daemon.js` — `recoverStaleTasks()`（启动路径）和
    `reconcileAssignedTasks()`（重连路径）在 PATCH killed 前都要查 tmux 存活。
+   ✅ 实际做的比这更进一步：**认领**而不是跳过，见下。
 2. `cli/test/daemon-lock.test.js` — `runPreflight` 白名单式构造 env，剥离生产身份变量。
-3. `cli/test/daemon-lock.test.js` — fixture 回收 preflight 泄漏的 daemon 并加断言。
+   ✅ 抽成 `cli/test/helpers/sandboxed-env.js`。
+3. `cli/test/daemon-lock.test.js` — fixture 回收 preflight 泄漏的 daemon 并加断言。✅
 
 ### 本地 E2E 已验证的结论
 

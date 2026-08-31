@@ -6796,6 +6796,19 @@ describe("Daemon", () => {
       },
       {
         spawn: (cmd, args, opts) => {
+          const child = new EventEmitter();
+          child.pid = 4242;
+          child.unref = () => {};
+          child.kill = () => {};
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          // Startup adoption probes `tmux list-sessions` before anything is
+          // spawned for a task. Answer it (no sessions) and keep it out of
+          // `spawnCalls`, which exists to observe the fire launch.
+          if (cmd === "tmux" && args?.[0] === "list-sessions") {
+            setImmediate(() => child.emit("exit", 1));
+            return child;
+          }
           spawnCalls.push({ cmd, args, opts });
           // The fire only writes its log *after* being spawned. Modelling
           // that matters: the daemon watermarks the log size at spawn time
@@ -6803,12 +6816,6 @@ describe("Daemon", () => {
           // full contents beforehand is (correctly) attributed to a previous
           // run and would not be reported.
           logWritten = true;
-          const child = new EventEmitter();
-          child.pid = 4242;
-          child.unref = () => {};
-          child.kill = () => {};
-          child.stdout = new EventEmitter();
-          child.stderr = new EventEmitter();
           forkChild = child;
           return child;
         },
