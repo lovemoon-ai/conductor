@@ -67,6 +67,16 @@ import {
   maskErrorForLogs,
   redactSecretsForLogs,
 } from "./handoff-log-mask.js";
+import {
+  DAEMON_LOCK_FILE_NAME,
+  FORCE_KILL_UNKNOWN_OWNER_ENV_VAR,
+  buildDaemonInstanceIdentity,
+  compareDaemonLockIdentity,
+  describeDaemonLockOwner,
+  describeForceRestartRefusal,
+  parseDaemonLockState,
+  serializeDaemonLock,
+} from "./daemon-lock.js";
 import { StringDecoder } from "node:string_decoder";
 
 dotenv.config();
@@ -911,6 +921,17 @@ export function startDaemon(config = {}, deps = {}) {
       readFileSync: deps.readFileSync || fs.readFileSync,
     }));
   const skipPidLockCheck = parseBooleanEnv(process.env.CONDUCTOR_TUI_DEBUG);
+  // Fingerprint of *this* daemon instance, persisted into daemon.pid so that a
+  // later `--force` can tell "restart myself" apart from "kill whoever happens
+  // to hold the lock". WORKSPACE_ROOT defaults to $HOME/ws, so unrelated
+  // instances collide on the same lock file by default.
+  const daemonInstanceIdentity = buildDaemonInstanceIdentity({
+    conductorHome: materializedConductorPathEnv.CONDUCTOR_HOME,
+    configPath: effectiveConfigPath,
+    workspaceRoot: WORKSPACE_ROOT,
+    daemonName: AGENT_NAME,
+    backendUrl: BACKEND_HTTP,
+  });
   const lockHandoffToken =
     normalizeOptionalString(config.LOCK_HANDOFF_TOKEN) ||
     normalizeOptionalString(process.env.CONDUCTOR_LOCK_HANDOFF_TOKEN);
@@ -2637,36 +2658,7 @@ export function startDaemon(config = {}, deps = {}) {
     DEFAULT_TERMINAL_RESUME_SNAPSHOT_MAX_BYTES,
   );
 
-  const readLockState = () => {
-    const raw = String(readFileSyncFn(LOCK_FILE, "utf-8") || "").trim();
-    if (!raw) {
-      return null;
-    }
-
-    const pid = Number.parseInt(raw, 10);
-    if (!Number.isNaN(pid) && pid > 0) {
-      return {
-        pid,
-        handoffFromPid: null,
-        handoffToken: null,
-        handoffExpiresAt: null,
-      };
-    }
-
-    try {
-      const parsed = JSON.parse(raw);
-      const parsedPid = normalizePositiveInt(parsed?.pid, null);
-      const parsedHandoffFromPid = normalizePositiveInt(parsed?.handoff_from_pid, null);
-      return {
-        pid: parsedPid ?? parsedHandoffFromPid,
-        handoffFromPid: parsedHandoffFromPid,
-        handoffToken: normalizeOptionalString(parsed?.handoff_token),
-        handoffExpiresAt: normalizePositiveInt(parsed?.handoff_expires_at, null),
-      };
-    } catch {
-      return null;
-    }
-  };
+  const readLockState = () => parseDaemonLockState(readFileSyncFn(LOCK_FILE, "utf-8"));
 
   const hasMatchingLockHandoff = (lockState) => {
     if (!lockState || !lockHandoffToken || !lockHandoffFromPid) {
@@ -2705,7 +2697,7 @@ export function startDaemon(config = {}, deps = {}) {
     return exitAndReturn(1);
   }
 
-  const LOCK_FILE = path.join(WORKSPACE_ROOT, "daemon.pid");
+  const LOCK_FILE = path.join(WORKSPACE_ROOT, DAEMON_LOCK_FILE_NAME);
   try {
     if (skipPidLockCheck) {
       log("CONDUCTOR_TUI_DEBUG enabled; skipping daemon PID lock enforcement");
@@ -2722,6 +2714,21 @@ export function startDaemon(config = {}, deps = {}) {
               const alive = isProcessAlive(pid);
               if (alive) {
                 if (config.FORCE) {
+                  const forceRefusal = describeForceRestartRefusal({
+                    lockState,
+                    identity: daemonInstanceIdentity,
+                    lockFile: LOCK_FILE,
+                    env: process.env,
+                  });
+                  if (forceRefusal) {
+                    logError(forceRefusal);
+                    return exitAndReturn(1);
+                  }
+                  if (compareDaemonLockIdentity(lockState, daemonInstanceIdentity) === "unknown") {
+                    log(
+                      `${FORCE_KILL_UNKNOWN_OWNER_ENV_VAR} is set: stopping PID ${pid} even though the lock file carries no instance identity`,
+                    );
+                  }
                   log(`Force enabled: stopping existing daemon PID ${pid}`);
                   let alreadyExited = false;
                   try {
@@ -2763,7 +2770,9 @@ export function startDaemon(config = {}, deps = {}) {
                     unlinkSyncFn(LOCK_FILE);
                   }
                 } else {
-                  logError(`Daemon already running with PID ${pid}`);
+                  logError(
+                    `Daemon already running with PID ${pid} — ${describeDaemonLockOwner(lockState)}. Use --force to restart it.`,
+                  );
                   return exitAndReturn(1);
                 }
               } else {
@@ -2784,7 +2793,10 @@ export function startDaemon(config = {}, deps = {}) {
           unlinkSyncFn(LOCK_FILE);
         }
       }
-      writeFileSyncFn(LOCK_FILE, process.pid.toString());
+      writeFileSyncFn(
+        LOCK_FILE,
+        serializeDaemonLock({ pid: process.pid, identity: daemonInstanceIdentity }),
+      );
     }
   } catch (err) {
     logError("Failed to acquire lock:", err);
@@ -2811,13 +2823,15 @@ export function startDaemon(config = {}, deps = {}) {
     if (skipPidLockCheck) {
       return;
     }
+    // Keeps the instance identity attached while the handoff window is open so
+    // an unrelated instance racing a `--force` during a restart still sees who
+    // owns the lock.
     writeFileSyncFn(
       LOCK_FILE,
-      JSON.stringify({
+      serializeDaemonLock({
         pid: handoffFromPid,
-        handoff_from_pid: handoffFromPid,
-        handoff_token: handoffToken,
-        handoff_expires_at: handoffExpiresAt,
+        identity: daemonInstanceIdentity,
+        handoff: { handoffFromPid, handoffToken, handoffExpiresAt },
       }),
     );
   };
