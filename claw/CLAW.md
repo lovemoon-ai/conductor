@@ -103,6 +103,9 @@ Structure:
 
 Task files should focus on scope, acceptance, dependencies, and next actions.
 
+Creating a `tasks/todo/` item also requires an issue card on the online board —
+see "Mirror every new issue onto the online board" below.
+
 ### `issues/`
 
 Tracked product or engineering problems that still need resolution.
@@ -114,6 +117,33 @@ Put here:
 - execution blockers that need ownership and follow-up
 
 If the issue is fixed and the learning matters, add a note to `lessons/`.
+
+### Mirror every new issue onto the online board
+
+A markdown file in `issues/` or `tasks/todo/` is not enough on its own. Whenever
+you create one, also create the matching card on the Conductor issue board with
+the CLI, so the work is visible where it actually gets scheduled:
+
+```bash
+conductor issue create \
+  --title "<short title>" \
+  --description-file claw/tasks/todo/<the-file>.md \
+  --priority P1 --status backlog
+```
+
+Rules:
+
+- Use `--description-file` and point it at the markdown you just wrote. Do not
+  retype a summary — the card and the file must not drift.
+- **Run `--dry-run` first and check the `projectId` it resolved.** Several hosts
+  have same-named projects (`conductor` exists under `m2`, `macmini` and
+  `ubuntu`), so the wrong one is easy to hit. Confirm with
+  `conductor project list` before creating for real.
+- `--priority` accepts `P1|P2|P3` and `--status` accepts
+  `backlog|doing|done`; the backend stores `backlog` as `todo`.
+- Read the card back (`conductor issue show <id>`) and record the returned issue
+  id in the markdown file, so the doc and the card stay linked in both
+  directions.
 
 ### `diagnosis/`
 

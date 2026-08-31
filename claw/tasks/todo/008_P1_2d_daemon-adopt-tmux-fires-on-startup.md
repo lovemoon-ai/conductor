@@ -1,5 +1,8 @@
 # Goal
 
+线上 issue card：`0a6fff53-495c-40e9-9df4-f364d533d36a`
+（project `conductor` @ macmini，P1）
+
 让 daemon 在启动/重连时**认领**（adopt）上一个 daemon 留下的 tmux Fire，而不是把它们
 判成 stale 并 PATCH `killed`。
 
