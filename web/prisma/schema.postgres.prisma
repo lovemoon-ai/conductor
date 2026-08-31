@@ -56,17 +56,21 @@ model User {
 }
 
 model UserToken {
-  id          String    @id @default(uuid()) @db.Uuid
-  userId      String    @map("user_id") @db.Uuid
-  name        String?
-  tokenHash   String    @map("token_hash")
-  tokenSalt   String    @map("token_salt")
-  tokenPrefix String    @map("token_prefix")
-  tokenValue  String?   @map("token_value")
-  lastUsedAt  DateTime? @map("last_used_at")
-  revokedAt   DateTime? @map("revoked_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @map("user_id") @db.Uuid
+  name          String?
+  tokenHash     String    @map("token_hash")
+  tokenSalt     String    @map("token_salt")
+  tokenPrefix   String    @map("token_prefix")
+  tokenValue    String?   @map("token_value")
+  // RFC 0035: "full" | "daemon_share". `daemonShareId` points at a future
+  // `DaemonShare` row; plain column for now because that model does not exist yet.
+  scope         String    @default("full")
+  daemonShareId String?   @map("daemon_share_id") @db.Uuid
+  lastUsedAt    DateTime? @map("last_used_at")
+  revokedAt     DateTime? @map("revoked_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

@@ -184,7 +184,10 @@ export async function consumeSsoAuthorizationCode(
 export async function getOrIssueConnectedAppToken(userId: string, clientId: string): Promise<string> {
   const name = connectedAppTokenName(clientId);
   const existing = await db.userToken.findFirst({
-    where: { userId, name, revokedAt: null },
+    // RFC 0035: never hand back a non-`full` token's plaintext. The `name`
+    // convention and the null `tokenValue` on scoped tokens already make this
+    // unreachable; the filter keeps the invariant explicit instead of incidental.
+    where: { userId, name, revokedAt: null, scope: "full" },
     orderBy: { createdAt: "desc" },
   });
   if (existing?.tokenValue) {

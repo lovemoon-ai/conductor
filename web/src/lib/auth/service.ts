@@ -81,7 +81,25 @@ async function findDefaultProjectMapping(prisma: DbClient, userId: string) {
   }
 }
 
-export type AuthUser = { id: string; email: string | null; phone: string | null };
+// RFC 0035: a `daemon_share` token authenticates as its owner but is meant to be
+// usable only for one shared daemon. Nothing enforces that yet -- this only
+// carries the value out of the database so callers can start checking it.
+export type TokenScope = "full" | "daemon_share";
+
+// Unknown/legacy values fall back to "full", which matches the column default:
+// every row written before scoping existed was an unrestricted account token.
+const toTokenScope = (value: string): TokenScope =>
+  value === "daemon_share" ? "daemon_share" : "full";
+
+// `tokenScope` is always populated by `authenticateToken`. It stays optional so
+// that the many existing `AuthUser` literals keep type-checking; read a missing
+// value as "full".
+export type AuthUser = {
+  id: string;
+  email: string | null;
+  phone: string | null;
+  tokenScope?: TokenScope;
+};
 export type SelfHostBootstrapUserResult = {
   user: User;
   project: Project;
@@ -272,7 +290,8 @@ export async function authenticateToken(token: string): Promise<AuthUser | null>
     if (!payload) return null;
     const user = await db.user.findUnique({ where: { id: payload.sub } });
     if (!user) return null;
-    return { id: user.id, email: user.email, phone: user.phone };
+    // Browser sessions are never scoped.
+    return { id: user.id, email: user.email, phone: user.phone, tokenScope: "full" };
   }
 
   const tokenPrefix = token.slice(0, 8);
@@ -289,7 +308,12 @@ export async function authenticateToken(token: string): Promise<AuthUser | null>
       where: { id: candidate.id },
       data: { lastUsedAt: new Date() },
     });
-    return { id: candidate.user.id, email: candidate.user.email, phone: candidate.user.phone };
+    return {
+      id: candidate.user.id,
+      email: candidate.user.email,
+      phone: candidate.user.phone,
+      tokenScope: toTokenScope(candidate.scope),
+    };
   }
   return null;
 }
@@ -427,13 +451,24 @@ export async function loginWithCode(input: { identifier: string; code: string })
   return { token: signJwt(user.id), user: { id: user.id, email: user.email, phone: user.phone } };
 }
 
-export async function issueApiToken(userId: string, name?: string | null) {
+export async function issueApiToken(userId: string, name?: string | null, scope: TokenScope = "full") {
   const rawToken = randomBytes(24).toString("hex");
   const { hash, salt } = hashSecret(rawToken);
   const tokenPrefix = rawToken.slice(0, 8);
 
   const record = await db.userToken.create({
-    data: { userId, name, tokenHash: hash, tokenSalt: salt, tokenPrefix, tokenValue: rawToken },
+    // `tokenValue` keeps the raw token in plaintext so it can be re-served later
+    // (`/api/auth/tokens/latest`, device auth). A scoped token is handed to its
+    // caller once and never read back, so it is not stored.
+    data: {
+      userId,
+      name,
+      tokenHash: hash,
+      tokenSalt: salt,
+      tokenPrefix,
+      tokenValue: scope === "full" ? rawToken : null,
+      scope,
+    },
   });
 
   return { token: rawToken, tokenId: record.id, tokenPrefix, createdAt: record.createdAt.toISOString() };
@@ -441,7 +476,10 @@ export async function issueApiToken(userId: string, name?: string | null) {
 
 export async function getLatestTokenValue(userId: string): Promise<string | null> {
   const latest = await db.userToken.findFirst({
-    where: { userId, revokedAt: null },
+    // Scope filter is load-bearing: this value is served to the user's *own*
+    // daemon via `/api/auth/tokens/latest` and `/api/auth/config`. Handing back a
+    // `daemon_share` token would give that daemon a restricted credential.
+    where: { userId, revokedAt: null, scope: "full" },
     orderBy: { createdAt: "desc" },
   });
   return latest?.tokenValue ?? null;
@@ -449,7 +487,10 @@ export async function getLatestTokenValue(userId: string): Promise<string | null
 
 export async function listTokens(userId: string) {
   const tokens = await db.userToken.findMany({
-    where: { userId, revokedAt: null },
+    // Share tokens are owned by their `DaemonShare` and are listed/revoked there,
+    // where the UI can say which machine they belong to. Showing them here would
+    // render an unlabelled token whose "revoke" leaves the share half-alive.
+    where: { userId, revokedAt: null, scope: "full" },
     orderBy: { createdAt: "desc" },
   });
   return tokens.map((t) => ({
