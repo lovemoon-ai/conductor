@@ -1,5 +1,5 @@
 ---
-"@love-moon/conductor-cli": minor
+"@love-moon/conductor-cli": patch
 ---
 
 Add a built-in "Update daemon" action to the web settings Danger zone.
