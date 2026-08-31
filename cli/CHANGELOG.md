@@ -1,5 +1,107 @@
 # @love-moon/conductor-cli
 
+## 0.11.0
+
+### Minor Changes
+
+- c987457: Allow creating a project whose workspace path does not exist yet.
+
+  The daemon now accepts `create_if_missing` on `validate_project_path` and will
+  `mkdir -p` the workspace before snapshotting it, advertising the new
+  `project_path_create` capability. In the web Create Project dialog a missing
+  path no longer dead-ends: it offers "Create this directory and continue", so a
+  typo still fails loudly instead of silently creating the wrong folder.
+  `conductor project create` gains `--create-workspace` for the same behavior.
+
+- ccf902d: Add daemon sharing so a host can invite other conductor accounts to run tasks on their machine.
+
+  A host daemon can create share invitations from the web settings page. Each invite is scoped to one guest user and carries a `allow_cli_list` whitelist. When the guest accepts, the host daemon spawns an isolated guest daemon with a dedicated workspace and token; the guest sees only their own tasks and cannot access the host's projects or files outside the shared workspace.
+
+  Guest daemons are supervised by the host daemon: if the host restarts, guest configs are regenerated from the backend on the next reconcile; revoking a share stops the guest daemon and removes its workspace.
+
+  This changes the agent-token schema (a new `scope` column is required on the backend) and adds `conductor_guest`, `allow_cli_list`, and `daemon_name` handling to the guest config path.
+
+### Patch Changes
+
+- 30afccc: Make the claude backend usable when conductor runs as root.
+
+  Claude Code refuses `bypassPermissions` / `--dangerously-skip-permissions` under
+  root unless `IS_SANDBOX=1` or `CLAUDE_CODE_BUBBLEWRAP` is set, so every claude
+  turn died immediately on root installs (docker, CI, bare VPS). Both routes a
+  claude command takes are now root-aware, sharing one check
+  (`isClaudeRootPermissionRestricted`, which mirrors claude's own gate):
+
+  - The agent-SDK session downgrades the permission mode to `acceptEdits` (auto
+    mode) and stops passing `allowDangerouslySkipPermissions`.
+  - The daemon's tool-preset PTY path rewrites the configured `allow_cli_list`
+    command via `resolveClaudeCommandForRoot`, using the same env the spawned
+    child receives, so a per-task `IS_SANDBOX=1` opt-out is honored.
+  - `conductor config` no longer writes `--dangerously-skip-permissions` into a
+    config generated on a root machine.
+
+  The mode is also configurable now: `claude --permission-mode acceptEdits` in
+  `allow_cli_list` is lifted out of the command string. An unrecognized mode still
+  falls back to the default instead of failing, but logs a warning at session boot.
+
+  ai-sdk gains three exports: `isClaudeRootPermissionRestricted`,
+  `resolveClaudeCommandForRoot`, `resolveClaudePermissionPolicy`.
+
+- a3c41dd: Document every supported key in the config file `conductor config` generates.
+
+  The generated `config.yaml` only ever contained six keys, so nothing told a new
+  user that the other fifteen existed. They are now all present as commented-out
+  entries carrying their default value and env-var override, grouped into
+  Connection / Coding CLIs / Environment / Daemon behaviour / Optional features:
+
+  - `websocket_url`, previously written only when device authorization returned one
+  - `pre_prompt`, `custom_commands`, `cdp_user_data_dir`
+  - `remote_exec`, `fire_tmux_mode`, `auto_update`, `auto_update_respawn`,
+    `update_window`
+  - `ai_manager.codex.auth_json`, `serve_ai.{host,port,backend,api_key}`,
+    `channels.feishu.*`
+  - `envs.no_proxy`, `envs.DEEPSEEK_API_KEY`, `envs.DEEPSEEK_BASE_URL` alongside
+    the proxy keys and `AISDK_PROVIDER_PATH` that were already shown
+
+  Three notes correct documentation that would otherwise mislead. The commented
+  `websocket_url` example is derived from this install's own `backend_url` (via
+  the same rule as `ConductorConfig.resolvedWebsocketUrl`) instead of naming the
+  official host, so a self-hosted user who uncomments it is not pointed at
+  someone else's server. `daemon_name` is flagged as the one key whose precedence
+  is inverted — the config value wins over `CONDUCTOR_DAEMON_NAME`. `log_level`
+  is marked as validated on load but not yet consumed by any component.
+
+  Behaviour is unchanged: the same six keys are still written uncommented, and
+  the daemon still derives its own WebSocket URL from `backend_url` regardless of
+  the `websocket_url` key.
+
+- ccf902d: Refuse `--force` daemon restart when it would take over an unrelated daemon instance.
+
+  Previously `conductor daemon --force` blindly replaced any existing lock, which could kill a daemon belonging to a different conductor home, backend URL, or agent token. The lock now stores an identity fingerprint (home directory, backend URL, agent token prefix, and daemon name) and `--force` only overwrites when the fingerprint matches. A mismatch reports the running daemon's identity and exits with code 7.
+
+  This makes `--force` safe for "restart my own stuck daemon" while preventing accidental cross-instance takeovers.
+
+- 884945c: Keep every task in a multi-agent group in one working directory. Creating a
+  task with several agents and `worktree` enabled put the worker in
+  `.conductor/worktrees/<branch>/` but pinned each reviewer to the project root,
+  so reviewers read the base branch instead of the worker's changes. Reviewers
+  now inherit the worker's worktree.
+
+  Reviewers join as reuse-only members: they carry the full worktree identity —
+  so archiving one member no longer deletes a directory its siblings are still
+  running in — but never run `git worktree add` themselves. The daemon
+  additionally serializes worktree preparation per on-disk root, so concurrent
+  group members can no longer race on creating the same branch, and treats a
+  worktree as ready only once preparation has fully completed rather than as soon
+  as `.git` appears.
+
+  Two new optional daemon environment variables:
+  `CONDUCTOR_WORKTREE_REUSE_WAIT_TIMEOUT_MS` (default `180000`) and
+  `CONDUCTOR_WORKTREE_REUSE_POLL_INTERVAL_MS` (default `250`).
+
+- Updated dependencies [30afccc]
+  - @love-moon/ai-sdk@0.11.0
+  - @love-moon/conductor-sdk@0.11.0
+
 ## 0.10.0
 
 ### Minor Changes
