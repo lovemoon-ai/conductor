@@ -1082,6 +1082,46 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Collapse the group into a single tab card in the task list. The shared
+  // `groupId` above is an execution-time relationship the agents use to find
+  // each other; it is invisible to the list view, which renders from the
+  // per-user card groups in `user_preferences`. Without this the members show
+  // up as unrelated cards. Mirrors the restart successor path.
+  let taskCardGroupsSnapshot:
+    | Awaited<ReturnType<typeof mergeRelatedTaskCardGroup>>
+    | null = null;
+  if (reviewerTaskIds.length > 0 && task) {
+    for (const reviewerTaskId of reviewerTaskIds) {
+      try {
+        // Serial on purpose: each merge is a read-modify-write of one
+        // preference row, so concurrent merges would clobber each other and
+        // only the last reviewer would survive in the card.
+        taskCardGroupsSnapshot = await mergeRelatedTaskCardGroup(
+          user.id,
+          task.id,
+          reviewerTaskId,
+        );
+      } catch (error) {
+        // Grouping is presentation state. The tasks are already created and
+        // dispatched; failing the POST here would invite a duplicate group.
+        console.warn(
+          `[tasks.POST] reviewer ${reviewerTaskId} was created but could not be grouped with ${task.id}`,
+          error,
+        );
+      }
+    }
+    if (taskCardGroupsSnapshot) {
+      realtimeHub.broadcastToUser(user.id, {
+        type: "task_card_groups_update",
+        payload: {
+          user_id: user.id,
+          snapshot: taskCardGroupsSnapshot,
+          updated_at: new Date().toISOString(),
+        },
+      });
+    }
+  }
+
   const taskResponseRecord = ptySession ? { ...task, ptySession } : task;
 
   const taskResponse = serializeTaskResponse(taskResponseRecord);
@@ -1089,5 +1129,8 @@ export async function POST(request: NextRequest) {
     ...taskResponse,
     ...(grouping ? { grouping } : {}),
     ...(reviewerTaskIds.length > 0 ? { reviewer_task_ids: reviewerTaskIds } : {}),
+    ...(taskCardGroupsSnapshot
+      ? { task_card_groups_snapshot: taskCardGroupsSnapshot }
+      : {}),
   });
 }

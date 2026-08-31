@@ -413,7 +413,16 @@ export const useTasksStore = create<TasksState>()((set, get) => {
       set({ isLoading: true, error: null });
       try {
         const api = getApiClient();
-        const incomingTask = normalizeTask(await api.post<Task>('/tasks', input));
+        // A multi-agent create returns more than the worker: the sibling
+        // reviewer ids, and the card-group snapshot that collapses the whole
+        // group into one tab card. Typing the POST as a bare `Task` used to
+        // drop both, so reviewers only appeared after the next full refetch
+        // and never as a group.
+        const response = await api.post<Task & {
+          reviewer_task_ids?: string[];
+          task_card_groups_snapshot?: unknown;
+        }>('/tasks', input);
+        const incomingTask = normalizeTask(response);
         const task = mergeMutationTask(get().tasks.find((current) => current.id === incomingTask.id), incomingTask);
         set((state) => ({
           tasks: upsertTask(state.tasks, task),
@@ -421,6 +430,22 @@ export const useTasksStore = create<TasksState>()((set, get) => {
         }));
         if (incomingTask.status === 'init') {
           void get().fetchTask(incomingTask.id);
+        }
+        // There is no `task_created` realtime event for the browser, so the
+        // siblings have to be pulled in explicitly or the group renders with
+        // missing members until a refetch.
+        const reviewerTaskIds = Array.isArray(response.reviewer_task_ids)
+          ? response.reviewer_task_ids.filter(
+              (id): id is string => typeof id === 'string' && id.trim().length > 0,
+            )
+          : [];
+        for (const reviewerTaskId of reviewerTaskIds) {
+          void get().fetchTask(reviewerTaskId);
+        }
+        if (response.task_card_groups_snapshot) {
+          useTaskCardGroupsSyncStore.getState().applySnapshot(
+            response.task_card_groups_snapshot,
+          );
         }
         return task;
       } catch (error) {
