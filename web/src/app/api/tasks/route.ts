@@ -1022,6 +1022,10 @@ export async function POST(request: NextRequest) {
   // worker's backend. A reviewer spawn failure must never fail the worker
   // creation, so each is wrapped fail-soft.
   const reviewerTaskIds: string[] = [];
+  // Pair each spawned reviewer with its agent name as we go. Looking the name
+  // up afterwards would mean keying on the pre-allocated `spec.taskId` and
+  // assuming it equals the id the create returned.
+  const reviewerGroupMembers: Array<{ taskId: string; agent: string }> = [];
   if (taskType === "ai_task" && task && groupId && reviewerSpecs.length > 0) {
     // Every member of a group must run in the *same* working directory: the
     // worker's worktree when `worktree` was requested, otherwise the project
@@ -1073,6 +1077,7 @@ export async function POST(request: NextRequest) {
           groupId,
         });
         reviewerTaskIds.push(reviewerTask.id);
+        reviewerGroupMembers.push({ taskId: reviewerTask.id, agent: spec.agent });
       } catch (error) {
         console.error(
           `Failed to spawn reviewer task for agent "${spec.agent}"`,
@@ -1090,8 +1095,11 @@ export async function POST(request: NextRequest) {
   let taskCardGroupsSnapshot:
     | Awaited<ReturnType<typeof mergeRelatedTaskCardGroup>>
     | null = null;
-  if (reviewerTaskIds.length > 0 && task) {
-    for (const reviewerTaskId of reviewerTaskIds) {
+  if (reviewerGroupMembers.length > 0 && task) {
+    // Name each tab after its agent, so the strip reads
+    // "feature-dev | code-reviewer" instead of the default ordinals "1 | 2".
+    const workerAgentName = agentGroup?.[0]?.name ?? null;
+    for (const { taskId: reviewerTaskId, agent } of reviewerGroupMembers) {
       try {
         // Serial on purpose: each merge is a read-modify-write of one
         // preference row, so concurrent merges would clobber each other and
@@ -1100,6 +1108,7 @@ export async function POST(request: NextRequest) {
           user.id,
           task.id,
           reviewerTaskId,
+          { source: workerAgentName, related: agent },
         );
       } catch (error) {
         // Grouping is presentation state. The tasks are already created and

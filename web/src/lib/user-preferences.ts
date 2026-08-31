@@ -6,6 +6,7 @@ import {
   MAX_SYNCED_TASK_CARD_SCOPES,
   mergeTaskIntoSourceCardGroup,
   readSyncedTaskCardGroups,
+  setTaskCardTabLabel,
   readTaskCardGroupsSyncSnapshot,
   toSyncedTaskCardGroups,
   type SyncedTaskCardGroup,
@@ -410,6 +411,13 @@ export async function mergeRelatedTaskCardGroup(
   userId: string,
   sourceTaskId: string,
   relatedTaskId: string,
+  /**
+   * Optional tab titles for the two members. Without them a tab falls back to
+   * its ordinal ("1", "2", …) — see `taskCardTabLabel`. Multi-agent groups pass
+   * the agent names so the strip reads "feature-dev | code-reviewer" instead of
+   * "1 | 2". Users can still rename a tab by long-pressing it.
+   */
+  labels?: { source?: string | null; related?: string | null },
 ): Promise<TaskCardGroupsSyncSnapshot> {
   const normalizedSourceTaskId = sourceTaskId.trim();
   const normalizedRelatedTaskId = relatedTaskId.trim();
@@ -445,14 +453,30 @@ export async function mergeRelatedTaskCardGroup(
       ...group,
       activeIndex: 0,
     }));
-    const mergedGroups = toSyncedTaskCardGroups(
-      mergeTaskIntoSourceCardGroup(
-        localGroups,
-        `tabcard-branch-${randomUUID()}`,
-        normalizedSourceTaskId,
-        normalizedRelatedTaskId,
-      ),
+    let merged = mergeTaskIntoSourceCardGroup(
+      localGroups,
+      `tabcard-branch-${randomUUID()}`,
+      normalizedSourceTaskId,
+      normalizedRelatedTaskId,
     );
+    const mergedGroupId = merged.find((group) =>
+      group.taskIds.includes(normalizedSourceTaskId)
+      && group.taskIds.includes(normalizedRelatedTaskId)
+    )?.id;
+    if (mergedGroupId) {
+      // Applied after the merge because the group id is only known here — a
+      // brand new card gets a fresh `tabcard-branch-*` id, while merging into
+      // an existing card reuses that card's id.
+      const sourceLabel = labels?.source?.trim();
+      const relatedLabel = labels?.related?.trim();
+      if (sourceLabel) {
+        merged = setTaskCardTabLabel(merged, mergedGroupId, normalizedSourceTaskId, sourceLabel);
+      }
+      if (relatedLabel) {
+        merged = setTaskCardTabLabel(merged, mergedGroupId, normalizedRelatedTaskId, relatedLabel);
+      }
+    }
+    const mergedGroups = toSyncedTaskCardGroups(merged);
     if (!mergedGroups.some((group) =>
       group.taskIds.includes(normalizedSourceTaskId)
       && group.taskIds.includes(normalizedRelatedTaskId)
