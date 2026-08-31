@@ -1328,6 +1328,167 @@ describe("/api/tasks", () => {
       );
     });
 
+    // Regression: the group's `groupId` is an execution-time link the agents use
+    // to find each other; the task LIST renders from per-user card groups in
+    // user_preferences. Nothing used to bridge the two, so a multi-agent create
+    // produced unrelated cards.
+    it("collapses the whole agent group into one task card group", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const makeTask = (id: string, title: string) => ({
+        id,
+        projectId: "proj-agents",
+        secondProjectId: null,
+        issueId: null,
+        title,
+        taskType: "ai_task",
+        status: "init",
+        agentHost: "daemon-a",
+        executionHost: "daemon-a",
+        backendType: "claude",
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: null,
+        createdAt: new Date("2026-07-28T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-28T00:00:00.000Z"),
+      });
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-agents",
+        name: "Agents Project",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/agents",
+        repoRoot: "/repo/agents",
+        worktreeBranch: "main",
+      } as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "daemon-1", host: "daemon-a", supportedBackends: ["claude"], capabilities: [] },
+      ] as any);
+      resolveProjectAgentsRegistryMock.mockResolvedValue([
+        { name: "feature-dev", doc: "personas/feature.md", description: "", backend: "claude" },
+        { name: "code-reviewer", doc: "review-guides/code.md", description: "", backend: "claude" },
+        { name: "qa", doc: "review-guides/qa.md", description: "", backend: "claude" },
+      ]);
+      vi.mocked(db.task.create)
+        .mockResolvedValueOnce(makeTask("task-worker", "Build") as any)
+        .mockResolvedValueOnce(makeTask("task-reviewer", "Reviewer: code-reviewer") as any)
+        .mockResolvedValueOnce(makeTask("task-qa", "Reviewer: qa") as any);
+      vi.mocked(db.message.create).mockResolvedValue({
+        id: "message-1",
+        createdAt: new Date("2026-07-28T00:00:01.000Z"),
+      } as any);
+      const snapshot = { scopes: { "projects:all": [] }, updatedAt: "2026-07-28T00:00:02.000Z" };
+      mergeRelatedTaskCardGroupMock.mockResolvedValue(snapshot);
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {
+            project_id: "proj-agents",
+            title: "Build",
+            initial_content: "Do the thing",
+            agents: ["feature-dev", "code-reviewer", "qa"],
+          },
+        }),
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      // Every reviewer is merged against the worker, so all three land in one card.
+      expect(mergeRelatedTaskCardGroupMock).toHaveBeenCalledTimes(2);
+      expect(mergeRelatedTaskCardGroupMock).toHaveBeenNthCalledWith(
+        1,
+        "user-1",
+        "task-worker",
+        "task-reviewer",
+      );
+      expect(mergeRelatedTaskCardGroupMock).toHaveBeenNthCalledWith(
+        2,
+        "user-1",
+        "task-worker",
+        "task-qa",
+      );
+      // The client applies this directly; without it the grouping only shows up
+      // after a full refetch.
+      expect(data.task_card_groups_snapshot).toEqual(snapshot);
+      expect(data.reviewer_task_ids).toEqual(["task-reviewer", "task-qa"]);
+      expect(realtimeHub.broadcastToUser).toHaveBeenCalledWith(
+        "user-1",
+        expect.objectContaining({ type: "task_card_groups_update" }),
+      );
+    });
+
+    it("still returns the created group when card grouping fails", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const makeTask = (id: string, title: string) => ({
+        id,
+        projectId: "proj-agents",
+        secondProjectId: null,
+        issueId: null,
+        title,
+        taskType: "ai_task",
+        status: "init",
+        agentHost: "daemon-a",
+        executionHost: "daemon-a",
+        backendType: "claude",
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: null,
+        createdAt: new Date("2026-07-28T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-28T00:00:00.000Z"),
+      });
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-agents",
+        name: "Agents Project",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/repo/agents",
+        repoRoot: "/repo/agents",
+        worktreeBranch: "main",
+      } as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "daemon-1", host: "daemon-a", supportedBackends: ["claude"], capabilities: [] },
+      ] as any);
+      resolveProjectAgentsRegistryMock.mockResolvedValue([
+        { name: "feature-dev", doc: "personas/feature.md", description: "", backend: "claude" },
+        { name: "code-reviewer", doc: "review-guides/code.md", description: "", backend: "claude" },
+      ]);
+      vi.mocked(db.task.create)
+        .mockResolvedValueOnce(makeTask("task-worker", "Build") as any)
+        .mockResolvedValueOnce(makeTask("task-reviewer", "Reviewer: code-reviewer") as any);
+      vi.mocked(db.message.create).mockResolvedValue({
+        id: "message-1",
+        createdAt: new Date("2026-07-28T00:00:01.000Z"),
+      } as any);
+      mergeRelatedTaskCardGroupMock.mockRejectedValue(new Error("preferences unavailable"));
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: {
+            project_id: "proj-agents",
+            title: "Build",
+            agents: ["feature-dev", "code-reviewer"],
+          },
+        }),
+      );
+      const data = await extractJson(response);
+
+      // Grouping is presentation state: the tasks exist and were dispatched, so
+      // failing the POST here would only invite a duplicate group.
+      expect(response.status).toBe(200);
+      expect(data.id).toBe("task-worker");
+      expect(data.reviewer_task_ids).toEqual(["task-reviewer"]);
+      expect(data.task_card_groups_snapshot).toBeUndefined();
+    });
+
     it("puts every group member in the same worktree when worktree is requested", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const makeTask = (params: { id: string; title: string; backendType: string }) => ({

@@ -31,6 +31,63 @@ describe('tasks store', () => {
     });
   });
 
+  // Regression: createTask typed the POST as a bare `Task`, so the multi-agent
+  // extras were dropped. The reviewers then only appeared after a full refetch
+  // (there is no browser-side `task_created` event) and never as a group.
+  it('applies the card-group snapshot and pulls in reviewer siblings on create', async () => {
+    const snapshot = {
+      scopes: { 'projects:all': [{ id: 'tabcard-1', taskIds: ['task-worker', 'task-reviewer'], labels: {} }] },
+      updatedAt: '2026-07-28T00:00:02.000Z',
+    };
+    mockPost.mockResolvedValueOnce({
+      id: 'task-worker',
+      title: 'Build',
+      status: 'running',
+      taskType: 'ai_task',
+      reviewer_task_ids: ['task-reviewer'],
+      task_card_groups_snapshot: snapshot,
+    });
+    // Once, not a persistent implementation: vi.clearAllMocks() only clears
+    // call records, so a lingering mockResolvedValue would leak into later tests.
+    mockGet.mockResolvedValueOnce({
+      id: 'task-reviewer',
+      title: 'Reviewer: code-reviewer',
+      status: 'running',
+      taskType: 'ai_task',
+    });
+
+    const applySnapshotSpy = vi.spyOn(
+      useTaskCardGroupsSyncStore.getState(),
+      'applySnapshot',
+    );
+
+    await useTasksStore.getState().createTask({ title: 'Build' } as any);
+
+    expect(applySnapshotSpy).toHaveBeenCalledWith(snapshot);
+    // The sibling is fetched so the group does not render with a missing member.
+    expect(mockGet).toHaveBeenCalledWith(
+      expect.stringContaining('/tasks/task-reviewer'),
+    );
+  });
+
+  it('creates a plain task without reviewer fetches or snapshot writes', async () => {
+    mockPost.mockResolvedValueOnce({
+      id: 'task-solo',
+      title: 'Solo',
+      status: 'running',
+      taskType: 'ai_task',
+    });
+    const applySnapshotSpy = vi.spyOn(
+      useTaskCardGroupsSyncStore.getState(),
+      'applySnapshot',
+    );
+
+    await useTasksStore.getState().createTask({ title: 'Solo' } as any);
+
+    expect(applySnapshotSpy).not.toHaveBeenCalled();
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
   it("uses the extended task-mutation timeout for archive and delete", async () => {
     mockPost.mockResolvedValueOnce({});
     mockDelete.mockResolvedValueOnce(undefined);
