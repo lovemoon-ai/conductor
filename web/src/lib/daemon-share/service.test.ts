@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
-  FIRE_HOST_PREFIX,
   buildDaemonShareInviteUrl,
   buildGuestHost,
+  DAEMON_SHARE_INVITE_TTL_MS,
   disambiguateGuestHost,
+  FIRE_HOST_PREFIX,
   formatUserLabel,
+  inviteExpiresAt,
   isHostAllowedForShare,
+  isInviteExpired,
+  liveShareWhere,
   sanitizeHostPart,
 } from './service';
 
@@ -108,5 +112,50 @@ describe('buildDaemonShareInviteUrl', () => {
       if (previous === undefined) delete process.env.NEXT_PUBLIC_BASE_URL;
       else process.env.NEXT_PUBLIC_BASE_URL = previous;
     }
+  });
+});
+
+describe('invite expiry', () => {
+  const NOW = new Date('2026-08-31T12:00:00.000Z');
+
+  it('mints a five-minute deadline', () => {
+    expect(inviteExpiresAt(NOW).toISOString()).toBe('2026-08-31T12:05:00.000Z');
+    expect(DAEMON_SHARE_INVITE_TTL_MS).toBe(5 * 60_000);
+  });
+
+  it('keeps a pending invite alive until its deadline', () => {
+    const share = { status: 'pending', expiresAt: new Date(NOW.getTime() + 1000) };
+    expect(isInviteExpired(share, NOW)).toBe(false);
+  });
+
+  it('expires a pending invite once the deadline passes', () => {
+    const share = { status: 'pending', expiresAt: new Date(NOW.getTime() - 1) };
+    expect(isInviteExpired(share, NOW)).toBe(true);
+  });
+
+  it('treats a pending invite with no deadline as expired', () => {
+    // Rows written before expiry existed. Reading NULL as "never expires"
+    // would leave exactly the forever-valid links this change exists to kill.
+    expect(isInviteExpired({ status: 'pending', expiresAt: null }, NOW)).toBe(true);
+  });
+
+  it('never expires a share that was already accepted', () => {
+    // The deadline governs the invite link, not the access it grants. An
+    // active share ends by revocation only.
+    expect(isInviteExpired({ status: 'active', expiresAt: null }, NOW)).toBe(false);
+    expect(
+      isInviteExpired({ status: 'active', expiresAt: new Date(NOW.getTime() - 9e6) }, NOW),
+    ).toBe(false);
+  });
+
+  it('builds a where-fragment that admits active and unexpired pending only', () => {
+    // Guards the one definition every caller shares. `gt` against NULL is
+    // false in SQL, which is what makes legacy rows fail closed.
+    expect(liveShareWhere(NOW)).toEqual({
+      OR: [
+        { status: 'active' },
+        { status: 'pending', expiresAt: { gt: NOW } },
+      ],
+    });
   });
 });

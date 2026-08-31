@@ -4,9 +4,11 @@ import { getActiveSubscriptionUser } from '@/lib/auth/middleware';
 import { db } from '@/lib/db';
 import { issueApiToken } from '@/lib/auth/service';
 import {
+  INVITE_EXPIRED_MESSAGE,
   buildGuestHost,
   disambiguateGuestHost,
   formatUserLabel,
+  isInviteExpired,
   serializeDaemonShare,
 } from '@/lib/daemon-share/service';
 
@@ -27,6 +29,9 @@ export async function POST(
   if (userResult instanceof Response) return userResult;
   const user = userResult;
   const { token } = await params;
+  // One instant for the whole request, so the early check below and the atomic
+  // claim further down cannot disagree about whether the link was still alive.
+  const now = new Date();
 
   const share = await db.daemonShare.findUnique({
     where: { inviteToken: token },
@@ -35,6 +40,7 @@ export async function POST(
       ownerUserId: true,
       ownerDaemonHost: true,
       status: true,
+      expiresAt: true,
       owner: { select: { id: true, email: true, phone: true } },
     },
   });
@@ -44,6 +50,12 @@ export async function POST(
   }
   if (share.status !== 'pending') {
     return NextResponse.json({ error: 'Invitation already accepted' }, { status: 409 });
+  }
+  // Checked before minting so an expired link does not create a credential we
+  // would immediately have to revoke. The claim below re-checks it anyway --
+  // this one is only here to avoid the wasted write and to say why.
+  if (isInviteExpired(share, now)) {
+    return NextResponse.json({ error: INVITE_EXPIRED_MESSAGE }, { status: 410 });
   }
   if (share.ownerUserId === user.id) {
     return NextResponse.json(
@@ -71,7 +83,13 @@ export async function POST(
       // `status: 'pending'` in the filter is the concurrency guard: two
       // simultaneous accepts both pass the read above, but only one updateMany
       // matches a row, so the loser gets count 0 and its token is revoked.
-      where: { id: share.id, status: 'pending' },
+      //
+      // `expiresAt` is in the filter for the same reason, and it is the check
+      // that actually enforces the deadline: the read above and this write are
+      // separate round trips, so a link that lapses in between must still be
+      // refused here. It also covers legacy rows, where `expiresAt` is NULL and
+      // `gt` is false.
+      where: { id: share.id, status: 'pending', expiresAt: { gt: now } },
       data: {
         granteeUserId: user.id,
         guestHost,
@@ -87,6 +105,7 @@ export async function POST(
         where: { id: minted.tokenId },
         data: { revokedAt: new Date() },
       });
+      // Lost the race, or the link lapsed between the read and this write.
       return NextResponse.json({ error: 'Invitation already accepted' }, { status: 409 });
     }
 
@@ -119,6 +138,7 @@ export async function POST(
       status: true,
       workspaceRoot: true,
       createdAt: true,
+      expiresAt: true,
       acceptedAt: true,
       revokedAt: true,
       owner: { select: { id: true, email: true, phone: true } },

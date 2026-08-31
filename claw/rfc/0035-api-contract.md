@@ -15,10 +15,14 @@ Schema 与 migration 已落地：
 
 ```
 pending --accept--> active --revoke--> revoked
-   \--------------- revoke ----------------^
+   |  \--------------- revoke ----------------^
+   \--(expiresAt 到期)--> 仍是 pending，但所有路径都当它不存在
 ```
 
-`status` 只有这三个值。`revoked` 是终态。
+`status` 只有这三个值，`revoked` 是终态。过期**不是**一个 status —— 它是
+`status='pending' AND expiresAt <= now` 的派生状态，判定集中在
+`liveShareWhere()` / `isInviteExpired()` 一处，列表、名额计数、邀请查询、
+accept 认领四个调用点共用同一个定义。两层各自判过期就等于没判。
 
 ## 路由
 
@@ -32,18 +36,25 @@ Owner（A）为自己的某台 daemon 创建邀请。
 { "daemonHost": "alice-mbp", "workspaceRoot": "~/conductor-guests/bob" }
 // res 201
 { "id": "...", "inviteToken": "...", "inviteUrl": "https://.../app/daemon-share/<token>",
-  "ownerDaemonHost": "alice-mbp", "status": "pending", "createdAt": "..." }
+  "ownerDaemonHost": "alice-mbp", "status": "pending", "createdAt": "...",
+  "expiresAt": "..." }
 ```
 
 - `daemonHost` 必须是调用者当前在线的 daemon（`realtimeHub.getAgentsForUser(user.id)`），
   否则 409。禁止 `conductor-fire-*` host。
-- 每台 daemon 的 **active + pending** share 上限 `MAX_SHARES_PER_DAEMON = 3` → 超出 409。
+- 每台 daemon 的 **active + 未过期 pending** share 上限 `MAX_SHARES_PER_DAEMON = 3` → 超出 409。
+  过期的邀请**不占名额**，否则发三个没人点的链接就能把一台机器永久锁死。
 - `inviteToken`：32 字节 base64url。
+- `expiresAt = now + DAEMON_SHARE_INVITE_TTL_MS`（**5 分钟**）。这条约束的不是爆破
+  （32 字节不可猜），而是**链接的暴露时长**：粘错窗口、留在聊天记录里，几个月后
+  被人翻出来点开就是机主机器上的一个 shell + 已登录的 AI 账号。5 分钟只够
+  「生成 → 发出去 → 对方点开」。
 - `inviteUrl` 用 `buildInviteUrl` 同款逻辑（优先 `NEXT_PUBLIC_BASE_URL`，
   见 `web/src/lib/collaboration/service.ts` —— 不要直接拼 `request.url`）。
 
 ### `GET /api/daemon-shares/invitations/[token]`
-邀请页用。要求登录（防匿名探测）。
+邀请页用。要求登录（防匿名探测）。已过期 → **410** + `INVITE_EXPIRED_MESSAGE`
+（刻意区别于 404：持链接的人本来就知道邀请存在过，藏起原因只会让他以为自己贴错了 URL）。
 
 ```jsonc
 // res 200
@@ -61,8 +72,13 @@ Grantee（B）接受。
 { "id": "...", "guestHost": "shared-alice-alice-mbp", "status": "active", "acceptedAt": "..." }
 ```
 
+已过期 → 410，且**在铸 token 之前**返回，避免造一个马上又要吊销的凭据。
+
 事务内完成：
 1. `status` 必须是 `pending`，否则 409。
+1b. `expiresAt > now` —— 这条**同时写进 `updateMany` 的 where**。读和写是两次
+    往返，中间过期的链接必须在写这一步被挡掉；`expiresAt` 为 NULL 的历史行在
+    SQL 里 `gt` 恒假，因此一并 fail closed。
 2. `granteeUserId !== ownerUserId`，否则 400（不能分享给自己）。
 3. 生成 `guestHost`（见下）。
 4. 铸 scoped token：`issueApiToken(granteeUserId, "daemon-share:<shareId>", "daemon_share")`，

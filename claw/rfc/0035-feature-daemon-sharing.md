@@ -281,6 +281,8 @@ daemon 共享把「一台机器承载多个用户身份」变成常态，正好�
 ```
 A: Web 上 Settings → Connected Daemons → 点进某台 daemon → Sharing 卡片点「Share」
      → POST /api/daemon-shares          → 邀请链接 /app/daemon-share/<inviteToken>
+        · 链接 5 分钟后失效（`expiresAt`），过期的邀请不占 3 个名额
+        · 卡片上显示倒计时 —— 看不见的 deadline 就是个陷阱
 B: 打开链接（需登录）→ 接受
      → POST /api/daemon-shares/:token/accept
         · 校验 status=pending、B != A、A 的 per-daemon 共享数未超上限
@@ -365,6 +367,8 @@ supervisor 的职责：
 
 - 共享操作放在**单台 daemon 自己的页面**（`/app/ai-manager?agentHost=…`）的 Sharing 卡片上：
   「Share」按钮 → 生成并复制邀请链接；列出已共享给谁 + 重新复制未接受的链接 + 撤销。
+- 未接受的邀请显示「Expires in Nm Ns」倒计时，到点后前端按和后端同一条规则把它移除，
+  不会继续提供一个后端已经拒绝的「Copy link」。
 - **不放在 Settings 一级页**。一级页是机器列表，是导航；共享是某一台机器的属性。
   一级页只保留一个只读徽标：这台机器是别人借给你的（`shared` + `ownerLabel`）。
 - 入口在前端，不在 CLI（见 Phase 2 第 1 条）。

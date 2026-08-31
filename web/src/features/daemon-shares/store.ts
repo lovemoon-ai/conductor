@@ -20,6 +20,8 @@ export type DaemonShare = {
   granteeLabel: string | null;
   ownerLabel: string | null;
   createdAt: string;
+  /** When an unaccepted invite link stops working. Null once accepted. */
+  expiresAt: string | null;
   acceptedAt: string | null;
   revokedAt: string | null;
   inviteToken?: string;
@@ -45,6 +47,7 @@ export const normalizeDaemonShare = (raw: unknown): DaemonShare | null => {
     granteeLabel: pickString(record.granteeLabel),
     ownerLabel: pickString(record.ownerLabel),
     createdAt: pickString(record.createdAt) ?? '',
+    expiresAt: pickString(record.expiresAt),
     acceptedAt: pickString(record.acceptedAt),
     revokedAt: pickString(record.revokedAt),
     inviteToken: pickString(record.inviteToken) ?? undefined,

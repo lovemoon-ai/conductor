@@ -9,6 +9,8 @@ import {
   MAX_SHARES_PER_DAEMON,
   buildDaemonShareInviteUrl,
   createShareInviteToken,
+  inviteExpiresAt,
+  liveShareWhere,
   serializeDaemonShare,
 } from '@/lib/daemon-share/service';
 
@@ -19,6 +21,7 @@ const shareSelect = {
   status: true,
   workspaceRoot: true,
   createdAt: true,
+  expiresAt: true,
   acceptedAt: true,
   revokedAt: true,
   inviteToken: true,
@@ -35,7 +38,10 @@ export async function GET(request: NextRequest) {
   const shares = await db.daemonShare.findMany({
     where: {
       ownerUserId: user.id,
-      status: { not: 'revoked' },
+      // Not `status != revoked`: an expired invite grants nothing, so listing
+      // it as "Invite not accepted yet" would claim access exists that does
+      // not. It also must not keep occupying one of the three slots.
+      ...liveShareWhere(),
       ...(daemonHost ? { ownerDaemonHost: daemonHost } : {}),
     },
     select: shareSelect,
@@ -98,6 +104,7 @@ export async function POST(request: NextRequest) {
             workspaceRoot,
             inviteToken: createShareInviteToken(),
             status: 'pending',
+            expiresAt: inviteExpiresAt(),
           },
           select: shareSelect,
         });
@@ -110,7 +117,9 @@ export async function POST(request: NextRequest) {
           where: {
             ownerUserId: user.id,
             ownerDaemonHost: daemonHost,
-            status: { not: 'revoked' },
+            // Same predicate as the list. Counting expired invites here would
+            // let three abandoned links lock a machine out of sharing forever.
+            ...liveShareWhere(),
           },
         });
         if (used > MAX_SHARES_PER_DAEMON) {

@@ -14,6 +14,23 @@ interface DaemonSharingCardProps {
   ownerLabel?: string | null;
 }
 
+/** Remaining life of an unaccepted invite, or null once it is moot. */
+const countdown = (share: DaemonShare, now: number): string | null => {
+  if (share.granteeLabel || !share.expiresAt) return null;
+  const left = new Date(share.expiresAt).getTime() - now;
+  if (!Number.isFinite(left) || left <= 0) return null;
+  const seconds = Math.ceil(left / 1000);
+  const minutes = Math.floor(seconds / 60);
+  return minutes > 0 ? `Expires in ${minutes}m ${seconds % 60}s` : `Expires in ${seconds}s`;
+};
+
+const isLive = (share: DaemonShare, now: number): boolean => {
+  if (share.status !== 'pending') return true;
+  // Mirrors the server's rule (`liveShareWhere`): a pending invite with no
+  // deadline predates expiry and is treated as already dead.
+  return Boolean(share.expiresAt) && new Date(share.expiresAt as string).getTime() > now;
+};
+
 const inviteUrlFor = (share: DaemonShare): string => {
   const fromServer = share.inviteUrl?.trim();
   if (fromServer) return fromServer;
@@ -33,6 +50,10 @@ export function DaemonSharingCard({ agentHost, shared, ownerLabel }: DaemonShari
   const { pushToast } = useToast();
   const { confirm } = useConfirm();
   const [busy, setBusy] = useState(false);
+  // The invite link dies on a five-minute timer the server owns. Without a
+  // local clock the card would keep offering a "Copy link" for a token the
+  // backend already refuses, which is worse than showing nothing.
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     // A borrowed machine has no owner-side shares to list, and the endpoint
@@ -40,15 +61,25 @@ export function DaemonSharingCard({ agentHost, shared, ownerLabel }: DaemonShari
     if (!shared) void fetchShares();
   }, [fetchShares, shared]);
 
-  const hostShares = shares.filter((share) => share.ownerDaemonHost === agentHost);
+  const hostShares = shares.filter(
+    (share) => share.ownerDaemonHost === agentHost && isLive(share, now),
+  );
   const atCap = hostShares.length >= maxSharesPerDaemon;
+  const hasPendingInvite = hostShares.some((share) => !share.granteeLabel);
+
+  useEffect(() => {
+    // Only tick while something on screen is actually counting down.
+    if (!hasPendingInvite) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [hasPendingInvite]);
 
   const copyInvite = async (url: string, createdNow: boolean) => {
     const copied = url ? await copyToClipboard(url) : false;
     pushToast(copied
       ? {
         title: createdNow ? 'Share link copied' : 'Link copied',
-        description: 'Send it to the person you want to lend this machine to.',
+        description: 'Send it now — the link stops working in five minutes.',
         variant: 'success',
       }
       : {
@@ -128,13 +159,14 @@ export function DaemonSharingCard({ agentHost, shared, ownerLabel }: DaemonShari
     >
       {hostShares.length === 0 ? (
         <p className="text-sm text-muted">
-          Not shared with anyone. Share creates a link — whoever opens it gets this machine in
-          their own daemon list.
+          Not shared with anyone. Share creates a link that works for five minutes — whoever
+          opens it in that window gets this machine in their own daemon list.
         </p>
       ) : (
         <div className="flex flex-col divide-y divide-border">
           {hostShares.map((share) => {
             const url = inviteUrlFor(share);
+            const remaining = countdown(share, now);
             return (
               <div key={share.id} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
                 <div className="min-w-0 flex-1">
@@ -143,6 +175,9 @@ export function DaemonSharingCard({ agentHost, shared, ownerLabel }: DaemonShari
                   </p>
                   {share.guestHost ? (
                     <p className="truncate font-mono text-xs text-muted">{share.guestHost}</p>
+                  ) : null}
+                  {remaining ? (
+                    <p className="truncate text-xs text-muted">{remaining}</p>
                   ) : null}
                 </div>
                 {/* A pending invite is useless if its link is lost -- it is

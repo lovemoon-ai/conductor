@@ -1,0 +1,17 @@
+-- RFC 0035: give the daemon-share invite link a lifetime.
+--
+-- Without this a `pending` invite stayed redeemable forever. The realistic
+-- failure is not brute force (the token is 32 random bytes) but a link that
+-- leaks into a chat log and is opened months later: redeeming it yields a shell
+-- on the owner's machine plus their signed-in AI accounts. Every other
+-- redeemable credential in this schema (device_auth_sessions,
+-- sso_authorization_codes, verifications) already carries an expiry; this was
+-- the exception.
+--
+-- Nullable on purpose. Rows written before this migration get NULL, and every
+-- query filters pending invites with `expires_at > now`. SQL comparisons
+-- against NULL are false, so those legacy invites are treated as expired --
+-- they fail closed instead of remaining valid forever, which is the whole point
+-- of the change. Already-accepted shares are unaffected: expiry is only
+-- consulted while status = 'pending'.
+ALTER TABLE "daemon_shares" ADD COLUMN "expires_at" DATETIME;

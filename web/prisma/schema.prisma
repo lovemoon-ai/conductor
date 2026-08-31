@@ -103,6 +103,12 @@ model DaemonShare {
   /// tokens. Nulled on revoke.
   agentToken      String?   @map("agent_token")
   status          String    @default("pending")
+  /// When the invite link stops being redeemable. Only meaningful while
+  /// `status` is "pending"; an accepted share does not expire. NULL means the
+  /// row predates invite expiry and is treated as already expired -- every
+  /// query filters with `expiresAt > now`, and SQL comparisons against NULL are
+  /// false, so a legacy invite fails closed rather than staying valid forever.
+  expiresAt       DateTime? @map("expires_at")
   acceptedAt      DateTime? @map("accepted_at")
   revokedAt       DateTime? @map("revoked_at")
   createdAt       DateTime  @default(now()) @map("created_at")

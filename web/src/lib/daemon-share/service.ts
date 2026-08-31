@@ -20,6 +20,48 @@ export const MAX_SHARES_PER_DAEMON = 3;
 
 export const createShareInviteToken = (): string => randomBytes(32).toString('base64url');
 
+/**
+ * How long an unaccepted invite link stays redeemable.
+ *
+ * Short on purpose. The token is unguessable, so the risk this bounds is not
+ * brute force but exposure over time: a link pasted into the wrong window or
+ * left in a chat log, redeemed later by whoever finds it, yielding a shell on
+ * the owner's machine and their signed-in AI accounts. Five minutes covers
+ * "create it, send it, they click it" and nothing else.
+ */
+export const DAEMON_SHARE_INVITE_TTL_MS = 5 * 60_000;
+
+export const inviteExpiresAt = (now: Date = new Date()): Date =>
+  new Date(now.getTime() + DAEMON_SHARE_INVITE_TTL_MS);
+
+/**
+ * The single definition of "this share still counts".
+ *
+ * Every caller — the list, the per-daemon cap, the invite lookup, the accept
+ * claim — must agree on it. Two layers evaluating expiry slightly differently
+ * is how a check becomes decorative, so there is exactly one expression of it
+ * and it is a Prisma `where` fragment rather than a predicate over loaded rows,
+ * so the database does the filtering and the accept path can use it atomically.
+ *
+ * A pending row with a NULL `expiresAt` predates this rule. `gt` is false
+ * against NULL, so it is excluded — fail closed.
+ */
+export const liveShareWhere = (now: Date = new Date()) => ({
+  OR: [
+    { status: 'active' },
+    { status: 'pending', expiresAt: { gt: now } },
+  ],
+});
+
+/** True when a share row can no longer be redeemed because its link aged out. */
+export const isInviteExpired = (
+  share: { status: string; expiresAt: Date | null },
+  now: Date = new Date(),
+): boolean => share.status === 'pending' && !(share.expiresAt && share.expiresAt > now);
+
+export const INVITE_EXPIRED_MESSAGE =
+  'This invite link has expired. Ask for a new one.';
+
 export type DaemonShareStatus = 'pending' | 'active' | 'revoked';
 
 type UserIdentity = {
@@ -129,6 +171,8 @@ export type SerializedDaemonShare = {
   granteeLabel: string | null;
   ownerLabel: string | null;
   createdAt: string;
+  /** Deadline for redeeming an unaccepted invite link; null once accepted. */
+  expiresAt: string | null;
   acceptedAt: string | null;
   revokedAt: string | null;
 };
@@ -140,6 +184,7 @@ type ShareRow = {
   status: string;
   workspaceRoot: string | null;
   createdAt: Date;
+  expiresAt?: Date | null;
   acceptedAt: Date | null;
   revokedAt: Date | null;
   owner?: UserIdentity | null;
@@ -155,6 +200,7 @@ export const serializeDaemonShare = (share: ShareRow): SerializedDaemonShare => 
   granteeLabel: share.grantee ? formatUserLabel(share.grantee) : null,
   ownerLabel: share.owner ? formatUserLabel(share.owner) : null,
   createdAt: share.createdAt.toISOString(),
+  expiresAt: share.expiresAt?.toISOString() ?? null,
   acceptedAt: share.acceptedAt?.toISOString() ?? null,
   revokedAt: share.revokedAt?.toISOString() ?? null,
 });

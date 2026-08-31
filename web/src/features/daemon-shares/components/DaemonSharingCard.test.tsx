@@ -30,6 +30,8 @@ const share = (overrides: Partial<DaemonShare> = {}): DaemonShare => ({
   granteeLabel: null,
   ownerLabel: null,
   createdAt: '',
+  // Comfortably inside the window unless a case overrides it.
+  expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
   acceptedAt: null,
   revokedAt: null,
   ...overrides,
@@ -103,6 +105,48 @@ describe('DaemonSharingCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Stop sharing' }));
 
     await waitFor(() => expect(store.revokeShare).toHaveBeenCalledWith('s1'));
+  });
+
+  it('shows how long a pending invite has left', () => {
+    store.shares = [share({ expiresAt: new Date(Date.now() + 125_000).toISOString() })];
+
+    render(<DaemonSharingCard agentHost="alice-mbp" />);
+
+    // A five-minute deadline the owner cannot see is a trap: they send the
+    // link, the colleague opens it at lunch, and nobody knows why it failed.
+    expect(screen.getByText(/Expires in 2m/)).toBeInTheDocument();
+  });
+
+  it('drops an invite whose window has closed instead of offering a dead link', () => {
+    store.shares = [share({ expiresAt: new Date(Date.now() - 1000).toISOString() })];
+
+    render(<DaemonSharingCard agentHost="alice-mbp" />);
+
+    // The server already refuses this token. Still rendering "Copy link" would
+    // hand the owner something that cannot work.
+    expect(screen.getByText(/Not shared with anyone/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Copy the invite link/i })).not.toBeInTheDocument();
+  });
+
+  it('treats a pending invite with no deadline as already dead', () => {
+    // Mirrors the server rule for rows written before expiry existed.
+    store.shares = [share({ expiresAt: null })];
+
+    render(<DaemonSharingCard agentHost="alice-mbp" />);
+
+    expect(screen.getByText(/Not shared with anyone/)).toBeInTheDocument();
+  });
+
+  it('keeps showing an accepted share once its invite deadline is long past', () => {
+    store.shares = [
+      share({ status: 'active', granteeLabel: 'bob', expiresAt: new Date(Date.now() - 9e6).toISOString() }),
+    ];
+
+    render(<DaemonSharingCard agentHost="alice-mbp" />);
+
+    // The deadline governs the link, not the access. Hiding an active share
+    // would strand the owner with no way to revoke it.
+    expect(screen.getByText('bob')).toBeInTheDocument();
   });
 
   it('stops at the per-daemon cap', () => {
