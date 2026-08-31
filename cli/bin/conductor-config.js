@@ -299,19 +299,43 @@ async function main() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
 
   const lines = [
+    "# Conductor CLI configuration.",
+    "# Lookup order: --config-file > $CONDUCTOR_CONFIG > $CONDUCTOR_HOME/config.yaml",
+    "# > ~/.conductor/config.yaml",
+    "# Commented-out keys are optional; the value shown is the default.",
+    "",
+    "# ---------------------------------------------------------------------------",
+    "# Connection",
+    "# ---------------------------------------------------------------------------",
+    "",
+    "# Agent token issued by `conductor config`. Env: CONDUCTOR_AGENT_TOKEN",
     `agent_token: ${yamlQuote(token)}`,
+    "# Conductor server this daemon talks to. Env: CONDUCTOR_BACKEND_URL",
     `backend_url: ${yamlQuote(resolvedBackendUrl)}`,
+    "# Realtime endpoint used by fire and the other CLI commands; derived from",
+    "# backend_url when unset. The daemon always derives its own WebSocket URL",
+    "# from backend_url and ignores this key. Env: CONDUCTOR_WS_URL",
+    resolvedWebsocketUrl
+      ? `websocket_url: ${yamlQuote(resolvedWebsocketUrl)}`
+      : `# websocket_url: ${deriveWebsocketUrlHint(resolvedBackendUrl)}`,
+    "# Name this machine shows up as in the app. Precedence is inverted here:",
+    "# --daemon-name > this key > CONDUCTOR_DAEMON_NAME > hostname, so this value",
+    "# wins over the env var.",
     `daemon_name: ${yamlQuote(defaultDaemonName)}`,
+    "# debug | info | warning | error | critical (default: info). Validated on",
+    "# load but not consumed by any component yet. Env: CONDUCTOR_LOG_LEVEL",
     "log_level: debug",
+    "# Root directory where the daemon creates task workspaces. Env: CONDUCTOR_WS",
     "workspace: '~/ws/fires'",
     "",
-    "# Allowed coding CLIs",
+    "# ---------------------------------------------------------------------------",
+    "# Coding CLIs",
+    "# ---------------------------------------------------------------------------",
+    "",
+    "# Allowed coding CLIs. Key = backend name shown in the app, value = command",
+    "# line used to launch it. Only backends listed here can run tasks.",
     "allow_cli_list:"
   ];
-
-  if (resolvedWebsocketUrl) {
-    lines.splice(2, 0, `websocket_url: ${yamlQuote(resolvedWebsocketUrl)}`);
-  }
 
   if (detectedCLIs.length > 0) {
     detectedCLIs.forEach((cli) => {
@@ -332,17 +356,88 @@ async function main() {
     "# daemon's supported backends without removing the shipped dependency.",
     "# disable_built_in_cli_list:",
     "#   - dsh",
-    "#   - copilot"
-  );
-
-  lines.push(
+    "#   - copilot",
     "",
-    "# Uncomment to use custom envs, such as proxy.",
+    "# Text automatically sent as the first message of every new task, per",
+    "# backend. ${VAR} / $VAR are expanded from the environment.",
+    "# pre_prompt:",
+    "#   claude: Always answer in English and run the tests before finishing.",
+    "#   codex: Read AGENTS.md first.",
+    "",
+    "# ---------------------------------------------------------------------------",
+    "# Environment for the coding CLIs",
+    "# ---------------------------------------------------------------------------",
+    "",
+    "# Extra environment variables exported into every backend process. Common",
+    "# uses: proxies, API keys, and loading a private AI SDK provider.",
     "# envs:",
     "#   http_proxy: http://127.0.0.1:7890",
     "#   https_proxy: http://127.0.0.1:7890",
     "#   all_proxy: socks5://127.0.0.1:7890",
-    "#   AISDK_PROVIDER_PATH: path-to-private-aisdk-provider.js"
+    "#   no_proxy: localhost,127.0.0.1",
+    "#   DEEPSEEK_API_KEY: sk-xxx            # required by the built-in dsh backend",
+    "#   DEEPSEEK_BASE_URL: https://api.deepseek.com",
+    "#   AISDK_PROVIDER_PATH: path-to-private-aisdk-provider.js",
+    "",
+    "# ---------------------------------------------------------------------------",
+    "# Daemon behaviour",
+    "# ---------------------------------------------------------------------------",
+    "",
+    "# Accept `conductor remote-exec` requests for this host.",
+    "# Env: CONDUCTOR_REMOTE_EXEC",
+    "# remote_exec: true",
+    "",
+    "# Launch each Fire process inside a detached tmux session so it survives a",
+    "# daemon restart. Requires tmux on PATH. Env: CONDUCTOR_FIRE_TMUX_MODE",
+    "# fire_tmux_mode: false",
+    "",
+    "# Let the daemon upgrade the CLI in place (npm/pnpm installs only).",
+    "# Env: CONDUCTOR_AUTO_UPDATE",
+    "# auto_update: true",
+    "",
+    "# After an auto-update, restart the daemon into the new version.",
+    "# Env: CONDUCTOR_AUTO_UPDATE_RESPAWN",
+    "# auto_update_respawn: false",
+    "",
+    "# Local-time window in which auto-update may run. Env: CONDUCTOR_UPDATE_WINDOW",
+    "# update_window: '02:00-04:00'",
+    "",
+    "# Scripts exposed to the app as one-click commands. Key = command name,",
+    "# value = executable script path (relative paths resolve against this file).",
+    "# custom_commands:",
+    "#   restart-service: ~/.conductor/scripts/restart-service.sh",
+    "",
+    "# Chrome profile directory used by `conductor chrome` and the web-* backends.",
+    "# Env: CDP_USER_DATA_DIR",
+    "# cdp_user_data_dir: ~/.conductor/chrome-profile",
+    "",
+    "# ---------------------------------------------------------------------------",
+    "# Optional features",
+    "# ---------------------------------------------------------------------------",
+    "",
+    "# Extra Codex auth.json files to switch between from the app's account",
+    "# picker. The file name (without .json) becomes the account name.",
+    "# ai_manager:",
+    "#   codex:",
+    "#     auth_json:",
+    "#       - ~/.codex/auth-work.json",
+    "#       - ~/.codex/auth-personal.json",
+    "",
+    "# Defaults for `conductor serve-ai`, the OpenAI-compatible local server.",
+    "# serve_ai:",
+    "#   host: 127.0.0.1",
+    "#   port: 8787",
+    "#   backend: codex",
+    "#   api_key: local-dev-key",
+    "",
+    "# Feishu (Lark) chat channel, uploaded with `conductor channel connect feishu`.",
+    "# channels:",
+    "#   feishu:",
+    "#     app_id: cli_xxx",
+    "#     app_secret: xxx",
+    "#     verification_token: xxx",
+    "#     encrypt_key: xxx",
+    ""
   );
 
   fs.writeFileSync(CONFIG_FILE, lines.join("\n"), "utf-8");
@@ -695,6 +790,20 @@ function sleep(ms) {
 
 function yamlQuote(value) {
   return JSON.stringify(value);
+}
+
+// Mirror ConductorConfig.resolvedWebsocketUrl so the commented-out
+// `websocket_url` example shows THIS install's derived default rather than a
+// hard-coded official host — a self-hosted user who uncomments it would
+// otherwise point their CLI at someone else's server.
+function deriveWebsocketUrlHint(backendUrl) {
+  try {
+    const url = new URL(backendUrl);
+    const scheme = url.protocol === "https:" ? "wss" : "ws";
+    return `${scheme}://${url.host}/ws/agent`;
+  } catch {
+    return "wss://<your-backend-host>/ws/agent";
+  }
 }
 
 main()
