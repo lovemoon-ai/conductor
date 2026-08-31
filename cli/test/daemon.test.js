@@ -7927,7 +7927,7 @@ describe("Daemon", () => {
       assert.ok(typeof handler === "function");
       assert.strictEqual(
         webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-        "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,remote_exec,pty_task,terminal_snapshot",
+        "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,update_daemon,remote_exec,pty_task,terminal_snapshot",
       );
 
       handler({
@@ -7957,7 +7957,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,remote_exec,pty_task,terminal_snapshot",
+      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,update_daemon,remote_exec,pty_task,terminal_snapshot",
     );
 
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -8230,7 +8230,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,remote_exec",
+      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,update_daemon,remote_exec",
     );
 
     handler({
@@ -11653,6 +11653,43 @@ describe("Daemon", () => {
       const caps = String(headers["x-conductor-capabilities"] || "").split(",");
       assert.ok(caps.includes("restart_daemon"));
       fx.close();
+    });
+
+    it("answers update_daemon_request without restarting or exiting", async () => {
+      // The built-in update never runs inside the daemon: the request only
+      // spawns a detached updater, so the daemon must still be serving after it.
+      const conductorHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-update-dispatch-"));
+      const previousHome = process.env.CONDUCTOR_HOME;
+      process.env.CONDUCTOR_HOME = conductorHome;
+      let fx;
+      try {
+        fx = buildRestartDaemonFixture();
+        await new Promise((r) => setTimeout(r, 20));
+
+        const headers = fx.webSocketClientOptions()?.extraHeaders || {};
+        assert.ok(
+          String(headers["x-conductor-capabilities"] || "").split(",").includes("update_daemon"),
+        );
+
+        fx.dispatch({
+          type: "update_daemon_request",
+          payload: { request_id: "req-update-status", action: "status" },
+        });
+        await waitUntil(
+          () => fx.sentEvents.some((e) => e.type === "update_daemon_response"),
+          { message: "daemon answers update_daemon_request" },
+        );
+
+        const response = fx.sentEvents.find((e) => e.type === "update_daemon_response");
+        assert.strictEqual(response.payload.request_id, "req-update-status");
+        assert.strictEqual(response.payload.result.status, "idle");
+        assert.equal(fx.getExitCode(), null, "daemon must not exit for an update request");
+      } finally {
+        fx?.close();
+        if (previousHome === undefined) delete process.env.CONDUCTOR_HOME;
+        else process.env.CONDUCTOR_HOME = previousHome;
+        fs.rmSync(conductorHome, { recursive: true, force: true });
+      }
     });
 
     it("installs an explicit semver target when it differs from current", async () => {

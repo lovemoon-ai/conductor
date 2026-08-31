@@ -12,6 +12,7 @@ import { CustomCommandsPanel } from './CustomCommandsPanel';
 import { DaemonSharingCard } from '@/features/daemon-shares';
 import { QuotaBar } from './QuotaBar';
 import { ToolStatusRow } from './ToolStatusRow';
+import { UpdateDaemonButton } from './UpdateDaemonButton';
 
 interface AiManagerPanelProps {
   /** Daemon to display. Falls back to the first connected daemon when omitted. */
@@ -171,6 +172,7 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
   const selectedDaemon = visibleDaemons.find((daemon) => daemon.host === host) ?? null;
   const supportsRestart = selectedDaemon?.capabilities?.includes('restart_daemon') ?? false;
   const supportsCustomCommands = selectedDaemon?.capabilities?.includes('custom_commands') ?? false;
+  const supportsUpdate = selectedDaemon?.capabilities?.includes('update_daemon') ?? false;
   const supportedBackends = selectedDaemon?.supportedBackends ?? [];
   const managedTools = supportedManagedTools(supportedBackends, selectedDaemon?.runtimeBackendMap);
   const externalBackends = externalQuotaBackends(supportedBackends, selectedDaemon?.runtimeBackendMap);
@@ -518,7 +520,12 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
       />
 
       <SectionCard title="Danger zone">
-        <div className="flex justify-end">
+        <div className="flex flex-wrap items-start justify-end gap-3">
+          <UpdateDaemonButton
+            agentHost={host}
+            supported={supportsUpdate}
+            onFinished={fetchAgents}
+          />
           <button
             type="button"
             onClick={() => void handleRestartDaemon()}

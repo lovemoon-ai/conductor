@@ -168,6 +168,20 @@ type CustomCommandsWaiter = {
   expectedAgentHost: string;
 };
 
+export type UpdateDaemonResponse = {
+  request_id: string;
+  action: string;
+  result?: unknown;
+  error?: string | null;
+};
+
+type UpdateDaemonWaiter = {
+  resolve: (result: UpdateDaemonResponse | null) => void;
+  timeout: NodeJS.Timeout;
+  expectedUserId: string;
+  expectedAgentHost: string;
+};
+
 export type RemoteExecResponse = {
   request_id: string;
   action: string;
@@ -228,6 +242,7 @@ export class RealtimeHub {
   private taskWorktreeCleanupWaiters = new Map<string, TaskWorktreeCleanupWaiter>();
   private aiManagerWaiters = new Map<string, AiManagerWaiter>();
   private customCommandsWaiters = new Map<string, CustomCommandsWaiter>();
+  private updateDaemonWaiters = new Map<string, UpdateDaemonWaiter>();
   private remoteExecWaiters = new Map<string, RemoteExecWaiter>();
   private terminalSubscriptions = new Map<string, Set<string>>();
   private appTerminalTasks = new Map<string, Set<string>>();
@@ -289,6 +304,7 @@ export class RealtimeHub {
     const maps = [
       asHostScoped(this.remoteExecWaiters),
       asHostScoped(this.customCommandsWaiters),
+      asHostScoped(this.updateDaemonWaiters),
       asHostScoped(this.aiManagerWaiters),
     ];
     for (const waiters of maps) {
@@ -915,6 +931,52 @@ export class RealtimeHub {
     if (!waiter) return;
     clearTimeout(waiter.timeout);
     this.customCommandsWaiters.delete(requestId);
+    waiter.resolve(null);
+  }
+
+  waitForUpdateDaemonResponse(
+    requestId: string,
+    timeoutMs: number,
+    expectedUserId: string,
+    expectedAgentHost: string,
+  ): Promise<UpdateDaemonResponse | null> {
+    return new Promise<UpdateDaemonResponse | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.updateDaemonWaiters.delete(requestId);
+        resolve(null);
+      }, timeoutMs);
+      this.updateDaemonWaiters.set(requestId, {
+        resolve,
+        timeout,
+        expectedUserId,
+        expectedAgentHost,
+      });
+    });
+  }
+
+  resolveUpdateDaemonResponse(
+    result: UpdateDaemonResponse,
+    sourceUserId: string,
+    sourceAgentHost: string,
+  ) {
+    const waiter = this.updateDaemonWaiters.get(result.request_id);
+    if (!waiter) return;
+    if (waiter.expectedUserId !== sourceUserId || waiter.expectedAgentHost !== sourceAgentHost) {
+      console.warn(
+        `[realtimeHub] dropped update_daemon_response: requestId=${result.request_id}, expected=${waiter.expectedUserId}/${waiter.expectedAgentHost}, got=${sourceUserId}/${sourceAgentHost}`,
+      );
+      return;
+    }
+    clearTimeout(waiter.timeout);
+    this.updateDaemonWaiters.delete(result.request_id);
+    waiter.resolve(result);
+  }
+
+  cancelUpdateDaemonResponse(requestId: string) {
+    const waiter = this.updateDaemonWaiters.get(requestId);
+    if (!waiter) return;
+    clearTimeout(waiter.timeout);
+    this.updateDaemonWaiters.delete(requestId);
     waiter.resolve(null);
   }
 
