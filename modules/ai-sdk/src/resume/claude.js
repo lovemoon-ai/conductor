@@ -3,12 +3,12 @@ import { promises as fsp } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 
+import { resolveClaudeConfigDirs } from "../manager/paths.js";
 import {
   buildResumeContext,
   isExistingDirectory,
   normalizeSessionId,
   pathExists,
-  resolveHomeDir,
   resolveSessionRunDirectory,
 } from "./shared.js";
 
@@ -28,17 +28,21 @@ export async function findSessionPath(sessionId, options = {}) {
     return null;
   }
 
-  const homeDir = resolveHomeDir(options);
-  const projectsDir = options.claudeProjectsDir || path.join(homeDir, ".claude", "projects");
-  const sessionEntries = await findClaudeSessionEntries(projectsDir, normalizedSessionId);
-  if (sessionEntries.length > 0) {
-    return sessionEntries[0]?.source || null;
-  }
+  // Search $CLAUDE_CONFIG_DIR first, then ~/.claude, so sessions recorded
+  // before that variable was introduced stay resumable.
+  const configDirs = resolveClaudeConfigDirs(options.env ?? process.env, options.homeDir);
+  for (const configDir of configDirs) {
+    const projectsDir = options.claudeProjectsDir || path.join(configDir, "projects");
+    const sessionPath = await findClaudeSessionPath(projectsDir, normalizedSessionId);
+    if (sessionPath) {
+      return sessionPath;
+    }
 
-  const tasksDir = options.claudeTasksDir || path.join(homeDir, ".claude", "tasks");
-  const directTaskDir = path.join(tasksDir, normalizedSessionId);
-  if (await pathExists(directTaskDir, "directory")) {
-    return directTaskDir;
+    const tasksDir = options.claudeTasksDir || path.join(configDir, "tasks");
+    const directTaskDir = path.join(tasksDir, normalizedSessionId);
+    if (await pathExists(directTaskDir, "directory")) {
+      return directTaskDir;
+    }
   }
 
   return null;
@@ -99,13 +103,17 @@ export async function resolveResumeContext(sessionId, options = {}) {
   });
 }
 
-async function findClaudeSessionEntries(projectsDir, sessionId) {
-  const entries = [];
+/**
+ * Returns the first session file mentioning `sessionId`. Session ids are
+ * unique, so this stops at the first hit instead of walking the whole history
+ * tree - which now may live on network storage.
+ */
+async function findClaudeSessionPath(projectsDir, sessionId) {
   let projectDirs = [];
   try {
     projectDirs = await fsp.readdir(projectsDir, { withFileTypes: true });
   } catch {
-    return entries;
+    return null;
   }
 
   for (const projectDir of projectDirs) {
@@ -129,10 +137,8 @@ async function findClaudeSessionEntries(projectsDir, sessionId) {
       }
 
       const filePath = path.join(projectPath, file.name);
-      const rl = readline.createInterface({
-        input: fs.createReadStream(filePath),
-        crlfDelay: Infinity,
-      });
+      const input = fs.createReadStream(filePath);
+      const rl = readline.createInterface({ input, crlfDelay: Infinity });
 
       for await (const line of rl) {
         const trimmed = line.trim();
@@ -146,11 +152,14 @@ async function findClaudeSessionEntries(projectsDir, sessionId) {
           continue;
         }
         if (entry.sessionId === sessionId) {
-          entries.push({ ...entry, source: filePath });
+          // Close both: rl.close() alone leaves the fd open.
+          rl.close();
+          input.destroy();
+          return filePath;
         }
       }
     }
   }
 
-  return entries;
+  return null;
 }

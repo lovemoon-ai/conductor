@@ -167,6 +167,69 @@ describe("ai-sdk resume API", () => {
     assert.equal(await findSessionPath("claude", taskSessionId, { homeDir: tmpRoot }), taskDir);
   });
 
+  const writeClaudeSession = async (baseDir, sessionId, project = "demo-project") => {
+    const projectDir = path.join(baseDir, "projects", project);
+    await fsp.mkdir(projectDir, { recursive: true });
+    const historyPath = path.join(projectDir, "history.jsonl");
+    await fsp.writeFile(
+      historyPath,
+      `${JSON.stringify({
+        sessionId,
+        timestamp: 1,
+        message: { role: "user", content: [{ type: "text", text: "hello" }] },
+      })}\n`,
+      "utf8",
+    );
+    return historyPath;
+  };
+
+  it("finds claude session path under $CLAUDE_CONFIG_DIR", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "ai-sdk-resume-cfgdir-"));
+    const configDir = path.join(tmpRoot, "shared", "claude-sessions");
+    const sessionId = "3f1d0b2a-1111-4c22-9999-abcdefabcdef";
+    const historyPath = await writeClaudeSession(configDir, sessionId);
+
+    assert.equal(
+      await findSessionPath("claude", sessionId, { env: { CLAUDE_CONFIG_DIR: configDir } }),
+      historyPath,
+    );
+  });
+
+  it("still finds pre-existing ~/.claude sessions after CLAUDE_CONFIG_DIR is introduced", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "ai-sdk-resume-fallback-"));
+    const configDir = path.join(tmpRoot, "shared", "claude-sessions");
+    await fsp.mkdir(path.join(configDir, "projects"), { recursive: true });
+    const sessionId = "6a2c8f14-2222-4d33-8888-0123456789ab";
+    // Session predates the env var, so it only exists under ~/.claude.
+    const historyPath = await writeClaudeSession(path.join(tmpRoot, ".claude"), sessionId);
+
+    const prev = process.env.HOME;
+    process.env.HOME = tmpRoot;
+    try {
+      assert.equal(
+        await findSessionPath("claude", sessionId, { env: { CLAUDE_CONFIG_DIR: configDir, HOME: tmpRoot } }),
+        historyPath,
+      );
+    } finally {
+      if (prev === undefined) delete process.env.HOME;
+      else process.env.HOME = prev;
+    }
+  });
+
+  it("lets an explicit homeDir pin the lookup over an ambient CLAUDE_CONFIG_DIR", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "ai-sdk-resume-pin-"));
+    const decoy = path.join(tmpRoot, "decoy");
+    const sessionId = "9b3e7c05-3333-4e44-7777-fedcba987654";
+    const historyPath = await writeClaudeSession(path.join(tmpRoot, ".claude"), sessionId);
+    // Same id under the decoy: if the guard regresses, this path wins instead.
+    await writeClaudeSession(decoy, sessionId, "decoy-project");
+
+    assert.equal(
+      await findSessionPath("claude", sessionId, { homeDir: tmpRoot, env: { CLAUDE_CONFIG_DIR: decoy } }),
+      historyPath,
+    );
+  });
+
   it("finds kimi session path from hashed ~/.kimi/sessions directories", async () => {
     const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "ai-sdk-resume-"));
     const workspaceDir = path.join(tmpRoot, "workspace-kimi");

@@ -40,6 +40,22 @@ export function resolveDefaultConductorConfig(env: PathEnv = process.env): strin
   return join(resolveConductorHome(env), "config.yaml");
 }
 
+/**
+ * Claude Code keeps its config (credentials, projects/, tasks/) under
+ * $CLAUDE_CONFIG_DIR when that is set - shared hosts point it at network
+ * storage - and under ~/.claude otherwise. Returns both, in priority order, so
+ * callers can search the override first and still find pre-existing state that
+ * was written before the variable was introduced.
+ */
+export function resolveClaudeConfigDirs(env: PathEnv = process.env, homeDir?: string): string[] {
+  const fallback = join(homeDir ? resolve(homeDir) : resolve(userHome(env)), ".claude");
+  // An explicit homeDir is a caller/test override that pins the lookup.
+  const configured = homeDir ? "" : optionalString(env.CLAUDE_CONFIG_DIR);
+  if (!configured) return [fallback];
+  const expanded = resolve(expandHomeWithEnv(configured, env));
+  return expanded === fallback ? [fallback] : [expanded, fallback];
+}
+
 export function resolveDefaultQuotaCacheDir(env: PathEnv = process.env): string {
   return join(resolveConductorHome(env), "cache", "ai-manager");
 }

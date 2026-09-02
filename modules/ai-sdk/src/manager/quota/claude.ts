@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeQuota, QuotaWindow } from "../types.js";
 import { headersToMap, num, str } from "./headers.js";
 import { cacheFile, fingerprintKey, isFresh, readCache, writeCache } from "./cache.js";
+import { resolveClaudeConfigDirs } from "../paths.js";
 
 const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const DEFAULT_TTL = 60;
@@ -17,6 +17,16 @@ export interface ClaudeCredential {
   token: string;
   /** JSON source string (for fingerprinting). */
   fingerprintInput: string;
+  /** OAuth expiry in epoch ms, when the source reports one. */
+  expiresAt?: number;
+}
+
+export interface ResolveClaudeCredentialOptions {
+  env?: Record<string, string | undefined>;
+  /** Pins the lookup to one home, ignoring CLAUDE_CONFIG_DIR (tests). */
+  homeDir?: string;
+  platform?: string;
+  readKeychain?: () => Promise<string | null>;
 }
 
 export interface GetClaudeQuotaOptions {
@@ -30,34 +40,54 @@ export interface GetClaudeQuotaOptions {
   credential?: ClaudeCredential;
 }
 
-export async function resolveClaudeCredential(): Promise<ClaudeCredential | null> {
-  const envKey = process.env.ANTHROPIC_API_KEY;
+export async function resolveClaudeCredential(
+  opts: ResolveClaudeCredentialOptions = {},
+): Promise<ClaudeCredential | null> {
+  const env = opts.env ?? process.env;
+  const envKey = env.ANTHROPIC_API_KEY;
   if (envKey && envKey.length > 10) {
     return { kind: "api-key", token: envKey, fingerprintInput: envKey };
   }
 
-  if (process.platform === "darwin") {
-    const raw = await readMacKeychain();
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw);
-        const oauth = parsed?.claudeAiOauth ?? parsed;
-        if (oauth?.accessToken) {
-          return {
-            kind: "oauth",
-            token: oauth.accessToken,
-            fingerprintInput: oauth.accessToken,
-          };
-        }
-      } catch {
-        // fall through
-      }
-    }
-  }
+  // Candidates in priority order:
+  //   $CLAUDE_CONFIG_DIR  - explicitly chosen, so it outranks the machine-wide
+  //                         Keychain, which belongs to a different account.
+  //   Keychain (macOS)    - where Claude Code refreshes tokens to.
+  //   ~/.claude           - last, because on macOS it is the stale-file trap:
+  //                         refreshes go to the Keychain, so a leftover file
+  //                         here holds a dead token.
+  const dirs = resolveClaudeConfigDirs(env, opts.homeDir);
+  const overrideDir = dirs.length > 1 ? dirs[0] : undefined;
+  const homeDir = dirs[dirs.length - 1];
+  const readFileCred = (dir: string) => () => oauthFromFile(join(dir, ".credentials.json"));
 
-  // Linux/Windows fallback: look for ~/.claude/.credentials.json (best-effort).
+  const sources: Array<() => Promise<ClaudeCredential | null>> = [];
+  if (overrideDir) sources.push(readFileCred(overrideDir));
+  if ((opts.platform ?? process.platform) === "darwin") {
+    const readKeychain = opts.readKeychain ?? readMacKeychain;
+    sources.push(async () => {
+      const raw = await readKeychain();
+      return raw ? oauthFromJson(raw) : null;
+    });
+  }
+  sources.push(readFileCred(homeDir));
+
+  // Prefer the first live credential. An expired one is remembered but not
+  // returned yet, so a stale file cannot shadow a working Keychain entry.
+  let expired: ClaudeCredential | null = null;
+  for (const read of sources) {
+    const cred = await read();
+    if (!cred) continue;
+    if (!cred.expiresAt || cred.expiresAt > Date.now()) return cred;
+    expired ??= cred;
+  }
+  // Everything on offer is expired: return it anyway so the caller surfaces an
+  // auth error rather than a misleading "no credential found".
+  return expired;
+}
+
+function oauthFromJson(raw: string): ClaudeCredential | null {
   try {
-    const raw = await readFile(join(homedir(), ".claude", ".credentials.json"), "utf8");
     const parsed = JSON.parse(raw);
     const oauth = parsed?.claudeAiOauth ?? parsed;
     if (oauth?.accessToken) {
@@ -65,12 +95,21 @@ export async function resolveClaudeCredential(): Promise<ClaudeCredential | null
         kind: "oauth",
         token: oauth.accessToken,
         fingerprintInput: oauth.accessToken,
+        expiresAt: typeof oauth.expiresAt === "number" ? oauth.expiresAt : undefined,
       };
     }
   } catch {
-    // ignore
+    // not JSON, or no token in it
   }
   return null;
+}
+
+async function oauthFromFile(path: string): Promise<ClaudeCredential | null> {
+  try {
+    return oauthFromJson(await readFile(path, "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 function readMacKeychain(): Promise<string | null> {
@@ -136,7 +175,7 @@ export async function getClaudeQuota(opts: GetClaudeQuotaOptions = {}): Promise<
   if (!credential) {
     return emptyQuota(
       "unknown",
-      "no Claude credential found (ANTHROPIC_API_KEY env, macOS Keychain, or ~/.claude/.credentials.json)",
+      "no Claude credential found (ANTHROPIC_API_KEY env, $CLAUDE_CONFIG_DIR/.credentials.json, macOS Keychain, or ~/.claude/.credentials.json)",
     );
   }
 
