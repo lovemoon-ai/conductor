@@ -379,6 +379,131 @@ describe('AiManagerPanel', () => {
     expect(within(quotaSection!).queryByText(/Copilot/)).not.toBeInTheDocument();
   });
 
+  it('renders Codex like other providers when no extra accounts are configured', () => {
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-a',
+        supportedBackends: ['codex'],
+        capabilities: ['restart_daemon'],
+      },
+    ];
+    aiManagerState.selectedHost = 'daemon-a';
+    const hostState: any = makeHostState(makeStatus());
+    hostState.quota.codex.plan = 'plus';
+    aiManagerState.byHost = { 'daemon-a': hostState };
+
+    render(<AiManagerPanel initialAgentHost="daemon-a" />);
+
+    const quotaSection = screen.getByRole('heading', { name: 'Quota' }).closest('section');
+    expect(quotaSection).not.toBeNull();
+    // Plain provider column: plan badge + weekly bar, no account cards, no
+    // switch buttons, no "configure accounts" hint.
+    expect(within(quotaSection!).getByText('plus')).toBeInTheDocument();
+    expect(
+      within(quotaSection!).getByRole('progressbar', { name: 'Weekly usage' }),
+    ).toHaveAttribute('aria-valuenow', '20');
+    expect(within(quotaSection!).queryByRole('button', { name: /^Use/ })).not.toBeInTheDocument();
+    expect(
+      within(quotaSection!).queryByText(/No codex accounts configured/),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps the plain Codex quota view when only one account is configured', () => {
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-a',
+        supportedBackends: ['codex'],
+        capabilities: ['restart_daemon'],
+      },
+    ];
+    aiManagerState.selectedHost = 'daemon-a';
+    const hostState: any = makeHostState(makeStatus());
+    hostState.accounts = {
+      accounts: [
+        { name: 'alice', path: '/tmp/alice.json', email: 'alice@example.com', isCurrent: true },
+      ],
+    };
+    aiManagerState.byHost = { 'daemon-a': hostState };
+
+    render(<AiManagerPanel initialAgentHost="daemon-a" />);
+
+    const quotaSection = screen.getByRole('heading', { name: 'Quota' }).closest('section');
+    expect(quotaSection).not.toBeNull();
+    expect(
+      within(quotaSection!).getByRole('progressbar', { name: 'Weekly usage' }),
+    ).toHaveAttribute('aria-valuenow', '20');
+    // No account card and no switch affordance for a single account.
+    expect(within(quotaSection!).queryByText('alice@example.com')).not.toBeInTheDocument();
+    expect(within(quotaSection!).queryByRole('button', { name: /^Use|^Active/ })).not.toBeInTheDocument();
+  });
+
+  it('shows the switcher for a single configured account that is not the active identity', () => {
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-a',
+        supportedBackends: ['codex'],
+        capabilities: ['restart_daemon'],
+      },
+    ];
+    aiManagerState.selectedHost = 'daemon-a';
+    const hostState: any = makeHostState(makeStatus());
+    // The user explicitly configured auth-work.json but ~/.codex/auth.json
+    // currently holds a different identity; the configuration wins, so the
+    // card + Use button must stay available to activate it.
+    hostState.accounts = {
+      accounts: [
+        { name: 'work', path: '/tmp/auth-work.json', email: 'work@example.com', isCurrent: false },
+      ],
+    };
+    aiManagerState.byHost = { 'daemon-a': hostState };
+
+    render(<AiManagerPanel initialAgentHost="daemon-a" />);
+
+    const quotaSection = screen.getByRole('heading', { name: 'Quota' }).closest('section');
+    expect(quotaSection).not.toBeNull();
+    expect(within(quotaSection!).getByText('work@example.com')).toBeInTheDocument();
+    expect(within(quotaSection!).getByRole('button', { name: 'Use' })).toBeEnabled();
+  });
+
+  it('shows the account switcher only when multiple Codex accounts are configured', () => {
+    agentsState.agents = [
+      {
+        id: 'agent-1',
+        host: 'daemon-a',
+        supportedBackends: ['codex'],
+        capabilities: ['restart_daemon'],
+      },
+    ];
+    aiManagerState.selectedHost = 'daemon-a';
+    const hostState: any = makeHostState(makeStatus());
+    hostState.accounts = {
+      accounts: [
+        { name: 'alice', path: '/tmp/alice.json', email: 'alice@example.com', isCurrent: true },
+        { name: 'bob', path: '/tmp/bob.json', email: 'bob@example.com', isCurrent: false },
+      ],
+    };
+    hostState.codexQuotaByAccount = {
+      alice: {
+        tool: 'codex',
+        source: 'fresh',
+        weekly: { usedPercent: 20, remainingPercent: 80 },
+      },
+    };
+    aiManagerState.byHost = { 'daemon-a': hostState };
+
+    render(<AiManagerPanel initialAgentHost="daemon-a" />);
+
+    const quotaSection = screen.getByRole('heading', { name: 'Quota' }).closest('section');
+    expect(quotaSection).not.toBeNull();
+    expect(within(quotaSection!).getByText('alice@example.com')).toBeInTheDocument();
+    expect(within(quotaSection!).getByText('bob@example.com')).toBeInTheDocument();
+    expect(within(quotaSection!).getByRole('button', { name: 'Active' })).toBeDisabled();
+    expect(within(quotaSection!).getByRole('button', { name: 'Use' })).toBeInTheDocument();
+  });
+
   it('shows the Copilot login label inline with the header when quota data includes account info', () => {
     agentsState.agents = [
       {

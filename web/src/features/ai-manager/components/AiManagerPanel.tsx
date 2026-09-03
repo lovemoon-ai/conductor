@@ -315,19 +315,52 @@ export function AiManagerPanel({ initialAgentHost }: AiManagerPanelProps = {}) {
           <div className={`grid gap-5 ${quotaGridClass(availableTools.length)}`}>
             {availableTools.map((tool) => {
               if (tool === 'codex') {
+                // The multi-account switcher only appears when the user
+                // explicitly configured accounts under ai_manager.codex.auth_json
+                // and there is actually something to switch: either several
+                // accounts, or a single configured account that is not the
+                // active identity (the configuration wins over the default
+                // auth.json, so the user must keep a path to activate it).
+                // Otherwise Codex renders like every other provider, fed by
+                // the daemon's default auth.json quota.
+                const showSwitcher =
+                  accounts.length > 1 || (accounts.length === 1 && !accounts[0].isCurrent);
                 return (
                   <div key={tool} className="flex min-w-0 flex-col gap-3">
-                    <div className="text-sm font-semibold text-ink">Codex</div>
-                    <CodexAccountSwitcher
-                      agentHost={host}
-                      accounts={accounts}
-                      codexQuotaByAccount={codexQuotaByAccount}
-                      loading={state?.loading?.accounts ?? false}
-                      errorMessage={state?.error?.accounts}
-                    />
-                    {unattributedCodexError ? (
-                      <p className="text-xs text-[var(--error)]">{unattributedCodexError}</p>
-                    ) : null}
+                    <div className="text-sm font-semibold text-ink">
+                      Codex
+                      {!showSwitcher && quota?.codex?.plan ? (
+                        <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
+                          {quota.codex.plan}
+                        </span>
+                      ) : null}
+                    </div>
+                    {showSwitcher ? (
+                      <>
+                        <CodexAccountSwitcher
+                          agentHost={host}
+                          accounts={accounts}
+                          codexQuotaByAccount={codexQuotaByAccount}
+                          errorMessage={state?.error?.accounts}
+                        />
+                        {unattributedCodexError ? (
+                          <p className="text-xs text-[var(--error)]">{unattributedCodexError}</p>
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        <QuotaBar label="Weekly" window={quota?.codex?.weekly} />
+                        {quota?.codex?.error ? (
+                          <p className="text-xs text-[var(--error)]">{quota.codex.error}</p>
+                        ) : null}
+                        {/* An accounts-fetch failure would otherwise be
+                            invisible here (the switcher normally surfaces it),
+                            silently hiding a configured multi-account list. */}
+                        {state?.error?.accounts ? (
+                          <p className="text-xs text-[var(--error)]">{state.error.accounts}</p>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 );
               }

@@ -56,13 +56,23 @@ export function resolveClaudeConfigDirs(env: PathEnv = process.env, homeDir?: st
   return expanded === fallback ? [fallback] : [expanded, fallback];
 }
 
+/**
+ * Codex keeps auth.json/config.toml under $CODEX_HOME when that is set
+ * (identity isolation, multi-instance daemons) and under ~/.codex otherwise.
+ */
+export function resolveCodexHome(env: PathEnv = process.env): string {
+  const configured = optionalString(env.CODEX_HOME);
+  if (configured) return resolve(expandHomeWithEnv(configured, env));
+  return join(resolve(userHome(env)), ".codex");
+}
+
 export function resolveDefaultQuotaCacheDir(env: PathEnv = process.env): string {
   return join(resolveConductorHome(env), "cache", "ai-manager");
 }
 
 export const DEFAULT_CONDUCTOR_CONFIG = resolveDefaultConductorConfig();
-export const DEFAULT_CODEX_AUTH = join(homedir(), ".codex", "auth.json");
-export const DEFAULT_CODEX_CONFIG = join(homedir(), ".codex", "config.toml");
+export const DEFAULT_CODEX_AUTH = join(resolveCodexHome(), "auth.json");
+export const DEFAULT_CODEX_CONFIG = join(resolveCodexHome(), "config.toml");
 export const DEFAULT_KIMI_CODE_HOME =
   process.env.KIMI_CODE_HOME?.trim() || join(homedir(), ".kimi-code");
 export const DEFAULT_KIMI_CREDENTIAL = join(
