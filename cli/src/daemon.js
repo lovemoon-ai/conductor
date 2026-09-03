@@ -7940,6 +7940,31 @@ export function startDaemon(config = {}, deps = {}) {
       return;
     }
 
+    if (!resolvedResumeCwd && isForkMode) {
+      // A fork starts a brand-new session and receives its context as a URL, so
+      // it does not need the source task's files. When nothing in the chain
+      // resolves — the normal case for a cross-daemon fork, where the server
+      // drops the source machine's paths and this daemon holds no local path
+      // for the project — land in a fresh workspace dir exactly like
+      // create_task does, instead of killing the successor on arrival.
+      const now = new Date();
+      // Keyed off the task id, not the daemon pid: the run timestamp only has
+      // second granularity and this path never renames the dir afterwards
+      // (create_task does), so two forks landing in the same second would
+      // otherwise share one workspace AND one conductor.log.
+      const taskSuffix =
+        normalizedTargetTaskId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8) || String(process.pid);
+      resolvedResumeCwd = path.join(
+        WORKSPACE_ROOT,
+        formatWorkspaceDate(now),
+        `${formatWorkspaceRunTimestamp(now)}_fork_${taskSuffix}`,
+      );
+      log(
+        `No local workspace for project ${normalizedProjectId} on this daemon; ` +
+          `forking task ${normalizedTargetTaskId} into ${resolvedResumeCwd}`,
+      );
+    }
+
     if (!resolvedResumeCwd) {
       reportRestartFailure({
         taskId: normalizedTargetTaskId,

@@ -7817,6 +7817,211 @@ describe("Daemon", () => {
     daemonInstance.close();
   });
 
+  it("forks into a fresh daemon workspace when the target daemon holds no path for the project", async () => {
+    let handler;
+    let connected = false;
+    const spawnCalls = [];
+    const mkdirPaths = [];
+    const sentEvents = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-restart-cross-daemon",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "restart-cross-daemon",
+      },
+      {
+        spawn: (_cmd, args, opts) => {
+          spawnCalls.push({ args, opts });
+          return {
+            pid: 61999,
+            kill: () => {},
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: (dir) => {
+          mkdirPaths.push(String(dir));
+        },
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        resolveResumeContext: async () => ({ cwd: "" }),
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            // Default project: no daemon binding, no workspace path, and no
+            // localPaths entry for this daemon.
+            return {
+              ok: true,
+              json: async () => ({ metadata: { localPaths: { ubuntu: "/home/u/ws/repo" } } }),
+            };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {
+            connected = true;
+          },
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
+        }),
+      },
+    );
+
+    await waitUntil(() => connected, { message: "restart-cross-daemon daemon to connect" });
+
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "fork_to_new_task",
+        source_task_id: "task-source-cross-1",
+        target_task_id: "task-successor-cross-1",
+        project_id: "proj-cross-1",
+        title: "GR00T [claude]",
+        source_backend_type: "claude",
+        source_session_id: "sess-claude-source-cross-1",
+        // The server drops cwd/worktree paths for a cross-daemon fork, and the
+        // source session file lives on the other machine.
+        target_backend_type: "claude",
+        resume_context_url: "http://localhost:6152/share/tok-cross/plain",
+        request_id: "req-fork-cross-1",
+      },
+    });
+
+    await waitUntil(() => spawnCalls.length === 1, { message: "cross-daemon fork to spawn" });
+
+    const spawnCwd = spawnCalls[0].opts.cwd;
+    assert.match(
+      spawnCwd,
+      /^\/tmp\/test-ws-restart-cross-daemon\/\d{4}-\d{2}-\d{2}\/\d{2}-\d{2}-\d{2}_fork_tasksucc$/,
+      `cross-daemon fork should land in a task-scoped dir under the daemon workspace root, got ${spawnCwd}`,
+    );
+    assert.ok(mkdirPaths.includes(spawnCwd), "fallback workspace should be created");
+    assert.strictEqual(spawnCalls[0].opts.env.CONDUCTOR_RESUME_CWD, spawnCwd);
+    assert.ok(
+      !sentEvents.some(
+        (entry) =>
+          entry.type === "task_status_update" &&
+          entry.payload?.task_id === "task-successor-cross-1" &&
+          entry.payload?.status === "KILLED",
+      ),
+      "cross-daemon fork must not be killed with an unresolved cwd",
+    );
+
+    daemonInstance.close();
+  });
+
+  it("still fails an in-place restart loudly when no workspace can be resolved", async () => {
+    let handler;
+    let connected = false;
+    const sentEvents = [];
+    let spawnCount = 0;
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-restart-inplace-nocwd",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "restart-inplace-nocwd",
+      },
+      {
+        spawn: () => {
+          spawnCount += 1;
+          throw new Error("spawn should not be called");
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          on: () => {},
+          write: () => {},
+          end: () => {},
+        }),
+        resolveResumeContext: async () => ({ cwd: "" }),
+        fetch: async (url) => {
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {
+            connected = true;
+          },
+          disconnect: async () => {},
+          sendJson: async (payload) => {
+            sentEvents.push(payload);
+          },
+        }),
+      },
+    );
+
+    await waitUntil(() => connected, { message: "restart-inplace-nocwd daemon to connect" });
+
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "resume_inplace",
+        source_task_id: "task-inplace-nocwd-1",
+        target_task_id: "task-inplace-nocwd-1",
+        project_id: "proj-inplace-nocwd-1",
+        title: "Resume in place",
+        source_backend_type: "claude",
+        source_session_id: "sess-claude-inplace-nocwd-1",
+        target_backend_type: "claude",
+        request_id: "req-inplace-nocwd-1",
+      },
+    });
+
+    await waitUntil(
+      () =>
+        sentEvents.some(
+          (entry) =>
+            entry.type === "task_status_update" &&
+            entry.payload?.task_id === "task-inplace-nocwd-1" &&
+            entry.payload?.status === "KILLED",
+        ),
+      { message: "in-place restart KILLED status" },
+    );
+
+    // The fork-mode workspace fallback must not leak into in-place restart:
+    // resuming a session in a fresh empty directory would silently detach the
+    // task from the work it is supposed to continue.
+    assert.strictEqual(spawnCount, 0);
+    expectEvent(sentEvents, "task_status_update", (payload) => {
+      assert.strictEqual(payload.task_id, "task-inplace-nocwd-1");
+      assert.strictEqual(payload.status, "KILLED");
+      assert.match(payload.summary, /Could not resolve resume cwd/);
+    });
+
+    daemonInstance.close();
+  });
+
   it("creates PTY tasks, strips task-scoped env, and sends a terminal snapshot on fresh attach", async () => {
     let handler;
     let onData = null;

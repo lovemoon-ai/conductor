@@ -856,8 +856,9 @@ export async function POST(
   //      work there (or fail a git worktree add against a missing repo root).
   //      Drop them and let the daemon's own fallback chain resolve the
   //      project's local path on the target machine — if the project has no
-  //      binding there, the daemon fails with a clear "Could not resolve
-  //      resume cwd" instead of fabricating a workspace.
+  //      local path there, the daemon starts the successor in a fresh
+  //      workspace dir of its own, exactly like a brand-new task; the
+  //      conversation still transfers through resume_context_url.
   const isCrossDaemonOverride =
     useAgentHostOverride && restartAgentHost !== sourceRunHost;
   const sourceCwd = normalizeOptionalString(sourceLaunchConfig?.cwd);

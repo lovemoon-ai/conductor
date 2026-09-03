@@ -278,7 +278,8 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
           </select>
           {isCrossDaemonSelection ? (
             <p className="text-xs text-muted">
-              Runs on a different machine than the source task — starts from that daemon&apos;s own project path.
+              Runs on a different machine than the source task — starts from that daemon&apos;s own project path, or a
+              fresh workspace when the project is not set up there.
             </p>
           ) : null}
         </div>
