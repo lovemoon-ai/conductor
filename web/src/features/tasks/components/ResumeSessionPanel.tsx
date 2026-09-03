@@ -101,8 +101,11 @@ export function ResumeSessionPanel({ onClose, onCreatedTask }: ResumeSessionPane
     () => sessions?.find((session) => sessionKey(session) === selectedKey) ?? null,
     [sessions, selectedKey],
   );
+  // Same selectability rule as the create form: projects bound to this daemon,
+  // plus the host-agnostic default project (no daemonHost; the server accepts
+  // any online agent_host for it).
   const daemonProjects = useMemo(
-    () => projects.filter((project) => project.daemonHost === host),
+    () => projects.filter((project) => project.daemonHost === host || Boolean(project.isDefault)),
     [projects, host],
   );
   const needsProjectPick = Boolean(selectedSession) && !selectedSession?.projectId;
