@@ -525,6 +525,21 @@ export interface UpdateIssueInput {
   metadata?: Record<string, unknown> | null;
 }
 
+// Backend AI Session Types (GET /api/agents/[host]/sessions)
+// snake_case mirrors the API response, which relays the daemon wire format.
+export interface BackendSessionSummary {
+  backend: string;
+  session_id: string;
+  session_file_path: string | null;
+  cwd: string | null;
+  title: string | null;
+  updated_at: string | null;
+  /** Task owned by the current user whose sessionId matches, else null. */
+  linked_task_id: string | null;
+  /** Longest workspacePath prefix match among the user's projects on this daemon, else null. */
+  project_id: string | null;
+}
+
 export interface SendMessageInput {
   content: string;
   role?: MessageRole;

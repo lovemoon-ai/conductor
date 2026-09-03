@@ -61,4 +61,5 @@ export {
   findSessionPath,
   resolveSessionRunDirectory,
   inspectResumeTarget,
+  listSessionsForBackend,
 } from "./resume/index.js";

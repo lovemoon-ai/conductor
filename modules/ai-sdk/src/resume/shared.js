@@ -38,6 +38,50 @@ export async function pathExists(targetPath, expectedType) {
   }
 }
 
+/** Collapses whitespace and truncates a session title for list display. */
+export function normalizeSessionTitle(text, maxLength = 80) {
+  const collapsed = String(text || "").replace(/\s+/g, " ").trim();
+  if (!collapsed) {
+    return null;
+  }
+  return collapsed.length > maxLength ? collapsed.slice(0, maxLength) : collapsed;
+}
+
+/**
+ * Parses the head of a jsonl file (bounded by lines and bytes so multi-MB
+ * session files stay cheap to inspect). Unreadable files and unparsable lines
+ * are skipped.
+ */
+export async function readJsonlHeadEntries(filePath, maxLines = 50, maxBytes = 128 * 1024) {
+  const entries = [];
+  const input = fs.createReadStream(filePath, { end: maxBytes - 1 });
+  const rl = readline.createInterface({ input, crlfDelay: Infinity });
+  try {
+    let lineCount = 0;
+    for await (const line of rl) {
+      if (++lineCount > maxLines) {
+        break;
+      }
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      try {
+        entries.push(JSON.parse(trimmed));
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    // Ignore read errors; callers degrade to null cwd/title.
+  } finally {
+    // Close both: rl.close() alone leaves the fd open.
+    rl.close();
+    input.destroy();
+  }
+  return entries;
+}
+
 export async function isExistingDirectory(targetPath) {
   const normalizedPath = typeof targetPath === "string" ? targetPath.trim() : "";
   if (!normalizedPath) {

@@ -672,8 +672,100 @@ export function buildFireSpawnArgs({ selectedBackend, initialContent, launchConf
   if (effectivePrefill) {
     args.push("--prefill", effectivePrefill);
   }
+  const resumeSessionId =
+    normalizeOptionalString(launchConfig?.resumeSessionId) ||
+    normalizeOptionalString(launchConfig?.resume_session_id);
+  if (resumeSessionId) {
+    args.push("--resume", resumeSessionId);
+  }
   args.push("--");
   return args;
+}
+
+// Backends whose local session stores the ai-sdk resume module can enumerate.
+// Kept in sync with the server side of the `list_backend_sessions` RPC.
+const LISTABLE_SESSION_BACKENDS = ["claude", "codex", "kimi"];
+const DEFAULT_BACKEND_SESSION_LIMIT = 20;
+const MAX_BACKEND_SESSION_LIMIT = 50;
+
+// Lazy so a daemon running against an older ai-sdk build only fails when the
+// RPC is actually invoked (surfaced as a per-backend error), not at load time.
+async function listSessionsForBackendFromSdk(backendType, options) {
+  let sdk = await import("@love-moon/ai-sdk");
+  if (typeof sdk.listSessionsForBackend !== "function") {
+    // The root index can lag behind the resume module the function lives in;
+    // fall back to that entry point before declaring the sdk too old.
+    sdk = await import("@love-moon/ai-sdk/dist/resume/index.js").catch(() => sdk);
+  }
+  if (typeof sdk.listSessionsForBackend !== "function") {
+    throw new Error("Session listing is not supported by the installed ai-sdk");
+  }
+  return sdk.listSessionsForBackend(backendType, options);
+}
+
+/**
+ * Pure aggregation behind the `list_backend_sessions` RPC: intersect the
+ * requested backends with what this daemon supports, list each backend's
+ * sessions, and merge them newest-first. A single backend failing lands in
+ * `errors` without affecting the others. Exported so tests can drive it with
+ * a stubbed `listSessions`.
+ */
+export async function collectBackendSessions({
+  requestedBackends = null,
+  supportedBackends = [],
+  limit,
+  listSessions = listSessionsForBackendFromSdk,
+} = {}) {
+  const numericLimit = Number(limit);
+  const effectiveLimit =
+    Number.isFinite(numericLimit) && numericLimit > 0
+      ? Math.min(Math.floor(numericLimit), MAX_BACKEND_SESSION_LIMIT)
+      : DEFAULT_BACKEND_SESSION_LIMIT;
+  const listableBackends = LISTABLE_SESSION_BACKENDS.filter((backend) => supportedBackends.includes(backend));
+  const errors = [];
+  let backends;
+  if (Array.isArray(requestedBackends)) {
+    backends = [];
+    for (const raw of requestedBackends) {
+      const backend = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+      if (!backend || backends.includes(backend)) {
+        continue;
+      }
+      if (!listableBackends.includes(backend)) {
+        errors.push({ backend, message: `Backend "${backend}" does not support session listing on this daemon` });
+        continue;
+      }
+      backends.push(backend);
+    }
+  } else {
+    backends = listableBackends;
+  }
+  const sessions = [];
+  for (const backend of backends) {
+    try {
+      const listed = await listSessions(backend, { limit: effectiveLimit });
+      for (const entry of Array.isArray(listed) ? listed : []) {
+        const sessionId = normalizeOptionalString(entry?.sessionId);
+        if (!sessionId) {
+          continue;
+        }
+        sessions.push({
+          backend,
+          session_id: sessionId,
+          session_file_path: normalizeOptionalString(entry?.sessionFilePath),
+          cwd: normalizeOptionalString(entry?.cwd),
+          title: normalizeOptionalString(entry?.title),
+          updated_at: Number.isFinite(entry?.updatedAt) ? new Date(entry.updatedAt).toISOString() : null,
+        });
+      }
+    } catch (error) {
+      errors.push({ backend, message: error?.message || String(error) });
+    }
+  }
+  // ISO 8601 strings compare lexicographically; entries without a timestamp
+  // sort last.
+  sessions.sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+  return { sessions, errors };
 }
 
 function normalizeBooleanFlag(value) {
@@ -3663,6 +3755,7 @@ export function startDaemon(config = {}, deps = {}) {
     "restart_daemon",
     "refresh_session_inplace",
     "task_attachments_v1",
+    "backend_session_list",
     CUSTOM_COMMANDS_CAPABILITY,
     UPDATE_DAEMON_CAPABILITY,
   ];
@@ -6173,6 +6266,10 @@ export function startDaemon(config = {}, deps = {}) {
       void handleGetProjectAgents(event.payload);
       return;
     }
+    if (event.type === "list_backend_sessions") {
+      void handleListBackendSessions(event.payload);
+      return;
+    }
     if (event.type === "ai_manager_request") {
       // RFC 0035: reads are fine and genuinely useful to a guest (it needs to
       // know how much quota the borrowed machine has left). `switch_account` is
@@ -6548,6 +6645,42 @@ export function startDaemon(config = {}, deps = {}) {
       });
     } catch (error) {
       logError(`Failed to report project_agents_resolved for ${rawWorkspacePath}: ${error?.message || error}`);
+    }
+  }
+
+  async function handleListBackendSessions(payload) {
+    const requestId = payload?.request_id ? String(payload.request_id).trim() : "";
+    if (!requestId) {
+      logError(`Invalid list_backend_sessions payload: ${JSON.stringify(payload)}`);
+      return;
+    }
+
+    let result;
+    try {
+      result = await collectBackendSessions({
+        requestedBackends: Array.isArray(payload?.backends) ? payload.backends : null,
+        supportedBackends: SUPPORTED_BACKENDS,
+        limit: payload?.limit,
+        listSessions: deps.listBackendSessions,
+      });
+    } catch (error) {
+      result = {
+        sessions: [],
+        errors: [{ backend: "*", message: `Failed to list backend sessions on daemon ${AGENT_NAME}: ${error?.message || error}` }],
+      };
+    }
+
+    try {
+      await client.sendJson({
+        type: "backend_sessions_listed",
+        payload: {
+          request_id: requestId,
+          sessions: result.sessions,
+          errors: result.errors,
+        },
+      });
+    } catch (error) {
+      logError(`Failed to report backend_sessions_listed for ${requestId}: ${error?.message || error}`);
     }
   }
 

@@ -7,6 +7,7 @@ import {
   isExistingDirectory,
   listCandidateWorkingDirectories,
   normalizeSessionId,
+  normalizeSessionTitle,
   pathExists,
   resolveHomeDir,
 } from "./shared.js";
@@ -88,6 +89,157 @@ async function resolveLegacyKimiResumeCwd(sessionPath, _sessionId, options = {})
   }
 
   return null;
+}
+
+/**
+ * Lists local Kimi Code sessions, newest first.
+ *
+ * Prefers the session_index.jsonl fast path and falls back to scanning
+ * `<KIMI_CODE_HOME>/sessions/<hash>/<sessionId>/`. Candidates are ranked by
+ * directory mtime; state.json is only read for the `limit` newest sessions.
+ */
+export async function listSessions(options = {}) {
+  const { limit = 20 } = options;
+  const homeDir = resolveHomeDir(options);
+  const kimiCodeHome = resolveKimiCodeHome(homeDir, options);
+  const sessionsDir = path.join(kimiCodeHome, "sessions");
+
+  let stated = await statKimiSessionCandidates(
+    await listIndexedKimiCodeSessions(kimiCodeHome, sessionsDir),
+  );
+  if (!stated.length) {
+    // The index can go stale wholesale (sessions dir cleaned, index copied from
+    // another machine), so fall back to scanning even when it had records.
+    stated = await statKimiSessionCandidates(await scanKimiCodeSessionDirs(sessionsDir));
+  }
+  stated.sort((a, b) => b.updatedAt - a.updatedAt);
+
+  const sessions = [];
+  for (const candidate of stated.slice(0, Math.max(0, limit))) {
+    const statePath = path.join(candidate.sessionPath, "state.json");
+    let state = null;
+    try {
+      state = JSON.parse(await fsp.readFile(statePath, "utf8"));
+    } catch {
+      // Fall back to the session index record, which also carries workDir.
+    }
+    const stateWorkDir = typeof state?.workDir === "string" ? state.workDir.trim() : "";
+    // The Kimi Code message log format is not stable; use the title recorded in
+    // state.json / the session index when present instead of parsing messages.
+    const title =
+      normalizeSessionTitle(state?.title) || normalizeSessionTitle(candidate.title) || null;
+    sessions.push({
+      sessionId: candidate.sessionId,
+      sessionFilePath: (await pathExists(statePath, "file")) ? statePath : null,
+      cwd: stateWorkDir || candidate.workDir || null,
+      title,
+      updatedAt: candidate.updatedAt,
+    });
+  }
+  return sessions;
+}
+
+async function statKimiSessionCandidates(candidates) {
+  const stated = [];
+  for (const candidate of candidates) {
+    let stats;
+    try {
+      stats = await fsp.stat(candidate.sessionPath);
+    } catch {
+      continue;
+    }
+    if (!stats.isDirectory()) {
+      continue;
+    }
+    stated.push({ ...candidate, updatedAt: Math.round(stats.mtimeMs) });
+  }
+  return stated;
+}
+
+async function listIndexedKimiCodeSessions(kimiCodeHome, sessionsDir) {
+  let raw = "";
+  try {
+    raw = await fsp.readFile(path.join(kimiCodeHome, "session_index.jsonl"), "utf8");
+  } catch {
+    return [];
+  }
+
+  const recordsBySessionId = new Map();
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    let record = null;
+    try {
+      record = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    const sessionId = typeof record?.sessionId === "string" ? record.sessionId.trim() : "";
+    if (!sessionId) {
+      continue;
+    }
+    if (record?.deleted === true) {
+      recordsBySessionId.delete(sessionId);
+      continue;
+    }
+    const sessionDir = typeof record?.sessionDir === "string" ? record.sessionDir.trim() : "";
+    if (!sessionDir || !path.isAbsolute(sessionDir)) {
+      continue;
+    }
+    const relativePath = path.relative(path.resolve(sessionsDir), path.resolve(sessionDir));
+    if (
+      !relativePath ||
+      relativePath === ".." ||
+      relativePath.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relativePath) ||
+      path.basename(sessionDir) !== sessionId
+    ) {
+      continue;
+    }
+    recordsBySessionId.set(sessionId, {
+      sessionId,
+      sessionPath: sessionDir,
+      workDir: typeof record?.workDir === "string" && record.workDir.trim() ? record.workDir.trim() : null,
+      title: typeof record?.title === "string" ? record.title : null,
+    });
+  }
+  return [...recordsBySessionId.values()];
+}
+
+async function scanKimiCodeSessionDirs(sessionsDir) {
+  let hashDirs = [];
+  try {
+    hashDirs = await fsp.readdir(sessionsDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const candidates = [];
+  for (const hashDir of hashDirs) {
+    if (!hashDir.isDirectory()) {
+      continue;
+    }
+    let sessionDirs = [];
+    try {
+      sessionDirs = await fsp.readdir(path.join(sessionsDir, hashDir.name), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const sessionDir of sessionDirs) {
+      if (!sessionDir.isDirectory()) {
+        continue;
+      }
+      candidates.push({
+        sessionId: sessionDir.name,
+        sessionPath: path.join(sessionsDir, hashDir.name, sessionDir.name),
+        workDir: null,
+        title: null,
+      });
+    }
+  }
+  return candidates;
 }
 
 async function findKimiSessionTarget(sessionId, options = {}) {

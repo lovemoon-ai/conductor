@@ -8139,7 +8139,7 @@ describe("Daemon", () => {
       assert.ok(typeof handler === "function");
       assert.strictEqual(
         webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-        "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,update_daemon,remote_exec,pty_task,terminal_snapshot",
+        "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,pty_task,terminal_snapshot",
       );
 
       handler({
@@ -8169,7 +8169,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,update_daemon,remote_exec,pty_task,terminal_snapshot",
+      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,pty_task,terminal_snapshot",
     );
 
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -8442,7 +8442,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,custom_commands,update_daemon,remote_exec",
+      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec",
     );
 
     handler({

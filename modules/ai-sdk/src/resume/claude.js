@@ -8,7 +8,9 @@ import {
   buildResumeContext,
   isExistingDirectory,
   normalizeSessionId,
+  normalizeSessionTitle,
   pathExists,
+  readJsonlHeadEntries,
   resolveSessionRunDirectory,
 } from "./shared.js";
 
@@ -101,6 +103,117 @@ export async function resolveResumeContext(sessionId, options = {}) {
     cwd,
     cwdSource: cwdFromSession ? "session" : "session_path",
   });
+}
+
+/**
+ * Lists local Claude Code sessions, newest first.
+ *
+ * Candidates are collected with readdir + stat only; session files can be tens
+ * of megabytes, so file contents (cwd/title) are read - head only - for the
+ * `limit` newest files after sorting by mtime.
+ */
+export async function listSessions(options = {}) {
+  const { limit = 20, env = process.env } = options;
+  const configDirs = resolveClaudeConfigDirs(env, options.homeDir);
+  const scannedProjectsDirs = new Set();
+  const candidatesById = new Map();
+
+  for (const configDir of configDirs) {
+    const projectsDir = options.claudeProjectsDir || path.join(configDir, "projects");
+    if (scannedProjectsDirs.has(projectsDir)) {
+      continue;
+    }
+    scannedProjectsDirs.add(projectsDir);
+
+    let projectDirs = [];
+    try {
+      projectDirs = await fsp.readdir(projectsDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const projectDir of projectDirs) {
+      if (!projectDir.isDirectory()) {
+        continue;
+      }
+      const projectPath = path.join(projectsDir, projectDir.name);
+      let files = [];
+      try {
+        files = await fsp.readdir(projectPath, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        if (!file.isFile() || !file.name.endsWith(".jsonl") || file.name.startsWith("agent-")) {
+          continue;
+        }
+        const sessionId = file.name.slice(0, -".jsonl".length);
+        // Config dirs are searched in priority order; the first hit wins.
+        if (!sessionId || candidatesById.has(sessionId)) {
+          continue;
+        }
+        const filePath = path.join(projectPath, file.name);
+        let stats;
+        try {
+          stats = await fsp.stat(filePath);
+        } catch {
+          continue;
+        }
+        candidatesById.set(sessionId, {
+          sessionId,
+          sessionFilePath: filePath,
+          updatedAt: Math.round(stats.mtimeMs),
+        });
+      }
+    }
+  }
+
+  const selected = [...candidatesById.values()]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, Math.max(0, limit));
+  const sessions = [];
+  for (const candidate of selected) {
+    const entries = await readJsonlHeadEntries(candidate.sessionFilePath);
+    sessions.push({
+      sessionId: candidate.sessionId,
+      sessionFilePath: candidate.sessionFilePath,
+      cwd: extractHeadCwd(entries),
+      title: extractClaudeTitle(entries),
+      updatedAt: candidate.updatedAt,
+    });
+  }
+  return sessions;
+}
+
+function extractHeadCwd(entries) {
+  for (const entry of entries) {
+    if (typeof entry?.cwd === "string" && entry.cwd.trim()) {
+      return entry.cwd.trim();
+    }
+  }
+  return null;
+}
+
+function extractClaudeTitle(entries) {
+  for (const entry of entries) {
+    if (entry?.type !== "user" || entry?.isMeta === true) {
+      continue;
+    }
+    const content = entry?.message?.content;
+    let text = "";
+    if (typeof content === "string") {
+      text = content;
+    } else if (Array.isArray(content)) {
+      text = content
+        .filter((item) => item?.type === "text" && typeof item.text === "string")
+        .map((item) => item.text)
+        .join(" ");
+    }
+    const title = normalizeSessionTitle(text);
+    if (title) {
+      return title;
+    }
+  }
+  return null;
 }
 
 /**
