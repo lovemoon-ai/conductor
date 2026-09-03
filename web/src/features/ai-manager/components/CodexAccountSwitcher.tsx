@@ -14,7 +14,6 @@ interface Props {
    * value captured while they were active.
    */
   codexQuotaByAccount: Record<string, CodexQuota>;
-  loading: boolean;
   errorMessage?: string;
 }
 
@@ -22,7 +21,6 @@ export function CodexAccountSwitcher({
   agentHost,
   accounts,
   codexQuotaByAccount,
-  loading,
   errorMessage,
 }: Props) {
   const switchAccount = useAiManagerStore((s) => s.switchAccount);
@@ -52,19 +50,10 @@ export function CodexAccountSwitcher({
     };
   }, [pendingName]);
 
-  if (loading && accounts.length === 0) {
-    return <div className="text-sm text-muted">Loading accounts…</div>;
-  }
+  // AiManagerPanel only mounts this switcher once more than one account is
+  // configured, so no empty state is needed here.
   if (errorMessage) {
     return <div className="text-sm text-[var(--error)]">{errorMessage}</div>;
-  }
-  if (accounts.length === 0) {
-    return (
-      <div className="text-sm text-muted">
-        No codex accounts configured. Add paths under <code>ai_manager.codex.auth_json</code> in
-        <code className="mx-1">~/.conductor/config.yaml</code>.
-      </div>
-    );
   }
 
   return (

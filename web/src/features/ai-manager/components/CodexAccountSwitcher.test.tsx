@@ -39,7 +39,6 @@ describe('CodexAccountSwitcher', () => {
             },
           },
         }}
-        loading={false}
       />,
     );
 

@@ -34,7 +34,7 @@ import type {
 export interface AiManagerOptions {
   /** Path to conductor config.yaml. Default: $CONDUCTOR_HOME/config.yaml. */
   configPath?: string;
-  /** Path to the active codex auth.json. Default: ~/.codex/auth.json */
+  /** Path to the active codex auth.json. Default: $CODEX_HOME/auth.json, else ~/.codex/auth.json */
   codexAuthPath?: string;
   /** Pre-loaded config; skips loading from disk if provided. */
   config?: AiManagerConfig;

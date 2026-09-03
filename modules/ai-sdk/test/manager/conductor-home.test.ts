@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { loadAiManagerConfig } from "../../src/manager/config.ts";
 import { cacheFile } from "../../src/manager/quota/cache.ts";
 import {
+  resolveCodexHome,
   resolveConductorHome,
   resolveDefaultConductorConfig,
   resolveDefaultQuotaCacheDir,
@@ -57,6 +58,26 @@ test("AI manager config and cache follow CONDUCTOR_HOME", async () => {
     }
     rmSync(conductorHome, { recursive: true, force: true });
   }
+});
+
+test("resolveCodexHome honors CODEX_HOME and falls back to ~/.codex", () => {
+  assert.equal(
+    resolveCodexHome({ HOME: "/tmp/user-home", CODEX_HOME: "/tmp/codex-home" }),
+    resolve("/tmp/codex-home"),
+  );
+  assert.equal(
+    resolveCodexHome({ HOME: "/tmp/user-home", CODEX_HOME: "~/isolated-codex" }),
+    join(resolve("/tmp/user-home"), "isolated-codex"),
+  );
+  assert.equal(
+    resolveCodexHome({ HOME: "/tmp/user-home" }),
+    join(resolve("/tmp/user-home"), ".codex"),
+  );
+  // Blank override is ignored, same as every other *_HOME variable here.
+  assert.equal(
+    resolveCodexHome({ HOME: "/tmp/user-home", CODEX_HOME: "  " }),
+    join(resolve("/tmp/user-home"), ".codex"),
+  );
 });
 
 test("CONDUCTOR_CONFIG overrides CONDUCTOR_HOME for AI manager config", () => {
