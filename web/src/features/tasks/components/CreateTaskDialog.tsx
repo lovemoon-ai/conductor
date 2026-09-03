@@ -12,6 +12,7 @@ import { ApiRequestError } from '@/shared/api/client';
 import { formatBindingLabel } from '@/features/projects';
 import { computeProjectGroups } from '@/features/projects/utils/project-groups';
 import { useRouter } from 'next/navigation';
+import { ResumeSessionPanel } from './ResumeSessionPanel';
 import type { TaskType } from '@/lib/tasks/task-config';
 import type { CreateTaskInput, Project } from '@/shared/types';
 
@@ -45,7 +46,7 @@ function getCreateTaskLimitMessage(error: unknown): string | null {
   return error.payload?.message || error.payload?.error || null;
 }
 
-function getCreateTaskErrorMessage(error: unknown): string {
+export function getCreateTaskErrorMessage(error: unknown): string {
   const limitMessage = getCreateTaskLimitMessage(error);
   if (limitMessage) {
     return limitMessage;
@@ -253,6 +254,9 @@ export function CreateTaskDialog({
 }: CreateTaskDialogProps) {
   const { push } = useRouter();
   const [form, dispatch] = useReducer(createTaskDialogReducer, initialCreateTaskDialogFormState);
+  // 'create' = the regular new-task form; 'resume' = pick up an existing AI
+  // session found on a daemon (ResumeSessionPanel).
+  const [mode, setMode] = useState<'create' | 'resume'>('create');
   const {
     title,
     initialContent,
@@ -462,6 +466,7 @@ export function CreateTaskDialog({
 
   const handleCloseDialog = () => {
     dispatch({ type: 'reset' });
+    setMode('create');
     onClose();
   };
 
@@ -529,9 +534,36 @@ export function CreateTaskDialog({
     <Dialog
       open={open}
       onClose={handleCloseDialog}
-      title="Create New Task"
+      title={mode === 'resume' ? 'Resume Session' : 'Create New Task'}
       maxWidthClassName="max-w-2xl"
     >
+      <div
+        role="tablist"
+        aria-label="Task creation mode"
+        className="mb-5 inline-flex rounded-xl border border-border bg-paper/60 p-1"
+      >
+        {([
+          { value: 'create', label: 'New Task' },
+          { value: 'resume', label: 'Resume Session' },
+        ] as const).map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            role="tab"
+            aria-selected={mode === option.value}
+            onClick={() => setMode(option.value)}
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+              mode === option.value ? 'bg-accent text-white shadow-sm' : 'text-muted hover:text-ink'
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'resume' ? (
+        <ResumeSessionPanel onClose={handleCloseDialog} onCreatedTask={onCreatedTask} />
+      ) : (
       <form onSubmit={handleSubmit} className="space-y-5">
         <div className="grid gap-5 md:grid-cols-[1.35fr_minmax(0,0.9fr)]">
           <div>
@@ -1007,6 +1039,7 @@ export function CreateTaskDialog({
           </button>
         </div>
       </form>
+      )}
     </Dialog>
   );
 }

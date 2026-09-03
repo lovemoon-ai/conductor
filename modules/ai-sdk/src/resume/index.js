@@ -103,6 +103,18 @@ export async function findSessionPath(provider, sessionId, options = {}) {
 
 export { resolveSessionRunDirectory };
 
+/**
+ * Lists local sessions for a backend (aliases resolve like every other resume
+ * entry point). Backends without a `listSessions` implementation yield [].
+ */
+export async function listSessionsForBackend(backendType, opts = {}) {
+  const provider = lookupBuiltInProvider(backendType);
+  if (!provider || typeof provider.listSessions !== "function") {
+    return [];
+  }
+  return provider.listSessions(opts);
+}
+
 export async function resolveResumeContext(backend, sessionId, options = {}) {
   const normalizedSessionId = normalizeSessionId(sessionId);
   if (!normalizedSessionId) {

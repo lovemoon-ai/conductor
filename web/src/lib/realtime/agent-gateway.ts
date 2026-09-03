@@ -3,6 +3,7 @@ import type { IncomingMessage } from "http";
 import {
   realtimeHub,
   type AgentLogCollectionResult,
+  type BackendSessionsResult,
   type ProjectAgentsResult,
   type ProjectPathValidationResult,
   type TaskWorktreeCleanupResult,
@@ -123,6 +124,14 @@ type AgentEvent =
         error?: string | null;
         error_code?: string | null;
         resolved_at?: string;
+      };
+    }
+  | {
+      type: "backend_sessions_listed";
+      payload: {
+        request_id: string;
+        sessions?: unknown;
+        errors?: unknown;
       };
     }
   | {
@@ -793,6 +802,49 @@ const normalizeProjectAgentsResult = (
     error: normalizeOptionalString(payload.error),
     error_code: normalizeOptionalString(payload.error_code),
     resolved_at: normalizeIsoDate(payload.resolved_at, new Date().toISOString()),
+  };
+};
+
+const normalizeBackendSessionsResult = (
+  payload: Record<string, unknown>,
+): BackendSessionsResult | null => {
+  const requestId = normalizeOptionalString(payload.request_id);
+  if (!requestId) {
+    return null;
+  }
+  const sessions = (Array.isArray(payload.sessions) ? payload.sessions : [])
+    .map((entry) => {
+      const record = (entry ?? {}) as Record<string, unknown>;
+      const backend = normalizeOptionalString(record.backend);
+      const sessionId = normalizeOptionalString(record.session_id);
+      if (!backend || !sessionId) {
+        return null;
+      }
+      return {
+        backend,
+        session_id: sessionId,
+        session_file_path: normalizeOptionalString(record.session_file_path),
+        cwd: normalizeOptionalString(record.cwd),
+        title: normalizeOptionalString(record.title),
+        updated_at: normalizeIsoTimestamp(record.updated_at),
+      };
+    })
+    .filter((entry): entry is BackendSessionsResult["sessions"][number] => Boolean(entry));
+  const errors = (Array.isArray(payload.errors) ? payload.errors : [])
+    .map((entry) => {
+      const record = (entry ?? {}) as Record<string, unknown>;
+      const backend = normalizeOptionalString(record.backend);
+      const message = normalizeOptionalString(record.message);
+      if (!backend || !message) {
+        return null;
+      }
+      return { backend, message };
+    })
+    .filter((entry): entry is BackendSessionsResult["errors"][number] => Boolean(entry));
+  return {
+    request_id: requestId,
+    sessions,
+    errors,
   };
 };
 
@@ -1758,6 +1810,17 @@ export const setupAgentGateway = (): WebSocketServer => {
               break;
             }
             realtimeHub.resolveProjectAgents(normalized);
+            break;
+          }
+          case "backend_sessions_listed": {
+            const normalized = normalizeBackendSessionsResult(
+              event.payload as Record<string, unknown>,
+            );
+            if (!normalized) {
+              sendEnvelope(socket, { type: "error", payload: { message: "backend_sessions_listed requires request_id" } });
+              break;
+            }
+            realtimeHub.resolveBackendSessions(normalized);
             break;
           }
           case "task_worktree_cleanup_result": {

@@ -6,6 +6,8 @@ import {
   isExistingDirectory,
   iterateJsonlEntries,
   normalizeSessionId,
+  normalizeSessionTitle,
+  readJsonlHeadEntries,
   resolveHomeDir,
   resolveSessionRunDirectory,
 } from "./shared.js";
@@ -68,6 +70,109 @@ export async function resolveResumeContext(sessionId, options = {}) {
     cwd,
     cwdSource: cwdFromSession ? "session" : "session_path",
   });
+}
+
+/**
+ * Lists local Codex sessions, newest first.
+ *
+ * Candidates are collected with readdir + stat only; session files can be tens
+ * of megabytes, so file contents (session_meta/title) are read - head only -
+ * for the `limit` newest files after sorting by mtime.
+ */
+export async function listSessions(options = {}) {
+  const { limit = 20 } = options;
+  const homeDir = resolveHomeDir(options);
+  const sessionsDir = options.codexSessionsDir || path.join(homeDir, ".codex", "sessions");
+
+  const candidates = [];
+  const queue = [sessionsDir];
+  while (queue.length) {
+    const current = queue.pop();
+    let entries = [];
+    try {
+      entries = await fsp.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(fullPath);
+      } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        let stats;
+        try {
+          stats = await fsp.stat(fullPath);
+        } catch {
+          continue;
+        }
+        candidates.push({ filePath: fullPath, updatedAt: Math.round(stats.mtimeMs) });
+      }
+    }
+  }
+  candidates.sort((a, b) => b.updatedAt - a.updatedAt);
+
+  const maxSessions = Math.max(0, limit);
+  const sessions = [];
+  for (const candidate of candidates) {
+    if (sessions.length >= maxSessions) {
+      break;
+    }
+    const headEntries = await readJsonlHeadEntries(candidate.filePath);
+    const meta = headEntries.find((entry) => entry?.type === "session_meta") || null;
+    const sessionId =
+      normalizeSessionId(meta?.payload?.id)
+      || normalizeSessionId(meta?.payload?.session_id)
+      || extractSessionIdFromFileName(candidate.filePath);
+    if (!sessionId) {
+      continue;
+    }
+    const metaCwd = meta?.payload?.cwd;
+    sessions.push({
+      sessionId,
+      sessionFilePath: candidate.filePath,
+      cwd: typeof metaCwd === "string" && metaCwd.trim() ? metaCwd.trim() : null,
+      title: extractCodexTitle(headEntries),
+      updatedAt: candidate.updatedAt,
+    });
+  }
+  return sessions;
+}
+
+const SESSION_ID_IN_FILE_NAME = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+function extractSessionIdFromFileName(filePath) {
+  const match = path.basename(filePath).match(SESSION_ID_IN_FILE_NAME);
+  return match ? match[0] : "";
+}
+
+function extractCodexTitle(entries) {
+  for (const entry of entries) {
+    if (entry?.type === "event_msg" && entry?.payload?.type === "user_message") {
+      const title = normalizeSessionTitle(entry.payload.message);
+      if (title) {
+        return title;
+      }
+    }
+  }
+  for (const entry of entries) {
+    const payload = entry?.type === "response_item" ? entry.payload : null;
+    if (payload?.type !== "message" || payload?.role !== "user" || !Array.isArray(payload.content)) {
+      continue;
+    }
+    const text = payload.content
+      .filter((item) => item?.type === "input_text" && typeof item.text === "string")
+      .map((item) => item.text)
+      .join(" ");
+    if (text.trim().startsWith("<")) {
+      // Skip injected wrappers such as <environment_context> / <user_instructions>.
+      continue;
+    }
+    const title = normalizeSessionTitle(text);
+    if (title) {
+      return title;
+    }
+  }
+  return null;
 }
 
 async function findCodexSessionFile(rootDir, sessionId) {

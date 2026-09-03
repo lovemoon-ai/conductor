@@ -95,6 +95,19 @@ export type ProjectAgentsResult = {
   resolved_at: string;
 };
 
+export type BackendSessionsResult = {
+  request_id: string;
+  sessions: Array<{
+    backend: string;
+    session_id: string;
+    session_file_path: string | null;
+    cwd: string | null;
+    title: string | null;
+    updated_at: string | null;
+  }>;
+  errors: Array<{ backend: string; message: string }>;
+};
+
 export type TaskWorktreeCleanupResult = {
   request_id: string;
   task_id: string;
@@ -129,6 +142,11 @@ type ProjectPathValidationWaiter = {
 
 type ProjectAgentsWaiter = {
   resolve: (result: ProjectAgentsResult | null) => void;
+  timeout: NodeJS.Timeout;
+};
+
+type BackendSessionsWaiter = {
+  resolve: (result: BackendSessionsResult | null) => void;
   timeout: NodeJS.Timeout;
 };
 
@@ -239,6 +257,7 @@ export class RealtimeHub {
   private agentLogWaiters = new Map<string, AgentLogWaiter>();
   private projectPathValidationWaiters = new Map<string, ProjectPathValidationWaiter>();
   private projectAgentsWaiters = new Map<string, ProjectAgentsWaiter>();
+  private backendSessionsWaiters = new Map<string, BackendSessionsWaiter>();
   private taskWorktreeCleanupWaiters = new Map<string, TaskWorktreeCleanupWaiter>();
   private aiManagerWaiters = new Map<string, AiManagerWaiter>();
   private customCommandsWaiters = new Map<string, CustomCommandsWaiter>();
@@ -1079,6 +1098,34 @@ export class RealtimeHub {
 
     clearTimeout(waiter.timeout);
     this.projectAgentsWaiters.delete(requestId);
+    waiter.resolve(null);
+  }
+
+  waitForBackendSessions(requestId: string, timeoutMs: number): Promise<BackendSessionsResult | null> {
+    return new Promise<BackendSessionsResult | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.backendSessionsWaiters.delete(requestId);
+        resolve(null);
+      }, timeoutMs);
+      this.backendSessionsWaiters.set(requestId, { resolve, timeout });
+    });
+  }
+
+  resolveBackendSessions(result: BackendSessionsResult) {
+    const waiter = this.backendSessionsWaiters.get(result.request_id);
+    if (!waiter) return;
+
+    clearTimeout(waiter.timeout);
+    this.backendSessionsWaiters.delete(result.request_id);
+    waiter.resolve(result);
+  }
+
+  cancelBackendSessions(requestId: string) {
+    const waiter = this.backendSessionsWaiters.get(requestId);
+    if (!waiter) return;
+
+    clearTimeout(waiter.timeout);
+    this.backendSessionsWaiters.delete(requestId);
     waiter.resolve(null);
   }
 
