@@ -347,6 +347,30 @@ describe('task-ingress-service', () => {
     expect(db.taskAttachment.findMany).not.toHaveBeenCalled();
   });
 
+  it('binds attachments for an sdk message without requiring a connected agent', async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: 'task-1', projectId: 'proj-1', agentHost: 'conductor-fire-runtime', executionHost: 'conductor-fire-runtime',
+    } as any);
+    // `conductor send-file` delivers to the browser, not to an agent, so an sdk
+    // message needs neither a target host nor an agent-side capability.
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([] as any);
+    vi.mocked(db.taskAttachment.findMany).mockResolvedValue([{
+      id: 'att-1', originalName: 'clip.mp4', mimeType: 'video/mp4', sizeBytes: 9,
+      kind: 'file', sha256: 'c'.repeat(64), createdAt: new Date('2026-08-01T00:00:01Z'),
+    }] as any);
+    vi.mocked(db.taskAttachment.updateMany).mockResolvedValue({ count: 1 } as any);
+
+    await appendUserMessageToTask({
+      userId: 'user-1', taskId: 'task-1', content: 'repro video', role: 'sdk', attachmentIds: ['att-1'],
+    });
+
+    const metadata = JSON.parse((vi.mocked(db.message.create).mock.calls[0][0] as any).data.metadata);
+    expect(metadata.attachments).toMatchObject([{ id: 'att-1', mimeType: 'video/mp4', kind: 'file' }]);
+    expect(db.taskAttachment.updateMany).toHaveBeenCalled();
+    // An sdk message is never handed to an agent, so no delivery row is written.
+    expect(db.agentOutbox.create).not.toHaveBeenCalled();
+  });
+
   it('rolls back message creation when attachment binding loses a race', async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue({
       id: 'task-1', projectId: 'proj-1', agentHost: 'conductor-fire-runtime', executionHost: 'conductor-fire-runtime',

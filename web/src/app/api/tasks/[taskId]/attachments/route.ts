@@ -1,4 +1,3 @@
-import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import Busboy from "busboy";
@@ -12,7 +11,6 @@ export const runtime = "nodejs";
 
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 const MAX_MULTIPART_OVERHEAD_BYTES = 1024 * 1024;
-const VIDEO_EXTENSIONS = new Set([".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"]);
 
 export async function POST(
   request: NextRequest,
@@ -47,14 +45,8 @@ export async function POST(
     });
     stored = await new Promise<Awaited<ReturnType<typeof writeTaskAttachmentStream>>>((resolve, reject) => {
       let upload: Promise<Awaited<ReturnType<typeof writeTaskAttachmentStream>>> | undefined;
-      let rejectedType: Error | undefined;
       parser.on("file", (fieldName, stream, info) => {
         if (fieldName !== "file" || upload) {
-          stream.resume();
-          return;
-        }
-        if (info.mimeType.startsWith("video/") || VIDEO_EXTENSIONS.has(path.extname(info.filename).toLowerCase())) {
-          rejectedType = Object.assign(new Error("video attachments are not supported"), { code: "ATTACHMENT_VIDEO" });
           stream.resume();
           return;
         }
@@ -70,8 +62,7 @@ export async function POST(
       parser.once("error", reject);
       parser.once("filesLimit", () => reject(Object.assign(new Error("only one file is allowed"), { code: "ATTACHMENT_FILE_LIMIT" })));
       parser.once("finish", () => {
-        if (rejectedType) reject(rejectedType);
-        else if (!upload) reject(Object.assign(new Error("file required"), { code: "ATTACHMENT_REQUIRED" }));
+        if (!upload) reject(Object.assign(new Error("file required"), { code: "ATTACHMENT_REQUIRED" }));
         else upload.then(resolve, reject);
       });
       const source = Readable.from(request.body as unknown as AsyncIterable<Uint8Array>);
@@ -92,7 +83,6 @@ export async function POST(
     const code = error instanceof Error && "code" in error ? String(error.code) : "";
     if (code === "ATTACHMENT_TOO_LARGE") return NextResponse.json({ error: "file too large" }, { status: 413 });
     if (code === "ATTACHMENT_EMPTY") return NextResponse.json({ error: "file is empty" }, { status: 400 });
-    if (code === "ATTACHMENT_VIDEO") return NextResponse.json({ error: "video attachments are not supported" }, { status: 415 });
     if (code === "ATTACHMENT_REQUIRED") return NextResponse.json({ error: "file required" }, { status: 400 });
     if (code === "ATTACHMENT_FILE_LIMIT") return NextResponse.json({ error: "upload one file per request" }, { status: 400 });
     return NextResponse.json({ error: "invalid multipart form" }, { status: 400 });

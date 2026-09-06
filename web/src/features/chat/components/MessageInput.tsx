@@ -20,7 +20,6 @@ const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const NATIVE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const NATIVE_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
-const VIDEO_EXTENSIONS = new Set(['avi', 'm4v', 'mkv', 'mov', 'mp4', 'mpeg', 'mpg', 'webm']);
 
 const DRAFT_STORAGE_PREFIX = 'conductor-task-draft:';
 const MAX_HISTORY_ITEMS = 200;
@@ -620,14 +619,6 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   const handleFilesSelected = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const picked = Array.from(event.target.files ?? []);
     event.target.value = '';
-    const invalidVideo = picked.find((file) => {
-      const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
-      return file.type.startsWith('video/') || VIDEO_EXTENSIONS.has(extension);
-    });
-    if (invalidVideo) {
-      setFileError('Video attachments are not supported.');
-      return;
-    }
     // Shrink oversized photos in the browser before they enter the upload
     // pipeline, so previews, dedup and every network hop see the smaller file.
     const incoming = await Promise.all(picked.map((file) => compressImageIfNeeded(file)));

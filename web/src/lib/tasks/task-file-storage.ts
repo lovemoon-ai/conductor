@@ -38,7 +38,7 @@ const resolveStorageRoot = (): string => (
   path.resolve(process.env.CONDUCTOR_FILE_STORAGE_DIR || DEFAULT_STORAGE_ROOT)
 );
 
-const DEFAULT_ATTACHMENT_TTL_MINUTES = 10;
+const DEFAULT_ATTACHMENT_TTL_MINUTES = 5;
 
 /**
  * How long the Web server keeps an attachment file on disk. It bounds two
@@ -74,23 +74,6 @@ function matchesImageSignature(mimeType: string, prefix: Buffer): boolean {
   if (mimeType === "image/gif") return prefix.subarray(0, 6).toString("ascii") === "GIF87a" || prefix.subarray(0, 6).toString("ascii") === "GIF89a";
   if (mimeType === "image/webp") return prefix.subarray(0, 4).toString("ascii") === "RIFF" && prefix.subarray(8, 12).toString("ascii") === "WEBP";
   return false;
-}
-
-function matchesVideoSignature(prefix: Buffer): boolean {
-  // ISO BMFF begins with a sized box whose type is `ftyp`; an arbitrary
-  // occurrence of that word in a text file is not a video signature.
-  if (prefix.length >= 12 && prefix.subarray(4, 8).toString("ascii") === "ftyp") {
-    const boxSize = prefix.readUInt32BE(0);
-    if (boxSize >= 8) return true;
-  }
-  if (prefix.subarray(0, 3).toString("ascii") === "FLV") return true;
-  if (prefix.subarray(0, 16).equals(Buffer.from("3026b2758e66cf11a6d900aa0062ce6c", "hex"))) return true;
-  if (prefix.length >= 12 && prefix.subarray(0, 4).toString("ascii") === "RIFF"
-      && prefix.subarray(8, 12).toString("ascii") === "AVI ") return true;
-  if (prefix.length >= 4 && prefix.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) return true;
-  if (prefix.length > 188 && prefix[0] === 0x47 && prefix[188] === 0x47) return true;
-  return prefix.length >= 4 && prefix[0] === 0x00 && prefix[1] === 0x00 && prefix[2] === 0x01
-    && (prefix[3] === 0xba || prefix[3] === 0xb3);
 }
 
 const resolveAttachmentDirectory = (taskId: string): string => (
@@ -183,10 +166,6 @@ export async function writeTaskAttachment(params: {
   const filePath = path.join(directory, storedName);
   const createdAt = new Date();
 
-  if (matchesVideoSignature(params.bytes.subarray(0, 512))) {
-    throw Object.assign(new Error("video attachments are not supported"), { code: "ATTACHMENT_VIDEO" });
-  }
-
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   await fs.chmod(directory, 0o700);
   await fs.writeFile(filePath, params.bytes, { mode: 0o600 });
@@ -233,10 +212,6 @@ export async function writeTaskAttachmentStream(params: {
     transform(chunk: Buffer, _encoding, callback) {
       sizeBytes += chunk.byteLength;
       if (prefix.byteLength < 512) prefix = Buffer.concat([prefix, chunk.subarray(0, 512 - prefix.byteLength)]);
-      if (matchesVideoSignature(prefix)) {
-        callback(Object.assign(new Error("video attachments are not supported"), { code: "ATTACHMENT_VIDEO" }));
-        return;
-      }
       if (sizeBytes > params.maxBytes) {
         callback(Object.assign(new Error("file too large"), { code: "ATTACHMENT_TOO_LARGE" }));
         return;

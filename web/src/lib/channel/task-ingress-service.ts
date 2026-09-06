@@ -328,7 +328,11 @@ export async function appendUserMessageToTask(input: {
       error: "Too many attachments",
     });
   }
-  if (attachmentIds.length > 0) {
+  // Only a `user` message is delivered to an agent, so only it needs the
+  // agent-side capability. An `sdk` message (e.g. `conductor send-file`)
+  // carries its attachment to the browser and never reaches an agent, and has
+  // no `userMessageTargetHost` to look one up by.
+  if (attachmentIds.length > 0 && normalizedInputRole === "user") {
     const targetAgent = realtimeHub.getAgentsForUser(input.userId)
       .find((agent) => agent.host === userMessageTargetHost);
     const supportsAttachments = targetAgent?.capabilities
@@ -356,7 +360,8 @@ export async function appendUserMessageToTask(input: {
   }
   const orderedAttachments = attachmentIds.map((id) => attachments.find((entry) => entry.id === id)!);
   const nativeImageTypes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-  if (normalizeBackendType((task as { backendType?: unknown }).backendType) === "chat-web"
+  if (normalizedInputRole === "user"
+      && normalizeBackendType((task as { backendType?: unknown }).backendType) === "chat-web"
       && orderedAttachments.some((entry) => !nativeImageTypes.has(entry.mimeType.toLowerCase()))) {
     throw new TaskIngressError("CONTEXT_FILES_UNSUPPORTED_BY_BACKEND", 409, "The selected backend does not support context files", {
       error: "Context files unsupported",
@@ -386,11 +391,15 @@ export async function appendUserMessageToTask(input: {
     status: "bound",
     downloadUrl: `/api/tasks/${encodeURIComponent(input.taskId)}/attachments/${encodeURIComponent(attachment.id)}`,
     createdAt: attachment.createdAt.toISOString(),
-    transferToken: signAttachmentTransferToken({
-      taskId: input.taskId,
-      attachmentId: attachment.id,
-      agentHost: userMessageTargetHost!,
-    }),
+    // Only agent delivery needs a transfer token. An `sdk` attachment has no
+    // target host; the browser fetches it through the session-authed route.
+    transferToken: userMessageTargetHost
+      ? signAttachmentTransferToken({
+          taskId: input.taskId,
+          attachmentId: attachment.id,
+          agentHost: userMessageTargetHost,
+        })
+      : null,
   }));
   const attachmentMetadata = attachmentDeliveryMetadata.map(({ transferToken: _transferToken, ...attachment }) => attachment);
   const callerMetadata = input.metadata ? { ...input.metadata } : null;

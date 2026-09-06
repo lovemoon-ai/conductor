@@ -182,34 +182,56 @@ export async function sendFileToTask(options) {
   body.set("file", new Blob([fileBuffer], { type: mimeType }), fileName);
 
   const content = typeof options.content === "string" ? options.content.trim() : "";
-  if (content) {
-    body.set("content", content);
-  }
-
   const role = typeof options.role === "string" && options.role.trim()
     ? options.role.trim().toLowerCase()
     : "sdk";
-  body.set("role", role);
+  const authHeaders = {
+    Authorization: `Bearer ${config.agentToken}`,
+    Accept: "application/json",
+  };
 
-  const url = new URL(`/api/tasks/${encodeURIComponent(taskId)}/attachments`, config.backendUrl);
-  const response = await fetchImpl(String(url), {
+  // Phase 1 stages the bytes. This endpoint only stores the file; the row it
+  // creates carries no message and expires within the attachment TTL.
+  const uploadUrl = new URL(`/api/tasks/${encodeURIComponent(taskId)}/attachments`, config.backendUrl);
+  const uploadResponse = await fetchImpl(String(uploadUrl), {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.agentToken}`,
-      Accept: "application/json",
-    },
+    headers: authHeaders,
     body,
   });
 
-  const rawText = await response.text();
-  if (!response.ok) {
-    const details = formatErrorBody(rawText);
-    throw new Error(`Upload failed (${response.status})${details ? `: ${details}` : ""}`);
+  const uploadText = await uploadResponse.text();
+  if (!uploadResponse.ok) {
+    const details = formatErrorBody(uploadText);
+    throw new Error(`Upload failed (${uploadResponse.status})${details ? `: ${details}` : ""}`);
+  }
+  const attachment = (uploadText ? JSON.parse(uploadText) : {}).attachment;
+  if (!attachment || !attachment.id) {
+    throw new Error("Upload succeeded but the server returned no attachment id");
+  }
+
+  // Phase 2 binds the staged file to a message. Without it the attachment
+  // never reaches the chat UI and the janitor deletes it when staging expires.
+  const messageUrl = new URL(`/api/tasks/${encodeURIComponent(taskId)}/messages`, config.backendUrl);
+  const messageResponse = await fetchImpl(String(messageUrl), {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      content: content || `Attached file: ${attachment.name}`,
+      role,
+      attachmentIds: [attachment.id],
+    }),
+  });
+
+  const messageText = await messageResponse.text();
+  if (!messageResponse.ok) {
+    const details = formatErrorBody(messageText);
+    throw new Error(`Attach failed (${messageResponse.status})${details ? `: ${details}` : ""}`);
   }
 
   return {
     taskId,
-    response: rawText ? JSON.parse(rawText) : {},
+    attachment,
+    response: messageText ? JSON.parse(messageText) : {},
   };
 }
 
