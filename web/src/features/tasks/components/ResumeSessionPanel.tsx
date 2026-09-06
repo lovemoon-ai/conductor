@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getApiClient } from '@/shared/api/client';
 import { InlineNotice } from '@/components/common/InlineNotice';
@@ -38,6 +38,9 @@ export function ResumeSessionPanel({ onClose, onCreatedTask }: ResumeSessionPane
   const { push } = useRouter();
   const createTask = useTasksStore((state) => state.createTask);
   const projects = useProjectsStore((state) => state.projects);
+  const projectsLoading = useProjectsStore((state) => state.isLoading);
+  const projectsError = useProjectsStore((state) => state.error);
+  const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const agents = useAgentsStore((state) => state.agents);
   const daemons = agents.filter((agent) => !agent.host.startsWith('conductor-fire-'));
 
@@ -97,6 +100,18 @@ export function ResumeSessionPanel({ onClose, onCreatedTask }: ResumeSessionPane
     };
   }, [host, reloadToken]);
 
+  // The app layout loads projects on mount; if that fetch failed (or never ran)
+  // the panel would otherwise present an empty project list as "you have no
+  // project", so retry once here instead.
+  const projectsRefetchedRef = useRef(false);
+  useEffect(() => {
+    if (projects.length > 0 || projectsLoading || projectsRefetchedRef.current) {
+      return;
+    }
+    projectsRefetchedRef.current = true;
+    void fetchProjects();
+  }, [projects.length, projectsLoading, fetchProjects]);
+
   const selectedSession = useMemo(
     () => sessions?.find((session) => sessionKey(session) === selectedKey) ?? null,
     [sessions, selectedKey],
@@ -108,9 +123,18 @@ export function ResumeSessionPanel({ onClose, onCreatedTask }: ResumeSessionPane
     () => projects.filter((project) => project.daemonHost === host || Boolean(project.isDefault)),
     [projects, host],
   );
+  // A session whose cwd matches no bound project falls back to the user's
+  // default project unless they pick another one: a fresh install has no bound
+  // projects at all, and the default project accepts any online daemon host.
+  const defaultProjectId = useMemo(
+    () => projects.find((project) => project.isDefault)?.id ?? '',
+    [projects],
+  );
   const needsProjectPick = Boolean(selectedSession) && !selectedSession?.projectId;
   const resolvedProjectId = selectedSession?.projectId
-    ?? (daemonProjects.some((project) => project.id === fallbackProjectId) ? fallbackProjectId : '');
+    ?? (daemonProjects.some((project) => project.id === fallbackProjectId)
+      ? fallbackProjectId
+      : defaultProjectId);
   const sessionProjectName = selectedSession?.projectId
     ? projects.find((project) => project.id === selectedSession.projectId)?.name ?? null
     : null;
@@ -272,11 +296,11 @@ export function ResumeSessionPanel({ onClose, onCreatedTask }: ResumeSessionPane
                 <label htmlFor="resume-session-project" className="mb-2 block text-sm font-medium">Project</label>
                 <select
                   id="resume-session-project"
-                  value={fallbackProjectId}
+                  value={resolvedProjectId}
                   onChange={(e) => setFallbackProjectId(e.target.value)}
                   className="webapp-input w-full"
                 >
-                  <option value="">Select a project…</option>
+                  {resolvedProjectId ? null : <option value="">Select a project…</option>}
                   {daemonProjects.map((project) => (
                     <option key={project.id} value={project.id}>
                       {project.name}
@@ -284,10 +308,23 @@ export function ResumeSessionPanel({ onClose, onCreatedTask }: ResumeSessionPane
                   ))}
                 </select>
               </div>
+            ) : projectsLoading ? (
+              <InlineNotice variant="info">Loading your projects…</InlineNotice>
+            ) : projectsError ? (
+              <InlineNotice variant="error" title="Could not load your projects">
+                <span>{projectsError}</span>
+                <button
+                  type="button"
+                  onClick={() => void fetchProjects()}
+                  className="ml-2 font-medium underline"
+                >
+                  Retry
+                </button>
+              </InlineNotice>
             ) : (
               <InlineNotice variant="warning">
-                This session has no matching project, and this daemon has no bound project to
-                attach it to. Bind a project on the daemon first.
+                No project is available to attach this session to. Create or bind a project for
+                this daemon on the Projects page, then try again.
               </InlineNotice>
             )
           ) : sessionProjectName ? (

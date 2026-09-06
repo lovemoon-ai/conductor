@@ -11623,6 +11623,164 @@ describe("Daemon", () => {
     });
   });
 
+  it("runs a resumed session in the session cwd when the project has no bound path", (t, done) => {
+    // Resuming a local session under the Default Project: the server sends no
+    // launch_config.cwd (nothing to bind) and the project lookup has no
+    // workspace path, so the daemon must recover the workspace from the
+    // session store instead of dropping the task in a scratch workspace dir.
+    const taskPayload = {
+      task_id: "task-resume-default-project",
+      project_id: "proj-default-project",
+      backend_type: "codex",
+      launch_config: { resumeSessionId: "sess-resume-1" },
+    };
+
+    const spawnCalls = [];
+    const mkdirPaths = [];
+    const resumeLookups = [];
+    let daemonInstance = null;
+
+    wss.once("connection", (ws) => {
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+    });
+
+    daemonInstance = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        BACKEND_HTTP: `http://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-resume-default-project",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-resume-default-project",
+      },
+      {
+        spawn: (cmd, args, opts) => {
+          spawnCalls.push({ cmd, args, opts });
+          return {
+            pid: 41001,
+            kill: () => {},
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: (dir) => {
+          mkdirPaths.push(String(dir));
+        },
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ on: () => {}, write: () => {}, end: () => {} }),
+        // Default Project: no daemon_host / workspace_path binding.
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return { ok: true, json: async () => ({ id: "proj-default-project", metadata: {} }) };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        resolveResumeContext: async (backend, sessionId) => {
+          resumeLookups.push({ backend, sessionId });
+          return { cwd: "/tmp/resumed-session-cwd" };
+        },
+      },
+    );
+
+    setTimeout(() => {
+      try {
+        const fireSpawn = spawnCalls.find((call) => call.cmd === process.execPath);
+        assert.ok(fireSpawn, "expected fire to be spawned");
+        assert.deepStrictEqual(resumeLookups, [{ backend: "codex", sessionId: "sess-resume-1" }]);
+        assert.strictEqual(fireSpawn.opts.cwd, "/tmp/resumed-session-cwd");
+        assert.strictEqual(fireSpawn.opts.env.PWD, "/tmp/resumed-session-cwd");
+        assert.ok(fireSpawn.args.includes("--resume"));
+        assert.ok(
+          // WORKSPACE_ROOT itself is created at daemon startup; what must not
+          // appear is a dated run dir under it.
+          !mkdirPaths.some((dir) => dir.startsWith("/tmp/test-ws-resume-default-project/")),
+          `expected no scratch workspace run dir; got: ${mkdirPaths.join(", ")}`,
+        );
+      } finally {
+        if (daemonInstance && typeof daemonInstance.close === "function") {
+          daemonInstance.close();
+        }
+      }
+      done();
+    }, 500);
+  });
+
+  it("falls back to a scratch workspace when the resumed session cwd cannot be resolved", (t, done) => {
+    const taskPayload = {
+      task_id: "task-resume-unresolvable",
+      project_id: "proj-default-project",
+      backend_type: "codex",
+      launch_config: { resumeSessionId: "sess-missing" },
+    };
+
+    const spawnCalls = [];
+    let daemonInstance = null;
+
+    wss.once("connection", (ws) => {
+      ws.send(JSON.stringify({ type: "create_task", payload: taskPayload }));
+    });
+
+    daemonInstance = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        BACKEND_HTTP: `http://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-resume-unresolvable",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-resume-unresolvable",
+      },
+      {
+        spawn: (cmd, args, opts) => {
+          spawnCalls.push({ cmd, args, opts });
+          return {
+            pid: 41002,
+            kill: () => {},
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ on: () => {}, write: () => {}, end: () => {} }),
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return { ok: true, json: async () => ({ id: "proj-default-project", metadata: {} }) };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        // Unknown session id: the lookup throws, and the task must still start
+        // rather than dying on the cwd resolution.
+        resolveResumeContext: async () => {
+          throw new Error("Invalid --resume session id");
+        },
+      },
+    );
+
+    setTimeout(() => {
+      try {
+        const fireSpawn = spawnCalls.find((call) => call.cmd === process.execPath);
+        assert.ok(fireSpawn, "expected fire to be spawned");
+        assert.ok(
+          String(fireSpawn.opts.cwd).startsWith("/tmp/test-ws-resume-unresolvable/"),
+          `expected scratch workspace fallback; got: ${fireSpawn.opts.cwd}`,
+        );
+      } finally {
+        if (daemonInstance && typeof daemonInstance.close === "function") {
+          daemonInstance.close();
+        }
+      }
+      done();
+    }, 500);
+  });
+
   describe("handleRestartDaemon", () => {
     function buildRestartDaemonFixture({
       cliVersion = "0.2.21",

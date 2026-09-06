@@ -7258,6 +7258,49 @@ export function startDaemon(config = {}, deps = {}) {
       });
   }
 
+  /**
+   * Recover the workspace of a resumable session from the backend's own
+   * session store. Used when neither a launch-config cwd nor a bound project
+   * path is available -- the Default Project resuming a local session -- so the
+   * task runs (and logs) where the conversation actually lives instead of an
+   * unrelated scratch directory.
+   *
+   * Returns "" when the session cannot be located; callers keep their own
+   * fallbacks. `runtimeBackend` short-circuits the alias lookup for callers
+   * that already resolved it.
+   */
+  async function resolveSessionResumeCwd({ backendType, runtimeBackend = "", sessionId }) {
+    const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+    const normalizedBackend = normalizeRuntimeBackendName(backendType);
+    // opencode has no resumable local session store to look the cwd up in.
+    if (!normalizedSessionId || !normalizedBackend || normalizedBackend === "opencode") {
+      return "";
+    }
+    try {
+      let resumeBackend = normalizeOptionalString(runtimeBackend);
+      if (!resumeBackend) {
+        const configuredBackend = await resolveConfiguredRuntimeBackend(normalizedBackend, ALLOW_CLI_LIST, {
+          configFilePath: config.CONFIG_FILE,
+        });
+        resumeBackend = configuredBackend?.runtimeBackend ||
+          await normalizeRuntimeBackendAlias(normalizedBackend, { configFilePath: config.CONFIG_FILE });
+      }
+      const resumeContext = await (deps.resolveResumeContext || resolveResumeContext)(
+        resumeBackend,
+        normalizedSessionId,
+        {
+          cwd: process.cwd(),
+          configFilePath: config.CONFIG_FILE,
+        },
+      );
+      return normalizeOptionalString(resumeContext?.cwd) || "";
+    } catch {
+      // Provider lookup failed (unknown id, unreadable store): let the caller
+      // fall back rather than failing the task here.
+      return "";
+    }
+  }
+
   async function resolveRestartCwd({
     taskId,
     projectId,
@@ -7291,29 +7334,9 @@ export function startDaemon(config = {}, deps = {}) {
       return boundPath;
     }
 
-    const normalizedBackend = normalizeRuntimeBackendName(backendType);
-    const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
-    if (normalizedSessionId && normalizedBackend && normalizedBackend !== "opencode") {
-      try {
-        const configuredBackend = await resolveConfiguredRuntimeBackend(normalizedBackend, ALLOW_CLI_LIST, {
-          configFilePath: config.CONFIG_FILE,
-        });
-        const resumeBackend = configuredBackend?.runtimeBackend ||
-          await normalizeRuntimeBackendAlias(normalizedBackend, { configFilePath: config.CONFIG_FILE });
-        const resumeContext = await (deps.resolveResumeContext || resolveResumeContext)(
-          resumeBackend,
-          normalizedSessionId,
-          {
-            cwd: process.cwd(),
-            configFilePath: config.CONFIG_FILE,
-          },
-        );
-        if (typeof resumeContext?.cwd === "string" && resumeContext.cwd.trim()) {
-          return resumeContext.cwd.trim();
-        }
-      } catch {
-        // ignore provider-specific fallback failure here; we'll try the remaining fallbacks
-      }
+    const sessionCwd = await resolveSessionResumeCwd({ backendType, sessionId });
+    if (sessionCwd) {
+      return sessionCwd;
     }
 
     const normalizedSessionPath =
@@ -7474,7 +7497,14 @@ export function startDaemon(config = {}, deps = {}) {
           launchConfig,
         })) ||
         normalizeOptionalString(launchConfig.cwd) ||
-        boundPath;
+        boundPath ||
+        (await resolveSessionResumeCwd({
+          backendType: requestedBackend,
+          runtimeBackend: effectiveBackend,
+          sessionId:
+            normalizeOptionalString(launchConfig?.resumeSessionId) ||
+            normalizeOptionalString(launchConfig?.resume_session_id),
+        }));
 
       if (resolvedTaskWorkspace) {
         taskDir = resolvedTaskWorkspace;
