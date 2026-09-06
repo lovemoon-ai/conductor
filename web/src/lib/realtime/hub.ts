@@ -214,6 +214,20 @@ type RemoteExecWaiter = {
   expectedAgentHost: string;
 };
 
+export type RemoteFileResponse = {
+  request_id: string;
+  action: string;
+  result?: unknown;
+  error?: string | null;
+};
+
+type RemoteFileWaiter = {
+  resolve: (result: RemoteFileResponse | null) => void;
+  timeout: NodeJS.Timeout;
+  expectedUserId: string;
+  expectedAgentHost: string;
+};
+
 /**
  * The shape shared by every request/response waiter that is addressed to one
  * specific daemon, so `failWaitersForAgent` can sweep them uniformly.
@@ -263,6 +277,7 @@ export class RealtimeHub {
   private customCommandsWaiters = new Map<string, CustomCommandsWaiter>();
   private updateDaemonWaiters = new Map<string, UpdateDaemonWaiter>();
   private remoteExecWaiters = new Map<string, RemoteExecWaiter>();
+  private remoteFileWaiters = new Map<string, RemoteFileWaiter>();
   private terminalSubscriptions = new Map<string, Set<string>>();
   private appTerminalTasks = new Map<string, Set<string>>();
   private terminalWriters = new Map<string, string>();
@@ -322,6 +337,7 @@ export class RealtimeHub {
     const asHostScoped = (waiters: Map<string, HostScopedWaiter>) => waiters;
     const maps = [
       asHostScoped(this.remoteExecWaiters),
+      asHostScoped(this.remoteFileWaiters),
       asHostScoped(this.customCommandsWaiters),
       asHostScoped(this.updateDaemonWaiters),
       asHostScoped(this.aiManagerWaiters),
@@ -1042,6 +1058,52 @@ export class RealtimeHub {
     if (!waiter) return;
     clearTimeout(waiter.timeout);
     this.remoteExecWaiters.delete(requestId);
+    waiter.resolve(null);
+  }
+
+  waitForRemoteFileResponse(
+    requestId: string,
+    timeoutMs: number,
+    expectedUserId: string,
+    expectedAgentHost: string,
+  ): Promise<RemoteFileResponse | null> {
+    return new Promise<RemoteFileResponse | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.remoteFileWaiters.delete(requestId);
+        resolve(null);
+      }, timeoutMs);
+      this.remoteFileWaiters.set(requestId, {
+        resolve,
+        timeout,
+        expectedUserId,
+        expectedAgentHost,
+      });
+    });
+  }
+
+  resolveRemoteFileResponse(
+    result: RemoteFileResponse,
+    sourceUserId: string,
+    sourceAgentHost: string,
+  ) {
+    const waiter = this.remoteFileWaiters.get(result.request_id);
+    if (!waiter) return;
+    if (waiter.expectedUserId !== sourceUserId || waiter.expectedAgentHost !== sourceAgentHost) {
+      console.warn(
+        `[realtimeHub] dropped remote_file_response: requestId=${result.request_id}, expected=${waiter.expectedUserId}/${waiter.expectedAgentHost}, got=${sourceUserId}/${sourceAgentHost}`,
+      );
+      return;
+    }
+    clearTimeout(waiter.timeout);
+    this.remoteFileWaiters.delete(result.request_id);
+    waiter.resolve(result);
+  }
+
+  cancelRemoteFileResponse(requestId: string) {
+    const waiter = this.remoteFileWaiters.get(requestId);
+    if (!waiter) return;
+    clearTimeout(waiter.timeout);
+    this.remoteFileWaiters.delete(requestId);
     waiter.resolve(null);
   }
 

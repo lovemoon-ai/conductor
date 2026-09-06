@@ -15,7 +15,7 @@
  *   project  - Manage Conductor projects (list/show/create/...)
  *   issue    - Manage issues (list/show/create/update/start/done)
  *   task     - Manage tasks (create/list/show/send/messages/schedule)
- *   remote-exec - Run a command on another daemon's host
+ *   remote   - Run commands and copy files on another daemon's host
  */
 
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -51,7 +51,7 @@ export function runConductorCli(args = argv, deps = {}) {
     "project",
     "issue",
     "task",
-    "remote-exec",
+    "remote",
   ];
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
@@ -137,7 +137,7 @@ Subcommands:
   project   Manage Conductor projects (list/show/create/...)
   issue     Manage issues (list/show/create/update/start/done)
   task      Manage tasks (create/list/show/send/messages/schedule)
-  remote-exec Run a command on another daemon's host
+  remote    Run commands and copy files on another daemon's host (exec/cp)
 
 Options:
   -h, --help     Show this help message
@@ -162,7 +162,8 @@ Examples:
   conductor task create --title "Refactor module" --prompt "Extract the parser" --backend codex
   conductor task send <task-id> "please add a unit test"
   conductor task schedule create <task-id> "follow up" --delay 10m
-  conductor remote-exec --target ubuntu --workspace /home/duino/ws/holomotion ls .
+  conductor remote exec --target ubuntu --workspace /home/duino/ws/holomotion ls .
+  conductor remote cp ./build.tar.gz ubuntu:/srv/app/build.tar.gz
 
 For subcommand-specific help:
   conductor fire --help
@@ -176,7 +177,7 @@ For subcommand-specific help:
   conductor project --help
   conductor issue --help
   conductor task --help
-  conductor remote-exec --help
+  conductor remote --help
 
 Version: ${pkgJson.version}
 `);

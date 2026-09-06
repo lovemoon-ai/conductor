@@ -8,7 +8,8 @@ import {
   parseArgs,
   parseTimeoutMs,
   runRemoteExec,
-} from "../bin/conductor-remote-exec.js";
+} from "../src/remote/exec.js";
+import { runRemote } from "../bin/conductor-remote.js";
 
 const config = new ConductorConfig({
   agentToken: "test-token",
@@ -356,4 +357,103 @@ test("runRemoteExec --json prints the raw run payload", async () => {
 
   assert.equal(code, 0);
   assert.equal(JSON.parse(consoleImpl.logs.join("\n")).runId, "run-1");
+});
+
+test("runRemote dispatches to the exec verb", async () => {
+  const consoleImpl = makeConsole();
+  const { fetch, calls } = makeFetch([{ body: completedRun() }]);
+
+  const code = await runRemote(["exec", "-t", "ubuntu", "ls", "."], {
+    config,
+    fetch,
+    console: consoleImpl,
+    sleep: async () => {},
+  });
+
+  assert.equal(code, 0);
+  assert.match(calls[0].url, /\/api\/agents\/ubuntu\/exec$/);
+});
+
+test("runRemote dispatches to the cp verb", async () => {
+  const consoleImpl = makeConsole();
+  const code = await runRemote(["cp", "./a", "./b"], {
+    config,
+    fetch: async () => {
+      throw new Error("should not reach the network");
+    },
+    console: consoleImpl,
+  });
+
+  // Both sides local is a cp-level usage error, which proves the verb ran.
+  assert.equal(code, 255);
+  assert.ok(consoleImpl.errors.some((line) => line.includes("must name a daemon")));
+});
+
+test("runRemote names an unknown verb instead of guessing", async () => {
+  const consoleImpl = makeConsole();
+  const code = await runRemote(["scp", "./a", "ubuntu:/b"], { config, console: consoleImpl });
+  assert.equal(code, 255);
+  assert.ok(consoleImpl.errors.some((line) => line.includes("unknown verb 'scp'")));
+  assert.ok(consoleImpl.errors.some((line) => line.includes("Valid verbs: exec, cp")));
+});
+
+test("runRemote passes a verb's own --help through to that verb", async () => {
+  const consoleImpl = makeConsole();
+  assert.equal(await runRemote(["cp", "--help"], { config, console: consoleImpl }), 0);
+  assert.ok(consoleImpl.logs.join("\n").includes("conductor remote cp"));
+
+  const execConsole = makeConsole();
+  assert.equal(await runRemote(["exec", "--help"], { config, console: execConsole }), 0);
+  assert.ok(execConsole.logs.join("\n").includes("conductor remote exec"));
+});
+
+test("runRemote with no verb prints help and fails", async () => {
+  const consoleImpl = makeConsole();
+  assert.equal(await runRemote([], { config, console: consoleImpl }), 255);
+  assert.ok(consoleImpl.logs.join("\n").includes("conductor remote - act on"));
+});
+
+test("runRemote --help succeeds", async () => {
+  const consoleImpl = makeConsole();
+  assert.equal(await runRemote(["--help"], { config, console: consoleImpl }), 0);
+  assert.ok(consoleImpl.logs.join("\n").includes("Verbs:"));
+});
+
+test("remote exec still passes the remote command's own flags through untouched", async () => {
+  const { fetch, calls } = makeFetch([{ body: completedRun() }]);
+  await runRemote(["exec", "-t", "ubuntu", "--", "git", "log", "--oneline", "-5"], {
+    config,
+    fetch,
+    console: makeConsole(),
+    sleep: async () => {},
+  });
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(body.command, "git");
+  assert.deepEqual(body.args, ["log", "--oneline", "-5"]);
+});
+
+test("runRemoteExec still prints output when --kill-on-timeout fails to stop the run", async () => {
+  const consoleImpl = makeConsole();
+  const { fetch } = makeFetch([
+    { body: { runId: "run-1", status: "running", stdoutTail: "partial output\n" } },
+    { body: { runId: "run-1", status: "running", stdoutTail: "partial output\n" } },
+    { status: 502, body: { error: "daemon went away" } },
+  ]);
+
+  let clock = 0;
+  const code = await runRemoteExec(
+    ["-t", "ubuntu", "--timeout", "1s", "--kill-on-timeout", "--json", "sleep", "60"],
+    {
+      config,
+      fetch,
+      console: consoleImpl,
+      sleep: async () => {},
+      now: () => (clock += 900),
+    },
+  );
+
+  assert.equal(code, 255);
+  // The kill failing must not swallow the run we already have in hand.
+  assert.ok(consoleImpl.errors.some((line) => line.includes("failed to stop the run")));
+  assert.ok(consoleImpl.logs.join("\n").includes("partial output"));
 });

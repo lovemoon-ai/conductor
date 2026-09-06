@@ -43,6 +43,11 @@ import {
   handleRemoteExecRequest,
 } from "./remote-exec-handlers.js";
 import {
+  REMOTE_FILE_CAPABILITY,
+  createRemoteFileHandlers,
+  handleRemoteFileRequest,
+} from "./remote-file-handlers.js";
+import {
   UPDATE_DAEMON_CAPABILITY,
   createDaemonUpdateHandlers,
   handleUpdateDaemonRequest,
@@ -283,6 +288,33 @@ function getRemoteExecEnabled(userConfig) {
     }
   }
   if (userConfig && typeof userConfig === "object" && userConfig.remote_exec === false) {
+    return false;
+  }
+  return true;
+}
+
+// Whether this host will accept `conductor remote cp` file transfers (RFC
+// 0037). Kept separate from `remote_exec` on purpose: the two are not distinct
+// trust levels — anyone with exec can already `base64` a file — but a host may
+// well want scripted commands without letting the account push bytes onto its
+// disk, and a separate flag is the only way to say that.
+//
+// Resolution order:
+//   1. CONDUCTOR_REMOTE_FILE env var ("1"/"true"/"on" enable, "0"/"false"/"off" disable)
+//   2. remote_file boolean in the resolved Conductor config.yaml
+//   3. Default: true
+function getRemoteFileEnabled(userConfig) {
+  const rawEnv = process.env.CONDUCTOR_REMOTE_FILE;
+  if (typeof rawEnv === "string" && rawEnv.trim()) {
+    const normalized = rawEnv.trim().toLowerCase();
+    if (normalized === "1" || normalized === "true" || normalized === "on" || normalized === "yes") {
+      return true;
+    }
+    if (normalized === "0" || normalized === "false" || normalized === "off" || normalized === "no") {
+      return false;
+    }
+  }
+  if (userConfig && typeof userConfig === "object" && userConfig.remote_file === false) {
     return false;
   }
   return true;
@@ -1154,6 +1186,10 @@ export function startDaemon(config = {}, deps = {}) {
   // path would cost function without removing reach (RFC 0034 makes the same
   // argument). An owner who wants it off can set `remote_exec: false`.
   const remoteExecEnabled = getRemoteExecEnabled(userConfig);
+  // Same reasoning for file transfer, with one addition: when the share scoped
+  // the guest to a root, transfers are confined to it (`isPathInsideGuestRoot`,
+  // a lexical check — misuse prevention, not a security boundary).
+  const remoteFileEnabled = getRemoteFileEnabled(userConfig);
 
   // Get allow_cli_list from config
   const RAW_ALLOW_CLI_LIST = getRawAllowCliList(userConfig);
@@ -3764,6 +3800,11 @@ export function startDaemon(config = {}, deps = {}) {
   } else {
     log("[remote-exec] Disabled by config (remote_exec: false); capability not advertised");
   }
+  if (remoteFileEnabled) {
+    advertisedCapabilities.push(REMOTE_FILE_CAPABILITY);
+  } else {
+    log("[remote-file] Disabled by config (remote_file: false); capability not advertised");
+  }
   if (ptyTaskCapabilityEnabled) {
     advertisedCapabilities.push("pty_task", "terminal_snapshot");
   }
@@ -3830,6 +3871,13 @@ export function startDaemon(config = {}, deps = {}) {
   });
   const remoteExecHandlers = remoteExecEnabled
     ? createRemoteExecHandlers({ defaultWorkspace: homeDir })
+    : null;
+  const remoteFileHandlers = remoteFileEnabled
+    ? createRemoteFileHandlers({
+        config: sdkConfig,
+        agentHost: AGENT_NAME,
+        guestRoot: IS_GUEST_DAEMON ? GUEST_ROOT : null,
+      })
     : null;
 
   const client = createWebSocketClient(sdkConfig, {
@@ -6334,6 +6382,50 @@ export function startDaemon(config = {}, deps = {}) {
         logError(`Unhandled remote_exec_request failure: ${error?.message || error}`);
       });
     }
+    if (event.type === "remote_file_request") {
+      // Same reason as remote exec: a transfer leaves no Task row and no
+      // per-run log, so it would be invisible after a restart. Only the action,
+      // the path and the byte count are recorded — never file contents, and
+      // never the transfer token, because this log is collected by
+      // `collect_logs`.
+      const fileArgs = event?.payload?.args && typeof event.payload.args === "object" ? event.payload.args : {};
+      log(
+        `[remote-file] ${event?.payload?.action || "?"} path=${fileArgs.remotePath || fileArgs.remote_path || ""} ` +
+          `bytes=${fileArgs.sizeBytes ?? fileArgs.size_bytes ?? "?"}`,
+      );
+      // Fail fast rather than letting the caller wait out its full timeout —
+      // it has no other way to learn that this daemon will never answer.
+      const rejectReason = !remoteFileHandlers
+        ? "remote file transfer is disabled on this daemon (remote_file: false)"
+        : daemonShuttingDown
+          ? "daemon is shutting down"
+          : "";
+      if (rejectReason) {
+        void client
+          .sendJson({
+            type: "remote_file_response",
+            payload: {
+              request_id: event?.payload?.request_id ? String(event.payload.request_id) : "",
+              action: event?.payload?.action ? String(event.payload.action) : "",
+              error: rejectReason,
+            },
+          })
+          .catch(() => {});
+        return;
+      }
+      handleRemoteFileRequest(client, remoteFileHandlers, event.payload)
+        .then((response) => {
+          if (response?.result) {
+            log(
+              `[remote-file] ${event?.payload?.action || "?"} ok path=${response.result.path || ""} ` +
+                `bytes=${response.result.bytesWritten ?? response.result.sizeBytes ?? "?"}`,
+            );
+          }
+        })
+        .catch((error) => {
+          logError(`Unhandled remote_file_request failure: ${error?.message || error}`);
+        });
+    }
     if (event.type === "restart_daemon") {
       void handleRestartDaemon(event.payload).catch((error) => {
         logError(`Unhandled restart_daemon failure: ${error?.message || error}`);
@@ -8567,6 +8659,9 @@ export function startDaemon(config = {}, deps = {}) {
         clearInterval(tmuxLivenessTimer);
         tmuxLivenessTimer = null;
       }
+      // An in-flight transfer holds an open socket and a `.part` file; abort
+      // them so shutdown is not gated on a multi-gigabyte download finishing.
+      remoteFileHandlers?.abortAll();
       const activeProcessEntries = [...activeTaskProcesses.entries()];
       const activePtyEntries = [...activePtySessions.entries()];
       const activeEntries = [...activeProcessEntries, ...activePtyEntries];

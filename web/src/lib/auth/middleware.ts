@@ -51,6 +51,18 @@ export function resolveAuthToken(request: NextRequest): string | null {
   return getAuthorizationToken(request) || getAttachmentCookieToken(request);
 }
 
+/**
+ * Routes whose body is an opaque byte stream, never JSON. Listed explicitly
+ * rather than sniffed from `content-type`, which a caller controls.
+ */
+const RAW_BODY_PATHS: RegExp[] = [
+  /^\/api\/agents\/[^/]+\/files\/[^/]+\/content$/,
+];
+
+function isRawBodyPath(pathname: string): boolean {
+  return RAW_BODY_PATHS.some((pattern) => pattern.test(pathname));
+}
+
 export async function getAuthUser(request: NextRequest): Promise<AuthUser | null> {
   const token = resolveAuthToken(request);
   if (!token) return null;
@@ -96,17 +108,26 @@ export async function getAuthUser(request: NextRequest): Promise<AuthUser | null
     // Reading the body here is safe: route handlers get a fresh clone, and
     // `NextRequest` bodies are only consumed once per instance.
     //
-    // Skipped only for multipart, which is the one shape that is both
-    // expensive to buffer (attachment uploads) and impossible for a route to
-    // read as JSON anyway. Deliberately NOT gated on "content-type is JSON":
+    // Skipped for multipart, which is the one shape that is both expensive to
+    // buffer (attachment uploads) and impossible for a route to read as JSON
+    // anyway. Deliberately NOT gated on "content-type is JSON":
     // `request.json()` in a route handler ignores the header, so trusting it
     // here would let `content-type: text/plain` carry a JSON body past this
     // check and straight into a route that parses it.
+    //
+    // Also skipped for the raw-body routes below, by path rather than by
+    // header for the same reason. Those stream a whole file; buffering one
+    // here would pull it into the heap in full — twice, since `clone()` tees
+    // while the route has not started reading — which is exactly what the
+    // transfer design exists to avoid. Safe because they take their target
+    // host from the URL, which layer 3 has already pinned, and they never
+    // parse their body as JSON.
     let body: unknown = null;
     const isMultipart = (request.headers.get("content-type") || "")
       .toLowerCase()
       .includes("multipart/form-data");
-    if (request.method !== "GET" && request.method !== "HEAD" && !isMultipart) {
+    if (request.method !== "GET" && request.method !== "HEAD" && !isMultipart
+        && !isRawBodyPath(pathname)) {
       body = await request
         .clone()
         .json()
