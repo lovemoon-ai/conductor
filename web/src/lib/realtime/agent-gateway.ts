@@ -310,6 +310,15 @@ type AgentEvent =
       };
     }
   | {
+      type: "remote_file_response";
+      payload: {
+        request_id?: string;
+        action?: string;
+        result?: unknown;
+        error?: string | null;
+      };
+    }
+  | {
       // RFC 0029: daemon proactively asserts which tasks it still believes
       // are alive so the backend can revoke speculative `daemon_disconnected`
       // killed flags. `agent_host` lets backend reject cross-host claims;
@@ -2066,6 +2075,24 @@ export const setupAgentGateway = (): WebSocketServer => {
               break;
             }
             realtimeHub.resolveRemoteExecResponse(
+              {
+                request_id: requestId,
+                action: normalizeOptionalString(event.payload.action) || "",
+                result: event.payload.result,
+                error: normalizeOptionalString(event.payload.error),
+              },
+              user.id,
+              agentHost,
+            );
+            break;
+          }
+          case "remote_file_response": {
+            const requestId = normalizeOptionalString(event.payload.request_id);
+            if (!requestId) {
+              sendEnvelope(socket, { type: "error", payload: { message: "remote_file_response requires request_id" } });
+              break;
+            }
+            realtimeHub.resolveRemoteFileResponse(
               {
                 request_id: requestId,
                 action: normalizeOptionalString(event.payload.action) || "",

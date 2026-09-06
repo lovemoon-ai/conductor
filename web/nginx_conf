@@ -51,6 +51,37 @@ server {
     add_header Cache-Control "public, immutable";
   }
 
+  # Remote file transfer (RFC 0037): whole files move through these two route
+  # families, so they need their own body limit. This cap is PER CHUNK, not per
+  # file: uploads are split into 32 MiB `Content-Range` chunks, so a 1 GiB
+  # transfer is ~32 requests of at most 32 MiB each and never one 1 GiB body.
+  # 64m leaves headroom for a larger chunk size without touching ops again.
+  # `proxy_request_buffering off` keeps nginx from spooling each chunk to a temp
+  # file before Next.js sees a byte. Must precede `location /` to win the regex
+  # match.
+  location ~ ^/api/(agents/[^/]+/files|agent/files)(/|$) {
+    client_max_body_size 64m;
+    proxy_request_buffering off;
+
+    # These are between two successive reads, not a total, so a steadily
+    # streaming 1 GiB body never trips them. The default 60s is still too tight:
+    # the daemon can take longer than that to produce the first byte of a large
+    # download while it hashes and seeks.
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+
+    proxy_pass http://127.0.0.1:6152;
+    proxy_http_version 1.1;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    proxy_cache_bypass 1;
+    proxy_no_cache 1;
+  }
+
   # All app/API routes handled by Next.js
   location / {
     proxy_pass http://127.0.0.1:6152;

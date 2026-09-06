@@ -1,32 +1,24 @@
-#!/usr/bin/env node
-
 /**
- * conductor remote-exec — run one command on another daemon's host.
- *
- *   conductor remote-exec --target ubuntu --workspace /home/duino/ws/holomotion ls .
- *   conductor remote-exec --target ubuntu -- bash -lc "pnpm build 2>&1 | tail -20"
+ * `conductor remote exec` — run one command on another daemon's host.
  *
  * The command is sent as argv and spawned without a shell on the target, so
  * quoting is not re-interpreted remotely. Pass `-- bash -lc "..."` when pipes
  * or globs are actually wanted.
  */
 
-import fs from "node:fs";
-import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
 
-import { ConductorConfig, loadConfig } from "@love-moon/conductor-sdk";
-import { envForExplicitConfigFile } from "../src/config-env.js";
-import { resolveConductorConfigPath } from "../src/conductor-paths.js";
+import {
+  EXIT,
+  UsageError,
+  callApi,
+  delay,
+  loadCliConfig,
+  parseTimeoutMs as parseSharedTimeoutMs,
+} from "./client.js";
 
-/**
- * Following ssh: the remote command's exit code is passed through verbatim
- * (0-254) and 255 is reserved for this CLI's own failures. Reusing 1/2/4 for
- * local errors would make `grep` finding nothing (1) or `ls` on a missing path
- * (2) indistinguishable from a network error or a usage mistake.
- */
-const EXIT = { OK: 0, CLI_ERROR: 255 };
+export { EXIT, UsageError };
+
 const DEFAULT_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 1_000;
 /** How long a single request may block server-side before we switch to polling. */
@@ -49,12 +41,6 @@ const BOOL_FLAGS = new Map([
   ["--help", "help"],
   ["-h", "help"],
 ]);
-
-const isMainModule = (() => {
-  const currentFile = fileURLToPath(import.meta.url);
-  const entryFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
-  return entryFile === currentFile;
-})();
 
 /**
  * Split argv into flags and the remote command.
@@ -116,81 +102,17 @@ export function parseArgs(argv) {
   return { options, command };
 }
 
-export class UsageError extends Error {}
-
 /** Accepts `500ms`, `30s`, `2m`, or a bare number of seconds. */
 export function parseTimeoutMs(value) {
-  if (value === undefined || value === null || value === "") {
-    return DEFAULT_TIMEOUT_MS;
-  }
-  const raw = String(value).trim().toLowerCase();
-  const match = raw.match(/^(\d+(?:\.\d+)?)(ms|s|m)?$/);
-  if (!match) {
-    throw new UsageError(`invalid --timeout value: ${value}`);
-  }
-  const amount = Number.parseFloat(match[1]);
-  const unit = match[2] || "s";
-  const multiplier = unit === "ms" ? 1 : unit === "m" ? 60_000 : 1_000;
-  const ms = Math.round(amount * multiplier);
-  if (!Number.isFinite(ms) || ms <= 0) {
-    throw new UsageError(`invalid --timeout value: ${value}`);
-  }
-  return ms;
+  return parseSharedTimeoutMs(value, DEFAULT_TIMEOUT_MS);
 }
-
-function loadCliConfig(configFile, env = process.env) {
-  const configPath = resolveConductorConfigPath(configFile, env);
-  const configEnv = envForExplicitConfigFile(configFile, env);
-  if (fs.existsSync(configPath)) {
-    return loadConfig(configPath, { env: configEnv });
-  }
-
-  const agentToken = typeof env.CONDUCTOR_AGENT_TOKEN === "string" ? env.CONDUCTOR_AGENT_TOKEN.trim() : "";
-  const backendUrl = typeof env.CONDUCTOR_BACKEND_URL === "string" ? env.CONDUCTOR_BACKEND_URL.trim() : "";
-  if (agentToken && backendUrl) {
-    return new ConductorConfig({ agentToken, backendUrl });
-  }
-
-  return loadConfig(configPath, { env: configEnv });
-}
-
-async function callApi(config, method, pathname, body, fetchImpl) {
-  const url = new URL(pathname, config.backendUrl);
-  const response = await fetchImpl(url.toString(), {
-    method,
-    headers: {
-      Authorization: `Bearer ${config.agentToken}`,
-      Accept: "application/json",
-      ...(body ? { "Content-Type": "application/json" } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-
-  const text = await response.text();
-  let payload = null;
-  try {
-    payload = text ? JSON.parse(text) : null;
-  } catch {
-    payload = null;
-  }
-
-  if (!response.ok) {
-    const message = payload?.error || text.trim() || `HTTP ${response.status}`;
-    const error = new Error(message);
-    error.status = response.status;
-    throw error;
-  }
-  return payload;
-}
-
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function showHelp(consoleImpl = console) {
-  consoleImpl.log(`conductor remote-exec - run a command on another daemon's host
+  consoleImpl.log(`conductor remote exec - run a command on another daemon's host
 
 Usage:
-  conductor remote-exec --target <daemon> [options] <command> [args...]
-  conductor remote-exec --target <daemon> [options] -- <command> [args...]
+  conductor remote exec --target <daemon> [options] <command> [args...]
+  conductor remote exec --target <daemon> [options] -- <command> [args...]
 
 Options:
   -t, --target <daemon>   Daemon name to run on (required)
@@ -205,15 +127,106 @@ Options:
 
 Notes:
   The command is spawned without a shell. For pipes, globs or redirection use:
-    conductor remote-exec -t ubuntu -- bash -lc "ls | wc -l"
+    conductor remote exec -t ubuntu -- bash -lc "ls | wc -l"
 
   Exit codes follow ssh: the remote command's own code is passed through, and
   255 means this CLI failed (bad usage, daemon offline, network error).
 
 Examples:
-  conductor remote-exec --target ubuntu --workspace /home/duino/ws/holomotion ls .
-  conductor remote-exec -t ubuntu -w /srv/app -- git log --oneline -5
+  conductor remote exec --target ubuntu --workspace /home/duino/ws/holomotion ls .
+  conductor remote exec -t ubuntu -w /srv/app -- git log --oneline -5
 `);
+}
+
+/**
+ * Run one command on `target` and return the final run record.
+ *
+ * This is the programmatic half of `runRemoteExec`: same two-phase POST-then-poll
+ * behaviour, no argv parsing and no printing. `remote cp -r` uses it to drive
+ * `tar` on the target.
+ */
+export async function execRemote(config, target, command, options = {}) {
+  const {
+    args = [],
+    workspace,
+    env,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    fetchImpl = globalThis.fetch,
+    sleep = delay,
+    now = () => Date.now(),
+    killOnTimeout = false,
+  } = options;
+
+  const basePath = `/api/agents/${encodeURIComponent(target)}/exec`;
+  const deadline = now() + timeoutMs;
+
+  let run = await callApi(config, "POST", basePath, {
+    command,
+    args,
+    ...(workspace ? { workspace } : {}),
+    ...(env && Object.keys(env).length > 0 ? { env } : {}),
+    // Deliberately short, and independent of the overall deadline: that is
+    // owned by the poll loop below. Handing the daemon the full budget would
+    // make one HTTP request block for it and leave the loop unreachable.
+    timeoutMs: Math.min(timeoutMs, POST_WAIT_MS),
+  }, fetchImpl);
+
+  let pollError = null;
+  while (run?.status === "running" && now() < deadline) {
+    if (!run.runId) {
+      pollError = new Error("daemon reported a running command but returned no runId");
+      break;
+    }
+    await sleep(POLL_INTERVAL_MS);
+    try {
+      run = await callApi(
+        config,
+        "GET",
+        `${basePath}/runs/${encodeURIComponent(run.runId)}`,
+        null,
+        fetchImpl,
+      );
+      pollError = null;
+    } catch (error) {
+      // A saturated or briefly unreachable daemon can fail one status poll.
+      // Keep waiting until the caller's own deadline rather than aborting a
+      // long-running command that is still perfectly healthy.
+      pollError = error;
+    }
+  }
+
+  let killError = null;
+  if (run?.status === "running" && killOnTimeout && run.runId) {
+    try {
+      run = await callApi(
+        config,
+        "DELETE",
+        `${basePath}/runs/${encodeURIComponent(run.runId)}`,
+        null,
+        fetchImpl,
+      );
+    } catch (error) {
+      // Failing to stop it must not cost the caller the output we already have.
+      killError = error;
+    }
+  }
+
+  return { run, pollError, killError, basePath };
+}
+
+/**
+ * `execRemote` for callers that only care whether it worked. Throws with the
+ * remote's own stderr, which is what the user needs to see.
+ */
+export async function execRemoteOrThrow(config, target, command, options = {}) {
+  const { run } = await execRemote(config, target, command, options);
+  if (run?.status === "completed" && run.exitCode === 0) return run;
+
+  const detail = (run?.stderrTail || run?.stdoutTail || run?.error || "").trim();
+  const what = run?.status === "running"
+    ? `timed out after ${options.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`
+    : `exited ${run?.exitCode ?? "?"}`;
+  throw new Error(detail ? `${what} on ${target}: ${detail}` : `${what} on ${target}`);
 }
 
 export async function runRemoteExec(argv, deps = {}) {
@@ -265,64 +278,29 @@ export async function runRemoteExec(argv, deps = {}) {
     return EXIT.CLI_ERROR;
   }
 
-  const basePath = `/api/agents/${encodeURIComponent(target)}/exec`;
-  const deadline = now() + timeoutMs;
-
   let run;
+  let pollError = null;
+  let basePath;
   try {
-    run = await callApi(config, "POST", basePath, {
-      command: command[0],
+    let killError;
+    ({ run, pollError, killError, basePath } = await execRemote(config, target, command[0], {
       args: command.slice(1),
-      ...(options.workspace ? { workspace: options.workspace } : {}),
-      ...(Object.keys(options.env).length > 0 ? { env: options.env } : {}),
-      // Deliberately short, and independent of `--timeout`: the overall deadline
-      // is owned by the poll loop below. Handing the daemon the full deadline
-      // would make one HTTP request block for it, and would leave the loop
-      // unreachable because the POST alone would consume the whole budget.
-      timeoutMs: Math.min(timeoutMs, POST_WAIT_MS),
-    }, fetchImpl);
+      workspace: options.workspace,
+      env: options.env,
+      timeoutMs,
+      fetchImpl,
+      sleep,
+      now,
+      killOnTimeout: options.killOnTimeout,
+    }));
+    if (killError) {
+      consoleImpl.error(`[conductor] failed to stop the run on ${target}: ${killError.message}`);
+    } else if (options.killOnTimeout && run?.status === "cancelled") {
+      consoleImpl.error(`[conductor] deadline reached; stopped the command on ${target}`);
+    }
   } catch (error) {
     consoleImpl.error(`Error: ${error.message}`);
     return EXIT.CLI_ERROR;
-  }
-
-  let pollError = null;
-  while (run?.status === "running" && now() < deadline) {
-    if (!run.runId) {
-      pollError = new Error("daemon reported a running command but returned no runId");
-      break;
-    }
-    await sleep(POLL_INTERVAL_MS);
-    try {
-      run = await callApi(
-        config,
-        "GET",
-        `${basePath}/runs/${encodeURIComponent(run.runId)}`,
-        null,
-        fetchImpl,
-      );
-      pollError = null;
-    } catch (error) {
-      // A saturated or briefly unreachable daemon can fail one status poll.
-      // Keep waiting until the caller's own deadline rather than aborting a
-      // long-running command that is still perfectly healthy.
-      pollError = error;
-    }
-  }
-
-  if (run?.status === "running" && options.killOnTimeout && run.runId) {
-    try {
-      run = await callApi(
-        config,
-        "DELETE",
-        `${basePath}/runs/${encodeURIComponent(run.runId)}`,
-        null,
-        fetchImpl,
-      );
-      consoleImpl.error(`[conductor] deadline reached; stopped the command on ${target}`);
-    } catch (error) {
-      consoleImpl.error(`[conductor] failed to stop the run on ${target}: ${error.message}`);
-    }
   }
 
   if (options.json) {
@@ -356,10 +334,4 @@ export async function runRemoteExec(argv, deps = {}) {
     return run.exitCode;
   }
   return run?.status === "completed" ? EXIT.OK : EXIT.CLI_ERROR;
-}
-
-if (isMainModule) {
-  // `process.exitCode` rather than `process.exit()`: writes to a pipe are async,
-  // and exiting outright truncates them. Let the loop drain and end naturally.
-  process.exitCode = await runRemoteExec(process.argv.slice(2));
 }

@@ -114,6 +114,46 @@ describe("daemon-share scope gate", () => {
     shareScope.isResourceInShareScope.mockResolvedValue(true);
   });
 
+  it("does not buffer the body of a raw-body upload route", async () => {
+    // The host-redirect scan JSON-parses the body of every non-GET request
+    // from a share token. On `.../files/<id>/content` that body is a whole
+    // file: buffering it pulls it into the shared backend's heap — twice,
+    // because `clone()` tees while the route has not started reading — which
+    // is exactly what the transfer design exists to avoid.
+    const request = createMockRequest({
+      method: "PUT",
+      token: "share-token",
+      url: "http://localhost/api/agents/shared-alice-mbp/files/abc-123/content",
+    });
+    const clone = vi.spyOn(request, "clone");
+
+    const user = await getAuthUser(request as NextRequest);
+
+    expect(user).toEqual(shareUser);
+    expect(clone).not.toHaveBeenCalled();
+    // Skipping the scan is safe only because the host came from the URL, and
+    // that is still checked.
+    expect(shareScope.isResourceInShareScope).toHaveBeenCalledWith(
+      expect.anything(),
+      "/api/agents/shared-alice-mbp/files/abc-123/content",
+      null,
+    );
+  });
+
+  it("still buffers the body of an ordinary JSON route", async () => {
+    const request = createMockRequest({
+      method: "POST",
+      token: "share-token",
+      url: "http://localhost/api/tasks",
+      body: { projectId: "p1" },
+    });
+    const clone = vi.spyOn(request, "clone");
+
+    await getAuthUser(request as NextRequest);
+
+    expect(clone).toHaveBeenCalled();
+  });
+
   it("does not refuse a non-/api path, so the SDK's prefix probe still 404s", async () => {
     // `conductor-sdk`'s backend client sends every path unprefixed first and
     // only retries with `/api` when it gets a 404. Refusing `/tasks/:id` here

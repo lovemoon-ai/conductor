@@ -13,6 +13,7 @@ import { setupAppGateway, APP_WS_PATH } from "./src/lib/realtime/app-gateway";
 import { setupAgentGateway, AGENT_WS_PATH } from "./src/lib/realtime/agent-gateway";
 import { setupSpeechGateway, SPEECH_WS_PATH } from "./src/lib/speech/gateway";
 import { reconcileOrphanedTaskAttachmentFiles, startTaskAttachmentJanitor } from "./src/lib/tasks/task-attachment-janitor";
+import { startTransferJanitor } from "./src/lib/transfers/transfer-store";
 import { assertTaskAttachmentStorageConfigured } from "./src/lib/tasks/task-file-storage";
 import { startScheduledMessageDispatcher } from "./src/lib/tasks/scheduled-messages";
 import {
@@ -70,6 +71,7 @@ app.prepare().then(async () => {
     console.warn(`[attachments] orphan reconciliation failed: ${error instanceof Error ? error.message : String(error)}`);
   });
   startTaskAttachmentJanitor();
+  startTransferJanitor();
 
   // Restore task bindings from database to prevent tasks stuck in 'init' state after restart
   await realtimeHub.restoreTaskBindingsFromDb(async () => {
