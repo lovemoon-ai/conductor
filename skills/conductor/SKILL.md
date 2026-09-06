@@ -114,6 +114,11 @@ Typical payloads:
 - PDFs and documents
 - logs, JSON, and text outputs
 
+A single upload is capped at 100 MB. The upload is a two-phase call: the bytes are
+staged first, then bound to a message. If the second phase never runs the staged file
+is deleted once the staging window (`CONDUCTOR_ATTACHMENT_TTL_MINUTES`, default 5)
+closes. Once bound to a message the attachment no longer expires.
+
 Prefer `conductor send-file` over raw API calls when the file already exists on disk.
 
 ```bash

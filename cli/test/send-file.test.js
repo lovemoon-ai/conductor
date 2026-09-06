@@ -67,7 +67,7 @@ describe("conductor send-file", () => {
     assert.equal(taskId, "");
   });
 
-  it("uploads a file to the resolved task session", async () => {
+  it("stages the upload, then binds it to a message", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-send-file-upload-"));
     const filePath = path.join(tempDir, "image.png");
     fs.writeFileSync(filePath, "png-data", "utf8");
@@ -75,6 +75,7 @@ describe("conductor send-file", () => {
     const calls = [];
     const result = await sendFileToTask({
       filePath,
+      content: "look at this",
       env: {
         CONDUCTOR_TASK_ID: "task-1",
         CONDUCTOR_AGENT_TOKEN: "token-1",
@@ -82,25 +83,57 @@ describe("conductor send-file", () => {
       },
       fetchImpl: async (url, init) => {
         calls.push({ url, init });
+        const headers = { "Content-Type": "application/json" };
+        if (String(url).endsWith("/attachments")) {
+          return new Response(JSON.stringify({ attachment: { id: "att-1", name: "image.png" } }), { status: 201, headers });
+        }
         return new Response(
-          JSON.stringify({
-            id: "msg-1",
-            attachments: [{ id: "att-1", name: "image.png" }],
-          }),
-          {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          },
+          JSON.stringify({ id: "msg-1", attachments: [{ id: "att-1", name: "image.png" }] }),
+          { status: 200, headers },
         );
       },
     });
 
     assert.equal(result.taskId, "task-1");
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
+
+    // Phase 1 uploads the bytes only; `content` / `role` are not multipart fields.
     assert.equal(calls[0].url, "https://conductor.example/api/tasks/task-1/attachments");
     assert.equal(calls[0].init.headers.Authorization, "Bearer token-1");
-    assert.equal(calls[0].init.body.get("role"), "sdk");
     assert.equal(calls[0].init.body.get("file").name, "image.png");
+
+    // Phase 2 binds the staged attachment, which is what makes it reach the chat UI.
+    assert.equal(calls[1].url, "https://conductor.example/api/tasks/task-1/messages");
+    const payload = JSON.parse(calls[1].init.body);
+    assert.deepEqual(payload.attachmentIds, ["att-1"]);
+    assert.equal(payload.role, "sdk");
+    assert.equal(payload.content, "look at this");
+    assert.equal(result.attachment.id, "att-1");
+  });
+
+  it("surfaces a failure to bind the staged attachment", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-send-file-bind-fail-"));
+    const filePath = path.join(tempDir, "image.png");
+    fs.writeFileSync(filePath, "png-data", "utf8");
+
+    await assert.rejects(
+      sendFileToTask({
+        filePath,
+        env: {
+          CONDUCTOR_TASK_ID: "task-1",
+          CONDUCTOR_AGENT_TOKEN: "token-1",
+          CONDUCTOR_BACKEND_URL: "https://conductor.example/",
+        },
+        fetchImpl: async (url) => {
+          const headers = { "Content-Type": "application/json" };
+          if (String(url).endsWith("/attachments")) {
+            return new Response(JSON.stringify({ attachment: { id: "att-1", name: "image.png" } }), { status: 201, headers });
+          }
+          return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers });
+        },
+      }),
+      /Attach failed \(404\)/,
+    );
   });
 
   it("accepts a positional file argument in the CLI entrypoint", async () => {
@@ -118,11 +151,16 @@ describe("conductor send-file", () => {
     process.env.CONDUCTOR_TASK_ID = "task-main";
     process.env.CONDUCTOR_AGENT_TOKEN = "token-main";
     process.env.CONDUCTOR_BACKEND_URL = "https://conductor.example/";
-    global.fetch = async () =>
-      new Response(JSON.stringify({ id: "msg-main", attachments: [{ id: "att-main", name: "positional.png" }] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+    global.fetch = async (url) =>
+      String(url).endsWith("/attachments")
+        ? new Response(JSON.stringify({ attachment: { id: "att-main", name: "positional.png" } }), {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          })
+        : new Response(JSON.stringify({ id: "msg-main", attachments: [{ id: "att-main", name: "positional.png" }] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
     process.stdout.write = (chunk, encoding, callback) => {
       chunks.push(String(chunk));
       if (typeof callback === "function") {

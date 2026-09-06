@@ -59,24 +59,30 @@ describe("/api/tasks/[taskId]/attachments", () => {
     }));
   });
 
-  it("rejects video before writing it", async () => {
+  it("stores a video upload as a context file", async () => {
+    vi.mocked(writeTaskAttachmentStream).mockImplementation(async ({ stream }) => {
+      stream.resume();
+      return {
+        id: "att-2", name: "clip.mp4", mimeType: "video/mp4", sizeBytes: 5, kind: "file",
+        downloadUrl: "/api/tasks/task-1/attachments/att-2", storageKey: "att-2--clip.mp4", sha256: "b".repeat(64),
+      } as any;
+    });
+    vi.mocked(db.taskAttachment.create).mockResolvedValue({
+      id: "att-2", taskId: "task-1", originalName: "clip.mp4", mimeType: "video/mp4", sizeBytes: 5,
+      kind: "file", status: "uploaded", sha256: "b".repeat(64), createdAt: new Date("2026-08-01T00:00:00Z"),
+      expiresAt: new Date("2026-08-01T00:05:00Z"),
+    } as any);
+
     const formData = new FormData();
     formData.set("file", new File(["video"], "clip.mp4", { type: "video/mp4" }));
     const response = await POST(new NextRequest("http://localhost/api/tasks/task-1/attachments", {
       method: "POST", body: formData,
     }), { params: Promise.resolve({ taskId: "task-1" }) });
-    expect(response.status).toBe(415);
-    expect(writeTaskAttachmentStream).not.toHaveBeenCalled();
-  });
+    const data = await extractJson(response);
 
-  it("rejects a video extension even when the browser omits its MIME type", async () => {
-    const formData = new FormData();
-    formData.set("file", new File(["video"], "clip.mkv"));
-    const response = await POST(new NextRequest("http://localhost/api/tasks/task-1/attachments", {
-      method: "POST", body: formData,
-    }), { params: Promise.resolve({ taskId: "task-1" }) });
-    expect(response.status).toBe(415);
-    expect(writeTaskAttachmentStream).not.toHaveBeenCalled();
+    expect(response.status).toBe(201);
+    expect(writeTaskAttachmentStream).toHaveBeenCalled();
+    expect(data.attachment).toMatchObject({ id: "att-2", mimeType: "video/mp4", kind: "file" });
   });
 
   it("removes the staged file when its database record cannot be created", async () => {

@@ -23,7 +23,9 @@ server {
   include /etc/letsencrypt/options-ssl-nginx.conf;
   ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
-  client_max_body_size 20m;
+  # Must stay >= MAX_ATTACHMENT_BYTES + multipart overhead in
+  # web/src/app/api/tasks/[taskId]/attachments/route.ts (100 MB + 1 MB).
+  client_max_body_size 110m;
 
   # WebSocket endpoints
   location /ws/ {
@@ -63,5 +65,10 @@ server {
     # emits long s-maxage headers during the brief restart window.
     proxy_cache_bypass 1;
     proxy_no_cache 1;
+
+    # Stream large uploads straight through. With the default buffering nginx
+    # spools the whole body to disk before Next.js sees a byte, so an oversized
+    # or unsupported upload still pays full transfer cost before being rejected.
+    proxy_request_buffering off;
   }
 }

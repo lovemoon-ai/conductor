@@ -77,19 +77,12 @@ describe("task-file-storage", () => {
     expect(attachment).toMatchObject({ mimeType: "application/octet-stream", kind: "file" });
   });
 
-  it("rejects video signatures even when name and MIME are disguised", async () => {
-    const disguisedMp4 = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypisom00000000")]);
+  it("stores a video stream as a context file", async () => {
+    const mp4 = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypisom00000000")]);
     await expect(writeTaskAttachmentStream({
-      taskId: "task-1", fileName: "notes.txt", mimeType: "text/plain",
-      stream: Readable.from(disguisedMp4), maxBytes: 1024,
-    })).rejects.toMatchObject({ code: "ATTACHMENT_VIDEO" });
-  });
-
-  it("does not reject ordinary text that mentions ftyp", async () => {
-    await expect(writeTaskAttachmentStream({
-      taskId: "task-1", fileName: "notes.txt", mimeType: "text/plain",
-      stream: Readable.from("the parser looks for ftyp metadata"), maxBytes: 1024,
-    })).resolves.toMatchObject({ kind: "file" });
+      taskId: "task-1", fileName: "clip.mp4", mimeType: "video/mp4",
+      stream: Readable.from(mp4), maxBytes: 1024,
+    })).resolves.toMatchObject({ mimeType: "video/mp4", kind: "file" });
   });
 
   it("removes all attachment files for a deleted task", async () => {

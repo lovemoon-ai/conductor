@@ -160,16 +160,14 @@ describe('MessageInput', () => {
     await waitFor(() => expect(screen.queryByTestId('message-input-files')).toBeNull());
   });
 
-  it('rejects video files before sending', () => {
-    const onSend = vi.fn();
+  it('accepts video files', async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
     render(<MessageInput taskId="task-video" onSend={onSend} />);
     fireEvent.change(screen.getByTestId('message-input-file-picker'), {
       target: { files: [new File(['video'], 'clip.mp4', { type: 'video/mp4' })] },
     });
 
-    expect(screen.getByText('Video attachments are not supported.')).toBeTruthy();
-    expect(screen.queryByTestId('message-input-files')).toBeNull();
-    expect(onSend).not.toHaveBeenCalled();
+    await screen.findByText('clip.mp4');
   });
 
   it('rejects native images above 20 MB before upload', async () => {
