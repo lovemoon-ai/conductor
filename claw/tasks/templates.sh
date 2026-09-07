@@ -48,7 +48,7 @@ Bug symptom: \"$1\". Fix it.
     a. Run `make info-volc` to inspect the Volcengine setup
     b. On the Volcengine machine: cd /opt/conductor/conductor && bash scripts/deploy-prod.sh
     c. If the local code changed, commit and push first, then pull on the Volcengine machine
-5. Volcengine production test method: open https://conductor-ai.top/ with chrome-devtools mcp and log in using env:CONDUCTOR_PHONE
+5. Volcengine production test method: open https://conductor.conductor-ai.top/ with chrome-devtools mcp and log in using env:CONDUCTOR_PHONE
 6. Start the conductor daemon connected to Volcengine production: conductor daemon --config-file ~/.conductor/config.yaml
 
 # Steps (must provide a plan first)

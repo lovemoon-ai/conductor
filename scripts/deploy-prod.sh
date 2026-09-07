@@ -258,7 +258,7 @@ fi
 echo ""
 echo "✅ Conductor Web is running!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🌍 Public URL: https://conductor-ai.top"
+echo "🌍 Public URL: https://conductor.conductor-ai.top"
 echo "📊 Logs: tail -f $LOG"
 echo "📋 Nginx Logs: tail -f /var/log/nginx/error.log"
 echo "🔄 Restart: systemctl restart conductor-web"

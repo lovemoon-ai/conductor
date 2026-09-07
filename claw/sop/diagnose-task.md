@@ -27,7 +27,7 @@ First establish the following runtime contexts before starting diagnosis:
 - `conductor diagnose <task-id> --json | jq '{source: .payload.source, diagnosis: .payload.diagnosis}'`
 - `conductor diagnose <task-id> --json | jq '{task: .payload.task, realtime: .payload.realtime, outbox: .payload.outbox.latest_for_pending_user}'`
 - `conductor diagnose <task-id> --json | jq '.payload.fire_logs'`
-- `curl -sS -H "Authorization: Bearer <agent-token>" -H "Accept: application/json" "https://conductor-ai.top/api/diagnostics/tasks/<task-id>" | jq`
+- `curl -sS -H "Authorization: Bearer <agent-token>" -H "Accept: application/json" "https://conductor.conductor-ai.top/api/diagnostics/tasks/<task-id>" | jq`
 
 7. Common judgment rules- `source=snapshot`
 - The task has been deleted or the live task cannot be found; do not expect new remote status or new log collection.- `bound_agent_host` is daemon, not fire- Prioritize troubleshooting `agent_resume`, fire reconnect, stale binding.- `outbox.latest_for_pending_user.status=failed`

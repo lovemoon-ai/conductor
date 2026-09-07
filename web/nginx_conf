@@ -1,17 +1,44 @@
 # Nginx site config for Conductor (web v2)
 # Reverse proxy to the Next.js server, including WebSocket upgrades.
 # Place inside http { ... } or copy into sites-available.
+#
+# ---------------------------------------------------------------------------
+# DOMAIN STATE — read this before adding a location block.
+#
+# The canonical host is `conductor.conductor-ai.top`. Every daemon, every CLI
+# and the web UI talk to it; it is the ONLY host that serves real traffic.
+#
+# `conductor-ai.top` (the apex) is RETIRED and kept solely as a 301 to the
+# canonical host. Do not add proxy rules to it — a request that reaches the
+# apex should bounce, not be served.
+#
+# Why this warning exists: the 2026-06-30 migration to the subdomain created
+# the new vhost BY HAND on the box and deliberately left the apex alone
+# ("dual-domain coexistence, this phase"). The phase never ended, the SOP
+# recording it was deleted a month later as "useless files", and this file —
+# the only nginx config in the repo and the only one deploy-prod.sh ships —
+# went on describing the dead apex. RFC 0037's file-transfer limits landed
+# here, i.e. on the retired host, so `conductor remote cp` 413'd on anything
+# over 20 MB in production while every test against this file looked fine.
+#
+# The fix is that this file now describes the canonical host. Keep it that way:
+# a new location block belongs in the `conductor.conductor-ai.top` server, and
+# there should never be a second Conductor vhost living only on the box.
+# ---------------------------------------------------------------------------
 
 map $http_upgrade $connection_upgrade {
   default upgrade;
   ''      close;
 }
 
+# Retired apex: bounce everything to the canonical subdomain. Its certificate
+# must stay renewed for as long as this block exists, or the redirect itself
+# fails TLS before it can redirect.
 server {
   listen 80;
   server_name conductor-ai.top;
 
-  return 301 https://$host$request_uri;
+  return 301 https://conductor.conductor-ai.top$request_uri;
 }
 
 server {
@@ -20,6 +47,25 @@ server {
 
   ssl_certificate /etc/letsencrypt/live/conductor-ai.top/fullchain.pem;
   ssl_certificate_key /etc/letsencrypt/live/conductor-ai.top/privkey.pem;
+  include /etc/letsencrypt/options-ssl-nginx.conf;
+  ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+  return 301 https://conductor.conductor-ai.top$request_uri;
+}
+
+server {
+  listen 80;
+  server_name conductor.conductor-ai.top;
+
+  return 301 https://$host$request_uri;
+}
+
+server {
+  listen 443 ssl http2;
+  server_name conductor.conductor-ai.top;
+
+  ssl_certificate /etc/letsencrypt/live/conductor.conductor-ai.top/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/conductor.conductor-ai.top/privkey.pem;
   include /etc/letsencrypt/options-ssl-nginx.conf;
   ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 

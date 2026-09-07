@@ -7,7 +7,7 @@ First establish the following deployment contexts before starting deployment:
 - `web/prisma/schema.prisma` and `web/prisma/migrations/` determine whether this deployment requires database migration.
 - `web/package.json` and `web/pnpm-lock.yaml` decide whether dependencies need to be installed first for this deployment.
 2. Key deployment semantics
-- The production site is `https://conductor-ai.top`.
+- The production site is `https://conductor.conductor-ai.top`.
 - The production machine connection method and remote warehouse path are subject to `make info-volc` output.
 - The current standard remote warehouse path is `/opt/conductor/conductor`.
 - The content that will actually be deployed must already exist on `origin/main`; local uncommitted or unpushed changes will not appear on the production machine.
@@ -36,7 +36,7 @@ First establish the following deployment contexts before starting deployment:
 - If dependency changes are involved, execute `npm --prefix web install` first.
 - If database changes are involved, load the production environment variables first, and then execute Prisma generate and `prisma migrate deploy`.
 - Execute `bash scripts/deploy-prod.sh` to complete the build, restart and basic health check.
-- Finally, open `https://conductor-ai.top` for manual regression; perform login and critical path verification if necessary.
+- Finally, open `https://conductor.conductor-ai.top` for manual regression; perform login and critical path verification if necessary.
 5. Recommended commands
 - `make info-volc`
 - `git status --short`
@@ -79,7 +79,7 @@ First establish the following deployment contexts before starting deployment:
 - `http://127.0.0.1:6152/api/health` Return `200`
 - `http://127.0.0.1:6152/api/health` Return `200`
 - `http://127.0.0.1:6152/api/health` Return `200`
-- Accessible online at `https://conductor-ai.top`
+- Accessible online at `https://conductor.conductor-ai.top`
 - If this change involves login, payment, task, agent or cron path, at least add a corresponding human flesh verification
 8. Supplementary troubleshooting directions in case of failure
 - `git pull` failed
