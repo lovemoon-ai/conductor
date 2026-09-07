@@ -47,6 +47,10 @@ export interface TransferRecord {
   /** Disk budget held by this transfer while it is live. Charged at create
    *  time from the *declared* size — see `createTransfer`. */
   reservedBytes: number;
+  /** Set once the staged blob has been unlinked ahead of the TTL sweep, which
+   *  happens as soon as a delivered upload's bytes stop having a consumer. The
+   *  record outlives its blob so the client's status poll still resolves. */
+  blobReleased: boolean;
   createdAt: number;
   expiresAt: number;
 }
@@ -161,15 +165,20 @@ function reservedBytes(userId?: string): number {
   let total = 0;
   for (const record of transfers.values()) {
     if (userId !== undefined && record.userId !== userId) continue;
+    // Blob already unlinked: the record lingers only so the client's status
+    // poll resolves, and a record with no bytes on disk must cost no budget.
+    if (record.blobReleased) continue;
     if (isLive(record)) {
       total += Math.max(record.reservedBytes, record.receivedBytes);
       continue;
     }
-    // A `ready` transfer is finished but its bytes are still on disk until the
+    // A `ready` download is finished but its bytes stay on disk until the
     // client fetches them or the TTL sweep runs. Excluding it from the budget
     // while it still occupies the volume is how a disk fills up: the cap would
-    // only bound work in progress, not storage. `failed`/`cancelled` records
-    // have had their blobs removed, so they cost nothing.
+    // only bound work in progress, not storage. (A `ready` upload never gets
+    // here — it releases its blob on delivery and is skipped above.)
+    // `failed`/`cancelled` records have had their blobs removed, so they cost
+    // nothing.
     if (record.status === "ready") total += record.receivedBytes;
   }
   return total;
@@ -256,6 +265,7 @@ export function createTransfer(input: CreateTransferInput): TransferRecord {
     receivedBytes: 0,
     totalBytes: input.direction === "up" ? input.sizeBytes ?? null : null,
     reservedBytes: reserve,
+    blobReleased: false,
     createdAt: now,
     expiresAt: now + TRANSFER_TTL_MS,
   };
@@ -281,6 +291,17 @@ export function updateTransfer(
   const record = transfers.get(transferId);
   if (!record) return null;
   Object.assign(record, patch);
+  // A delivered upload's staged blob has no reader left: the daemon has
+  // already written the bytes to `remotePath`, and the client only polls for
+  // status from here. Holding it until the TTL sweep charged the user's
+  // staging budget for storage that was doing nothing, so two 1 GiB copies
+  // exhausted a 2 GiB budget and locked the account out of `remote cp`
+  // entirely — at any size — for the rest of the window. Downloads are
+  // different: `ready` there means "fetchable", so those bytes must stay.
+  if (record.status === "ready" && record.direction === "up" && !record.blobReleased) {
+    record.blobReleased = true;
+    void releaseTransferBlob(record.transferId);
+  }
   // Every state change is proof of progress, so restart the expiry clock.
   // With a fixed `createdAt + TTL` deadline, a 1 GiB upload on a slow link
   // could be swept — record dropped, blob unlinked — while the daemon was
@@ -567,6 +588,13 @@ export async function openTransferContent(
     end,
     partial: true,
   };
+}
+
+/** Drop a transfer's bytes while keeping its record. */
+async function releaseTransferBlob(transferId: string): Promise<void> {
+  if (!isSafeTransferId(transferId)) return;
+  await fs.rm(contentPath(transferId), { force: true }).catch(() => undefined);
+  await fs.rm(partPath(transferId), { force: true }).catch(() => undefined);
 }
 
 export async function deleteTransfer(transferId: string): Promise<void> {

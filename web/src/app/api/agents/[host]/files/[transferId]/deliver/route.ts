@@ -26,6 +26,13 @@ export async function POST(
     );
   }
 
+  // Already delivered: the bytes are at `remotePath` and the staged blob has
+  // been released, so re-issuing the pull would only have the daemon 404. The
+  // file is where the caller asked for it, so report that rather than fail.
+  if (transfer.status === "ready" && transfer.blobReleased) {
+    return NextResponse.json({ transferId: transfer.transferId, status: "ready" });
+  }
+
   updateTransfer(transfer.transferId, { status: "delivering", error: null });
 
   const outcome = await callRemoteFileDetached(

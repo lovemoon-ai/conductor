@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createTransfer,
@@ -577,14 +577,14 @@ describe("staging budgets", () => {
   });
 });
 
-it("keeps counting a finished transfer's bytes until its blob is gone", async () => {
-  // `ready` means the work is done, not that the disk is free: the blob sits
-  // there until the client fetches it or the TTL sweep runs. A budget that
-  // ignored it would bound concurrency but not storage.
+it("keeps counting a ready download's bytes until its blob is gone", async () => {
+  // For a download `ready` means "fetchable": the blob sits there until the
+  // client GETs it or the TTL sweep runs. A budget that ignored it would bound
+  // concurrency but not storage.
   const record = createTransfer({
     userId: "user-1",
     agentHost: "ubuntu",
-    direction: "up",
+    direction: "down",
     remotePath: "/srv/a.bin",
     sizeBytes: 8,
   });
@@ -596,4 +596,49 @@ it("keeps counting a finished transfer's bytes until its blob is gone", async ()
   // ...and released only once the bytes actually go.
   await deleteTransfer(record.transferId);
   expect(remoteFileReservedBytesForTests("user-1")).toBe(0);
+});
+
+it("releases a delivered upload's budget and blob without waiting for the sweep", async () => {
+  // Regression: a delivered upload's blob has no reader left — the daemon has
+  // already written the bytes to `remotePath`. Holding the charge until the
+  // TTL sweep meant two 1 GiB copies exhausted a 2 GiB budget and locked the
+  // account out of `remote cp` at any size for the rest of the window.
+  const record = createTransfer({
+    userId: "user-1",
+    agentHost: "ubuntu",
+    direction: "up",
+    remotePath: "/srv/a.bin",
+    sizeBytes: 8,
+  });
+  await writeTransferContent(record.transferId, Readable.from([Buffer.alloc(8, 1)]), { maxBytes: 1024 });
+  expect(remoteFileReservedBytesForTests("user-1")).toBe(8);
+
+  updateTransfer(record.transferId, { status: "ready" });
+
+  expect(remoteFileReservedBytesForTests("user-1")).toBe(0);
+  expect(getTransfer(record.transferId, "user-1")?.status).toBe("ready");
+  expect(getTransfer(record.transferId, "user-1")?.blobReleased).toBe(true);
+  await vi.waitFor(() => {
+    expect(nodeFs.existsSync(path.join(stagingDir(), `${record.transferId}.bin`))).toBe(false);
+    expect(nodeFs.existsSync(partFile(record.transferId))).toBe(false);
+  });
+});
+
+it("lets a user run back-to-back uploads that each fill the whole budget", async () => {
+  process.env.CONDUCTOR_REMOTE_FILE_USER_BYTES = "16";
+  // Three sequential transfers, each sized at the full per-user budget. With
+  // the charge released on delivery this is fine; while it leaked, the second
+  // create was refused outright.
+  for (let i = 0; i < 3; i += 1) {
+    const record = createTransfer({
+      userId: "user-1",
+      agentHost: "ubuntu",
+      direction: "up",
+      remotePath: `/srv/a-${i}.bin`,
+      sizeBytes: 16,
+    });
+    await writeTransferContent(record.transferId, Readable.from([Buffer.alloc(16, 1)]), { maxBytes: 1024 });
+    updateTransfer(record.transferId, { status: "ready" });
+    expect(remoteFileReservedBytesForTests("user-1")).toBe(0);
+  }
 });
