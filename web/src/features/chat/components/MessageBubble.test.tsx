@@ -18,6 +18,22 @@ const makeMessage = (overrides: Partial<Parameters<typeof MessageBubble>[0]['mes
 });
 
 describe('MessageBubble', () => {
+  it('opens message actions from the visible button', () => {
+    render(<MessageBubble message={makeMessage()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Message actions' }));
+    expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
+  });
+
+  it('collapses synthetic activity while keeping SDK replies visible', () => {
+    const view = render(<MessageBubble message={makeMessage({ metadata: { synthetic: true }, content: 'claude session started' })} />);
+    const details = screen.getByText('Session activity').closest('details');
+    expect(details).not.toHaveAttribute('open');
+    expect(details).toHaveTextContent('claude session started');
+    view.rerender(<MessageBubble message={makeMessage({ metadata: { session_stream: true }, content: 'The answer' })} />);
+    expect(screen.queryByText('Session activity')).not.toBeInTheDocument();
+    expect(screen.getByText('The answer').closest('details')).toBeNull();
+  });
+
   beforeEach(() => {
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
@@ -50,10 +66,10 @@ describe('MessageBubble', () => {
       'w-full',
       'rounded-2xl',
       'border',
-      'webapp-gradient-bg',
+      'bg-[var(--surface-default)]',
       'border-transparent',
-      'text-white',
-      'rounded-br-md',
+      'text-ink',
+      'max-w-[92%]',
     );
     expect(screen.getByText('user message')).toBeInTheDocument();
     expect(screen.queryByTestId('markdown-renderer')).not.toBeInTheDocument();
@@ -212,7 +228,7 @@ describe('MessageBubble', () => {
     expect(row).toHaveClass('w-full');
     expect(column).toHaveClass('w-full');
     expect(column).not.toHaveClass('max-w-5xl');
-    expect(bubble).toHaveClass('w-full', 'rounded-2xl', 'border', 'bg-paper', 'border-border', 'rounded-bl-md', 'shadow-sm');
+    expect(bubble).toHaveClass('w-full', 'rounded-2xl', 'border', 'bg-transparent', 'border-transparent', 'text-ink');
     expect(screen.getByTestId('markdown-renderer')).toHaveTextContent('ai message');
     expect(screen.queryByText('Conductor')).not.toBeInTheDocument();
     expect(wrapper).toHaveClass('pt-2');

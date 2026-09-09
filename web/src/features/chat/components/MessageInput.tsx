@@ -12,7 +12,7 @@ const SEND_BUTTON_SIZE_PX = 32;
 const COMPOSER_HORIZONTAL_PADDING_PX = 24;
 const COMPOSER_GAP_PX = 8;
 const SEND_BUTTON_SAFETY_GAP_PX = 12;
-const INPUT_SCROLL_THRESHOLD_RATIO = 0.75;
+const INPUT_SCROLL_THRESHOLD_RATIO = 0.45;
 const SWIPE_ACTION_WIDTH_PX = 52;
 const SWIPE_ACTION_GAP_PX = 4; // matches the reveal panel's gap-1 and pr-1
 const MAX_ATTACHMENTS = 20;
@@ -120,7 +120,7 @@ const INITIAL_LAYOUT_STATE: ComposerLayoutState = {
 const deriveSentHistoryFromMessages = (messages: Message[]): string[] => {
   const seen = new Set<string>();
   const reversed: string[] = [];
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
+  for (let i = messages.length - 1;i >= 0;i -= 1) {
     const message = messages[i];
     if (!message || message.role !== 'user') {
       continue;
@@ -241,61 +241,101 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-
-    textarea.style.height = 'auto';
-
-    const computedStyle = window.getComputedStyle(textarea);
-    const lineHeight = Number.parseFloat(computedStyle.lineHeight) || 20;
-    const maxHeightPx = Math.max(
-      lineHeight * 2,
-      Math.floor(window.innerHeight * INPUT_SCROLL_THRESHOLD_RATIO),
-    );
-    const shouldEnableScroll = textarea.scrollHeight > maxHeightPx;
-    const nextHeightPx = shouldEnableScroll ? maxHeightPx : textarea.scrollHeight;
-    textarea.style.height = `${nextHeightPx}px`;
-    textarea.style.overflowY = shouldEnableScroll ? 'auto' : 'hidden';
-
-    const hasExplicitNewLine = content.includes('\n');
-    const isWrappedToMultipleLines = Boolean(content) && textarea.scrollHeight > lineHeight * 1.5;
-
-    const composerWidth = composerRef.current?.clientWidth ?? 0;
-    const inlineTextWidth =
-      composerWidth > COMPOSER_HORIZONTAL_PADDING_PX
-        ? composerWidth - COMPOSER_HORIZONTAL_PADDING_PX - SEND_BUTTON_SIZE_PX - COMPOSER_GAP_PX
-        : 0;
-
-    let isNearSendButton = false;
-    if (inlineTextWidth > 0) {
-      const canvas = measureCanvasRef.current ?? document.createElement('canvas');
-      measureCanvasRef.current = canvas;
-      const context = canvas.getContext('2d');
-
-      if (context) {
-        context.font = computedStyle.font;
-        const widestLine = content.split('\n').reduce((max, line) => {
-          const width = context.measureText(line).width;
-          return Math.max(max, width);
-        }, 0);
-
-        isNearSendButton = widestLine >= inlineTextWidth - SEND_BUTTON_SAFETY_GAP_PX;
-      }
-    }
-
-    const nextLayoutState: ComposerLayoutState = {
-      isInputScrollable: shouldEnableScroll,
-      hasExplicitNewLine,
-      isWrappedToMultipleLines,
-      isNearSendButton,
+    const composer = composerRef.current;
+    const chatViewport = composer?.closest<HTMLElement>('[data-chat-viewport]');
+    let frame = 0;
+    const fitTextarea = () => {
+      const computedStyle = window.getComputedStyle(textarea);
+      const lineHeight = Number.parseFloat(computedStyle.lineHeight) || 20;
+      const viewport = window.visualViewport;
+      const viewportHeight = Math.min(window.innerHeight,
+        viewport && viewport.scale === 1 ? viewport.height : window.innerHeight);
+      const availableHeight = Math.min(viewportHeight, chatViewport?.clientHeight || viewportHeight);
+      // Reserve the attachment/send controls, outer padding, and some conversation.
+      const controlsHeight = Math.max(0, (composer?.offsetHeight ?? 0) - textarea.offsetHeight);
+      const maxHeightPx = Math.max(lineHeight, Math.min(
+        viewportHeight * INPUT_SCROLL_THRESHOLD_RATIO,
+        availableHeight - controlsHeight - 32 - 64,
+      ));
+      textarea.style.height = 'auto';
+      const shouldEnableScroll = textarea.scrollHeight > maxHeightPx;
+      textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeightPx)}px`;
+      textarea.style.overflowY = shouldEnableScroll ? 'auto' : 'hidden';
+      return { computedStyle, lineHeight, shouldEnableScroll };
     };
-    setLayoutState((previous) => (
-      previous.isInputScrollable === nextLayoutState.isInputScrollable
-      && previous.hasExplicitNewLine === nextLayoutState.hasExplicitNewLine
-      && previous.isWrappedToMultipleLines === nextLayoutState.isWrappedToMultipleLines
-      && previous.isNearSendButton === nextLayoutState.isNearSendButton
-        ? previous
-        : nextLayoutState
-    ));
-  }, [content]);
+
+    const measure = () => {
+      const { computedStyle, lineHeight, shouldEnableScroll } = fitTextarea();
+      const hasExplicitNewLine = content.includes('\n');
+      const isWrappedToMultipleLines = Boolean(content) && textarea.scrollHeight > lineHeight * 1.5;
+
+      const composerWidth = composerRef.current?.clientWidth ?? 0;
+      const inlineTextWidth =
+        composerWidth > COMPOSER_HORIZONTAL_PADDING_PX
+          ? composerWidth - COMPOSER_HORIZONTAL_PADDING_PX - SEND_BUTTON_SIZE_PX - COMPOSER_GAP_PX
+          : 0;
+
+      let isNearSendButton = false;
+      if (inlineTextWidth > 0) {
+        const canvas = measureCanvasRef.current ?? document.createElement('canvas');
+        measureCanvasRef.current = canvas;
+        const context = canvas.getContext('2d');
+
+        if (context) {
+          context.font = computedStyle.font;
+          const widestLine = content.split('\n').reduce((max, line) => {
+            const width = context.measureText(line).width;
+            return Math.max(max, width);
+          }, 0);
+
+          isNearSendButton = widestLine >= inlineTextWidth - SEND_BUTTON_SAFETY_GAP_PX;
+        }
+      }
+
+      const nextLayoutState: ComposerLayoutState = {
+        isInputScrollable: shouldEnableScroll,
+        hasExplicitNewLine,
+        isWrappedToMultipleLines,
+        isNearSendButton,
+      };
+      setLayoutState((previous) => (
+        previous.isInputScrollable === nextLayoutState.isInputScrollable
+          && previous.hasExplicitNewLine === nextLayoutState.hasExplicitNewLine
+          && previous.isWrappedToMultipleLines === nextLayoutState.isWrappedToMultipleLines
+          && previous.isNearSendButton === nextLayoutState.isNearSendButton
+          ? previous
+          : nextLayoutState
+      ));
+    };
+    const resize = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        measure();
+        // React may move the controls onto a new row after measuring text.
+        frame = requestAnimationFrame(fitTextarea);
+      });
+    };
+    measure();
+    frame = requestAnimationFrame(fitTextarea);
+    window.addEventListener('resize', resize);
+    window.visualViewport?.addEventListener('resize', resize);
+    let lastWidth = composer?.clientWidth;
+    let lastHeight = chatViewport?.clientHeight;
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+      if (composer?.clientWidth === lastWidth && chatViewport?.clientHeight === lastHeight) return;
+      lastWidth = composer?.clientWidth;
+      lastHeight = chatViewport?.clientHeight;
+      resize();
+    });
+    if (composer) observer?.observe(composer);
+    if (chatViewport) observer?.observe(chatViewport);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', resize);
+      window.visualViewport?.removeEventListener('resize', resize);
+      observer?.disconnect();
+    };
+  }, [content, selectedFiles.length]);
 
   const canSend = Boolean(content.trim() || selectedFiles.length) && !disabled && !sendDisabled && !isSubmitting;
 
@@ -333,15 +373,15 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
       setIsSubmitting(false);
     } else {
       void sendResult
-      .then(() => {
-        updateContent('');
-        setSelectedFiles([]);
-        setFileError('');
-      })
-      .catch(() => setFileError(filesToSend.length
-        ? 'Upload or send failed. Your files are still selected; please retry.'
-        : 'Send failed. Your message is still here; please retry.'))
-      .finally(() => setIsSubmitting(false));
+        .then(() => {
+          updateContent('');
+          setSelectedFiles([]);
+          setFileError('');
+        })
+        .catch(() => setFileError(filesToSend.length
+          ? 'Upload or send failed. Your files are still selected; please retry.'
+          : 'Send failed. Your message is still here; please retry.'))
+        .finally(() => setIsSubmitting(false));
     }
     // The prompt will show up in the ArrowUp history as soon as it lands in
     // the chat store (either via the optimistic insert in `sendMessage` or
@@ -670,7 +710,7 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   }, [composerSwipe]);
 
   return (
-    <div className="relative border-t border-border bg-panel/95 px-4 py-3 backdrop-blur-sm md:px-6">
+    <div className="relative">
       <CatchphrasePopover
         open={isCatchphraseOpen}
         onClose={() => setIsCatchphraseOpen(false)}
@@ -729,9 +769,8 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
           onPointerMove={(event) => { if (event.pointerType !== 'mouse') composerSwipe.onPointerMove(event); }}
           onPointerUp={composerSwipe.onPointerUp}
           onPointerCancel={composerSwipe.onPointerCancel}
-          // Opaque surface so the swipe-revealed actions stay fully hidden until
-          // the composer slides aside (bg-paper is not a generated utility here).
-          className="relative z-10 w-full min-h-11 rounded-2xl border border-zinc-50 bg-[var(--paper)] p-3 transition-all dark:border-zinc-700/70 focus-within:border-accent focus-within:shadow-[0_0_0_4px_rgba(228,87,46,0.1)]"
+          // Keep the optional swipe menu behind an opaque composer.
+          className="message-composer relative z-10 w-full min-h-11 rounded-xl border border-border bg-[var(--surface-default)] p-3 transition-colors"
         >
           <input
             ref={fileInputRef}
@@ -761,18 +800,8 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
           ) : null}
           {fileError ? <p className="mb-2 text-xs text-red-600">{fileError}</p> : null}
           <div className={isSendOnNextLine ? 'flex flex-col gap-2' : 'flex items-center gap-2'}>
-            <button
-              type="button"
-              aria-label={composerSwipe.isOpen ? 'Hide actions' : 'Show actions'}
-              title="Attach files or schedule (swipe left)"
-              data-testid="message-input-actions-toggle"
-              aria-expanded={composerSwipe.isOpen}
-              onClick={toggleComposerActions}
-              className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-border/50 hover:text-ink"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`size-4 transition-transform ${composerSwipe.isOpen ? 'rotate-180' : ''}`} aria-hidden="true">
-                <path d="M15 6l-6 6 6 6" />
-              </svg>
+            <button type="button" aria-label="Add attachment" title="Attach files" disabled={attachDisabled} onClick={openAttachPicker} className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted hover:bg-border/50 disabled:opacity-40">
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.9-8.9" /></svg>
             </button>
             <textarea
               ref={textareaRef}
@@ -788,13 +817,24 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
               disabled={disabled}
               rows={1}
               data-testid="message-input-textarea"
-              className={`block min-w-0 resize-none border-0 bg-transparent p-0 text-sm leading-relaxed text-ink placeholder:text-muted outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
-                isInputScrollable ? 'overflow-y-auto' : 'overflow-hidden'
-              } ${
-                isSendOnNextLine ? 'w-full' : 'w-full flex-1'
-              }`}
+              className={`block min-w-0 resize-none border-0 bg-transparent p-0 text-sm leading-relaxed text-ink placeholder:text-muted outline-none disabled:cursor-not-allowed disabled:opacity-60 ${isInputScrollable ? 'overflow-y-auto' : 'overflow-hidden'
+                } ${isSendOnNextLine ? 'w-full' : 'w-full flex-1'
+                }`}
             />
             <div className={isSendOnNextLine ? 'flex w-full items-center justify-end gap-2' : 'flex shrink-0 items-center gap-2'}>
+              <button
+                type="button"
+                aria-label={composerSwipe.isOpen ? 'Hide actions' : 'Show actions'}
+                title="More message actions"
+                data-testid="message-input-actions-toggle"
+                aria-expanded={composerSwipe.isOpen}
+                onClick={toggleComposerActions}
+                className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-border/50 hover:text-ink"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`size-4 transition-transform ${composerSwipe.isOpen ? 'rotate-180' : ''}`} aria-hidden="true">
+                  <circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" />
+                </svg>
+              </button>
               {/* Desktop-only: one-click send of the system clipboard contents. */}
               <button
                 type="button"
@@ -816,11 +856,10 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
                 onClick={handleSendButtonClick}
                 disabled={!canSend}
                 data-testid="message-input-send-button"
-                className={`flex h-8 w-8 items-center justify-center rounded-md transition-all ${
-                  canSend
-                    ? 'webapp-gradient-bg text-white shadow-[0_2px_8px_rgba(228,87,46,0.25)] hover:brightness-105'
+                className={`flex h-8 w-8 items-center justify-center rounded-md transition-all ${canSend
+                    ? 'bg-accent text-white hover:brightness-105'
                     : 'border border-zinc-300 bg-transparent text-zinc-400 dark:border-zinc-600 dark:text-zinc-500'
-                } ${insertEnabled ? 'ring-2 ring-accent/50 ring-offset-1 ring-offset-paper' : ''}`}
+                  } ${insertEnabled ? 'ring-2 ring-accent/50 ring-offset-1 ring-offset-paper' : ''}`}
                 title={
                   sendDisabled
                     ? 'Sending will be available when the session is ready'

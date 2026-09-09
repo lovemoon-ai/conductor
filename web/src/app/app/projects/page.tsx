@@ -81,13 +81,16 @@ export default function ProjectsPage() {
               <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
+              <span className="ml-2 hidden sm:inline">New project</span>
             </button>
           </div>
         }
       />
 
-      <div className="flex-1 overflow-y-auto p-4 webapp-scrollbar">
-        <ProjectList />
+      <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6 webapp-scrollbar">
+        <div className="mx-auto max-w-5xl overflow-hidden rounded-xl border border-border bg-panel">
+          <ProjectList />
+        </div>
       </div>
 
       <CreateProjectDialog

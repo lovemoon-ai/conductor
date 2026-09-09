@@ -1,3 +1,4 @@
+import { projectFixture } from '@/__tests__/project-fixture';
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { POST } from "@/app/api/projects/match-path/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
@@ -79,7 +80,7 @@ describe("/api/projects/match-path", () => {
     vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
 
     vi.mocked(db.project.findMany).mockResolvedValue([
-      {
+      projectFixture({
         id: "proj-1",
         name: "Project 1",
         userId: "user-1",
@@ -92,7 +93,7 @@ describe("/api/projects/match-path", () => {
         metadata: null,
         createdAt: new Date("2024-01-01"),
         updatedAt: new Date("2024-01-01"),
-      },
+      }),
     ]);
 
     const token = createTestToken("user-1");
@@ -114,7 +115,7 @@ describe("/api/projects/match-path", () => {
     vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
 
     vi.mocked(db.project.findMany).mockResolvedValue([
-      {
+      projectFixture({
         id: "proj-legacy",
         name: "Legacy Project",
         userId: "user-1",
@@ -131,7 +132,7 @@ describe("/api/projects/match-path", () => {
         }),
         createdAt: new Date("2024-01-01"),
         updatedAt: new Date("2024-01-01"),
-      },
+      }),
     ]);
 
     const token = createTestToken("user-1");
@@ -153,7 +154,7 @@ describe("/api/projects/match-path", () => {
     vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
 
     vi.mocked(db.project.findMany).mockResolvedValue([
-      {
+      projectFixture({
         id: "proj-pending",
         name: "Pending Project",
         userId: "user-1",
@@ -171,7 +172,7 @@ describe("/api/projects/match-path", () => {
         }),
         createdAt: new Date("2024-01-01"),
         updatedAt: new Date("2024-01-01"),
-      },
+      }),
     ]);
 
     const token = createTestToken("user-1");
@@ -193,7 +194,7 @@ describe("/api/projects/match-path", () => {
     vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
 
     vi.mocked(db.project.findMany).mockResolvedValue([
-      {
+      projectFixture({
         id: "proj-pending-other-daemon",
         name: "Pending Project",
         userId: "user-1",
@@ -211,7 +212,7 @@ describe("/api/projects/match-path", () => {
         }),
         createdAt: new Date("2024-01-01"),
         updatedAt: new Date("2024-01-01"),
-      },
+      }),
     ]);
 
     const token = createTestToken("user-1");
@@ -233,7 +234,7 @@ describe("/api/projects/match-path", () => {
     vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
 
     vi.mocked(db.project.findMany).mockResolvedValue([
-      {
+      projectFixture({
         id: "proj-pending",
         name: "Pending Project",
         userId: "user-1",
@@ -251,8 +252,8 @@ describe("/api/projects/match-path", () => {
         }),
         createdAt: new Date("2024-01-02"),
         updatedAt: new Date("2024-01-03"),
-      },
-      {
+      }),
+      projectFixture({
         id: "proj-confirmed",
         name: "Confirmed Project",
         userId: "user-1",
@@ -265,7 +266,7 @@ describe("/api/projects/match-path", () => {
         metadata: null,
         createdAt: new Date("2024-01-01"),
         updatedAt: new Date("2024-01-01"),
-      },
+      }),
     ]);
 
     const token = createTestToken("user-1");
@@ -287,7 +288,7 @@ describe("/api/projects/match-path", () => {
     vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
 
     vi.mocked(db.project.findMany).mockResolvedValue([
-      {
+      projectFixture({
         id: "proj-legacy",
         name: "Legacy Workspace Row",
         userId: "user-1",
@@ -300,8 +301,8 @@ describe("/api/projects/match-path", () => {
         metadata: null,
         createdAt: new Date("2024-01-03"),
         updatedAt: new Date("2024-01-03"),
-      },
-      {
+      }),
+      projectFixture({
         id: "proj-confirmed",
         name: "Confirmed Project",
         userId: "user-1",
@@ -314,7 +315,7 @@ describe("/api/projects/match-path", () => {
         metadata: null,
         createdAt: new Date("2024-01-01"),
         updatedAt: new Date("2024-01-01"),
-      },
+      }),
     ]);
 
     const token = createTestToken("user-1");
@@ -336,7 +337,7 @@ describe("/api/projects/match-path", () => {
     vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
 
     vi.mocked(db.project.findMany).mockResolvedValue([
-      {
+      projectFixture({
         id: "proj-1",
         name: "Project 1",
         userId: "user-1",
@@ -349,7 +350,7 @@ describe("/api/projects/match-path", () => {
         metadata: null,
         createdAt: new Date("2024-01-01"),
         updatedAt: new Date("2024-01-01"),
-      },
+      }),
     ]);
 
     const token = createTestToken("user-1");
@@ -371,7 +372,7 @@ describe("/api/projects/match-path", () => {
     vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
 
     vi.mocked(db.project.findMany).mockResolvedValue([
-      {
+      projectFixture({
         id: "proj-1",
         name: "Project 1",
         userId: "user-1",
@@ -384,7 +385,7 @@ describe("/api/projects/match-path", () => {
         metadata: null,
         createdAt: new Date("2024-01-01"),
         updatedAt: new Date("2024-01-01"),
-      },
+      }),
     ]);
 
     const token = createTestToken("user-1");

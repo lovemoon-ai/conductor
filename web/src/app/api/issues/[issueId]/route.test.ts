@@ -1,3 +1,4 @@
+import { mockPrismaQuery } from '@/__tests__/mock-prisma-query';
 import { Prisma } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DELETE, GET, PATCH } from './route';
@@ -158,7 +159,7 @@ describe('/api/issues/[issueId]', () => {
     vi.mocked(db.project.findMany).mockResolvedValue([
       { id: 'project-1', collaborationId: null },
     ] as any);
-    vi.mocked(db.project.findFirst).mockImplementation(async ({ where }: any) => ({
+    mockPrismaQuery(db.project.findFirst).mockImplementation(async ({ where }: any) => ({
       id: where.id ?? 'project-1',
       userId: 'user-1',
       collaborationId: null,
@@ -178,7 +179,7 @@ describe('/api/issues/[issueId]', () => {
       status: 'killed',
       executionHost: null,
     }) as any);
-    vi.mocked(db.task.update).mockImplementation(async ({ where, data }: any) => ({
+    mockPrismaQuery(db.task.update).mockImplementation(async ({ where, data }: any) => ({
       ...buildTask(),
       id: where.id,
       ...data,
@@ -1176,7 +1177,7 @@ describe('/api/issues/[issueId]', () => {
         initialMessage: null,
         initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
       } as any);
-      vi.mocked(db.issue.update).mockImplementation(async ({ data }: any) =>
+      mockPrismaQuery(db.issue.update).mockImplementation(async ({ data }: any) =>
         buildMergedExistingIssue({
           projectId: data.projectId,
           status: data.status,

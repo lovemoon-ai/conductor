@@ -1,3 +1,4 @@
+import { mockPrismaQuery } from '@/__tests__/mock-prisma-query';
 import { Prisma } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET, POST } from './route';
@@ -59,7 +60,7 @@ describe('/api/issues', () => {
       { id: 'project-1', collaborationId: null },
       { id: 'project-2', collaborationId: null },
     ] as any);
-    vi.mocked(db.project.findUnique).mockImplementation(async ({ where }: any) => ({
+    mockPrismaQuery(db.project.findUnique).mockImplementation(async ({ where }: any) => ({
       id: where.id,
       userId: 'user-1',
       collaborationId: null,

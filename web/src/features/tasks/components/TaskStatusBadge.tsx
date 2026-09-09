@@ -43,9 +43,9 @@ export function TaskStatusBadge({
       label: 'killing',
     },
     killed: {
-      bg: 'bg-slate-100 dark:bg-slate-800',
-      text: 'text-slate-600 dark:text-slate-400',
-      label: 'killed',
+      bg: 'bg-transparent',
+      text: 'text-muted',
+      label: 'Stopped',
     },
     unknown: {
       bg: 'bg-slate-100 dark:bg-slate-800',

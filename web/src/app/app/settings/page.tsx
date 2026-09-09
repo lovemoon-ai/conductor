@@ -1,5 +1,6 @@
 'use client';
 
+import { ThemeToggle } from '@/components/theme/ThemeToggle';
 import { Header } from '@/components/layout/Header';
 import { useAgentsStore } from '@/features/agents';
 import { useEffect, useState } from 'react';
@@ -92,6 +93,8 @@ export default function SettingsPage() {
     setLastSettingsPath(SETTINGS_ROOT_PATH);
   }, [setLastSettingsPath]);
 
+  const [section, setSection] = useState<'devices' | 'preferences' | 'about'>('devices');
+
   const visibleDaemons = agents.filter((agent) => !agent.host.startsWith('conductor-fire-'));
   const isDaemonAuthError = agentsErrorStatus === 401;
 
@@ -107,155 +110,155 @@ export default function SettingsPage() {
     <>
       <Header title="Settings" compact />
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 webapp-scrollbar">
-        {/* Connected Daemons Section */}
-        <section className="webapp-card p-5">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="size-10 rounded-lg bg-success/10 flex items-center justify-center">
-              <svg className="size-5 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
-              </svg>
-            </div>
-            <h3 className="font-semibold text-lg">Connected Daemons</h3>
-          </div>
-          {agentsError ? (
-            <div className="text-center py-6 text-muted">
-              <svg className="size-12 mx-auto mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              {isDaemonAuthError ? (
-                <p className="text-sm">Please log in to view connected daemons.</p>
-              ) : (
-                <>
-                  <p className="text-sm">Unable to load connected daemons.</p>
-                  <p className="text-xs mt-1">{agentsError}</p>
-                </>
-              )}
-            </div>
-          ) : visibleDaemons.length === 0 ? (
-            <div className="text-center py-6 text-muted">
-              <svg className="size-12 mx-auto mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
-              </svg>
-              <p className="text-sm">No daemons connected</p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {visibleDaemons.map((agent) => {
-                return (
-                  <div
-                    key={agent.id}
-                    className="flex items-center gap-2 p-3 bg-paper border border-border rounded-lg transition-colors hover:bg-[var(--accent)]/5 hover:border-[var(--accent)]/40"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => openAiManager(agent.host)}
-                      aria-label={`Open AI Manager for ${agent.host}`}
-                      className="flex flex-1 items-center gap-3 text-left min-w-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40 rounded"
-                    >
-                      <div className="size-2 bg-success rounded-full animate-pulse shrink-0" />
-                      <div className="min-w-0 flex-1">
-                        <p className="font-medium text-sm truncate">{agent.host}</p>
-                        {/* Whose machine this is, not what you can do with it --
-                            the sharing controls live on the daemon's own page. */}
-                        {agent.shared && (
-                          <p className="text-xs text-muted truncate">
-                            Shared by {agent.ownerLabel ?? 'a colleague'} — runs on their machine
-                          </p>
-                        )}
-                      </div>
-                      <svg className="size-4 text-muted shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+      <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-8 webapp-scrollbar">
+        <div className="mx-auto grid max-w-5xl gap-6 md:grid-cols-[160px_minmax(0,1fr)]">
+          <nav aria-label="Settings sections" className="flex gap-1 self-start md:sticky md:top-0 md:flex-col">
+            {([{ id: 'devices', label: 'Devices' }, { id: 'preferences', label: 'Preferences' }, { id: 'about', label: 'About' }] as const).map((item) => (
+              <button key={item.id} type="button" aria-pressed={section === item.id} onClick={() => setSection(item.id)} className={`rounded-lg px-3 py-2 text-left text-sm transition-colors ${section === item.id ? 'bg-panel font-semibold text-ink shadow-sm' : 'text-muted hover:bg-panel/60'}`}>{item.label}</button>
+            ))}
+          </nav>
+          <div className="settings-content space-y-4">
+            <div className="mb-5"><h1 className="text-xl font-semibold tracking-tight">{section === 'devices' ? 'Your devices' : section === 'preferences' ? 'Make it yours' : 'About Conductor'}</h1><p className="mt-1 text-sm text-muted">{section === 'devices' ? 'Choose where your agents do their work.' : section === 'preferences' ? 'Appearance, shortcuts, and your daily workflow.' : 'App information and your session.'}</p></div>
+            {section === 'devices' && (
+              <>
+
+                {/* Connected Daemons Section */}
+                <section className="webapp-card p-5">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="size-10 rounded-lg bg-success/10 flex items-center justify-center">
+                      <svg className="size-5 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
                       </svg>
-                    </button>
+                    </div>
+                    <h3 className="font-semibold text-lg">Available devices</h3>
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
+                  {agentsError ? (
+                    <div className="text-center py-6 text-muted">
+                      <svg className="size-12 mx-auto mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      {isDaemonAuthError ? (
+                        <p className="text-sm">Please log in to view connected daemons.</p>
+                      ) : (
+                        <>
+                          <p className="text-sm">Unable to load connected daemons.</p>
+                          <p className="text-xs mt-1">{agentsError}</p>
+                        </>
+                      )}
+                    </div>
+                  ) : visibleDaemons.length === 0 ? (
+                    <div className="text-center py-6 text-muted">
+                      <svg className="size-12 mx-auto mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+                      </svg>
+                      <p className="text-sm font-medium text-ink">No devices connected</p>
+                      <p className="mx-auto mt-2 max-w-sm text-sm">Start Conductor on the computer where you want to run your tasks.</p>
+                      <code className="mt-4 inline-block rounded-lg border border-border bg-paper px-4 py-2 text-sm text-ink">conductor daemon</code>
+                      <a href="/docs" className="mt-4 block text-sm font-medium text-accent">Device setup guide →</a>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {visibleDaemons.map((agent) => {
+                        return (
+                          <div
+                            key={agent.id}
+                            className="flex items-center gap-2 p-3 bg-paper border border-border rounded-lg transition-colors hover:bg-[var(--accent)]/5 hover:border-[var(--accent)]/40"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => openAiManager(agent.host)}
+                              aria-label={`Open AI Manager for ${agent.host}`}
+                              className="flex flex-1 items-center gap-3 text-left min-w-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40 rounded"
+                            >
+                              <div className="size-2 bg-success rounded-full animate-pulse shrink-0" />
+                              <div className="min-w-0 flex-1">
+                                <p className="font-medium text-sm truncate">{agent.host}</p>
+                                {/* Whose machine this is, not what you can do with it --
+                            the sharing controls live on the daemon's own page. */}
+                                {agent.shared && (
+                                  <p className="text-xs text-muted truncate">
+                                    Shared by {agent.ownerLabel ?? 'a colleague'} — runs on their machine
+                                  </p>
+                                )}
+                              </div>
+                              <svg className="size-4 text-muted shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                              </svg>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
 
-        {/* Whole-history search entry */}
-        <section className="webapp-card p-5">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="size-10 rounded-lg bg-accent/10 flex items-center justify-center">
-              <svg className="size-5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <circle cx="11" cy="11" r="7" strokeWidth={2} />
-                <path strokeLinecap="round" strokeWidth={2} d="M20 20l-3.2-3.2" />
-              </svg>
-            </div>
-            <h3 className="font-semibold text-lg">Search</h3>
+              </>
+            )}
+            {section === 'preferences' && (
+              <>
+                <section className="flex items-center justify-between rounded-xl border border-border bg-panel p-4"><div><h3 className="font-semibold">Appearance</h3><p className="text-sm text-muted">Switch between light and dark.</p></div><ThemeToggle /></section>
+                {/* Catchphrases (RFC 0032) */}
+                <CatchphraseSettingsCard />
+
+                <DailyReportSettingsCard />
+
+                <AchievedTaskSettingsCard />
+
+              </>
+            )}
+            {section === 'about' && (
+              <>
+                {/* Build Info Section */}
+                <section className="webapp-card p-5">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="size-10 rounded-lg bg-accent/10 flex items-center justify-center">
+                      <svg className="size-5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V5a4 4 0 118 0v2M6 7h12a2 2 0 012 2v8a2 2 0 01-2 2H6a2 2 0 01-2-2V9a2 2 0 012-2zm4 6h4" />
+                      </svg>
+                    </div>
+                    <h3 className="font-semibold text-lg">Build Info</h3>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between p-3 bg-paper border border-border rounded-lg">
+                      <span className="text-sm text-muted">CLI Version</span>
+                      <span className="font-mono text-sm">{cliVersion}</span>
+                    </div>
+                    <div className="flex items-center justify-between p-3 bg-paper border border-border rounded-lg">
+                      <span className="text-sm text-muted">Commit ID</span>
+                      <span className="font-mono text-sm">{gitCommitId}</span>
+                    </div>
+                    <div className="flex items-center justify-between p-3 bg-paper border border-border rounded-lg">
+                      <span className="text-sm text-muted">Build Time</span>
+                      <span className="font-mono text-sm text-right">{buildTimeInBeijing}</span>
+                    </div>
+                  </div>
+                </section>
+
+                {/* Logout Section */}
+                <section className="webapp-card p-5">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="size-10 rounded-lg bg-error/10 flex items-center justify-center">
+                      <svg className="size-5 text-error" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                      </svg>
+                    </div>
+                    <h3 className="font-semibold text-lg">Session</h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={exitToHome}
+                    className="flex items-center gap-2 px-4 py-2 bg-[var(--accent)] text-white rounded-full text-sm hover:opacity-90 transition-opacity"
+                  >
+                    <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                    Back to home
+                  </button>
+                </section>
+              </>
+            )}
           </div>
-          <p className="text-sm text-muted mb-4">
-            Search across every message in all of your tasks.
-          </p>
-          <button
-            type="button"
-            onClick={() => push('/app/search')}
-            className="flex items-center gap-2 px-4 py-2 bg-[var(--accent)] text-white rounded-full text-sm hover:opacity-90 transition-opacity"
-          >
-            <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
-              <circle cx="11" cy="11" r="7" strokeWidth={2} />
-              <path strokeLinecap="round" strokeWidth={2} d="M20 20l-3.2-3.2" />
-            </svg>
-            Open search
-          </button>
-        </section>
-
-        {/* Catchphrases (RFC 0032) */}
-        <CatchphraseSettingsCard />
-
-        <DailyReportSettingsCard />
-
-        <AchievedTaskSettingsCard />
-
-        {/* Build Info Section */}
-        <section className="webapp-card p-5">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="size-10 rounded-lg bg-accent/10 flex items-center justify-center">
-              <svg className="size-5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V5a4 4 0 118 0v2M6 7h12a2 2 0 012 2v8a2 2 0 01-2 2H6a2 2 0 01-2-2V9a2 2 0 012-2zm4 6h4" />
-              </svg>
-            </div>
-            <h3 className="font-semibold text-lg">Build Info</h3>
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center justify-between p-3 bg-paper border border-border rounded-lg">
-              <span className="text-sm text-muted">CLI Version</span>
-              <span className="font-mono text-sm">{cliVersion}</span>
-            </div>
-            <div className="flex items-center justify-between p-3 bg-paper border border-border rounded-lg">
-              <span className="text-sm text-muted">Commit ID</span>
-              <span className="font-mono text-sm">{gitCommitId}</span>
-            </div>
-            <div className="flex items-center justify-between p-3 bg-paper border border-border rounded-lg">
-              <span className="text-sm text-muted">Build Time</span>
-              <span className="font-mono text-sm text-right">{buildTimeInBeijing}</span>
-            </div>
-          </div>
-        </section>
-
-        {/* Logout Section */}
-        <section className="webapp-card p-5">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="size-10 rounded-lg bg-error/10 flex items-center justify-center">
-              <svg className="size-5 text-error" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
-            </div>
-            <h3 className="font-semibold text-lg">Session</h3>
-          </div>
-          <button
-            type="button"
-            onClick={exitToHome}
-            className="flex items-center gap-2 px-4 py-2 bg-[var(--accent)] text-white rounded-full text-sm hover:opacity-90 transition-opacity"
-          >
-            <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
-            Exit
-          </button>
-        </section>
+        </div>
       </div>
     </>
   );

@@ -26,6 +26,11 @@ const agentsState = {
   ],
 };
 
+vi.mock('@/features/auth', () => ({
+  useAuthStore: (selector: (state: { session: { user: { id: string } } }) => unknown) =>
+    selector({ session: { user: { id: 'draft-user' } } }),
+}));
+
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
     push: pushMock,
@@ -43,8 +48,8 @@ vi.mock('@/shared/api/client', async (importOriginal) => {
 });
 
 vi.mock('@/components/common/Dialog', () => ({
-  Dialog: ({ open, children }: { open: boolean; children: ReactNode }) =>
-    open ? <div>{children}</div> : null,
+  Dialog: ({ open, children, footer }: { open: boolean; children: ReactNode; footer?: ReactNode }) =>
+    open ? <div>{children}{footer}</div> : null,
 }));
 
 vi.mock('../store', () => ({
@@ -67,6 +72,7 @@ vi.mock('@/features/agents', () => ({
 describe('CreateTaskDialog', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    sessionStorage.clear();
     createTaskMock.mockReset();
     pushMock.mockReset();
     onCreatedTaskMock.mockReset();
@@ -98,17 +104,109 @@ describe('CreateTaskDialog', () => {
     ];
   });
 
+
+  it('saves the task prompt before device setup and restores it after remounting', async () => {
+    agentsState.agents = [];
+    const view = render(<CreateTaskDialog open onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Task prompt'), { target: { value: 'Keep these detailed instructions' } });
+    fireEvent.change(screen.getByLabelText('Task title'), { target: { value: 'Mobile task' } });
+    const link = screen.getByRole('link', { name: 'Manage devices' });
+    link.addEventListener('click', (event) => event.preventDefault());
+    fireEvent.click(link);
+    view.unmount();
+    render(<CreateTaskDialog open onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText('Task prompt')).toHaveValue('Keep these detailed instructions'));
+    expect(screen.getByLabelText('Task title')).toHaveValue('Mobile task');
+  });
+
+  it('preserves advanced options through offline registry failure and clears the draft on success', async () => {
+    projectsState.projects[0].repoRoot = '/repo';
+    const draft = {
+      title: 'Restore all options', initialContent: 'Implement the mobile fixes', projectId: 'project-1',
+      taskType: 'ai_task', createWorktree: true, agentHost: 'daemon-a', backendType: 'codex',
+      workerAgent: 'feature-dev', reviewers: [{ name: 'code-reviewer', backend: 'codex' }], submitError: null,
+    };
+    sessionStorage.setItem('conductor-create-task-draft:draft-user', JSON.stringify(draft));
+    apiGetMock.mockRejectedValueOnce(new Error('Device offline'));
+    const online = agentsState.agents;
+    agentsState.agents = [];
+    const view = render(<CreateTaskDialog open onClose={() => {}} />);
+    await waitFor(() => expect(apiGetMock).toHaveBeenCalled());
+    const link = screen.getByRole('link', { name: 'Manage devices' });
+    link.addEventListener('click', (event) => event.preventDefault());
+    fireEvent.click(link);
+    expect(JSON.parse(sessionStorage.getItem('conductor-create-task-draft:draft-user')!)).toEqual(draft);
+    view.unmount();
+    agentsState.agents = online;
+    createTaskMock.mockResolvedValueOnce({ id: 'restored-task' });
+    render(<CreateTaskDialog open onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText('Worker agent')).toHaveValue('feature-dev'));
+    fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+    await waitFor(() => expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: draft.title, initialContent: draft.initialContent, projectId: 'project-1',
+      backendType: 'codex', launchConfig: { worktree: true },
+      agents: [{ name: 'feature-dev' }, { name: 'code-reviewer', backend: 'codex' }],
+    })));
+    expect(sessionStorage.getItem('conductor-create-task-draft:draft-user')).toBeNull();
+  });
+
+  it('discards the saved draft on explicit cancellation', async () => {
+    agentsState.agents = [];
+    const view = render(<CreateTaskDialog open onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Task prompt'), { target: { value: 'Cancelled draft' } });
+    const link = screen.getByRole('link', { name: 'Manage devices' });
+    link.addEventListener('click', (event) => event.preventDefault());
+    fireEvent.click(link);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(sessionStorage.getItem('conductor-create-task-draft:draft-user')).toBeNull();
+    view.unmount();
+    render(<CreateTaskDialog open onClose={() => {}} />);
+    expect(screen.getByLabelText('Task prompt')).toHaveValue('');
+  });
+
+  it('ignores malformed drafts and drafts belonging to another user', () => {
+    sessionStorage.setItem('conductor-create-task-draft:draft-user', '{malformed');
+    sessionStorage.setItem('conductor-create-task-draft:another-user', JSON.stringify({ initialContent: 'Private draft' }));
+    render(<CreateTaskDialog open onClose={() => {}} />);
+    expect(screen.getByLabelText('Task prompt')).toHaveValue('');
+    expect(sessionStorage.getItem('conductor-create-task-draft:draft-user')).toBeNull();
+  });
+
+  it('keeps the user in the form if the device-setup draft cannot be saved', () => {
+    agentsState.agents = [];
+    render(<CreateTaskDialog open onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Task prompt'), { target: { value: 'Do not lose this' } });
+    vi.spyOn(sessionStorage, 'setItem').mockImplementation(() => { throw new Error('Storage full'); });
+    expect(fireEvent.click(screen.getByRole('link', { name: 'Manage devices' }))).toBe(false);
+    expect(screen.getByLabelText('Task prompt')).toHaveValue('Do not lose this');
+    expect(screen.getByText(/Unable to save your draft/)).toBeInTheDocument();
+  });
+  it('creates a task from instructions and derives a concise title without requiring advanced options', async () => {
+    createTaskMock.mockResolvedValueOnce({ id: 'task-from-prompt' });
+    render(<CreateTaskDialog open onClose={() => {}} />);
+    const prompt = 'Improve the settings page.\nKeep device controls easy to find.';
+    fireEvent.change(screen.getByLabelText('Task prompt'), { target: { value: prompt } });
+    expect(screen.getByText('Advanced options').closest('details')).not.toHaveAttribute('open');
+    fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+    await waitFor(() => expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Improve the settings page. Keep device controls easy to find.',
+      initialContent: prompt,
+      projectId: 'project-1',
+      agentHost: 'daemon-a',
+    })));
+  });
+
   it('disables AI task creation when no daemon is online', async () => {
     agentsState.agents = [];
 
     render(<CreateTaskDialog open onClose={() => {}} />);
 
-    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+    fireEvent.change(screen.getByLabelText('Task title'), {
       target: { value: 'Cannot dispatch yet' },
     });
 
     expect(screen.getByText(
-      'No daemon is online right now. Reconnect conductor daemon before creating an AI task.',
+      'Connect a device to run this task. You can keep writing your instructions here.',
     )).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create AI Task' })).toBeDisabled();
     expect(createTaskMock).not.toHaveBeenCalled();
@@ -165,8 +263,9 @@ describe('CreateTaskDialog', () => {
 
     render(<CreateTaskDialog open onClose={() => {}} />);
 
+    screen.getByText('Advanced options').closest('details')!.open = true;
     fireEvent.click(screen.getByRole('radio', { name: /PTY Task/ }));
-    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+    fireEvent.change(screen.getByLabelText('Task title'), {
       target: { value: 'Open a codex terminal' },
     });
     expect(screen.getByRole('radio', { name: /PTY Task/ })).toBeChecked();
@@ -198,7 +297,7 @@ describe('CreateTaskDialog', () => {
 
     render(<CreateTaskDialog open onClose={() => {}} onCreatedTask={onCreatedTaskMock} />);
 
-    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+    fireEvent.change(screen.getByLabelText('Task title'), {
       target: { value: 'Open inline detail' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
@@ -212,7 +311,7 @@ describe('CreateTaskDialog', () => {
   it('omits agents for a plain AI task (no worker agent named)', async () => {
     createTaskMock.mockResolvedValueOnce({ id: 'task-plain' });
     render(<CreateTaskDialog open onClose={() => {}} />);
-    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+    fireEvent.change(screen.getByLabelText('Task title'), {
       target: { value: 'Plain task' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
@@ -224,7 +323,7 @@ describe('CreateTaskDialog', () => {
     createTaskMock.mockResolvedValueOnce({ id: 'task-group' });
     render(<CreateTaskDialog open onClose={() => {}} />);
 
-    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+    fireEvent.change(screen.getByLabelText('Task title'), {
       target: { value: 'Build with review' },
     });
     fireEvent.change(await screen.findByLabelText('Worker agent'), {
@@ -261,7 +360,7 @@ describe('CreateTaskDialog', () => {
     createTaskMock.mockResolvedValueOnce({ id: 'task-group-prompted' });
     render(<CreateTaskDialog open onClose={() => {}} />);
 
-    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+    fireEvent.change(screen.getByLabelText('Task title'), {
       target: { value: 'Build with review' },
     });
     fireEvent.change(screen.getByLabelText('Task prompt'), {
@@ -289,7 +388,7 @@ describe('CreateTaskDialog', () => {
     createTaskMock.mockResolvedValueOnce({ id: 'task-plain-prompted' });
     render(<CreateTaskDialog open onClose={() => {}} />);
 
-    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+    fireEvent.change(screen.getByLabelText('Task title'), {
       target: { value: 'Plain task' },
     });
     fireEvent.change(screen.getByLabelText('Task prompt'), {
@@ -310,7 +409,7 @@ describe('CreateTaskDialog', () => {
     createTaskMock.mockResolvedValueOnce({ id: 'task-no-prompt' });
     render(<CreateTaskDialog open onClose={() => {}} />);
 
-    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+    fireEvent.change(screen.getByLabelText('Task title'), {
       target: { value: 'No prompt' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
@@ -324,7 +423,7 @@ describe('CreateTaskDialog', () => {
   it('drops the group (no agents) when the worker agent is cleared', async () => {
     createTaskMock.mockResolvedValueOnce({ id: 'task-plain-after-clear' });
     render(<CreateTaskDialog open onClose={() => {}} />);
-    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+    fireEvent.change(screen.getByLabelText('Task title'), {
       target: { value: 'Needs worker' },
     });
     // Name a worker to reveal the reviewer control, add a reviewer, then clear the worker.
@@ -377,7 +476,7 @@ describe('CreateTaskDialog', () => {
     fireEvent.change(await screen.findByLabelText('Worker agent'), {
       target: { value: 'feature-dev' },
     });
-    expect(screen.getByLabelText('Backend')).toHaveValue('codex');
+    expect(screen.getByLabelText('AI backend')).toHaveValue('codex');
   });
 
   it('shows worktree for git projects and submits the checkbox state', async () => {
@@ -398,13 +497,13 @@ describe('CreateTaskDialog', () => {
 
     const worktreeLabel = await screen.findByText('worktree');
     expect(worktreeLabel).toBeInTheDocument();
-    const executionHeading = screen.getByRole('heading', { name: 'Execution' });
+    const executionHeading = screen.getByRole('heading', { name: 'Run on' });
     expect(
       Boolean(executionHeading.compareDocumentPosition(worktreeLabel) & Node.DOCUMENT_POSITION_FOLLOWING),
     ).toBe(true);
     const worktreeCheckbox = await screen.findByRole('checkbox');
     fireEvent.click(worktreeCheckbox);
-    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+    fireEvent.change(screen.getByLabelText('Task title'), {
       target: { value: 'Use isolated branch' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
@@ -437,6 +536,7 @@ describe('CreateTaskDialog', () => {
 
     expect(await screen.findByRole('checkbox')).toBeInTheDocument();
 
+    screen.getByText('Advanced options').closest('details')!.open = true;
     fireEvent.click(screen.getByRole('radio', { name: /PTY Task/ }));
 
     await waitFor(() => {
@@ -459,14 +559,14 @@ describe('CreateTaskDialog', () => {
 
     render(<CreateTaskDialog open onClose={() => {}} />);
 
-    const daemonSelect = await screen.findByLabelText('Daemon');
+    const daemonSelect = await screen.findByLabelText('Device');
     await waitFor(() => {
       expect(daemonSelect).toHaveValue('daemon-b');
     });
     expect(daemonSelect).toBeDisabled();
     expect(screen.getByText('Bound to daemon-b : /repo/bound')).toBeInTheDocument();
 
-    fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+    fireEvent.change(screen.getByLabelText('Task title'), {
       target: { value: 'Use bound daemon' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
@@ -516,7 +616,7 @@ describe('CreateTaskDialog', () => {
       createTaskMock.mockResolvedValueOnce({ id: 'task-merged' });
       render(<CreateTaskDialog open onClose={() => {}} />);
 
-      const daemonSelect = await screen.findByLabelText('Daemon');
+      const daemonSelect = await screen.findByLabelText('Device');
       // The daemon dropdown lists each member's daemon and is enabled even
       // though the underlying member project is "bound".
       expect(daemonSelect).not.toBeDisabled();
@@ -531,7 +631,7 @@ describe('CreateTaskDialog', () => {
       // Switch to daemon-b's underlying project.
       fireEvent.change(daemonSelect, { target: { value: 'p-b' } });
 
-      fireEvent.change(screen.getByPlaceholderText('What do you want to accomplish?'), {
+      fireEvent.change(screen.getByLabelText('Task title'), {
         target: { value: 'Run on daemon-b' },
       });
       fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));

@@ -1,15 +1,30 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Expose the shared palette to Tailwind utilities in both themes. */
+@theme inline {
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-paper: var(--paper);
+  --color-panel: var(--panel);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
+}
+
 :root {
   /* Primitive tokens */
-  --ink: #0d0f12;
-  --muted: #4a5568;
-  --paper: #f5f1ea;
+  --ink: #1d1d1f;
+  --muted: #6e6e73;
+  --paper: #f5f5f7;
   --panel: #ffffff;
-  --border: #efe4d6;
-  --accent: #e4572e;
-  --accent-light: #f06543;
+  --border: #e5e5ea;
+  --accent: #c94725;
+  --accent-light: #df5632;
   --accent-dark: #c94420;
   --success: #10b981;
   --warning: #f59e0b;
@@ -39,10 +54,10 @@
 .dark {
   /* Primitive tokens */
   --ink: #f5f3ef;
-  --muted: #c2c9d6;
-  --paper: #101214;
-  --panel: #1a1d22;
-  --border: #2a3038;
+  --muted: #a1a1aa;
+  --paper: #161618;
+  --panel: #222225;
+  --border: #36363b;
   --accent: #f06543;
   --accent-light: #f58b6f;
   --accent-dark: #e4572e;
@@ -72,6 +87,8 @@
 }
 
 body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
   color: var(--text-primary);
   background: var(--surface-default);
 }
@@ -86,7 +103,7 @@ body {
   border: 1px solid var(--border-default);
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
-  transition: all 0.2s ease;
+  transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
 
 .webapp-card:hover {
@@ -150,18 +167,18 @@ body {
 }
 
 .webapp-btn-primary {
-  background: linear-gradient(135deg, var(--gradient-start) 0%, var(--gradient-end) 100%);
+  background: var(--accent);
   color: white;
   font-weight: 500;
   padding: 0.5rem 1rem;
   border-radius: 10px;
-  transition: all 0.2s ease;
-  box-shadow: 0 2px 8px rgba(228, 87, 46, 0.25);
+  transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  box-shadow: none;
 }
 
 .webapp-btn-primary:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 16px rgba(228, 87, 46, 0.35);
+  background: var(--accent-dark);
+  box-shadow: none;
 }
 
 .webapp-btn-primary:active {
@@ -177,17 +194,17 @@ body {
 
 .webapp-input {
   background: var(--surface-default);
-  border: 1.5px solid var(--border-default);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
-  padding: 0.75rem 1rem;
-  transition: all 0.2s ease;
+  padding: 0.625rem 0.75rem;
+  transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
   font-size: 0.9375rem;
 }
 
 .webapp-input:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 4px rgba(228, 87, 46, 0.1);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .webapp-input::placeholder {
@@ -394,3 +411,112 @@ dialog::backdrop {
 .xterm .xterm-screen canvas {
   image-rendering: auto;
 }
+
+/* Workspace controls share an inset focus ring so scroll containers do not clip it. */
+.conductor-workspace :where(a, button, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.conductor-workspace .webapp-card {
+  transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.conductor-workspace .webapp-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  box-shadow: var(--shadow-card);
+}
+
+.conductor-workspace .webapp-card-list-pane-active,
+.conductor-workspace .webapp-card-list-pane-active:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conductor-workspace .webapp-card,
+  .conductor-workspace .webapp-btn-primary {
+    transition: none;
+  }
+
+  .conductor-workspace .webapp-btn-primary:hover {
+    transform: none;
+  }
+}
+
+/* App surfaces: quiet navigation, compact lists, and an uninterrupted reading area. */
+.conductor-workspace aside { background: var(--surface-default); }
+.conductor-workspace .task-row.webapp-card {
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--surface-panel);
+  box-shadow: none;
+}
+.conductor-workspace .task-row.webapp-card:hover { background: var(--surface-subtle); }
+.conductor-workspace .task-row.webapp-card-list-pane-active,
+.conductor-workspace .task-row.webapp-card-active,
+.conductor-workspace .task-row.webapp-card-active-strong {
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-panel));
+  box-shadow: none;
+}
+.task-row-metadata > * {
+  background: transparent;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.task-row-metadata { scrollbar-width: none; }
+.task-row-metadata::-webkit-scrollbar { display: none; }
+.task-row-metadata > * + *::before { content: '·'; margin-right: 6px; color: var(--muted); }
+.task-row-metadata > button:hover { color: var(--accent); }
+.task-row-metadata > * { flex-shrink: 0; }
+.task-list-surface { background: var(--surface-panel); }
+.task-list-surface .space-y-3 > :not(:last-child) { margin-bottom: 2px; }
+.task-list-surface .task-row h3 { font-size: 14px; line-height: 20px; font-weight: 600; }
+.task-list-surface .task-row-preview { font-size: 12px; line-height: 18px; }
+.task-pane { width: clamp(250px, var(--task-pane-width, 340px), 42vw); }
+.task-pane-resizer:hover, .task-pane-resizer:focus-visible { background: var(--accent); }
+.conductor-workspace .message-composer textarea:focus-visible { outline: none; }
+.conductor-workspace .message-composer:focus-within { border-color: var(--muted); box-shadow: none; }
+.conductor-workspace .project-row.webapp-card {
+  border: 0; border-bottom: 1px solid var(--border); border-radius: 0;
+  background: var(--surface-panel); box-shadow: none; padding: 16px 20px;
+}
+.conductor-workspace .project-row.webapp-card:hover { background: var(--surface-subtle); }
+.conductor-workspace .project-row.webapp-card[aria-pressed="true"],
+.conductor-workspace .project-row.webapp-card[aria-pressed="true"]:hover {
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-panel));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.settings-content { max-width: 900px; width: 100%; margin: 0 auto; }
+.settings-content > section { box-shadow: none; border-radius: 12px; }
+.settings-content > section > div:first-child { margin-bottom: 12px; }
+.settings-content > section > div:first-child > div:first-child { width: 28px; height: 28px; }
+.settings-content h3 { font-size: 15px; }
+.settings-content > section .py-6 { padding-block: 12px; }
+.settings-content > section .size-12 { display: none; }
+.dialog-surface {
+  top: var(--dialog-viewport-top, 0px);
+  bottom: calc(100dvh - var(--dialog-viewport-top, 0px) - var(--dialog-viewport-height, 100dvh));
+  max-height: calc(var(--dialog-viewport-height, 100dvh) - 32px);
+  display: none; flex-direction: column; overflow: hidden;
+}
+.dialog-surface[open] { display: flex; }
+.dialog-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.dialog-footer { flex-shrink: 0; background: var(--surface-panel); border-top: 1px solid var(--border); padding: 16px 20px; }
+.create-task-form .webapp-input { background: var(--surface-panel); }
+.create-task-form details > summary { cursor: pointer; list-style-position: inside; color: var(--muted); font-size: 13px; }
+@media (max-width: 639px) {
+  .dialog-surface.dialog-sheet { width: 100%; max-width: none; height: var(--dialog-viewport-height, 100dvh); max-height: var(--dialog-viewport-height, 100dvh); border-radius: 0; border: 0; }
+  .dialog-sheet .dialog-body { flex: 1; }
+  .dialog-footer { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+  .message-composer { font-size: 16px; }
+  .message-composer textarea { font-size: 16px; }
+}
+
+.task-action-menu > button, .project-action-menu > button { flex-direction: column; gap: 4px; background: transparent; border: 0; }
+.task-action-menu > button { width: 100%; }
+.project-action-menu > button { flex-shrink: 0; }

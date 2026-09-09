@@ -971,7 +971,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   };
 
   return (
-    <div className="flex h-full flex-col bg-paper">
+    <div data-chat-viewport className="flex h-full flex-col bg-panel">
       <div className="relative min-h-0 flex-1">
         <div
           ref={scrollContainerRef}
@@ -984,7 +984,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
             </div>
           ) : messages.length === 0 ? (
             <div className="flex h-full items-center justify-center">
-              <div className="w-full max-w-3xl rounded-3xl border border-dashed border-border bg-panel/70 px-8 py-10 text-center shadow-sm">
+              <div className="w-full max-w-lg px-8 py-10 text-center">
                 <svg className="mx-auto mb-4 size-14 opacity-35" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                 </svg>
@@ -1010,7 +1010,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
               </div>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="mx-auto max-w-3xl space-y-6">
               {hasMoreBefore ? (
                 <div className="flex justify-center pb-1 text-xs text-muted">
                   <span className="rounded-full border border-border bg-panel/80 px-3 py-1.5">
@@ -1094,8 +1094,8 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
           </button>
         ) : null}
       </div>
-      <div className="border-t border-border bg-paper/40 px-4 py-3 md:px-6">
-        <div className="w-full space-y-3">
+      <div className="shrink-0 bg-panel px-4 pb-4 pt-3 md:px-6">
+        <div className="mx-auto w-full max-w-3xl space-y-3">
           {aiRuntimeStatusText ? (
             <div className="flex flex-wrap gap-2 text-xs text-muted">
               <span className="rounded-full bg-border/50 px-2.5 py-1">
@@ -1108,26 +1108,26 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
               {visibleComposerFeedback.message}
             </InlineNotice>
           ) : null}
+          <MessageInput
+            ref={messageInputRef}
+            taskId={taskId}
+            onSend={handleSend}
+            onSchedule={handleScheduleDraft}
+            onInsert={(content) => {
+              void handleInsert(content);
+            }}
+            onInterrupt={() => {
+              void handleInterrupt();
+            }}
+            sendDisabled={!isTaskRunning || interruptPending || restartPending}
+            interruptEnabled={interruptEnabled}
+            interruptPending={interruptPending}
+            insertEnabled={insertEnabled}
+            insertPending={insertPending}
+            autoFocus={autoFocusComposer}
+          />
         </div>
       </div>
-      <MessageInput
-        ref={messageInputRef}
-        taskId={taskId}
-        onSend={handleSend}
-        onSchedule={handleScheduleDraft}
-        onInsert={(content) => {
-          void handleInsert(content);
-        }}
-        onInterrupt={() => {
-          void handleInterrupt();
-        }}
-        sendDisabled={!isTaskRunning || interruptPending || restartPending}
-        interruptEnabled={interruptEnabled}
-        interruptPending={interruptPending}
-        insertEnabled={insertEnabled}
-        insertPending={insertPending}
-        autoFocus={autoFocusComposer}
-      />
       <ScheduledMessageDialog
         open={scheduledMessage !== null}
         taskId={taskId}

@@ -1,3 +1,4 @@
+import { mockPrismaQuery } from '@/__tests__/mock-prisma-query';
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PATCH } from "@/app/api/tasks/[taskId]/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
@@ -113,7 +114,7 @@ describe("/api/tasks/[taskId]", () => {
     } as any);
     vi.mocked(db.user.findUnique).mockResolvedValue(ACTIVE_USER as any);
     vi.mocked(db.task.findFirst).mockResolvedValue(existingAiTask as any);
-    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+    mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => ({
       ...existingAiTask,
       ...data,
       updatedAt: new Date("2024-01-02T00:00:00.000Z"),

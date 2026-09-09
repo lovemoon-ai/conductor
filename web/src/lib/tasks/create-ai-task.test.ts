@@ -441,7 +441,6 @@ describe('createAiTaskArtifacts + finalizeAiTaskCreation (dedup)', () => {
       // SHADOW the original — should be ignored when effectiveLaunchConfig is present
       launchConfig: { cwd: '/somewhere-else', aiMode: 'goal', goal: { objective: 'DRIFTED', source: 'issue' } },
       metadata: { backendType: 'claude' },
-      initialMessageContent: 'ship the feature',
       aiMode: 'goal',
       goal: {
         objective: 'DRIFTED',

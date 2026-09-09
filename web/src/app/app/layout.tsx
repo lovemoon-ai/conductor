@@ -10,6 +10,7 @@ import { useAgentsStore } from '@/features/agents';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { MobileNav } from '@/components/layout/MobileNav';
 import { ProjectDocumentTitle } from '@/components/layout/ProjectDocumentTitle';
+import { useVisualViewport } from '@/shared/hooks/useVisualViewport';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'conductor-sidebar-collapsed';
@@ -22,7 +23,8 @@ export default function WebAppLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const { replace } = useRouter();
+  const { replace, push } = useRouter();
+  const viewport = useVisualViewport();
   const pathname = usePathname();
   const [isInitializing, setIsInitializing] = useState(true);
   const storedSidebarCollapsed = useSyncExternalStore(subscribeToHydration, getSidebarCollapsedSnapshot, () => false);
@@ -40,6 +42,20 @@ export default function WebAppLayout({
     pathSegments.length === 3 &&
     pathSegments[0] === 'app' &&
     pathSegments[1] === 'tasks';
+
+  useEffect(() => {
+    const handleSearch = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        if (event.defaultPrevented || event.isComposing) return;
+        event.preventDefault();
+        // Navigation would unmount an open form and discard its unsaved draft.
+        if (document.querySelector('dialog[open], [aria-modal="true"]')) return;
+        push('/app/search');
+      }
+    };
+    window.addEventListener('keydown', handleSearch);
+    return () => window.removeEventListener('keydown', handleSearch);
+  }, [push]);
 
   // Initialize WebSocket connection
   useWebSocket();
@@ -97,7 +113,7 @@ export default function WebAppLayout({
   }
 
   return (
-    <div className="h-screen flex flex-col bg-paper">
+    <div className="conductor-workspace h-dvh flex flex-col bg-paper" style={{ height: viewport?.height }}>
       <ProjectDocumentTitle />
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
         {/* Desktop Sidebar */}
@@ -110,7 +126,7 @@ export default function WebAppLayout({
 
         {/* Main Content */}
         <main
-          className={`flex-1 flex flex-col overflow-hidden ${
+          className={`min-w-0 flex-1 flex flex-col overflow-hidden ${
             isTaskChatPage ? 'pb-0' : 'pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0'
           }`}
         >

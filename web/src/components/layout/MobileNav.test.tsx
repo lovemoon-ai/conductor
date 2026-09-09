@@ -99,7 +99,7 @@ describe('MobileNav', () => {
     const dailyLink = screen.getByRole('link', { name: 'Daily' });
     const tasksLink = screen.getByRole('link', { name: 'Tasks' });
     expect(dailyLink).toHaveAttribute('href', '/app/daily-reports');
-    expect(dailyLink.className).toContain('text-accent');
+    expect(dailyLink).toHaveAttribute('aria-current', 'page');
     expect(tasksLink).toHaveAttribute('href', '/app/tasks');
     expect(tasksLink.className).toContain('text-muted');
   });
@@ -153,7 +153,7 @@ describe('MobileNav', () => {
     const projectsLink = screen.getByRole('link', { name: 'Projects' });
     const tasksLink = screen.getByRole('link', { name: 'Tasks' });
 
-    expect(projectsLink.className).toContain('text-accent');
+    expect(projectsLink).toHaveAttribute('aria-current', 'page');
     expect(tasksLink.className).toContain('text-muted');
     expect(tasksLink.querySelector('.bg-error')).not.toBeNull();
   });

@@ -208,9 +208,8 @@ const MoveToProjectMenu = ({
             role="menuitem"
             disabled={disabled || isCurrentTarget}
             onClick={() => onSelect(project.id)}
-            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--accent)]/10 disabled:opacity-50 ${
-              isCurrentTarget ? 'text-[var(--accent)]' : 'text-ink'
-            }`}
+            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--accent)]/10 disabled:opacity-50 ${isCurrentTarget ? 'text-[var(--accent)]' : 'text-ink'
+              }`}
             title={daemonHost ? `${project.name} (${daemonHost})` : project.name}
           >
             <span className="truncate">{project.name}</span>
@@ -324,8 +323,8 @@ const parseTaskWorktreeBranch = (
   }
   const requested = normalizeBoolean(
     launchConfig.worktree ??
-      launchConfig.createWorktree ??
-      launchConfig.create_worktree,
+    launchConfig.createWorktree ??
+    launchConfig.create_worktree,
   );
   if (!requested) {
     return null;
@@ -441,6 +440,7 @@ function TaskItemComponent({
   const [statusAction, setStatusAction] = useState<StatusAction>('idle');
   const [editTitle, setEditTitle] = useState('');
   const [swipeOffset, setSwipeOffset] = useState(0);
+  const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
   const [isSwiping, setIsSwiping] = useState(false);
   const [shareDialog, setShareDialog] = useState<ShareDialogState | null>(null);
   const [lastShareDialog, setLastShareDialog] = useState<ShareDialogState | null>(null);
@@ -624,7 +624,7 @@ function TaskItemComponent({
   const rightActionHasEmptyCell = rightActionButtonCount % 2 === 1;
   const stableBackend = getStableTaskBackend(task);
   const backend = stableBackend ?? runtime?.backend ?? null;
-  const runtimeText = runtime?.statusLine || runtime?.statusDoneLine || runtime?.replyPreview || runtime?.state || null;
+  const runtimeText = runtime?.replyPreview || runtime?.statusDoneLine || runtime?.statusLine || runtime?.state || null;
 
   const isTaskRunning = task.status === 'running';
   const canQuickRestart =
@@ -647,6 +647,7 @@ function TaskItemComponent({
   }, []);
 
   const closeSwipeActions = useCallback(() => {
+    setIsActionsMenuOpen(false);
     setSwipeOffsetValue(0);
     didSwipeRef.current = false;
     setMoveMenuAnchor(null);
@@ -765,11 +766,14 @@ function TaskItemComponent({
     const nextOffset = clamp(startOffsetRef.current + delta, -rightActionWidth, leftActionWidth);
     if (Math.abs(nextOffset - startOffsetRef.current) > SWIPE_START_THRESHOLD) {
       didSwipeRef.current = true;
+      clearLongPress();
     }
     setSwipeOffsetValue(nextOffset);
-  }, [leftActionWidth, rightActionWidth, setSwipeOffsetValue]);
+  }, [clearLongPress, leftActionWidth, rightActionWidth, setSwipeOffsetValue]);
 
   const finalizeSwipe = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    // Pointer capture sends the release to the card instead of its title.
+    clearLongPress();
     if (!draggingRef.current || pointerIdRef.current !== event.pointerId) {
       return;
     }
@@ -790,7 +794,7 @@ function TaskItemComponent({
     if (typeof target.hasPointerCapture === 'function' && target.hasPointerCapture(event.pointerId)) {
       target.releasePointerCapture(event.pointerId);
     }
-  }, [leftActionWidth, rightActionWidth, setSwipeOffsetValue]);
+  }, [clearLongPress, leftActionWidth, rightActionWidth, setSwipeOffsetValue]);
 
   const consumeTap = useCallback(() => {
     if (dismissedStatusConfirmationRef.current) {
@@ -1142,7 +1146,7 @@ function TaskItemComponent({
       // guard in `fetchTasks` discards a no-filter response whenever a
       // project filter is active, so the new `attachedTerminal` never made
       // it into the UI until the user reloaded.
-      await fetchTask(task.id).catch(() => {});
+      await fetchTask(task.id).catch(() => { });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to attach terminal';
       pushToast({
@@ -1214,7 +1218,7 @@ function TaskItemComponent({
   };
 
   const isLeftActionsOpen = swipeOffset > 0;
-  const isRightActionsOpen = swipeOffset < 0;
+  const isRightActionsOpen = swipeOffset < 0 || isActionsMenuOpen;
   const cardStyle = useMemo<CSSProperties>(() => ({
     transform: `translateX(${swipeOffset}px)`,
     transition: isSwiping ? 'none' : 'transform 180ms ease',
@@ -1268,9 +1272,8 @@ function TaskItemComponent({
             onFilterByTaskType(taskType);
           }}
           title={taskTypeChipTitle}
-          className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium transition-colors hover:opacity-80 ${taskTypeBaseClass} ${
-            isTaskTypeFilterActive ? taskTypeActiveClass : ''
-          }`}
+          className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium transition-colors hover:opacity-80 ${taskTypeBaseClass} ${isTaskTypeFilterActive ? taskTypeActiveClass : ''
+            }`}
         >
           {taskTypeChipLabel}
         </button>
@@ -1290,9 +1293,8 @@ function TaskItemComponent({
               onFilterByBackend(stableBackend);
             }}
             title={backendChipTitle}
-            className={`${backendChipBaseClass} transition-colors hover:bg-[var(--accent)]/20 ${
-              isBackendFilterActive ? backendChipActiveClass : ''
-            }`}
+            className={`${backendChipBaseClass} transition-colors hover:bg-[var(--accent)]/20 ${isBackendFilterActive ? backendChipActiveClass : ''
+              }`}
           >
             {backend}
           </button>
@@ -1319,9 +1321,8 @@ function TaskItemComponent({
               onFilterByProject(projectId);
             }}
             title={projectChipTitle}
-            className={`${projectChipBaseClass} transition-colors hover:text-ink ${
-              isProjectFilterActive ? projectChipActiveClass : ''
-            }`}
+            className={`${projectChipBaseClass} transition-colors hover:text-ink ${isProjectFilterActive ? projectChipActiveClass : ''
+              }`}
           >
             {projectName}
           </button>
@@ -1340,9 +1341,8 @@ function TaskItemComponent({
               onFilterByDaemonHost(projectDaemonHost);
             }}
             title={daemonChipTitle}
-            className={`${daemonChipBaseClass} transition-colors hover:text-ink ${
-              isDaemonHostFilterActive ? daemonChipActiveClass : ''
-            }`}
+            className={`${daemonChipBaseClass} transition-colors hover:text-ink ${isDaemonHostFilterActive ? daemonChipActiveClass : ''
+              }`}
           >
             {projectDaemonHost}
           </button>
@@ -1381,25 +1381,25 @@ function TaskItemComponent({
     title?: string;
     tone?: 'default' | 'danger' | 'warning';
   } = isTaskRunning
-    ? {
+      ? {
         onClick: handleRunningStatusClick,
         disabled: isKillingTask,
         labelOverride: statusBadgeLabel,
         title: statusBadgeTitle,
         tone: isKillConfirming || isKillingTask ? 'danger' : 'default',
       }
-    : canQuickRestart
-      ? {
+      : canQuickRestart
+        ? {
           onClick: handleStoppedStatusClick,
           disabled: isRestartingTask,
           labelOverride: statusBadgeLabel,
           title: statusBadgeTitle,
           tone: isRestartConfirming ? 'warning' : 'default',
         }
-      : {};
+        : {};
 
   return (
-    <div className="relative overflow-hidden rounded-2xl">
+    <div className="relative flex flex-col overflow-hidden rounded-2xl">
       <div
         className="absolute inset-y-0 left-0 z-0 flex items-center justify-center gap-1 bg-[var(--paper)]"
         style={{ width: `${leftActionWidth}px` }}
@@ -1419,11 +1419,10 @@ function TaskItemComponent({
               closeSwipeActions();
             }
           }}
-          className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${
-            isSelected
+          className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${isSelected
               ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
               : 'border-border bg-[var(--paper)] text-muted hover:border-[var(--accent)] hover:text-[var(--accent)]'
-          }`}
+            }`}
         >
           <SelectIcon selected={isSelected} />
         </button>
@@ -1443,11 +1442,10 @@ function TaskItemComponent({
               const rect = e.currentTarget.getBoundingClientRect();
               setMoveMenuAnchor({ top: rect.top, left: rect.left, bottom: rect.bottom });
             }}
-            className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${
-              movedToProjectId
+            className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${movedToProjectId
                 ? 'border-[var(--accent)] text-[var(--accent)] hover:bg-[var(--accent)]/10'
                 : 'border-border bg-[var(--paper)] text-muted hover:border-[var(--accent)] hover:text-[var(--accent)]'
-            }`}
+              }`}
           >
             <MoveToProjectIcon />
           </button>
@@ -1471,8 +1469,8 @@ function TaskItemComponent({
         on hover and a soft tint stands in for the visual separation.
       */}
       <div
-        className="absolute inset-y-0 right-0 z-0 grid grid-flow-col grid-rows-2 bg-[var(--paper)]"
-        style={{ gridTemplateColumns: `repeat(${rightActionColumns}, ${RIGHT_ACTION_BUTTON_WIDTH}px)` }}
+        className={isActionsMenuOpen ? "task-action-menu relative order-2 grid grid-flow-col grid-rows-2 border-t border-border bg-paper" : "absolute inset-y-0 right-0 z-0 grid grid-flow-col grid-rows-2 bg-[var(--paper)]"}
+        style={{ gridTemplateColumns: `repeat(${rightActionColumns}, ${isActionsMenuOpen ? 'minmax(0, 1fr)' : RIGHT_ACTION_BUTTON_WIDTH + 'px'})`, height: isActionsMenuOpen ? 88 : undefined }}
         aria-hidden={!isRightActionsOpen}
       >
         {showAttachedTerminalAction ? (
@@ -1493,6 +1491,7 @@ function TaskItemComponent({
             className={swipeActionButtonClassName('default')}
           >
             <TerminalIcon />
+            {isActionsMenuOpen ? <span className="text-[10px]">Terminal</span> : null}
           </button>
         ) : null}
         {showSwipePinAction ? (
@@ -1513,6 +1512,7 @@ function TaskItemComponent({
             className={swipeActionButtonClassName('default')}
           >
             <PinIcon filled={false} />
+            {isActionsMenuOpen ? <span className="text-[10px]">Pin</span> : null}
           </button>
         ) : null}
         {showRestartAction ? (
@@ -1534,6 +1534,7 @@ function TaskItemComponent({
             className={swipeActionButtonClassName('default')}
           >
             <NewTaskIcon />
+            {isActionsMenuOpen ? <span className="text-[10px]">New task</span> : null}
           </button>
         ) : null}
         {showShareAction ? (
@@ -1554,6 +1555,7 @@ function TaskItemComponent({
             className={swipeActionButtonClassName('default')}
           >
             <ShareIcon />
+            {isActionsMenuOpen ? <span className="text-[10px]">Share</span> : null}
           </button>
         ) : null}
         {showAchieveAction ? (
@@ -1574,6 +1576,7 @@ function TaskItemComponent({
             className={swipeActionButtonClassName('default')}
           >
             <PackIcon />
+            {isActionsMenuOpen ? <span className="text-[10px]">Pack</span> : null}
           </button>
         ) : null}
         <button
@@ -1593,6 +1596,7 @@ function TaskItemComponent({
           className={swipeActionButtonClassName('danger')}
         >
           <TrashIcon />
+          {isActionsMenuOpen ? <span className="text-[10px]">Delete</span> : null}
         </button>
         {rightActionHasEmptyCell ? (
           // Pure decoration — the empty cell at the bottom of the last
@@ -1615,10 +1619,11 @@ function TaskItemComponent({
         onPointerUp={finalizeSwipe}
         onPointerCancel={finalizeSwipe}
         style={cardStyle}
-        className={`webapp-card relative z-10 cursor-pointer p-4 transition-colors hover:border-[var(--accent)] ${cardSurfaceClassName}`}
+        className={`task-row webapp-card relative z-10 cursor-pointer p-4 transition-colors hover:border-[var(--accent)] ${cardSurfaceClassName}`}
         role="button"
         tabIndex={0}
         onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return;
           if (e.key === 'Escape') {
             closeSwipeActions();
             return;
@@ -1633,7 +1638,7 @@ function TaskItemComponent({
           }
         }}
       >
-        <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-2">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               {isUnread ? <span className="size-2 shrink-0 rounded-full bg-[var(--accent)] animate-pulse" /> : null}
@@ -1657,7 +1662,8 @@ function TaskItemComponent({
                 />
               ) : (
                 <h3
-                  className="truncate text-base font-medium text-ink"
+                  className="line-clamp-2 text-sm font-semibold leading-5 text-ink"
+                  title={task.title}
                   onPointerDown={handleTitlePointerDown}
                   onPointerUp={handleTitlePointerUp}
                   onPointerMove={handleTitlePointerMove}
@@ -1677,24 +1683,25 @@ function TaskItemComponent({
                     handleTrailingPinClick();
                   }}
                   onPointerDown={(e) => e.stopPropagation()}
-                  className={`shrink-0 transition-colors ${
-                    pendingUnpinConfirm ? 'text-[var(--accent)]' : 'text-muted'
-                  }`}
+                  className={`shrink-0 transition-colors ${pendingUnpinConfirm ? 'text-[var(--accent)]' : 'text-muted'
+                    }`}
                 >
                   <PinIcon className="size-3.5" />
                 </button>
               ) : null}
             </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted">
-              {metadataChips}
-            </div>
             {runtimeText ? (
-              <p className="mt-3 line-clamp-2 text-sm text-muted/90">
+              <p className="task-row-preview mt-1.5 line-clamp-1 text-sm text-muted">
                 {runtimeText}
               </p>
             ) : null}
+            <div className="task-row-metadata mt-1.5 flex items-center gap-1.5 overflow-x-auto whitespace-nowrap text-muted">
+              {metadataChips}
+            </div>
           </div>
           <div ref={statusBadgeRef} className="flex items-center gap-1.5">
+            <time className="mr-auto text-[11px] text-muted" dateTime={task.updatedAt ?? task.createdAt} suppressHydrationWarning>{new Date(task.updatedAt ?? task.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time>
+            <button type="button" aria-label={isRightActionsOpen ? 'Hide actions' : 'More actions'} aria-expanded={isRightActionsOpen} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); if (isRightActionsOpen) closeSwipeActions(); else setIsActionsMenuOpen(true); }} className="flex size-6 items-center justify-center rounded text-muted hover:bg-border/50" title="Task actions">⋯</button>
             {task.attachedTerminal ? (
               <PtyToggleButton
                 aiTaskId={task.id}

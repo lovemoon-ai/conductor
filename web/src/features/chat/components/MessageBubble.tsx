@@ -43,6 +43,7 @@ export function MessageBubble({
   interruptPending = false,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user';
+  const isActivity = message.role === 'sdk' && message.metadata?.synthetic === true && /^[\w-]+ session started\b/.test(message.content) && !message.attachments?.length;
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [isToolbarOpen, setIsToolbarOpen] = useState(false);
   const [isTimestampVisible, setIsTimestampVisible] = useState(false);
@@ -199,52 +200,52 @@ export function MessageBubble({
     <>
       {onResend
         ? renderAction(
-            'resend',
-            'Resend',
-            <button
-              type="button"
-              aria-label="Resend message"
-              title="Resend message"
-              disabled={!message.content.trim()}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                resendMessage();
-              }}
-              className={actionButtonClassName}
-            >
-              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M4 12a8 8 0 1 0 2.34-5.66" />
-                <path d="M4 4v6h6" />
-                <path d="M12 8v5l3 2" />
-              </svg>
-            </button>,
-          )
+          'resend',
+          'Resend',
+          <button
+            type="button"
+            aria-label="Resend message"
+            title="Resend message"
+            disabled={!message.content.trim()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              resendMessage();
+            }}
+            className={actionButtonClassName}
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 12a8 8 0 1 0 2.34-5.66" />
+              <path d="M4 4v6h6" />
+              <path d="M12 8v5l3 2" />
+            </svg>
+          </button>,
+        )
         : null}
       {onSchedule
         ? renderAction(
-            'schedule',
-            'Schedule',
-            <button
-              type="button"
-              data-testid="message-bubble-schedule-button"
-              aria-label="Schedule message"
-              title="Schedule message"
-              disabled={!message.content.trim()}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                scheduleMessage();
-              }}
-              className={actionButtonClassName}
-            >
-              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="9" />
-                <path d="M12 7v5l3 2" />
-                <path d="M17.5 3.5l3 3" />
-              </svg>
-            </button>,
-          )
+          'schedule',
+          'Schedule',
+          <button
+            type="button"
+            data-testid="message-bubble-schedule-button"
+            aria-label="Schedule message"
+            title="Schedule message"
+            disabled={!message.content.trim()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              scheduleMessage();
+            }}
+            className={actionButtonClassName}
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 7v5l3 2" />
+              <path d="M17.5 3.5l3 3" />
+            </svg>
+          </button>,
+        )
         : null}
       {renderAction(
         'copy',
@@ -274,52 +275,52 @@ export function MessageBubble({
       )}
       {onRestart
         ? renderAction(
-            'restart',
-            'Restart',
-            <button
-              type="button"
-              data-testid="message-bubble-restart-button"
-              aria-label={restartActionLabel}
-              title={restartActionLabel}
-              disabled={!restartEnabled || restartPending}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                restartTask();
-              }}
-              className={actionButtonClassName}
-            >
-              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 3v4" />
-                <path d="M17.66 6.34A8 8 0 1 1 12 4" />
-              </svg>
-            </button>,
-          )
+          'restart',
+          'Restart',
+          <button
+            type="button"
+            data-testid="message-bubble-restart-button"
+            aria-label={restartActionLabel}
+            title={restartActionLabel}
+            disabled={!restartEnabled || restartPending}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              restartTask();
+            }}
+            className={actionButtonClassName}
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 3v4" />
+              <path d="M17.66 6.34A8 8 0 1 1 12 4" />
+            </svg>
+          </button>,
+        )
         : null}
       {onInterrupt
         ? renderAction(
-            'interrupt',
-            'Interrupt',
-            <button
-              type="button"
-              data-testid="message-bubble-interrupt-button"
-              aria-label={interruptActionLabel}
-              title={interruptActionLabel}
-              disabled={!interruptEnabled || interruptPending}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                interruptTurn();
-              }}
-              className={actionButtonClassName}
-            >
-              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M8 3h8l5 5v8l-5 5H8l-5-5V8l5-5z" />
-                <path d="M9 9l6 6" />
-                <path d="M15 9l-6 6" />
-              </svg>
-            </button>,
-          )
+          'interrupt',
+          'Interrupt',
+          <button
+            type="button"
+            data-testid="message-bubble-interrupt-button"
+            aria-label={interruptActionLabel}
+            title={interruptActionLabel}
+            disabled={!interruptEnabled || interruptPending}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              interruptTurn();
+            }}
+            className={actionButtonClassName}
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 3h8l5 5v8l-5 5H8l-5-5V8l5-5z" />
+              <path d="M9 9l6 6" />
+              <path d="M15 9l-6 6" />
+            </svg>
+          </button>,
+        )
         : null}
     </>
   );
@@ -334,19 +335,18 @@ export function MessageBubble({
           {message.createdAt ? (
             <span
               suppressHydrationWarning
-              className={`pointer-events-none absolute left-4 -top-1 z-20 flex h-2 items-center text-[10px] leading-none text-muted transition-opacity ${
-                isTimestampVisible ? 'opacity-100' : 'opacity-0 group-hover/message:opacity-100'
-              }`}
+              className={`pointer-events-none absolute left-4 -top-1 z-20 flex h-2 items-center text-[10px] leading-none text-muted transition-opacity ${isTimestampVisible ? 'opacity-100' : 'opacity-0 group-hover/message:opacity-100'
+                }`}
             >
               {formatTime(message.createdAt)}
             </span>
           ) : null}
+          <button type="button" aria-label="Message actions" onClick={() => setIsToolbarOpen(true)} className="absolute right-0 -top-3 z-10 flex size-7 items-center justify-center rounded-md bg-panel text-muted opacity-70 hover:opacity-100 focus-visible:opacity-100 md:opacity-0 md:group-hover/message:opacity-100">⋯</button>
           <div
-            className={`w-full rounded-2xl border px-4 py-3 ${
-              isUser
-                ? 'webapp-gradient-bg border-transparent text-white rounded-br-md shadow-[0_10px_24px_rgba(228,87,46,0.18)]'
-                : 'bg-paper border-border rounded-bl-md shadow-sm'
-            }`}
+            className={`w-full rounded-2xl border px-4 py-3 ${isUser
+                ? 'ml-auto max-w-[92%] bg-[var(--surface-default)] border-transparent text-ink'
+                : 'bg-transparent border-transparent text-ink'
+              }`}
             role="button"
             tabIndex={0}
             aria-expanded={isToolbarOpen}
@@ -379,6 +379,7 @@ export function MessageBubble({
               lastTouchEndAtRef.current = now;
             }}
             onKeyDown={(event) => {
+              if (isInteractiveTarget(event.target)) return;
               if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
                 setIsToolbarOpen(true);
@@ -388,10 +389,15 @@ export function MessageBubble({
               }
             }}
           >
-            {isUser ? (
-              <p className="whitespace-pre-wrap text-sm leading-relaxed text-white">{message.content}</p>
+            {isActivity ? (
+              <details className="text-xs text-muted">
+                <summary className="cursor-pointer">Session activity</summary>
+                <div className="mt-2 text-sm"><MarkdownRenderer content={message.content} /></div>
+              </details>
+            ) : isUser ? (
+              <p className="whitespace-pre-wrap text-[15px] leading-7 text-ink">{message.content}</p>
             ) : (
-              <div className="text-sm leading-relaxed">
+              <div className="text-[15px] leading-7">
                 <MarkdownRenderer content={message.content} />
               </div>
             )}
@@ -400,9 +406,7 @@ export function MessageBubble({
                 {message.attachments.map((attachment) => (
                   <div
                     key={attachment.id}
-                    className={`overflow-hidden rounded-xl border ${
-                      isUser ? 'border-white/20 bg-white/10' : 'border-border bg-paper'
-                    }`}
+                    className="overflow-hidden rounded-xl border border-border bg-panel"
                   >
                     {attachment.kind === 'image' && !releasedAttachmentIds.includes(attachment.id) ? (
                       <a href={attachment.downloadUrl} target="_blank" rel="noreferrer" className="block">
@@ -419,7 +423,7 @@ export function MessageBubble({
                       </a>
                     ) : null}
                     {attachment.kind === 'image' && releasedAttachmentIds.includes(attachment.id) ? (
-                      <div className={`px-3 py-6 text-center text-xs ${isUser ? 'text-white/70' : 'text-muted'}`}>
+                      <div className="px-3 py-6 text-center text-xs text-muted">
                         Preview no longer available
                       </div>
                     ) : null}
@@ -460,8 +464,8 @@ export function MessageBubble({
                           void probeAttachment(attachment.id, attachment.downloadUrl);
                         }}
                       >
-                        <span className={isUser ? 'text-white' : 'text-ink'}>{attachment.name}</span>
-                        <span className={isUser ? 'text-white/70' : 'text-muted'}>
+                        <span className="text-ink">{attachment.name}</span>
+                        <span className="text-muted">
                           {releasedAttachmentIds.includes(attachment.id)
                             ? 'No longer available'
                             : formatBytes(attachment.sizeBytes)}
@@ -469,7 +473,7 @@ export function MessageBubble({
                       </a>
                     ) : null}
                     {attachment.kind !== 'file' ? (
-                      <div className={`flex items-center justify-between gap-3 px-3 py-2 text-xs ${isUser ? 'text-white/70' : 'text-muted'}`}>
+                      <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs text-muted">
                         <span className="truncate">{attachment.name}</span>
                         <span>{formatBytes(attachment.sizeBytes)}</span>
                       </div>

@@ -1,3 +1,4 @@
+import { mockPrismaQuery } from '@/__tests__/mock-prisma-query';
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GET, POST, DELETE } from "@/app/api/tasks/[taskId]/terminal/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
@@ -414,7 +415,7 @@ describe("/api/tasks/[taskId]/terminal", () => {
       // After the AI-task lookup, `loadAttachedPtyTask` runs a second
       // `findFirst` for the PTY row with project.userId scope. Return the
       // PTY task when that call comes in.
-      vi.mocked(db.task.findFirst).mockImplementation(async (args: any) => {
+      mockPrismaQuery(db.task.findFirst).mockImplementation(async (args: any) => {
         if (args?.where?.id === "ai-1") return aiTaskFixture as any;
         if (args?.where?.id === "pty-attached-1") {
           return { ...ptyTaskFixture, ptySession: ptySessionFixture } as any;
@@ -464,7 +465,7 @@ describe("/api/tasks/[taskId]/terminal", () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       } as any);
-      vi.mocked(db.task.findFirst).mockImplementation(async (args: any) => {
+      mockPrismaQuery(db.task.findFirst).mockImplementation(async (args: any) => {
         // First call: lookup AI task (in fetchAiTask)
         // Second call: lookup PTY task inside deletePtyTaskWithKill
         if (args?.where?.id === "ai-1") return aiTaskFixture as any;

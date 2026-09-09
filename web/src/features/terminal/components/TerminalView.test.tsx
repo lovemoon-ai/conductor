@@ -92,7 +92,7 @@ const flushMicrotasks = async () => {
 };
 
 const renderTerminalView = async (task: any) => {
-  let view: ReturnType<typeof render> | null = null;
+  let view!: ReturnType<typeof render>;
   await act(async () => {
     view = render(<TerminalView task={task} />);
     await Promise.resolve();
@@ -100,7 +100,7 @@ const renderTerminalView = async (task: any) => {
     await Promise.resolve();
     await Promise.resolve();
   });
-  return view as ReturnType<typeof render>;
+  return view;
 };
 
 describe('TerminalView', () => {

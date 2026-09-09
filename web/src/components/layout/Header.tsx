@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import Link from 'next/link';
 import { ConnectionStatus } from '../common/ConnectionStatus';
 
 export interface TitleSwipeProgress {
@@ -273,7 +274,7 @@ export function Header({
   };
 
   return (
-    <header className={`bg-panel border-b border-border flex items-center justify-between px-4 md:px-6 ${compact ? 'h-12' : 'h-16'}`}>
+    <header className={`bg-panel border-b border-border flex shrink-0 items-center justify-between gap-3 px-4 md:px-6 ${compact ? 'h-14 md:h-16' : 'h-16'}`}>
       <div className="flex min-w-0 items-center gap-4">
         {showBack && (
           <button type="button"
@@ -311,8 +312,11 @@ export function Header({
         )}
       </div>
 
-      <div className="flex items-center gap-4">
+      <div className="flex shrink-0 items-center gap-2 sm:gap-4">
         <ConnectionStatus detailsEnabled={showConnectionStatus} taskId={connectionTaskId} />
+        <Link href="/app/search" aria-label="Search messages" title="Search messages (⌘K / Ctrl+K)" className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-paper md:hidden">
+          <svg aria-hidden="true" className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></svg>
+        </Link>
         {actions}
       </div>
     </header>

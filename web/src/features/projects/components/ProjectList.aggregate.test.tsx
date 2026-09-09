@@ -147,7 +147,7 @@ const renderedProjectOrder = (container: HTMLElement): string[] =>
 describe('ProjectList aggregation drag', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function () {
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
       const projectId = this.querySelector('[data-project-id]')?.getAttribute('data-project-id');
       const top = projectId ? projectTopById[projectId] : 0;
       return {

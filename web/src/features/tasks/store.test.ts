@@ -1,3 +1,4 @@
+import { deferred } from '@/__tests__/deferred';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGet = vi.fn();
@@ -98,6 +99,7 @@ describe('tasks store', () => {
           title: "Task",
           status: "completed",
           taskType: "ai_task",
+          createdAt: "2026-01-01T00:00:00.000Z",
         },
       ],
     });
@@ -116,6 +118,7 @@ describe('tasks store', () => {
           title: "Task 2",
           status: "completed",
           taskType: "ai_task",
+          createdAt: "2026-01-01T00:00:00.000Z",
         },
       ],
     });
@@ -688,19 +691,15 @@ describe('tasks store', () => {
   });
 
   it('ignores stale unfiltered fetch results after switching to a project filter', async () => {
-    let resolveUnfiltered: ((value: unknown) => void) | null = null;
-    let resolveFiltered: ((value: unknown) => void) | null = null;
+    const resolveUnfiltered = deferred<unknown[]>();
+    const resolveFiltered = deferred<unknown[]>();
 
     mockGet.mockImplementation((url: string) => {
       if (url === '/tasks?recover_stale=1') {
-        return new Promise((resolve) => {
-          resolveUnfiltered = resolve;
-        });
+        return resolveUnfiltered.promise;
       }
       if (url === '/tasks?project_id=proj-1&recover_stale=1') {
-        return new Promise((resolve) => {
-          resolveFiltered = resolve;
-        });
+        return resolveFiltered.promise;
       }
       throw new Error(`Unexpected url: ${url}`);
     });
@@ -708,7 +707,7 @@ describe('tasks store', () => {
     const initialFetch = useTasksStore.getState().fetchTasks();
     useTasksStore.getState().setProjectFilter('proj-1');
 
-    resolveFiltered?.([
+    resolveFiltered.resolve([
       {
         id: 'task-proj-1',
         project_id: 'proj-1',
@@ -729,7 +728,7 @@ describe('tasks store', () => {
       },
     ]);
 
-    resolveUnfiltered?.([
+    resolveUnfiltered.resolve([
       {
         id: 'task-all-1',
         project_id: 'proj-2',
@@ -795,12 +794,10 @@ describe('tasks store', () => {
   });
 
   it('drops a stale merged-group response once the active scope changes', async () => {
-    let resolveFirst: ((value: unknown) => void) | null = null;
+    const resolveFirst = deferred<unknown[]>();
     mockGet.mockImplementation((url: string) => {
       if (url === '/tasks?project_ids=proj-a%2Cproj-b&recover_stale=1') {
-        return new Promise((resolve) => {
-          resolveFirst = resolve;
-        });
+        return resolveFirst.promise;
       }
       if (url === '/tasks?project_id=proj-c&recover_stale=1') {
         return Promise.resolve([
@@ -823,7 +820,7 @@ describe('tasks store', () => {
     // request is still pending.
     useTasksStore.getState().setProjectFilter('proj-c');
 
-    resolveFirst?.([
+    resolveFirst.resolve([
       {
         id: 'stale',
         project_id: 'proj-a',

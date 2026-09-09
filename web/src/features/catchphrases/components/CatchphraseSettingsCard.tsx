@@ -192,9 +192,9 @@ export function CatchphraseSettingsCard() {
           onClick={startCreate}
           disabled={reachedLimit || isCreating}
           data-testid="catchphrase-new"
-          aria-label="新增口头禅"
-          className="size-8 flex items-center justify-center rounded-md webapp-gradient-bg text-white disabled:opacity-50 disabled:cursor-not-allowed"
-          title={reachedLimit ? `Up to ${MAX_TOTAL} catchphrases` : '新增口头禅'}
+          aria-label="New catchphrase"
+          className="size-8 flex items-center justify-center rounded-md bg-accent text-white disabled:opacity-50 disabled:cursor-not-allowed"
+          title={reachedLimit ? `Up to ${MAX_TOTAL} catchphrases` : 'New catchphrase'}
         >
           <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 5v14M5 12h14" />
@@ -215,7 +215,7 @@ export function CatchphraseSettingsCard() {
             value={draftText}
             onChange={(event) => setDraftText(event.target.value.slice(0, MAX_TEXT_LENGTH))}
             onKeyDown={handleCreateKeyDown}
-            placeholder="输入一条新的口头禅..."
+            placeholder="Write a reusable instruction…"
             maxLength={MAX_TEXT_LENGTH}
             rows={2}
             data-testid="catchphrase-new-textarea"
@@ -229,8 +229,8 @@ export function CatchphraseSettingsCard() {
               <button
                 type="button"
                 onClick={cancelCreate}
-                aria-label="取消"
-                title="取消"
+                aria-label="Cancel"
+                title="Cancel"
                 className="size-7 flex items-center justify-center rounded-md border border-border text-muted hover:text-ink hover:bg-[var(--accent)]/5"
               >
                 <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
@@ -242,9 +242,9 @@ export function CatchphraseSettingsCard() {
                 onClick={() => void saveCreate()}
                 disabled={!draftText.trim()}
                 data-testid="catchphrase-save-new"
-                aria-label="保存"
-                title="保存"
-                className="size-7 flex items-center justify-center rounded-md webapp-gradient-bg text-white disabled:opacity-50"
+                aria-label="Save"
+                title="Save"
+                className="size-7 flex items-center justify-center rounded-md bg-accent text-white disabled:opacity-50"
               >
                 <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
@@ -259,7 +259,7 @@ export function CatchphraseSettingsCard() {
         <div className="text-center py-6 text-muted text-sm">Loading...</div>
       ) : catchphrases.length === 0 && !isCreating ? (
         <div className="text-center py-6 text-muted text-sm">
-          还没有口头禅，新建一条试试
+          Save instructions you use often, then insert them into any conversation.
         </div>
       ) : (
         // Cap visible height at ~5 rows (~64px per row including gap). Anything
@@ -299,8 +299,8 @@ export function CatchphraseSettingsCard() {
                         <button
                           type="button"
                           onClick={cancelEdit}
-                          aria-label="取消"
-                          title="取消"
+                          aria-label="Cancel"
+                          title="Cancel"
                           className="size-7 flex items-center justify-center rounded-md border border-border text-muted hover:text-ink hover:bg-[var(--accent)]/5"
                         >
                           <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
@@ -312,9 +312,9 @@ export function CatchphraseSettingsCard() {
                           onClick={() => void saveEdit()}
                           disabled={!editingText.trim()}
                           data-testid={`catchphrase-save-edit-${row.id}`}
-                          aria-label="保存"
-                          title="保存"
-                          className="size-7 flex items-center justify-center rounded-md webapp-gradient-bg text-white disabled:opacity-50"
+                          aria-label="Save"
+                          title="Save"
+                          className="size-7 flex items-center justify-center rounded-md bg-accent text-white disabled:opacity-50"
                         >
                           <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
@@ -330,7 +330,7 @@ export function CatchphraseSettingsCard() {
                         type="button"
                         onClick={() => void moveUp(index)}
                         disabled={index === 0}
-                        title="上移"
+                        title="Move up"
                         aria-label="Move up"
                         className="text-muted hover:text-ink disabled:opacity-30 leading-none"
                       >
@@ -340,7 +340,7 @@ export function CatchphraseSettingsCard() {
                         type="button"
                         onClick={() => void moveDown(index)}
                         disabled={index === catchphrases.length - 1}
-                        title="下移"
+                        title="Move down"
                         aria-label="Move down"
                         className="text-muted hover:text-ink disabled:opacity-30 leading-none mt-0.5"
                       >
@@ -355,8 +355,8 @@ export function CatchphraseSettingsCard() {
                         type="button"
                         onClick={() => startEdit(row)}
                         data-testid={`catchphrase-edit-${row.id}`}
-                        aria-label="编辑"
-                        title="编辑"
+                        aria-label="Edit"
+                        title="Edit"
                         className="size-7 flex items-center justify-center rounded-md border border-border text-muted hover:text-ink hover:bg-[var(--accent)]/5"
                       >
                         <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
@@ -372,8 +372,8 @@ export function CatchphraseSettingsCard() {
                         type="button"
                         onClick={() => void confirmDelete(row.id)}
                         data-testid={`catchphrase-delete-${row.id}`}
-                        aria-label={isConfirming ? '再次点击确认删除' : '删除'}
-                        title={isConfirming ? '再次点击确认删除' : '删除'}
+                        aria-label={isConfirming ? 'Click again to delete' : 'Delete'}
+                        title={isConfirming ? 'Click again to delete' : 'Delete'}
                         className={`size-7 flex items-center justify-center rounded-md border ${
                           isConfirming
                             ? 'border-error bg-error/10 text-error animate-pulse'

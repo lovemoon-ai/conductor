@@ -25,7 +25,7 @@ describe('CatchphraseSettingsCard', () => {
 
   it('renders the empty-state hint when there are no rows', () => {
     render(<CatchphraseSettingsCard />);
-    expect(screen.getByText(/还没有口头禅/i)).toBeInTheDocument();
+    expect(screen.getByText(/Save instructions you use often/i)).toBeInTheDocument();
   });
 
   it('renders each catchphrase row', () => {
@@ -104,7 +104,7 @@ describe('CatchphraseSettingsCard', () => {
     // now that the delete button uses an icon.
     expect(screen.getByTestId('catchphrase-delete-cp-del')).toHaveAttribute(
       'aria-label',
-      '再次点击确认删除',
+      'Click again to delete',
     );
 
     act(() => {
@@ -112,7 +112,7 @@ describe('CatchphraseSettingsCard', () => {
     });
     expect(screen.getByTestId('catchphrase-delete-cp-del')).toHaveAttribute(
       'aria-label',
-      '删除',
+      'Delete',
     );
     expect(removeSpy).not.toHaveBeenCalled();
     vi.useRealTimers();

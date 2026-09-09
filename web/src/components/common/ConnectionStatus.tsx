@@ -73,17 +73,17 @@ export function ConnectionStatus({
     connected: {
       color: 'bg-[var(--success)]',
       pulse: false,
-      label: 'Connected',
+      label: 'Service connected',
     },
     connecting: {
       color: 'bg-[var(--warning)]',
       pulse: true,
-      label: 'Connecting...',
+      label: 'Connecting to service…',
     },
     disconnected: {
       color: 'bg-[var(--error)]',
       pulse: false,
-      label: 'Disconnected',
+      label: 'Service disconnected',
     },
   };
 
@@ -248,7 +248,7 @@ export function ConnectionStatus({
 
       {detailsEnabled && open && (
         <div
-          className={`absolute right-0 mt-2 w-[22rem] rounded-xl border backdrop-blur-md shadow-xl p-3 z-30 ${
+          className={`fixed left-3 right-3 top-16 max-h-[calc(100dvh-5rem)] overflow-y-auto rounded-xl border backdrop-blur-md shadow-xl p-3 z-30 sm:absolute sm:left-auto sm:right-0 sm:top-auto sm:mt-2 sm:w-[22rem] ${
             isPtyTask
               ? 'border-white/10 bg-zinc-950/70 text-white'
               : 'border-border bg-panel/70'

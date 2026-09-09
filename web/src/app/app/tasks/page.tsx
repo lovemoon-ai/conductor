@@ -3,6 +3,7 @@
 import { Suspense, useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore, type CSSProperties } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/common/FeedbackProvider';
+import { ResizableTaskPane } from '@/components/layout/ResizableTaskPane';
 import { Header, type TitleSwipeProgress } from '@/components/layout/Header';
 import {
   RefreshIcon,
@@ -30,7 +31,7 @@ type ProjectSwipeState = Pick<TitleSwipeProgress, 'progress' | 'isDragging'>;
 
 const subscribeToDesktopViewport = (onStoreChange: () => void) => {
   if (typeof window === 'undefined') {
-    return () => {};
+    return () => { };
   }
 
   const mediaQuery = window.matchMedia(DESKTOP_MEDIA_QUERY);
@@ -323,15 +324,14 @@ function TasksPageContent() {
     : '';
   const projectSwipeProgress = !isDesktop && viewMode === 'list' ? projectSwipeState.progress : 0;
   const projectSwipeClassName = !isDesktop && viewMode === 'list'
-    ? `webapp-task-list-swipe-follow ${
-        projectSwipeState.isDragging ? 'webapp-task-list-swipe-follow-dragging' : ''
-      }`
+    ? `webapp-task-list-swipe-follow ${projectSwipeState.isDragging ? 'webapp-task-list-swipe-follow-dragging' : ''
+    }`
     : '';
   const projectSwipeStyle: CSSProperties | undefined = projectSwipeProgress !== 0
     ? {
-        opacity: 1 - Math.min(Math.abs(projectSwipeProgress) * PROJECT_SWIPE_LIST_MAX_OPACITY_DROP, PROJECT_SWIPE_LIST_MAX_OPACITY_DROP),
-        transform: `translateX(${projectSwipeProgress * PROJECT_SWIPE_LIST_OFFSET_PX}px)`,
-      }
+      opacity: 1 - Math.min(Math.abs(projectSwipeProgress) * PROJECT_SWIPE_LIST_MAX_OPACITY_DROP, PROJECT_SWIPE_LIST_MAX_OPACITY_DROP),
+      transform: `translateX(${projectSwipeProgress * PROJECT_SWIPE_LIST_OFFSET_PX}px)`,
+    }
     : undefined;
 
   useEffect(() => {
@@ -460,10 +460,32 @@ function TasksPageContent() {
     });
   }, [replaceTaskRoute]);
 
+  const taskStatusFilter = (
+    <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-3">
+      <div role="group" aria-label="Task status filter" className="inline-flex rounded-xl border border-border bg-[var(--surface-default)] p-1">
+        {[{ label: 'All tasks', running: false }, { label: 'Running', running: true }].map((option) => (
+          <button
+            key={option.label}
+            type="button"
+            aria-pressed={showRunningOnly === option.running}
+            onClick={() => { void setTaskListRunningOnly(option.running); }}
+            className={`inline-flex min-h-8 items-center gap-2 rounded-lg px-3 text-xs font-medium transition-colors ${showRunningOnly === option.running
+              ? 'bg-panel text-ink shadow-sm'
+              : 'text-muted hover:text-ink'}`}
+          >
+            {option.running && <span aria-hidden="true" className="size-1.5 rounded-full bg-[var(--success)]" />}
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+  const selectedTask = visibleTasks.find((task) => task.id === effectiveSelectedTaskId);
+
   return (
     <>
       <Header
-        title={currentProjectName ? `${currentProjectName} (${projectTaskCountLabel})` : `Tasks(${taskCount})`}
+        title={currentProjectName ? `${currentProjectName} (${projectTaskCountLabel})` : `Tasks (${taskCount})`}
         compact
         onTitleDoubleClick={handleTitleDoubleClick}
         onTitleSwipeLeft={canSwipeProjectTitleLeft ? () => handleProjectTitleSwipe(1) : undefined}
@@ -484,7 +506,7 @@ function TasksPageContent() {
               disabled={isLoading}
               aria-label={isLoading ? 'Refreshing tasks' : 'Refresh tasks'}
               title={isLoading ? 'Refreshing tasks' : 'Refresh tasks'}
-              className="flex items-center justify-center rounded-lg bg-paper/80 p-2 text-sm text-muted transition-colors hover:text-ink disabled:opacity-50"
+              className="flex size-9 items-center justify-center rounded-xl border border-border bg-panel text-muted transition-colors hover:bg-[var(--surface-subtle)] hover:text-ink disabled:opacity-50"
             >
               <RefreshIcon spinning={isLoading} />
             </button>
@@ -493,37 +515,51 @@ function TasksPageContent() {
               onClick={() => setShowCreateDialog(true)}
               aria-label="Create task"
               title="Create task"
-              className="webapp-btn-primary flex items-center justify-center p-2 text-sm"
+              className="webapp-btn-primary flex min-h-9 items-center justify-center gap-2 text-sm"
             >
               <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
+              <span className="hidden sm:inline">New task</span>
             </button>
           </div>
         }
       />
 
-      <div className={viewMode === 'graph' ? 'flex-1 overflow-hidden' : 'flex-1 overflow-hidden px-4 pb-4 pt-4'}>
+      {!inlineDetailEnabled && taskStatusFilter}
+
+      <div className={viewMode === 'graph' ? 'min-h-0 flex-1 overflow-hidden' : 'min-h-0 flex-1 overflow-hidden bg-panel'}>
         {inlineDetailEnabled ? (
-          <div className="flex h-full gap-4">
-            <div className="min-h-0 min-w-0 shrink-0 overflow-y-auto pr-1 webapp-scrollbar md:w-[19.2rem] lg:w-[20.8rem] xl:w-[24rem]">
-              <TaskList
-                viewMode={viewMode}
-                activeTaskId={effectiveSelectedTaskId}
-                onOpenTask={handleSelectTask}
-                desktopListPaneMode
-                projectFilter={projectScope.length > 0 ? projectScope : null}
-                runningOnly={showRunningOnly}
-                taskTypeFilter={taskTypeFilter}
-                daemonHostFilter={daemonHostFilter}
-                backendFilter={backendFilter}
-                onFilterByTaskType={handleFilterByTaskType}
-                onFilterByProject={handleFilterByProject}
-                onFilterByDaemonHost={handleFilterByDaemonHost}
-                onFilterByBackend={handleFilterByBackend}
-              />
-            </div>
-            <div className="hidden min-h-0 min-w-0 flex-1 overflow-hidden rounded-[24px] border border-border bg-paper shadow-sm md:flex md:flex-col">
+          <div className="flex h-full">
+            <ResizableTaskPane>
+              {taskStatusFilter}
+              <div className="task-list-surface min-h-0 flex-1 overflow-y-auto px-2 pb-3 webapp-scrollbar">
+                <TaskList
+                  viewMode={viewMode}
+                  activeTaskId={effectiveSelectedTaskId}
+                  onOpenTask={handleSelectTask}
+                  desktopListPaneMode
+                  projectFilter={projectScope.length > 0 ? projectScope : null}
+                  runningOnly={showRunningOnly}
+                  taskTypeFilter={taskTypeFilter}
+                  daemonHostFilter={daemonHostFilter}
+                  backendFilter={backendFilter}
+                  onFilterByTaskType={handleFilterByTaskType}
+                  onFilterByProject={handleFilterByProject}
+                  onFilterByDaemonHost={handleFilterByDaemonHost}
+                  onFilterByBackend={handleFilterByBackend}
+                />
+              </div>
+            </ResizableTaskPane>
+            <div className="hidden min-h-0 min-w-0 flex-1 overflow-hidden bg-panel md:flex md:flex-col">
+              {selectedTask && (
+                <div className="flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-border/60 px-6 py-3">
+                  <h2 className="min-w-0 text-sm font-semibold leading-5 text-ink">{selectedTask.title}</h2>
+                  <button type="button" aria-label="Open conversation in full page" title="Open conversation in full page" onClick={() => handleOpenTaskPage(selectedTask.id)} className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-paper">
+                    <svg aria-hidden="true" className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M14 4h6v6m0-6L10 14M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5" /></svg>
+                  </button>
+                </div>
+              )}
               {effectiveSelectedTaskId ? (
                 <TaskDetailPane
                   taskId={effectiveSelectedTaskId}
@@ -538,7 +574,7 @@ function TasksPageContent() {
           <div
             className={viewMode === 'graph'
               ? 'h-full'
-              : `h-full overflow-y-auto webapp-scrollbar ${projectSwitchAnimationClassName} ${projectSwipeClassName}`}
+              : `task-list-surface h-full overflow-y-auto px-2 pb-3 webapp-scrollbar ${projectSwitchAnimationClassName} ${projectSwipeClassName}`}
             style={viewMode === 'graph' ? undefined : projectSwipeStyle}
           >
             <TaskList

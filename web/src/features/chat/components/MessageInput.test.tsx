@@ -96,6 +96,27 @@ describe('MessageInput', () => {
     );
   });
 
+
+  it('recalculates a long draft after viewport resize without changing its text', async () => {
+    const originalHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+    const view = render(<MessageInput taskId="resize-draft" onSend={vi.fn()} />);
+    const textarea = screen.getByRole('textbox', { name: 'Message input' });
+    Object.defineProperty(textarea, 'scrollHeight', { configurable: true, value: 2000 });
+    fireEvent.change(textarea, { target: { value: 'Keep this draft\n'.repeat(60) } });
+    await waitFor(() => expect(parseFloat(textarea.style.height)).toBeLessThan(400));
+    const portraitHeight = parseFloat(textarea.style.height);
+    try {
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 390 });
+      fireEvent(window, new Event('resize'));
+      await waitFor(() => expect(parseFloat(textarea.style.height)).toBeLessThan(portraitHeight));
+      expect(parseFloat(textarea.style.height)).toBeLessThan(200);
+      expect(textarea).toHaveValue('Keep this draft\n'.repeat(60));
+    } finally {
+      view.unmount();
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalHeight });
+    }
+  });
   it('reveals the attach and schedule actions from the swipe menu toggle', () => {
     const onSend = vi.fn();
     const onSchedule = vi.fn();

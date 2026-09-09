@@ -27,7 +27,7 @@ const { mockDb, mockStartNewUserPlusAccess } = vi.hoisted(() => {
       project,
       defaultProject,
       user,
-      $transaction: vi.fn(async (callback: (tx: typeof tx) => Promise<unknown>) => callback(tx)),
+      $transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)),
     },
     mockStartNewUserPlusAccess: vi.fn(),
   };

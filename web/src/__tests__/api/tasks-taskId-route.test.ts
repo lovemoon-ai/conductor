@@ -1,3 +1,4 @@
+import { mockPrismaQuery } from '@/__tests__/mock-prisma-query';
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { DELETE, GET, PATCH } from "@/app/api/tasks/[taskId]/route";
@@ -186,7 +187,7 @@ describe("/api/tasks/[taskId]", () => {
     } as any);
     vi.mocked(db.ptySession.deleteMany).mockResolvedValue({ count: 0 } as any);
     vi.mocked(db.agentOutbox.findMany).mockResolvedValue([]);
-    vi.mocked(db.agentOutbox.create).mockImplementation(async ({ data }: any) => ({
+    mockPrismaQuery(db.agentOutbox.create).mockImplementation(async ({ data }: any) => ({
       id: "outbox-1",
       userId: data.userId,
       agentHost: data.agentHost,
@@ -1118,7 +1119,7 @@ describe("/api/tasks/[taskId]", () => {
       createdAt: new Date("2026-03-05T12:00:02.000Z"),
       updatedAt: new Date("2026-03-05T12:00:03.000Z"),
     } as any;
-    vi.mocked(db.task.findFirst).mockImplementation(async ({ where }: any) => {
+    mockPrismaQuery(db.task.findFirst).mockImplementation(async ({ where }: any) => {
       if (where?.id === "task-worktree-source") {
         return sourceTask;
       }
@@ -1511,7 +1512,7 @@ describe("/api/tasks/[taskId]", () => {
       ptySession: null,
     };
     vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
-    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+    mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => ({
       ...existingTask,
       ...data,
       updatedAt: new Date("2024-01-01T00:02:00.000Z"),
@@ -1613,7 +1614,7 @@ describe("/api/tasks/[taskId]", () => {
     };
     vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("debug");
     vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
-    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+    mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => ({
       ...existingTask,
       ...data,
       updatedAt: new Date("2024-01-01T00:02:00.000Z"),
@@ -1724,7 +1725,7 @@ describe("/api/tasks/[taskId]", () => {
       ptySession: null,
     };
     vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
-    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+    mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => ({
       ...existingTask,
       ...data,
       updatedAt: new Date("2024-01-01T00:02:00.000Z"),
@@ -1789,7 +1790,7 @@ describe("/api/tasks/[taskId]", () => {
       ptySession: null,
     };
     vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
-    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+    mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => ({
       ...existingTask,
       ...data,
       updatedAt: new Date("2024-01-01T00:02:00.000Z"),
@@ -1852,7 +1853,7 @@ describe("/api/tasks/[taskId]", () => {
       ptySession: null,
     };
     vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
-    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+    mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => ({
       ...existingTask,
       ...data,
       updatedAt: new Date(),
@@ -1903,7 +1904,7 @@ describe("/api/tasks/[taskId]", () => {
       ptySession: null,
     };
     vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
-    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+    mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => ({
       ...existingTask,
       ...data,
       updatedAt: new Date("2024-01-01T00:02:00.000Z"),
@@ -1957,7 +1958,7 @@ describe("/api/tasks/[taskId]", () => {
       ptySession: null,
     };
     vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
-    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+    mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => ({
       ...existingTask,
       ...data,
       updatedAt: new Date("2024-01-01T00:02:00.000Z"),
@@ -2035,7 +2036,7 @@ describe("/api/tasks/[taskId]", () => {
       ptySession: null,
     };
     vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
-    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+    mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => ({
       ...existingTask,
       ...data,
       updatedAt: new Date("2024-01-01T00:02:00.000Z"),

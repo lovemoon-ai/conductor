@@ -1,3 +1,4 @@
+import { deferred } from '@/__tests__/deferred';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGet = vi.fn();
@@ -88,10 +89,8 @@ describe('issues store', () => {
   });
 
   it('treats reversed project id order as the same merged fetch scope', async () => {
-    let resolveFetch: ((value: unknown[]) => void) | null = null;
-    mockGet.mockReturnValueOnce(new Promise((resolve) => {
-      resolveFetch = resolve;
-    }));
+    const resolveFetch = deferred<unknown[]>();
+    mockGet.mockReturnValueOnce(resolveFetch.promise);
 
     const fetchPromise = useIssuesStore.getState().fetchIssuesForProjects([
       'project-a',
@@ -103,7 +102,7 @@ describe('issues store', () => {
       currentProjectIds: ['project-b', 'project-a'],
     });
 
-    resolveFetch?.([
+    resolveFetch.resolve([
       {
         id: 'issue-merged',
         project_id: 'project-a',

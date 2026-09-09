@@ -1,3 +1,4 @@
+import { mockPrismaQuery } from '@/__tests__/mock-prisma-query';
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { PUT } from "@/app/api/tasks/[taskId]/second-project/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
@@ -90,7 +91,7 @@ describe("PUT /api/tasks/[taskId]/second-project", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     } as any);
-    vi.mocked(db.task.update).mockImplementation(async ({ data }: any) => ({
+    mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => ({
       ...baseTaskRow,
       secondProjectId: data.secondProjectId,
     }) as any);

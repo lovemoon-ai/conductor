@@ -1,3 +1,4 @@
+import { mockPrismaQuery } from '@/__tests__/mock-prisma-query';
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
 import { POST } from "./route";
@@ -65,7 +66,7 @@ describe("/api/projects/reorder", () => {
       { id: "project-b", sortOrder: 1, createdAt: new Date("2026-04-09T00:00:00.000Z") },
       { id: "project-c", sortOrder: 2, createdAt: new Date("2026-04-08T00:00:00.000Z") },
     ] as any);
-    vi.mocked(db.project.update).mockImplementation(({ where, data }: any) =>
+    mockPrismaQuery(db.project.update).mockImplementation(({ where, data }: any) =>
       Promise.resolve({ id: where.id, sortOrder: data.sortOrder } as any),
     );
     vi.mocked(db.$transaction).mockImplementation(async (operations: any) => Promise.all(operations));

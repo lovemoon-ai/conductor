@@ -1,6 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useReducer, useState } from 'react';
+import { useEffect, useId, useMemo, useReducer, useState, type MouseEvent } from 'react';
+import { z } from 'zod';
+import { useAuthStore } from '@/features/auth';
 import { getApiClient } from '@/shared/api/client';
 import { Dialog } from '@/components/common/Dialog';
 import { HelpTip } from '@/components/common/HelpTip';
@@ -68,17 +70,17 @@ const TASK_TYPE_OPTIONS: Array<{
   label: string;
   description: string;
 }> = [
-  {
-    value: 'ai_task',
-    label: 'AI Task',
-    description: 'Conversation-first task routed through the AI runner. The selected project fixes the daemon, and backend choices come from that daemon.',
-  },
-  {
-    value: 'pty_task',
-    label: 'PTY Task',
-    description: 'Persistent terminal session on a PTY-capable daemon. A bound project must use a PTY-capable daemon.',
-  },
-];
+    {
+      value: 'ai_task',
+      label: 'AI Task',
+      description: 'Conversation-first task routed through the AI runner. The selected project fixes the daemon, and backend choices come from that daemon.',
+    },
+    {
+      value: 'pty_task',
+      label: 'PTY Task',
+      description: 'Persistent terminal session on a PTY-capable daemon. A bound project must use a PTY-capable daemon.',
+    },
+  ];
 
 // RFC 0033: a reviewer row in the multi-agent selector. `backend === ''` means
 // "inherit the worker's backend".
@@ -117,6 +119,7 @@ interface CreateTaskDialogFormState {
 
 type CreateTaskDialogAction =
   | { type: 'reset' }
+  | { type: 'restore'; form: CreateTaskDialogFormState }
   | { type: 'set-title'; title: string }
   | { type: 'set-initial-content'; initialContent: string }
   | { type: 'set-project'; projectId: string }
@@ -145,11 +148,32 @@ const initialCreateTaskDialogFormState: CreateTaskDialogFormState = {
   submitError: null,
 };
 
+// Only retained for the device-setup detour, in this tab and for this user.
+const taskDraftSchema = z.object({
+  title: z.string(),
+  initialContent: z.string(),
+  projectId: z.string(),
+  taskType: z.enum(['ai_task', 'pty_task']),
+  createWorktree: z.boolean(),
+  agentHost: z.string(),
+  backendType: z.string(),
+  workerAgent: z.string(),
+  reviewers: z.array(z.object({ name: z.string(), backend: z.string() })).max(MAX_REVIEWER_ROWS),
+  submitError: z.null(),
+});
+
+function clearDeviceSetupDraft(key: string | null) {
+  if (!key) return;
+  try { sessionStorage.removeItem(key); } catch { /* Storage may be unavailable. */ }
+}
+
 function createTaskDialogReducer(
   state: CreateTaskDialogFormState,
   action: CreateTaskDialogAction,
 ): CreateTaskDialogFormState {
   switch (action.type) {
+    case 'restore':
+      return action.form;
     case 'reset':
       return initialCreateTaskDialogFormState;
     case 'set-title':
@@ -253,7 +277,22 @@ export function CreateTaskDialog({
   defaultProjectId = null,
 }: CreateTaskDialogProps) {
   const { push } = useRouter();
+  const formId = useId();
+  const userId = useAuthStore((state) => state.session?.user.id);
+  const draftKey = userId ? `conductor-create-task-draft:${userId}` : null;
   const [form, dispatch] = useReducer(createTaskDialogReducer, initialCreateTaskDialogFormState);
+  useEffect(() => {
+    if (!open || !draftKey) return;
+    try {
+      const raw = sessionStorage.getItem(draftKey);
+      if (!raw) return;
+      const restored = taskDraftSchema.safeParse(JSON.parse(raw));
+      if (restored.success) dispatch({ type: 'restore', form: restored.data });
+      else clearDeviceSetupDraft(draftKey);
+    } catch {
+      clearDeviceSetupDraft(draftKey);
+    }
+  }, [open, draftKey]);
   // 'create' = the regular new-task form; 'resume' = pick up an existing AI
   // session found on a daemon (ResumeSessionPanel).
   const [mode, setMode] = useState<'create' | 'resume'>('create');
@@ -270,7 +309,6 @@ export function CreateTaskDialog({
     submitError,
   } = form;
   // Named worker agent, if any — used to make the prompt hint concrete.
-  const trimmedWorkerAgentForHint = workerAgent.trim();
   const [isSubmitting, setIsSubmitting] = useState(false);
   // RFC 0033: agents registered in the selected project's .conductor/settings.yaml.
   const [availableAgents, setAvailableAgents] = useState<AgentRegistryOption[]>([]);
@@ -368,8 +406,8 @@ export function CreateTaskDialog({
   const boundBindingLabel = boundDaemonHost ? formatBindingLabel(boundDaemonHost, boundWorkspacePath) : null;
   const daemonScope = isMergedGroup && mergedGroupDaemonOptions
     ? mergedGroupDaemonOptions
-        .map((entry) => entry.agent)
-        .filter((agent): agent is NonNullable<typeof agent> => Boolean(agent))
+      .map((entry) => entry.agent)
+      .filter((agent): agent is NonNullable<typeof agent> => Boolean(agent))
     : isBoundProject
       ? (boundDaemonAgent ? [boundDaemonAgent] : [])
       : daemons;
@@ -393,13 +431,14 @@ export function CreateTaskDialog({
     : (availableBackends[0] ?? '');
   const canCreatePtyTask = isMergedGroup && mergedGroupDaemonOptions
     ? mergedGroupDaemonOptions.some(
-        (entry) => entry.agent && supportsPtyTask(entry.agent.capabilities),
-      )
+      (entry) => entry.agent && supportsPtyTask(entry.agent.capabilities),
+    )
     : isBoundProject
       ? boundDaemonSupportsPty
       : daemons.some((agent) => supportsPtyTask(agent.capabilities));
   const hasEligibleDaemon = eligibleDaemons.length > 0;
-  const canSubmit = Boolean(title.trim())
+  const resolvedTitle = title.trim() || (taskType === 'ai_task' ? initialContent.trim().replace(/\s+/g, ' ').slice(0, 80) : '');
+  const canSubmit = Boolean(resolvedTitle)
     && selectableProjects.length > 0
     && !isSubmitting
     && hasReadyProjectBinding
@@ -410,16 +449,16 @@ export function CreateTaskDialog({
   // submission target. Other modes keep the previous (host-keyed) behavior.
   const daemonSelectOptions = isMergedGroup && mergedGroupDaemonOptions
     ? mergedGroupDaemonOptions.flatMap((entry) => {
-        if (!entry.agent) return [];
-        if (taskType === 'pty_task' && !supportsPtyTask(entry.agent.capabilities)) {
-          return [];
-        }
-        return [{
-          value: entry.memberId,
-          host: entry.host,
-          label: entry.host,
-        }];
-      })
+      if (!entry.agent) return [];
+      if (taskType === 'pty_task' && !supportsPtyTask(entry.agent.capabilities)) {
+        return [];
+      }
+      return [{
+        value: entry.memberId,
+        host: entry.host,
+        label: entry.host,
+      }];
+    })
     : isBoundProject && boundDaemonHost
       ? [{ value: boundDaemonHost, host: boundDaemonHost, label: boundDaemonOnline ? boundDaemonHost : `${boundDaemonHost} (offline)` }]
       : eligibleDaemons.map((daemon) => ({ value: daemon.host, host: daemon.host, label: daemon.host }));
@@ -454,7 +493,7 @@ export function CreateTaskDialog({
         if (cancelled) return;
         setAvailableAgents([]);
         setAgentsLoadFailed(true);
-        dispatch({ type: 'reconcile-agent-registry', names: [] });
+        // A failed fetch is not evidence that saved worker/reviewer names are invalid.
       })
       .finally(() => {
         if (!cancelled) setIsLoadingAgents(false);
@@ -464,7 +503,25 @@ export function CreateTaskDialog({
     };
   }, [open, taskType, projectId]);
 
+  const handleManageDevices = (event: MouseEvent<HTMLAnchorElement>) => {
+    try {
+      if (!draftKey) throw new Error('No signed-in user');
+      sessionStorage.setItem(draftKey, JSON.stringify({
+        ...form,
+        projectId,
+        agentHost: requestedAgentHost || agentHost,
+        backendType: requestedBackendType || backendType,
+        submitError: null,
+      }));
+    } catch {
+      // Keep the user and their instructions here if storage is unavailable.
+      event.preventDefault();
+      dispatch({ type: 'set-submit-error', submitError: 'Unable to save your draft. Open Settings in another tab to connect a device.' });
+    }
+  };
+
   const handleCloseDialog = () => {
+    clearDeviceSetupDraft(draftKey);
     dispatch({ type: 'reset' });
     setMode('create');
     onClose();
@@ -472,7 +529,7 @@ export function CreateTaskDialog({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !projectId) {
+    if (!resolvedTitle || !projectId) {
       return;
     }
     if (taskType === 'pty_task' && !agentHost) {
@@ -500,7 +557,7 @@ export function CreateTaskDialog({
     dispatch({ type: 'set-submit-error', submitError: null });
     try {
       const task = await createTask({
-        title: title.trim(),
+        title: resolvedTitle,
         projectId: projectId || undefined,
         taskType,
         agentHost: agentHost || undefined,
@@ -512,10 +569,11 @@ export function CreateTaskDialog({
         launchConfig:
           taskType === 'pty_task'
             ? {
-                entrypointType: 'shell',
-              }
+              entrypointType: 'shell',
+            }
             : (createWorktree ? { worktree: true } : null),
       });
+      clearDeviceSetupDraft(draftKey);
       dispatch({ type: 'reset' });
       onClose();
       if (onCreatedTask) {
@@ -536,6 +594,26 @@ export function CreateTaskDialog({
       onClose={handleCloseDialog}
       title={mode === 'resume' ? 'Resume Session' : 'Create New Task'}
       maxWidthClassName="max-w-2xl"
+      mobileSheet
+      footer={mode === 'create' ? (
+        <div className="flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={handleCloseDialog}
+            className="rounded-lg px-4 py-2.5 text-sm font-medium transition-colors hover:bg-[var(--border)]/50"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            form={formId}
+            disabled={!canSubmit}
+            className="webapp-btn-primary px-5 py-2.5 text-sm"
+          >
+            {isSubmitting ? 'Creating...' : taskType === 'pty_task' ? 'Create PTY Task' : 'Create AI Task'}
+          </button>
+        </div>
+      ) : undefined}
     >
       <div
         role="tablist"
@@ -552,9 +630,8 @@ export function CreateTaskDialog({
             role="tab"
             aria-selected={mode === option.value}
             onClick={() => setMode(option.value)}
-            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-              mode === option.value ? 'bg-accent text-white shadow-sm' : 'text-muted hover:text-ink'
-            }`}
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${mode === option.value ? 'bg-panel text-ink shadow-sm' : 'text-muted hover:text-ink'
+              }`}
           >
             {option.label}
           </button>
@@ -564,36 +641,33 @@ export function CreateTaskDialog({
       {mode === 'resume' ? (
         <ResumeSessionPanel onClose={handleCloseDialog} onCreatedTask={onCreatedTask} />
       ) : (
-      <form onSubmit={handleSubmit} className="space-y-5">
-        <div className="grid gap-5 md:grid-cols-[1.35fr_minmax(0,0.9fr)]">
-          <div>
-            <div className="mb-2 flex items-center gap-2">
-              <label htmlFor="create-task-title" className="block text-sm font-medium">Title</label>
-              <HelpTip label="task title">
-                Use a short action-oriented title so the task is easy to scan later.
-              </HelpTip>
+        <form id={formId} onSubmit={handleSubmit} className="create-task-form space-y-5">
+          {taskType === 'ai_task' ? (
+            <div>
+              <div className="mb-2 flex items-center gap-2">
+                <label htmlFor="create-task-prompt" className="block text-sm font-medium">
+                  What would you like to do?
+                </label>
+              </div>
+              <textarea
+                id="create-task-prompt"
+                aria-label="Task prompt"
+                value={initialContent}
+                onChange={(e) => {
+                  dispatch({ type: 'set-initial-content', initialContent: e.target.value });
+                }}
+                rows={4}
+                autoFocus
+                placeholder="Describe a change, ask a question, or give your agent a task…"
+                className="webapp-input w-full resize-y"
+              />
             </div>
-            <input
-              id="create-task-title"
-              type="text"
-              aria-label="Task title"
-              value={title}
-              onChange={(e) => {
-                dispatch({ type: 'set-title', title: e.target.value });
-              }}
-              placeholder="What do you want to accomplish?"
-              className="webapp-input w-full"
-            />
-          </div>
+          ) : null}
+
 
           <div>
             <div className="mb-2 flex items-center gap-2">
               <label htmlFor="create-task-project" className="block text-sm font-medium">Project</label>
-              <HelpTip label="project selection">
-                {selectableProjects.length === 0
-                  ? 'Create a project first to organize the new task.'
-                  : 'Tasks inherit the selected project daemon and workspace context.'}
-              </HelpTip>
             </div>
             <select
               id="create-task-project"
@@ -619,426 +693,396 @@ export function CreateTaskDialog({
               })}
             </select>
           </div>
-        </div>
+          {selectableProjects.length === 0 ? (
+            <InlineNotice variant="warning" title="No project available">
+              Create a project first, then come back to launch the task from the right workspace.
+            </InlineNotice>
+          ) : null}
 
-        {taskType === 'ai_task' ? (
-          <div>
-            <div className="mb-2 flex items-center gap-2">
-              <label htmlFor="create-task-prompt" className="block text-sm font-medium">
-                Prompt <span className="font-normal text-muted">(optional)</span>
-              </label>
-              <HelpTip label="task prompt">
-                {trimmedWorkerAgentForHint
-                  ? `Sent as the opening message to "${trimmedWorkerAgentForHint}", the first agent. Reviewers find the work through \`conductor task group\` — give the first agent enough here and the group starts on its own.`
-                  : 'Sent as the opening message when the task starts. Leave empty to start the task and type in the chat instead.'}
-              </HelpTip>
-            </div>
-            <textarea
-              id="create-task-prompt"
-              aria-label="Task prompt"
-              value={initialContent}
-              onChange={(e) => {
-                dispatch({ type: 'set-initial-content', initialContent: e.target.value });
-              }}
-              rows={4}
-              placeholder="Describe the work in enough detail for the agent to start without you."
-              className="webapp-input w-full resize-y"
-            />
-          </div>
-        ) : null}
+          {selectedProject && !hasReadyProjectBinding ? (
+            <InlineNotice variant="warning" title="Binding pending">
+              This project is waiting for daemon confirmation. Confirm the binding from the daemon or CLI before creating tasks.
+            </InlineNotice>
+          ) : null}
 
-        <div>
-          <span className="mb-2 block text-sm font-medium">Task Type</span>
-          <div className="grid gap-3 md:grid-cols-2">
-            {TASK_TYPE_OPTIONS.map((option) => {
-              const checked = taskType === option.value;
-              const disabled = option.value === 'pty_task' && !canCreatePtyTask;
-              return (
-                <label
-                  key={option.value}
-                  className={`rounded-2xl border px-4 py-4 transition-all ${
-                    checked
-                      ? 'border-accent bg-accent/8 shadow-[0_0_0_3px_rgba(228,87,46,0.08)]'
-                      : 'border-border bg-paper/60 hover:border-accent/40 hover:bg-panel'
-                  } ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
-                >
-                  <input
-                    type="radio"
-                    name="task-type"
-                    aria-label={option.label}
-                    value={option.value}
-                    checked={checked}
-                    disabled={disabled}
-                    onChange={() => {
-                      dispatch({ type: 'set-task-type', taskType: option.value });
-                    }}
-                    className="sr-only"
-                  />
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-ink">{option.label}</span>
-                        <HelpTip label={option.label}>
-                          {option.description}
-                        </HelpTip>
-                        {checked ? (
-                          <span className="rounded-full bg-accent/12 px-2 py-0.5 text-[11px] font-medium text-[var(--accent)]">
-                            Selected
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                    <span
-                      className={`mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
-                        checked ? 'border-accent bg-accent text-white' : 'border-border text-transparent'
-                      }`}
-                      aria-hidden="true"
-                    >
-                      <svg className="size-3.5" viewBox="0 0 20 20" fill="currentColor">
-                        <path d="M16.704 5.29a1 1 0 010 1.42l-7.2 7.2a1 1 0 01-1.414 0l-3-3a1 1 0 111.414-1.42l2.293 2.294 6.493-6.494a1 1 0 011.414 0z" />
-                      </svg>
-                    </span>
-                  </div>
-                  {option.value === 'pty_task' && !canCreatePtyTask ? (
-                    <div className="mt-3">
-                      <HelpTip label="PTY availability">
-                        No PTY-capable daemon is online yet. Reconnect conductor daemon with PTY support to enable this mode.
-                      </HelpTip>
-                    </div>
-                  ) : null}
-                </label>
-              );
-            })}
-          </div>
-        </div>
-
-        {selectableProjects.length === 0 ? (
-          <InlineNotice variant="warning" title="No project available">
-            Create a project first, then come back to launch the task from the right workspace.
-          </InlineNotice>
-        ) : null}
-
-        {selectedProject && !hasReadyProjectBinding ? (
-          <InlineNotice variant="warning" title="Binding pending">
-            This project is waiting for daemon confirmation. Confirm the binding from the daemon or CLI before creating tasks.
-          </InlineNotice>
-        ) : null}
-
-        <div className="rounded-2xl border border-border bg-paper/50 p-4">
-          <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-ink">Execution</h3>
-                <HelpTip label="execution setup">
-                  {taskType === 'ai_task'
-                    ? (isBoundProject
-                      ? 'This project is bound to a daemon, so backend choices come from that daemon.'
-                      : 'Pick the connected daemon that should run this AI task. Backend choices come from the selected daemon.')
-                    : 'Choose the PTY-capable daemon that should host the terminal session.'}
-                </HelpTip>
-              </div>
-              {isBoundProject ? (
-                <p className="mt-1 text-xs text-muted">
-                  Bound to {boundBindingLabel}
-                </p>
-              ) : null}
-            </div>
-            <span className="rounded-full bg-border/50 px-2.5 py-1 text-xs font-medium text-muted">
-              {hasEligibleDaemon
-                ? `${eligibleDaemons.length} daemon${eligibleDaemons.length > 1 ? 's' : ''} online`
-                : isBoundProject && boundDaemonHost
-                  ? 'Daemon offline'
-                  : 'No daemon online'}
-            </span>
-          </div>
-
-          {hasEligibleDaemon ? (
-            <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="rounded-xl border border-border p-4">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <div className="mb-2 flex items-center gap-2">
-                  <label htmlFor="create-task-daemon" className="block text-sm font-medium">Daemon</label>
-                  <HelpTip label="daemon">
-                    {isBoundProject
-                      ? 'The daemon is fixed for this project.'
-                      : taskType === 'ai_task'
-                        ? 'The selected daemon defines which AI backends are available below.'
-                        : 'PTY tasks will open a shell session on this daemon.'}
-                  </HelpTip>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-semibold text-ink">Run on</h3>
                 </div>
-                <select
-                  id="create-task-daemon"
-                  value={isMergedGroup ? projectId : agentHost}
-                  onChange={(e) => {
-                    if (isMergedGroup) {
-                      // For merged groups the option value IS the member's
-                      // projectId — switching daemon means switching which
-                      // daemon's underlying project receives the task.
-                      dispatch({ type: 'set-project', projectId: e.target.value });
-                    } else {
-                      dispatch({ type: 'set-agent-host', agentHost: e.target.value });
-                    }
-                  }}
-                  className="webapp-input w-full"
-                  disabled={!isMergedGroup && isBoundProject}
-                >
-                  {daemonSelectOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                {isBoundProject ? (
+                  <p className="mt-1 text-xs text-muted">
+                    Bound to {boundBindingLabel}
+                  </p>
+                ) : null}
               </div>
+              <span className="rounded-full bg-border/50 px-2.5 py-1 text-xs font-medium text-muted">
+                {hasEligibleDaemon
+                  ? `${eligibleDaemons.length} device${eligibleDaemons.length > 1 ? 's' : ''} available`
+                  : isBoundProject && boundDaemonHost
+                    ? 'Device offline'
+                    : 'No devices available'}
+              </span>
+            </div>
 
-              {taskType === 'ai_task' ? (
+            {hasEligibleDaemon ? (
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <div>
                   <div className="mb-2 flex items-center gap-2">
-                    <label htmlFor="create-task-backend" className="block text-sm font-medium">Backend</label>
-                    <HelpTip label="backend selection" align="right">
-                      {selectedAgent?.host
-                        ? `${selectedAgent.host} currently advertises ${availableBackends.length} backend${availableBackends.length > 1 ? 's' : ''}.`
-                        : 'Choose a daemon to see backend options.'}
+                    <label htmlFor="create-task-daemon" className="block text-sm font-medium">Device</label>
+                    <HelpTip label="daemon">
+                      {isBoundProject
+                        ? 'The daemon is fixed for this project.'
+                        : taskType === 'ai_task'
+                          ? 'The selected daemon defines which AI backends are available below.'
+                          : 'PTY tasks will open a shell session on this daemon.'}
                     </HelpTip>
                   </div>
-                  {availableBackends.length > 0 ? (
-                    <select
-                      id="create-task-backend"
-                      value={backendType}
-                      onChange={(e) => {
-                        dispatch({ type: 'set-backend', backendType: e.target.value });
-                      }}
-                      className="webapp-input w-full"
-                    >
-                      {availableBackends.map((backend) => (
-                        <option key={backend} value={backend}>
-                          {backend}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <InlineNotice variant="warning">
-                      This daemon is online, but it does not advertise any AI backends yet. You can still switch daemons before creating the task.
-                    </InlineNotice>
-                  )}
+                  <select
+                    id="create-task-daemon"
+                    value={isMergedGroup ? projectId : agentHost}
+                    onChange={(e) => {
+                      if (isMergedGroup) {
+                        // For merged groups the option value IS the member's
+                        // projectId — switching daemon means switching which
+                        // daemon's underlying project receives the task.
+                        dispatch({ type: 'set-project', projectId: e.target.value });
+                      } else {
+                        dispatch({ type: 'set-agent-host', agentHost: e.target.value });
+                      }
+                    }}
+                    className="webapp-input w-full"
+                    disabled={!isMergedGroup && isBoundProject}
+                  >
+                    {daemonSelectOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-                  {/* RFC 0033: optional multi-agent group. Pick a worker agent
-                      (runs this task) and, optionally, reviewer agents that
-                      periodically review the worker. The agent list comes from
-                      the project's .conductor/settings.yaml registry; each
-                      reviewer may run on a different backend. */}
-                  <div className="mt-4 border-t border-border pt-4">
+                {taskType === 'ai_task' ? (
+                  <div>
                     <div className="mb-2 flex items-center gap-2">
-                      <label htmlFor="create-task-worker-agent" className="block text-sm font-medium">
-                        Agents <span className="text-muted">(optional)</span>
-                      </label>
-                      <HelpTip label="agents" align="right">
-                        Pick a worker agent to run this task, and optionally reviewer agents that
-                        periodically review it (each can use its own backend). Agents are
-                        registered per project in .conductor/settings.yaml. Leave as “None” for a
-                        plain task.
+                      <label htmlFor="create-task-backend" className="block text-sm font-medium">AI backend</label>
+                      <HelpTip label="backend selection" align="right">
+                        {selectedAgent?.host
+                          ? `${selectedAgent.host} currently advertises ${availableBackends.length} backend${availableBackends.length > 1 ? 's' : ''}.`
+                          : 'Choose a daemon to see backend options.'}
                       </HelpTip>
                     </div>
-                    {isLoadingAgents ? (
-                      <InlineNotice variant="info">
-                        Loading registered agents…
-                      </InlineNotice>
-                    ) : agentsLoadFailed ? (
-                      <InlineNotice variant="error">
-                        Could not load this project&apos;s agent registry. Check that its daemon is
-                        online, then reopen the dialog.
-                      </InlineNotice>
-                    ) : availableAgents.length === 0 ? (
-                      <InlineNotice variant="info">
-                        No agents registered for this project. Add an <code>agents:</code> block to
-                        <code> .conductor/settings.yaml</code> to enable worker/reviewer agents.
-                      </InlineNotice>
+                    {availableBackends.length > 0 ? (
+                      <select
+                        id="create-task-backend"
+                        value={backendType}
+                        onChange={(e) => {
+                          dispatch({ type: 'set-backend', backendType: e.target.value });
+                        }}
+                        className="webapp-input w-full"
+                      >
+                        {availableBackends.map((backend) => (
+                          <option key={backend} value={backend}>
+                            {backend}
+                          </option>
+                        ))}
+                      </select>
                     ) : (
-                      <>
-                        <select
-                          id="create-task-worker-agent"
-                          value={workerAgent}
-                          onChange={(e) => {
-                            const nextWorkerAgent = e.target.value;
-                            dispatch({ type: 'set-worker-agent', workerAgent: nextWorkerAgent });
-                            const agentDefaultBackend = availableAgents.find(
-                              (agent) => agent.name === nextWorkerAgent,
-                            )?.backend;
-                            if (
-                              agentDefaultBackend &&
-                              availableBackends.includes(agentDefaultBackend)
-                            ) {
-                              dispatch({ type: 'set-backend', backendType: agentDefaultBackend });
-                            }
-                          }}
-                          className="webapp-input w-full"
-                          aria-label="Worker agent"
-                        >
-                          <option value="">None (plain task)</option>
-                          {availableAgents.map((agent) => (
-                            <option key={agent.name} value={agent.name}>
-                              {agent.description ? `${agent.name} — ${agent.description}` : agent.name}
-                            </option>
-                          ))}
-                        </select>
+                      <InlineNotice variant="warning">
+                        This daemon is online, but it does not advertise any AI backends yet. You can still switch daemons before creating the task.
+                      </InlineNotice>
+                    )}
 
-                        {workerAgent.trim() ? (
-                          <div className="mt-3 space-y-2">
-                            {reviewers.map((row, index) => {
-                              const selectedElsewhere = new Set(
-                                reviewers
-                                  .filter((_, reviewerIndex) => reviewerIndex !== index)
-                                  .map((reviewer) => reviewer.name)
-                                  .filter(Boolean),
-                              );
-                              const selectedAgent = availableAgents.find(
-                                (agent) => agent.name === row.name,
-                              );
-                              return (
-                                <div key={index} className="flex items-center gap-2">
-                                  <select
-                                    value={row.name}
-                                    onChange={(e) =>
-                                      dispatch({ type: 'set-reviewer-name', index, name: e.target.value })
-                                    }
-                                    className="webapp-input flex-1"
-                                    aria-label={`Reviewer ${index + 1} agent`}
-                                  >
-                                    <option value="">Select reviewer agent…</option>
-                                    {availableAgents
-                                      .filter(
-                                        (agent) =>
-                                          agent.name !== workerAgent &&
-                                          (!selectedElsewhere.has(agent.name) || agent.name === row.name),
-                                      )
-                                      .map((agent) => (
-                                        <option key={agent.name} value={agent.name}>
-                                          {agent.description
-                                            ? `${agent.name} — ${agent.description}`
-                                            : agent.name}
-                                        </option>
-                                      ))}
-                                  </select>
-                                  <select
-                                    value={row.backend}
-                                    onChange={(e) =>
-                                      dispatch({ type: 'set-reviewer-backend', index, backend: e.target.value })
-                                    }
-                                    className="webapp-input w-40"
-                                    aria-label={`Reviewer ${index + 1} backend`}
-                                  >
-                                    <option value="">
-                                      {selectedAgent?.backend
-                                        ? `agent default (${selectedAgent.backend})`
-                                        : 'inherit worker backend'}
-                                    </option>
-                                    {availableBackends.map((backend) => (
-                                      <option key={backend} value={backend}>
-                                        {backend}
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <button
-                                    type="button"
-                                    onClick={() => dispatch({ type: 'remove-reviewer', index })}
-                                    className="rounded-lg px-2 py-2 text-sm font-medium transition-colors hover:bg-[var(--border)]/50"
-                                    aria-label={`Remove reviewer ${index + 1}`}
-                                  >
-                                    ✕
-                                  </button>
-                                </div>
-                              );
-                            })}
-                            {reviewers.length < MAX_REVIEWER_ROWS &&
-                            reviewers.every((row) => row.name) &&
-                            reviewers.length + 1 < availableAgents.length ? (
-                              <button
-                                type="button"
-                                onClick={() => dispatch({ type: 'add-reviewer' })}
-                                className="rounded-lg px-3 py-2 text-sm font-medium transition-colors hover:bg-[var(--border)]/50"
-                              >
-                                + Add reviewer
-                              </button>
-                            ) : null}
+
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-border bg-panel/70 p-4">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium text-ink">Terminal entrypoint</p>
+                      <HelpTip label="terminal entrypoint" align="right">
+                        PTY tasks start with the default shell entrypoint. Advanced launch presets can be layered on later without changing this flow.
+                      </HelpTip>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <InlineNotice variant="warning" className="mt-4">
+                {isBoundProject && boundDaemonHost && !boundDaemonOnline
+                  ? `This project is bound to ${boundDaemonHost}, but the daemon is offline. Reconnect it before creating this task.`
+                  : isBoundProject && boundDaemonHost && taskType === 'pty_task' && !boundDaemonSupportsPty
+                    ? `This project is bound to ${boundDaemonHost}, but it does not support PTY tasks.`
+                    : taskType === 'pty_task'
+                      ? 'No PTY-capable daemon is online. Reconnect conductor daemon with PTY support before creating this task.'
+                      : 'Connect a device to run this task. You can keep writing your instructions here.'}
+                <a href="/app/settings#devices" onClick={handleManageDevices} className="mt-2 block font-medium underline underline-offset-4">Manage devices</a>
+              </InlineNotice>
+            )}
+          </div>
+
+          <details className="rounded-xl border border-border p-4">
+            <summary className="font-medium">Advanced options</summary>
+            <div className="mt-5 space-y-5">
+              <div>
+                <div className="mb-2 flex items-center gap-2">
+                  <label htmlFor="create-task-title" className="block text-sm font-medium">Title {taskType === 'ai_task' ? <span className="font-normal text-muted">(optional)</span> : null}</label>
+                </div>
+                <input
+                  id="create-task-title"
+                  type="text"
+                  aria-label="Task title"
+                  value={title}
+                  onChange={(e) => {
+                    dispatch({ type: 'set-title', title: e.target.value });
+                  }}
+                  placeholder={taskType === 'pty_task' ? 'Name your terminal task' : resolvedTitle || 'Generated from your instructions'}
+                  className="webapp-input w-full"
+                />
+              </div>
+              <div>
+                <span className="mb-2 block text-sm font-medium">Task Type</span>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {TASK_TYPE_OPTIONS.map((option) => {
+                    const checked = taskType === option.value;
+                    const disabled = option.value === 'pty_task' && !canCreatePtyTask;
+                    return (
+                      <label
+                        key={option.value}
+                        className={`rounded-xl border px-3 py-3 transition-colors ${checked
+                            ? 'border-accent bg-accent/5'
+                            : 'border-border bg-paper/60 hover:border-accent/40 hover:bg-panel'
+                          } ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+                      >
+                        <input
+                          type="radio"
+                          name="task-type"
+                          aria-label={option.label}
+                          value={option.value}
+                          checked={checked}
+                          disabled={disabled}
+                          onChange={() => {
+                            dispatch({ type: 'set-task-type', taskType: option.value });
+                          }}
+                          className="sr-only"
+                        />
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-semibold text-ink">{option.label}</span>
+                              <HelpTip label={option.label}>
+                                {option.description}
+                              </HelpTip>
+                              {checked ? (
+                                <span className="rounded-full bg-accent/12 px-2 py-0.5 text-[11px] font-medium text-[var(--accent)]">
+                                  Selected
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                          <span
+                            className={`mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${checked ? 'border-accent bg-accent text-white' : 'border-border text-transparent'
+                              }`}
+                            aria-hidden="true"
+                          >
+                            <svg className="size-3.5" viewBox="0 0 20 20" fill="currentColor">
+                              <path d="M16.704 5.29a1 1 0 010 1.42l-7.2 7.2a1 1 0 01-1.414 0l-3-3a1 1 0 111.414-1.42l2.293 2.294 6.493-6.494a1 1 0 011.414 0z" />
+                            </svg>
+                          </span>
+                        </div>
+                        {option.value === 'pty_task' && !canCreatePtyTask ? (
+                          <div className="mt-3">
+                            <HelpTip label="PTY availability">
+                              No PTY-capable daemon is online yet. Reconnect conductor daemon with PTY support to enable this mode.
+                            </HelpTip>
                           </div>
                         ) : null}
-                      </>
-                    )}
-                  </div>
+                      </label>
+                    );
+                  })}
                 </div>
-              ) : (
-                <div className="rounded-2xl border border-dashed border-border bg-panel/70 p-4">
-                  <div className="flex items-center gap-2">
-                    <p className="text-sm font-medium text-ink">Terminal entrypoint</p>
-                    <HelpTip label="terminal entrypoint" align="right">
-                      PTY tasks start with the default shell entrypoint. Advanced launch presets can be layered on later without changing this flow.
+              </div>
+
+              {canCreateTaskWorktree ? (
+                <div className="rounded-xl border border-border p-4">
+                  <label htmlFor="create-task-worktree" className="flex cursor-pointer items-start gap-3">
+                    <input
+                      id="create-task-worktree"
+                      type="checkbox"
+                      aria-label="Create task in a separate worktree"
+                      checked={createWorktree}
+                      onChange={(e) => {
+                        dispatch({ type: 'set-create-worktree', createWorktree: e.target.checked });
+                      }}
+                      className="mt-0.5 size-4 rounded border-border text-[var(--accent)] focus:ring-[var(--accent)]"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-ink">worktree</span>
+                        <HelpTip label="worktree" align="right">
+                          Create this task in an isolated git worktree and branch for the selected project.
+                        </HelpTip>
+                      </div>
+                      <p className="mt-1 text-xs text-muted">
+                        Each new task from the project gets its own branch. Tasks continued from an existing worktree reuse that same branch.
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              ) : null}
+
+
+              {taskType === 'ai_task' && hasEligibleDaemon ? (
+                <div className="mt-4 border-t border-border pt-4">
+                  <div className="mb-2 flex items-center gap-2">
+                    <label htmlFor="create-task-worker-agent" className="block text-sm font-medium">
+                      Agents <span className="text-muted">(optional)</span>
+                    </label>
+                    <HelpTip label="agents" align="right">
+                      Pick a worker agent to run this task, and optionally reviewer agents that
+                      periodically review it (each can use its own backend). Agents are
+                      registered per project in .conductor/settings.yaml. Leave as “None” for a
+                      plain task.
                     </HelpTip>
                   </div>
+                  {isLoadingAgents ? (
+                    <InlineNotice variant="info">
+                      Loading registered agents…
+                    </InlineNotice>
+                  ) : agentsLoadFailed ? (
+                    <InlineNotice variant="error">
+                      Could not load this project&apos;s agent registry. Check that its daemon is
+                      online, then reopen the dialog.
+                    </InlineNotice>
+                  ) : availableAgents.length === 0 ? (
+                    <InlineNotice variant="info">
+                      No agents registered for this project. Add an <code>agents:</code> block to
+                      <code> .conductor/settings.yaml</code> to enable worker/reviewer agents.
+                    </InlineNotice>
+                  ) : (
+                    <>
+                      <select
+                        id="create-task-worker-agent"
+                        value={workerAgent}
+                        onChange={(e) => {
+                          const nextWorkerAgent = e.target.value;
+                          dispatch({ type: 'set-worker-agent', workerAgent: nextWorkerAgent });
+                          const agentDefaultBackend = availableAgents.find(
+                            (agent) => agent.name === nextWorkerAgent,
+                          )?.backend;
+                          if (
+                            agentDefaultBackend &&
+                            availableBackends.includes(agentDefaultBackend)
+                          ) {
+                            dispatch({ type: 'set-backend', backendType: agentDefaultBackend });
+                          }
+                        }}
+                        className="webapp-input w-full"
+                        aria-label="Worker agent"
+                      >
+                        <option value="">None (plain task)</option>
+                        {availableAgents.map((agent) => (
+                          <option key={agent.name} value={agent.name}>
+                            {agent.description ? `${agent.name} — ${agent.description}` : agent.name}
+                          </option>
+                        ))}
+                      </select>
+
+                      {workerAgent.trim() ? (
+                        <div className="mt-3 space-y-2">
+                          {reviewers.map((row, index) => {
+                            const selectedElsewhere = new Set(
+                              reviewers
+                                .filter((_, reviewerIndex) => reviewerIndex !== index)
+                                .map((reviewer) => reviewer.name)
+                                .filter(Boolean),
+                            );
+                            const selectedAgent = availableAgents.find(
+                              (agent) => agent.name === row.name,
+                            );
+                            return (
+                              <div key={index} className="flex items-center gap-2">
+                                <select
+                                  value={row.name}
+                                  onChange={(e) =>
+                                    dispatch({ type: 'set-reviewer-name', index, name: e.target.value })
+                                  }
+                                  className="webapp-input flex-1"
+                                  aria-label={`Reviewer ${index + 1} agent`}
+                                >
+                                  <option value="">Select reviewer agent…</option>
+                                  {availableAgents
+                                    .filter(
+                                      (agent) =>
+                                        agent.name !== workerAgent &&
+                                        (!selectedElsewhere.has(agent.name) || agent.name === row.name),
+                                    )
+                                    .map((agent) => (
+                                      <option key={agent.name} value={agent.name}>
+                                        {agent.description
+                                          ? `${agent.name} — ${agent.description}`
+                                          : agent.name}
+                                      </option>
+                                    ))}
+                                </select>
+                                <select
+                                  value={row.backend}
+                                  onChange={(e) =>
+                                    dispatch({ type: 'set-reviewer-backend', index, backend: e.target.value })
+                                  }
+                                  className="webapp-input w-40"
+                                  aria-label={`Reviewer ${index + 1} backend`}
+                                >
+                                  <option value="">
+                                    {selectedAgent?.backend
+                                      ? `agent default (${selectedAgent.backend})`
+                                      : 'inherit worker backend'}
+                                  </option>
+                                  {availableBackends.map((backend) => (
+                                    <option key={backend} value={backend}>
+                                      {backend}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={() => dispatch({ type: 'remove-reviewer', index })}
+                                  className="rounded-lg px-2 py-2 text-sm font-medium transition-colors hover:bg-[var(--border)]/50"
+                                  aria-label={`Remove reviewer ${index + 1}`}
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            );
+                          })}
+                          {reviewers.length < MAX_REVIEWER_ROWS &&
+                            reviewers.every((row) => row.name) &&
+                            reviewers.length + 1 < availableAgents.length ? (
+                            <button
+                              type="button"
+                              onClick={() => dispatch({ type: 'add-reviewer' })}
+                              className="rounded-lg px-3 py-2 text-sm font-medium transition-colors hover:bg-[var(--border)]/50"
+                            >
+                              + Add reviewer
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </>
+                  )}
                 </div>
-              )}
+              ) : null}
             </div>
-          ) : (
-            <InlineNotice variant="warning" className="mt-4">
-              {isBoundProject && boundDaemonHost && !boundDaemonOnline
-                ? `This project is bound to ${boundDaemonHost}, but the daemon is offline. Reconnect it before creating this task.`
-                : isBoundProject && boundDaemonHost && taskType === 'pty_task' && !boundDaemonSupportsPty
-                  ? `This project is bound to ${boundDaemonHost}, but it does not support PTY tasks.`
-                  : taskType === 'pty_task'
-                    ? 'No PTY-capable daemon is online. Reconnect conductor daemon with PTY support before creating this task.'
-                    : 'No daemon is online right now. Reconnect conductor daemon before creating an AI task.'}
+          </details>
+
+          {submitError ? (
+            <InlineNotice variant="error" title="Task creation failed">
+              {submitError}
             </InlineNotice>
-          )}
-        </div>
+          ) : null}
 
-        {canCreateTaskWorktree ? (
-          <div className="rounded-2xl border border-border bg-paper/50 p-4">
-            <label htmlFor="create-task-worktree" className="flex cursor-pointer items-start gap-3">
-              <input
-                id="create-task-worktree"
-                type="checkbox"
-                aria-label="Create task in a separate worktree"
-                checked={createWorktree}
-                onChange={(e) => {
-                  dispatch({ type: 'set-create-worktree', createWorktree: e.target.checked });
-                }}
-                className="mt-0.5 size-4 rounded border-border text-[var(--accent)] focus:ring-[var(--accent)]"
-              />
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-ink">worktree</span>
-                  <HelpTip label="worktree" align="right">
-                    Create this task in an isolated git worktree and branch for the selected project.
-                  </HelpTip>
-                </div>
-                <p className="mt-1 text-xs text-muted">
-                  Each new task from the project gets its own branch. Tasks continued from an existing worktree reuse that same branch.
-                </p>
-              </div>
-            </label>
-          </div>
-        ) : null}
 
-        {submitError ? (
-          <InlineNotice variant="error" title="Task creation failed">
-            {submitError}
-          </InlineNotice>
-        ) : null}
-
-        <div className="flex justify-end gap-3 border-t border-border pt-4">
-          <button
-            type="button"
-            onClick={handleCloseDialog}
-            className="rounded-lg px-4 py-2.5 text-sm font-medium transition-colors hover:bg-[var(--border)]/50"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            className="webapp-btn-primary px-5 py-2.5 text-sm"
-          >
-            {isSubmitting ? 'Creating...' : taskType === 'pty_task' ? 'Create PTY Task' : 'Create AI Task'}
-          </button>
-        </div>
-      </form>
+        </form>
       )}
     </Dialog>
   );

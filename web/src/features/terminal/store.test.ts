@@ -210,7 +210,7 @@ describe('terminal store', () => {
 
     const originalSetItem = Storage.prototype.setItem;
     let shouldFailFirstWrite = true;
-    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (key: string, value: string) {
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
       if (key === 'conductor-terminal-resume:task-pty-resume-quota' && shouldFailFirstWrite) {
         shouldFailFirstWrite = false;
         throw new DOMException('quota exceeded', 'QuotaExceededError');

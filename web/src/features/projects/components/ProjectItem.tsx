@@ -166,6 +166,7 @@ export function ProjectItem({
   const groupMembers = mergedMembers && mergedMembers.length > 0 ? mergedMembers : [project];
   const isMergedGroup = groupMembers.length > 1;
   const [isEditing, setIsEditing] = useState(false);
+  const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [editName, setEditName] = useState('');
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -336,14 +337,14 @@ export function ProjectItem({
     }
     setIsEditing(false);
     renamingRef.current = false;
-    swipe.closeActions();
+    swipe.closeActions(); setIsActionsMenuOpen(false);
   };
 
   const handleCancelRename = () => {
     skipRenameOnBlurRef.current = true;
     setEditName(project.name);
     setIsEditing(false);
-    swipe.closeActions();
+    swipe.closeActions(); setIsActionsMenuOpen(false);
   };
 
   const handleTitlePointerDown = useCallback((e: ReactPointerEvent<HTMLHeadingElement>) => {
@@ -360,7 +361,7 @@ export function ProjectItem({
       skipRenameOnBlurRef.current = false;
       setEditName(project.name);
       setIsEditing(true);
-      swipe.closeActions();
+      swipe.closeActions(); setIsActionsMenuOpen(false);
     }, 500);
   }, [clearLongPress, isDefault, isEditing, project.name, swipe]);
 
@@ -434,7 +435,7 @@ export function ProjectItem({
         });
       }
     }
-    swipe.closeActions();
+    swipe.closeActions(); setIsActionsMenuOpen(false);
   };
 
   const handleHide = () => {
@@ -450,7 +451,7 @@ export function ProjectItem({
       title: isMergedGroup ? 'Merged project hidden across daemons' : 'Project hidden',
       description: 'Double-click Projects to show hidden projects.',
     });
-    swipe.closeActions();
+    swipe.closeActions(); setIsActionsMenuOpen(false);
   };
 
   const handleUnhide = () => {
@@ -465,7 +466,7 @@ export function ProjectItem({
     pushToast({
       title: isMergedGroup ? 'Merged project restored' : 'Project restored',
     });
-    swipe.closeActions();
+    swipe.closeActions(); setIsActionsMenuOpen(false);
   };
 
   const handleToggleMerge = async () => {
@@ -511,7 +512,7 @@ export function ProjectItem({
       });
     } finally {
       setIsMergeBusy(false);
-      swipe.closeActions();
+      swipe.closeActions(); setIsActionsMenuOpen(false);
     }
   };
 
@@ -558,7 +559,7 @@ export function ProjectItem({
       });
     } finally {
       setIsCollaborationBusy(false);
-      swipe.closeActions();
+      swipe.closeActions(); setIsActionsMenuOpen(false);
     }
   };
 
@@ -591,7 +592,7 @@ export function ProjectItem({
       });
     } finally {
       setIsCollaborationBusy(false);
-      swipe.closeActions();
+      swipe.closeActions(); setIsActionsMenuOpen(false);
     }
   };
 
@@ -659,329 +660,339 @@ export function ProjectItem({
 
   return (
     <div ref={setNodeRef} style={style}>
-      <div className="relative overflow-hidden rounded-2xl">
-      {swipeActionsWidth > 0 && (
-        <div className="absolute inset-y-0 right-0 flex z-0" aria-hidden={!swipe.isOpen}>
-          {canInvite ? (
-            <button
-              type="button"
-              tabIndex={swipe.isOpen ? 0 : -1}
-              aria-label="Invite project"
-              title="Invite"
-              disabled={isCollaborationBusy}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                void handleInvite(e);
-              }}
-              className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--accent)]/10 text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20 disabled:opacity-60"
-            >
-              <InviteIcon />
-            </button>
-          ) : null}
-          {canLeaveCollaboration ? (
-            <button
-              type="button"
-              tabIndex={swipe.isOpen ? 0 : -1}
-              aria-label="Leave collaboration"
-              title="Leave"
-              disabled={isCollaborationBusy}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                void handleLeaveCollaboration(e);
-              }}
-              className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--warning)]/10 text-ink transition-colors hover:bg-[var(--warning)]/20 disabled:opacity-60"
-            >
-              <LeaveIcon />
-            </button>
-          ) : null}
-          {showMergeToggle ? (
-            <button
-              type="button"
-              tabIndex={swipe.isOpen ? 0 : -1}
-              aria-label={canSplitMerge ? 'Split cross-daemon merged project' : 'Merge same-name projects across daemons'}
-              title={canSplitMerge ? 'Split' : 'Merge'}
-              disabled={isMergeBusy}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                void handleToggleMerge();
-              }}
-              className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--accent)]/10 text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20 disabled:opacity-60"
-            >
-              {canSplitMerge ? <SplitIcon /> : <MergeIcon />}
-            </button>
-          ) : null}
-          {canHide ? (
-            <button
-              type="button"
-              tabIndex={swipe.isOpen ? 0 : -1}
-              aria-label="Hide project"
-              title="Hide"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                handleHide();
-              }}
-              className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--paper)] text-muted hover:text-ink transition-colors"
-            >
-              <HideIcon />
-            </button>
-          ) : canUnhide ? (
-            <button
-              type="button"
-              tabIndex={swipe.isOpen ? 0 : -1}
-              aria-label="Show project"
-              title="Show"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                handleUnhide();
-              }}
-              className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--accent)]/10 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors"
-            >
-              <ShowIcon />
-            </button>
-          ) : null}
-          {canDelete ? (
-            <button
-              type="button"
-              tabIndex={swipe.isOpen ? 0 : -1}
-              aria-label="Delete project"
-              title="Delete"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                void handleDelete();
-              }}
-              className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--error)]/10 text-[var(--error)] hover:bg-[var(--error)]/20 transition-colors"
-            >
-              <TrashIcon />
-            </button>
-          ) : null}
-        </div>
-      )}
+      <div className="relative flex flex-col overflow-hidden rounded-2xl">
+        {swipeActionsWidth > 0 && (
+          <div className={isActionsMenuOpen ? "project-action-menu relative order-2 flex h-14 overflow-x-auto border-b border-border bg-paper" : "absolute inset-y-0 right-0 flex z-0"} aria-hidden={!swipe.isOpen && !isActionsMenuOpen}>
+            {canInvite ? (
+              <button
+                type="button"
+                tabIndex={swipe.isOpen || isActionsMenuOpen ? 0 : -1}
+                aria-label="Invite project"
+                title="Invite"
+                disabled={isCollaborationBusy}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  void handleInvite(e);
+                }}
+                className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--accent)]/10 text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20 disabled:opacity-60"
+              >
+                <InviteIcon />
+                {isActionsMenuOpen ? <span className="text-[10px]">Invite</span> : null}
+              </button>
+            ) : null}
+            {canLeaveCollaboration ? (
+              <button
+                type="button"
+                tabIndex={swipe.isOpen || isActionsMenuOpen ? 0 : -1}
+                aria-label="Leave collaboration"
+                title="Leave"
+                disabled={isCollaborationBusy}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  void handleLeaveCollaboration(e);
+                }}
+                className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--warning)]/10 text-ink transition-colors hover:bg-[var(--warning)]/20 disabled:opacity-60"
+              >
+                <LeaveIcon />
+                {isActionsMenuOpen ? <span className="text-[10px]">Leave</span> : null}
+              </button>
+            ) : null}
+            {showMergeToggle ? (
+              <button
+                type="button"
+                tabIndex={swipe.isOpen || isActionsMenuOpen ? 0 : -1}
+                aria-label={canSplitMerge ? 'Split cross-daemon merged project' : 'Merge same-name projects across daemons'}
+                title={canSplitMerge ? 'Split' : 'Merge'}
+                disabled={isMergeBusy}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  void handleToggleMerge();
+                }}
+                className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--accent)]/10 text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20 disabled:opacity-60"
+              >
+                {canSplitMerge ? <SplitIcon /> : <MergeIcon />}
+                {isActionsMenuOpen ? <span className="text-[10px]">{canSplitMerge ? 'Split' : 'Merge'}</span> : null}
+              </button>
+            ) : null}
+            {canHide ? (
+              <button
+                type="button"
+                tabIndex={swipe.isOpen || isActionsMenuOpen ? 0 : -1}
+                aria-label="Hide project"
+                title="Hide"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleHide();
+                }}
+                className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--paper)] text-muted hover:text-ink transition-colors"
+              >
+                <HideIcon />
+                {isActionsMenuOpen ? <span className="text-[10px]">Hide</span> : null}
+              </button>
+            ) : canUnhide ? (
+              <button
+                type="button"
+                tabIndex={swipe.isOpen || isActionsMenuOpen ? 0 : -1}
+                aria-label="Show project"
+                title="Show"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleUnhide();
+                }}
+                className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--accent)]/10 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors"
+              >
+                <ShowIcon />
+                {isActionsMenuOpen ? <span className="text-[10px]">Show</span> : null}
+              </button>
+            ) : null}
+            {canDelete ? (
+              <button
+                type="button"
+                tabIndex={swipe.isOpen || isActionsMenuOpen ? 0 : -1}
+                aria-label="Delete project"
+                title="Delete"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  void handleDelete();
+                }}
+                className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--error)]/10 text-[var(--error)] hover:bg-[var(--error)]/20 transition-colors"
+              >
+                <TrashIcon />
+                {isActionsMenuOpen ? <span className="text-[10px]">Delete</span> : null}
+              </button>
+            ) : null}
+          </div>
+        )}
 
-      <div
-        onClick={() => {
-          if (swipe.consumeTap()) {
-            return;
-          }
-          selectProject();
-        }}
-        onDoubleClick={openProjectDetails}
-        className={`webapp-card relative z-10 cursor-pointer px-4 pb-4 pt-4 transition-colors hover:border-[var(--accent)] ${
-          isSelected ? 'webapp-card-list-pane-active' : 'webapp-card-list-pane-idle'
-        } ${isPendingBinding ? 'opacity-70' : ''}`}
-        role="button"
-        tabIndex={0}
-        aria-label={project.name}
-        aria-pressed={isSelected}
-        data-project-id={project.id}
-        onPointerDown={handleCardPointerDown}
-        onPointerMove={handleCardPointerMove}
-        onPointerUp={handleCardPointerUp}
-        onPointerCancel={handleCardPointerCancel}
-        style={swipe.panelStyle}
-        onKeyDown={(e: ReactKeyboardEvent<HTMLDivElement>) => {
-          if (e.key === 'Escape') {
-            swipe.closeActions();
-            return;
-          }
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            if (swipe.isOpen) {
-              swipe.closeActions();
+        <div
+          onClick={() => {
+            if (swipe.consumeTap()) {
               return;
             }
             selectProject();
-          }
-        }}
-      >
-        {aggregation ? (
-          <ProjectCardTabBar
-            tabs={aggregation.tabs}
-            activeProjectId={aggregation.activeProjectId}
-            onSelect={aggregation.onSelectTab}
-            onEject={aggregation.onEjectTab}
-            onRename={aggregation.onRenameTab}
-          />
-        ) : null}
-        <div className="flex items-start gap-3">
-          <button
-            type="button"
-            {...attributes}
-            aria-label="Drag project"
-            aria-describedby={projectTitleId}
-            title="Hold and drag to reorder"
-            className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 cursor-grab active:cursor-grabbing overflow-hidden ${
-              // Default project keeps its branded gradient regardless of the
-              // custom icon so the home card stays recognizable.
-              isDefault
-                ? 'webapp-gradient-bg'
-                : customIcon
-                  ? isHidden
-                    ? 'bg-muted/10'
-                    : 'bg-transparent'
-                  : isHidden
-                    ? 'bg-muted/10'
-                    : 'bg-accent/10'
-            }`}
-            style={dragHandleStyle}
-            onPointerDown={handleDragHandlePointerDown}
-            onMouseDown={handleDragHandleMouseDown}
-            onTouchStart={handleDragHandleTouchStart}
-            onClick={handleDragHandleClick}
-            onKeyDown={handleDragHandleKeyDown}
-          >
-            {customIcon && !isDefault ? (
-              isImageIcon ? (
-                <Image
-                  src={customIcon}
-                  alt=""
-                  width={40}
-                  height={40}
-                  unoptimized
-                  loader={({ src }) => src}
-                  draggable={false}
-                  // Hidden projects render the icon as a grey "template" — full
-                  // grayscale + low opacity matches the muted treatment the
-                  // default folder icon already uses for the hidden state.
-                  className={`h-full w-full object-cover ${isHidden ? 'grayscale opacity-30' : ''}`}
-                />
+          }}
+          onDoubleClick={openProjectDetails}
+          className={`project-row webapp-card relative z-10 cursor-pointer px-4 pb-4 pt-4 transition-colors hover:border-[var(--accent)] ${isSelected ? 'webapp-card-list-pane-active' : 'webapp-card-list-pane-idle'
+            } ${isPendingBinding ? 'opacity-70' : ''}`}
+          role="button"
+          tabIndex={0}
+          aria-label={project.name}
+          aria-pressed={isSelected}
+          data-project-id={project.id}
+          onPointerDown={handleCardPointerDown}
+          onPointerMove={handleCardPointerMove}
+          onPointerUp={handleCardPointerUp}
+          onPointerCancel={handleCardPointerCancel}
+          style={swipe.panelStyle}
+          onKeyDown={(e: ReactKeyboardEvent<HTMLDivElement>) => {
+            if (e.target !== e.currentTarget) return;
+            if (e.key === 'Escape') {
+              swipe.closeActions(); setIsActionsMenuOpen(false);
+              return;
+            }
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              if (swipe.isOpen) {
+                swipe.closeActions(); setIsActionsMenuOpen(false);
+                return;
+              }
+              selectProject();
+            }
+          }}
+        >
+          {aggregation ? (
+            <ProjectCardTabBar
+              tabs={aggregation.tabs}
+              activeProjectId={aggregation.activeProjectId}
+              onSelect={aggregation.onSelectTab}
+              onEject={aggregation.onEjectTab}
+              onRename={aggregation.onRenameTab}
+            />
+          ) : null}
+          <div className="flex items-start gap-3">
+            <button
+              type="button"
+              {...attributes}
+              aria-label="Drag project"
+              aria-describedby={projectTitleId}
+              title="Hold and drag to reorder"
+              className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 cursor-grab active:cursor-grabbing overflow-hidden ${
+                // Default project keeps its branded gradient regardless of the
+                // custom icon so the home card stays recognizable.
+                isDefault
+                  ? 'webapp-gradient-bg'
+                  : customIcon
+                    ? isHidden
+                      ? 'bg-muted/10'
+                      : 'bg-transparent'
+                    : isHidden
+                      ? 'bg-muted/10'
+                      : 'bg-accent/10'
+                }`}
+              style={dragHandleStyle}
+              onPointerDown={handleDragHandlePointerDown}
+              onMouseDown={handleDragHandleMouseDown}
+              onTouchStart={handleDragHandleTouchStart}
+              onClick={handleDragHandleClick}
+              onKeyDown={handleDragHandleKeyDown}
+            >
+              {customIcon && !isDefault ? (
+                isImageIcon ? (
+                  <Image
+                    src={customIcon}
+                    alt=""
+                    width={40}
+                    height={40}
+                    unoptimized
+                    loader={({ src }) => src}
+                    draggable={false}
+                    // Hidden projects render the icon as a grey "template" — full
+                    // grayscale + low opacity matches the muted treatment the
+                    // default folder icon already uses for the hidden state.
+                    className={`h-full w-full object-cover ${isHidden ? 'grayscale opacity-30' : ''}`}
+                  />
+                ) : (
+                  <span
+                    aria-hidden="true"
+                    className={`text-xl leading-none select-none ${isHidden ? 'grayscale opacity-30' : ''}`}
+                  >
+                    {customIcon}
+                  </span>
+                )
               ) : (
-                <span
-                  aria-hidden="true"
-                  className={`text-xl leading-none select-none ${isHidden ? 'grayscale opacity-30' : ''}`}
-                >
-                  {customIcon}
-                </span>
-              )
-            ) : (
-              <svg className={`w-5 h-5 ${isDefault ? 'text-white' : isHidden ? 'text-muted opacity-20' : 'text-accent'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap={isHidden ? 'butt' : 'round'}
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  strokeDasharray={isHidden ? '0.5 1.5' : undefined}
-                  d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-                />
-              </svg>
-            )}
-          </button>
-          <div className="flex-1">
-            <div className="flex items-center gap-2">
-              {isEditing ? (
-                <input
-                  type="text"
-                  aria-label="Edit project name"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  onBlur={() => void handleRename()}
-                  onKeyDown={(e) => {
-                    e.stopPropagation();
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      void handleRename();
-                    }
-                    if (e.key === 'Escape') {
-                      e.preventDefault();
-                      handleCancelRename();
-                    }
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                  className="min-w-0 flex-1 truncate border-0 bg-transparent px-1 -mx-1 text-base font-medium text-ink outline-none ring-1 ring-[var(--accent)] rounded"
-                />
-              ) : (
-                <h3
-                  id={projectTitleId}
-                  className="truncate font-medium select-none"
-                  onPointerDown={handleTitlePointerDown}
-                  onMouseDown={handleTitleMouseDown}
-                  onTouchStart={handleTitleTouchStart}
-                  onPointerUp={handleTitlePointerUp}
-                  onPointerMove={handleTitlePointerMove}
-                  onPointerCancel={handleTitlePointerUp}
-                >
-                  {project.name}
-                </h3>
+                <svg className={`w-5 h-5 ${isDefault ? 'text-white' : isHidden ? 'text-muted opacity-20' : 'text-accent'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap={isHidden ? 'butt' : 'round'}
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    strokeDasharray={isHidden ? '0.5 1.5' : undefined}
+                    d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                  />
+                </svg>
               )}
-            </div>
-            {hasMetadataChips || isMergedGroup ? (
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted">
-                {isGitProject ? (
-                  <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
-                    git
-                  </span>
-                ) : null}
-                {isMergedGroup ? (
-                  // Merged group: list each member's daemon as its own badge so
-                  // the user can see at a glance which daemons own this name.
-                  // Offline daemons keep a gray indicator instead of hiding.
-                  groupMembers.map((member) => {
-                    const memberDaemon = typeof member.daemonHost === 'string' ? member.daemonHost.trim() : '';
-                    if (!memberDaemon) return null;
-                    const memberOnline = agents.some((agent) => agent.host === memberDaemon);
-                    return (
-                      <span
-                        key={member.id}
-                        title={`${formatBindingLabel(memberDaemon, member.workspacePath ?? null)} (${memberOnline ? 'online' : 'offline'})`}
-                        className="flex max-w-[12rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted"
-                      >
-                        <span
-                          aria-hidden="true"
-                          className={`inline-block h-1.5 w-1.5 rounded-full ${memberOnline ? 'bg-emerald-500' : 'bg-[var(--muted)]'}`}
-                        />
-                        {memberDaemon}
-                      </span>
-                    );
-                  })
-                ) : daemonLabel ? (
-                  <span
-                    title={daemonTitle ? `${daemonTitle} (${isDaemonOnline ? 'online' : 'offline'})` : daemonLabel}
-                    className="flex max-w-[12rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted"
+            </button>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                {isEditing ? (
+                  <input
+                    type="text"
+                    aria-label="Edit project name"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    onBlur={() => void handleRename()}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void handleRename();
+                      }
+                      if (e.key === 'Escape') {
+                        e.preventDefault();
+                        handleCancelRename();
+                      }
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="min-w-0 flex-1 truncate border-0 bg-transparent px-1 -mx-1 text-base font-medium text-ink outline-none ring-1 ring-[var(--accent)] rounded"
+                  />
+                ) : (
+                  <h3
+                    id={projectTitleId}
+                    className="truncate font-medium select-none"
+                    onPointerDown={handleTitlePointerDown}
+                    onMouseDown={handleTitleMouseDown}
+                    onTouchStart={handleTitleTouchStart}
+                    onPointerUp={handleTitlePointerUp}
+                    onPointerMove={handleTitlePointerMove}
+                    onPointerCancel={handleTitlePointerUp}
                   >
-                    <span
-                      aria-hidden="true"
-                      className={`inline-block h-1.5 w-1.5 rounded-full ${isDaemonOnline ? 'bg-emerald-500' : 'bg-[var(--muted)]'}`}
-                    />
-                    {daemonLabel}
-                  </span>
-                ) : null}
-                {isMergedGroup ? (
-                  <span
-                    title={`${groupMembers.length} daemons share this project`}
-                    className="flex items-center gap-1 rounded bg-[var(--accent)]/15 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]"
-                  >
-                    {groupMembers.length} daemons
-                  </span>
-                ) : null}
-                {!isMergedGroup && isPendingBinding ? (
-                  <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted">
-                    Binding pending
-                  </span>
-                ) : null}
-                {hasCollaboration ? (
-                  <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
-                    {collaborationMemberCount}/{collaboration?.maxMembers ?? 5} members
-                  </span>
-                ) : null}
-                {runningCount > 0 ? (
-                  <span className="flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                    {runningCount} running
-                  </span>
-                ) : null}
-                {killedCount > 0 ? (
-                  <span className="flex items-center gap-1 rounded bg-[var(--error)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--error)]">
-                    {killedCount} killed
-                  </span>
-                ) : null}
+                    {project.name}
+                  </h3>
+                )}
               </div>
-            ) : null}
+              {hasMetadataChips || isMergedGroup ? (
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted">
+                  {isGitProject ? (
+                    <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
+                      git
+                    </span>
+                  ) : null}
+                  {isMergedGroup ? (
+                    // Merged group: list each member's daemon as its own badge so
+                    // the user can see at a glance which daemons own this name.
+                    // Offline daemons keep a gray indicator instead of hiding.
+                    groupMembers.map((member) => {
+                      const memberDaemon = typeof member.daemonHost === 'string' ? member.daemonHost.trim() : '';
+                      if (!memberDaemon) return null;
+                      const memberOnline = agents.some((agent) => agent.host === memberDaemon);
+                      return (
+                        <span
+                          key={member.id}
+                          title={`${formatBindingLabel(memberDaemon, member.workspacePath ?? null)} (${memberOnline ? 'online' : 'offline'})`}
+                          className="flex max-w-[12rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted"
+                        >
+                          <span
+                            aria-hidden="true"
+                            className={`inline-block h-1.5 w-1.5 rounded-full ${memberOnline ? 'bg-emerald-500' : 'bg-[var(--muted)]'}`}
+                          />
+                          {memberDaemon}
+                        </span>
+                      );
+                    })
+                  ) : daemonLabel ? (
+                    <span
+                      title={daemonTitle ? `${daemonTitle} (${isDaemonOnline ? 'online' : 'offline'})` : daemonLabel}
+                      className="flex max-w-[12rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`inline-block h-1.5 w-1.5 rounded-full ${isDaemonOnline ? 'bg-emerald-500' : 'bg-[var(--muted)]'}`}
+                      />
+                      {daemonLabel}
+                    </span>
+                  ) : null}
+                  {isMergedGroup ? (
+                    <span
+                      title={`${groupMembers.length} daemons share this project`}
+                      className="flex items-center gap-1 rounded bg-[var(--accent)]/15 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]"
+                    >
+                      {groupMembers.length} daemons
+                    </span>
+                  ) : null}
+                  {!isMergedGroup && isPendingBinding ? (
+                    <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted">
+                      Binding pending
+                    </span>
+                  ) : null}
+                  {hasCollaboration ? (
+                    <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
+                      {collaborationMemberCount}/{collaboration?.maxMembers ?? 5} members
+                    </span>
+                  ) : null}
+                  {runningCount > 0 ? (
+                    <span className="flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                      {runningCount} running
+                    </span>
+                  ) : null}
+                  {killedCount > 0 ? (
+                    <span className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-muted">
+                      {killedCount} stopped
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <button type="button" aria-label="Project details" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); openProjectDetails(); }} className="rounded-lg px-3 py-2 text-xs font-medium text-muted hover:bg-paper hover:text-ink">Details</button>
+              {swipeActionsWidth > 0 ? <button type="button" aria-label="Project actions" aria-expanded={isActionsMenuOpen || swipe.isOpen} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); swipe.closeActions(); setIsActionsMenuOpen(!isActionsMenuOpen); }} className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-paper">⋯</button> : null}
+            </div>
           </div>
         </div>
-      </div>
       </div>
       {isDetailsOpen ? (
         // Lazy-mount the dialog so its inner content (which mirrors several

@@ -23,6 +23,7 @@ describe("task-file-storage", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     if (originalStorageDir === undefined) {
       delete process.env.CONDUCTOR_FILE_STORAGE_DIR;
     } else {
@@ -44,19 +45,11 @@ describe("task-file-storage", () => {
   });
 
   it("requires an explicit shared storage directory in production", () => {
-    const previousNodeEnv = process.env.NODE_ENV;
-    const previousDir = process.env.CONDUCTOR_FILE_STORAGE_DIR;
-    const previousShared = process.env.CONDUCTOR_FILE_STORAGE_SHARED;
-    process.env.NODE_ENV = "production";
-    delete process.env.CONDUCTOR_FILE_STORAGE_DIR;
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("CONDUCTOR_FILE_STORAGE_DIR", undefined);
     expect(() => assertTaskAttachmentStorageConfigured()).toThrow("every Web replica mounts the same storage");
-    process.env.CONDUCTOR_FILE_STORAGE_DIR = tempRoot;
+    vi.stubEnv("CONDUCTOR_FILE_STORAGE_DIR", tempRoot);
     expect(() => assertTaskAttachmentStorageConfigured()).not.toThrow();
-    process.env.NODE_ENV = previousNodeEnv;
-    if (previousDir === undefined) delete process.env.CONDUCTOR_FILE_STORAGE_DIR;
-    else process.env.CONDUCTOR_FILE_STORAGE_DIR = previousDir;
-    if (previousShared === undefined) delete process.env.CONDUCTOR_FILE_STORAGE_SHARED;
-    else process.env.CONDUCTOR_FILE_STORAGE_SHARED = previousShared;
   });
 
   it("treats non-image uploads as context files", async () => {

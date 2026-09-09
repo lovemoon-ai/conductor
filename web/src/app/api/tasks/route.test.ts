@@ -1,3 +1,4 @@
+import { mockPrismaQuery } from '@/__tests__/mock-prisma-query';
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GET, POST } from "@/app/api/tasks/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
@@ -92,7 +93,7 @@ const prismaError = (code: string, message: string) =>
 let defaultProjectId: string | null = null;
 const setDefaultProjectId = (projectId: string | null) => {
   defaultProjectId = projectId;
-  vi.mocked(db.defaultProject.findUnique).mockImplementation(async () =>
+  mockPrismaQuery(db.defaultProject.findUnique).mockImplementation(async () =>
     defaultProjectId ? ({ projectId: defaultProjectId } as any) : null,
   );
 };
@@ -515,7 +516,7 @@ describe("/api/tasks", () => {
       // that references the column (OR filter WHERE, or the default column
       // SELECT) throws; only the plain projectId filter with a legacy select
       // succeeds.
-      vi.mocked(db.task.findMany).mockImplementation(async (args: any) => {
+      mockPrismaQuery(db.task.findMany).mockImplementation(async (args: any) => {
         const where = args?.where ?? {};
         const referencesSecondProjectInWhere = Array.isArray(where.OR);
         const selectsAllColumns = !args?.select; // include path selects second_project_id
@@ -2352,7 +2353,7 @@ describe("/api/tasks", () => {
           capabilities: [],
         },
       ]);
-      vi.mocked(db.task.create).mockImplementation(async ({ data }: any) => ({
+      mockPrismaQuery(db.task.create).mockImplementation(async ({ data }: any) => ({
         id: "task-bound-1",
         projectId: data.projectId,
         title: data.title,
@@ -2424,7 +2425,7 @@ describe("/api/tasks", () => {
           capabilities: [],
         },
       ]);
-      vi.mocked(db.task.create).mockImplementation(async ({ data }: any) => ({
+      mockPrismaQuery(db.task.create).mockImplementation(async ({ data }: any) => ({
         id: data.id,
         projectId: data.projectId,
         title: data.title,

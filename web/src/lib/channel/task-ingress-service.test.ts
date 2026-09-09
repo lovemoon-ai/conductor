@@ -1,3 +1,4 @@
+import { mockPrismaQuery } from '@/__tests__/mock-prisma-query';
 import { NextRequest } from 'next/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -612,11 +613,11 @@ describe('task-ingress-service', () => {
     ];
     const messages: any[] = [];
 
-    vi.mocked(db.task.findFirst).mockImplementation(async ({ where }: any) => (
+    mockPrismaQuery(db.task.findFirst).mockImplementation(async ({ where }: any) => (
       taskRows.find((task) => task.id === where.id) ?? null
     ) as any);
-    vi.mocked(db.task.findMany).mockImplementation(async () => taskRows as any);
-    vi.mocked(db.task.update).mockImplementation(async ({ where, data }: any) => {
+    mockPrismaQuery(db.task.findMany).mockImplementation(async () => taskRows as any);
+    mockPrismaQuery(db.task.update).mockImplementation(async ({ where, data }: any) => {
       const task = taskRows.find((item) => item.id === where.id);
       if (!task) {
         throw new Error(`task ${where.id} not found`);
@@ -624,7 +625,7 @@ describe('task-ingress-service', () => {
       task.updatedAt = data.updatedAt;
       return task as any;
     });
-    vi.mocked(db.message.create).mockImplementation(async ({ data }: any) => {
+    mockPrismaQuery(db.message.create).mockImplementation(async ({ data }: any) => {
       const message = {
         id: `msg-${messages.length + 1}`,
         taskId: data.taskId,
@@ -636,7 +637,7 @@ describe('task-ingress-service', () => {
       messages.push(message);
       return message as any;
     });
-    vi.mocked(db.message.findMany).mockImplementation(async ({ where }: any) => {
+    mockPrismaQuery(db.message.findMany).mockImplementation(async ({ where }: any) => {
       const taskIds = new Set(where.taskId.in);
       const roles = new Set(where.role.in);
       return messages

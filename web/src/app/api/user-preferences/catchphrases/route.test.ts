@@ -1,3 +1,4 @@
+import { mockPrismaQuery } from '@/__tests__/mock-prisma-query';
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET, POST } from "./route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
@@ -54,7 +55,7 @@ describe("/api/user-preferences/catchphrases (collection)", () => {
     vi.mocked(db.userCatchphrase.findMany).mockResolvedValue([]);
     vi.mocked(db.userCatchphrase.count).mockResolvedValue(0);
     vi.mocked(db.userCatchphrase.findFirst).mockResolvedValue(null);
-    vi.mocked(db.userCatchphrase.create).mockImplementation(async ({ data }: any) =>
+    mockPrismaQuery(db.userCatchphrase.create).mockImplementation(async ({ data }: any) =>
       sampleRow({ id: "cp-new", text: data.text, sortOrder: data.sortOrder }),
     );
     // Transparent passthrough for $transaction(async tx => ...).

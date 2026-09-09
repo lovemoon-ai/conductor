@@ -320,11 +320,11 @@ describe('TasksPage', () => {
   it('renders header controls with list view', () => {
     render(<TasksPage />);
 
-    expect(screen.getByText('Tasks(2)')).toBeInTheDocument();
+    expect(screen.getByText('Tasks (2)')).toBeInTheDocument();
     const taskList = screen.getByText('task-list:list:none:route');
     expect(taskList).toBeInTheDocument();
     expect(screen.getByText('running-only:no')).toBeInTheDocument();
-    expect(taskList.parentElement?.parentElement).toHaveClass('px-4', 'pb-4', 'pt-4');
+    expect(taskList.parentElement?.parentElement).toHaveClass('bg-panel');
     expect(screen.queryByText('task-detail:task-1')).not.toBeInTheDocument();
   });
 
@@ -347,12 +347,12 @@ describe('TasksPage', () => {
     const inlineTaskList = screen.getByText('task-list:list:task-1:inline');
 
     expect(inlineTaskList).toBeInTheDocument();
-    expect(inlineTaskList.parentElement).toHaveClass('md:w-[19.2rem]', 'lg:w-[20.8rem]', 'xl:w-[24rem]');
+    expect(screen.getByRole('separator', { name: 'Task list width' })).toBeInTheDocument();
     expect(screen.getByText('task-detail:task-1:no-header')).toBeInTheDocument();
     expect(replaceMock).toHaveBeenCalledWith('/app/tasks?taskId=task-1', { scroll: false });
     expect(headerMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'Tasks(2)',
+        title: 'Tasks (2)',
         titleDoubleClickHint: 'Double-click to show running tasks only.',
         showConnectionStatus: true,
         connectionTaskId: 'task-1',
@@ -365,7 +365,7 @@ describe('TasksPage', () => {
     expect(screen.getByText('task-detail:task-2:no-header')).toBeInTheDocument();
     expect(headerMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'Tasks(2)',
+        title: 'Tasks (2)',
         titleDoubleClickHint: 'Double-click to show running tasks only.',
         showConnectionStatus: true,
         connectionTaskId: 'task-2',
@@ -413,33 +413,58 @@ describe('TasksPage', () => {
 
     render(<TasksPage />);
 
-    expect(screen.getByRole('heading', { name: 'Tasks(3)' })).toHaveAttribute(
+    expect(screen.getByRole('heading', { name: 'Tasks (3)' })).toHaveAttribute(
       'title',
       'Double-click to show running tasks only.',
     );
     expect(screen.getByText('running-only:no')).toBeInTheDocument();
 
-    fireEvent.doubleClick(screen.getByRole('heading', { name: 'Tasks(3)' }));
+    fireEvent.doubleClick(screen.getByRole('heading', { name: 'Tasks (3)' }));
 
     expect(apiClientMock.patch).toHaveBeenCalledWith('/user-preferences/task-list', {
       tasksRunningOnly: true,
     });
-    expect(screen.getByRole('heading', { name: 'Tasks(2)' })).toHaveAttribute(
+    expect(screen.getByRole('heading', { name: 'Tasks (2)' })).toHaveAttribute(
       'title',
       'Double-click to show all tasks.',
     );
     expect(screen.getByText('running-only:yes')).toBeInTheDocument();
 
-    fireEvent.doubleClick(screen.getByRole('heading', { name: 'Tasks(2)' }));
+    fireEvent.doubleClick(screen.getByRole('heading', { name: 'Tasks (2)' }));
 
     expect(apiClientMock.patch).toHaveBeenLastCalledWith('/user-preferences/task-list', {
       tasksRunningOnly: false,
     });
-    expect(screen.getByRole('heading', { name: 'Tasks(3)' })).toHaveAttribute(
+    expect(screen.getByRole('heading', { name: 'Tasks (3)' })).toHaveAttribute(
       'title',
       'Double-click to show running tasks only.',
     );
     expect(screen.getByText('running-only:no')).toBeInTheDocument();
+  });
+
+  it('filters tasks using the visible status controls and persists the selection', async () => {
+    tasksState.tasks = [
+      { id: 'running', status: 'running' },
+      { id: 'stopping', status: 'killing' },
+      { id: 'completed', status: 'completed' },
+    ];
+    render(<TasksPage />);
+
+    expect(screen.getByRole('button', { name: 'All tasks' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Running' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Running' })).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByRole('heading', { name: 'Tasks (2)' })).toBeInTheDocument();
+    });
+    expect(screen.getByText('running-only:yes')).toBeInTheDocument();
+    expect(apiClientMock.patch).toHaveBeenLastCalledWith('/user-preferences/task-list', { tasksRunningOnly: true });
+
+    fireEvent.click(screen.getByRole('button', { name: 'All tasks' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'All tasks' })).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByRole('heading', { name: 'Tasks (3)' })).toBeInTheDocument();
+    });
+    expect(apiClientMock.patch).toHaveBeenLastCalledWith('/user-preferences/task-list', { tasksRunningOnly: false });
   });
 
   it('rolls back the running-only preference and shows a toast when persistence fails', async () => {
@@ -454,17 +479,18 @@ describe('TasksPage', () => {
 
     render(<TasksPage />);
 
-    fireEvent.doubleClick(screen.getByRole('heading', { name: 'Tasks(2)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Running' }));
 
     expect(apiClientMock.patch).toHaveBeenCalledWith('/user-preferences/task-list', {
       tasksRunningOnly: true,
     });
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Tasks(2)' })).toHaveAttribute(
+      expect(screen.getByRole('heading', { name: 'Tasks (2)' })).toHaveAttribute(
         'title',
         'Double-click to show running tasks only.',
       );
     });
+    expect(screen.getByRole('button', { name: 'All tasks' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByText('running-only:no')).toBeInTheDocument();
     expect(pushToastMock).toHaveBeenCalledWith({
       title: 'Task view preference not saved',
@@ -486,7 +512,7 @@ describe('TasksPage', () => {
     render(<TasksPage />);
 
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Tasks(1)' })).toHaveAttribute(
+      expect(screen.getByRole('heading', { name: 'Tasks (1)' })).toHaveAttribute(
         'title',
         'Double-click to show all tasks.',
       );
@@ -683,7 +709,7 @@ describe('TasksPage', () => {
 
     render(<TasksPage />);
 
-    expect(screen.getByText('Tasks(1)')).toBeInTheDocument();
+    expect(screen.getByText('Tasks (1)')).toBeInTheDocument();
   });
 
   it('expands a cross-daemon merged project so the task list shows tasks from every daemon', () => {

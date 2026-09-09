@@ -1,3 +1,4 @@
+import { mockPrismaQuery } from '@/__tests__/mock-prisma-query';
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/api/tasks/[taskId]/restart/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
@@ -122,14 +123,14 @@ describe("/api/tasks/[taskId]/restart", () => {
       }),
     );
     vi.mocked(db.message.create).mockResolvedValue({ id: "msg-handoff" } as any);
-    vi.mocked(db.task.update).mockImplementation(async ({ where, data }: any) => ({
+    mockPrismaQuery(db.task.update).mockImplementation(async ({ where, data }: any) => ({
       ...buildTask(),
       id: where.id,
       ...data,
       createdAt: new Date("2026-03-24T10:00:00.000Z"),
       updatedAt: new Date("2026-03-24T10:10:00.000Z"),
     }) as any);
-    vi.mocked(db.task.create).mockImplementation(async ({ data }: any) => ({
+    mockPrismaQuery(db.task.create).mockImplementation(async ({ data }: any) => ({
       ...buildTask(),
       ...data,
       status: data.status,
@@ -140,7 +141,7 @@ describe("/api/tasks/[taskId]/restart", () => {
       createdAt: new Date("2026-03-24T10:10:00.000Z"),
       updatedAt: new Date("2026-03-24T10:10:00.000Z"),
     }) as any);
-    vi.mocked(db.agentOutbox.create).mockImplementation(async ({ data }: any) => ({
+    mockPrismaQuery(db.agentOutbox.create).mockImplementation(async ({ data }: any) => ({
       id: "outbox-1",
       ...data,
       createdAt: new Date("2026-03-24T10:10:00.000Z"),

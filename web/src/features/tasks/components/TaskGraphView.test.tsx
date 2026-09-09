@@ -12,8 +12,6 @@ vi.mock('next/navigation', () => ({
 }));
 
 const createTask = (overrides: Partial<Task> & Pick<Task, 'id' | 'title'>): Task => ({
-  id: overrides.id,
-  title: overrides.title,
   projectId: 'project-1',
   issueId: null,
   status: 'running',

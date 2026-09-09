@@ -1,3 +1,4 @@
+import { projectFixture } from '@/__tests__/project-fixture';
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Prisma } from "@prisma/client";
 import { GET, POST, PATCH, DELETE } from "@/app/api/projects/route";
@@ -170,7 +171,7 @@ describe("/api/projects", () => {
     it("should return user projects when authenticated", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const mockProjects = [
-        {
+        projectFixture({
           id: "proj-1",
           name: "Project 1",
           userId: "user-1",
@@ -183,7 +184,7 @@ describe("/api/projects", () => {
           metadata: JSON.stringify({ key: "value" }),
           createdAt: new Date("2024-01-01"),
           updatedAt: new Date("2024-01-01"),
-        },
+        }),
       ];
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
@@ -386,7 +387,7 @@ describe("/api/projects", () => {
 
     it("should create project when authenticated", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
-      const mockProject = {
+      const mockProject = projectFixture({
         id: "proj-2",
         name: "New Project",
         userId: "user-1",
@@ -399,7 +400,7 @@ describe("/api/projects", () => {
         metadata: null,
         createdAt: new Date("2024-01-02"),
         updatedAt: new Date("2024-01-02"),
-      };
+      });
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
       vi.mocked(db.project.findFirst).mockResolvedValueOnce(null).mockResolvedValueOnce(null);
@@ -437,6 +438,7 @@ describe("/api/projects", () => {
 
     it("creates projects without sortOrder when sort_order column is missing", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      // Legacy projections deliberately omit fields absent from the old schema.
       const mockProject = {
         id: "proj-nosort",
         name: "No Sort Project",
@@ -459,7 +461,7 @@ describe("/api/projects", () => {
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
       vi.mocked(db.project.aggregate).mockRejectedValueOnce(missingSortOrderColumnError());
-      vi.mocked(db.project.create).mockResolvedValue(mockProject);
+      vi.mocked(db.project.create, { partial: true }).mockResolvedValue(mockProject);
 
       const response = await POST(createMockRequest({
         method: "POST",
@@ -485,7 +487,7 @@ describe("/api/projects", () => {
 
     it("should validate daemonHost and workspacePath before creating a bound project", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
-      const mockProject = {
+      const mockProject = projectFixture({
         id: "proj-validated",
         name: "Validated Project",
         userId: "user-1",
@@ -494,13 +496,13 @@ describe("/api/projects", () => {
         repoRoot: "/Users/duo/ws/conductor-real",
         worktreeBranch: "main",
         lastCommit: "abc123",
-        lastCommitAt: "2026-05-12T14:30:00.000Z",
+        lastCommitAt: new Date("2026-05-12T14:30:00.000Z"),
         gitRemoteUrl: null,
         fileCount: 42,
         metadata: JSON.stringify({ settingsIcon: "🚀" }),
         createdAt: new Date("2024-01-02"),
         updatedAt: new Date("2024-01-02"),
-      };
+      });
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
       vi.mocked(validateProjectBindingWithDaemon).mockResolvedValue({
@@ -555,7 +557,7 @@ describe("/api/projects", () => {
 
     it("preserves cached icon metadata when promoting an existing binding with an old daemon", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
-      const existingProject = {
+      const existingProject = projectFixture({
         id: "proj-existing",
         name: "Existing Project",
         userId: "user-1",
@@ -570,12 +572,12 @@ describe("/api/projects", () => {
         metadata: JSON.stringify({ color: "blue", settingsIcon: "old-icon" }),
         createdAt: new Date("2024-01-02"),
         updatedAt: new Date("2024-01-02"),
-      };
+      });
       const updatedProject = {
         ...existingProject,
         name: "Existing Project",
         lastCommit: "abc123",
-        lastCommitAt: "2026-05-12T14:30:00.000Z",
+        lastCommitAt: new Date("2026-05-12T14:30:00.000Z"),
         fileCount: 42,
       };
 
@@ -672,7 +674,7 @@ describe("/api/projects", () => {
 
     it("should forward createWorkspaceIfMissing to the daemon binding check", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
-      const mockProject = {
+      const mockProject = projectFixture({
         id: "proj-created",
         name: "Fresh Project",
         userId: "user-1",
@@ -685,7 +687,7 @@ describe("/api/projects", () => {
         metadata: null,
         createdAt: new Date("2024-01-02"),
         updatedAt: new Date("2024-01-02"),
-      };
+      });
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
       vi.mocked(db.project.findFirst).mockResolvedValueOnce(null).mockResolvedValueOnce(null);
@@ -733,7 +735,7 @@ describe("/api/projects", () => {
 
     it("should create a pending project when given a binding candidate metadata", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
-      const mockProject = {
+      const mockProject = projectFixture({
         id: "proj-pending",
         name: "Pending Project",
         userId: "user-1",
@@ -751,7 +753,7 @@ describe("/api/projects", () => {
         }),
         createdAt: new Date("2024-01-02"),
         updatedAt: new Date("2024-01-02"),
-      };
+      });
 
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
       vi.mocked(db.project.create).mockResolvedValue(mockProject);

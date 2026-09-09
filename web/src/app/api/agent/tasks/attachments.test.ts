@@ -17,7 +17,7 @@ const { openTaskAttachmentStreamByStorageKey } = await import("@/lib/tasks/task-
 const { GET } = await import("./[taskId]/attachments/[attachmentId]/content/route");
 const { POST } = await import("./[taskId]/messages/[messageId]/materialized/route");
 
-const agentRequest = (url: string, init?: RequestInit) => new NextRequest(url, {
+const agentRequest = (url: string, init?: ConstructorParameters<typeof NextRequest>[1]) => new NextRequest(url, {
   ...init,
   headers: {
     authorization: "Bearer token",

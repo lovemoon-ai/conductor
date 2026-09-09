@@ -145,6 +145,18 @@ describe('ProjectItem', () => {
     vi.useRealTimers();
   });
 
+  it('exposes project actions from a button and closes them on a second click', () => {
+    render(<ProjectItem project={{ id: 'project-menu', name: 'Readable project', daemonHost: 'daemon-a', workspacePath: '/repo', repoRoot: '/repo' } as any} />);
+    const toggle = screen.getByRole('button', { name: 'Project actions' });
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: 'Delete project' })).toBeInTheDocument();
+    expect(pushMock).not.toHaveBeenCalled();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('button', { name: 'Delete project' })).not.toBeInTheDocument();
+  });
+
   it('shows online indicator in daemon tag when daemon is online', () => {
     agentsState = {
       agents: [{ id: 'daemon-1', host: 'daemon-online' }],
@@ -745,7 +757,7 @@ describe('ProjectItem', () => {
       // 2 + 3 = 5 running.
       expect(screen.getByText(/5 running/)).toBeInTheDocument();
       // 0 + 1 = 1 killed.
-      expect(screen.getByText(/1 killed/)).toBeInTheDocument();
+      expect(screen.getByText(/1 stopped/)).toBeInTheDocument();
     });
   });
 

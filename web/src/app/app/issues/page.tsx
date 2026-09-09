@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/common/FeedbackProvider';
+import { EmptyState } from '@/components/common/EmptyState';
 import { Header } from '@/components/layout/Header';
 import { useAgentsStore } from '@/features/agents';
 import {
@@ -485,6 +486,7 @@ function IssuesPageContent() {
               <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
+              <span className="ml-2 hidden sm:inline">New issue</span>
             </button>
           </div>
         }
@@ -494,6 +496,11 @@ function IssuesPageContent() {
         {shouldWaitForProjectResolution ? (
           <div className="flex h-full min-h-[24rem] items-center justify-center rounded-[28px] border border-border bg-panel/60">
             <RefreshIcon spinning />
+          </div>
+        ) : !isIssuesLoading && visibleIssues.length === 0 ? (
+          <div className="flex h-full items-center justify-center">
+            <EmptyState title="Turn an idea into a plan" description="Create an issue to track work from the first idea to the finished result." className="w-full max-w-lg border-0 bg-transparent"
+              action={<button type="button" onClick={() => setShowCreateDialog(true)} className="webapp-btn-primary">Create your first issue</button>} />
           </div>
         ) : !isDesktop ? (
           <IssueList

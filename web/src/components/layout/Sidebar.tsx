@@ -120,6 +120,10 @@ const DailyIcon = ({ active, compact = false }: NavIconProps) => (
   </svg>
 );
 
+const SearchIcon = () => (
+  <svg aria-hidden="true" className="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></svg>
+);
+
 const SettingsIcon = ({ active, compact = false }: NavIconProps) => (
   <svg
     className={compact ? 'h-[18px] w-[18px]' : 'h-[18px] w-[18px]'}
@@ -244,6 +248,7 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
   }, [dailyReportSetting, hydrateDailyReportSetting, isLoadingDailyReportSetting]);
 
   const navItems: NavItem[] = [
+    { href: '/app/search', activePaths: ['/app/search'], label: 'Search', Icon: SearchIcon, badge: null },
     { href: '/app/projects', activePaths: ['/app/projects'], label: 'Projects', Icon: ProjectsIcon, badge: null },
     { href: issuesHref, activePaths: ['/app/issues'], label: 'Issues', Icon: IssuesIcon, badge: null },
     {
@@ -274,11 +279,11 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
 
   return (
     <aside
-      className={`flex h-full shrink-0 flex-col border-r border-border bg-[var(--surface-panel)] text-[var(--ink)] transition-[width] duration-200 motion-reduce:transition-none ${collapsed ? 'w-[68px]' : 'w-[272px]'}`}
+      className={`flex h-full shrink-0 flex-col border-r border-border bg-[var(--surface-panel)] text-[var(--ink)] transition-[width] duration-200 motion-reduce:transition-none ${collapsed ? 'w-[68px]' : 'w-[232px]'}`}
       aria-label="Workspace sidebar"
       data-collapsed={collapsed ? 'true' : 'false'}
     >
-      <div className="group/sidebar relative flex h-14 items-center px-2">
+      <div className="group/sidebar relative flex h-16 shrink-0 items-center border-b border-border/70 px-2">
         <Link
           href="/app/tasks"
           className={`${iconRailClassName} rounded-xl transition-opacity ${
@@ -300,6 +305,8 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
           />
         </Link>
 
+        {!collapsed && <span className="pointer-events-none text-[17px] font-semibold tracking-tight">Conductor</span>}
+
         {collapsed ? (
           <button
             type="button"
@@ -320,7 +327,7 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
             aria-expanded={true}
             title="Collapse sidebar"
             onClick={onToggleCollapsed}
-            className="absolute right-2 top-1/2 inline-flex size-10 -translate-y-1/2 cursor-ew-resize items-center justify-center rounded-2xl bg-transparent text-[var(--ink)] transition-colors hover:bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/35"
+            className="absolute right-2 top-1/2 inline-flex size-10 -translate-y-1/2 cursor-ew-resize items-center justify-center rounded-2xl bg-transparent text-muted transition-colors hover:bg-[var(--surface-subtle)] hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/35"
           >
             <CollapseIcon />
           </button>
@@ -330,9 +337,10 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
       <nav
         id="conductor-sidebar-primary-nav"
         aria-label="Primary navigation"
-        className="flex-1 overflow-y-auto px-2 pb-4 webapp-scrollbar"
+        className="flex-1 overflow-y-auto px-2 py-4 webapp-scrollbar"
       >
-        <div className="space-y-0.5">
+        {!collapsed && <p className="mb-3 px-4 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted">Workspace</p>}
+        <div className="space-y-1">
           {navItems.map((item) => {
             const isActive = item.activePaths.some((path) => pathname.startsWith(path));
             const tooltipId = `sidebar-tooltip-${item.label.toLowerCase()}`;
@@ -369,11 +377,11 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
                 }}
                 className={`relative flex h-10 items-center rounded-xl text-[15px] transition-colors ${
                   isActive
-                    ? 'bg-[var(--surface-subtle)] text-[var(--ink)]'
-                    : 'text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200'
+                    ? 'bg-[var(--border)]/65 text-[var(--ink)]'
+                    : 'text-muted hover:bg-[var(--surface-subtle)] hover:text-ink'
                 } ${collapsed ? 'justify-center' : 'pr-3'} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/35`}
               >
-                <span className={iconRailClassName}>
+                <span className={`${iconRailClassName} ${isActive ? 'text-ink' : ''}`}>
                   <item.Icon active={isActive} compact={collapsed} />
                 </span>
                 {!collapsed ? (

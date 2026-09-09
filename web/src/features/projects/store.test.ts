@@ -1,3 +1,4 @@
+import { deferred } from '@/__tests__/deferred';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { JWT_STORAGE_KEY } from '@/lib/auth/token-storage';
 
@@ -291,27 +292,20 @@ describe('useProjectsStore fetchProjects', () => {
   });
 
   it('ignores stale fetchProjects responses when a newer refresh finishes first', async () => {
-    let resolveFirst: ((value: unknown) => void) | null = null;
-    let resolveSecond: ((value: unknown) => void) | null = null;
+    const resolveFirst = deferred<unknown[]>();
+    const resolveSecond = deferred<unknown[]>();
 
-    mockGet.mockImplementation(() => {
-      if (!resolveFirst) {
-        return new Promise((resolve) => {
-          resolveFirst = resolve;
-        });
-      }
-      if (!resolveSecond) {
-        return new Promise((resolve) => {
-          resolveSecond = resolve;
-        });
-      }
-      throw new Error('Unexpected extra fetchProjects request');
-    });
+    mockGet
+      .mockImplementation(() => {
+        throw new Error('Unexpected extra fetchProjects request');
+      })
+      .mockReturnValueOnce(resolveFirst.promise)
+      .mockReturnValueOnce(resolveSecond.promise);
 
     const firstFetch = useProjectsStore.getState().fetchProjects();
     const secondFetch = useProjectsStore.getState().fetchProjects();
 
-    resolveSecond?.([
+    resolveSecond.resolve([
       {
         id: 'project-new',
         name: 'Newest Order',
@@ -322,7 +316,7 @@ describe('useProjectsStore fetchProjects', () => {
 
     expect(useProjectsStore.getState().projects.map((project) => project.id)).toEqual(['project-new']);
 
-    resolveFirst?.([
+    resolveFirst.resolve([
       {
         id: 'project-old',
         name: 'Stale Order',
@@ -337,17 +331,15 @@ describe('useProjectsStore fetchProjects', () => {
   });
 
   it('ignores fetchProjects responses after the stored JWT changes', async () => {
-    let resolveFetch: ((value: unknown) => void) | null = null;
+    const resolveFetch = deferred<unknown[]>();
 
     window.localStorage.setItem(JWT_STORAGE_KEY, 'jwt-old');
-    mockGet.mockImplementationOnce(() => new Promise((resolve) => {
-      resolveFetch = resolve;
-    }));
+    mockGet.mockImplementationOnce(() => resolveFetch.promise);
 
     const pendingFetch = useProjectsStore.getState().fetchProjects();
 
     window.localStorage.setItem(JWT_STORAGE_KEY, 'jwt-new');
-    resolveFetch?.([
+    resolveFetch.resolve([
       {
         id: 'project-old',
         name: 'Old Session Project',

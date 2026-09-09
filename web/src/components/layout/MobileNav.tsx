@@ -234,7 +234,7 @@ export function MobileNav() {
   ];
 
   return (
-    <nav className="fixed bottom-0 inset-x-0 z-40 h-16 bg-panel/95 backdrop-blur border-t border-border flex items-center justify-around md:hidden safe-area-bottom">
+    <nav aria-label="Primary navigation" className="fixed bottom-0 inset-x-0 z-40 h-[calc(4rem+env(safe-area-inset-bottom))] bg-panel/95 backdrop-blur border-t border-border flex items-center justify-around md:hidden safe-area-bottom">
       {navItems.map((item) => {
         const isActive = item.activePaths.some((path) => pathname.startsWith(path));
         const showTasksBadge = item.activePaths.includes('/app/tasks');
@@ -242,9 +242,10 @@ export function MobileNav() {
           <Link
             key={item.label}
             href={item.href}
+            aria-current={isActive ? 'page' : undefined}
             onDoubleClick={item.onDoubleClick}
             className={`relative flex min-w-0 flex-1 flex-col items-center gap-0.5 px-1 py-2 transition-colors ${
-              isActive ? 'text-accent' : 'text-muted'
+              isActive ? 'text-[var(--accent)]' : 'text-muted'
             }`}
           >
             <div className="relative">
@@ -255,7 +256,7 @@ export function MobileNav() {
             </div>
             <span className={`text-xs ${isActive ? 'font-medium' : ''}`}>{item.label}</span>
             {isActive && (
-              <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 size-1 rounded-full webapp-gradient-bg" />
+              <div className="absolute bottom-0 left-1/2 -translate-x-1/2 size-1 rounded-full webapp-gradient-bg" />
             )}
           </Link>
         );

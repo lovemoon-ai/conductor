@@ -49,12 +49,14 @@ function makeStatus(currentName: string | null): StatusResponse {
       claude: { installed: false },
       kimi: { installed: false },
       copilot: { installed: false },
+      dsh: { installed: false },
     },
     network: {
       codex: { reachable: true, endpoint: '' },
       claude: { reachable: false, endpoint: '' },
       kimi: { reachable: false, endpoint: '' },
       copilot: { reachable: false, endpoint: '' },
+      dsh: { reachable: false, endpoint: '' },
     },
     currentCodexAccount: currentName
       ? makeAccount({ name: currentName, isCurrent: true })

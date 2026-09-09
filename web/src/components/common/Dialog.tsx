@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useId, useRef, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useId, useRef, useSyncExternalStore, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
+import { useVisualViewport } from '@/shared/hooks/useVisualViewport';
 
 interface DialogProps {
   open: boolean;
@@ -10,6 +11,8 @@ interface DialogProps {
   description?: string;
   maxWidthClassName?: string;
   children: React.ReactNode;
+  footer?: React.ReactNode;
+  mobileSheet?: boolean;
 }
 
 const stopPointerPropagation = (event: ReactPointerEvent) => {
@@ -25,7 +28,10 @@ export function Dialog({
   description,
   maxWidthClassName = 'max-w-md',
   children,
+  footer,
+  mobileSheet = false,
 }: DialogProps) {
+  const viewport = useVisualViewport();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const descriptionId = useId();
@@ -48,15 +54,19 @@ export function Dialog({
   const dialogNode = (
     <dialog
       ref={dialogRef}
+      style={viewport ? {
+        '--dialog-viewport-height': `${viewport.height}px`,
+        '--dialog-viewport-top': `${viewport.offsetTop}px`,
+      } as CSSProperties : undefined}
       aria-labelledby={titleId}
       aria-describedby={description ? descriptionId : undefined}
-      className={`fixed inset-0 m-auto w-[calc(100%-2rem)] ${maxWidthClassName} rounded-2xl border border-border bg-panel p-0 shadow-2xl backdrop:bg-ink/60 backdrop:backdrop-blur-sm`}
+      className={`dialog-surface ${mobileSheet ? 'dialog-sheet' : ''} fixed inset-0 m-auto w-[calc(100%-2rem)] ${maxWidthClassName} rounded-2xl border border-border bg-panel p-0 shadow-2xl backdrop:bg-ink/60 backdrop:backdrop-blur-sm`}
       onClose={onClose}
       onPointerDown={stopPointerPropagation}
       onPointerMove={stopPointerPropagation}
       onPointerUp={stopPointerPropagation}
     >
-      <div className="flex items-start justify-between gap-4 border-b border-border p-5">
+      <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border p-5">
         <div className="min-w-0">
           <h2 id={titleId} className="text-lg font-semibold">
             {title}
@@ -78,7 +88,8 @@ export function Dialog({
           </svg>
         </button>
       </div>
-      <div className="p-5">{children}</div>
+      <div className="dialog-body p-5">{children}</div>
+      {footer ? <div className="dialog-footer">{footer}</div> : null}
     </dialog>
   );
 

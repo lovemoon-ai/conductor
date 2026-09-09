@@ -109,6 +109,31 @@ describe('TaskItem', () => {
     vi.useRealTimers();
   });
 
+  it('opens and closes labeled actions without navigating away from the task', () => {
+    render(<TaskItem
+      task={{ id: 'task-menu', title: 'Keep this title visible', status: 'killed', projectId: null, createdAt: FIXED_DATE.toISOString(), updatedAt: null }}
+      isUnread={false} isSelected={false} selectionMode={false} onToggleSelect={() => {}}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    expect(screen.getByRole('button', { name: 'Delete task' })).toBeInTheDocument();
+    expect(screen.getByText('Keep this title visible')).toBeInTheDocument();
+    expect(pushMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide actions' }));
+    expect(screen.queryByRole('button', { name: 'Delete task' })).not.toBeInTheDocument();
+  });
+
+  it('does not rename after a short title click whose pointer release is captured by the card', async () => {
+    vi.useFakeTimers();
+    const { container } = render(<TaskItem
+      task={{ id: 'task-title-click', title: 'Read the task', status: 'killed', projectId: null, createdAt: FIXED_DATE.toISOString(), updatedAt: null }}
+      isUnread={false} isSelected={false} selectionMode={false} onToggleSelect={() => {}}
+    />);
+    fireEvent.pointerDown(screen.getByText('Read the task'), { pointerId: 1, pointerType: 'mouse', button: 0, clientX: 20, clientY: 20 });
+    fireEvent.pointerUp(container.querySelector('.task-row')!, { pointerId: 1, pointerType: 'mouse', button: 0 });
+    await act(async () => { vi.advanceTimersByTime(600); });
+    expect(screen.queryByRole('textbox', { name: 'Edit task title' })).not.toBeInTheDocument();
+  });
+
   it('shows backend labels without daemon labels in task list item', () => {
     render(
       <TaskItem
