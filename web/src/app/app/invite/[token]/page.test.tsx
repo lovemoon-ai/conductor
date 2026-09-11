@@ -128,6 +128,49 @@ describe('CollaborationInvitePage', () => {
     });
   });
 
+  it('asks the user to unhide a hidden same-name project instead of dead-ending', async () => {
+    apiGetMock.mockResolvedValueOnce(buildInvite({
+      suggestedProjectNameExists: true,
+      suggestedProjectNameAvailable: false,
+      suggestedProjectNameHidden: true,
+    }));
+
+    render(<CollaborationInvitePage />);
+
+    expect(await screen.findByText('Project is hidden')).toBeInTheDocument();
+    expect(screen.getByText(/is hidden, so it can't be paired/)).toBeInTheDocument();
+    expect(screen.queryByText('Project already exists')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Create "conductor" & join' })).not.toBeInTheDocument();
+  });
+
+  it('does not preselect an unrelated project when the same-name project is hidden', async () => {
+    apiGetMock.mockResolvedValueOnce(buildInvite({
+      candidateProjects: [
+        {
+          id: 'project-other',
+          name: 'other',
+          daemonHost: null,
+          workspacePath: null,
+          alreadyInCollaboration: false,
+          canJoin: true,
+        },
+      ],
+      suggestedProjectNameExists: true,
+      suggestedProjectNameAvailable: false,
+      suggestedProjectNameHidden: true,
+    }));
+
+    render(<CollaborationInvitePage />);
+
+    const select = await screen.findByLabelText('Pair with project') as HTMLSelectElement;
+    expect(select.value).toBe('');
+    expect(screen.getByText('Project is hidden')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Join' })).toBeDisabled();
+
+    fireEvent.change(select, { target: { value: 'project-other' } });
+    expect(screen.getByRole('button', { name: 'Join' })).not.toBeDisabled();
+  });
+
   it('can create and join only when the suggested project name is available', async () => {
     apiGetMock.mockResolvedValueOnce(buildInvite());
     apiPostMock.mockResolvedValueOnce({ projectId: 'project-created' });

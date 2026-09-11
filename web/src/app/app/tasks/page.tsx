@@ -14,7 +14,10 @@ import { TaskDetailPane } from '@/features/tasks';
 import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
 import { computeProjectGroups } from '@/features/projects/utils/project-groups';
-import { getVisibleProjectGroupsForProjectList } from '@/features/projects/utils/project-list-order';
+import {
+  excludeArchivedProjects,
+  getVisibleProjectGroupsForProjectList,
+} from '@/features/projects/utils/project-list-order';
 import { isProjectTaskGraphEnabled } from '@/features/projects/utils/task-graph-settings';
 import { filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } from '@/features/tasks';
 import { buildTaskDetailHref } from '@/features/tasks/utils/task-navigation';
@@ -102,7 +105,12 @@ function TasksPageContent() {
   // expand it to every member so the task list pulls tasks from each
   // daemon's same-named project. Single-member groups behave exactly as
   // before (a single projectId in / out).
-  const projectGroups = useMemo(() => computeProjectGroups(projects), [projects]);
+  // Archived members are dropped first so a merged group never pulls a hidden
+  // sibling's tasks back into the visible group's scope.
+  const projectGroups = useMemo(
+    () => computeProjectGroups(excludeArchivedProjects(projects)),
+    [projects],
+  );
   const currentGroup = useMemo(() => {
     if (!projectId) return null;
     return projectGroups.find((group) =>

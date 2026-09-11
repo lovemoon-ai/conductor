@@ -120,8 +120,35 @@ describe("GET /api/agents/[host]/sessions", () => {
     });
     expect(db.project.findMany).toHaveBeenCalledWith({
       where: { userId: "user-1", daemonHost: "daemon-a", workspacePath: { not: null } },
-      select: { id: true, workspacePath: true },
+      select: { id: true, workspacePath: true, hiddenAt: true },
     });
+  });
+
+  it("leaves a session unmatched when its cwd belongs to an archived project nested in a visible one", async () => {
+    vi.mocked(listBackendSessions).mockResolvedValueOnce({
+      ok: true,
+      result: {
+        request_id: "req-1",
+        sessions: [
+          sessionEntry({ session_id: "sess-archived", cwd: "/home/u/repo/sub/pkg" }),
+          sessionEntry({ session_id: "sess-visible", cwd: "/home/u/repo/other" }),
+        ],
+        errors: [],
+      },
+    });
+    vi.mocked(db.project.findMany).mockResolvedValueOnce([
+      { id: "proj-outer", workspacePath: "/home/u/repo", hiddenAt: null },
+      { id: "proj-archived", workspacePath: "/home/u/repo/sub", hiddenAt: new Date("2026-09-01T00:00:00.000Z") },
+    ] as any);
+
+    const res = await GET(createMockRequest({ method: "GET" }), paramsFor("daemon-a"));
+    const data = await extractJson(res);
+
+    expect(res.status).toBe(200);
+    // The archived project wins the longest-prefix match, so the session must
+    // not fall through to the visible parent project.
+    expect(data.sessions[0]).toMatchObject({ session_id: "sess-archived", project_id: null });
+    expect(data.sessions[1]).toMatchObject({ session_id: "sess-visible", project_id: "proj-outer" });
   });
 
   it("omits errors field when the daemon reported none", async () => {

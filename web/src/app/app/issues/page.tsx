@@ -16,6 +16,7 @@ import {
 import type { MoveIssueToDoingDaemonOption } from '@/features/issues/components/MoveIssueToDoingDialog';
 import { useProjectsStore } from '@/features/projects';
 import { canMergeProjects, computeProjectGroups } from '@/features/projects/utils/project-groups';
+import { excludeArchivedProjects } from '@/features/projects/utils/project-list-order';
 import { RefreshIcon } from '@/features/tasks';
 import {
   calculateIssueAppendPosition,
@@ -69,11 +70,22 @@ const pickIssueBackend = (issue: Issue | null): string | null => {
  *     is the only candidate; for merged groups it is "where the issue lives
  *     right now" — typically the same machine as the most recent run.
  */
-const pickIssueDaemon = (issue: Issue | null, project: Project | null): string | null => {
+const pickIssueDaemon = (
+  issue: Issue | null,
+  project: Project | null,
+  projects: Project[],
+): string | null => {
   const fromMetadata = typeof issue?.metadata?.daemonHost === 'string'
     ? issue.metadata.daemonHost.trim()
     : '';
-  if (fromMetadata) {
+  // Skip a last daemon that belonged to a since-archived (hidden) sibling: it
+  // is no longer offered, and the dialog would otherwise call it offline.
+  const belongsToArchivedSibling = Boolean(fromMetadata) && !!project && projects.some((candidate) =>
+    candidate.hidden === true
+    && candidate.id !== project.id
+    && normalizeHost(candidate.daemonHost) === normalizeHost(fromMetadata)
+    && canMergeProjects(project, candidate));
+  if (fromMetadata && !belongsToArchivedSibling) {
     return fromMetadata;
   }
   const fromProject = normalizeHost(project?.daemonHost);
@@ -135,8 +147,11 @@ const getIssueDaemonOptions = (
   }
 
   for (const candidate of projects) {
-    if (candidate.id !== project.id && !canMergeProjects(project, candidate)) {
-      continue;
+    if (candidate.id !== project.id) {
+      // Archived (hidden) siblings are not offered as run targets.
+      if (candidate.hidden === true || !canMergeProjects(project, candidate)) {
+        continue;
+      }
     }
     const host = normalizeHost(candidate.daemonHost);
     if (!host || seenHost.has(host)) {
@@ -212,7 +227,12 @@ function IssuesPageContent() {
   // When the resolved project belongs to a cross-daemon merged group, fetch
   // issues for every member so the board shows them together with daemon
   // attribution. Single-member groups behave exactly as before.
-  const projectGroups = useMemo(() => computeProjectGroups(projects), [projects]);
+  // Archived members are dropped first so a merged group never pulls a hidden
+  // sibling's issues back into the visible group's scope.
+  const projectGroups = useMemo(
+    () => computeProjectGroups(excludeArchivedProjects(projects)),
+    [projects],
+  );
   const currentGroup = useMemo(() => {
     if (!resolvedProjectId) return null;
     return projectGroups.find((group) =>
@@ -249,8 +269,10 @@ function IssuesPageContent() {
         }
         continue;
       }
+      // Archived siblings are not run targets, so they don't make a project
+      // multi-daemon.
       const hasSibling = projects.some(
-        (other) => other.id !== project.id && canMergeProjects(project, other),
+        (other) => other.id !== project.id && other.hidden !== true && canMergeProjects(project, other),
       );
       if (hasSibling) {
         result.add(project.id);
@@ -302,7 +324,7 @@ function IssuesPageContent() {
     [agents, pendingIssueProject, projects],
   );
   const pendingIssueInitialBackend = pickIssueBackend(pendingIssue);
-  const pendingIssueInitialDaemon = pickIssueDaemon(pendingIssue, pendingIssueProject);
+  const pendingIssueInitialDaemon = pickIssueDaemon(pendingIssue, pendingIssueProject, projects);
 
   useEffect(() => {
     if (shouldWaitForProjectResolution || !projectIdFromUrl || resolvedProjectId) {

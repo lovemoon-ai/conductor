@@ -210,6 +210,24 @@ describe('ResumeSessionPanel', () => {
     expect(createTaskMock).not.toHaveBeenCalled();
   });
 
+  it('does not offer archived (hidden) projects in the project picker', async () => {
+    projectsState = projectsStoreState({
+      projects: [
+        { id: 'project-default', name: 'Default Project', isDefault: true, daemonHost: null },
+        { id: 'project-bound', name: 'Bound Project', isDefault: false, daemonHost: 'daemon-a' },
+        { id: 'project-archived', name: 'Archived Project', isDefault: false, daemonHost: 'daemon-a', hidden: true },
+      ],
+    });
+    render(<ResumeSessionPanel onClose={() => {}} />);
+
+    fireEvent.click(await screen.findByText('Fix the login bug'));
+
+    const optionValues = Array.from((screen.getByLabelText('Project') as HTMLSelectElement).options)
+      .map((option) => option.value);
+    expect(optionValues).toEqual(expect.arrayContaining(['project-default', 'project-bound']));
+    expect(optionValues).not.toContain('project-archived');
+  });
+
   it('uses the project matched from the session cwd when there is one', async () => {
     projectsState = projectsStoreState({
       projects: [

@@ -164,6 +164,25 @@ describe('CreateTaskDialog', () => {
     expect(screen.getByLabelText('Task prompt')).toHaveValue('');
   });
 
+  it('does not restore an archived (hidden) project from a saved draft', async () => {
+    projectsState = {
+      projects: [
+        { id: 'project-1', name: 'Project One', isDefault: true },
+        { id: 'project-archived', name: 'Archived Project', daemonHost: 'daemon-a', workspacePath: '/repo/archived', hidden: true },
+      ],
+    };
+    sessionStorage.setItem('conductor-create-task-draft:draft-user', JSON.stringify({
+      title: 'Archived draft', initialContent: 'Continue the archived work', projectId: 'project-archived',
+      taskType: 'ai_task', createWorktree: true, agentHost: 'daemon-a', backendType: 'codex',
+      workerAgent: 'feature-dev', reviewers: [{ name: 'code-reviewer', backend: 'codex' }], submitError: null,
+    }));
+
+    render(<CreateTaskDialog open onClose={() => {}} />);
+
+    await waitFor(() => expect(screen.getByLabelText('Task prompt')).toHaveValue('Continue the archived work'));
+    expect(screen.getByLabelText('Project')).toHaveValue('project-1');
+  });
+
   it('ignores malformed drafts and drafts belonging to another user', () => {
     sessionStorage.setItem('conductor-create-task-draft:draft-user', '{malformed');
     sessionStorage.setItem('conductor-create-task-draft:another-user', JSON.stringify({ initialContent: 'Private draft' }));
@@ -255,6 +274,39 @@ describe('CreateTaskDialog', () => {
     const projectSelect = await screen.findByLabelText('Project');
     await waitFor(() => {
       expect(projectSelect).toHaveValue('project-bound');
+    });
+  });
+
+  it('omits archived (hidden) projects from the project picker', async () => {
+    projectsState = {
+      projects: [
+        { id: 'project-1', name: 'Project One', isDefault: true },
+        { id: 'project-bound', name: 'Bound Project', daemonHost: 'daemon-b', workspacePath: '/repo/bound' },
+        { id: 'project-archived', name: 'Archived Project', daemonHost: 'daemon-b', workspacePath: '/repo/archived', hidden: true },
+      ],
+    };
+
+    render(<CreateTaskDialog open onClose={() => {}} />);
+
+    const projectSelect = await screen.findByLabelText('Project');
+    const optionLabels = within(projectSelect).getAllByRole('option').map((option) => option.textContent);
+    expect(optionLabels).toEqual(expect.arrayContaining(['Project One', 'Bound Project']));
+    expect(optionLabels.join(' ')).not.toContain('Archived Project');
+  });
+
+  it('falls back off an archived defaultProjectId instead of preselecting it', async () => {
+    projectsState = {
+      projects: [
+        { id: 'project-1', name: 'Project One', isDefault: true },
+        { id: 'project-archived', name: 'Archived Project', daemonHost: 'daemon-b', workspacePath: '/repo/archived', hidden: true },
+      ],
+    };
+
+    render(<CreateTaskDialog open onClose={() => {}} defaultProjectId="project-archived" />);
+
+    const projectSelect = await screen.findByLabelText('Project');
+    await waitFor(() => {
+      expect(projectSelect).toHaveValue('project-1');
     });
   });
 

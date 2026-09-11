@@ -41,6 +41,7 @@ export async function GET(
       daemonHost: true,
       workspacePath: true,
       collaborationId: true,
+      hiddenAt: true,
       // Default project is the user's personal scratch and cannot be paired
       // into a collaboration — exclude it from the candidate list so the
       // invite page never offers it as a pickable option.
@@ -56,8 +57,19 @@ export async function GET(
   const suggestedProjectNameExists = projects.some(
     (project: (typeof projects)[number]) => project.name.trim() === suggestedProjectName,
   );
+  // A same-name project that would be joinable but is hidden (archived) is not
+  // offered below; flag it so the invite page can ask the user to unhide it
+  // instead of dead-ending on "already exists" or pairing another project.
+  const suggestedProjectNameHidden = projects.some(
+    (project: (typeof projects)[number]) =>
+      Boolean(project.hiddenAt)
+      && !project.defaultProject
+      && !project.collaborationId
+      && project.name.trim() === suggestedProjectName,
+  );
   const candidateProjects = projects.flatMap((project: (typeof projects)[number]) => {
-    if (project.defaultProject) {
+    // Hiding a project archives it, so it is no longer a pickable option.
+    if (project.defaultProject || project.hiddenAt) {
       return [];
     }
     return [{
@@ -82,11 +94,13 @@ export async function GET(
     suggestedProjectName,
     suggestedProjectNameExists,
     suggestedProjectNameAvailable: !suggestedProjectNameExists,
+    suggestedProjectNameHidden,
     candidate_projects: candidateProjects,
     already_joined: alreadyJoined,
     is_full: isFull,
     suggested_project_name: suggestedProjectName,
     suggested_project_name_exists: suggestedProjectNameExists,
     suggested_project_name_available: !suggestedProjectNameExists,
+    suggested_project_name_hidden: suggestedProjectNameHidden,
   });
 }

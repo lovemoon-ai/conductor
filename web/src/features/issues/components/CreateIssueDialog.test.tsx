@@ -105,6 +105,25 @@ describe('CreateIssueDialog', () => {
     });
   });
 
+  it('omits archived (hidden) projects from the project picker', async () => {
+    projectsState = {
+      projects: [
+        { id: 'project-default', name: 'Default Project', isDefault: true },
+        { id: 'project-2', name: 'Other Project' },
+        { id: 'project-archived', name: 'Archived Project', hidden: true },
+      ],
+      fetchProjects: fetchProjectsMock,
+    };
+
+    render(<CreateIssueDialog open onClose={() => {}} projectId={null} />);
+
+    const optionLabels = Array.from(
+      screen.getByLabelText('Project').querySelectorAll('option'),
+    ).map((option) => option.textContent);
+    expect(optionLabels).toEqual(expect.arrayContaining(['Default Project', 'Other Project']));
+    expect(optionLabels.join(' ')).not.toContain('Archived Project');
+  });
+
   it('does not expose owner selection during creation for shared projects', async () => {
     createIssueMock.mockResolvedValue({ id: 'issue-1' });
     projectsState = {

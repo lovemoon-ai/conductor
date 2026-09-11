@@ -17,6 +17,7 @@ import { useProjectsStore } from '@/features/projects';
 import { useAuthStore } from '@/features/auth/store';
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
 import { computeProjectGroups } from '@/features/projects/utils/project-groups';
+import { excludeArchivedProjects } from '@/features/projects/utils/project-list-order';
 import { parseTaskType } from '@/lib/tasks/task-config';
 import {
   buildTaskCardGroupsStorageKey,
@@ -95,7 +96,11 @@ export default function TaskDetailPage() {
     return new URLSearchParams(queryIndex >= 0 ? returnHref.slice(queryIndex + 1) : '');
   }, [returnHref]);
   const projectId = returnSearchParams.get('projectId');
-  const projectGroups = useMemo(() => computeProjectGroups(projects), [projects]);
+  // Archived members are dropped first, matching the task list scope.
+  const projectGroups = useMemo(
+    () => computeProjectGroups(excludeArchivedProjects(projects)),
+    [projects],
+  );
   const currentProjectGroup = useMemo(() => (
     projectId
       ? projectGroups.find((group) => group.members.some((member) => member.id === projectId)) ?? null

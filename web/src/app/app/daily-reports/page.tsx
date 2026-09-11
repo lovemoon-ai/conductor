@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Header } from "@/components/layout/Header";
 import { LoadingSpinner } from "@/components/common/LoadingSpinner";
 import { useDailyReportsStore, type DailyReportProject } from "@/features/daily-reports";
+import { excludeArchivedReportProjects } from "@/features/daily-reports/visible-projects";
+import { useProjectsStore } from "@/features/projects";
 import { MarkdownRenderer } from "@/features/chat/components/MarkdownRenderer";
 
 const pad2 = (value: number): string => String(value).padStart(2, "0");
@@ -133,6 +135,10 @@ function DailyReportsPageContent() {
   const fetchReport = useDailyReportsStore((state) => state.fetchReport);
   const generateReport = useDailyReportsStore((state) => state.generateReport);
   const fetchHistory = useDailyReportsStore((state) => state.fetchHistory);
+  const hiddenProjectIds = useProjectsStore((state) => state.hiddenProjectIds);
+  // Hidden state is only known once projects have loaded (every account has a
+  // default project); wait for it so saved reports don't flash archived ones.
+  const projectsLoaded = useProjectsStore((state) => state.projects.length > 0 || state.error !== null);
   const timezone = setting?.timezone ?? browserTimezone();
   const initialDate = searchParams.get("date") || formatLocalDate(new Date(), timezone);
   const [selectedDate, setSelectedDate] = useState(initialDate);
@@ -160,7 +166,13 @@ function DailyReportsPageContent() {
     replace(`/app/daily-reports?${nextParams.toString()}`, { scroll: false });
   };
 
-  const totals = report?.payload.totals;
+  // Archived (hidden) projects follow the Project List hide state, including
+  // on reports that were saved before the project was hidden.
+  const visibleReport = useMemo(
+    () => (report && projectsLoaded ? excludeArchivedReportProjects(report.payload, hiddenProjectIds) : null),
+    [hiddenProjectIds, projectsLoaded, report],
+  );
+  const totals = visibleReport?.totals;
   const summarizer = report?.payload.summarizer;
   const summaryMarkdown = report?.summaryMarkdown.trim() ?? "";
   const summaryBadge =
@@ -319,13 +331,13 @@ function DailyReportsPageContent() {
             </section>
           ) : null}
 
-          {isLoadingReport && !report ? (
+          {(isLoadingReport && !report) || (report && !visibleReport) ? (
             <div className="flex min-h-[16rem] items-center justify-center">
               <LoadingSpinner size="lg" />
             </div>
-          ) : report && report.payload.projects.length > 0 ? (
+          ) : visibleReport && visibleReport.projects.length > 0 ? (
             <div className="space-y-4">
-              {report.payload.projects.map((project) => (
+              {visibleReport.projects.map((project) => (
                 <ProjectSection key={project.projectId} project={project} />
               ))}
             </div>

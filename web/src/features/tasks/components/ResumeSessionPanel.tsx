@@ -6,6 +6,7 @@ import { getApiClient } from '@/shared/api/client';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
+import { excludeArchivedProjects } from '@/features/projects/utils/project-list-order';
 import { useAgentsStore } from '@/features/agents';
 import {
   RESUME_SESSION_BACKENDS,
@@ -119,8 +120,10 @@ export function ResumeSessionPanel({ onClose, onCreatedTask }: ResumeSessionPane
   // Same selectability rule as the create form: projects bound to this daemon,
   // plus the host-agnostic default project (no daemonHost; the server accepts
   // any online agent_host for it).
+  // Archived (hidden) projects are excluded here as well.
   const daemonProjects = useMemo(
-    () => projects.filter((project) => project.daemonHost === host || Boolean(project.isDefault)),
+    () => excludeArchivedProjects(projects)
+      .filter((project) => project.daemonHost === host || Boolean(project.isDefault)),
     [projects, host],
   );
   // A session whose cwd matches no bound project falls back to the user's

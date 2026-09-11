@@ -160,6 +160,7 @@ type ReportTaskRow = {
   createdAt: Date;
   updatedAt: Date;
   killedAt?: Date | null;
+  secondProjectId?: string | null;
   project: {
     id: string;
     name: string;
@@ -698,7 +699,9 @@ export async function generateDailyReport(input: {
 
   const tasks = (await (db as any).task.findMany({
     where: {
-      project: { userId: input.userId },
+      // Archived (hidden) projects are left out of the report entirely,
+      // including the summary text and pushed notifications.
+      project: { userId: input.userId, hiddenAt: null },
       OR: [
         { createdAt: { gte: start, lt: end } },
         { updatedAt: { gte: start, lt: end } },
@@ -742,7 +745,20 @@ export async function generateDailyReport(input: {
     killed: 0,
   };
 
+  // Tasks moved into a project (`secondProjectId`) are listed under it in the
+  // task list, so they follow that project's hide state here too. The column
+  // has no relation, hence the separate lookup.
+  const hiddenProjectIds = new Set(
+    ((await (db as any).project.findMany({
+      where: { userId: input.userId, hiddenAt: { not: null } },
+      select: { id: true },
+    })) as Array<{ id: string }>).map((project) => project.id),
+  );
+
   for (const task of tasks) {
+    if (task.secondProjectId && hiddenProjectIds.has(task.secondProjectId)) {
+      continue;
+    }
     const events = buildTaskEvents(task, start, end, timezone);
     if (events.length === 0) {
       continue;

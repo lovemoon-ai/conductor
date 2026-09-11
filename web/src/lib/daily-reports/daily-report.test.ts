@@ -5,6 +5,9 @@ vi.mock("@/lib/db", () => ({
     task: {
       findMany: vi.fn(),
     },
+    project: {
+      findMany: vi.fn(),
+    },
     dailyReportSetting: {
       findMany: vi.fn(),
       findUnique: vi.fn(),
@@ -85,6 +88,7 @@ describe("daily reports", () => {
       }),
     );
     vi.mocked(db.task.findMany).mockResolvedValue([]);
+    vi.mocked(db.project.findMany).mockResolvedValue([]);
     vi.mocked(db.dailyReportSetting.findUnique).mockResolvedValue(settingRow as any);
     vi.mocked(db.dailyReportSetting.findMany).mockResolvedValue([]);
     vi.mocked(db.dailyReportSetting.update).mockResolvedValue({} as any);
@@ -221,6 +225,64 @@ describe("daily reports", () => {
     });
     expect(report.summaryMarkdown).toContain("## Conductor");
     expect(summarizeDailyReportWithGlm).not.toHaveBeenCalled();
+  });
+
+  it("leaves archived (hidden) projects out of the report query", async () => {
+    await generateDailyReport({
+      userId: "user-1",
+      reportDate: "2026-07-01",
+      timezone: "Asia/Shanghai",
+      now: date("2026-07-01T04:00:00.000Z"),
+    });
+
+    expect(db.task.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          project: { userId: "user-1", hiddenAt: null },
+        }),
+      }),
+    );
+  });
+
+  it("leaves tasks moved into an archived project out of the report", async () => {
+    const touchedTask = (id: string, secondProjectId: string | null) => ({
+      id,
+      title: `Task ${id}`,
+      status: "completed",
+      secondProjectId,
+      createdAt: date("2026-07-01T01:00:00.000Z"),
+      updatedAt: date("2026-07-01T03:00:00.000Z"),
+      killedAt: null,
+      project: { id: "project-default", name: "Inbox", daemonHost: null },
+      issue: null,
+      messages: [
+        { id: `${id}-msg`, role: "user", content: "Do it", createdAt: date("2026-07-01T01:10:00.000Z") },
+      ],
+      taskStatusEvents: [],
+    });
+    vi.mocked(db.task.findMany).mockResolvedValue([
+      touchedTask("task-kept", null),
+      touchedTask("task-moved-visible", "project-visible"),
+      touchedTask("task-moved-archived", "project-archived"),
+    ] as any);
+    vi.mocked(db.project.findMany).mockResolvedValue([{ id: "project-archived" }] as any);
+
+    const report = await generateDailyReport({
+      userId: "user-1",
+      reportDate: "2026-07-01",
+      timezone: "Asia/Shanghai",
+      now: date("2026-07-01T04:00:00.000Z"),
+    });
+
+    expect(db.project.findMany).toHaveBeenCalledWith({
+      where: { userId: "user-1", hiddenAt: { not: null } },
+      select: { id: true },
+    });
+    expect(report.payload.totals.tasks).toBe(2);
+    expect(report.payload.projects[0].timeline.map((segment) => segment.taskId).sort()).toEqual([
+      "task-kept",
+      "task-moved-visible",
+    ]);
   });
 
   it("uses GLM summarization when requested", async () => {

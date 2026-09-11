@@ -733,6 +733,64 @@ describe('IssuesPage', () => {
     });
   });
 
+  it('leaves an archived (hidden) sibling out of a merged-group issue start', async () => {
+    searchParamsState = new URLSearchParams('projectId=project-merged-a');
+    agentsState = {
+      agents: [
+        { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude', 'codex'] },
+        { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['claude'] },
+      ],
+      fetchAgents: fetchAgentsMock,
+    };
+    projectsState = {
+      projects: [
+        { id: 'project-merged-a', name: 'Merged', daemonHost: 'daemon-a', gitRemoteUrl: 'github.com/foo/merged' } as any,
+        {
+          id: 'project-merged-b',
+          name: 'Merged',
+          daemonHost: 'daemon-b',
+          gitRemoteUrl: 'github.com/foo/merged',
+          hidden: true,
+        } as any,
+      ],
+      hiddenProjectIds: ['project-merged-b'],
+      isLoading: false,
+      fetchProjects: fetchProjectsMock,
+      setSelectedProjectId: setSelectedProjectIdMock,
+    };
+    issuesState = {
+      ...issuesState,
+      issues: [
+        {
+          id: 'issue-1',
+          projectId: 'project-merged-a',
+          title: 'Cross-daemon work',
+          status: 'todo',
+          position: 0,
+          createdAt: '2026-04-14T00:00:00.000Z',
+          // Last run happened on the sibling that has since been archived.
+          metadata: { daemonHost: 'daemon-b' },
+        },
+      ],
+    };
+
+    render(<IssuesPage />);
+
+    // The archived sibling is not part of the fetch scope.
+    expect(fetchIssuesMock).toHaveBeenCalledWith('project-merged-a');
+    expect(fetchIssuesForProjectsMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'status-issue' }));
+
+    // Only the visible daemon is offered, and the archived sibling's daemon is
+    // not handed over as the initial daemon (the dialog would call it offline).
+    expect(
+      screen.getByText(
+        'move-issue-to-doing:hosts=daemon-a:backends=daemon-a=claude,codex:initialDaemon=daemon-a:initialBackend=none',
+      ),
+    ).toBeInTheDocument();
+  });
+
   it('keeps the issue on its current project when the user picks the same daemon', async () => {
     searchParamsState = new URLSearchParams('projectId=project-merged-a');
     agentsState = {
