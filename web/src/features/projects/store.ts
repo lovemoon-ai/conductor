@@ -320,6 +320,13 @@ interface ProjectsState {
    * so the toast / spinner can sequence correctly.
    */
   deleteProjectGroup: (projectIds: string[]) => Promise<void>;
+  /**
+   * Count active tasks whose REAL project is in `projectIds` but which are
+   * filed (display-only `secondProjectId`) under a project outside that set.
+   * Deleting the projects deletes these tasks too, so the delete confirmation
+   * surfaces the number.
+   */
+  countTasksFiledElsewhere: (projectIds: string[]) => Promise<number>;
   /** Toggle a single project's mergeOptOut flag (split / re-merge). */
   setProjectMergeOptOut: (projectId: string, value: boolean) => Promise<Project>;
   /** Re-validate a project against its daemon to refresh git fields. */
@@ -754,6 +761,21 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
     for (const id of targets) {
       await get().deleteProject(id);
     }
+  },
+
+  countTasksFiledElsewhere: async (projectIds) => {
+    if (projectIds.length === 0) return 0;
+    const api = getApiClient();
+    // `project_scope=real` filters by REAL project, so the list includes the
+    // tasks filed elsewhere, which are exactly the ones carrying an override.
+    const tasks = await api.get<Array<{ second_project_id?: string | null; secondProjectId?: string | null }>>(
+      `/tasks?project_ids=${encodeURIComponent(projectIds.join(','))}&project_scope=real`,
+    );
+    const deletedIds = new Set(projectIds);
+    return tasks.filter((task) => {
+      const filedUnder = task.second_project_id ?? task.secondProjectId ?? null;
+      return !!filedUnder && !deletedIds.has(filedUnder);
+    }).length;
   },
 
   setProjectMergeOptOut: async (projectId, value) => {

@@ -353,3 +353,25 @@ describe('useProjectsStore fetchProjects', () => {
     expect(useProjectsStore.getState().error).toBeNull();
   });
 });
+
+describe('countTasksFiledElsewhere', () => {
+  beforeEach(() => {
+    mockGet.mockReset();
+  });
+
+  it('counts tasks filed under a project outside the deleted set, from the real-project list', async () => {
+    mockGet.mockResolvedValue([
+      { id: 'task-home', second_project_id: null },
+      { id: 'task-filed-out', second_project_id: 'proj-other' },
+      // Filed within the group being deleted: it goes away with the group
+      // either way, so it does not count as filed elsewhere.
+      { id: 'task-filed-within', second_project_id: 'proj-b' },
+    ]);
+
+    const count = await useProjectsStore.getState().countTasksFiledElsewhere(['proj-a', 'proj-b']);
+
+    expect(count).toBe(1);
+    // The real-project filter is what includes filed-out tasks.
+    expect(mockGet).toHaveBeenCalledWith('/tasks?project_ids=proj-a%2Cproj-b&project_scope=real');
+  });
+});

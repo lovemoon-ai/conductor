@@ -393,6 +393,40 @@ describe("/api/tasks", () => {
       );
     });
 
+    it("filters by the real projectId when project_scope=real", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.task.findMany).mockResolvedValue([]);
+
+      const token = createTestToken("user-1");
+      await GET(createMockRequest({
+        token,
+        url: "http://localhost:6152/api/tasks?project_id=proj-1&project_scope=real",
+      }));
+      await GET(createMockRequest({
+        token,
+        url: "http://localhost:6152/api/tasks?project_ids=proj-a,proj-b&project_scope=real",
+      }));
+
+      // The SDK's `list_tasks` and the project-delete impact count rely on
+      // this: a task filed elsewhere is still listed under its real project,
+      // and a task filed INTO the project is not.
+      expect(db.task.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ projectId: "proj-1" }),
+        }),
+      );
+      expect(db.task.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ projectId: { in: ["proj-a", "proj-b"] } }),
+        }),
+      );
+      for (const [args] of vi.mocked(db.task.findMany).mock.calls as any[]) {
+        expect(args?.where?.OR).toBeUndefined();
+      }
+    });
+
     it("rejects requests that combine project_id and project_ids", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
 
@@ -562,6 +596,54 @@ describe("/api/tasks", () => {
       );
       expect(data).toEqual([
         expect.objectContaining({ id: "task-degraded-1", second_project_id: null }),
+      ]);
+    });
+
+    it("serves project_scope=real on a DB that predates second_project_id", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+
+      // Same pre-migration simulation as the display-grouping degrade test. The
+      // real-project path has no outer retry, so it must recover through the
+      // legacy select tier of the PTY schema fallback.
+      mockPrismaQuery(db.task.findMany).mockImplementation(async (args: any) => {
+        const where = args?.where ?? {};
+        if (Array.isArray(where.OR) || !args?.select) {
+          throw prismaError(
+            "P2022",
+            "The column `tasks.second_project_id` does not exist in the current database.",
+          );
+        }
+        return [
+          {
+            id: "task-real-legacy-1",
+            projectId: "proj-1",
+            title: "Legacy Task",
+            status: "completed",
+            agentHost: "daemon-a",
+            executionHost: "daemon-a",
+            backendType: "codex",
+            sessionId: null,
+            sessionFilePath: null,
+            metadata: null,
+            createdAt: new Date("2024-01-01T00:00:00.000Z"),
+            updatedAt: new Date("2024-01-01T00:01:00.000Z"),
+          },
+        ] as any;
+      });
+
+      const token = createTestToken("user-1");
+      const response = await GET(
+        createMockRequest({
+          token,
+          url: "http://localhost:6152/api/tasks?project_id=proj-1&project_scope=real",
+        }),
+      );
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data).toEqual([
+        expect.objectContaining({ id: "task-real-legacy-1", second_project_id: null }),
       ]);
     });
 

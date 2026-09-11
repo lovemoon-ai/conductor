@@ -244,6 +244,10 @@ export class BackendApiClient {
     const query = new URLSearchParams();
     if (params.projectId) {
       query.set('project_id', params.projectId);
+      // Match the task's REAL project. By default the server groups by where the
+      // user filed a task in the web UI (display-only), which would hide this
+      // project's filed-out tasks from agents and include foreign ones.
+      query.set('project_scope', 'real');
     }
     if (params.status) {
       query.set('status', params.status);

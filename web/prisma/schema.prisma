@@ -267,12 +267,12 @@ model DefaultProject {
 model Task {
   id        String   @id @default(uuid())
   projectId String   @map("project_id")
-  /// Display-only secondary project. When set on a task whose real
-  /// `projectId` is the user's default project, the frontend shows the task
-  /// under this project instead of the default one. It NEVER changes
-  /// `projectId`, the daemon, the session, or any runtime behaviour — it is a
-  /// pure presentation override, cleared (null) to move the task back to the
-  /// default project. Only default-project tasks may carry a value.
+  /// Display-only secondary project. When set, project task lists and counts
+  /// show the task under this project instead of its real `projectId` (API
+  /// callers can ask for the real association with `project_scope=real`). It
+  /// NEVER changes `projectId`, the daemon, the session, or any runtime
+  /// behaviour — it is a pure presentation override, cleared (null) to move the
+  /// task back to its own project. Any task may carry a value.
   secondProjectId String? @map("second_project_id")
   issueId   String?  @map("issue_id")
   title     String

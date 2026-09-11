@@ -84,13 +84,6 @@ describe("PUT /api/tasks/[taskId]/second-project", () => {
       trialEndsAt: null,
       lastPaymentAt: null,
     } as any);
-    vi.mocked(db.defaultProject.findUnique).mockResolvedValue({
-      id: "dp-1",
-      userId: "user-1",
-      projectId: DEFAULT_PROJECT_ID,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    } as any);
     mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => ({
       ...baseTaskRow,
       secondProjectId: data.secondProjectId,
@@ -134,10 +127,9 @@ describe("PUT /api/tasks/[taskId]/second-project", () => {
     );
   });
 
-  it("allows clearing the override even when the task's real project is no longer the default", async () => {
-    // Simulates the user having switched their default project after moving a
-    // task: the task's real projectId is now a non-default project, but it must
-    // still be movable back to the inbox so it is not stranded.
+  it("allows clearing the override for a task whose real project is not the default", async () => {
+    // Clearing always files the task back under its own real project, whatever
+    // that is, so a moved task can never be stranded.
     vi.mocked(db.task.findFirst).mockResolvedValue({
       ...baseTaskRow,
       projectId: "former-default-project",
@@ -153,15 +145,41 @@ describe("PUT /api/tasks/[taskId]/second-project", () => {
     );
   });
 
-  it("rejects moving a task whose real project is NOT the default project", async () => {
+  it("moves a task whose real project is NOT the default project", async () => {
+    // Any owned task can be filed under any other own project, not just tasks
+    // that live in the default project.
     vi.mocked(db.task.findFirst).mockResolvedValue({
       ...baseTaskRow,
       projectId: "some-other-project",
     } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({
+      id: TARGET_PROJECT_ID,
+      userId: "user-1",
+    } as any);
 
     const response = await callPut({ second_project_id: TARGET_PROJECT_ID });
-    expect(response.status).toBe(403);
-    expect(vi.mocked(db.task.update)).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(vi.mocked(db.task.update)).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { secondProjectId: TARGET_PROJECT_ID } }),
+    );
+  });
+
+  it("allows the default project itself as a target for a non-default task", async () => {
+    // Filing an "archive"-style task back into the inbox is a real move now
+    // that the source no longer has to be the default project.
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      ...baseTaskRow,
+      projectId: "some-other-project",
+    } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({
+      id: DEFAULT_PROJECT_ID,
+      userId: "user-1",
+    } as any);
+
+    const response = await callPut({ second_project_id: DEFAULT_PROJECT_ID });
+    expect(response.status).toBe(200);
+    const json = await extractJson(response);
+    expect(json.second_project_id).toBe(DEFAULT_PROJECT_ID);
   });
 
   it("rejects a target project that does not belong to the caller", async () => {
@@ -173,12 +191,38 @@ describe("PUT /api/tasks/[taskId]/second-project", () => {
     expect(vi.mocked(db.task.update)).not.toHaveBeenCalled();
   });
 
-  it("rejects using the default project itself as the target", async () => {
-    vi.mocked(db.task.findFirst).mockResolvedValue({ ...baseTaskRow } as any);
+  it("normalises a target equal to the task's own project to null", async () => {
+    // Filing a task under the project it already belongs to is the same as
+    // having no override, so it is stored as null rather than a self-reference
+    // that would go stale if the task were ever reparented.
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      ...baseTaskRow,
+      secondProjectId: TARGET_PROJECT_ID,
+    } as any);
 
     const response = await callPut({ second_project_id: DEFAULT_PROJECT_ID });
-    expect(response.status).toBe(400);
-    expect(vi.mocked(db.task.update)).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    const json = await extractJson(response);
+    expect(json.second_project_id).toBeNull();
+    expect(vi.mocked(db.project.findFirst)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.task.update)).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { secondProjectId: null } }),
+    );
+  });
+
+  it("does not depend on the user's default-project mapping", async () => {
+    // Eligibility used to hinge on the default project; it must not anymore,
+    // including for users whose default mapping row is missing.
+    vi.mocked(db.defaultProject.findUnique).mockResolvedValue(null);
+    vi.mocked(db.task.findFirst).mockResolvedValue({ ...baseTaskRow } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({
+      id: TARGET_PROJECT_ID,
+      userId: "user-1",
+    } as any);
+
+    const response = await callPut({ second_project_id: TARGET_PROJECT_ID });
+    expect(response.status).toBe(200);
+    expect(vi.mocked(db.defaultProject.findUnique)).not.toHaveBeenCalled();
   });
 
   it("returns 404 for a task the caller does not own", async () => {

@@ -11,6 +11,7 @@ const unhideProjectGroupMock = vi.fn();
 const startProjectCollaborationMock = vi.fn();
 const leaveCollaborationMock = vi.fn();
 const setProjectMergeOptOutMock = vi.fn();
+const countTasksFiledElsewhereMock = vi.fn();
 const pushToastMock = vi.fn();
 const confirmMock = vi.fn();
 const writeTextMock = vi.fn();
@@ -52,6 +53,7 @@ vi.mock('../store', () => ({
       startProjectCollaboration: startProjectCollaborationMock,
       leaveCollaboration: leaveCollaborationMock,
       setProjectMergeOptOut: setProjectMergeOptOutMock,
+      countTasksFiledElsewhere: countTasksFiledElsewhereMock,
     };
     if (typeof selector === 'function') {
       return selector({ ...projectsState, ...actions });
@@ -117,6 +119,8 @@ describe('ProjectItem', () => {
     leaveCollaborationMock.mockReset();
     setProjectMergeOptOutMock.mockReset();
     setProjectMergeOptOutMock.mockResolvedValue({});
+    countTasksFiledElsewhereMock.mockReset();
+    countTasksFiledElsewhereMock.mockResolvedValue(0);
     projectsState = { projects: [] };
     pushToastMock.mockReset();
     confirmMock.mockReset();
@@ -891,4 +895,46 @@ describe('ProjectItem', () => {
       ).toBeNull();
     });
   });
+
+  describe('delete confirmation', () => {
+    const openDelete = () => {
+      render(<ProjectItem project={{ id: 'project-del', name: 'Reading', daemonHost: 'daemon-a', workspacePath: '/repo', repoRoot: '/repo' } as any} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Project actions' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Delete project' }));
+    };
+
+    it('warns how many tasks filed under other projects will also be deleted', async () => {
+      countTasksFiledElsewhereMock.mockResolvedValue(2);
+      openDelete();
+
+      await waitFor(() => expect(confirmMock).toHaveBeenCalled());
+      expect(countTasksFiledElsewhereMock).toHaveBeenCalledWith(['project-del']);
+      expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({
+        description:
+          '2 tasks from this project are filed under other projects and will also be deleted. This action cannot be undone.',
+      }));
+      await waitFor(() => expect(deleteProjectMock).toHaveBeenCalledWith('project-del'));
+    });
+
+    it('keeps the plain confirmation when nothing is filed elsewhere', async () => {
+      openDelete();
+
+      await waitFor(() => expect(confirmMock).toHaveBeenCalled());
+      expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({
+        description: 'This action cannot be undone.',
+      }));
+    });
+
+    it('falls back to a generic warning when the count cannot be loaded', async () => {
+      countTasksFiledElsewhereMock.mockRejectedValue(new Error('offline'));
+      openDelete();
+
+      await waitFor(() => expect(confirmMock).toHaveBeenCalled());
+      expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({
+        description:
+          'Tasks from this project that are filed under other projects will also be deleted. This action cannot be undone.',
+      }));
+    });
+  });
+
 });

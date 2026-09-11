@@ -699,9 +699,7 @@ export async function generateDailyReport(input: {
 
   const tasks = (await (db as any).task.findMany({
     where: {
-      // Archived (hidden) projects are left out of the report entirely,
-      // including the summary text and pushed notifications.
-      project: { userId: input.userId, hiddenAt: null },
+      project: { userId: input.userId },
       OR: [
         { createdAt: { gte: start, lt: end } },
         { updatedAt: { gte: start, lt: end } },
@@ -735,6 +733,19 @@ export async function generateDailyReport(input: {
     orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
   })) as ReportTaskRow[];
 
+  // Tasks are reported under the project they are DISPLAYED in (display-only
+  // `secondProjectId` override, else their real project). The override has no
+  // relation, so filed projects are looked up by id; a missing one falls back.
+  const filedProjectIds = [...new Set(tasks.flatMap((task) => (task.secondProjectId ? [task.secondProjectId] : [])))];
+  const filedProjects = new Map<string, ReportTaskRow["project"]>(
+    filedProjectIds.length > 0
+      ? ((await (db as any).project.findMany({
+          where: { userId: input.userId, id: { in: filedProjectIds } },
+          select: { id: true, name: true, daemonHost: true },
+        })) as Array<ReportTaskRow["project"]>).map((project): [string, ReportTaskRow["project"]] => [project.id, project])
+      : [],
+  );
+
   const projectMap = new Map<string, DailyReportProject>();
   const totals = {
     projects: 0,
@@ -745,9 +756,10 @@ export async function generateDailyReport(input: {
     killed: 0,
   };
 
-  // Tasks moved into a project (`secondProjectId`) are listed under it in the
-  // task list, so they follow that project's hide state here too. The column
-  // has no relation, hence the separate lookup.
+  // Archived (hidden) projects are left out of the report entirely, including
+  // the summary text and pushed notifications. Like the task list, a task
+  // follows the hide state of the project it is DISPLAYED under (see the loop),
+  // so this is a per-task check rather than a query filter.
   const hiddenProjectIds = new Set(
     ((await (db as any).project.findMany({
       where: { userId: input.userId, hiddenAt: { not: null } },
@@ -756,7 +768,8 @@ export async function generateDailyReport(input: {
   );
 
   for (const task of tasks) {
-    if (task.secondProjectId && hiddenProjectIds.has(task.secondProjectId)) {
+    const displayProject = (task.secondProjectId && filedProjects.get(task.secondProjectId)) || task.project;
+    if (hiddenProjectIds.has(displayProject.id)) {
       continue;
     }
     const events = buildTaskEvents(task, start, end, timezone);
@@ -771,16 +784,16 @@ export async function generateDailyReport(input: {
     const messageCount = events.filter((event) => event.type === "message").length;
     totals.messages += messageCount;
 
-    const projectId = task.project.id;
+    const projectId = displayProject.id;
     let project = projectMap.get(projectId);
     if (!project) {
       project = {
         projectId,
         project_id: projectId,
-        projectName: task.project.name,
-        project_name: task.project.name,
-        daemonHost: task.project.daemonHost ?? null,
-        daemon_host: task.project.daemonHost ?? null,
+        projectName: displayProject.name,
+        project_name: displayProject.name,
+        daemonHost: displayProject.daemonHost ?? null,
+        daemon_host: displayProject.daemonHost ?? null,
         summary: "",
         stats: {
           tasksTouched: 0,

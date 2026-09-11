@@ -457,10 +457,10 @@ export async function DELETE(
       where: activeTaskWhere,
     });
     // Tasks that were *displayed* under this project via the display-only
-    // `secondProjectId` override still live in their real (default) project.
-    // Clearing the override reverts them to the inbox instead of leaving them
-    // orphaned — pointing at a project that no longer exists would hide them
-    // from every task-list view (excluded from default, target gone).
+    // `secondProjectId` override still live in their real (home) project.
+    // Clearing the override reverts them to that home project instead of
+    // leaving them orphaned — pointing at a project that no longer exists would
+    // hide them from every task-list view (excluded from home, target gone).
     // Gated on the same schema probe: `second_project_id` ships in the same
     // migration batch as `achieved_at`, and a P2022 inside the transaction
     // would abort the whole delete on a pre-migration schema.

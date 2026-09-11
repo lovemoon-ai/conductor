@@ -1,6 +1,7 @@
 import { appendUserMessageToTask } from "@/lib/channel/task-ingress-service";
 import { db } from "@/lib/db";
 import { normalizeTaskStatus } from "@/lib/tasks/task-config";
+import { isMissingSecondProjectIdColumnError } from "@/lib/tasks/pty-compat";
 
 export type ScheduledMessageMode =
   | {
@@ -573,28 +574,68 @@ export async function countActiveScheduledMessagesForProjects(input: {
   }
 
   try {
-    const rows = await scheduledMessage.findMany({
-      where: {
-        userId: input.userId,
-        status: "active",
-        ...(projectIds
-          ? {
-              task: {
-                projectId: { in: projectIds },
-              },
-            }
-          : {}),
-      },
-      select: {
-        task: {
-          select: {
-            projectId: true,
+    // Attribute each schedule to the project its task is DISPLAYED under (the
+    // display-only `secondProjectId` override, else the real project), matching
+    // the project task list. A schema without `second_project_id` falls back to
+    // the real project, which is equivalent there (no task can be filed).
+    let taskProjects: Array<{ projectId: string | null; secondProjectId: string | null }>;
+    try {
+      const rows = await scheduledMessage.findMany({
+        where: {
+          userId: input.userId,
+          status: "active",
+          ...(projectIds
+            ? {
+                task: {
+                  OR: [
+                    { projectId: { in: projectIds }, secondProjectId: null },
+                    { secondProjectId: { in: projectIds } },
+                  ],
+                },
+              }
+            : {}),
+        },
+        select: {
+          task: {
+            select: {
+              projectId: true,
+              secondProjectId: true,
+            },
           },
         },
-      },
-    });
-    for (const row of rows) {
-      const projectId = row.task?.projectId;
+      });
+      taskProjects = rows.map((row) => ({
+        projectId: row.task?.projectId ?? null,
+        secondProjectId: row.task?.secondProjectId ?? null,
+      }));
+    } catch (error) {
+      if (!isMissingSecondProjectIdColumnError(error)) {
+        throw error;
+      }
+      const rows = await scheduledMessage.findMany({
+        where: {
+          userId: input.userId,
+          status: "active",
+          ...(projectIds
+            ? {
+                task: {
+                  projectId: { in: projectIds },
+                },
+              }
+            : {}),
+        },
+        select: {
+          task: {
+            select: {
+              projectId: true,
+            },
+          },
+        },
+      });
+      taskProjects = rows.map((row) => ({ projectId: row.task?.projectId ?? null, secondProjectId: null }));
+    }
+    for (const task of taskProjects) {
+      const projectId = task.secondProjectId ?? task.projectId;
       if (!projectId) {
         continue;
       }

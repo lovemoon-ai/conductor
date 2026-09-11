@@ -210,15 +210,14 @@ const buildTaskMessagePreviews = async (
 };
 
 // `projectIds` may be `null` (no filter), `[id]` (single project) or
-// `[a, b, …]` (cross-daemon merged group). Display grouping honours the
-// display-only `secondProjectId` override so a moved default-project task
-// appears under its target project and NOT under the default one:
+// `[a, b, …]` (cross-daemon merged group). Display grouping (the default, what
+// every user-facing client such as web and Rokid expects) honours the
+// display-only `secondProjectId` override so a moved task appears under its
+// target project and NOT under its home one:
 //   - a task whose real `projectId` is in the set but which has been moved
 //     out (`secondProjectId` set) is EXCLUDED (mutual exclusion), and
 //   - a task moved INTO one of these projects (`secondProjectId` in the set)
-//     is INCLUDED even though its real `projectId` is the default project.
-// `secondProjectId` is only ever set on default-project tasks, so for regular
-// projects the second clause is a no-op and behaviour is unchanged.
+//     is INCLUDED even though its real `projectId` is some other project.
 const buildProjectIdFilter = (projectIds: string[] | null): Record<string, unknown> => {
   if (projectIds === null) return {};
   const idClause = projectIds.length === 1 ? projectIds[0] : { in: projectIds };
@@ -230,10 +229,11 @@ const buildProjectIdFilter = (projectIds: string[] | null): Record<string, unkno
   };
 };
 
-// Pre-`second_project_id` fallback filter: plain projectId match, no reference
-// to the display-only column. Used only when the DB predates the
-// `second_project_id` migration, so the OR-based filter above would throw.
-const buildLegacyProjectIdFilter = (
+// Real-project filter: plain projectId match, no reference to the display-only
+// column. Used when a caller opts in with `project_scope=real` (the SDK's
+// `list_tasks` must see its project's real tasks), and as the fallback for
+// display grouping when the DB predates the `second_project_id` migration.
+const buildRealProjectIdFilter = (
   projectIds: string[] | null,
 ): Record<string, unknown> => {
   if (projectIds === null) return {};
@@ -292,7 +292,14 @@ const runTaskListQuery = (
   );
 };
 
-const findTasksForList = async (userId: string, projectIds: string[] | null) => {
+const findTasksForList = async (
+  userId: string,
+  projectIds: string[] | null,
+  displayGrouping: boolean,
+) => {
+  if (!displayGrouping) {
+    return runTaskListQuery(userId, buildRealProjectIdFilter(projectIds));
+  }
   try {
     return await runTaskListQuery(userId, buildProjectIdFilter(projectIds));
   } catch (error) {
@@ -305,7 +312,7 @@ const findTasksForList = async (userId: string, projectIds: string[] | null) => 
     console.warn(
       "[tasks.GET.list] second_project_id column missing; falling back to plain projectId filter. Run 'pnpm -C web db:push'.",
     );
-    return runTaskListQuery(userId, buildLegacyProjectIdFilter(projectIds));
+    return runTaskListQuery(userId, buildRealProjectIdFilter(projectIds));
   }
 };
 
@@ -378,6 +385,9 @@ export async function GET(request: NextRequest) {
   }
 
   const recoverStale = searchParams.get("recover_stale") === "1";
+  // Programmatic callers (SDK `list_tasks`, the delete-impact count) opt into
+  // the real project association; user-facing clients keep display grouping.
+  const displayGrouping = searchParams.get("project_scope") !== "real";
 
   const projectIdFilter: string[] | null = explicitProjectIds.length > 0
     ? explicitProjectIds
@@ -391,7 +401,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json([]);
   }
 
-  const rawTasks = await findTasksForList(user.id, projectIdFilter);
+  const rawTasks = await findTasksForList(user.id, projectIdFilter, displayGrouping);
 
   // Exclude PTY tasks that are attached to an AI task — they are rendered
   // inside the AI task's detail pane, not as standalone cards. We exclude

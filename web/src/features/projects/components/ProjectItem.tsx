@@ -180,6 +180,7 @@ export function ProjectItem({
     updateProject,
     deleteProject,
     deleteProjectGroup,
+    countTasksFiledElsewhere,
     hideProjectGroup,
     unhideProjectGroup,
     startProjectCollaboration,
@@ -409,13 +410,27 @@ export function ProjectItem({
     }
     const memberIds = groupMembers.map((member) => member.id);
     const memberCount = memberIds.length;
+    // Tasks from this project that were filed under another project (display-
+    // only move) still live here and are deleted with it, so say how many. If
+    // the count can't be loaded, warn generically rather than stay silent.
+    let filedElsewhereNote = '';
+    try {
+      const filedElsewhere = await countTasksFiledElsewhere(memberIds);
+      if (filedElsewhere > 0) {
+        filedElsewhereNote = filedElsewhere === 1
+          ? '1 task from this project is filed under another project and will also be deleted. '
+          : `${filedElsewhere} tasks from this project are filed under other projects and will also be deleted. `;
+      }
+    } catch {
+      filedElsewhereNote = 'Tasks from this project that are filed under other projects will also be deleted. ';
+    }
     const accepted = await confirm({
       title: isMergedGroup
         ? `Delete merged project "${project.name}" on ${memberCount} daemons?`
         : `Delete project "${project.name}"?`,
       description: isMergedGroup
-        ? 'This deletes the project from every daemon it is bound to. This action cannot be undone.'
-        : 'This action cannot be undone.',
+        ? `This deletes the project from every daemon it is bound to. ${filedElsewhereNote}This action cannot be undone.`
+        : `${filedElsewhereNote}This action cannot be undone.`,
       confirmLabel: 'Delete',
       tone: 'danger',
     });

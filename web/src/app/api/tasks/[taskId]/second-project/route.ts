@@ -10,11 +10,12 @@ import { serializeTaskResponse } from "@/lib/tasks/serialization";
  * that changes which project bucket a task renders under WITHOUT touching its
  * real `projectId`, daemon, session, or any runtime behaviour. Constraints:
  *
- *   - Only tasks whose real `projectId` is the caller's default project may be
- *     moved (a moved task keeps `projectId === default`, so it always remains
- *     eligible to be moved back).
- *   - The target project must belong to the caller and must not be the default
- *     project itself — passing `null` is how a task is moved back to default.
+ *   - Any owned task may be moved, regardless of which project it really
+ *     belongs to. A move never rewrites `projectId`, so the task always stays
+ *     eligible to be moved back to its home project.
+ *   - The target project must belong to the caller. Passing `null` — or the
+ *     task's own home project — clears the override and files the task back
+ *     under its home project.
  */
 
 type SecondProjectBody = {
@@ -74,30 +75,14 @@ export async function PUT(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const defaultProject = await db.defaultProject.findUnique({
-    where: { userId: user.id },
-  });
+  // Filing a task under its own home project is the same thing as having no
+  // override at all, so normalise it to `null` instead of storing a redundant
+  // (and later stale) self-reference.
+  const nextProjectId = targetProjectId === task.projectId ? null : targetProjectId;
 
-  // Moving OUT (setting a target) is only allowed for tasks whose real project
-  // is the current default. Moving BACK to the inbox (clearing the override) is
-  // always allowed for an owned task — otherwise a task moved before the user
-  // switched their default project could never be reverted (its real project is
-  // no longer the default), leaving it stranded.
-  if (targetProjectId !== null) {
-    if (!defaultProject || task.projectId !== defaultProject.projectId) {
-      return NextResponse.json(
-        { error: "Only default-project tasks can be moved" },
-        { status: 403 },
-      );
-    }
-    if (targetProjectId === defaultProject.projectId) {
-      return NextResponse.json(
-        { error: "Use null to move a task back to the default project" },
-        { status: 400 },
-      );
-    }
+  if (nextProjectId !== null) {
     const target = await db.project.findFirst({
-      where: { id: targetProjectId, userId: user.id },
+      where: { id: nextProjectId, userId: user.id },
     });
     if (!target) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
@@ -106,7 +91,7 @@ export async function PUT(
 
   const updated = await db.task.update({
     where: { id: taskId },
-    data: { secondProjectId: targetProjectId },
+    data: { secondProjectId: nextProjectId },
     include: { ptySession: true },
   });
 
