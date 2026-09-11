@@ -617,6 +617,11 @@ export class KimiPrintSession extends EventEmitter {
         const stdoutReader = readline.createInterface({ input: child.stdout });
         const stderrReader = readline.createInterface({ input: child.stderr });
         let timeoutId = null;
+        let lastActivityAt = Date.now();
+
+        const noteTurnActivity = () => {
+          lastActivityAt = Date.now();
+        };
 
         const settle = (error, value = null) => {
           if (currentTurn.settled) {
@@ -635,18 +640,36 @@ export class KimiPrintSession extends EventEmitter {
           resolve(value);
         };
 
-        timeoutId = setTimeout(() => {
-          try {
-            child.kill("SIGTERM");
-          } catch {
-            // ignore
+        // Activity-based idle deadline (aligned with wire mode): any stdout/stderr
+        // output resets the idle clock, so a busy turn is never killed mid-work;
+        // only a turn with no output at all for turnDeadlineMs is considered stuck.
+        const scheduleTurnDeadline = () => {
+          if (currentTurn.settled) {
+            return;
           }
-          settle(
-            createTurnError("Kimi print turn timed out", {
-              reason: "turn_timeout",
-            }),
-          );
-        }, this.turnDeadlineMs);
+          const idleMs = Math.max(0, Date.now() - lastActivityAt);
+          const waitMs = Math.max(1, this.turnDeadlineMs - idleMs);
+          timeoutId = setTimeout(() => {
+            if (currentTurn.settled) {
+              return;
+            }
+            if (Date.now() - lastActivityAt < this.turnDeadlineMs) {
+              scheduleTurnDeadline();
+              return;
+            }
+            try {
+              child.kill("SIGTERM");
+            } catch {
+              // ignore
+            }
+            settle(
+              createTurnError("Kimi print turn timed out", {
+                reason: "turn_timeout",
+              }),
+            );
+          }, waitMs);
+        };
+        scheduleTurnDeadline();
 
         stdoutReader.on("line", (line) => {
           const normalizedLine = String(line || "").trim();
@@ -659,6 +682,7 @@ export class KimiPrintSession extends EventEmitter {
           } catch {
             payload = { role: "raw", content: normalizedLine };
           }
+          noteTurnActivity();
           currentTurn.items.push(payload);
           const role = String(payload?.role || "").trim().toLowerCase();
           if (role === "meta") {
@@ -712,6 +736,7 @@ export class KimiPrintSession extends EventEmitter {
           if (!normalizedLine.trim()) {
             return;
           }
+          noteTurnActivity();
           currentTurn.stderrTail.push(normalizedLine);
           if (currentTurn.stderrTail.length > 20) {
             currentTurn.stderrTail.shift();
