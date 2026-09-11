@@ -235,6 +235,16 @@ describe('TaskDetailPage', () => {
     expect(pushMock).toHaveBeenCalledWith('/app/tasks?projectId=project-1');
   });
 
+  it('navigates back to the project a filed task is displayed under', async () => {
+    tasksState = [{ ...tasksState[0], secondProjectId: 'project-2' } as (typeof tasksState)[number]];
+    projectsState = [...projectsState, { id: 'project-2', name: 'Project Two', daemonHost: null }];
+    render(<TaskDetailPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'back' }));
+
+    expect(pushMock).toHaveBeenCalledWith('/app/tasks?projectId=project-2');
+  });
+
   it('prefers a safe graph return href when present', async () => {
     searchParamsState.set('from', '/app/tasks?projectId=project-1&view=graph');
 

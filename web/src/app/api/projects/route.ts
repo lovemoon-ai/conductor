@@ -315,13 +315,22 @@ const getNextProjectSortOrder = async (userId: string): Promise<number | null> =
 // Per-project status counts, excluding achieved (packed) tasks. On a
 // pre-migration schema that lacks `achieved_at`, retry without the filter so
 // the projects list keeps working (such rows can't be achieved anyway).
+// Counts are attributed to the project a task is DISPLAYED under (its
+// display-only `secondProjectId` override, else its real project) so a card's
+// running/stopped chips match the task list it opens. The pre-migration
+// fallback groups by real project, which is equivalent there (no overrides).
 const groupTaskStatusCounts = async (userId: string) => {
   try {
-    return await db.task.groupBy({
-      by: ["projectId", "status"],
+    const groups = await db.task.groupBy({
+      by: ["projectId", "secondProjectId", "status"],
       where: { project: { userId }, achievedAt: null },
       _count: { _all: true },
     });
+    return groups.map(({ projectId, secondProjectId, status, _count }) => ({
+      projectId: secondProjectId ?? projectId,
+      status,
+      _count,
+    }));
   } catch (error) {
     if (!isMissingPtySchemaError(error)) throw error;
     return db.task.groupBy({
@@ -1147,6 +1156,18 @@ export const DELETE = requireActiveSubscription(async (request: NextRequest, use
     await tx.task.deleteMany({
       where: activeTaskWhere,
     });
+    // Tasks filed under this project via the display-only `secondProjectId`
+    // override still live in their real (home) project. Clearing the override
+    // reverts them there — a dangling override would hide them from every
+    // project view (excluded from home, target gone). Gated on the same schema
+    // probe as the achieved re-home: `second_project_id` ships in the same
+    // migration batch, and a P2022 inside the transaction aborts the delete.
+    if (achievedColumnAvailable) {
+      await tx.task.updateMany({
+        where: { secondProjectId: projectId },
+        data: { secondProjectId: null },
+      });
+    }
     if (achievedHomeProjectId) {
       await tx.task.updateMany({
         where: { projectId, achievedAt: { not: null } },

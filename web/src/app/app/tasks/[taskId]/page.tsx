@@ -29,6 +29,7 @@ import {
 } from '@/features/tasks/utils/task-card-groups';
 import { useTaskCardGroupsSyncStore } from '@/features/tasks/task-card-groups-sync-store';
 import { buildTaskListNavigation } from '@/features/tasks/utils/task-list-navigation';
+import { resolveTaskDisplayProjectId } from '@/features/tasks/utils/task-filter';
 import {
   buildTaskDetailHref,
   normalizeTaskListReturnHref,
@@ -89,7 +90,9 @@ export default function TaskDetailPage() {
     isDragging: false,
   });
   const taskSwitchAnimationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const backProjectId = task?.projectId || selectedProjectId;
+  // Return to the list the task is DISPLAYED in (a filed task is not in its
+  // real project's list), unless the caller passed an explicit `from`.
+  const backProjectId = (task ? resolveTaskDisplayProjectId(task) : null) || selectedProjectId;
   const returnHref = normalizeTaskListReturnHref(searchParams.get('from')) ?? buildTaskListHref(backProjectId);
   const returnSearchParams = useMemo(() => {
     const queryIndex = returnHref.indexOf('?');

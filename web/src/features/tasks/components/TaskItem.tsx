@@ -16,7 +16,7 @@ import { RestartTaskControls } from './RestartTaskControls';
 import { PtyToggleButton } from './PtyToggleButton';
 import { useTasksStore } from '../store';
 import { usePtyToggleStore } from '../pty-toggle-store';
-import { getStableTaskBackend } from '../utils/task-filter';
+import { getStableTaskBackend, resolveTaskDisplayProjectId } from '../utils/task-filter';
 import { useProjectsStore } from '@/features/projects/store';
 import { useRuntimeStore } from '@/features/realtime';
 import { getApiClient } from '@/shared/api/client';
@@ -134,11 +134,12 @@ const SwipeActionPopup = ({ state }: { state: SwipeActionPopupState }) => {
 // portal (fixed positioning) so it escapes the task card wrapper's
 // `overflow-hidden` clip box. Lists the caller's own projects; selecting one
 // sets the task's `secondProjectId` (display override only). A moved task also
-// gets a "move back to inbox" entry that clears the override.
+// gets a "move back to <home project>" entry that clears the override.
 const MoveToProjectMenu = ({
   anchor,
   projects,
   movedToProjectId,
+  homeProjectName,
   disabled,
   onSelect,
   onDismiss,
@@ -146,6 +147,7 @@ const MoveToProjectMenu = ({
   anchor: { top: number; left: number; bottom: number };
   projects: { id: string; name: string; daemonHost?: string | null }[];
   movedToProjectId: string | null;
+  homeProjectName: string | null;
   disabled: boolean;
   onSelect: (projectId: string | null) => void;
   onDismiss: () => void;
@@ -189,7 +191,7 @@ const MoveToProjectMenu = ({
           onClick={() => onSelect(null)}
           className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink hover:bg-[var(--accent)]/10 disabled:opacity-50"
         >
-          ← 移回收件箱
+          ← 移回{homeProjectName ?? '原项目'}
         </button>
       ) : null}
       {movedToProjectId && projects.length > 0 ? (
@@ -586,37 +588,35 @@ function TaskItemComponent({
     (showAttachedTerminalAction ? 1 : 0);
   const rightActionColumns = Math.max(1, Math.ceil(rightActionButtonCount / 2));
   const rightActionWidth = RIGHT_ACTION_BUTTON_WIDTH * rightActionColumns;
-  // Display-only "move to project" availability. Only tasks whose REAL project
-  // is the default project may be moved; a moved task keeps `projectId ===
-  // default`, so it stays eligible and can always be moved back (clear
-  // `secondProjectId`). Collaboration projects are excluded per the feature
-  // spec (only the caller's own projects are valid targets).
-  const defaultProjectId = useMemo(
-    () => projects.find((project) => project.isDefault)?.id ?? null,
-    [projects],
-  );
+  // Display-only "move to project" availability. ANY owned task may be filed
+  // under any other own project: a move only writes `secondProjectId` and never
+  // rewrites `projectId`, so the task always stays eligible to be moved back to
+  // its home project. Collaboration projects are excluded per the feature spec
+  // (only the caller's own projects are valid targets), as are hidden projects
+  // (filing a task into one would make it disappear). The task's own home
+  // project is excluded too — filing it there is what "move back" already does.
+  const homeProjectId =
+    typeof task.projectId === 'string' && task.projectId.trim() ? task.projectId.trim() : null;
   const moveTargetProjects = useMemo(
     () =>
       projects.filter(
-        (project) => !project.isDefault && !project.hidden && !project.collaborationId,
+        (project) =>
+          !project.hidden && !project.collaborationId && project.id !== homeProjectId,
       ),
-    [projects],
+    [projects, homeProjectId],
   );
-  const isDefaultProjectTask =
-    !!defaultProjectId && (task.projectId ?? null) === defaultProjectId;
   const movedToProjectId =
     typeof task.secondProjectId === 'string' && task.secondProjectId.trim()
       ? task.secondProjectId.trim()
       : null;
-  // Re-targeting (picking a project) is only offered for default-project tasks.
-  // The picker lists the caller's own non-default projects.
-  const moveMenuProjects = isDefaultProjectTask ? moveTargetProjects : [];
-  // The move action is available when the task can be moved out (default-project
-  // task with somewhere to go) OR moved back (already carries an override). The
-  // latter keeps "move back to inbox" reachable even if the user later switched
-  // their default project, which would otherwise strand the task.
-  const canMoveToProject =
-    (isDefaultProjectTask && moveTargetProjects.length > 0) || movedToProjectId !== null;
+  // Name of the task's real project, used to label the "move back" entry. Falls
+  // back to a generic label when the home project is not in the visible list.
+  const homeProjectName =
+    projects.find((project) => project.id === homeProjectId)?.name ?? null;
+  // The move action is available when there is somewhere to file the task OR it
+  // already carries an override. The latter keeps "move back" reachable even
+  // when every other project is hidden, which would otherwise strand the task.
+  const canMoveToProject = moveTargetProjects.length > 0 || movedToProjectId !== null;
   const leftActionWidth = LEFT_ACTION_WIDTH * (canMoveToProject ? 2 : 1);
   // When the button count is odd, the bottom-right cell would otherwise be
   // a void. We render a small decorative slot there so the row stays
@@ -1236,7 +1236,9 @@ function TaskItemComponent({
       ? `Click to clear ${taskTypeChipLabel} filter`
       : `Click to show only ${taskTypeChipLabel} tasks`
     : undefined;
-  const projectId = task.projectId ?? null;
+  // The chip is labelled with the project the task is DISPLAYED under (see
+  // TaskList), so filtering must use the same id or a filed task would vanish.
+  const projectId = resolveTaskDisplayProjectId(task);
   const isProjectFilterActive = Boolean(projectId) && activeProjectFilter === projectId;
   const projectChipTitle = onFilterByProject && projectId
     ? isProjectFilterActive
@@ -1430,8 +1432,8 @@ function TaskItemComponent({
           <button
             type="button"
             tabIndex={isLeftActionsOpen ? 0 : -1}
-            aria-label={movedToProjectId ? 'Move task back to inbox' : 'Move task to project'}
-            title={movedToProjectId ? 'Move back to inbox' : 'Move to project'}
+            aria-label={movedToProjectId ? 'Move task back to its own project' : 'Move task to project'}
+            title={movedToProjectId ? 'Move back' : 'Move to project'}
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -1454,8 +1456,9 @@ function TaskItemComponent({
       {canMoveToProject && moveMenuAnchor ? (
         <MoveToProjectMenu
           anchor={moveMenuAnchor}
-          projects={moveMenuProjects}
+          projects={moveTargetProjects}
           movedToProjectId={movedToProjectId}
+          homeProjectName={homeProjectName}
           disabled={isMovingProject}
           onSelect={(projectId) => void handleMoveToProject(projectId)}
           onDismiss={() => setMoveMenuAnchor(null)}

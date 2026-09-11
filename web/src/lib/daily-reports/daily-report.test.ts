@@ -71,6 +71,17 @@ const settingRow = {
   updatedAt: date("2026-07-01T00:00:00.000Z"),
 };
 
+// `generateDailyReport` looks projects up twice: archived ids (`hiddenAt`) and
+// the projects tasks are filed under (`id in`). Answer each like the DB would.
+const mockProjectLookups = (
+  hiddenIds: string[],
+  filedProjects: Array<{ id: string; name: string; daemonHost: string | null }>,
+) =>
+  vi.mocked(db.project.findMany).mockImplementation((async (args: any) =>
+    args?.where?.hiddenAt
+      ? hiddenIds.map((id) => ({ id }))
+      : filedProjects.filter((project) => args?.where?.id?.in?.includes(project.id))) as any);
+
 describe("daily reports", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -164,6 +175,42 @@ describe("daily reports", () => {
     );
   });
 
+  it("reports a filed task under the project it is displayed in", async () => {
+    const touchedTask = (id: string, overrides: Record<string, unknown>) => ({
+      id,
+      title: `Task ${id}`,
+      status: "completed",
+      createdAt: date("2026-07-01T01:00:00.000Z"),
+      updatedAt: date("2026-07-01T03:00:00.000Z"),
+      killedAt: null,
+      project: { id: "project-1", name: "Reading", daemonHost: "daemon-a" },
+      issue: null,
+      messages: [
+        { id: `${id}-msg`, role: "user", content: "hi", createdAt: date("2026-07-01T01:10:00.000Z") },
+      ],
+      taskStatusEvents: [],
+      ...overrides,
+    });
+    vi.mocked(db.task.findMany).mockResolvedValue([
+      touchedTask("task-home", {}),
+      // Really lives in project-1, but the user filed it under project-2.
+      touchedTask("task-filed", { secondProjectId: "project-2" }),
+    ] as any);
+    mockProjectLookups([], [{ id: "project-2", name: "Work", daemonHost: "daemon-b" }]);
+
+    const report = await generateDailyReport({
+      userId: "user-1",
+      reportDate: "2026-07-01",
+      timezone: "Asia/Shanghai",
+      now: date("2026-07-01T04:00:00.000Z"),
+    });
+
+    const byName = Object.fromEntries(report.payload.projects.map((project) => [project.projectName, project]));
+    expect(byName.Reading.timeline.map((entry) => entry.taskId)).toEqual(["task-home"]);
+    expect(byName.Work.timeline.map((entry) => entry.taskId)).toEqual(["task-filed"]);
+    expect(byName.Work.daemonHost).toBe("daemon-b");
+  });
+
   it("groups touched tasks by project and builds task timelines", async () => {
     vi.mocked(db.task.findMany).mockResolvedValue([
       {
@@ -227,8 +274,31 @@ describe("daily reports", () => {
     expect(summarizeDailyReportWithGlm).not.toHaveBeenCalled();
   });
 
-  it("leaves archived (hidden) projects out of the report query", async () => {
-    await generateDailyReport({
+  it("follows the hide state of the project a task is displayed under", async () => {
+    const touchedTask = (id: string, secondProjectId: string | null) => ({
+      id,
+      title: `Task ${id}`,
+      status: "completed",
+      secondProjectId,
+      createdAt: date("2026-07-01T01:00:00.000Z"),
+      updatedAt: date("2026-07-01T03:00:00.000Z"),
+      killedAt: null,
+      project: { id: "project-archived", name: "Archived", daemonHost: null },
+      issue: null,
+      messages: [
+        { id: `${id}-msg`, role: "user", content: "Do it", createdAt: date("2026-07-01T01:10:00.000Z") },
+      ],
+      taskStatusEvents: [],
+    });
+    vi.mocked(db.task.findMany).mockResolvedValue([
+      touchedTask("task-archived-home", null),
+      // Lives in the archived project but is filed under a visible one, so the
+      // task list still shows it there.
+      touchedTask("task-filed-out", "project-visible"),
+    ] as any);
+    mockProjectLookups(["project-archived"], [{ id: "project-visible", name: "Visible", daemonHost: null }]);
+
+    const report = await generateDailyReport({
       userId: "user-1",
       reportDate: "2026-07-01",
       timezone: "Asia/Shanghai",
@@ -236,12 +306,10 @@ describe("daily reports", () => {
     });
 
     expect(db.task.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          project: { userId: "user-1", hiddenAt: null },
-        }),
-      }),
+      expect.objectContaining({ where: expect.objectContaining({ project: { userId: "user-1" } }) }),
     );
+    expect(report.payload.projects.map((project) => project.projectName)).toEqual(["Visible"]);
+    expect(report.payload.projects[0].timeline.map((segment) => segment.taskId)).toEqual(["task-filed-out"]);
   });
 
   it("leaves tasks moved into an archived project out of the report", async () => {
@@ -265,7 +333,13 @@ describe("daily reports", () => {
       touchedTask("task-moved-visible", "project-visible"),
       touchedTask("task-moved-archived", "project-archived"),
     ] as any);
-    vi.mocked(db.project.findMany).mockResolvedValue([{ id: "project-archived" }] as any);
+    mockProjectLookups(
+      ["project-archived"],
+      [
+        { id: "project-visible", name: "Visible", daemonHost: null },
+        { id: "project-archived", name: "Archived", daemonHost: null },
+      ],
+    );
 
     const report = await generateDailyReport({
       userId: "user-1",
@@ -279,10 +353,10 @@ describe("daily reports", () => {
       select: { id: true },
     });
     expect(report.payload.totals.tasks).toBe(2);
-    expect(report.payload.projects[0].timeline.map((segment) => segment.taskId).sort()).toEqual([
-      "task-kept",
-      "task-moved-visible",
-    ]);
+    const timelineByProject = Object.fromEntries(
+      report.payload.projects.map((project) => [project.projectName, project.timeline.map((segment) => segment.taskId)]),
+    );
+    expect(timelineByProject).toEqual({ Inbox: ["task-kept"], Visible: ["task-moved-visible"] });
   });
 
   it("uses GLM summarization when requested", async () => {

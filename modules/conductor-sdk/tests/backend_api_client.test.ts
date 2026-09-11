@@ -68,6 +68,22 @@ describe('BackendApiClient', () => {
     ]);
   });
 
+  test('listTasks asks for the real project association', async () => {
+    const urls: string[] = [];
+    const fetchImpl: FetchFn = async (url) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    };
+    const client = new BackendApiClient(makeConfig(), { fetchImpl });
+    await client.listTasks({ projectId: 'proj-1' });
+    const requested = new URL(urls[0]);
+    expect(requested.searchParams.get('project_id')).toBe('proj-1');
+    expect(requested.searchParams.get('project_scope')).toBe('real');
+  });
+
   test('createAppTask posts directly to the frontend task pipeline', async () => {
     const urls: string[] = [];
     const fetchImpl: FetchFn = async (url, init) => {

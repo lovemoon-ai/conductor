@@ -93,8 +93,8 @@ interface TasksState {
   updateTask: (taskId: string, input: UpdateTaskInput) => Promise<Task>;
   /**
    * Display-only "move task to project". Sets `secondProjectId` (or clears it
-   * with `null` to move the task back to the default project). Only valid for
-   * default-project tasks; never changes the task's real project or daemon.
+   * with `null` to file the task back under its own project). Valid for any
+   * owned task; never changes the task's real project or daemon.
    */
   setTaskSecondProject: (taskId: string, projectId: string | null) => Promise<Task>;
   restartTask: (taskId: string, input?: RestartTaskInput) => Promise<RestartTaskResponse>;

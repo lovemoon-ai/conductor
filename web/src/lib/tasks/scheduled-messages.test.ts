@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/db", () => ({
@@ -32,6 +33,7 @@ const { db } = await import("@/lib/db");
 const { appendUserMessageToTask } = await import("@/lib/channel/task-ingress-service");
 const {
   cancelScheduledMessageForTask,
+  countActiveScheduledMessagesForProjects,
   createScheduledMessageForTask,
   deleteScheduledMessageForTask,
   getScheduledMessageStatusForTask,
@@ -455,5 +457,73 @@ describe("scheduled messages", () => {
         scheduleId: "missing",
       }),
     ).resolves.toBeNull();
+  });
+});
+
+describe("countActiveScheduledMessagesForProjects", () => {
+  const missingSecondProjectIdColumn = () =>
+    new Prisma.PrismaClientKnownRequestError(
+      "The column `tasks.second_project_id` does not exist in the current database.",
+      { code: "P2022", clientVersion: "test" },
+    );
+
+  beforeEach(() => {
+    vi.mocked(db.scheduledMessage.findMany).mockReset();
+  });
+
+  it("attributes schedules to the project their task is filed under", async () => {
+    vi.mocked(db.scheduledMessage.findMany).mockResolvedValue([
+      { task: { projectId: "proj-home", secondProjectId: null } },
+      // Really lives in proj-home, but the user filed it under proj-work.
+      { task: { projectId: "proj-home", secondProjectId: "proj-work" } },
+    ] as any);
+
+    const counts = await countActiveScheduledMessagesForProjects({ userId: "user-1" });
+
+    expect(counts.get("proj-home")).toBe(1);
+    expect(counts.get("proj-work")).toBe(1);
+  });
+
+  it("scopes a project filter by the project a task is displayed under", async () => {
+    vi.mocked(db.scheduledMessage.findMany).mockResolvedValue([
+      { task: { projectId: "proj-home", secondProjectId: "proj-work" } },
+    ] as any);
+
+    const counts = await countActiveScheduledMessagesForProjects({
+      userId: "user-1",
+      projectIds: ["proj-work"],
+    });
+
+    expect(counts.get("proj-work")).toBe(1);
+    expect(db.scheduledMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          task: {
+            OR: [
+              { projectId: { in: ["proj-work"] }, secondProjectId: null },
+              { secondProjectId: { in: ["proj-work"] } },
+            ],
+          },
+        }),
+      }),
+    );
+  });
+
+  it("falls back to the real project on a schema without second_project_id", async () => {
+    vi.mocked(db.scheduledMessage.findMany)
+      .mockRejectedValueOnce(missingSecondProjectIdColumn())
+      .mockResolvedValueOnce([{ task: { projectId: "proj-home" } }] as any);
+
+    const counts = await countActiveScheduledMessagesForProjects({
+      userId: "user-1",
+      projectIds: ["proj-home"],
+    });
+
+    expect(counts.get("proj-home")).toBe(1);
+    expect(db.scheduledMessage.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ task: { projectId: { in: ["proj-home"] } } }),
+      }),
+    );
   });
 });

@@ -121,10 +121,12 @@ describe("GET /api/tasks/achieved", () => {
   it("filters achieved tasks by project without escaping the user scope", async () => {
     await callSearch("?projectId=proj-1");
     const whereArg = vi.mocked(db.task.findMany).mock.calls[0][0] as any;
-    expect(whereArg.where.project).toEqual({
-      id: "proj-1",
-      userId: ACTIVE_USER.id,
-    });
+    expect(whereArg.where.project).toEqual({ userId: ACTIVE_USER.id });
+    // Scoped by the project a task is displayed under: a task filed into
+    // proj-1 matches, one filed out of it does not.
+    expect(whereArg.where.AND).toEqual([
+      { OR: [{ projectId: "proj-1", secondProjectId: null }, { secondProjectId: "proj-1" }] },
+    ]);
     const countArg = vi.mocked(db.task.count).mock.calls[0][0] as any;
     expect(countArg.where).toEqual(whereArg.where);
   });
@@ -132,10 +134,11 @@ describe("GET /api/tasks/achieved", () => {
   it("filters a merged project group across all member project ids", async () => {
     await callSearch("?projectIds=proj-1,proj-2");
     const whereArg = vi.mocked(db.task.findMany).mock.calls[0][0] as any;
-    expect(whereArg.where.project).toEqual({
-      id: { in: ["proj-1", "proj-2"] },
-      userId: ACTIVE_USER.id,
-    });
+    expect(whereArg.where.project).toEqual({ userId: ACTIVE_USER.id });
+    const ids = { in: ["proj-1", "proj-2"] };
+    expect(whereArg.where.AND).toEqual([
+      { OR: [{ projectId: ids, secondProjectId: null }, { secondProjectId: ids }] },
+    ]);
     const countArg = vi.mocked(db.task.count).mock.calls[0][0] as any;
     expect(countArg.where).toEqual(whereArg.where);
   });

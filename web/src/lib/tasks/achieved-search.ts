@@ -34,17 +34,28 @@ const buildAchievedTaskWhere = (args: {
       return normalized ? [normalized] : [];
     }),
   )];
+  const projectIdClause = projectIds.length === 1 ? projectIds[0] : { in: projectIds };
   const where: Record<string, unknown> = {
     project: {
       userId: args.userId,
       ...(daemonHost ? { daemonHost } : {}),
-      ...(projectIds.length === 1
-        ? { id: projectIds[0] }
-        : projectIds.length > 1
-          ? { id: { in: projectIds } }
-          : {}),
     },
     achievedAt: { not: null },
+    // Scope by the project a task is DISPLAYED under (its display-only
+    // `secondProjectId` override, else its real project), matching the task
+    // list. Under `AND` so the text-search `OR` below stays independent.
+    ...(projectIds.length > 0
+      ? {
+          AND: [
+            {
+              OR: [
+                { projectId: projectIdClause, secondProjectId: null },
+                { secondProjectId: projectIdClause },
+              ],
+            },
+          ],
+        }
+      : {}),
   };
   if (query) {
     where.OR = [
@@ -100,6 +111,7 @@ export const searchAchievedTasks = async (args: {
       id: true,
       title: true,
       projectId: true,
+      secondProjectId: true,
       backendType: true,
       agentHost: true,
       executionHost: true,
@@ -138,11 +150,28 @@ export const searchAchievedTasks = async (args: {
     }
   }
 
+  // Report the project a task is displayed under. `secondProjectId` has no
+  // relation, so filed projects' names are looked up separately; a filed
+  // project that no longer exists falls back to the real one.
+  const filedProjectIds = [...new Set(tasks.flatMap((t) => (t.secondProjectId ? [t.secondProjectId] : [])))];
+  const filedProjectNames = new Map<string, string>(
+    filedProjectIds.length > 0
+      ? (await db.project.findMany({
+          where: { userId: args.userId, id: { in: filedProjectIds } },
+          select: { id: true, name: true },
+        })).map((project): [string, string] => [project.id, project.name])
+      : [],
+  );
+
   return tasks.map((t) => ({
     id: t.id,
     title: t.title,
-    projectId: t.projectId ?? null,
-    projectName: t.project?.name ?? null,
+    projectId: t.secondProjectId && filedProjectNames.has(t.secondProjectId)
+      ? t.secondProjectId
+      : t.projectId ?? null,
+    projectName: (t.secondProjectId ? filedProjectNames.get(t.secondProjectId) : undefined)
+      ?? t.project?.name
+      ?? null,
     backendType: t.backendType ?? null,
     agentHost: t.agentHost ?? null,
     daemonHost: resolveAchievedTaskDaemonHost(t),

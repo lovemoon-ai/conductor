@@ -206,6 +206,31 @@ describe("/api/projects", () => {
       expect(countActiveScheduledMessagesForProjectsMock).toHaveBeenCalledWith({ userId: "user-1" });
     });
 
+    it("attributes task status counts to the project a task is filed under", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findMany).mockResolvedValue([
+        projectFixture({ id: "proj-home", name: "Reading", userId: "user-1" }),
+        projectFixture({ id: "proj-work", name: "Work", userId: "user-1" }),
+      ]);
+      vi.mocked(db.task.groupBy).mockResolvedValue([
+        { projectId: "proj-home", secondProjectId: null, status: "running", _count: { _all: 2 } },
+        // Really lives in proj-home, but the user filed it under proj-work.
+        { projectId: "proj-home", secondProjectId: "proj-work", status: "running", _count: { _all: 1 } },
+      ] as any);
+
+      const response = await GET(createMockRequest({ token: createTestToken("user-1") }));
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      const byId = Object.fromEntries(data.map((project: any) => [project.id, project]));
+      expect(byId["proj-home"].taskStatusCounts).toEqual({ running: 2 });
+      expect(byId["proj-work"].taskStatusCounts).toEqual({ running: 1 });
+      expect(db.task.groupBy).toHaveBeenCalledWith(
+        expect.objectContaining({ by: ["projectId", "secondProjectId", "status"] }),
+      );
+    });
+
     it("surfaces the icon read from .conductor/settings.yaml on each project", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
@@ -1004,6 +1029,12 @@ describe("/api/projects", () => {
       });
       expect(db.task.deleteMany).toHaveBeenCalledWith({
         where: { projectId: "proj-1", achievedAt: null },
+      });
+      // This is the route the web UI calls: tasks filed under the deleted
+      // project from elsewhere revert to their home project, not orphaned.
+      expect(db.task.updateMany).toHaveBeenCalledWith({
+        where: { secondProjectId: "proj-1" },
+        data: { secondProjectId: null },
       });
       expect(db.project.delete).toHaveBeenCalledWith({
         where: { id: "proj-1" },

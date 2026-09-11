@@ -13,8 +13,17 @@ const onOpenTaskMock = vi.fn();
 const confirmMock = vi.fn();
 const pushToastMock = vi.fn();
 const apiPostMock = vi.fn();
+const setTaskSecondProjectMock = vi.fn();
 const FIXED_DATE = new Date('2024-01-15T10:00:00Z');
 let runtimeByTask: Record<string, unknown> = {};
+type MockProject = {
+  id: string;
+  name: string;
+  isDefault?: boolean;
+  hidden?: boolean;
+  collaborationId?: string | null;
+};
+let mockProjects: MockProject[] = [];
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
@@ -33,13 +42,15 @@ vi.mock('../store', () => ({
       achieveTask: vi.fn(),
       markTaskRead: markTaskReadMock,
       fetchTask: vi.fn(),
-      setTaskSecondProject: vi.fn(),
+      setTaskSecondProject: setTaskSecondProjectMock,
     }),
 }));
 
-vi.mock('@/features/projects', () => ({
-  useProjectsStore: (selector: (state: { projects: Array<{ id: string; name: string }> }) => unknown) =>
-    selector({ projects: [] }),
+// TaskItem imports the store directly, so the mock must target that exact
+// specifier — mocking the '@/features/projects' barrel alone has no effect.
+vi.mock('@/features/projects/store', () => ({
+  useProjectsStore: (selector: (state: { projects: MockProject[] }) => unknown) =>
+    selector({ projects: mockProjects }),
 }));
 
 vi.mock('@/features/realtime', () => ({
@@ -91,6 +102,9 @@ vi.mock('@/components/common/Dialog', () => ({
 describe('TaskItem', () => {
   beforeEach(() => {
     runtimeByTask = {};
+    mockProjects = [];
+    setTaskSecondProjectMock.mockReset();
+    setTaskSecondProjectMock.mockResolvedValue(undefined);
     window.sessionStorage.clear();
     window.history.replaceState({}, '', '/');
     pushMock.mockReset();
@@ -1174,4 +1188,122 @@ describe('TaskItem', () => {
       Symbol.for('react.memo'),
     );
   });
+
+  describe('move to project', () => {
+    const PROJECTS: MockProject[] = [
+      { id: 'proj-default', name: 'Default Project', isDefault: true },
+      { id: 'proj-archive', name: 'Archive Papers' },
+      { id: 'proj-work', name: 'Work' },
+      { id: 'proj-hidden', name: 'Hidden One', hidden: true },
+      { id: 'proj-collab', name: 'Shared', collaborationId: 'collab-1' },
+    ];
+
+    // The move button lives in the LEFT action panel, revealed by swiping the
+    // card to the RIGHT (the mirror of the swipe-left tests above).
+    const renderTaskInProject = (projectId: string, secondProjectId: string | null = null) => {
+      render(<TaskItem
+        task={{
+          id: 'task-move', title: 'Read the paper', status: 'completed',
+          projectId, secondProjectId,
+          createdAt: FIXED_DATE.toISOString(), updatedAt: null,
+        }}
+        isUnread={false} isSelected={false} selectionMode={false} onToggleSelect={() => {}}
+      />);
+      const card = screen.getByText('Read the paper').closest('[role="button"]')!;
+      fireEvent.pointerDown(card, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+      fireEvent.pointerMove(card, { pointerId: 1, clientX: 240, pointerType: 'touch' });
+      fireEvent.pointerUp(card, { pointerId: 1, clientX: 240, pointerType: 'touch' });
+    };
+
+    const openMoveMenu = async (moved: boolean) =>
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: moved ? 'Move task back to its own project' : 'Move task to project',
+        }),
+      );
+
+    beforeEach(() => {
+      mockProjects = PROJECTS;
+    });
+
+    it('lets a task in a NON-default project be filed under another project', async () => {
+      // The core relaxation: previously only default-project tasks could move.
+      renderTaskInProject('proj-archive');
+
+      await openMoveMenu(false);
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Work' }));
+
+      await waitFor(() =>
+        expect(setTaskSecondProjectMock).toHaveBeenCalledWith('task-move', 'proj-work'),
+      );
+    });
+
+    it('offers the default project as a target for a non-default task', async () => {
+      renderTaskInProject('proj-archive');
+      await openMoveMenu(false);
+
+      expect(screen.getByRole('menuitem', { name: 'Default Project' })).toBeInTheDocument();
+    });
+
+    it("never offers the task's own project, hidden projects, or collaboration projects", async () => {
+      renderTaskInProject('proj-archive');
+      await openMoveMenu(false);
+
+      expect(screen.queryByRole('menuitem', { name: 'Archive Papers' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: 'Hidden One' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: 'Shared' })).not.toBeInTheDocument();
+    });
+
+    it('names the real project in the move-back entry instead of the inbox', async () => {
+      // A moved task's home project is no longer necessarily the default one,
+      // so the old hard-coded "移回收件箱" label would have been wrong.
+      renderTaskInProject('proj-archive', 'proj-work');
+      await openMoveMenu(true);
+
+      expect(screen.getByRole('menuitem', { name: /移回Archive Papers/ })).toBeInTheDocument();
+    });
+
+    it('clears the override when the move-back entry is chosen', async () => {
+      renderTaskInProject('proj-archive', 'proj-work');
+
+      await openMoveMenu(true);
+      fireEvent.click(screen.getByRole('menuitem', { name: /移回Archive Papers/ }));
+
+      await waitFor(() =>
+        expect(setTaskSecondProjectMock).toHaveBeenCalledWith('task-move', null),
+      );
+    });
+
+    it("falls back to a generic move-back label when the task's own project is not loaded", async () => {
+      renderTaskInProject('proj-not-in-store', 'proj-work');
+      await openMoveMenu(true);
+
+      expect(screen.getByRole('menuitem', { name: /移回原项目/ })).toBeInTheDocument();
+    });
+  });
+
+
+  it('filters by the project a filed task is displayed under when its project chip is clicked', () => {
+    const onFilterByProject = vi.fn();
+    const renderChip = (activeProjectFilter: string | null) => render(<TaskItem
+      task={{
+        id: 'task-chip', title: 'Filed task', status: 'completed',
+        projectId: 'proj-home', secondProjectId: 'proj-work',
+        createdAt: FIXED_DATE.toISOString(), updatedAt: null,
+      }}
+      isUnread={false} isSelected={false} selectionMode={false} onToggleSelect={() => {}}
+      showProjectName projectName="Work"
+      activeProjectFilter={activeProjectFilter}
+      onFilterByProject={onFilterByProject}
+    />);
+
+    const { unmount } = renderChip(null);
+    fireEvent.click(screen.getAllByTitle('Click to show only Work')[0]);
+    expect(onFilterByProject).toHaveBeenCalledWith('proj-work');
+    unmount();
+
+    renderChip('proj-work');
+    expect(screen.getAllByTitle('Click to clear project filter').length).toBeGreaterThan(0);
+  });
+
 });
