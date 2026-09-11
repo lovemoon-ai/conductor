@@ -19,19 +19,21 @@ const querySchema = z.object({
  */
 const matchProjectByCwd = (
   cwd: string | null,
-  projects: Array<{ id: string; workspacePath: string | null }>,
+  projects: Array<{ id: string; workspacePath: string | null; hiddenAt?: Date | null }>,
 ): string | null => {
   if (!cwd) return null;
-  let best: { id: string; length: number } | null = null;
+  let best: { id: string; length: number; hidden: boolean } | null = null;
   for (const project of projects) {
     const workspacePath = project.workspacePath?.replace(/\/+$/, "");
     if (!workspacePath) continue;
     if (cwd !== workspacePath && !cwd.startsWith(`${workspacePath}/`)) continue;
     if (!best || workspacePath.length > best.length) {
-      best = { id: project.id, length: workspacePath.length };
+      best = { id: project.id, length: workspacePath.length, hidden: Boolean(project.hiddenAt) };
     }
   }
-  return best?.id ?? null;
+  // A cwd owned by an archived (hidden) project stays unmatched instead of
+  // falling through to a parent project, so the resume panel asks the user.
+  return best && !best.hidden ? best.id : null;
 };
 
 export async function GET(
@@ -92,7 +94,7 @@ export async function GET(
       : Promise.resolve([]),
     db.project.findMany({
       where: { userId: userResult.id, daemonHost: host, workspacePath: { not: null } },
-      select: { id: true, workspacePath: true },
+      select: { id: true, workspacePath: true, hiddenAt: true },
     }),
   ]);
   const taskBySessionId = new Map<string, string>();

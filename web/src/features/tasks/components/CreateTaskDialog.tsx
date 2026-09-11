@@ -13,6 +13,7 @@ import { useAgentsStore } from '@/features/agents';
 import { ApiRequestError } from '@/shared/api/client';
 import { formatBindingLabel } from '@/features/projects';
 import { computeProjectGroups } from '@/features/projects/utils/project-groups';
+import { excludeArchivedProjects } from '@/features/projects/utils/project-list-order';
 import { useRouter } from 'next/navigation';
 import { ResumeSessionPanel } from './ResumeSessionPanel';
 import type { TaskType } from '@/lib/tasks/task-config';
@@ -319,7 +320,10 @@ export function CreateTaskDialog({
   const projects = useProjectsStore((state) => state.projects);
   const agents = useAgentsStore((state) => state.agents);
   const daemons = agents.filter((agent) => !agent.host.startsWith('conductor-fire-'));
-  const selectableProjects = projects.filter((project) => Boolean(project.isDefault) || Boolean(project.daemonHost));
+  // Archived (hidden) projects are excluded: hiding a project in the Project
+  // List archives it, so it must not be offered as a target for new tasks.
+  const selectableProjects = excludeArchivedProjects(projects)
+    .filter((project) => Boolean(project.isDefault) || Boolean(project.daemonHost));
   // Merge same-name git projects across daemons into one picker entry; the
   // user picks the project name once and a separate daemon dropdown decides
   // which daemon's underlying project the task lands on. Single-member

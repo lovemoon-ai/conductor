@@ -37,6 +37,7 @@ type InviteData = {
   suggestedProjectName?: string;
   suggestedProjectNameExists: boolean;
   suggestedProjectNameAvailable: boolean;
+  suggestedProjectNameHidden: boolean;
 };
 
 const normalizeInviteProject = (raw: unknown): InviteProject | null => {
@@ -111,6 +112,7 @@ const normalizeInviteData = (raw: unknown): InviteData | null => {
         ? record.suggested_project_name
         : undefined,
     suggestedProjectNameExists: Boolean(record.suggestedProjectNameExists ?? record.suggested_project_name_exists),
+    suggestedProjectNameHidden: Boolean(record.suggestedProjectNameHidden ?? record.suggested_project_name_hidden),
     suggestedProjectNameAvailable: typeof record.suggestedProjectNameAvailable === 'boolean'
       ? record.suggestedProjectNameAvailable
       : typeof record.suggested_project_name_available === 'boolean'
@@ -143,7 +145,9 @@ const pickDefaultJoinProjectId = (invite: InviteData): string => {
   const suggestedName = getSuggestedProjectName(invite);
   const joinableProjects = invite.candidateProjects.filter((project) => project.canJoin && !project.alreadyInCollaboration);
   return joinableProjects.find((project) => project.name.trim() === suggestedName)?.id
-    ?? joinableProjects[0]?.id
+    // When the natural same-name match is hidden, make the user pick
+    // explicitly instead of pairing an unrelated project by default.
+    ?? (invite.suggestedProjectNameHidden ? '' : joinableProjects[0]?.id)
     ?? '';
 };
 
@@ -166,6 +170,15 @@ export default function CollaborationInvitePage() {
   );
   const suggestedProjectName = data ? getSuggestedProjectName(data) : 'Shared workspace';
   const canCreateSuggestedProject = Boolean(data && data.suggestedProjectNameAvailable && !data.suggestedProjectNameExists);
+  // The same-name project exists but is hidden (archived), so it isn't offered.
+  const suggestedProjectHidden = Boolean(data?.suggestedProjectNameHidden)
+    && !joinableProjects.some((project) => project.name.trim() === suggestedProjectName);
+  const hiddenProjectNotice = (
+    <>
+      Your project named "{suggestedProjectName}" is hidden, so it can't be paired. Unhide it from Projects
+      (double-click the Projects title to show hidden projects), then reopen this invite.
+    </>
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -318,7 +331,9 @@ export default function CollaborationInvitePage() {
                 <div className="space-y-4">
                   <InlineNotice
                     variant={canCreateSuggestedProject ? 'info' : 'warning'}
-                    title={canCreateSuggestedProject ? 'No project available to pair' : 'Project already exists'}
+                    title={canCreateSuggestedProject
+                      ? 'No project available to pair'
+                      : suggestedProjectHidden ? 'Project is hidden' : 'Project already exists'}
                   >
                     {canCreateSuggestedProject ? (
                       <>
@@ -326,6 +341,8 @@ export default function CollaborationInvitePage() {
                         default scratch project, which can't be shared). Create a new local project
                         and we'll pair it with this collaboration immediately.
                       </>
+                    ) : suggestedProjectHidden ? (
+                      hiddenProjectNotice
                     ) : (
                       <>
                         A project named "{suggestedProjectName}" already exists, so we won't create
@@ -355,6 +372,11 @@ export default function CollaborationInvitePage() {
                 </div>
               ) : (
                 <div className="space-y-4">
+                  {suggestedProjectHidden ? (
+                    <InlineNotice variant="info" title="Project is hidden">
+                      {hiddenProjectNotice}
+                    </InlineNotice>
+                  ) : null}
                   <div>
                     <label htmlFor="join-collaboration-project" className="mb-2 block text-sm font-medium text-ink">
                       Pair with project
@@ -365,6 +387,11 @@ export default function CollaborationInvitePage() {
                       onChange={(event) => setSelectedProjectId(event.target.value)}
                       className="w-full webapp-input"
                     >
+                      {!selectedProjectId ? (
+                        <option value="" disabled>
+                          Select a project
+                        </option>
+                      ) : null}
                       {joinableProjects.map((project) => (
                         <option key={project.id} value={project.id}>
                           {project.name}

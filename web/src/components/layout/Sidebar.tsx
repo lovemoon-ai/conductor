@@ -8,6 +8,7 @@ import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
 import { useDailyReportsStore } from '@/features/daily-reports';
 import { computeProjectGroups } from '@/features/projects/utils/project-groups';
+import { excludeArchivedProjects } from '@/features/projects/utils/project-list-order';
 import { isProjectTaskGraphEnabled } from '@/features/projects/utils/task-graph-settings';
 import { isTaskGraphReturnHref, normalizeTaskListReturnHref } from '@/features/tasks/utils/task-navigation';
 import {
@@ -193,7 +194,8 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
   const taskReturnHref = normalizeTaskListReturnHref(searchParams.get('from'));
   const taskGraphEnabled = useMemo(() => {
     if (!taskProjectId) return false;
-    const groups = computeProjectGroups(projects);
+    // Archived members are dropped first, matching the tasks page scope.
+    const groups = computeProjectGroups(excludeArchivedProjects(projects));
     const group = groups.find((entry) =>
       entry.members.some((member) => member.id === taskProjectId),
     );

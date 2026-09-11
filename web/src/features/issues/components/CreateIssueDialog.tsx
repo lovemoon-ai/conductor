@@ -13,6 +13,7 @@ import {
 } from '@/lib/issues/config';
 import { useIssuesStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
+import { excludeArchivedProjects } from '@/features/projects/utils/project-list-order';
 
 const DEFAULT_STATUS = 'todo' as const;
 
@@ -62,17 +63,20 @@ export function CreateIssueDialog({
 }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const projects = useProjectsStore((state) => state.projects);
+  const allProjects = useProjectsStore((state) => state.projects);
   const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const createIssue = useIssuesStore((state) => state.createIssue);
   const { pushToast } = useToast();
 
   useEffect(() => {
-    if (!open || projects.length > 0) {
+    if (!open || allProjects.length > 0) {
       return;
     }
     void fetchProjects();
-  }, [fetchProjects, open, projects.length]);
+  }, [fetchProjects, open, allProjects.length]);
+
+  // Archived (hidden) projects are excluded from the picker.
+  const projects = useMemo(() => excludeArchivedProjects(allProjects), [allProjects]);
 
   const defaultProjectId = useMemo(
     () => projectId ?? projects.find((project) => project.isDefault)?.id ?? projects[0]?.id ?? null,

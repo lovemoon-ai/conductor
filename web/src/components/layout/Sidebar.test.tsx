@@ -10,7 +10,13 @@ let dailyReportEnabled = true;
 let dailyReportLoading = false;
 const hydrateDailyReportSettingMock = vi.fn();
 let searchParamsState = new URLSearchParams();
-let projectsState: Array<{ id: string; name: string; metadata?: Record<string, unknown> | null }> = [];
+let projectsState: Array<{
+  id: string;
+  name: string;
+  daemonHost?: string | null;
+  hidden?: boolean;
+  metadata?: Record<string, unknown> | null;
+}> = [];
 const pushMock = vi.fn();
 
 vi.mock('next/navigation', () => ({
@@ -148,6 +154,21 @@ describe('Sidebar', () => {
     fireEvent.doubleClick(screen.getByRole('link', { name: /Tasks/i }));
 
     expect(pushMock).toHaveBeenCalledWith('/app/tasks?projectId=project-1&view=graph');
+  });
+
+  it('ignores an archived (hidden) group member when deciding whether graph view is available', () => {
+    pathname = '/app/projects';
+    selectedProjectId = 'project-1';
+    projectsState = [
+      { id: 'project-1', name: 'Shared', daemonHost: 'daemon-a', metadata: null },
+      { id: 'project-2', name: 'Shared', daemonHost: 'daemon-b', hidden: true, metadata: { taskGraphEnabled: true } },
+    ];
+
+    render(<Sidebar />);
+
+    fireEvent.doubleClick(screen.getByRole('link', { name: /Tasks/i }));
+
+    expect(pushMock).not.toHaveBeenCalled();
   });
 
   it('keeps graph return href and graph icon on task detail routes', () => {

@@ -116,4 +116,88 @@ describe('/api/invitations/[token]', () => {
       }),
     ]);
   });
+
+  it('omits archived (hidden) projects from the candidate list', async () => {
+    vi.mocked(db.project.findMany).mockResolvedValue([
+      {
+        id: 'project-visible',
+        name: 'visible',
+        daemonHost: 'local-daemon',
+        workspacePath: '/repo/visible',
+        collaborationId: null,
+        hiddenAt: null,
+        defaultProject: null,
+      },
+      {
+        id: 'project-archived',
+        name: 'archived',
+        daemonHost: 'local-daemon',
+        workspacePath: '/repo/archived',
+        collaborationId: null,
+        hiddenAt: new Date('2026-01-01T00:00:00.000Z'),
+        defaultProject: null,
+      },
+    ] as any);
+
+    const response = await GET(
+      createMockRequest({ url: 'http://localhost:6152/api/invitations/invite-token' }),
+      { params: Promise.resolve({ token: 'invite-token' }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.candidateProjects).toHaveLength(1);
+    expect(data.candidateProjects[0].id).toBe('project-visible');
+    expect(data.suggestedProjectNameHidden).toBe(false);
+  });
+
+  it('flags a hidden, otherwise joinable same-name project so the invite page can ask to unhide it', async () => {
+    vi.mocked(db.project.findMany).mockResolvedValue([
+      {
+        id: 'project-archived-conductor',
+        name: 'conductor',
+        daemonHost: 'local-daemon',
+        workspacePath: '/repo/conductor',
+        collaborationId: null,
+        hiddenAt: new Date('2026-01-01T00:00:00.000Z'),
+        defaultProject: null,
+      },
+    ] as any);
+
+    const response = await GET(
+      createMockRequest({ url: 'http://localhost:6152/api/invitations/invite-token' }),
+      { params: Promise.resolve({ token: 'invite-token' }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.candidateProjects).toEqual([]);
+    expect(data.suggestedProjectNameExists).toBe(true);
+    expect(data.suggestedProjectNameHidden).toBe(true);
+    expect(data.suggested_project_name_hidden).toBe(true);
+  });
+
+  it('does not flag a hidden same-name project that is already in another collaboration', async () => {
+    vi.mocked(db.project.findMany).mockResolvedValue([
+      {
+        id: 'project-archived-conductor',
+        name: 'conductor',
+        daemonHost: 'local-daemon',
+        workspacePath: '/repo/conductor',
+        collaborationId: 'collab-other',
+        hiddenAt: new Date('2026-01-01T00:00:00.000Z'),
+        defaultProject: null,
+      },
+    ] as any);
+
+    const response = await GET(
+      createMockRequest({ url: 'http://localhost:6152/api/invitations/invite-token' }),
+      { params: Promise.resolve({ token: 'invite-token' }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.suggestedProjectNameExists).toBe(true);
+    expect(data.suggestedProjectNameHidden).toBe(false);
+  });
 });

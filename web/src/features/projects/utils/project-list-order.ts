@@ -82,3 +82,14 @@ export const getVisibleProjectGroupsForProjectList = (
   projects: Project[],
   options: ProjectListVisibilityOptions = {},
 ): ProjectGroup[] => getProjectListVisibility(projects, options).visibleGroups;
+
+/**
+ * Hiding a project in the Project List means "archived": it must not show up
+ * in any project picker or project-scoped list elsewhere in the app.
+ *
+ * Deliberate exceptions that must stay unfiltered: global search and the
+ * achieved-task archive, which both need to reach historical work regardless
+ * of whether its project has since been archived.
+ */
+export const excludeArchivedProjects = <T extends { hidden?: boolean }>(projects: T[]): T[] =>
+  projects.filter((project) => project.hidden !== true);

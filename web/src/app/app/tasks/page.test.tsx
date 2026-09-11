@@ -749,6 +749,31 @@ describe('TasksPage', () => {
     expect(fetchTasksMock).not.toHaveBeenCalled();
   });
 
+  it('does not expand a merged project into an archived (hidden) member', () => {
+    projectsState = [
+      { id: 'proj-host-a', name: 'Shared', daemonHost: 'host-a' },
+      { id: 'proj-host-b', name: 'Shared', daemonHost: 'host-b', hidden: true },
+    ];
+    hiddenProjectIdsState = ['proj-host-b'];
+    searchParamsState = new URLSearchParams('projectId=proj-host-a');
+    tasksState = {
+      ...tasksState,
+      tasks: [
+        { id: 'task-a', projectId: 'proj-host-a', status: 'running' },
+        { id: 'task-b', projectId: 'proj-host-b', status: 'running' },
+      ],
+    };
+
+    render(<TasksPage />);
+
+    expect(setProjectFilterMock).toHaveBeenCalledWith('proj-host-a');
+    expect(setProjectGroupFilterMock).not.toHaveBeenCalled();
+    expect(screen.getByText('Shared (1 task)')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh tasks' }));
+    expect(fetchTasksForProjectsMock).not.toHaveBeenCalled();
+  });
+
   it('swipes across merged project groups using the project list order', () => {
     projectsState = [
       { id: 'proj-host-a', name: 'Shared', daemonHost: 'host-a' },
