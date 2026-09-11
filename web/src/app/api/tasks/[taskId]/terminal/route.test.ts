@@ -388,6 +388,70 @@ describe("/api/tasks/[taskId]/terminal", () => {
       const taskLaunchConfig = JSON.parse(taskArgs?.data?.launchConfig ?? "{}");
       expect(taskLaunchConfig.cwd).toBe("/repo/.conductor/worktrees/feature_login");
     });
+
+    it("prefers the cwd the fire reported under the terminal's daemon, even over the worktree path", async () => {
+      // Fire can run where launch_config does not say: a nested worktree
+      // matched to the parent project by path prefix, or a resumed session's
+      // own directory.
+      vi.mocked(db.task.findFirst).mockResolvedValue({
+        ...aiTaskFixture,
+        launchConfig: JSON.stringify({
+          worktree: true,
+          worktreeId: "ai-1",
+          worktreeBranch: "feature/login",
+          projectRepoRoot: "/repo",
+          projectWorkspacePath: "/repo",
+        }),
+        metadata: JSON.stringify({
+          daemonName: "host.local",
+          cwd: "/repo/.conductor/worktrees/93992e",
+        }),
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        url: "http://localhost/api/tasks/ai-1/terminal",
+        token,
+        body: {},
+      });
+      const response = await POST(request, {
+        params: Promise.resolve({ taskId: "ai-1" }),
+      });
+      expect(response.status).toBe(201);
+      const ptySessionArgs = vi.mocked(db.ptySession.create).mock.calls[0]?.[0] as any;
+      expect(ptySessionArgs?.data?.cwd).toBe("/repo/.conductor/worktrees/93992e");
+      const taskArgs = vi.mocked(db.task.create).mock.calls[0]?.[0] as any;
+      const taskLaunchConfig = JSON.parse(taskArgs?.data?.launchConfig ?? "{}");
+      expect(taskLaunchConfig.cwd).toBe("/repo/.conductor/worktrees/93992e");
+    });
+
+    it.each([
+      ["was reported under another daemon", { daemonName: "other-host", cwd: "/elsewhere" }],
+      ["has no reporting daemon", { cwd: "/elsewhere" }],
+      ["is blank", { daemonName: "host.local", cwd: "  " }],
+    ])("falls back to launch_config cwd when the reported cwd %s", async (_label, metadata) => {
+      // A path from another machine (e.g. left over from an in-place restart
+      // onto another daemon) would be mkdir'd here as an empty directory.
+      vi.mocked(db.task.findFirst).mockResolvedValue({
+        ...aiTaskFixture,
+        metadata: JSON.stringify(metadata),
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        url: "http://localhost/api/tasks/ai-1/terminal",
+        token,
+        body: {},
+      });
+      const response = await POST(request, {
+        params: Promise.resolve({ taskId: "ai-1" }),
+      });
+      expect(response.status).toBe(201);
+      const ptySessionArgs = vi.mocked(db.ptySession.create).mock.calls[0]?.[0] as any;
+      expect(ptySessionArgs?.data?.cwd).toBe("/repo");
+    });
   });
 
   describe("GET", () => {

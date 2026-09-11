@@ -514,6 +514,28 @@ describe('ConductorClient', () => {
     await client.close();
   });
 
+  test('bindTaskSession reports an explicit project_path as the task cwd', async () => {
+    const client = await makeClient();
+    await client.createTaskSession({
+      project_id: 'proj1',
+      task_title: 'Hello',
+      task_id: 'task-bind-cwd-1',
+    });
+
+    await client.bindTaskSession('task-bind-cwd-1', {
+      project_path: '/repo/.conductor/worktrees/abc',
+      daemon_name: 'mac-studio',
+    });
+
+    expect(backendApi.updateTaskCalls).toContainEqual(
+      expect.objectContaining({
+        taskId: 'task-bind-cwd-1',
+        metadata: { daemonName: 'mac-studio', cwd: '/repo/.conductor/worktrees/abc' },
+      }),
+    );
+    await client.close();
+  });
+
   test('getTask returns normalized task payload', async () => {
     const client = await makeClient();
     await client.createTaskSession({

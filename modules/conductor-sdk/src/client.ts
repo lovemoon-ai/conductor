@@ -696,12 +696,20 @@ export class ConductorClient {
           : existing?.hostname ?? this.resolveHostname(),
     });
 
+    // An explicit project_path is the fire's real working directory; record it
+    // as `cwd` so an attached terminal opens where the task actually runs.
+    const explicitCwd =
+      typeof payload.project_path === 'string' && payload.project_path ? payload.project_path : null;
+    const metadata = {
+      ...(explicitDaemonName ? { daemonName: explicitDaemonName } : {}),
+      ...(explicitCwd ? { cwd: explicitCwd } : {}),
+    };
     if (typeof (this.backendApi as any).updateTask === 'function') {
       await this.backendApi.updateTask(normalizedTaskId, {
         backendType: record.backendType ?? null,
         sessionId: record.sessionId ?? null,
         sessionFilePath: record.sessionFilePath ?? null,
-        metadata: explicitDaemonName ? { daemonName: explicitDaemonName } : undefined,
+        metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
       });
     }
 
