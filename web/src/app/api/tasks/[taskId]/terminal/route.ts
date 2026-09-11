@@ -38,6 +38,7 @@ const fetchAiTask = async (taskId: string, userId: string) =>
       taskType: true,
       agentHost: true,
       launchConfig: true,
+      metadata: true,
       project: {
         select: {
           daemonHost: true,
@@ -123,20 +124,21 @@ export async function POST(
     );
   }
 
-  const ptyLaunchConfig = inheritPtyLaunchConfigFromAiTask(
-    aiTask.launchConfig,
-    aiTask.project?.workspacePath ?? null,
-  );
-
   const agentResolution = resolveAttachedTerminalAgentHost({
     userId: user.id,
     aiTaskAgentHost: aiTask.agentHost,
     projectDaemonHost: aiTask.project?.daemonHost ?? null,
-    ptyLaunchConfig,
   });
   if ("error" in agentResolution) {
     return NextResponse.json({ error: agentResolution.error }, { status: agentResolution.status });
   }
+
+  const ptyLaunchConfig = inheritPtyLaunchConfigFromAiTask(
+    aiTask.launchConfig,
+    aiTask.project?.workspacePath ?? null,
+    aiTask.metadata,
+    agentResolution.agentHost,
+  );
 
   let created: Awaited<ReturnType<typeof createAttachedTerminalRecord>>;
   try {

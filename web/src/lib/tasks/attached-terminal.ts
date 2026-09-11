@@ -376,7 +376,6 @@ export const resolveAttachedTerminalAgentHost = (args: {
   userId: string;
   aiTaskAgentHost: string | null;
   projectDaemonHost: string | null;
-  ptyLaunchConfig: JsonObject | null;
 }):
   | { agentHost: string }
   | { error: string; status: number } => {
@@ -408,7 +407,8 @@ export const resolveAttachedTerminalAgentHost = (args: {
     connectedAgents,
     requestedAgentHost: preferred,
     requestedBackendType: null,
-    launchConfig: args.ptyLaunchConfig,
+    // An attached terminal is a plain shell: no tool preset to match.
+    launchConfig: null,
   });
   if ("error" in result) {
     return { error: result.error, status: result.status };
@@ -481,6 +481,14 @@ const PTY_INHERITABLE_LAUNCH_CONFIG_KEYS = ["env", "shell"] as const;
  * is attaching to. The terminal must open in the *same* on-disk directory
  * the AI task is running in:
  *
+ * 0. Prefer the cwd the running fire reported (`metadata.cwd`). It is the
+ *    only source that is right when fire was started in a subdirectory or
+ *    nested worktree of the matched project, in a daemon-generated run dir
+ *    (no bound workspace), or in a resumed session's directory. Trusted only
+ *    when reported under the daemon the terminal runs on
+ *    (`metadata.daemonName === agentHost`): a path from another machine
+ *    (cross-host fire, in-place restart onto another daemon) would be
+ *    mkdir'd there as an empty directory.
  * 1. If the AI task uses a worktree, mirror the daemon's path math
  *    (`projectWorkspacePath/.conductor/worktrees/<branch>[/projectRelativePath]`).
  *    Without this the terminal would land in the project root and the user
@@ -496,10 +504,18 @@ const PTY_INHERITABLE_LAUNCH_CONFIG_KEYS = ["env", "shell"] as const;
 export const inheritPtyLaunchConfigFromAiTask = (
   aiTaskLaunchConfig: unknown,
   projectWorkspacePath: string | null,
+  aiTaskMetadata?: unknown,
+  agentHost?: string | null,
 ): JsonObject | null => {
   const aiConfig = parseJsonObject(aiTaskLaunchConfig);
+  const aiMetadata = parseJsonObject(aiTaskMetadata);
   const worktreeCwd = resolveTaskWorktreeCwdFromLaunchConfig(aiTaskLaunchConfig);
+  const reportedCwd =
+    agentHost && normalizeOptionalString(aiMetadata?.daemonName) === agentHost
+      ? normalizeOptionalString(aiMetadata?.cwd)
+      : null;
   const cwd =
+    reportedCwd ??
     worktreeCwd ??
     normalizeOptionalString(aiConfig?.cwd) ??
     normalizeOptionalString(projectWorkspacePath);
