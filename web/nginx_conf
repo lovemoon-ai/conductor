@@ -105,7 +105,12 @@ server {
   # `proxy_request_buffering off` keeps nginx from spooling each chunk to a temp
   # file before Next.js sees a byte. Must precede `location /` to win the regex
   # match.
-  location ~ ^/api/(agents/[^/]+/files|agent/files)(/|$) {
+  #
+  # `/api` is optional because next.config.ts also serves these routes
+  # unprefixed (`/agent/files/...`); without it that door falls into
+  # `location /` and inherits the default 60s timeouts this block exists to
+  # raise, so the same transfer 504s depending only on which form was used.
+  location ~ ^(/api)?/(agents/[^/]+/files|agent/files)(/|$) {
     client_max_body_size 64m;
     proxy_request_buffering off;
 

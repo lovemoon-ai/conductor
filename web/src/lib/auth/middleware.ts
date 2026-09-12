@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { authenticateToken, AuthUser } from "./service";
 import { ATTACHMENT_AUTH_COOKIE_NAME } from "./token-storage";
+import { resolveRewrittenApiPath } from "@/lib/api-rewrites";
 import {
   isDaemonShareUser,
   isPathAllowedForDaemonShare,
@@ -56,7 +57,13 @@ export function resolveAuthToken(request: NextRequest): string | null {
  * rather than sniffed from `content-type`, which a caller controls.
  */
 const RAW_BODY_PATHS: RegExp[] = [
+  // Both transfer route families, exactly as `nginx_conf` matches them: the
+  // per-daemon form and the singular `/api/agent/files/...` one the CLI pushes
+  // chunks to (`cli/src/remote-file-handlers.js`). Missing the second meant a
+  // share token's upload got `clone()`d and JSON-buffered per 32 MiB chunk --
+  // the heap copy this listing exists to prevent.
   /^\/api\/agents\/[^/]+\/files\/[^/]+\/content$/,
+  /^\/api\/agent\/files\/[^/]+\/content$/,
 ];
 
 function isRawBodyPath(pathname: string): boolean {
@@ -82,19 +89,27 @@ export async function getAuthUser(request: NextRequest): Promise<AuthUser | null
     // allowlist normalized and the resource check did not, `/api/tasks//x` and
     // `/api/TASKS/x` passed the first and matched nothing in the second --
     // layered defence on paper, a gap in practice.
-    const pathname = normalizeSharePath(request.nextUrl.pathname);
-    if (pathname === null) return null;
+    const normalized = normalizeSharePath(request.nextUrl.pathname);
+    if (normalized === null) return null;
 
-    // Only API routes are in scope. The SDK probes every path unprefixed first
-    // and retries with `/api` on 404 (`shouldRetryWithApiPrefix` in
-    // conductor-sdk's backend client) -- so refusing `/tasks/:id` here turns
-    // that probe's expected 404 into a 401, the retry never fires, and fire
-    // dies mid-task with `Backend responded with 401`. Verified live: this is
-    // exactly what stopped a guest task from ever reaching the AI.
-    //
-    // Falling through is safe: nothing outside `/api` authenticates via
-    // `getAuthUser`, so a non-API path reaches Next's router and 404s the same
-    // way it does for any other credential.
+    // Resolve the alias BEFORE deciding anything. `next.config.ts` rewrites
+    // `/tasks/:path*` to `/api/tasks/:path*`, but Next restores the original
+    // pre-rewrite URL on the request, so `request.nextUrl.pathname` still reads
+    // `/tasks/t1` inside the handler. Gating on the raw pathname therefore let
+    // a share token skip all three checks below by simply dropping the `/api`
+    // prefix -- `/agents/<other-host>/exec` reached the exec route with no host
+    // pinning at all, and `/auth/tokens/latest` handed out credentials the
+    // allowlist explicitly withholds.
+    const pathname = resolveRewrittenApiPath(normalized);
+
+    // Only API routes are in scope. A path no rewrite claims is genuinely not
+    // served here, so it reaches Next's router and 404s the same way it does
+    // for any other credential -- which is what `conductor-sdk`'s backend
+    // client needs, since it probes unprefixed and retries with `/api` on 404
+    // (`shouldRetryWithApiPrefix`). Turning that probe into a 401 makes the
+    // retry never fire and fire dies mid-task with `Backend responded with
+    // 401`. Aliased paths are NOT such a probe: they resolve to a real route
+    // above and get the same answer the `/api` form would.
     if (!pathname.startsWith("/api/") && pathname !== "/api") return user;
 
     if (!isPathAllowedForDaemonShare(pathname)) return null;

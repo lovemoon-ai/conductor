@@ -140,6 +140,22 @@ describe("daemon-share scope gate", () => {
     );
   });
 
+  it("does not buffer the body of the singular transfer upload route", async () => {
+    // `cli/src/remote-file-handlers.js` pushes chunks to this form, not the
+    // per-daemon one. It was missing from RAW_BODY_PATHS, so every 32 MiB chunk
+    // was cloned and JSON-buffered on the way through.
+    const request = createMockRequest({
+      method: "PUT",
+      token: "share-token",
+      url: "http://localhost/api/agent/files/abc-123/content",
+    });
+    const clone = vi.spyOn(request, "clone");
+
+    await getAuthUser(request as NextRequest);
+
+    expect(clone).not.toHaveBeenCalled();
+  });
+
   it("still buffers the body of an ordinary JSON route", async () => {
     const request = createMockRequest({
       method: "POST",
@@ -154,20 +170,54 @@ describe("daemon-share scope gate", () => {
     expect(clone).toHaveBeenCalled();
   });
 
-  it("does not refuse a non-/api path, so the SDK's prefix probe still 404s", async () => {
+  it("does not refuse a path no rewrite claims, so the SDK's prefix probe still 404s", async () => {
     // `conductor-sdk`'s backend client sends every path unprefixed first and
-    // only retries with `/api` when it gets a 404. Refusing `/tasks/:id` here
-    // turns that probe into a 401, the retry never fires, and fire dies with
+    // only retries with `/api` when it gets a 404. Refusing such a probe here
+    // turns it into a 401, the retry never fires, and fire dies with
     // `Backend responded with 401` -- which is exactly what stopped a real
     // guest task from ever reaching the AI. Falling through lets Next's router
     // 404 it the same way it would for any other credential.
     const user = await getAuthUser(
-      createMockRequest({ token: "share-token", url: "http://localhost/tasks/t1" }) as NextRequest,
+      createMockRequest({ token: "share-token", url: "http://localhost/nope/t1" }) as NextRequest,
     );
 
     expect(user).not.toBeNull();
-    // The share layer must not even run for a non-API path.
+    // The share layer must not even run for a path that is not served here.
     expect(shareScope.resolveActiveShareForToken).not.toHaveBeenCalled();
+  });
+
+  it("enforces the scope on the unprefixed alias of an /api route", async () => {
+    // `next.config.ts` rewrites `/tasks/:path*` to `/api/tasks/:path*`, but Next
+    // restores the pre-rewrite URL before the handler runs, so `nextUrl.pathname`
+    // reads `/tasks/t1`. Gating on that raw value let a share token reach the
+    // real route with every scope check skipped -- so the alias must be resolved
+    // before any decision, not treated as an unserved path.
+    shareScope.isResourceInShareScope.mockResolvedValue(false);
+
+    const user = await getAuthUser(
+      createMockRequest({ token: "share-token", url: "http://localhost/tasks/t1" }) as NextRequest,
+    );
+
+    expect(user).toBeNull();
+    // The resolved `/api/...` form is what the host-pinning check must see.
+    expect(shareScope.isResourceInShareScope).toHaveBeenCalledWith(
+      expect.objectContaining({ guestHost: "shared-alice-mbp" }),
+      "/api/tasks/t1",
+      null,
+    );
+  });
+
+  it("refuses an unprefixed alias the allowlist withholds", async () => {
+    // `/api/auth/tokens/latest` hands out credentials and is denied for share
+    // tokens; `/auth/tokens/latest` must be denied identically.
+    const user = await getAuthUser(
+      createMockRequest({
+        token: "share-token",
+        url: "http://localhost/auth/tokens/latest",
+      }) as NextRequest,
+    );
+
+    expect(user).toBeNull();
   });
 
   it("still enforces the scope on /api paths", async () => {
