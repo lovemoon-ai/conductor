@@ -9,6 +9,9 @@ import {
   ISSUE_STATUSES,
   ISSUE_STATUS_BADGE_CLASSNAMES,
   ISSUE_STATUS_LABELS,
+  ISSUE_TYPE_BADGE_CLASSNAMES,
+  ISSUE_TYPE_LABELS,
+  normalizeIssueType,
 } from '@/lib/issues/config';
 import { pickDaemonBadgeClass } from './IssueCard.utils';
 
@@ -217,6 +220,7 @@ function IssueCardBody({
    */
   multiDaemonContext?: boolean;
 }) {
+  const issueType = normalizeIssueType(issue.type);
   const description = issue.description?.trim();
   const activeTask = issue.activeTask ?? null;
   const linkedTask = issue.linkedTask ?? activeTask;
@@ -283,6 +287,11 @@ function IssueCardBody({
     >
       <div className="min-w-0">
         <div className="flex flex-wrap items-start gap-2">
+          <span
+            className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${ISSUE_TYPE_BADGE_CLASSNAMES[issueType]}`}
+          >
+            {ISSUE_TYPE_LABELS[issueType]}
+          </span>
           <h3
             className={[
               'min-w-0 flex-1 text-sm font-semibold text-ink',

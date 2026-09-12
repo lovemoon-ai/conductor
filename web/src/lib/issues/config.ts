@@ -16,6 +16,16 @@ export type IssuePriorityValue = (typeof ISSUE_PRIORITIES)[number];
 
 export const DEFAULT_ISSUE_PRIORITY: IssuePriorityValue = 'P1';
 
+export const ISSUE_TYPES = [
+  'feature',
+  'bug',
+  'research',
+] as const;
+
+export type IssueTypeValue = (typeof ISSUE_TYPES)[number];
+
+export const DEFAULT_ISSUE_TYPE: IssueTypeValue = 'feature';
+
 export const ISSUE_STATUS_LABELS: Record<IssueStatusValue, string> = {
   todo: 'Todo',
   doing: 'Doing',
@@ -85,4 +95,28 @@ export const coerceIssuePriority = (value: unknown): IssuePriorityValue | null =
 
 export const normalizeIssuePriority = (value: unknown): IssuePriorityValue => {
   return coerceIssuePriority(value) ?? DEFAULT_ISSUE_PRIORITY;
+};
+
+export const ISSUE_TYPE_LABELS: Record<IssueTypeValue, string> = {
+  feature: 'Feature',
+  bug: 'Bug',
+  research: 'Research',
+};
+
+export const ISSUE_TYPE_BADGE_CLASSNAMES: Record<IssueTypeValue, string> = {
+  feature: 'border-violet-400/80 bg-violet-200/85 text-violet-800 dark:border-violet-700 dark:bg-violet-950/70 dark:text-violet-100',
+  bug: 'border-rose-400/80 bg-rose-200/85 text-rose-800 dark:border-rose-700 dark:bg-rose-950/70 dark:text-rose-100',
+  research: 'border-teal-400/80 bg-teal-200/85 text-teal-800 dark:border-teal-700 dark:bg-teal-950/70 dark:text-teal-100',
+};
+
+export const coerceIssueType = (value: unknown): IssueTypeValue | null => {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (ISSUE_TYPES.includes(normalized as IssueTypeValue)) {
+    return normalized as IssueTypeValue;
+  }
+  return null;
+};
+
+export const normalizeIssueType = (value: unknown): IssueTypeValue => {
+  return coerceIssueType(value) ?? DEFAULT_ISSUE_TYPE;
 };

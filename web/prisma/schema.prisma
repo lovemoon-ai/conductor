@@ -232,6 +232,7 @@ model Issue {
   description   String?
   status        String   @default("backlog")
   priority      String   @default("P1")
+  type          String   @default("feature")
   position      Float    @default(0)
   metadata      String?
   aiBackendType String?  @map("ai_backend_type")

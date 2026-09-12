@@ -381,6 +381,66 @@ describe('/api/issues', () => {
     }));
   });
 
+  it('persists the requested issue type and defaults it to feature', async () => {
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1', userId: 'user-1', collaborationId: null } as any);
+    vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
+    vi.mocked(db.issue.create).mockResolvedValue({
+      id: 'issue-bug',
+      projectId: 'project-1',
+      title: 'Board crashes on drag',
+      description: null,
+      status: 'todo',
+      priority: 'P1',
+      type: 'bug',
+      position: 0,
+      metadata: null,
+      tasks: [],
+      createdAt: new Date('2026-04-14T00:20:00.000Z'),
+      updatedAt: new Date('2026-04-14T00:20:00.000Z'),
+    } as any);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: {
+        projectId: 'project-1',
+        title: 'Board crashes on drag',
+        type: 'bug',
+      },
+    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.issue.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ type: 'bug' }),
+    }));
+    expect(data).toEqual(expect.objectContaining({ type: 'bug' }));
+
+    // No `type` in the body falls back to the default.
+    await POST(createMockRequest({
+      method: 'POST',
+      body: {
+        projectId: 'project-1',
+        title: 'Add board filters',
+      },
+    }));
+    expect(db.issue.create).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ type: 'feature' }),
+    }));
+
+    // `research` is a first-class type alongside feature/bug.
+    await POST(createMockRequest({
+      method: 'POST',
+      body: {
+        projectId: 'project-1',
+        title: 'Spike: evaluate worktree pooling',
+        type: 'research',
+      },
+    }));
+    expect(db.issue.create).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ type: 'research' }),
+    }));
+  });
+
   it('creates an issue with daemon attribution when requested by a merged view', async () => {
     vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1', userId: 'user-1', collaborationId: null } as any);
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
@@ -459,22 +519,15 @@ describe('/api/issues', () => {
     }));
   });
 
-  it('creates issues with default priority when the priority column is missing', async () => {
+  it('rejects creation with an actionable 409 when a post-original issues column is missing', async () => {
+    // This used to attempt a "legacy" create that omitted `priority`/`type`
+    // from `data`. That can never work: both are NOT NULL columns with
+    // schema-level defaults, so Prisma emits them in every INSERT regardless
+    // — verified end-to-end against a real SQLite DB with the column dropped,
+    // where the retry surfaced as a 500. Creation requires the migration.
     vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1', userId: 'user-1', collaborationId: null } as any);
     vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
-    vi.mocked(db.issue.create)
-      .mockRejectedValueOnce(missingPriorityColumnError())
-      .mockResolvedValueOnce({
-        id: 'issue-compat',
-        projectId: 'project-1',
-        title: 'Compat issue',
-        description: null,
-        status: 'todo',
-        position: 0,
-        metadata: null,
-        createdAt: new Date('2026-04-14T00:20:00.000Z'),
-        updatedAt: new Date('2026-04-14T00:20:00.000Z'),
-      } as any);
+    vi.mocked(db.issue.create).mockRejectedValueOnce(missingPriorityColumnError());
 
     const response = await POST(createMockRequest({
       method: 'POST',
@@ -485,18 +538,31 @@ describe('/api/issues', () => {
     }));
     const data = await extractJson(response);
 
-    expect(response.status).toBe(200);
-    expect(vi.mocked(db.issue.create)).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(db.issue.create).mock.calls[0]?.[0]).toEqual(expect.objectContaining({
-      data: expect.objectContaining({
-        priority: 'P1',
-      }),
+    expect(response.status).toBe(409);
+    expect(data.error).toContain('Issue priority is unavailable');
+    // No second attempt — the retry was removed, not just reordered.
+    expect(vi.mocked(db.issue.create)).toHaveBeenCalledTimes(1);
+  });
+
+  it('blames the type column when only the type column is missing on create', async () => {
+    vi.mocked(db.project.findFirst).mockResolvedValue({ id: 'project-1', userId: 'user-1', collaborationId: null } as any);
+    vi.mocked(db.issue.aggregate).mockResolvedValue({ _max: { position: null } } as any);
+    vi.mocked(db.issue.create).mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError(
+        'The column `issues.type` does not exist in the current database.',
+        { code: 'P2022', clientVersion: 'test' },
+      ),
+    );
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: { projectId: 'project-1', title: 'Compat issue', priority: 'P0' },
     }));
-    expect((vi.mocked(db.issue.create).mock.calls[1]?.[0] as { data: Record<string, unknown> }).data).not.toHaveProperty('priority');
-    expect(data).toEqual(expect.objectContaining({
-      id: 'issue-compat',
-      priority: 'P1',
-    }));
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toContain('Issue type is unavailable');
+    expect(data.error).not.toContain('Issue priority is unavailable');
   });
 
   it('returns a migration error when creating a non-default priority issue without the priority column', async () => {

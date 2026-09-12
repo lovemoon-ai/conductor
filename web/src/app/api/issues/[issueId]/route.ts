@@ -27,15 +27,16 @@ import {
   pickDefaultAgentHost,
 } from '@/lib/tasks/pty-runtime';
 import { realtimeHub } from '@/lib/realtime/hub';
-import { normalizeIssuePriority, normalizeIssueStatus } from '@/lib/issues/config';
+import { normalizeIssuePriority, normalizeIssueStatus, normalizeIssueType } from '@/lib/issues/config';
 import { parseIssueMetadata } from '@/lib/issues/serialization';
 import { canMergeProjectsByFields } from '@/lib/projects/grouping';
 import { isConductorFireHost } from '@/lib/subscription/plan-limits';
 import {
   buildIssueInitialContent,
   getNextIssuePosition,
-  ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE,
   isDefaultIssuePriority,
+  isDefaultIssueType,
+  issueSchemaUnavailableMessage,
   issuePatchSchema,
   issueSerializationSelect,
   issueSerializationWithPrioritySelect,
@@ -297,7 +298,7 @@ export async function PATCH(
     getAccessibleProjectIds(user.id),
     request.json().catch(() => null),
   ]);
-  const { result: existing, prioritySchemaAvailable } = await withIssuePrioritySchemaFallback(
+  const { result: existing, prioritySchemaAvailable, schemaError } = await withIssuePrioritySchemaFallback(
     'issues.patch.load',
     () => db.issue.findFirst({
       where: {
@@ -345,8 +346,10 @@ export async function PATCH(
   const currentPriority = normalizeIssuePriority(
     'priority' in existing ? existing.priority : undefined,
   );
+  const currentType = normalizeIssueType('type' in existing ? existing.type : undefined);
   const nextStatus = input.status ?? currentStatus;
   const nextPriority = input.priority ?? currentPriority;
+  const nextType = input.type ?? currentType;
   const issueProjectOwnerId = existing.project.userId ?? user.id;
   const issueProjectCollaborationId = existing.project.collaborationId ?? null;
   const currentOwnerUserId = existing.ownerUserId ?? issueProjectOwnerId;
@@ -475,9 +478,16 @@ export async function PATCH(
   if (currentStatus === 'doing' && nextStatus !== 'doing' && currentOwnerUserId !== user.id) {
     return NextResponse.json({ error: 'Only the issue owner can change a running issue status' }, { status: 409 });
   }
-  if (!prioritySchemaAvailable && input.priority !== undefined && !isDefaultIssuePriority(input.priority)) {
+  // `priority` and `type` share one legacy-safe select, so on a pre-migration
+  // schema neither can be written — reject a non-default value for either
+  // rather than silently dropping it.
+  if (
+    !prioritySchemaAvailable &&
+    ((input.priority !== undefined && !isDefaultIssuePriority(input.priority)) ||
+      (input.type !== undefined && !isDefaultIssueType(input.type)))
+  ) {
     return NextResponse.json(
-      { error: ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE },
+      { error: issueSchemaUnavailableMessage(schemaError) },
       { status: 409 },
     );
   }
@@ -752,6 +762,7 @@ export async function PATCH(
     data: {
       ...issueUpdateData,
       priority: nextPriority,
+      type: nextType,
     },
     select: issueSelectWithPriority,
   };

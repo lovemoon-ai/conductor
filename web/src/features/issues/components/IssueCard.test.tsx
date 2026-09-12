@@ -30,6 +30,7 @@ const baseIssue = (overrides: Partial<Issue> = {}): Issue => ({
   title: 'Wire up daemon chip',
   status: 'todo',
   priority: 'P1',
+  type: 'feature',
   position: 0,
   description: null,
   metadata: null,
@@ -46,6 +47,28 @@ describe('IssueCard daemon badge colors', () => {
 
   it('can assign different classes to different daemon hosts', () => {
     expect(pickDaemonBadgeClass('daemon-a')).not.toBe(pickDaemonBadgeClass('daemon-b'));
+  });
+});
+
+describe('IssueCard type badge', () => {
+  it('labels a feature issue', () => {
+    render(<IssueCard issue={baseIssue({ type: 'feature' })} />);
+    expect(screen.getByText('Feature')).toBeInTheDocument();
+  });
+
+  it('labels a bug issue', () => {
+    render(<IssueCard issue={baseIssue({ type: 'bug' })} />);
+    expect(screen.getByText('Bug')).toBeInTheDocument();
+  });
+
+  it('labels a research issue', () => {
+    render(<IssueCard issue={baseIssue({ type: 'research' })} />);
+    expect(screen.getByText('Research')).toBeInTheDocument();
+  });
+
+  it('falls back to Feature when the issue predates the type column', () => {
+    render(<IssueCard issue={baseIssue({ type: undefined as unknown as Issue['type'] })} />);
+    expect(screen.getByText('Feature')).toBeInTheDocument();
   });
 });
 

@@ -10,6 +10,7 @@ const buildIssue = (overrides: Partial<Issue>): Issue => ({
   status: 'doing',
   position: 0,
   priority: 'P2',
+  type: 'feature',
   createdAt: '2026-04-14T00:00:00.000Z',
   updatedAt: '2026-04-14T00:00:00.000Z',
   ...overrides,

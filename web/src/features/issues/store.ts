@@ -6,7 +6,7 @@ import type {
   Task,
 } from '@/shared/types';
 import { getApiClient } from '@/shared/api/client';
-import { ISSUE_STATUSES, normalizeIssuePriority, normalizeIssueStatus } from '@/lib/issues/config';
+import { ISSUE_STATUSES, normalizeIssuePriority, normalizeIssueStatus, normalizeIssueType } from '@/lib/issues/config';
 import { normalizeTask, useTasksStore } from '@/features/tasks/store';
 
 const pickString = (value: unknown): string | null => {
@@ -112,6 +112,7 @@ export const normalizeIssue = (raw: unknown): Issue | null => {
     description: pickString(record.description),
     status: normalizeIssueStatus(record.status),
     priority: normalizeIssuePriority(record.priority),
+    type: normalizeIssueType(record.type),
     position,
     metadata: normalizeObject(record.metadata),
     aiBackendType,

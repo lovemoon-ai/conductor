@@ -6,10 +6,14 @@ import { InlineNotice } from '@/components/common/InlineNotice';
 import { useToast } from '@/components/common/FeedbackProvider';
 import {
   DEFAULT_ISSUE_PRIORITY,
+  DEFAULT_ISSUE_TYPE,
   ISSUE_PRIORITIES,
   ISSUE_PRIORITY_LABELS,
   ISSUE_STATUS_LABELS,
+  ISSUE_TYPES,
+  ISSUE_TYPE_LABELS,
   type IssuePriorityValue,
+  type IssueTypeValue,
 } from '@/lib/issues/config';
 import { useIssuesStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
@@ -21,6 +25,7 @@ type CreateIssueFormState = {
   title: string;
   description: string;
   priority: IssuePriorityValue;
+  type: IssueTypeValue;
   selectedProjectId: string | null;
   error: string | null;
 };
@@ -29,6 +34,7 @@ type CreateIssueFormAction =
   | { type: 'set-title'; value: string }
   | { type: 'set-description'; value: string }
   | { type: 'set-priority'; value: IssuePriorityValue }
+  | { type: 'set-type'; value: IssueTypeValue }
   | { type: 'set-project'; value: string | null }
   | { type: 'set-error'; value: string | null };
 
@@ -43,6 +49,8 @@ function createIssueFormReducer(
       return { ...state, description: action.value };
     case 'set-priority':
       return { ...state, priority: action.value };
+    case 'set-type':
+      return { ...state, type: action.value };
     case 'set-project':
       return { ...state, selectedProjectId: action.value };
     case 'set-error':
@@ -132,6 +140,7 @@ function CreateIssueDialogContent({
     description: string | null;
     status: typeof DEFAULT_STATUS;
     priority: IssuePriorityValue;
+    type: IssueTypeValue;
   }) => Promise<unknown>;
   isSubmitting: boolean;
   setIsSubmitting: React.Dispatch<React.SetStateAction<boolean>>;
@@ -142,6 +151,7 @@ function CreateIssueDialogContent({
     title: '',
     description: '',
     priority: DEFAULT_ISSUE_PRIORITY,
+    type: DEFAULT_ISSUE_TYPE,
     selectedProjectId: null,
     error: null,
   });
@@ -168,6 +178,7 @@ function CreateIssueDialogContent({
         description: state.description.trim() ? state.description.trim() : null,
         status: DEFAULT_STATUS,
         priority: state.priority,
+        type: state.type,
       });
       pushToast({
         title: 'Issue created',
@@ -240,6 +251,25 @@ function CreateIssueDialogContent({
           placeholder="Add context, acceptance criteria, or raw requirement notes"
           className="min-h-32 w-full resize-y webapp-input"
         />
+      </div>
+
+      <div>
+        <label htmlFor="create-issue-type" className="mb-2 block text-sm font-medium text-ink">Type</label>
+        <select
+          id="create-issue-type"
+          value={state.type}
+          onChange={(event) => dispatch({
+            type: 'set-type',
+            value: event.target.value as IssueTypeValue,
+          })}
+          className="w-full webapp-input"
+        >
+          {ISSUE_TYPES.map((value) => (
+            <option key={value} value={value}>
+              {ISSUE_TYPE_LABELS[value]}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div>

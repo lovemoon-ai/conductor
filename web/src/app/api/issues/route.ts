@@ -5,14 +5,13 @@ import { db } from '@/lib/db';
 import { realtimeHub } from '@/lib/realtime/hub';
 import {
   getNextIssuePosition,
-  ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE,
-  isDefaultIssuePriority,
+  issueSchemaUnavailableMessage,
   issueCreateSchema,
   issueSerializationSelect,
   issueSerializationWithPrioritySelect,
   issueSerializationWithProjectSelect,
   issueSerializationWithPriorityAndProjectSelect,
-  isMissingIssuePriorityColumnError,
+  isMissingIssueExtendedColumnError,
   loadIssueTaskMaps,
   normalizeIssueCreateBody,
   serializeIssueWithTasks,
@@ -107,6 +106,7 @@ export async function GET(request: NextRequest) {
     description: string | null;
     status: string;
     priority?: string | null;
+    type?: string | null;
     position: number;
     metadata: string | null;
     createdAt: Date;
@@ -187,7 +187,7 @@ export async function POST(request: NextRequest) {
         ? issueSerializationWithPriorityAndProjectSelect
         : issueSerializationWithPrioritySelect,
     }).catch(async (error) => {
-      if (!isMissingIssuePriorityColumnError(error)) throw error;
+      if (!isMissingIssueExtendedColumnError(error)) throw error;
       warnMissingIssuePrioritySchema('issues.create.idempotency-lookup', error);
       return db.issue.findMany({
         where: {
@@ -224,6 +224,7 @@ export async function POST(request: NextRequest) {
     description: input.description ?? null,
     status: input.status,
     priority: input.priority,
+    type: input.type,
     position,
     metadata: mergedMetadata ? JSON.stringify(mergedMetadata) : null,
   };
@@ -237,31 +238,20 @@ export async function POST(request: NextRequest) {
         : issueSerializationWithPrioritySelect,
     });
   } catch (error) {
-    if (!isMissingIssuePriorityColumnError(error)) {
+    if (!isMissingIssueExtendedColumnError(error)) {
       throw error;
     }
-    if (!isDefaultIssuePriority(input.priority)) {
-      return NextResponse.json(
-        { error: ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE },
-        { status: 409 },
-      );
-    }
+    // There is deliberately no legacy retry here. `priority` and `type` are
+    // NOT NULL columns carrying schema-level defaults, so Prisma emits them in
+    // every INSERT even when `data` omits them — an insert cannot succeed
+    // while the column is absent, and attempting one only turns a clear 409
+    // into a 500. Reads still degrade gracefully via the fallback selects;
+    // creation genuinely requires the migration.
     warnMissingIssuePrioritySchema('issues.create', error);
-    issue = await db.issue.create({
-      data: {
-        projectId: issueData.projectId,
-        ownerUserId: issueData.ownerUserId,
-        creatorUserId: issueData.creatorUserId,
-        title: issueData.title,
-        description: issueData.description,
-        status: issueData.status,
-        position: issueData.position,
-        metadata: issueData.metadata,
-      },
-      select: input.includeProject
-        ? issueSerializationWithProjectSelect
-        : issueSerializationSelect,
-    });
+    return NextResponse.json(
+      { error: issueSchemaUnavailableMessage(error) },
+      { status: 409 },
+    );
   }
 
   const serialized = serializeIssueWithTasks(issue);

@@ -335,6 +335,7 @@ describe('issues store', () => {
           title: 'Reopenable issue',
           status: 'done',
           priority: 'P1',
+          type: 'feature',
           position: 0,
           createdAt: '2026-04-19T00:00:00.000Z',
           linkedTask: {
