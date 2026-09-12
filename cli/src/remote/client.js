@@ -97,8 +97,14 @@ export function isRetryable(error) {
   return status >= 500 || status === 429;
 }
 
-/** Retry `fn` on transient failures, handing it the attempt number. */
-export async function withRetry(fn, { attempts = 4, baseDelayMs = 500, sleep = delay } = {}) {
+/**
+ * Retry `fn` on transient failures, handing it the attempt number. `retryable`
+ * narrows what counts as transient: a caller whose request is not idempotent
+ * (starting a command) must not retry a 5xx that may already have taken effect.
+ */
+export async function withRetry(fn, {
+  attempts = 4, baseDelayMs = 500, sleep = delay, retryable = isRetryable,
+} = {}) {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
@@ -106,7 +112,7 @@ export async function withRetry(fn, { attempts = 4, baseDelayMs = 500, sleep = d
     } catch (error) {
       lastError = error;
       // An aborted transfer is the caller's own deadline firing, not a blip.
-      if (error?.name === "AbortError" || !isRetryable(error)) throw error;
+      if (error?.name === "AbortError" || !retryable(error)) throw error;
       if (attempt === attempts - 1) break;
       await sleep(baseDelayMs * 2 ** attempt);
     }

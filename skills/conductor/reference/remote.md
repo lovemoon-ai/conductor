@@ -27,7 +27,7 @@ conductor remote exec --target <daemon> [options] -- <command> [args...]
 | `--timeout <dur>` | 总时限，`30s` / `2m` / `500ms` / 裸数字（秒）。默认 60s |
 | `-e, --env KEY=VALUE` | 额外环境变量，可重复 |
 | `--json` | 打印原始 run 结果 JSON |
-| `--kill-on-timeout` | 到点后停掉远端命令。**默认不停**，命令会在目标机上继续跑 |
+| `--kill-on-timeout` | 到点、或本 CLI 被打断（Ctrl-C / SIGTERM）时停掉远端命令。**默认不停**，命令会在目标机上继续跑 |
 | `--config-file <p>` | 指定用哪个 config.yaml 鉴权 |
 
 ### 不经过 shell
@@ -54,8 +54,56 @@ conductor remote exec -t ubuntu -- bash -lc "ls | wc -l"
 
 ### 输出上限
 
-stdout/stderr 各自只保留**尾部 64 000 字符**，超了会带 `truncated` 标记。
-要完整输出就先重定向到文件再 `remote cp` 取回。
+stdout/stderr 各自只保留**尾部 64 000 字符**，超了会带 `truncated` 标记
+（非 `--json` 模式下 stderr 会提示 `output truncated; showing the tail only`）。
+读大文件不要裸 `cat`，用 `sed -n '1,200p'` / `rg` 分页；要完整输出就先重定向到文件再 `remote cp` 取回。
+
+### 命令超过时限 / 本地进程被杀
+
+到了 `--timeout` 命令还没结束时，CLI 以 255 退出并打印 runId，远端命令**继续跑**。
+Ctrl-C 或 SIGTERM（比如 AI 工具的 Bash 超时把 CLI 杀了）同样如此。
+拿着 runId 用 `conductor remote wait` 续等（见第 1.1 节）；带 `--kill-on-timeout` 则这两种情况都会把远端命令停掉。
+
+### 并发上限
+
+同一账号最多 8 个在途 exec 请求。撞到 429 时 CLI 会自动退避重试（最多约 15 秒），
+所以并行发几条短命令没问题；长时间占满 8 个槽位仍会失败。其它 HTTP 错误**不会**重试——
+一个 5xx 可能意味着命令已经在远端启动，重发会跑两遍。
+
+### 一次跑一段脚本
+
+脚本整段作为**一个 argv** 交给 `bash -lc`，本地引号不会被二次解析，heredoc 也能原样送达：
+
+```bash
+script=$(cat <<'OUTER'
+set -euo pipefail
+cat > /srv/app/config.yaml <<'CONF'
+key: "value with $dollar and `backticks`"
+CONF
+git -C /srv/app status --short
+OUTER
+)
+conductor remote exec -t ubuntu -- bash -lc "$script"
+```
+
+记得 `set -euo pipefail`：没有它，脚本中间一步失败、最后一条成功，退出码也是 0。
+
+## 1.1 conductor remote wait
+
+```bash
+conductor remote wait --target <daemon> [--timeout <dur>] [--json] [--kill-on-timeout] <runId>
+```
+
+续等一条 `exec` 留在远端的命令。先 GET 一次 run 状态，然后按 `exec` 同样的方式轮询、
+打印输出、透传退出码。`--timeout` 是**这一次**等多久（默认 60s），到点仍未结束再打印一次 runId，可以反复 `wait`。
+
+```bash
+conductor remote exec -t ubuntu --timeout 30s -- make build
+# [conductor] still running on ubuntu after 30000ms; it keeps going on ubuntu — resume with: conductor remote wait -t ubuntu 3f9c1b2e-...
+conductor remote wait -t ubuntu --timeout 20m 3f9c1b2e-...
+```
+
+预计跑很久、又不想占着 CLI 时，另一种办法是远端 `nohup ... > log 2>&1 &`，之后反复 `exec -- tail -20 log`。
 
 ## 2. conductor remote cp
 
@@ -192,9 +240,9 @@ conductor remote cp -r ubuntu:/srv/app/logs ./logs   # → ./logs
 |---|---|
 | `404 daemon not connected` | 目标 daemon 不在线，或名字拼错 |
 | `409 daemon does not support ...` | daemon 版本太老，或 host 自己关掉了该 capability |
-| `429 too many concurrent ...` | 同一账号并发太多（exec 8 个 / 传输 4 个），稍等重试 |
+| `429 too many concurrent ...` | 同一账号并发太多（exec 8 个 / 传输 4 个）。exec 会自动退避重试约 15 秒，仍报错说明槽位被长命令占满了 |
 | `504` | daemon 收到了但没在时限内回话 |
-| 退出码 255 且提示 `still running` | 命令还在目标机上跑。用 `--kill-on-timeout`，或调大 `--timeout` |
+| 退出码 255 且提示 `still running` / `interrupted` | 命令还在目标机上跑。拿打印出的 runId `conductor remote wait` 续等；不想让它跑就加 `--kill-on-timeout` |
 | `checksum mismatch` | 传输过程中内容损坏，本地不会留下文件，直接重试 |
 | `is a directory; pass -r` | 传目录忘了加 `-r` |
 | `-r` 报 `not a directory` | 远端那个路径不是目录 |

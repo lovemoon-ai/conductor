@@ -1,7 +1,7 @@
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { isConductorFireHost } from "@/lib/subscription/plan-limits";
-import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
+import { deliverAgentOutboxRow, enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
 import { realtimeHub, type TaskWorktreeCleanupResult } from "@/lib/realtime/hub";
 import {
   normalizeOptionalString,
@@ -25,6 +25,21 @@ type TaskWorktreeLaunchConfig = {
    * as a sibling, so teardown will not delete the directory out from under it.
    */
   worktreeReuseOnly?: true;
+};
+
+/**
+ * RFC 0038: a worktree that lives on ANOTHER daemon (`host`) and is created by
+ * the AI itself over `conductor remote exec`, not by the daemon that runs the
+ * AI. Deliberately a separate key from `worktree: true` so the launching daemon
+ * never tries to create it locally, and so the two meanings cannot be confused.
+ */
+export type RemoteWorktreeLaunchConfig = {
+  host: string;
+  projectId: string;
+  repoRoot: string;
+  workspacePath: string;
+  branch: string;
+  baseRef: string;
 };
 
 const TASK_WORKTREE_CLEANUP_TIMEOUT_MS = 15_000;
@@ -71,7 +86,7 @@ const omitWorktreeFields = (launchConfig: JsonObject | null): JsonObject => {
   return next;
 };
 
-const computeProjectRelativePath = (
+export const computeProjectRelativePath = (
   projectRepoRoot: string,
   projectWorkspacePath: string,
 ): string => {
@@ -93,8 +108,66 @@ export const isTaskWorktreeRequested = (launchConfig: JsonObject | null): boolea
       launchConfig?.create_worktree,
   );
 
-const buildInitialWorktreeBranchName = (): string =>
+export const buildInitialWorktreeBranchName = (): string =>
   randomBytes(3).toString("hex");
+
+export const parseRemoteWorktreeLaunchConfig = (
+  launchConfig: unknown,
+): RemoteWorktreeLaunchConfig | null => {
+  const normalized = parseJsonObject(launchConfig);
+  const raw = parseJsonObject(normalized?.remoteWorktree ?? normalized?.remote_worktree);
+  if (!raw) {
+    return null;
+  }
+  const host = normalizeOptionalString(raw.host);
+  const projectId =
+    normalizeOptionalString(raw.projectId) ?? normalizeOptionalString(raw.project_id);
+  const repoRoot =
+    normalizeOptionalString(raw.repoRoot) ?? normalizeOptionalString(raw.repo_root);
+  const workspacePath =
+    normalizeOptionalString(raw.workspacePath) ?? normalizeOptionalString(raw.workspace_path);
+  const branch = normalizeOptionalString(raw.branch);
+  if (!host || !projectId || !repoRoot || !workspacePath || !branch) {
+    return null;
+  }
+  return {
+    host,
+    projectId,
+    repoRoot,
+    workspacePath,
+    branch,
+    baseRef:
+      normalizeOptionalString(raw.baseRef) ?? normalizeOptionalString(raw.base_ref) ?? "HEAD",
+  };
+};
+
+/**
+ * Any value other than null/undefined/false counts as a request, so a malformed
+ * one is rejected rather than silently ignored; `false` is "off", like `worktree: false`.
+ */
+export const isRemoteWorktreeRequested = (launchConfig: JsonObject | null): boolean => {
+  const value = launchConfig?.remoteWorktree ?? launchConfig?.remote_worktree;
+  return value != null && value !== false;
+};
+
+/**
+ * The remote daemon's `cleanup_task_worktree` handler only understands the
+ * ordinary worktree fields, and recomputes the on-disk path from them exactly
+ * as it would for a worktree it created itself. Translating here is what lets
+ * the remote daemon stay unchanged.
+ */
+export const toRemoteWorktreeCleanupLaunchConfig = (
+  remote: RemoteWorktreeLaunchConfig,
+  worktreeId: string = remote.projectId,
+): JsonObject => ({
+  worktree: true,
+  worktreeId,
+  worktreeBranch: remote.branch,
+  worktreeBaseRef: remote.baseRef,
+  projectRepoRoot: remote.repoRoot,
+  projectWorkspacePath: remote.workspacePath,
+  projectRelativePath: computeProjectRelativePath(remote.repoRoot, remote.workspacePath),
+});
 
 // Mirrors cli/src/daemon.js buildTaskWorktreeRoot — keep in sync.
 // Identity must key off the on-disk folder name, not the raw branch, so that
@@ -102,30 +175,84 @@ const buildInitialWorktreeBranchName = (): string =>
 const sanitizeWorktreeFolderName = (branch: string): string =>
   branch.replace(/[/\\]/g, "_").replace(/\.\./g, "_");
 
+/**
+ * Where a task's worktree lives, regardless of who created it: the on-disk
+ * folder name, the workspace it hangs under, and (for a remote worktree) the
+ * daemon that owns that disk. A local worktree has no host of its own — it is
+ * implicitly on the task's daemon — so two local configs compare on path only.
+ */
+const resolveTaskWorktreeIdentity = (
+  launchConfig: unknown,
+): { folder: string; workspacePath: string; host: string | null } | null => {
+  const local = parseTaskWorktreeLaunchConfig(launchConfig);
+  if (local) {
+    return {
+      folder: sanitizeWorktreeFolderName(local.worktreeBranch),
+      workspacePath: local.projectWorkspacePath,
+      host: null,
+    };
+  }
+  const remote = parseRemoteWorktreeLaunchConfig(launchConfig);
+  if (remote) {
+    return {
+      folder: sanitizeWorktreeFolderName(remote.branch),
+      workspacePath: remote.workspacePath,
+      host: remote.host,
+    };
+  }
+  return null;
+};
+
 export const hasSameTaskWorktreeRoot = (
   referenceLaunchConfig: unknown,
   candidateLaunchConfig: unknown,
 ): boolean => {
-  const reference = parseTaskWorktreeLaunchConfig(referenceLaunchConfig);
-  const candidate = parseTaskWorktreeLaunchConfig(candidateLaunchConfig);
+  const reference = resolveTaskWorktreeIdentity(referenceLaunchConfig);
+  const candidate = resolveTaskWorktreeIdentity(candidateLaunchConfig);
   if (!reference || !candidate) {
     return false;
   }
 
   return (
-    sanitizeWorktreeFolderName(reference.worktreeBranch) ===
-      sanitizeWorktreeFolderName(candidate.worktreeBranch) &&
-    reference.projectWorkspacePath === candidate.projectWorkspacePath
+    reference.folder === candidate.folder &&
+    reference.workspacePath === candidate.workspacePath &&
+    reference.host === candidate.host
   );
 };
 
 export const getTaskWorktreeRootKey = (launchConfig: unknown): string | null => {
-  const parsed = parseTaskWorktreeLaunchConfig(launchConfig);
-  if (!parsed) {
+  const identity = resolveTaskWorktreeIdentity(launchConfig);
+  if (!identity) {
     return null;
   }
 
-  return `${sanitizeWorktreeFolderName(parsed.worktreeBranch)}\u0000${parsed.projectWorkspacePath}`;
+  return `${identity.folder}\u0000${identity.workspacePath}\u0000${identity.host ?? ""}`;
+};
+
+/**
+ * Which daemon must run `cleanup_task_worktree` for this task, and with what
+ * launch_config. A local worktree is cleaned by `localCleanupHost` (the caller's
+ * `resolveTaskWorktreeCleanupHost` answer) with the task's own launch_config; a
+ * remote worktree is cleaned by the daemon that holds it, with the translated
+ * config. Null when the task has no worktree at all — or a local one whose
+ * daemon cannot be resolved, which callers already treat as a 409.
+ */
+export const resolveTaskWorktreeCleanupPlan = (
+  launchConfig: unknown,
+  localCleanupHost: string | null | undefined,
+): { agentHost: string; launchConfig: unknown } | null => {
+  if (parseTaskWorktreeLaunchConfig(launchConfig)) {
+    const agentHost = normalizeOptionalString(localCleanupHost);
+    return agentHost ? { agentHost, launchConfig } : null;
+  }
+  const remote = parseRemoteWorktreeLaunchConfig(launchConfig);
+  if (remote) {
+    return {
+      agentHost: remote.host,
+      launchConfig: toRemoteWorktreeCleanupLaunchConfig(remote),
+    };
+  }
+  return null;
 };
 
 /**
@@ -355,6 +482,36 @@ export const requestTaskWorktreeCleanup = async (args: {
   return { ok: true, requestId, result };
 };
 
+
+/**
+ * RFC 0038: a remote worktree's daemon receives no other traffic for this task,
+ * so nothing would drain its outbox until it next reconnects. A local worktree
+ * is cleaned by the task's own daemon, whose stop/ack traffic drains it anyway.
+ */
+export const deliverRemoteWorktreeCleanupNow = async (args: {
+  userId: string;
+  row: unknown;
+  cleanupHost: string;
+  stopTargetHost: string | null | undefined;
+}) => {
+  if (!args.row || args.cleanupHost === args.stopTargetHost) return;
+  try {
+    await deliverAgentOutboxRow(args.row as Parameters<typeof deliverAgentOutboxRow>[0], {
+      userId: args.userId,
+      agentHost: args.cleanupHost,
+      sendToAgentHost: ({ userId: targetUserId, agentHost: targetHost, envelope }) =>
+        realtimeHub.sendToAgentHost(targetUserId, targetHost, envelope),
+      resolveTaskHost: (queuedTaskId) => realtimeHub.getTaskAgentHost(queuedTaskId),
+    });
+  } catch (error) {
+    console.error(
+      `[worktree] failed to deliver remote worktree cleanup to ${args.cleanupHost}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+};
+
 export const buildTaskWorktreeLaunchConfig = (args: {
   launchConfig: JsonObject | null;
   worktreeId: string;
@@ -439,7 +596,15 @@ export const inheritTaskWorktreeLaunchConfig = (
 ): JsonObject | null => {
   const parsed = parseTaskWorktreeLaunchConfig(launchConfig);
   if (!parsed) {
-    return null;
+    // A remote worktree belongs to another machine, so unlike local paths it
+    // stays valid for the successor wherever the AI runs. `cwd` is the local
+    // clone the AI reads from; keep it when present.
+    const remote = parseRemoteWorktreeLaunchConfig(launchConfig);
+    if (!remote) {
+      return null;
+    }
+    const cwd = normalizeOptionalString(parseJsonObject(launchConfig)?.cwd);
+    return { remoteWorktree: remote, ...(cwd ? { cwd } : {}) };
   }
 
   return {

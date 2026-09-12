@@ -137,7 +137,7 @@ Subcommands:
   project   Manage Conductor projects (list/show/create/...)
   issue     Manage issues (list/show/create/update/start/done)
   task      Manage tasks (create/list/show/send/messages/schedule)
-  remote    Run commands and copy files on another daemon's host (exec/cp)
+  remote    Run commands and copy files on another daemon's host (exec/cp/wait)
 
 Options:
   -h, --help     Show this help message

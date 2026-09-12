@@ -19,12 +19,14 @@ import { fileURLToPath } from "node:url";
 import { EXIT } from "../src/remote/client.js";
 import { runRemoteExec, showHelp as showExecHelp } from "../src/remote/exec.js";
 import { runRemoteCp, showHelp as showCpHelp } from "../src/remote/cp.js";
+import { runRemoteWait, showHelp as showWaitHelp } from "../src/remote/wait.js";
 
 export { EXIT };
 
 const VERBS = new Map([
   ["exec", runRemoteExec],
   ["cp", runRemoteCp],
+  ["wait", runRemoteWait],
 ]);
 
 const isMainModule = (() => {
@@ -42,6 +44,7 @@ Usage:
 Verbs:
   exec   Run a command on another daemon's host
   cp     Copy a file to or from another daemon's host
+  wait   Wait for a command that \`exec\` left running (by run id)
 
 Options:
   -h, --help   Show this help
@@ -50,10 +53,12 @@ Examples:
   conductor remote exec --target ubuntu --workspace /srv/app -- git log --oneline -5
   conductor remote cp ./build.tar.gz ubuntu:/srv/app/build.tar.gz
   conductor remote cp ubuntu:/var/log/conductor.log ./conductor.log
+  conductor remote wait --target ubuntu <runId>
 
 For verb-specific help:
   conductor remote exec --help
   conductor remote cp --help
+  conductor remote wait --help
 `);
 }
 
@@ -84,7 +89,7 @@ export async function runRemote(argv, deps = {}) {
   return handler(argv.slice(1), deps);
 }
 
-export { showExecHelp, showCpHelp };
+export { showExecHelp, showCpHelp, showWaitHelp };
 
 if (isMainModule) {
   // `process.exitCode` rather than `process.exit()`: writes to a pipe are async,

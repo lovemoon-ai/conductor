@@ -7,8 +7,10 @@ import { db } from "@/lib/db";
 import { deleteTaskAttachmentDirectory } from "@/lib/tasks/task-file-storage";
 import {
   buildTaskWorktreeCleanupOutboxData,
+  deliverRemoteWorktreeCleanupNow,
   getTaskWorktreeRootKey,
   resolveTaskWorktreeCleanupHost,
+  resolveTaskWorktreeCleanupPlan,
 } from "@/lib/tasks/worktree";
 import { stopTaskBeforeRelaunch } from "@/lib/tasks/task-stop";
 import { isMissingPtySchemaError } from "@/lib/tasks/pty-compat";
@@ -349,6 +351,9 @@ export async function DELETE(
     {
       task: (typeof tasks)[number];
       agentHost: string;
+      launchConfig: unknown;
+      /** Where stop goes for this task; differs from agentHost for a remote worktree (RFC 0038). */
+      stopTargetHost: string | null;
     }
   >();
   const activeTasks: Array<{
@@ -366,8 +371,18 @@ export async function DELETE(
       projectDaemonHost: existing.daemonHost,
     });
     const worktreeRootKey = getTaskWorktreeRootKey(task.launchConfig);
-    if (worktreeRootKey && taskHost && !cleanupTargets.has(worktreeRootKey)) {
-      cleanupTargets.set(worktreeRootKey, { task, agentHost: taskHost });
+    // A local worktree is cleaned by taskHost with the task's own launch_config;
+    // a remote one by the daemon that holds it, with a config it understands.
+    const cleanupPlan = worktreeRootKey
+      ? resolveTaskWorktreeCleanupPlan(task.launchConfig, taskHost)
+      : null;
+    if (worktreeRootKey && cleanupPlan && !cleanupTargets.has(worktreeRootKey)) {
+      cleanupTargets.set(worktreeRootKey, {
+        task,
+        agentHost: cleanupPlan.agentHost,
+        launchConfig: cleanupPlan.launchConfig,
+        stopTargetHost: taskHost,
+      });
     }
     const normalizedTaskStatus = normalizeTaskStatus(task.status);
     if (
@@ -428,19 +443,25 @@ export async function DELETE(
     }
   }
 
+  const remoteCleanupRows: Array<{
+    row: unknown;
+    cleanupHost: string;
+    stopTargetHost: string | null;
+  }> = [];
   await db.$transaction(async (tx) => {
-    for (const { task, agentHost } of cleanupTargets.values()) {
-      await tx.agentOutbox.create({
+    for (const { task, agentHost, launchConfig, stopTargetHost } of cleanupTargets.values()) {
+      const row = await tx.agentOutbox.create({
         data: buildTaskWorktreeCleanupOutboxData({
           userId: user.id,
           agentHost,
           taskId: task.id,
           projectId,
-          launchConfig: task.launchConfig,
+          launchConfig,
           requestId: randomUUID(),
           force: true,
         }),
       });
+      remoteCleanupRows.push({ row, cleanupHost: agentHost, stopTargetHost });
     }
 
     if (taskIds.length > 0) {
@@ -480,6 +501,11 @@ export async function DELETE(
       where: { id: projectId },
     });
   });
+
+  // Remote worktree daemons hear nothing else about these tasks; push now.
+  for (const entry of remoteCleanupRows) {
+    await deliverRemoteWorktreeCleanupNow({ userId: user.id, ...entry });
+  }
 
   await Promise.all(
     taskIds.map((taskId) =>

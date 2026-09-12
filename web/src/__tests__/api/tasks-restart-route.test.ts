@@ -2253,6 +2253,85 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(JSON.parse(payloadJson).payload.target_launch_config).toEqual(worktreeLaunchConfig);
   });
 
+  // RFC 0038: a remote worktree describes another machine, so unlike local
+  // paths it stays valid for the successor wherever the AI runs.
+  it("keeps a remote worktree (and the local cwd) for a successor on the same daemon", async () => {
+    const remoteWorktree = {
+      host: "daemon-b",
+      projectId: "proj-b",
+      repoRoot: "/home/b/repo",
+      workspacePath: "/home/b/repo",
+      branch: "f8bc83",
+      baseRef: "main",
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        status: "running",
+        launchConfig: JSON.stringify({ cwd: "/Users/a/repo", remoteWorktree, initialContent: "x" }),
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+    expect(data.task.launch_config).toEqual({ remoteWorktree, cwd: "/Users/a/repo" });
+    const payloadJson = vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson as string;
+    expect(JSON.parse(payloadJson).payload.target_launch_config).toEqual({
+      remoteWorktree,
+      cwd: "/Users/a/repo",
+    });
+  });
+
+  it("keeps the remote worktree but drops the local cwd when agent_host targets a different daemon", async () => {
+    const remoteWorktree = {
+      host: "daemon-b",
+      projectId: "proj-b",
+      repoRoot: "/home/b/repo",
+      workspacePath: "/home/b/repo",
+      branch: "f8bc83",
+      baseRef: "main",
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        launchConfig: JSON.stringify({ cwd: "/Users/a/repo", remoteWorktree }),
+      }) as any,
+    );
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      { id: "agent-2", host: "daemon-2", supportedBackends: ["codex"], capabilities: [] },
+    ] as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task", agent_host: "daemon-2" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+    expect(data.task.launch_config).toEqual({ remoteWorktree });
+    expect(db.task.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ agentHost: "daemon-2" }),
+      }),
+    );
+    const payloadJson = vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson as string;
+    expect(JSON.parse(payloadJson).payload.target_launch_config).toEqual({ remoteWorktree });
+  });
+
   // RFC 0029: Reclaim path tests. The reclaim attempt is feature-flagged via
   // CONDUCTOR_TASK_RECLAIM_ENABLED; flip it on for these tests and restore at
   // the end so we don't pollute other suites in the same vitest worker.

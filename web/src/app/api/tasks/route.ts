@@ -18,8 +18,15 @@ import {
 import {
   buildTaskWorktreeLaunchConfig,
   inheritTaskWorktreeLaunchConfig,
+  isRemoteWorktreeRequested,
   isTaskWorktreeRequested,
+  type RemoteWorktreeLaunchConfig,
 } from "@/lib/tasks/worktree";
+import {
+  buildRemoteWorktreeBootstrap,
+  readRemoteWorktreeRequestHost,
+  resolveRemoteWorktreeTarget,
+} from "@/lib/tasks/remote-worktree";
 import {
   applyLegacyTaskShape,
   isMissingAnyNewSchemaError,
@@ -627,10 +634,30 @@ export async function POST(request: NextRequest) {
   if (taskType === "pty_task" && worktreeRequested) {
     return NextResponse.json({ error: "PTY task does not support worktree" }, { status: 400 });
   }
+  // RFC 0038: the worktree lives on another daemon and is created by the AI.
+  const remoteWorktreeHost = readRemoteWorktreeRequestHost(launchConfig);
+  if (isRemoteWorktreeRequested(launchConfig) && !remoteWorktreeHost) {
+    return NextResponse.json({ error: "remoteWorktree.host is required" }, { status: 400 });
+  }
+  if (remoteWorktreeHost && taskType !== "ai_task") {
+    return NextResponse.json({ error: "remoteWorktree is only supported for ai_task" }, { status: 400 });
+  }
+  if (remoteWorktreeHost && worktreeRequested) {
+    return NextResponse.json(
+      { error: "worktree and remoteWorktree are mutually exclusive" },
+      { status: 409 },
+    );
+  }
+  if (remoteWorktreeHost && agentGroup) {
+    return NextResponse.json(
+      { error: "remoteWorktree does not support agent groups" },
+      { status: 409 },
+    );
+  }
   const requestedId =
     typeof normalizedBody.id === "string" && normalizedBody.id.trim()
       ? normalizedBody.id
-      : worktreeRequested || agentGroup
+      : worktreeRequested || remoteWorktreeHost || agentGroup
         ? randomUUID()
         : undefined;
 
@@ -664,6 +691,27 @@ export async function POST(request: NextRequest) {
           };
         })
       : [];
+  let remoteWorktree: RemoteWorktreeLaunchConfig | null = null;
+  if (remoteWorktreeHost) {
+    const resolved = await resolveRemoteWorktreeTarget({
+      userId: user.id,
+      project: {
+        id: project.id,
+        name: project.name,
+        daemonHost: projectDaemonHost,
+        workspacePath: projectWorkspacePath,
+        gitRemoteUrl: (project as { gitRemoteUrl?: string | null }).gitRemoteUrl ?? null,
+        mergeOptOut: (project as { mergeOptOut?: boolean | null }).mergeOptOut ?? null,
+      },
+      requestedHost: remoteWorktreeHost,
+      connectedAgents,
+      tokenScope: user.tokenScope ?? null,
+    });
+    if ("error" in resolved) {
+      return NextResponse.json({ error: resolved.error }, { status: resolved.status });
+    }
+    remoteWorktree = resolved.remoteWorktree;
+  }
   const groupWorkerInitialContent: string | null = agentGroup
     ? buildAgentBootstrap({
         agent: agentGroup[0].name,
@@ -674,7 +722,15 @@ export async function POST(request: NextRequest) {
     : null;
   // For a worker in a group, the bootstrap (which already embeds the user's
   // original prompt) becomes the effective initial content.
-  const effectiveInitialContent = groupWorkerInitialContent ?? initialContent;
+  const effectiveInitialContent =
+    groupWorkerInitialContent ??
+    (remoteWorktree
+      ? buildRemoteWorktreeBootstrap({
+          remoteWorktree,
+          localWorkspacePath: projectWorkspacePath,
+          taskPrompt: initialContent,
+        })
+      : initialContent);
   if (worktreeRequested && (!projectDaemonHost || !projectWorkspacePath || !projectRepoRoot)) {
     return NextResponse.json(
       { error: "Worktree requires a git-backed bound project" },
@@ -719,6 +775,11 @@ export async function POST(request: NextRequest) {
       }
       if (projectWorktreeBranch) {
         aiLaunchConfig.worktreeBranch = projectWorktreeBranch;
+      }
+      if (remoteWorktree) {
+        // Never trust caller-supplied paths: the request only names the host.
+        delete aiLaunchConfig.remote_worktree;
+        aiLaunchConfig.remoteWorktree = remoteWorktree;
       }
       launchConfig = Object.keys(aiLaunchConfig).length > 0 ? aiLaunchConfig : null;
     }
