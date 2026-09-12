@@ -1,14 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react';
 import Link from 'next/link';
+import { getSwipeDirection, useHorizontalSwipe, type HorizontalSwipeProgress } from '@/shared/hooks/useHorizontalSwipe';
 import { ConnectionStatus } from '../common/ConnectionStatus';
 
-export interface TitleSwipeProgress {
-  progress: number;
-  direction: 'left' | 'right' | null;
-  isDragging: boolean;
-}
+export type TitleSwipeProgress = HorizontalSwipeProgress;
 
 interface HeaderProps {
   title?: string;
@@ -25,24 +22,14 @@ interface HeaderProps {
   onTitleSwipeProgress?: (state: TitleSwipeProgress) => void;
   titleSwipePreviewLeft?: string | null;
   titleSwipePreviewRight?: string | null;
+  /** Swipe state owned by the page; overrides the title's own drag so other surfaces can drive the preview. */
+  titleSwipeState?: Pick<TitleSwipeProgress, 'progress' | 'isDragging'>;
   titleTransitionDirection?: 'forward' | 'backward' | null;
   titleDoubleClickHint?: string;
 }
 
-const TITLE_SWIPE_DISTANCE_PX = 48;
-const TITLE_SWIPE_FULL_DISTANCE_PX = 96;
 const TITLE_SWIPE_CURRENT_OFFSET_PX = 28;
 const TITLE_SWIPE_PREVIEW_OFFSET_PX = 34;
-const TITLE_SWIPE_VERTICAL_TOLERANCE_PX = 32;
-
-const clampTitleSwipeProgress = (progress: number) =>
-  Math.max(-1, Math.min(1, progress));
-
-const getTitleSwipeDirection = (progress: number): TitleSwipeProgress['direction'] => {
-  if (progress < 0) return 'left';
-  if (progress > 0) return 'right';
-  return null;
-};
 
 const BackIcon = () => (
   <svg className="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -65,16 +52,14 @@ export function Header({
   onTitleSwipeProgress,
   titleSwipePreviewLeft,
   titleSwipePreviewRight,
+  titleSwipeState,
   titleTransitionDirection,
   titleDoubleClickHint,
 }: HeaderProps) {
-  const [titleSwipeProgress, setTitleSwipeProgress] = useState(0);
-  const [isTitleSwipeTracking, setIsTitleSwipeTracking] = useState(false);
-  const titleSwipeGestureRef = useRef<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-  } | null>(null);
+  const [localTitleSwipeProgress, setTitleSwipeProgress] = useState(0);
+  const [isLocalTitleSwipeTracking, setIsTitleSwipeTracking] = useState(false);
+  const titleSwipeProgress = titleSwipeState ? titleSwipeState.progress : localTitleSwipeProgress;
+  const isTitleSwipeTracking = titleSwipeState ? titleSwipeState.isDragging : isLocalTitleSwipeTracking;
   const titleDidSwipeRef = useRef(false);
   const titleSwipeClickResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTitleSwipeEnabled = Boolean(onTitleSwipeLeft || onTitleSwipeRight);
@@ -83,7 +68,7 @@ export function Header({
     ? `webapp-title-switch-${titleTransitionDirection}`
     : '';
   const titleSwipeAbsProgress = Math.abs(titleSwipeProgress);
-  const titleSwipeDirection = getTitleSwipeDirection(titleSwipeProgress);
+  const titleSwipeDirection = getSwipeDirection(titleSwipeProgress);
   const titleSwipePreview =
     titleSwipeDirection === 'left'
       ? titleSwipePreviewRight
@@ -139,109 +124,8 @@ export function Header({
     )
   ) : null;
 
-  const updateTitleSwipeProgress = (nextProgress: number, isDragging: boolean) => {
-    const progress = clampTitleSwipeProgress(nextProgress);
-    setTitleSwipeProgress(progress);
-    setIsTitleSwipeTracking(isDragging);
-    onTitleSwipeProgress?.({
-      progress,
-      direction: getTitleSwipeDirection(progress),
-      isDragging,
-    });
-  };
-
-  useEffect(() => (
-    () => {
-      if (titleSwipeClickResetTimeoutRef.current !== null) {
-        clearTimeout(titleSwipeClickResetTimeoutRef.current);
-      }
-    }
-  ), []);
-
-  const handleTitlePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!isTitleSwipeEnabled) {
-      return;
-    }
-    if (event.pointerType === 'mouse') {
-      return;
-    }
-    titleSwipeGestureRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-    };
-    updateTitleSwipeProgress(0, true);
-
-    if (typeof event.currentTarget.setPointerCapture === 'function') {
-      try {
-        event.currentTarget.setPointerCapture(event.pointerId);
-      } catch {
-        // Pointer capture can fail if the browser has already cancelled it.
-      }
-    }
-  };
-
-  const handleTitlePointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    const gesture = titleSwipeGestureRef.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) {
-      return;
-    }
-
-    const deltaX = event.clientX - gesture.startX;
-    const deltaY = event.clientY - gesture.startY;
-    const absDeltaX = Math.abs(deltaX);
-    const absDeltaY = Math.abs(deltaY);
-    if (absDeltaY > TITLE_SWIPE_VERTICAL_TOLERANCE_PX && absDeltaY > absDeltaX) {
-      titleSwipeGestureRef.current = null;
-      releaseTitlePointer(event);
-      updateTitleSwipeProgress(0, false);
-      return;
-    }
-
-    let progress = clampTitleSwipeProgress(deltaX / TITLE_SWIPE_FULL_DISTANCE_PX);
-    if ((progress < 0 && !onTitleSwipeLeft) || (progress > 0 && !onTitleSwipeRight)) {
-      progress = 0;
-    }
-    updateTitleSwipeProgress(progress, true);
-    if (progress !== 0) {
-      event.preventDefault();
-    }
-  };
-
-  const releaseTitlePointer = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (
-      typeof event.currentTarget.hasPointerCapture === 'function'
-      && event.currentTarget.hasPointerCapture(event.pointerId)
-      && typeof event.currentTarget.releasePointerCapture === 'function'
-    ) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  };
-
-  const handleTitlePointerEnd = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    const gesture = titleSwipeGestureRef.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) {
-      return;
-    }
-
-    titleSwipeGestureRef.current = null;
-    releaseTitlePointer(event);
-    updateTitleSwipeProgress(0, false);
-
-    const deltaX = event.clientX - gesture.startX;
-    const deltaY = event.clientY - gesture.startY;
-    if (
-      Math.abs(deltaX) < TITLE_SWIPE_DISTANCE_PX
-      || Math.abs(deltaY) > TITLE_SWIPE_VERTICAL_TOLERANCE_PX
-    ) {
-      return;
-    }
-
-    const swipeHandler = deltaX < 0 ? onTitleSwipeLeft : onTitleSwipeRight;
-    if (!swipeHandler) {
-      return;
-    }
-
+  // A completed swipe must swallow the click the browser synthesizes after it.
+  const withTitleSwipeClickGuard = (handler?: () => void) => handler && (() => {
     titleDidSwipeRef.current = true;
     if (titleSwipeClickResetTimeoutRef.current !== null) {
       clearTimeout(titleSwipeClickResetTimeoutRef.current);
@@ -250,15 +134,25 @@ export function Header({
       titleDidSwipeRef.current = false;
       titleSwipeClickResetTimeoutRef.current = null;
     }, 0);
-    event.preventDefault();
-    swipeHandler();
-  };
+    handler();
+  });
+  const titleSwipeHandlers = useHorizontalSwipe<HTMLButtonElement>({
+    onSwipeLeft: withTitleSwipeClickGuard(onTitleSwipeLeft),
+    onSwipeRight: withTitleSwipeClickGuard(onTitleSwipeRight),
+    onProgress: (state) => {
+      setTitleSwipeProgress(state.progress);
+      setIsTitleSwipeTracking(state.isDragging);
+      onTitleSwipeProgress?.(state);
+    },
+  });
 
-  const handleTitlePointerCancel = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    titleSwipeGestureRef.current = null;
-    releaseTitlePointer(event);
-    updateTitleSwipeProgress(0, false);
-  };
+  useEffect(() => (
+    () => {
+      if (titleSwipeClickResetTimeoutRef.current !== null) {
+        clearTimeout(titleSwipeClickResetTimeoutRef.current);
+      }
+    }
+  ), []);
 
   const handleTitleClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
     if (titleDidSwipeRef.current) {
@@ -295,10 +189,7 @@ export function Header({
                 type="button"
                 onClick={handleTitleClick}
                 onDoubleClick={onTitleDoubleClick}
-                onPointerDown={handleTitlePointerDown}
-                onPointerMove={handleTitlePointerMove}
-                onPointerUp={handleTitlePointerEnd}
-                onPointerCancel={handleTitlePointerCancel}
+                {...titleSwipeHandlers}
                 title={titleDoubleClickHint}
                 className="block min-w-0 max-w-full overflow-hidden truncate rounded bg-transparent p-0 text-left text-inherit"
                 style={isTitleSwipeEnabled ? { touchAction: 'pan-y' } : undefined}

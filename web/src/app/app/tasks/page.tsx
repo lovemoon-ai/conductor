@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore, type CSSProperties } from 'react';
+import { Suspense, useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/common/FeedbackProvider';
 import { ResizableTaskPane } from '@/components/layout/ResizableTaskPane';
@@ -23,11 +23,22 @@ import { filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } fro
 import { buildTaskDetailHref } from '@/features/tasks/utils/task-navigation';
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
 import { parseTaskType, type TaskType } from '@/lib/tasks/task-config';
+import { useHorizontalSwipe } from '@/shared/hooks/useHorizontalSwipe';
 
 const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
 const PROJECT_SWITCH_ANIMATION_MS = 220;
 const PROJECT_SWIPE_LIST_OFFSET_PX = 14;
 const PROJECT_SWIPE_LIST_MAX_OPACITY_DROP = 0.16;
+// Cards and tabs keep their own gestures (action menus, rename); only the list
+// surface they leave uncovered switches projects.
+const PROJECT_SWIPE_EXCLUDED_TARGETS = '[data-task-item-wrapper], [data-task-tab-card-body], [role="tab"], button, a, input, textarea, select, label';
+
+// React bubbles portaled overlays (dialogs, menus) through the list, so the
+// swipe must also start inside the list's own DOM.
+const isUncoveredTaskListTarget = ({ target, currentTarget }: ReactPointerEvent<HTMLDivElement>) =>
+  target instanceof Element
+  && currentTarget.contains(target)
+  && !target.closest(PROJECT_SWIPE_EXCLUDED_TARGETS);
 
 type ProjectSwitchDirection = 'forward' | 'backward';
 type ProjectSwipeState = Pick<TitleSwipeProgress, 'progress' | 'isDragging'>;
@@ -149,13 +160,15 @@ function TasksPageContent() {
       group.members.some((member) => member.id === projectId),
     );
   }, [projectId, switchableProjectGroups]);
-  const previousSwitchableProjectGroup = currentProjectSwitchIndex > 0
-    ? switchableProjectGroups[currentProjectSwitchIndex - 1] ?? null
+  // Project switching wraps around both ends of the project list.
+  const switchableProjectCount = switchableProjectGroups.length;
+  const canSwitchProject = currentProjectSwitchIndex >= 0 && switchableProjectCount > 1;
+  const previousSwitchableProjectGroup = canSwitchProject
+    ? switchableProjectGroups[(currentProjectSwitchIndex - 1 + switchableProjectCount) % switchableProjectCount] ?? null
     : null;
-  const nextSwitchableProjectGroup =
-    currentProjectSwitchIndex >= 0 && currentProjectSwitchIndex < switchableProjectGroups.length - 1
-      ? switchableProjectGroups[currentProjectSwitchIndex + 1] ?? null
-      : null;
+  const nextSwitchableProjectGroup = canSwitchProject
+    ? switchableProjectGroups[(currentProjectSwitchIndex + 1) % switchableProjectCount] ?? null
+    : null;
   // Defense-in-depth: even though the server-side list endpoint already
   // hides PTY tasks that are bound to an AI task via AttachedTerminal, any
   // single-task fetch path (e.g. deep-linking to a PTY id, or a stale WS
@@ -286,10 +299,7 @@ function TasksPageContent() {
   );
 
   const handleProjectTitleSwipe = useCallback((offset: -1 | 1) => {
-    if (currentProjectSwitchIndex === -1) {
-      return;
-    }
-    const targetGroup = switchableProjectGroups[currentProjectSwitchIndex + offset];
+    const targetGroup = offset > 0 ? nextSwitchableProjectGroup : previousSwitchableProjectGroup;
     const targetProjectId = targetGroup?.members[0]?.id;
     if (!targetProjectId) {
       return;
@@ -311,7 +321,7 @@ function TasksPageContent() {
       params.delete('taskId');
       params.delete('view');
     });
-  }, [currentProjectSwitchIndex, replaceTaskRoute, setSelectedProjectId, switchableProjectGroups]);
+  }, [nextSwitchableProjectGroup, previousSwitchableProjectGroup, replaceTaskRoute, setSelectedProjectId]);
 
   const handleProjectTitleSwipeProgress = useCallback((state: TitleSwipeProgress) => {
     setProjectSwipeState({
@@ -323,10 +333,15 @@ function TasksPageContent() {
   const canSwipeProjectTitle =
     !isDesktop
     && viewMode === 'list'
-    && currentProjectSwitchIndex >= 0
-    && switchableProjectGroups.length > 1;
-  const canSwipeProjectTitleLeft = canSwipeProjectTitle && Boolean(nextSwitchableProjectGroup);
-  const canSwipeProjectTitleRight = canSwipeProjectTitle && Boolean(previousSwitchableProjectGroup);
+    && canSwitchProject;
+  const swipeProjectLeft = canSwipeProjectTitle ? () => handleProjectTitleSwipe(1) : undefined;
+  const swipeProjectRight = canSwipeProjectTitle ? () => handleProjectTitleSwipe(-1) : undefined;
+  const projectListSwipeHandlers = useHorizontalSwipe<HTMLDivElement>({
+    onSwipeLeft: swipeProjectLeft,
+    onSwipeRight: swipeProjectRight,
+    onProgress: handleProjectTitleSwipeProgress,
+    canStart: isUncoveredTaskListTarget,
+  });
   const projectSwitchAnimationClassName = !isDesktop && projectSwitchAnimation
     ? `webapp-task-list-switch-${projectSwitchAnimation}`
     : '';
@@ -496,11 +511,12 @@ function TasksPageContent() {
         title={currentProjectName ? `${currentProjectName} (${projectTaskCountLabel})` : `Tasks (${taskCount})`}
         compact
         onTitleDoubleClick={handleTitleDoubleClick}
-        onTitleSwipeLeft={canSwipeProjectTitleLeft ? () => handleProjectTitleSwipe(1) : undefined}
-        onTitleSwipeRight={canSwipeProjectTitleRight ? () => handleProjectTitleSwipe(-1) : undefined}
+        onTitleSwipeLeft={swipeProjectLeft}
+        onTitleSwipeRight={swipeProjectRight}
         onTitleSwipeProgress={canSwipeProjectTitle ? handleProjectTitleSwipeProgress : undefined}
         titleSwipePreviewLeft={previousSwitchableProjectGroup?.name ?? null}
         titleSwipePreviewRight={nextSwitchableProjectGroup?.name ?? null}
+        titleSwipeState={canSwipeProjectTitle ? projectSwipeState : undefined}
         titleTransitionDirection={!isDesktop ? projectSwitchAnimation : null}
         titleDoubleClickHint={showRunningOnly
           ? 'Double-click to show all tasks.'
@@ -582,8 +598,9 @@ function TasksPageContent() {
           <div
             className={viewMode === 'graph'
               ? 'h-full'
-              : `task-list-surface h-full overflow-y-auto px-2 pb-3 webapp-scrollbar ${projectSwitchAnimationClassName} ${projectSwipeClassName}`}
+              : `task-list-surface h-full overflow-y-auto px-2 pb-3 webapp-scrollbar ${canSwipeProjectTitle ? 'touch-pan-y' : ''} ${projectSwitchAnimationClassName} ${projectSwipeClassName}`}
             style={viewMode === 'graph' ? undefined : projectSwipeStyle}
+            {...projectListSwipeHandlers}
           >
             <TaskList
               viewMode={viewMode}

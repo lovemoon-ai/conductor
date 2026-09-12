@@ -118,6 +118,20 @@ describe('Header', () => {
     expect(onTitleClick).toHaveBeenCalledTimes(1);
   });
 
+  it('renders swipe progress driven from outside the title', () => {
+    render(
+      <Header
+        title="Project A"
+        onTitleSwipeLeft={onSwipeLeft}
+        titleSwipePreviewRight="Project B"
+        titleSwipeState={{ progress: -0.5, isDragging: true }}
+      />,
+    );
+
+    expect(screen.getByText('Project A')).toHaveStyle('transform: translateX(-14px)');
+    expect(screen.getByText('Project B')).toBeInTheDocument();
+  });
+
   it('applies the requested title transition direction', () => {
     render(<Header title="Project A" titleTransitionDirection="forward" />);
 

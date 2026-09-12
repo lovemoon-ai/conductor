@@ -79,6 +79,7 @@ vi.mock('@/components/common/FeedbackProvider', () => ({
 
 vi.mock('@/features/tasks', async () => {
   const React = await import('react');
+  const { createPortal } = await import('react-dom');
   return {
     useTasksStore: (selector: (state: typeof tasksState) => unknown) => selector(tasksState),
     filterTasksByProject: (
@@ -133,6 +134,14 @@ vi.mock('@/features/tasks', async () => {
           <button type="button" onClick={() => onOpenTask?.('task-2')}>
             select-task-2
           </button>
+          <div data-task-item-wrapper="task-1">mock-task-card</div>
+          <div data-task-tab-card="group-1">
+            <div role="tablist" aria-label="mock-merged-tabs">
+              <div role="tab">mock-task-tab</div>
+            </div>
+            <div data-task-tab-card-body="group-1">mock-merged-card</div>
+          </div>
+          {createPortal(<div>mock-portal-overlay</div>, document.body)}
         </>
       );
     },
@@ -193,6 +202,7 @@ vi.mock('@/components/layout/Header', () => ({
     onTitleSwipeProgress,
     titleSwipePreviewLeft,
     titleSwipePreviewRight,
+    titleSwipeState,
     titleTransitionDirection,
     titleDoubleClickHint,
   }: {
@@ -206,6 +216,7 @@ vi.mock('@/components/layout/Header', () => ({
     onTitleSwipeProgress?: (state: { progress: number; direction: 'left' | 'right' | null; isDragging: boolean }) => void;
     titleSwipePreviewLeft?: string | null;
     titleSwipePreviewRight?: string | null;
+    titleSwipeState?: { progress: number; isDragging: boolean };
     titleTransitionDirection?: 'forward' | 'backward' | null;
     titleDoubleClickHint?: string;
   }) => {
@@ -219,6 +230,7 @@ vi.mock('@/components/layout/Header', () => ({
       hasTitleSwipeProgress: Boolean(onTitleSwipeProgress),
       titleSwipePreviewLeft,
       titleSwipePreviewRight,
+      titleSwipeState,
       titleTransitionDirection,
     });
     return (
@@ -599,9 +611,9 @@ describe('TasksPage', () => {
     expect(headerMock).toHaveBeenCalledWith(
       expect.objectContaining({
         hasTitleSwipeLeft: true,
-        hasTitleSwipeRight: false,
+        hasTitleSwipeRight: true,
         hasTitleSwipeProgress: true,
-        titleSwipePreviewLeft: null,
+        titleSwipePreviewLeft: 'CLI',
         titleSwipePreviewRight: 'Website',
       }),
     );
@@ -653,19 +665,178 @@ describe('TasksPage', () => {
     expect(replaceMock).toHaveBeenCalledWith('/app/tasks?projectId=project-1', { scroll: false });
   });
 
-  it('does not wrap project title swipes past the project list edges', () => {
+  it('wraps project title swipes around both ends of the project list', () => {
     searchParamsState = new URLSearchParams('projectId=project-1');
     projectsState = [
       { id: 'project-1', name: 'Conductor' },
       { id: 'project-2', name: 'Website' },
+      { id: 'project-3', name: 'CLI' },
     ];
 
     render(<TasksPage />);
 
     setSelectedProjectIdMock.mockClear();
     replaceMock.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'mock-title-swipe-right' }));
 
-    expect(screen.queryByRole('button', { name: 'mock-title-swipe-right' })).not.toBeInTheDocument();
+    expect(setSelectedProjectIdMock).toHaveBeenLastCalledWith('project-3');
+    expect(replaceMock).toHaveBeenLastCalledWith('/app/tasks?projectId=project-3', { scroll: false });
+    expect(headerMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        titleSwipePreviewLeft: 'Website',
+        titleSwipePreviewRight: 'Conductor',
+      }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'mock-title-swipe-left' }));
+
+    expect(setSelectedProjectIdMock).toHaveBeenLastCalledWith('project-1');
+    expect(replaceMock).toHaveBeenLastCalledWith('/app/tasks?projectId=project-1', { scroll: false });
+  });
+
+  it('switches projects when swiping the task list area outside task cards', () => {
+    searchParamsState = new URLSearchParams('projectId=project-3');
+    projectsState = [
+      { id: 'project-1', name: 'Conductor' },
+      { id: 'project-2', name: 'Website' },
+      { id: 'project-3', name: 'CLI' },
+    ];
+
+    render(<TasksPage />);
+
+    const taskListWrapper = screen.getByText('task-list:list:none:route').parentElement!;
+    expect(taskListWrapper).toHaveClass('touch-pan-y');
+    setSelectedProjectIdMock.mockClear();
+    replaceMock.mockClear();
+
+    fireEvent.pointerDown(taskListWrapper, { pointerId: 1, pointerType: 'touch', clientX: 220, clientY: 300 });
+    fireEvent.pointerMove(taskListWrapper, { pointerId: 1, pointerType: 'touch', clientX: 172, clientY: 302 });
+
+    expect(taskListWrapper).toHaveStyle({ transform: 'translateX(-7px)' });
+    expect(headerMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        titleSwipePreviewRight: 'Conductor',
+        titleSwipeState: { progress: -0.5, isDragging: true },
+      }),
+    );
+
+    fireEvent.pointerUp(taskListWrapper, { pointerId: 1, pointerType: 'touch', clientX: 150, clientY: 304 });
+
+    expect(setSelectedProjectIdMock).toHaveBeenCalledWith('project-1');
+    expect(replaceMock).toHaveBeenCalledWith('/app/tasks?projectId=project-1', { scroll: false });
+  });
+
+  const threeProjects: MockProject[] = [
+    { id: 'project-1', name: 'Conductor' },
+    { id: 'project-2', name: 'Website' },
+    { id: 'project-3', name: 'CLI' },
+  ];
+  const swipeOn = (
+    element: Element,
+    { deltaX = -70, deltaY = 4, pointerType = 'touch' }: { deltaX?: number; deltaY?: number; pointerType?: string } = {},
+  ) => {
+    const at = (fraction: number) => ({
+      pointerId: 1,
+      pointerType,
+      clientX: 220 + deltaX * fraction,
+      clientY: 300 + deltaY * fraction,
+    });
+    fireEvent.pointerDown(element, at(0));
+    fireEvent.pointerMove(element, at(0.5));
+    fireEvent.pointerUp(element, at(1));
+  };
+  const renderProjectTwo = () => {
+    searchParamsState = new URLSearchParams('projectId=project-2');
+    projectsState = threeProjects;
+    render(<TasksPage />);
+    setSelectedProjectIdMock.mockClear();
+    replaceMock.mockClear();
+    headerMock.mockClear();
+  };
+
+  it.each([
+    { target: 'a task card', text: 'mock-task-card' },
+    { target: 'a merged card body', text: 'mock-merged-card' },
+    { target: 'a merged card tab', text: 'mock-task-tab' },
+    { target: 'a button', text: 'select-task-2' },
+    { target: 'a portaled overlay', text: 'mock-portal-overlay' },
+  ])('leaves swipes that start on $target alone', ({ text }) => {
+    renderProjectTwo();
+
+    swipeOn(screen.getByText(text));
+
+    expect(headerMock).not.toHaveBeenCalled();
+    expect(setSelectedProjectIdMock).not.toHaveBeenCalled();
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { gesture: 'a tap', deltaX: 4, deltaY: 2, pointerType: 'touch' },
+    { gesture: 'a vertical scroll', deltaX: -20, deltaY: 120, pointerType: 'touch' },
+    { gesture: 'a mouse drag', deltaX: -70, deltaY: 4, pointerType: 'mouse' },
+  ])('ignores $gesture on the blank task list area without re-rendering', ({ deltaX, deltaY, pointerType }) => {
+    renderProjectTwo();
+
+    swipeOn(screen.getByText('task-list:list:none:route').parentElement!, { deltaX, deltaY, pointerType });
+
+    expect(headerMock).not.toHaveBeenCalled();
+    expect(setSelectedProjectIdMock).not.toHaveBeenCalled();
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
+  it('switches projects from the blank strip beside merged card tabs', () => {
+    renderProjectTwo();
+
+    swipeOn(screen.getByRole('tablist', { name: 'mock-merged-tabs' }));
+
+    expect(setSelectedProjectIdMock).toHaveBeenCalledWith('project-3');
+    expect(replaceMock).toHaveBeenCalledWith('/app/tasks?projectId=project-3', { scroll: false });
+  });
+
+  it('wraps both directions to the other project when only two projects exist', () => {
+    searchParamsState = new URLSearchParams('projectId=project-1');
+    projectsState = threeProjects.slice(0, 2);
+
+    render(<TasksPage />);
+
+    expect(headerMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        hasTitleSwipeLeft: true,
+        hasTitleSwipeRight: true,
+        titleSwipePreviewLeft: 'Website',
+        titleSwipePreviewRight: 'Website',
+      }),
+    );
+    setSelectedProjectIdMock.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'mock-title-swipe-right' }));
+
+    expect(setSelectedProjectIdMock).toHaveBeenCalledWith('project-2');
+  });
+
+  it.each([
+    { mode: 'desktop', desktop: true, query: 'projectId=project-2', metadata: null },
+    { mode: 'graph', desktop: false, query: 'projectId=project-2&view=graph', metadata: { taskGraphEnabled: true } },
+  ])('does not enable project swipes in $mode mode', ({ desktop, query, metadata }) => {
+    isDesktopViewport = desktop;
+    searchParamsState = new URLSearchParams(query);
+    projectsState = threeProjects.map((project) => ({ ...project, metadata }));
+
+    render(<TasksPage />);
+
+    const taskListWrapper = screen.getByText(/^task-list:/).parentElement!;
+    expect(taskListWrapper).not.toHaveClass('touch-pan-y');
+    expect(headerMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        hasTitleSwipeLeft: false,
+        hasTitleSwipeRight: false,
+        titleSwipeState: undefined,
+      }),
+    );
+    setSelectedProjectIdMock.mockClear();
+    replaceMock.mockClear();
+
+    swipeOn(taskListWrapper);
+
     expect(setSelectedProjectIdMock).not.toHaveBeenCalled();
     expect(replaceMock).not.toHaveBeenCalled();
   });

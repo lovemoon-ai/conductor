@@ -1485,7 +1485,7 @@ export function TaskList({
                     );
                   })}
                 </div>
-                <div className="relative">
+                <div data-task-tab-card-body={group.id} className="relative">
                   {renderTaskItem(activeTask)}
                   {isDropTarget ? <DropHighlight /> : null}
                 </div>
