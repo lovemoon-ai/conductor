@@ -134,3 +134,22 @@ export function pruneFireSessionRecords(dir, liveSessionNames, { fsImpl = fs } =
   }
   return pruned;
 }
+
+// Task ids a previous daemon left a tmux Fire running for. This is the only
+// evidence available to a successor that has no `tmux` binary to enumerate
+// sessions with, so it is what scopes that daemon's refusal to kill.
+export function listFireSessionTaskIds(dir, { fsImpl = fs } = {}) {
+  let entries;
+  try {
+    entries = fsImpl.readdirSync(dir);
+  } catch {
+    return new Set();
+  }
+  const taskIds = new Set();
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    const record = readFireSessionRecord(dir, entry.slice(0, -".json".length), { fsImpl });
+    if (record?.taskId) taskIds.add(record.taskId);
+  }
+  return taskIds;
+}

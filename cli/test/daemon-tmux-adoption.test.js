@@ -192,6 +192,11 @@ describe("daemon tmux Fire adoption", () => {
     // Model `tmux list-sessions` that cannot answer (wedged server, tmux
     // missing, probe timeout) rather than answering "no sessions".
     tmuxProbeUnanswerable = false,
+    // Model a daemon restarted with a minimal PATH that has no `tmux` binary
+    // at all (launchd/systemd/cron, or a `brew upgrade tmux` window): the
+    // startup probe fails, the re-probe fails too, and the sessions a
+    // predecessor left running cannot be enumerated by any means.
+    tmuxBinaryMissing = false,
   }) => {
     const conductorHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-adopt-run-"));
     const registryDir = resolveFireSessionRegistryDir(conductorHome);
@@ -271,7 +276,9 @@ describe("daemon tmux Fire adoption", () => {
           // Keep the `tmux -V` availability probe deterministic: without it
           // FIRE_TMUX_MODE_ACTIVE depends on whether the dev box has tmux.
           if (cmd === "tmux" && args?.[0] === "-V") {
-            return { status: 0, error: null, pid: 12345 };
+            return tmuxBinaryMissing
+              ? { status: null, error: new Error("spawnSync tmux ENOENT"), pid: undefined }
+              : { status: 0, error: null, pid: 12345 };
           }
           return { status: 1, error: new Error("ENOENT"), pid: undefined };
         },
@@ -314,9 +321,13 @@ describe("daemon tmux Fire adoption", () => {
     try {
       // Mirror production ordering: startup adoption is kicked off before
       // `client.connect()`, so the first probe always precedes onConnected.
-      await waitUntil(() => listSessionCalls.length > 0, {
-        message: "startup tmux list-sessions probe",
-      });
+      // With no tmux binary the daemon never reaches `list-sessions`, so
+      // there is no probe to wait for.
+      if (!tmuxBinaryMissing) {
+        await waitUntil(() => listSessionCalls.length > 0, {
+          message: "startup tmux list-sessions probe",
+        });
+      }
       await waitUntil(() => typeof onConnected === "function", { message: "ws client wiring" });
       // First connect always runs recoverStaleTasks (the startup path).
       onConnected({ isReconnect: false, connectedAt: Date.now() });
@@ -495,6 +506,44 @@ describe("daemon tmux Fire adoption", () => {
   // for its whole life — and the conclusiveness guard above never even runs,
   // because the sweeps skip the tmux lookup entirely. Same mass kill, different
   // door.
+  // The third door: `tmux` genuinely absent from PATH. A daemon restarted by
+  // launchd/systemd/cron — or during a `brew upgrade tmux` — logs the direct
+  // spawn fallback and then has no way at all to enumerate the sessions its
+  // predecessor deliberately left running. "Cannot see" is not "is dead": the
+  // hand-off records on disk name exactly the tasks whose liveness this
+  // process is unable to answer for, so they must not be killed.
+  it("kills nothing for a task whose hand-off record it cannot verify without tmux", async () => {
+    const { killedTaskIds } = await runScenario({
+      tmuxSessions: [SESSION_NAME],
+      handOffRecord: { exitMarkerToken: "tok123456789a" },
+      logContents: "fire is still talking\n",
+      tmuxBinaryMissing: true,
+      reconnects: 2,
+    });
+    assert.deepStrictEqual(
+      killedTaskIds,
+      [],
+      "a missing tmux binary must not authorize killing Fires the daemon cannot see",
+    );
+  });
+
+  // The counterweight to the guard above: scoping it to tasks that actually
+  // have a hand-off record. A host that simply never installs tmux spawns its
+  // Fires directly, and those die with their daemon — blanket-skipping the
+  // sweep there would strand every such task at `running` with nobody left to
+  // report its death, which the postmortems call worse than killing it.
+  it("still kills a task with no hand-off record when tmux is missing", async () => {
+    const { killedTaskIds } = await runScenario({
+      tmuxSessions: [],
+      tmuxBinaryMissing: true,
+    });
+    assert.deepStrictEqual(
+      killedTaskIds,
+      [TASK_ID],
+      "without a hand-off record there is no tmux Fire to be ignorant about",
+    );
+  });
+
   it("kills nothing when tmux is reachable but the startup probe said otherwise", async () => {
     const { killedTaskIds } = await runScenarioWithFailedStartupProbe();
     assert.deepStrictEqual(
