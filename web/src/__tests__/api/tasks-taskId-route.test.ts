@@ -859,6 +859,12 @@ describe("/api/tasks/[taskId]", () => {
       where: { id: "task-worktree-delete" },
     });
     expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-worktree-delete");
+    // A local worktree keeps the deferred delivery: its own daemon drains the
+    // outbox on its next event, exactly as before.
+    expect(deliverAgentOutboxRow).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "cleanup_task_worktree" }),
+      expect.anything(),
+    );
   });
 
   it("still deletes a stopped worktree task when its daemon is offline", async () => {
@@ -3364,5 +3370,82 @@ describe("/api/tasks/[taskId]", () => {
       where: { id: "task-6" },
     });
     expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-6");
+  });
+
+  it("cleans up a remote worktree on the daemon that holds it while stopping the AI on its own daemon", async () => {
+    const token = createTestToken("user-1");
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-remote-delete",
+      projectId: "proj-1",
+      title: "Remote worktree task",
+      taskType: "ai_task",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      status: "running",
+      launchConfig: JSON.stringify({
+        cwd: "/Users/a/repo",
+        remoteWorktree: {
+          host: "daemon-b",
+          projectId: "proj-b",
+          repoRoot: "/home/b/repo",
+          workspacePath: "/home/b/repo",
+          branch: "f8bc83",
+          baseRef: "main",
+        },
+      }),
+      createdAt: new Date("2026-09-12T12:00:00.000Z"),
+      updatedAt: new Date("2026-09-12T12:00:01.000Z"),
+    } as any);
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValue(true);
+    vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 0 } as any);
+    vi.mocked(db.task.delete).mockResolvedValue({ id: "task-remote-delete" } as any);
+
+    const request = createMockRequest({ method: "DELETE", token });
+    const response = await DELETE(request, { params: Promise.resolve({ taskId: "task-remote-delete" }) });
+
+    expect(response.status).toBe(204);
+    // The AI runs on daemon-a: that is where stop goes.
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        taskId: "task-remote-delete",
+        agentHost: "daemon-a",
+        eventType: "stop_task",
+      }),
+      expect.any(Object),
+    );
+    // The worktree lives on daemon-b: cleanup goes there, in the shape its
+    // (unchanged) cleanup handler understands.
+    const cleanup = vi
+      .mocked(db.agentOutbox.create)
+      .mock.calls.map((call) => (call[0] as any).data)
+      .find((data) => data.eventType === "cleanup_task_worktree");
+    expect(cleanup).toBeDefined();
+    expect(cleanup.agentHost).toBe("daemon-b");
+    expect(cleanup.taskId).toBe("task-remote-delete");
+    const payload = JSON.parse(cleanup.payloadJson).payload;
+    expect(payload.force).toBe(true);
+    expect(payload.launch_config).toEqual({
+      worktree: true,
+      worktreeId: "proj-b",
+      worktreeBranch: "f8bc83",
+      worktreeBaseRef: "main",
+      projectRepoRoot: "/home/b/repo",
+      projectWorkspacePath: "/home/b/repo",
+      projectRelativePath: ".",
+    });
+    // Nothing else would drain daemon-b's outbox for this task, so the row is
+    // delivered immediately after commit.
+    expect(deliverAgentOutboxRow).toHaveBeenCalledWith(
+      expect.objectContaining({ agentHost: "daemon-b", eventType: "cleanup_task_worktree" }),
+      expect.objectContaining({ agentHost: "daemon-b" }),
+    );
+    expect(db.task.delete).toHaveBeenCalledWith({ where: { id: "task-remote-delete" } });
+    // The worktree branch must tell app clients too, like the plain-task branch.
+    expect(realtimeHub.broadcast).toHaveBeenCalledWith(
+      "user-1",
+      "proj-1",
+      expect.objectContaining({ type: "task_deleted" }),
+    );
   });
 });

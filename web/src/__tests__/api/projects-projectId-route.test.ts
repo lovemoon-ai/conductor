@@ -54,6 +54,11 @@ vi.mock("@/lib/realtime/hub", () => ({
   },
 }));
 
+vi.mock("@/lib/realtime/agent-outbox", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/realtime/agent-outbox")>()),
+  deliverAgentOutboxRow: vi.fn().mockResolvedValue({ delivered: true }),
+}));
+
 vi.mock("@/lib/tasks/task-stop", () => ({
   stopTaskBeforeRelaunch: vi.fn(),
 }));
@@ -626,6 +631,75 @@ describe("/api/projects/[projectId]", () => {
       });
       expect(deleteTaskAttachmentDirectory).toHaveBeenCalledWith("task-worktree-1");
       expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-worktree-1");
+    });
+
+    // RFC 0038: the worktree lives on another daemon. Deleting the project must
+    // send cleanup THERE, in the shape that daemon understands, and push it
+    // immediately (that daemon sees no other traffic for the task).
+    it("routes a remote worktree's cleanup to the daemon that holds it when deleting the project", async () => {
+      const { deliverAgentOutboxRow } = await import("@/lib/realtime/agent-outbox");
+      const token = createTestToken("user-1");
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-1",
+        name: "conductor",
+        daemonHost: "daemon-a",
+      } as any);
+      vi.mocked(db.task.findMany).mockResolvedValue([
+        {
+          id: "task-remote-1",
+          taskType: "ai_task",
+          launchConfig: JSON.stringify({
+            cwd: "/Users/a/conductor",
+            remoteWorktree: {
+              host: "daemon-b",
+              projectId: "proj-b",
+              repoRoot: "/home/b/conductor",
+              workspacePath: "/home/b/conductor",
+              branch: "f8bc83",
+              baseRef: "main",
+            },
+          }),
+          metadata: null,
+          agentHost: "daemon-a",
+          executionHost: "daemon-a",
+          status: "completed",
+        },
+      ] as any);
+      (db.agentOutbox.create as any).mockResolvedValue({
+        id: "outbox-remote",
+        agentHost: "daemon-b",
+        eventType: "cleanup_task_worktree",
+      });
+      vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.task.deleteMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(db.project.delete).mockResolvedValue({ id: "proj-1" } as any);
+
+      const response = await DELETE(
+        createMockRequest({ method: "DELETE", token }),
+        { params: Promise.resolve({ projectId: "proj-1" }) },
+      );
+
+      expect(response.status).toBe(204);
+      const cleanup = vi
+        .mocked(db.agentOutbox.create)
+        .mock.calls.map((call) => (call[0] as any).data)
+        .find((data) => data.eventType === "cleanup_task_worktree");
+      expect(cleanup.agentHost).toBe("daemon-b");
+      expect(cleanup.taskId).toBe("task-remote-1");
+      expect(JSON.parse(cleanup.payloadJson).payload.launch_config).toEqual({
+        worktree: true,
+        worktreeId: "proj-b",
+        worktreeBranch: "f8bc83",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/home/b/conductor",
+        projectWorkspacePath: "/home/b/conductor",
+        projectRelativePath: ".",
+      });
+      expect(deliverAgentOutboxRow).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "outbox-remote" }),
+        expect.objectContaining({ agentHost: "daemon-b" }),
+      );
+      expect(db.project.delete).toHaveBeenCalledWith({ where: { id: "proj-1" } });
     });
 
     it("should skip message delete when no tasks", async () => {

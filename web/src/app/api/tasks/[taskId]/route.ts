@@ -47,7 +47,9 @@ import {
   acquireTaskWorktreeMutationLock,
   buildTaskWorktreeCleanupOutboxData,
   hasSameTaskWorktreeRoot,
+  deliverRemoteWorktreeCleanupNow,
   resolveTaskWorktreeCleanupHost,
+  resolveTaskWorktreeCleanupPlan,
   parseTaskWorktreeLaunchConfig,
 } from "@/lib/tasks/worktree";
 import {
@@ -1354,8 +1356,14 @@ export async function DELETE(
     }
   }
 
-  if (worktreeConfig) {
-    await db.$transaction(async (tx) => {
+  // A local worktree is cleaned by the task's own daemon; a remote one (RFC
+  // 0038) by the daemon that holds it, with a launch_config it understands.
+  const cleanupPlan =
+    (existing.taskType ?? "ai_task") === "ai_task"
+      ? resolveTaskWorktreeCleanupPlan(existing.launchConfig, stopTargetHost)
+      : null;
+  if (cleanupPlan) {
+    const cleanupOutboxRow = await db.$transaction(async (tx) => {
       await acquireTaskWorktreeMutationLock(
         tx as any,
         taskId,
@@ -1375,14 +1383,15 @@ export async function DELETE(
         ).find((candidate) =>
           hasSameTaskWorktreeRoot(existing.launchConfig, candidate.launchConfig),
         ) ?? null;
+      let outboxRow: unknown = null;
       if (!sharedWorktreeTask?.id || sharedWorktreeTask.id === taskId) {
-        await tx.agentOutbox.create({
+        outboxRow = await tx.agentOutbox.create({
           data: buildTaskWorktreeCleanupOutboxData({
             userId: user.id,
-            agentHost: stopTargetHost,
+            agentHost: cleanupPlan.agentHost,
             taskId,
             projectId: existing.projectId,
-            launchConfig: existing.launchConfig,
+            launchConfig: cleanupPlan.launchConfig,
             requestId: randomUUID(),
             force: true,
           }),
@@ -1402,6 +1411,13 @@ export async function DELETE(
         }
       }
       await tx.task.delete({ where: { id: taskId } });
+      return outboxRow;
+    });
+    await deliverRemoteWorktreeCleanupNow({
+      userId: user.id,
+      row: cleanupOutboxRow,
+      cleanupHost: cleanupPlan.agentHost,
+      stopTargetHost,
     });
 
     try {
@@ -1413,6 +1429,15 @@ export async function DELETE(
         }`,
       );
     }
+    // Same live notification the plain-task branch sends below; without it
+    // app clients only learn about the delete on their next list refresh.
+    realtimeHub.broadcast(user.id, existing.projectId, {
+      type: "task_deleted",
+      payload: {
+        task_id: taskId,
+        project_id: existing.projectId,
+      },
+    });
     realtimeHub.unbindTask(taskId);
     return new NextResponse(null, { status: 204 });
   }

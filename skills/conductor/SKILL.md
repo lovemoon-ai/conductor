@@ -23,7 +23,7 @@ Reference docs in this skill:
 
 - `reference/serve-ai.md`: `conductor serve-ai` usage, config fallback, startup commands, and `response_format` / output schema examples.
 - `reference/entity-commands.md`: `conductor project|issue|task` — entity-oriented CRUD commands for AI / CI / scripting. Covers app-task creation, global flags (`--json`, `--dry-run`, `--project`), exit codes, project resolution priority, the `metadata.audit` audit boundary, idempotency via `--client-request-id`, and the core RFC 0025 scenarios.
-- `reference/remote.md`: `conductor remote exec|cp` — running commands and copying files on another daemon's host. Covers the `daemon:path` syntax, ssh-style exit codes, the `remote_exec` / `remote_file` capability gates and their opt-outs, and how `-r` packs a directory through the single-file path.
+- `reference/remote.md`: `conductor remote exec|cp|wait` — running commands and copying files on another daemon's host. Covers the `daemon:path` syntax, ssh-style exit codes, the 64 KB tail-only output cap, re-attaching to a long command with `wait`, the `remote_exec` / `remote_file` capability gates and their opt-outs, and how `-r` packs a directory through the single-file path.
 - `reference/http-endpoints.md`: additional HTTP API beyond the CLI — whole-history search (`GET /api/search`), LLM handoff digest (`POST /api/tasks/{id}/digest`), per-task agent schedule access control (`agent_schedule_access` via `GET/PUT /api/tasks/{id}/agent-schedule-access` or `PATCH /api/tasks/{id}`), plus the automatic runtime health preflight and Codex oversized-thread recovery. Agents call these with `CONDUCTOR_AGENT_TOKEN` against `CONDUCTOR_BACKEND_URL`.
 
 ## First Decide The Intent
@@ -68,7 +68,7 @@ Only run `conductor --help`, subcommand help, or read `~/.conductor/config.yaml`
 - `conductor project|issue|task`: manage entities, including messages, mid-turn inserts, schedules, and fresh app-task creation. See `reference/entity-commands.md`.
 - `conductor daemon`: keep a desktop agent online so tasks created from the app can run remotely.
 - `conductor diagnose <task-id>`: inspect a stuck or failed task and print likely root cause.
-- `conductor remote exec|cp`: act on another daemon's host — run a one-shot command, or copy files and directories (`-r`) either way. See `reference/remote.md`.
+- `conductor remote exec|cp|wait`: act on another daemon's host — run a one-shot command, copy files and directories (`-r`) either way, or re-attach to a command that outlived its timeout. See `reference/remote.md`.
 - `conductor channel connect feishu`: upload `channels.feishu` from the selected config file to the Conductor backend.
 - `conductor serve-ai`: expose configured local AI backends through an OpenAI-compatible HTTP server. See `reference/serve-ai.md`.
 - `conductor update`: check npm for a newer CLI version and install it.

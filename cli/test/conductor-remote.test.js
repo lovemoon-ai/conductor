@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 
 import {
   ConductorConfig,
@@ -9,6 +10,7 @@ import {
   parseTimeoutMs,
   runRemoteExec,
 } from "../src/remote/exec.js";
+import { runRemoteWait } from "../src/remote/wait.js";
 import { runRemote } from "../bin/conductor-remote.js";
 
 const config = new ConductorConfig({
@@ -394,7 +396,7 @@ test("runRemote names an unknown verb instead of guessing", async () => {
   const code = await runRemote(["scp", "./a", "ubuntu:/b"], { config, console: consoleImpl });
   assert.equal(code, 255);
   assert.ok(consoleImpl.errors.some((line) => line.includes("unknown verb 'scp'")));
-  assert.ok(consoleImpl.errors.some((line) => line.includes("Valid verbs: exec, cp")));
+  assert.ok(consoleImpl.errors.some((line) => line.includes("Valid verbs: exec, cp, wait")));
 });
 
 test("runRemote passes a verb's own --help through to that verb", async () => {
@@ -456,4 +458,180 @@ test("runRemoteExec still prints output when --kill-on-timeout fails to stop the
   // The kill failing must not swallow the run we already have in hand.
   assert.ok(consoleImpl.errors.some((line) => line.includes("failed to stop the run")));
   assert.ok(consoleImpl.logs.join("\n").includes("partial output"));
+});
+
+// The per-user in-flight cap (8) is the one failure an agent firing parallel
+// commands hits routinely. Nothing was started on a 429, so retrying is safe.
+test("runRemoteExec retries the POST on 429 and then succeeds", async () => {
+  const consoleImpl = makeConsole();
+  const { fetch, calls } = makeFetch([
+    { status: 429, body: { error: "too many concurrent remote exec requests (limit 8); retry shortly" } },
+    { status: 429, body: { error: "too many concurrent remote exec requests (limit 8); retry shortly" } },
+    { body: completedRun({ stdoutTail: "ok\n" }) },
+  ]);
+  const slept = [];
+
+  const code = await runRemoteExec(["-t", "ubuntu", "ls"], {
+    console: consoleImpl,
+    fetch,
+    config,
+    sleep: async (ms) => slept.push(ms),
+  });
+
+  assert.equal(code, 0);
+  assert.equal(calls.length, 3);
+  assert.ok(calls.every((call) => call.init.method === "POST"));
+  assert.deepEqual(slept, [500, 1000], "backs off between attempts");
+});
+
+// A 5xx may mean the daemon already spawned the command; a second POST would
+// run it twice. Only 429 is safe to retry.
+test("runRemoteExec does not retry the POST on a 5xx", async () => {
+  const consoleImpl = makeConsole();
+  const { fetch, calls } = makeFetch([{ status: 502, body: { error: "daemon went away" } }]);
+
+  const code = await runRemoteExec(["-t", "ubuntu", "make"], {
+    console: consoleImpl,
+    fetch,
+    config,
+    sleep: async () => {},
+  });
+
+  assert.equal(code, 255);
+  assert.equal(calls.length, 1, "must not re-POST a command that may have started");
+  assert.match(consoleImpl.errors.join("\n"), /daemon went away/);
+});
+
+// When the process that started a long command is killed (a tool timeout, Ctrl-C),
+// the run id must still reach the user so `remote wait` can pick it up.
+test("runRemoteExec on SIGTERM stops waiting, prints the run id and points at remote wait", async () => {
+  const consoleImpl = makeConsole();
+  const proc = new EventEmitter();
+  const { fetch, calls } = makeFetch([
+    { body: { runId: "run-int", status: "running", exitCode: null, stdoutTail: "" } },
+    { body: { runId: "run-int", status: "running", exitCode: null, stdoutTail: "" } },
+  ]);
+
+  const code = await runRemoteExec(["-t", "ubuntu", "--timeout", "5m", "sleep", "600"], {
+    console: consoleImpl,
+    fetch,
+    config,
+    process: proc,
+    sleep: async () => {
+      proc.emit("SIGTERM");
+    },
+    now: () => 0,
+  });
+
+  assert.equal(code, 255);
+  assert.ok(!calls.some((call) => call.init.method === "DELETE"), "must not cancel without --kill-on-timeout");
+  assert.match(consoleImpl.errors.join("\n"), /interrupted/);
+  assert.match(consoleImpl.errors.join("\n"), /conductor remote wait -t ubuntu run-int/);
+  assert.equal(proc.listenerCount("SIGTERM"), 0, "signal listeners must be released");
+  assert.equal(proc.listenerCount("SIGINT"), 0);
+});
+
+test("runRemoteExec on SIGINT with --kill-on-timeout cancels the run", async () => {
+  const consoleImpl = makeConsole();
+  const proc = new EventEmitter();
+  const { fetch, calls } = makeFetch([
+    { body: { runId: "run-int2", status: "running", exitCode: null, stdoutTail: "" } },
+    { body: { runId: "run-int2", status: "running", exitCode: null, stdoutTail: "" } },
+    { body: { runId: "run-int2", status: "cancelled", exitCode: null, signal: "SIGTERM", stdoutTail: "" } },
+  ]);
+
+  const code = await runRemoteExec(
+    ["-t", "ubuntu", "--timeout", "5m", "--kill-on-timeout", "sleep", "600"],
+    {
+      console: consoleImpl,
+      fetch,
+      config,
+      process: proc,
+      sleep: async () => {
+        proc.emit("SIGINT");
+      },
+      now: () => 0,
+    },
+  );
+
+  assert.equal(code, 255);
+  assert.equal(calls.at(-1).init.method, "DELETE");
+  assert.equal(calls.at(-1).url, "http://localhost:6152/api/agents/ubuntu/exec/runs/run-int2");
+  assert.match(consoleImpl.errors.join("\n"), /interrupted; stopped the command on ubuntu/);
+});
+
+test("runRemoteWait re-attaches to a run by id and passes through its exit code", async () => {
+  const consoleImpl = makeConsole();
+  const { fetch, calls } = makeFetch([
+    { body: { runId: "run-7", status: "running", exitCode: null, stdoutTail: "" } },
+    { body: completedRun({ runId: "run-7", status: "failed", exitCode: 3, stdoutTail: "late\n" }) },
+  ]);
+
+  const code = await runRemote(["wait", "-t", "ubuntu", "run-7"], {
+    console: consoleImpl,
+    fetch,
+    config,
+    sleep: async () => {},
+  });
+
+  assert.equal(code, 3);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[0].url, "http://localhost:6152/api/agents/ubuntu/exec/runs/run-7");
+  assert.equal(calls[1].init.method, "GET");
+});
+
+test("runRemoteWait returns immediately for a run that already finished", async () => {
+  const consoleImpl = makeConsole();
+  const { fetch, calls } = makeFetch([{ body: completedRun({ runId: "run-done" }) }]);
+
+  const code = await runRemoteWait(["-t", "ubuntu", "--json", "run-done"], {
+    console: consoleImpl,
+    fetch,
+    config,
+    sleep: async () => {},
+  });
+
+  assert.equal(code, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(JSON.parse(consoleImpl.logs.join("\n")).runId, "run-done");
+});
+
+test("runRemoteWait gives up at its own deadline and prints the same resume hint", async () => {
+  const consoleImpl = makeConsole();
+  const { fetch } = makeFetch([
+    { body: { runId: "run-long", status: "running", exitCode: null, stdoutTail: "" } },
+  ]);
+  let clock = 0;
+
+  const code = await runRemoteWait(["-t", "ubuntu", "--timeout", "1s", "run-long"], {
+    console: consoleImpl,
+    fetch,
+    config,
+    sleep: async () => {},
+    now: () => (clock += 5_000),
+  });
+
+  assert.equal(code, 255);
+  assert.match(consoleImpl.errors.join("\n"), /conductor remote wait -t ubuntu run-long/);
+});
+
+test("runRemoteWait requires a target and exactly one runId", async () => {
+  const noTarget = makeConsole();
+  assert.equal(await runRemoteWait(["run-1"], { console: noTarget, config }), 255);
+  assert.match(noTarget.errors.join("\n"), /--target <daemon> is required/);
+
+  const noRun = makeConsole();
+  assert.equal(await runRemoteWait(["-t", "ubuntu"], { console: noRun, config }), 255);
+  assert.match(noRun.errors.join("\n"), /no runId given/);
+
+  const twoRuns = makeConsole();
+  assert.equal(await runRemoteWait(["-t", "ubuntu", "a", "b"], { console: twoRuns, config }), 255);
+  assert.match(twoRuns.errors.join("\n"), /exactly one runId/);
+});
+
+test("runRemote passes --help through to the wait verb", async () => {
+  const consoleImpl = makeConsole();
+  assert.equal(await runRemote(["wait", "--help"], { config, console: consoleImpl }), 0);
+  assert.ok(consoleImpl.logs.join("\n").includes("conductor remote wait"));
 });

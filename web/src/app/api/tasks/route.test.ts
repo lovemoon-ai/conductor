@@ -3454,5 +3454,207 @@ describe("/api/tasks", () => {
       expect(db.task.create).not.toHaveBeenCalled();
       expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
     });
+
+    describe("remoteWorktree (RFC 0038)", () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const projectA = {
+        id: "proj-a",
+        name: "conductor",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/Users/a/conductor",
+        repoRoot: "/Users/a/conductor",
+        worktreeBranch: "main",
+        gitRemoteUrl: "github.com/acme/conductor",
+      };
+      const projectB = {
+        id: "proj-b",
+        name: "conductor",
+        userId: "user-1",
+        daemonHost: "daemon-b",
+        workspacePath: "/home/b/conductor",
+        repoRoot: "/home/b/conductor",
+        worktreeBranch: "develop",
+        lastCommit: "abc1234",
+        gitRemoteUrl: "github-alias/acme/conductor",
+      };
+      const bothOnline = [
+        { id: "a", host: "daemon-a", supportedBackends: ["claude"], capabilities: [] },
+        { id: "b", host: "daemon-b", supportedBackends: ["claude"], capabilities: ["remote_exec", "remote_file"] },
+      ];
+      const createdTask = {
+        id: "task-remote",
+        projectId: "proj-a",
+        secondProjectId: null,
+        issueId: null,
+        title: "Fix",
+        taskType: "ai_task",
+        status: "init",
+        agentHost: "daemon-a",
+        executionHost: "daemon-a",
+        backendType: "claude",
+        sessionId: null,
+        sessionFilePath: null,
+        launchConfig: null,
+        metadata: null,
+        createdAt: new Date("2026-09-12T00:00:00.000Z"),
+        updatedAt: new Date("2026-09-12T00:00:00.000Z"),
+      };
+      let siblingProject: Record<string, unknown> | null = projectB;
+
+      const postRemote = (
+        launchConfig: Record<string, unknown>,
+        extra: Record<string, unknown> = {},
+      ) =>
+        POST(
+          createMockRequest({
+            method: "POST",
+            token: createTestToken("user-1"),
+            body: {
+              project_id: "proj-a",
+              title: "Fix",
+              initial_content: "Fix the flaky test",
+              backend_type: "claude",
+              launch_config: launchConfig,
+              ...extra,
+            },
+          }),
+        );
+
+      beforeEach(() => {
+        siblingProject = projectB;
+        vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+        // First lookup is the task's own project (by id); the sibling lookup is by daemon + name.
+        mockPrismaQuery(db.project.findFirst).mockImplementation(async ({ where }: any) =>
+          where?.daemonHost === "daemon-b"
+            ? (siblingProject as any)
+            : where?.id === "proj-a"
+              ? (projectA as any)
+              : null,
+        );
+        vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(bothOnline as any);
+        vi.mocked(db.task.create).mockResolvedValue(createdTask as any);
+        vi.mocked(db.message.create).mockResolvedValue({
+          id: "message-1",
+          createdAt: new Date("2026-09-12T00:00:01.000Z"),
+        } as any);
+      });
+
+      it("files the task under the launching daemon and describes the remote worktree from the sibling project", async () => {
+        const response = await postRemote({ remoteWorktree: { host: "daemon-b" } });
+        expect(response.status).toBe(200);
+
+        expect(db.task.create).toHaveBeenCalledTimes(1);
+        const created = vi.mocked(db.task.create).mock.calls[0][0].data as any;
+        expect(created.agentHost).toBe("daemon-a");
+        const launchConfig = JSON.parse(created.launchConfig);
+        expect(launchConfig.worktree).toBeUndefined();
+        expect(launchConfig.cwd).toBe("/Users/a/conductor");
+        expect(launchConfig.remoteWorktree).toEqual({
+          host: "daemon-b",
+          projectId: "proj-b",
+          repoRoot: "/home/b/conductor",
+          workspacePath: "/home/b/conductor",
+          branch: expect.stringMatching(/^[0-9a-f]{6}$/),
+          baseRef: "develop",
+        });
+
+        // The protocol is prepended to the first message and to what the daemon receives.
+        const branch = launchConfig.remoteWorktree.branch;
+        const message = vi.mocked(db.message.create).mock.calls[0][0].data as any;
+        expect(message.content.startsWith("[conductor:remote-worktree]")).toBe(true);
+        expect(message.content).toContain(
+          `git worktree add -b ${branch} /home/b/conductor/.conductor/worktrees/${branch} develop`,
+        );
+        expect(message.content.endsWith("--- Task ---\nFix the flaky test")).toBe(true);
+        expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+          expect.objectContaining({
+            agentHost: "daemon-a",
+            eventType: "create_task",
+            envelope: expect.objectContaining({
+              payload: expect.objectContaining({
+                initial_content: expect.stringContaining("[conductor:remote-worktree]"),
+              }),
+            }),
+          }),
+          expect.any(Object),
+        );
+      });
+
+      it("ignores caller-supplied remote paths; only the host is taken from the request", async () => {
+        const response = await postRemote({
+          remoteWorktree: { host: "daemon-b", repoRoot: "/evil", branch: "main" },
+          remote_worktree: { host: "daemon-b" },
+        });
+        expect(response.status).toBe(200);
+        const launchConfig = JSON.parse((vi.mocked(db.task.create).mock.calls[0][0].data as any).launchConfig);
+        expect(launchConfig.remoteWorktree.repoRoot).toBe("/home/b/conductor");
+        expect(launchConfig.remoteWorktree.branch).not.toBe("main");
+        expect(launchConfig.remote_worktree).toBeUndefined();
+      });
+
+      it("requires remoteWorktree.host and rejects a malformed value instead of ignoring it", async () => {
+        let response = await postRemote({ remoteWorktree: {} });
+        expect(response.status).toBe(400);
+        expect((await extractJson(response)).error).toBe("remoteWorktree.host is required");
+        response = await postRemote({ remoteWorktree: "daemon-b" });
+        expect(response.status).toBe(400);
+        expect(db.task.create).not.toHaveBeenCalled();
+      });
+
+      it("keeps a /goal directive first so the bootstrap does not disable goal mode", async () => {
+        const response = await postRemote(
+          { remoteWorktree: { host: "daemon-b" } },
+          { initial_content: "/goal\nFix the flaky test" },
+        );
+        expect(response.status).toBe(200);
+        const message = vi.mocked(db.message.create).mock.calls[0][0].data as any;
+        expect(message.content.startsWith("/goal\n[conductor:remote-worktree]")).toBe(true);
+        expect(message.content.endsWith("--- Task ---\nFix the flaky test")).toBe(true);
+      });
+
+      it("rejects combining remoteWorktree with a local worktree", async () => {
+        const response = await postRemote({ remoteWorktree: { host: "daemon-b" }, worktree: true });
+        expect(response.status).toBe(409);
+        expect((await extractJson(response)).error).toMatch(/mutually exclusive/);
+      });
+
+      it("rejects remoteWorktree for an agent group", async () => {
+        resolveProjectAgentsRegistryMock.mockResolvedValue([
+          { name: "feature-dev", doc: "personas/feature.md", description: "Builds features", backend: "claude" },
+        ]);
+        const response = await postRemote({ remoteWorktree: { host: "daemon-b" } }, { agents: ["feature-dev"] });
+        expect(response.status).toBe(409);
+        expect((await extractJson(response)).error).toMatch(/agent groups/);
+      });
+
+      it("rejects the project's own daemon, an offline daemon, and one without remote_file", async () => {
+        let response = await postRemote({ remoteWorktree: { host: "daemon-a" } });
+        expect(response.status).toBe(409);
+        expect((await extractJson(response)).error).toMatch(/different daemon/);
+
+        vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([bothOnline[0]] as any);
+        response = await postRemote({ remoteWorktree: { host: "daemon-b" } });
+        expect(response.status).toBe(409);
+        expect((await extractJson(response)).error).toBe("Remote worktree daemon daemon-b is offline");
+
+        vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+          bothOnline[0],
+          { ...bothOnline[1], capabilities: ["remote_exec"] },
+        ] as any);
+        response = await postRemote({ remoteWorktree: { host: "daemon-b" } });
+        expect(response.status).toBe(409);
+        expect((await extractJson(response)).error).toMatch(/does not support remote_file/);
+        expect(db.task.create).not.toHaveBeenCalled();
+      });
+
+      it("rejects when the project is not bound on the remote daemon", async () => {
+        siblingProject = null;
+        const response = await postRemote({ remoteWorktree: { host: "daemon-b" } });
+        expect(response.status).toBe(409);
+        expect((await extractJson(response)).error).toBe('Project "conductor" is not bound on daemon daemon-b');
+        expect(db.task.create).not.toHaveBeenCalled();
+      });
+    });
   });
 });

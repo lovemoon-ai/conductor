@@ -13,7 +13,9 @@ import {
   hasSameTaskWorktreeRoot,
   acquireTaskWorktreeMutationLock,
   resolveTaskWorktreeCleanupHost,
+  resolveTaskWorktreeCleanupPlan,
   parseTaskWorktreeLaunchConfig,
+  parseRemoteWorktreeLaunchConfig,
   requestTaskWorktreeCleanup,
 } from "@/lib/tasks/worktree";
 
@@ -114,8 +116,10 @@ export async function POST(
     return NextResponse.json({ error: "PTY task does not support worktree cleanup" }, { status: 409 });
   }
 
-  const worktreeConfig = parseTaskWorktreeLaunchConfig(task.launchConfig);
-  if (!worktreeConfig) {
+  if (
+    !parseTaskWorktreeLaunchConfig(task.launchConfig) &&
+    !parseRemoteWorktreeLaunchConfig(task.launchConfig)
+  ) {
     return NextResponse.json({ error: "Task does not use an isolated worktree" }, { status: 409 });
   }
 
@@ -123,15 +127,18 @@ export async function POST(
   if (normalizedStatus !== "completed" && normalizedStatus !== "killed") {
     return NextResponse.json({ error: "Stop this task before removing its worktree" }, { status: 409 });
   }
-  const daemonHost =
+  const cleanupPlan = resolveTaskWorktreeCleanupPlan(
+    task.launchConfig,
     resolveTaskWorktreeCleanupHost({
       boundHost: realtimeHub.getTaskAgentHost(task.id),
       agentHost: task.agentHost,
       executionHost: task.executionHost,
       metadata: task.metadata,
       projectDaemonHost: task.project.daemonHost,
-    });
-  if (!daemonHost) {
+    }),
+  );
+  const daemonHost = cleanupPlan?.agentHost ?? null;
+  if (!cleanupPlan || !daemonHost) {
     return NextResponse.json({ error: "Task missing daemon binding" }, { status: 409 });
   }
   if (!realtimeHub.hasAgentHost(daemonHost, user.id)) {
@@ -165,7 +172,7 @@ export async function POST(
     return {
       ok: true,
       agentHost: daemonHost,
-      launchConfig: task.launchConfig,
+      launchConfig: cleanupPlan.launchConfig,
     } as const;
   });
 

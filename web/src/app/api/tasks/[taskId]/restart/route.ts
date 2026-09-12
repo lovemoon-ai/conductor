@@ -37,6 +37,7 @@ import {
 import {
   acquireTaskWorktreeMutationLock,
   inheritTaskWorktreeLaunchConfig,
+  parseRemoteWorktreeLaunchConfig,
 } from "@/lib/tasks/worktree";
 import { normalizeBackendType } from "@/lib/tasks/pty-runtime";
 import {
@@ -863,8 +864,13 @@ export async function POST(
     useAgentHostOverride && restartAgentHost !== sourceRunHost;
   const sourceCwd = normalizeOptionalString(sourceLaunchConfig?.cwd);
   const successorCwd = sourceCwd ?? projectWorkspacePath ?? null;
+  // A remote worktree (RFC 0038) describes another machine, so it survives a
+  // cross-daemon move even though the local cwd does not.
+  const sourceRemoteWorktree = parseRemoteWorktreeLaunchConfig(sourceLaunchConfig);
   const successorLaunchConfig = isCrossDaemonOverride
-    ? {}
+    ? sourceRemoteWorktree
+      ? { remoteWorktree: sourceRemoteWorktree }
+      : {}
     : inheritedWorktreeLaunchConfig ?? {
         ...(successorCwd ? { cwd: successorCwd } : {}),
         ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),

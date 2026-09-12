@@ -12,8 +12,10 @@ import {
 import {
   acquireTaskWorktreeMutationLock,
   buildTaskWorktreeCleanupOutboxData,
+  deliverRemoteWorktreeCleanupNow,
   hasSameTaskWorktreeRoot,
   resolveTaskWorktreeCleanupHost,
+  resolveTaskWorktreeCleanupPlan,
   parseTaskWorktreeLaunchConfig,
 } from "@/lib/tasks/worktree";
 
@@ -198,8 +200,15 @@ export async function teardownTaskRuntime(args: {
   //    writes share one transaction. If another active task initially blocks
   //    cleanup, a post-commit recheck closes the cross-task concurrency race:
   //    the last archive will observe no active sibling and enqueue cleanup.
-  if (worktreeConfig) {
+  // A local worktree is cleaned by the task's own daemon; a remote one (RFC
+  // 0038) by the daemon that holds it, with a launch_config it understands.
+  const cleanupPlan =
+    taskType === "ai_task"
+      ? resolveTaskWorktreeCleanupPlan(task.launchConfig, stopTargetHost)
+      : null;
+  if (cleanupPlan) {
     let cleanupEnqueued = false;
+    let cleanupOutboxRow: unknown = null;
     await db.$transaction(async (tx) => {
       await acquireTaskWorktreeMutationLock(tx as any, taskId);
       const sharedWorktreeTask =
@@ -216,13 +225,13 @@ export async function teardownTaskRuntime(args: {
           hasSameTaskWorktreeRoot(task.launchConfig, candidate.launchConfig),
         ) ?? null;
       if (!sharedWorktreeTask?.id || sharedWorktreeTask.id === taskId) {
-        await tx.agentOutbox.create({
+        cleanupOutboxRow = await tx.agentOutbox.create({
           data: buildTaskWorktreeCleanupOutboxData({
             userId,
-            agentHost: stopTargetHost,
+            agentHost: cleanupPlan.agentHost,
             taskId,
             projectId: task.projectId,
-            launchConfig: task.launchConfig,
+            launchConfig: cleanupPlan.launchConfig,
             requestId: randomUUID(),
             force: true,
           }),
@@ -253,13 +262,13 @@ export async function teardownTaskRuntime(args: {
             hasSameTaskWorktreeRoot(task.launchConfig, candidate.launchConfig),
           ) ?? null;
         if (!activeSharedWorktreeTask) {
-          await tx.agentOutbox.create({
+          cleanupOutboxRow = await tx.agentOutbox.create({
             data: buildTaskWorktreeCleanupOutboxData({
               userId,
-              agentHost: stopTargetHost,
+              agentHost: cleanupPlan.agentHost,
               taskId,
               projectId: task.projectId,
-              launchConfig: task.launchConfig,
+              launchConfig: cleanupPlan.launchConfig,
               requestId: randomUUID(),
               force: true,
             }),
@@ -267,6 +276,12 @@ export async function teardownTaskRuntime(args: {
         }
       });
     }
+    await deliverRemoteWorktreeCleanupNow({
+      userId,
+      row: cleanupOutboxRow,
+      cleanupHost: cleanupPlan.agentHost,
+      stopTargetHost,
+    });
   } else {
     await db.$transaction(async (tx) => {
       await deleteRuntimeRows(tx, taskId);

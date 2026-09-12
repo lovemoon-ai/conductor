@@ -36,22 +36,33 @@ vi.mock("@/lib/tasks/attached-terminal", () => ({
   deletePtyTaskWithKill: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/lib/tasks/worktree", () => ({
-  parseTaskWorktreeLaunchConfig: vi.fn().mockReturnValue(null),
-  resolveTaskWorktreeCleanupHost: vi.fn().mockReturnValue(""),
-  acquireTaskWorktreeMutationLock: vi.fn(),
-  buildTaskWorktreeCleanupOutboxData: vi.fn(),
-  hasSameTaskWorktreeRoot: vi.fn().mockReturnValue(false),
-}));
+vi.mock("@/lib/tasks/worktree", () => {
+  const parseTaskWorktreeLaunchConfig = vi.fn().mockReturnValue(null);
+  return {
+    parseTaskWorktreeLaunchConfig,
+    resolveTaskWorktreeCleanupHost: vi.fn().mockReturnValue(""),
+    // Mirrors the real helper for local worktrees so the tests below keep
+    // driving cleanup through the mocked parse + host answers.
+    resolveTaskWorktreeCleanupPlan: vi.fn((launchConfig: unknown, host: string | null) =>
+      parseTaskWorktreeLaunchConfig(launchConfig) && host ? { agentHost: host, launchConfig } : null,
+    ),
+    acquireTaskWorktreeMutationLock: vi.fn(),
+    buildTaskWorktreeCleanupOutboxData: vi.fn(),
+    deliverRemoteWorktreeCleanupNow: vi.fn().mockResolvedValue(undefined),
+    hasSameTaskWorktreeRoot: vi.fn().mockReturnValue(false),
+  };
+});
 
 const { db } = await import("@/lib/db");
 const { realtimeHub } = await import("@/lib/realtime/hub");
 const { deleteTaskAttachmentDirectory } = await import("@/lib/tasks/task-file-storage");
 const {
   buildTaskWorktreeCleanupOutboxData,
+  deliverRemoteWorktreeCleanupNow,
   hasSameTaskWorktreeRoot,
   parseTaskWorktreeLaunchConfig,
   resolveTaskWorktreeCleanupHost,
+  resolveTaskWorktreeCleanupPlan,
 } = await import("@/lib/tasks/worktree");
 const { teardownTaskRuntime } = await import("./teardown");
 
@@ -252,5 +263,51 @@ describe("teardownTaskRuntime", () => {
     expect(db.$transaction).toHaveBeenCalledTimes(2);
     expect(db.task.findMany).toHaveBeenCalledTimes(2);
     expect(db.agentOutbox.create).toHaveBeenCalledTimes(1);
+  });
+
+  // RFC 0038: the worktree lives on another daemon. Stop still goes to the
+  // daemon running the AI; cleanup goes to the daemon holding the worktree.
+  it("cleans up a remote worktree on its own daemon while stopping the task where it runs", async () => {
+    const { enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
+    vi.mocked(enqueueAndAttemptAgentCommand).mockResolvedValue({ delivered: false } as any);
+    const translated = { worktree: true, worktreeBranch: "f8bc83", projectWorkspacePath: "/home/b/repo" };
+    vi.mocked(resolveTaskWorktreeCleanupPlan).mockReturnValueOnce({
+      agentHost: "daemon-b",
+      launchConfig: translated,
+    });
+    vi.mocked(buildTaskWorktreeCleanupOutboxData).mockReturnValue({
+      eventType: "cleanup_task_worktree",
+    } as any);
+    vi.mocked(db.agentOutbox.create).mockResolvedValue({ id: "outbox-remote" } as any);
+
+    const result = await teardownTaskRuntime({
+      userId: "user-1",
+      task: {
+        ...baseTask,
+        status: "running",
+        launchConfig: JSON.stringify({ cwd: "/Users/a/repo", remoteWorktree: { host: "daemon-b" } }),
+      },
+      reason: "achieved_by_user",
+      archivePatch,
+    });
+    // daemon-b sees no other traffic for this task, so the row is pushed now.
+    expect(deliverRemoteWorktreeCleanupNow).toHaveBeenCalledWith({
+      userId: "user-1",
+      row: { id: "outbox-remote" },
+      cleanupHost: "daemon-b",
+      stopTargetHost: "daemon-a",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ agentHost: "daemon-a", eventType: "stop_task" }),
+      expect.any(Object),
+    );
+    expect(buildTaskWorktreeCleanupOutboxData).toHaveBeenCalledWith(
+      expect.objectContaining({ agentHost: "daemon-b", launchConfig: translated, force: true }),
+    );
+    expect(db.agentOutbox.create).toHaveBeenCalledWith({
+      data: { eventType: "cleanup_task_worktree" },
+    });
   });
 });

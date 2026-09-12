@@ -15,6 +15,7 @@ import {
   delay,
   loadCliConfig,
   parseTimeoutMs as parseSharedTimeoutMs,
+  withRetry,
 } from "./client.js";
 
 export { EXIT, UsageError };
@@ -23,6 +24,14 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 1_000;
 /** How long a single request may block server-side before we switch to polling. */
 const POST_WAIT_MS = 10_000;
+/**
+ * A 429 means the per-user in-flight cap (8) is full — nothing was started, so
+ * retrying is safe. Six attempts at 500ms doubling waits out ~15s, longer than
+ * one saturating POST can block (POST_WAIT_MS). Nothing else is retried here:
+ * a 5xx may have started the command already, and a second POST would run it twice.
+ */
+const POST_RETRY = { attempts: 6, retryable: (error) => error?.status === 429 };
+const INTERRUPT_SIGNALS = ["SIGINT", "SIGTERM"];
 
 const VALUE_FLAGS = new Map([
   ["--target", "target"],
@@ -120,7 +129,8 @@ Options:
       --timeout <dur>     Overall deadline, e.g. 30s, 2m, 500ms (default: 60s)
   -e, --env KEY=VALUE     Extra environment variable (repeatable)
       --json              Print the raw run result as JSON
-      --kill-on-timeout   Stop the remote command when --timeout is reached
+      --kill-on-timeout   Stop the remote command when --timeout is reached or
+                          this CLI is interrupted (Ctrl-C, SIGTERM)
                           (default: it keeps running on the target)
       --config-file <p>   Conductor config file to authenticate with
   -h, --help              Show this help
@@ -132,6 +142,9 @@ Notes:
   Exit codes follow ssh: the remote command's own code is passed through, and
   255 means this CLI failed (bad usage, daemon offline, network error).
 
+  A command that outlives --timeout keeps running on the target; the run id is
+  printed and \`conductor remote wait -t <daemon> <runId>\` picks it up again.
+
 Examples:
   conductor remote exec --target ubuntu --workspace /home/duino/ws/holomotion ls .
   conductor remote exec -t ubuntu -w /srv/app -- git log --oneline -5
@@ -139,40 +152,23 @@ Examples:
 }
 
 /**
- * Run one command on `target` and return the final run record.
- *
- * This is the programmatic half of `runRemoteExec`: same two-phase POST-then-poll
- * behaviour, no argv parsing and no printing. `remote cp -r` uses it to drive
- * `tar` on the target.
+ * Poll `run` until it leaves `running`, the deadline passes, or `signal`
+ * aborts. With `killOnTimeout` a run that is still going at that point is
+ * cancelled on the target. Shared by `exec` (after its POST) and `wait`.
  */
-export async function execRemote(config, target, command, options = {}) {
+export async function waitForRun(config, basePath, initialRun, options = {}) {
   const {
-    args = [],
-    workspace,
-    env,
-    timeoutMs = DEFAULT_TIMEOUT_MS,
+    deadline,
     fetchImpl = globalThis.fetch,
     sleep = delay,
     now = () => Date.now(),
     killOnTimeout = false,
+    signal,
   } = options;
 
-  const basePath = `/api/agents/${encodeURIComponent(target)}/exec`;
-  const deadline = now() + timeoutMs;
-
-  let run = await callApi(config, "POST", basePath, {
-    command,
-    args,
-    ...(workspace ? { workspace } : {}),
-    ...(env && Object.keys(env).length > 0 ? { env } : {}),
-    // Deliberately short, and independent of the overall deadline: that is
-    // owned by the poll loop below. Handing the daemon the full budget would
-    // make one HTTP request block for it and leave the loop unreachable.
-    timeoutMs: Math.min(timeoutMs, POST_WAIT_MS),
-  }, fetchImpl);
-
+  let run = initialRun;
   let pollError = null;
-  while (run?.status === "running" && now() < deadline) {
+  while (run?.status === "running" && now() < deadline && !signal?.aborted) {
     if (!run.runId) {
       pollError = new Error("daemon reported a running command but returned no runId");
       break;
@@ -211,7 +207,47 @@ export async function execRemote(config, target, command, options = {}) {
     }
   }
 
-  return { run, pollError, killError, basePath };
+  return { run, pollError, killError };
+}
+
+/**
+ * Run one command on `target` and return the final run record.
+ *
+ * This is the programmatic half of `runRemoteExec`: same two-phase POST-then-poll
+ * behaviour, no argv parsing and no printing. `remote cp -r` uses it to drive
+ * `tar` on the target.
+ */
+export async function execRemote(config, target, command, options = {}) {
+  const {
+    args = [],
+    workspace,
+    env,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    fetchImpl = globalThis.fetch,
+    sleep = delay,
+    now = () => Date.now(),
+    killOnTimeout = false,
+    signal,
+  } = options;
+
+  const basePath = `/api/agents/${encodeURIComponent(target)}/exec`;
+  const deadline = now() + timeoutMs;
+
+  const started = await withRetry(() => callApi(config, "POST", basePath, {
+    command,
+    args,
+    ...(workspace ? { workspace } : {}),
+    ...(env && Object.keys(env).length > 0 ? { env } : {}),
+    // Deliberately short, and independent of the overall deadline: that is
+    // owned by the poll loop below. Handing the daemon the full budget would
+    // make one HTTP request block for it and leave the loop unreachable.
+    timeoutMs: Math.min(timeoutMs, POST_WAIT_MS),
+  }, fetchImpl), { ...POST_RETRY, sleep });
+
+  const waited = await waitForRun(config, basePath, started, {
+    deadline, fetchImpl, sleep, now, killOnTimeout, signal,
+  });
+  return { ...waited, basePath };
 }
 
 /**
@@ -227,6 +263,60 @@ export async function execRemoteOrThrow(config, target, command, options = {}) {
     ? `timed out after ${options.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`
     : `exited ${run?.exitCode ?? "?"}`;
   throw new Error(detail ? `${what} on ${target}: ${detail}` : `${what} on ${target}`);
+}
+
+/**
+ * An AbortSignal that fires on Ctrl-C / SIGTERM. Installing a listener also
+ * stops Node from exiting on the signal, which is the point: the CLI gets to
+ * print the run id (and cancel the run with --kill-on-timeout) before it goes.
+ * Callers must `release()` so the default behaviour comes back.
+ */
+export function interruptSignal(proc = process) {
+  const controller = new AbortController();
+  const onSignal = () => controller.abort();
+  for (const name of INTERRUPT_SIGNALS) proc.on(name, onSignal);
+  return {
+    signal: controller.signal,
+    release: () => {
+      for (const name of INTERRUPT_SIGNALS) proc.off(name, onSignal);
+    },
+  };
+}
+
+/** Print a finished (or abandoned) run the way `exec` and `wait` both do, and pick the exit code. */
+export function reportRun(run, { consoleImpl, json, target, pollError, waitedMs, interrupted }) {
+  if (json) {
+    consoleImpl.log(JSON.stringify(run, null, 2));
+  } else {
+    if (run?.stdoutTail) process.stdout.write(run.stdoutTail);
+    if (run?.stderrTail) process.stderr.write(run.stderrTail);
+    if (run?.truncated) {
+      consoleImpl.error(`[conductor] output truncated; showing the tail only`);
+    }
+    if (run?.error) {
+      consoleImpl.error(`Error: ${run.error}`);
+    }
+  }
+
+  if (run?.status === "running") {
+    if (pollError) {
+      consoleImpl.error(`[conductor] last status poll failed: ${pollError.message}`);
+    }
+    const why = interrupted ? "interrupted" : `still running on ${target} after ${waitedMs}ms`;
+    consoleImpl.error(
+      `[conductor] ${why}; it keeps going on ${target} — ` +
+        `resume with: conductor remote wait -t ${target} ${run.runId} ` +
+        `(add --kill-on-timeout to stop it instead)`,
+    );
+    return EXIT.CLI_ERROR;
+  }
+  if (run?.status === "cancelled") {
+    return EXIT.CLI_ERROR;
+  }
+  if (typeof run?.exitCode === "number") {
+    return run.exitCode;
+  }
+  return run?.status === "completed" ? EXIT.OK : EXIT.CLI_ERROR;
 }
 
 export async function runRemoteExec(argv, deps = {}) {
@@ -278,12 +368,12 @@ export async function runRemoteExec(argv, deps = {}) {
     return EXIT.CLI_ERROR;
   }
 
+  const interrupt = interruptSignal(deps.process);
   let run;
   let pollError = null;
-  let basePath;
   try {
     let killError;
-    ({ run, pollError, killError, basePath } = await execRemote(config, target, command[0], {
+    ({ run, pollError, killError } = await execRemote(config, target, command[0], {
       args: command.slice(1),
       workspace: options.workspace,
       env: options.env,
@@ -292,46 +382,27 @@ export async function runRemoteExec(argv, deps = {}) {
       sleep,
       now,
       killOnTimeout: options.killOnTimeout,
+      signal: interrupt.signal,
     }));
     if (killError) {
       consoleImpl.error(`[conductor] failed to stop the run on ${target}: ${killError.message}`);
     } else if (options.killOnTimeout && run?.status === "cancelled") {
-      consoleImpl.error(`[conductor] deadline reached; stopped the command on ${target}`);
+      const why = interrupt.signal.aborted ? "interrupted" : "deadline reached";
+      consoleImpl.error(`[conductor] ${why}; stopped the command on ${target}`);
     }
   } catch (error) {
     consoleImpl.error(`Error: ${error.message}`);
     return EXIT.CLI_ERROR;
+  } finally {
+    interrupt.release();
   }
 
-  if (options.json) {
-    consoleImpl.log(JSON.stringify(run, null, 2));
-  } else {
-    if (run?.stdoutTail) process.stdout.write(run.stdoutTail);
-    if (run?.stderrTail) process.stderr.write(run.stderrTail);
-    if (run?.truncated) {
-      consoleImpl.error(`[conductor] output truncated; showing the tail only`);
-    }
-    if (run?.error) {
-      consoleImpl.error(`Error: ${run.error}`);
-    }
-  }
-
-  if (run?.status === "running") {
-    if (pollError) {
-      consoleImpl.error(`[conductor] last status poll failed: ${pollError.message}`);
-    }
-    consoleImpl.error(
-      `[conductor] still running on ${target} after ${timeoutMs}ms; ` +
-        `it keeps going there — poll GET ${basePath}/runs/${run.runId}, ` +
-        `stop it with DELETE on the same path, or use --kill-on-timeout`,
-    );
-    return EXIT.CLI_ERROR;
-  }
-  if (run?.status === "cancelled") {
-    return EXIT.CLI_ERROR;
-  }
-  if (typeof run?.exitCode === "number") {
-    return run.exitCode;
-  }
-  return run?.status === "completed" ? EXIT.OK : EXIT.CLI_ERROR;
+  return reportRun(run, {
+    consoleImpl,
+    json: options.json,
+    target,
+    pollError,
+    waitedMs: timeoutMs,
+    interrupted: interrupt.signal.aborted,
+  });
 }

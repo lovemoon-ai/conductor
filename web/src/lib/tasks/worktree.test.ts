@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  getTaskWorktreeRootKey,
+  hasSameTaskWorktreeRoot,
   inheritTaskWorktreeLaunchConfig,
+  parseRemoteWorktreeLaunchConfig,
+  resolveTaskWorktreeCleanupPlan,
   resolveTaskWorktreeCwdFromLaunchConfig,
+  toRemoteWorktreeCleanupLaunchConfig,
 } from "./worktree";
 
 describe("resolveTaskWorktreeCwdFromLaunchConfig", () => {
@@ -185,5 +190,100 @@ describe("resolveTaskWorktreeCwdFromLaunchConfig", () => {
     });
     expect(a).toBe(b);
     expect(a).toBe("/repo/.conductor/worktrees/user_spike");
+  });
+});
+
+describe("remote worktree launch config (RFC 0038)", () => {
+  const remote = {
+    host: "ubuntu",
+    projectId: "proj-b",
+    repoRoot: "/home/b/repo",
+    workspacePath: "/home/b/repo",
+    branch: "f8bc83",
+    baseRef: "main",
+  };
+  const local = {
+    worktree: true,
+    worktreeId: "task-1",
+    worktreeBranch: "f8bc83",
+    worktreeBaseRef: "main",
+    projectRepoRoot: "/home/b/repo",
+    projectWorkspacePath: "/home/b/repo",
+    projectRelativePath: ".",
+  };
+
+  it("parseRemoteWorktreeLaunchConfig reads camelCase and snake_case and defaults baseRef", () => {
+    expect(parseRemoteWorktreeLaunchConfig(null)).toBeNull();
+    expect(parseRemoteWorktreeLaunchConfig(local)).toBeNull();
+    // A bare host is a request, not a resolved config.
+    expect(parseRemoteWorktreeLaunchConfig({ remoteWorktree: { host: "ubuntu" } })).toBeNull();
+    expect(parseRemoteWorktreeLaunchConfig({ remoteWorktree: remote })).toEqual(remote);
+    expect(
+      parseRemoteWorktreeLaunchConfig(
+        JSON.stringify({
+          remote_worktree: {
+            host: "ubuntu",
+            project_id: "proj-b",
+            repo_root: "/home/b/repo",
+            workspace_path: "/home/b/repo",
+            branch: "f8bc83",
+          },
+        }),
+      ),
+    ).toEqual({ ...remote, baseRef: "HEAD" });
+  });
+
+  it("toRemoteWorktreeCleanupLaunchConfig produces the shape the remote daemon's cleanup handler expects", () => {
+    const translated = toRemoteWorktreeCleanupLaunchConfig({
+      ...remote,
+      workspacePath: "/home/b/repo/web",
+    });
+    expect(translated).toEqual({
+      worktree: true,
+      worktreeId: "proj-b",
+      worktreeBranch: "f8bc83",
+      worktreeBaseRef: "main",
+      projectRepoRoot: "/home/b/repo",
+      projectWorkspacePath: "/home/b/repo/web",
+      projectRelativePath: "web",
+    });
+    // The translated config resolves to the folder the AI was told to create.
+    expect(resolveTaskWorktreeCwdFromLaunchConfig(translated)).toBe(
+      "/home/b/repo/web/.conductor/worktrees/f8bc83/web",
+    );
+  });
+
+  it("hasSameTaskWorktreeRoot compares remote worktrees by host, workspace and branch", () => {
+    const reference = { remoteWorktree: remote, cwd: "/Users/a/repo" };
+    expect(hasSameTaskWorktreeRoot(reference, { remoteWorktree: { ...remote } })).toBe(true);
+    expect(hasSameTaskWorktreeRoot(reference, { remoteWorktree: { ...remote, host: "other" } })).toBe(false);
+    expect(hasSameTaskWorktreeRoot(reference, { remoteWorktree: { ...remote, branch: "abcdef" } })).toBe(false);
+    // Same path on the launching daemon is a different directory on a different disk.
+    expect(hasSameTaskWorktreeRoot(reference, local)).toBe(false);
+    expect(hasSameTaskWorktreeRoot(local, reference)).toBe(false);
+    expect(getTaskWorktreeRootKey(reference)).toContain("ubuntu");
+    expect(getTaskWorktreeRootKey(reference)).not.toBe(getTaskWorktreeRootKey(local));
+  });
+
+  it("inheritTaskWorktreeLaunchConfig carries a remote worktree (and the local cwd) to the successor", () => {
+    expect(
+      inheritTaskWorktreeLaunchConfig({ remoteWorktree: remote, cwd: "/Users/a/repo", initialContent: "x" }),
+    ).toEqual({ remoteWorktree: remote, cwd: "/Users/a/repo" });
+    expect(inheritTaskWorktreeLaunchConfig({ remoteWorktree: remote })).toEqual({ remoteWorktree: remote });
+  });
+
+  it("resolveTaskWorktreeCleanupPlan sends a remote worktree to its own daemon with a translated config", () => {
+    expect(resolveTaskWorktreeCleanupPlan({ cwd: "/x" }, "daemon-a")).toBeNull();
+    expect(resolveTaskWorktreeCleanupPlan(local, "daemon-a")).toEqual({
+      agentHost: "daemon-a",
+      launchConfig: local,
+    });
+    expect(resolveTaskWorktreeCleanupPlan(local, null)).toBeNull();
+    // The local cleanup host is irrelevant for a remote worktree.
+    expect(resolveTaskWorktreeCleanupPlan({ remoteWorktree: remote }, "daemon-a")).toEqual({
+      agentHost: "ubuntu",
+      launchConfig: toRemoteWorktreeCleanupLaunchConfig(remote),
+    });
+    expect(resolveTaskWorktreeCleanupPlan({ remoteWorktree: remote }, null)?.agentHost).toBe("ubuntu");
   });
 });
