@@ -18,6 +18,40 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.13.0] - 2026-09-12
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.13.0`
+- `@love-moon/conductor-sdk` `0.13.0`
+- `@love-moon/ai-sdk` `0.13.0`
+- `@love-moon/app-sdk` `0.13.0`
+- `@love-moon/chat-web` `0.13.0`
+
+### Changes
+
+### Minor Changes
+
+- 8edbed5: `conductor remote exec` is safer to drive from an agent, and gains a `wait` verb.
+
+  - New `conductor remote wait -t <daemon> <runId>` re-attaches to a command that
+    `exec` left running past its `--timeout`, polling and reporting it exactly as
+    `exec` would have. `exec` now prints that command in its "still running" hint
+    instead of a raw API path.
+  - `exec` retries the initial request on `429 too many concurrent remote exec
+requests` with backoff (up to ~15 s), so a burst of parallel short commands no
+    longer fails outright. Other errors are still not retried: a 5xx may already
+    have started the command.
+  - `exec` and `wait` handle SIGINT/SIGTERM: the run id is printed before exiting,
+    and with `--kill-on-timeout` the remote command is cancelled as well. Before,
+    a tool timeout that killed the CLI silently orphaned the remote process.
+
+### Patch Changes
+
+- Updated dependencies [80ab13e]
+  - @love-moon/conductor-sdk@0.13.0
+  - @love-moon/ai-sdk@0.13.0
+
 ## [0.12.0] - 2026-09-07
 
 ### Released packages
