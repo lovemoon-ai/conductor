@@ -26,6 +26,7 @@ import {
 } from "./conductor-paths.js";
 import {
   deleteFireSessionRecord,
+  listFireSessionTaskIds,
   pruneFireSessionRecords,
   readFireSessionRecord,
   resolveFireSessionRegistryDir,
@@ -2304,6 +2305,30 @@ export function startDaemon(config = {}, deps = {}) {
   // enough — the next restart with a healthy probe adopts them properly.
   function tmuxFiresMayExistUnseen() {
     return FIRE_TMUX_MODE_ENABLED && !FIRE_TMUX_MODE_ACTIVE && isTmuxAvailable();
+  }
+
+  // The third door into the same mass kill: `tmux` genuinely absent from PATH.
+  // A daemon restarted by launchd/systemd/cron — or during a `brew upgrade
+  // tmux` — logs the direct-spawn fallback and then cannot enumerate sessions
+  // by any means, so the guard above (which needs tmux to answer) declines and
+  // every Fire the predecessor deliberately left running gets killed.
+  //
+  // The hand-off records on disk are the remaining evidence: they name exactly
+  // the tasks whose liveness this process is unable to answer for. Scoped to
+  // those rather than skipping the sweep wholesale, because a host that simply
+  // never installs tmux spawns its Fires directly and those DO die with their
+  // daemon — blanket-skipping would strand them at `running` with nobody left
+  // to report their death, which is worse than killing them. Nothing prunes
+  // the registry in this state (the prune needs a conclusive listing), so a
+  // later start with a healthy tmux still adopts or reaps them properly.
+  function taskIdsWithUnverifiableTmuxFire() {
+    if (!FIRE_TMUX_MODE_ENABLED || FIRE_TMUX_MODE_ACTIVE) return new Set();
+    try {
+      return listFireSessionTaskIds(FIRE_SESSION_REGISTRY_DIR);
+    } catch (error) {
+      logError(`Failed to read tmux hand-off records: ${error?.message || error}`);
+      return new Set();
+    }
   }
 
   // Sessions already identified as orphaned shells and killed. `tmux
@@ -4856,12 +4881,26 @@ export function startDaemon(config = {}, deps = {}) {
         );
         return;
       }
+      const unverifiableTmuxTaskIds = taskIdsWithUnverifiableTmuxFire();
+      const skippedUnverifiable = [];
       const deadTasks = staleTasks.filter((task) => {
+        const taskId = String(task?.id || "");
         // A spawn already in flight has no record yet either; killing it
         // would shoot down a Fire this daemon is in the middle of starting.
-        if (pendingTaskStarts.has(String(task?.id || ""))) return false;
+        if (pendingTaskStarts.has(taskId)) return false;
+        if (unverifiableTmuxTaskIds.has(taskId)) {
+          skippedUnverifiable.push(taskId);
+          return false;
+        }
         return !adoptLiveTmuxFireForTask(task, tmuxSessions?.sessions || []);
       });
+      if (skippedUnverifiable.length) {
+        logError(
+          `tmux is not on PATH, so the Fires a previous daemon left for ${skippedUnverifiable.length} ` +
+            `task(s) cannot be checked; skipping stale recovery for them rather than killing what this ` +
+            `daemon cannot see. Restart with tmux available to adopt or reap them.`,
+        );
+      }
 
       if (deadTasks.length === 0) {
         return;
@@ -4960,10 +4999,21 @@ export function startDaemon(config = {}, deps = {}) {
         );
         return;
       }
+      const unverifiableTmuxTaskIds = taskIdsWithUnverifiableTmuxFire();
       for (const task of assigned) {
         const taskId = String(task?.id || "");
         if (!taskId) continue;
         if (localTaskIds.has(taskId) || pendingTaskStarts.has(taskId)) {
+          continue;
+        }
+        // No tmux binary to ask, but a predecessor filed a hand-off record for
+        // this task: we cannot see its Fire, which is not the same as it being
+        // dead. See taskIdsWithUnverifiableTmuxFire.
+        if (unverifiableTmuxTaskIds.has(taskId)) {
+          logError(
+            `Task ${taskId} has a tmux hand-off record but tmux is not on PATH; skipping reconcile ` +
+              `rather than killing a Fire this daemon cannot see`,
+          );
           continue;
         }
         // Adopts on the spot rather than merely skipping: a survivor that
