@@ -27,6 +27,7 @@ const issue: Issue = {
   description: 'Hook issue board into the app shell',
   status: 'todo',
   priority: 'P2',
+  type: 'feature',
   position: 1,
   metadata: { backendType: 'claude' },
   activeTask: baseTask,
@@ -114,6 +115,23 @@ describe('IssueDetailsDialog', () => {
       variant: 'success',
     });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('submits the selected type', async () => {
+    const onClose = vi.fn();
+    updateIssueMock.mockResolvedValue({ ...issue, type: 'bug' });
+
+    render(<IssueDetailsDialog open onClose={onClose} issue={issue} />);
+
+    expect(screen.getByLabelText('Type')).toHaveValue('feature');
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'bug' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(updateIssueMock).toHaveBeenCalledWith('issue-1', {
+        type: 'bug',
+      });
+    });
   });
 
   it('updates owner from the details dialog', async () => {

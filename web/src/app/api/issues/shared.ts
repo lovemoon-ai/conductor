@@ -7,10 +7,14 @@ import {
   ACTIVE_ISSUE_TASK_STATUSES,
   coerceIssuePriority,
   coerceIssueStatus,
+  coerceIssueType,
   DEFAULT_ISSUE_PRIORITY,
+  DEFAULT_ISSUE_TYPE,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
+  ISSUE_TYPES,
   normalizeIssuePriority,
+  normalizeIssueType,
 } from '@/lib/issues/config';
 import { serializeIssue } from '@/lib/issues/serialization';
 import { isMissingIssueAiSessionColumnError } from '@/lib/issues/persist-ai-session';
@@ -87,6 +91,13 @@ const normalizeOptionalIssuePriority = (value: unknown): string | undefined => {
   return coerceIssuePriority(value) ?? normalizeOptionalString(value)?.toUpperCase() ?? undefined;
 };
 
+const normalizeOptionalIssueType = (value: unknown): string | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  return coerceIssueType(value) ?? normalizeOptionalString(value)?.toLowerCase() ?? undefined;
+};
+
 const normalizeMetadata = (value: unknown): Record<string, unknown> | null | undefined => {
   if (value === undefined) {
     return undefined;
@@ -103,18 +114,55 @@ const normalizeMetadata = (value: unknown): Record<string, unknown> | null | und
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-export const isMissingIssuePriorityColumnError = (error: unknown): boolean =>
+const isMissingColumnError = (error: unknown, needles: string[]): boolean =>
   error instanceof Prisma.PrismaClientKnownRequestError &&
   error.code === 'P2022' &&
-  (errorMessage(error).includes('issues.priority') ||
-    errorMessage(error).includes('issues`.`priority') ||
-    errorMessage(error).includes('`priority`') ||
-    errorMessage(error).includes(' priority '));
+  needles.some((needle) => errorMessage(error).includes(needle));
+
+export const isMissingIssuePriorityColumnError = (error: unknown): boolean =>
+  isMissingColumnError(error, [
+    'issues.priority',
+    'issues`.`priority',
+    '`priority`',
+    ' priority ',
+  ]);
+
+export const isMissingIssueTypeColumnError = (error: unknown): boolean =>
+  isMissingColumnError(error, ['issues.type', 'issues`.`type', '`type`']);
+
+/**
+ * True when ANY column added after the original `issues` table is missing.
+ * `issueSerializationSelect` is a single legacy-safe select that drops the
+ * whole post-original column group at once, so the fallback has to trigger on
+ * any one of them — a DB can legitimately have `priority` but not `type`
+ * (deploying this code before running the migration puts it in exactly that
+ * state).
+ */
+export const isMissingIssueExtendedColumnError = (error: unknown): boolean =>
+  isMissingIssuePriorityColumnError(error) ||
+  isMissingIssueTypeColumnError(error) ||
+  isMissingIssueAiSessionColumnError(error);
 
 const warnedIssuePriorityContexts = new Set<string>();
 
 export const ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE =
   "Issue priority is unavailable until the database schema is updated. Run 'pnpm -C web db:push'.";
+
+export const ISSUE_TYPE_SCHEMA_UNAVAILABLE_MESSAGE =
+  "Issue type is unavailable until the database schema is updated. Run 'pnpm -C web db:push'.";
+
+/**
+ * Pick the 409 body for a write we had to reject because the schema predates
+ * it. Keyed on the column the DB is ACTUALLY missing, not on the field the
+ * caller tried to set: `priority` and `type` degrade together (one shared
+ * fallback select), so a request setting only `priority` can still be blocked
+ * by a missing `type` column — and telling that caller "priority is
+ * unavailable" would send them chasing the wrong column.
+ */
+export const issueSchemaUnavailableMessage = (error: unknown): string =>
+  isMissingIssueTypeColumnError(error) && !isMissingIssuePriorityColumnError(error)
+    ? ISSUE_TYPE_SCHEMA_UNAVAILABLE_MESSAGE
+    : ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE;
 
 export const warnMissingIssuePrioritySchema = (context: string, error: unknown): void => {
   if (warnedIssuePriorityContexts.has(context)) {
@@ -122,7 +170,7 @@ export const warnMissingIssuePrioritySchema = (context: string, error: unknown):
   }
   warnedIssuePriorityContexts.add(context);
   console.warn(
-    `[issue-priority-compat] ${context}: issues.priority column is missing, falling back to default priority behavior. ${ISSUE_PRIORITY_SCHEMA_UNAVAILABLE_MESSAGE} (${errorMessage(error)})`,
+    `[issue-schema-compat] ${context}: an issues column added after the original table is missing, falling back to legacy behavior for priority + type. Run 'pnpm -C web db:push'. (${errorMessage(error)})`,
   );
 };
 
@@ -130,33 +178,28 @@ export const withIssuePrioritySchemaFallback = async <T>(
   context: string,
   run: () => Promise<T>,
   fallback: () => Promise<T>,
-): Promise<{ result: T; prioritySchemaAvailable: boolean }> => {
+): Promise<{ result: T; prioritySchemaAvailable: boolean; schemaError: unknown }> => {
   try {
     return {
       result: await run(),
       prioritySchemaAvailable: true,
+      schemaError: null,
     };
   } catch (error) {
-    // The fallback select drops both `priority` and the newer
-    // `ai_backend_type` / `ai_session_id` columns, so trigger it whenever
-    // either set is missing — that covers partial migrations where one column
-    // group is present but the other is not.
-    if (
-      !isMissingIssuePriorityColumnError(error) &&
-      !isMissingIssueAiSessionColumnError(error)
-    ) {
+    if (!isMissingIssueExtendedColumnError(error)) {
       throw error;
     }
     warnMissingIssuePrioritySchema(context, error);
     return {
       result: await fallback(),
       prioritySchemaAvailable: false,
+      schemaError: error,
     };
   }
 };
 
 // Legacy-safe select used as the fallback when newer columns are missing
-// (priority, ai_backend_type, ai_session_id). Do NOT add columns introduced
+// (priority, type, ai_backend_type, ai_session_id). Do NOT add columns introduced
 // after the original `issues` table to this select — extend the WITH variant
 // below instead, or routes will start failing on partially-migrated DBs.
 export const issueSerializationSelect = {
@@ -186,6 +229,7 @@ export const issueSerializationSelect = {
 export const issueSerializationWithPrioritySelect = {
   ...issueSerializationSelect,
   priority: true,
+  type: true,
   aiBackendType: true,
   aiSessionId: true,
 } satisfies Prisma.IssueSelect;
@@ -209,13 +253,18 @@ export const issueSerializationWithProjectSelect = {
 export const issueSerializationWithPriorityAndProjectSelect = {
   ...issueSerializationWithProjectSelect,
   priority: true,
+  type: true,
 } satisfies Prisma.IssueSelect;
 
 export const isDefaultIssuePriority = (value: unknown): boolean =>
   normalizeIssuePriority(value) === DEFAULT_ISSUE_PRIORITY;
 
+export const isDefaultIssueType = (value: unknown): boolean =>
+  normalizeIssueType(value) === DEFAULT_ISSUE_TYPE;
+
 const issueStatusSchema = z.enum(ISSUE_STATUSES);
 const issuePrioritySchema = z.enum(ISSUE_PRIORITIES);
+const issueTypeSchema = z.enum(ISSUE_TYPES);
 const issueMetadataSchema = z.record(z.string(), z.unknown());
 
 export const issueCreateSchema = z.object({
@@ -225,6 +274,7 @@ export const issueCreateSchema = z.object({
   description: z.string().trim().nullable().optional(),
   status: issueStatusSchema.default('todo'),
   priority: issuePrioritySchema.default(DEFAULT_ISSUE_PRIORITY),
+  type: issueTypeSchema.default(DEFAULT_ISSUE_TYPE),
   position: z.number().finite().optional(),
   metadata: issueMetadataSchema.nullable().optional(),
   includeProject: z.boolean().default(false),
@@ -242,6 +292,7 @@ export const issuePatchSchema = z.object({
   description: z.string().trim().nullable().optional(),
   status: issueStatusSchema.optional(),
   priority: issuePrioritySchema.optional(),
+  type: issueTypeSchema.optional(),
   position: z.number().finite().optional(),
   metadata: issueMetadataSchema.nullable().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
@@ -261,6 +312,7 @@ export const normalizeIssueCreateBody = (body: unknown) => {
     description: hasOwn(record, 'description') ? normalizeOptionalString(record.description) : undefined,
     status: normalizeOptionalIssueStatus(record.status),
     priority: normalizeOptionalIssuePriority(record.priority),
+    type: normalizeOptionalIssueType(record.type),
     position: hasOwn(record, 'position')
       ? (normalizeOptionalFiniteNumber(record.position) ?? record.position)
       : undefined,
@@ -299,6 +351,9 @@ export const normalizeIssuePatchBody = (body: unknown) => {
   }
   if (hasOwn(record, 'priority')) {
     normalized.priority = normalizeOptionalIssuePriority(record.priority) ?? '';
+  }
+  if (hasOwn(record, 'type')) {
+    normalized.type = normalizeOptionalIssueType(record.type) ?? '';
   }
   if (hasOwn(record, 'position')) {
     normalized.position = normalizeOptionalFiniteNumber(record.position) ?? record.position;
@@ -402,6 +457,7 @@ export const serializeIssueWithTasks = (issue: {
   description: string | null;
   status: string;
   priority?: string | null;
+  type?: string | null;
   position: number;
   metadata: string | null;
   aiBackendType?: string | null;

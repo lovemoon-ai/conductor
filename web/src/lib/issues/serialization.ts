@@ -1,4 +1,4 @@
-import { normalizeIssuePriority, normalizeIssueStatus } from '@/lib/issues/config';
+import { normalizeIssuePriority, normalizeIssueStatus, normalizeIssueType } from '@/lib/issues/config';
 import { serializeIssueUser, type IssueUserRecord } from '@/lib/collaboration/service';
 import { serializeTaskResponse } from '@/lib/tasks/serialization';
 
@@ -26,6 +26,7 @@ type SerializableIssue = {
   description: string | null;
   status: string;
   priority?: string | null;
+  type?: string | null;
   position: number;
   metadata: string | null;
   aiBackendType?: string | null;
@@ -63,6 +64,7 @@ export const serializeIssue = (
 ) => {
   const status = normalizeIssueStatus(issue.status);
   const priority = normalizeIssuePriority(issue.priority);
+  const type = normalizeIssueType(issue.type);
   const createdAt = issue.createdAt.toISOString();
   const updatedAt = issue.updatedAt.toISOString();
   const serializedActiveTask = activeTask ? serializeTaskResponse(activeTask) : null;
@@ -90,6 +92,7 @@ export const serializeIssue = (
     description: issue.description,
     status,
     priority,
+    type,
     position: issue.position,
     metadata: parseIssueMetadata(issue.metadata),
     aiBackendType,

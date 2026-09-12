@@ -96,12 +96,40 @@ describe('CreateIssueDialog', () => {
         description: null,
         status: 'todo',
         priority: 'P0',
+        type: 'feature',
       });
     });
     expect(pushToastMock).toHaveBeenCalledWith({
       title: 'Issue created',
       description: 'Added to Todo.',
       variant: 'success',
+    });
+  });
+
+  it('submits the selected issue type', async () => {
+    createIssueMock.mockResolvedValue({ id: 'issue-1' });
+
+    render(<CreateIssueDialog open onClose={() => {}} projectId="project-2" />);
+
+    fireEvent.change(screen.getByPlaceholderText('Summarize the issue'), {
+      target: { value: 'Fix the board crash' },
+    });
+    expect(screen.getByLabelText('Type')).toHaveValue('feature');
+    expect(
+      Array.from(screen.getByLabelText('Type').querySelectorAll('option')).map((o) => o.textContent),
+    ).toEqual(['Feature', 'Bug', 'Research']);
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'bug' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Issue' }));
+
+    await waitFor(() => {
+      expect(createIssueMock).toHaveBeenCalledWith({
+        projectId: 'project-2',
+        title: 'Fix the board crash',
+        description: null,
+        status: 'todo',
+        priority: 'P1',
+        type: 'bug',
+      });
     });
   });
 
@@ -161,6 +189,7 @@ describe('CreateIssueDialog', () => {
         description: null,
         status: 'todo',
         priority: 'P1',
+        type: 'feature',
       });
     });
   });

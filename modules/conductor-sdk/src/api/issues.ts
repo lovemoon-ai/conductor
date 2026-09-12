@@ -7,6 +7,8 @@ export interface Issue {
   description?: string | null;
   status: string;
   priority?: string | null;
+  /** "feature", "bug", or "research". */
+  type?: string | null;
   position?: number | null;
   metadata?: Record<string, unknown> | null;
   createdAt?: string | null;
@@ -27,6 +29,7 @@ const normalizeIssue = (payload: Record<string, any>): Issue => {
     description: payload.description ?? null,
     status: String(payload.status ?? ''),
     priority: payload.priority ?? null,
+    type: payload.type ?? null,
     position: typeof payload.position === 'number' ? payload.position : null,
     metadata:
       payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
@@ -82,6 +85,7 @@ export interface CreateIssueInput {
   title: string;
   description?: string;
   priority?: string;
+  type?: string;
   status?: string;
   metadata?: Record<string, unknown>;
   clientRequestId?: string;
@@ -91,6 +95,7 @@ export interface UpdateIssueInput {
   title?: string;
   description?: string;
   priority?: string;
+  type?: string;
   status?: string;
   metadata?: Record<string, unknown>;
 }
@@ -170,6 +175,9 @@ export class IssuesApi {
     if (input.priority !== undefined) {
       params.priority = input.priority;
     }
+    if (input.type !== undefined) {
+      params.type = input.type;
+    }
     if (input.status !== undefined) {
       params.status = input.status;
     }
@@ -191,6 +199,9 @@ export class IssuesApi {
     }
     if (patch.priority !== undefined) {
       params.priority = patch.priority;
+    }
+    if (patch.type !== undefined) {
+      params.type = patch.type;
     }
     if (patch.status !== undefined) {
       params.status = patch.status;

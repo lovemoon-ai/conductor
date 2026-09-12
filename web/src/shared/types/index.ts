@@ -1,5 +1,5 @@
 import type { TaskType } from "@/lib/tasks/task-config";
-import type { IssuePriorityValue, IssueStatusValue } from "@/lib/issues/config";
+import type { IssuePriorityValue, IssueStatusValue, IssueTypeValue } from "@/lib/issues/config";
 
 // Restart types — defined here to break a circular dep with @/lib/tasks/restart.
 // @/lib/tasks/restart re-exports these so the runtime values stay in one place.
@@ -113,6 +113,7 @@ export interface ProjectWithBoundDaemons extends Project {
 // Issue Types
 export type IssueStatus = IssueStatusValue;
 export type IssuePriority = IssuePriorityValue;
+export type IssueType = IssueTypeValue;
 
 export interface Issue {
   id: string;
@@ -136,6 +137,8 @@ export interface Issue {
   description?: string | null;
   status: IssueStatus;
   priority: IssuePriority;
+  /** Whether this issue tracks a feature request or a bug. */
+  type: IssueType;
   position: number;
   metadata?: Record<string, unknown> | null;
   /**
@@ -504,6 +507,7 @@ export interface CreateIssueInput {
   description?: string | null;
   status?: IssueStatus;
   priority?: IssuePriority;
+  type?: IssueType;
   position?: number;
   metadata?: Record<string, unknown> | null;
   /**
@@ -521,6 +525,7 @@ export interface UpdateIssueInput {
   description?: string | null;
   status?: IssueStatus;
   priority?: IssuePriority;
+  type?: IssueType;
   position?: number;
   metadata?: Record<string, unknown> | null;
 }

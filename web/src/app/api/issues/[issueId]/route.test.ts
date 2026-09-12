@@ -82,6 +82,15 @@ const missingPriorityColumnError = () =>
     },
   );
 
+const missingTypeColumnError = () =>
+  new Prisma.PrismaClientKnownRequestError(
+    'The column `issues.type` does not exist in the current database.',
+    {
+      code: 'P2022',
+      clientVersion: 'test',
+    },
+  );
+
 const missingAiSessionColumnError = () =>
   new Prisma.PrismaClientKnownRequestError(
     'The column `issues.ai_session_id` does not exist in the current database.',
@@ -98,6 +107,7 @@ const buildExistingIssue = (overrides: Record<string, unknown> = {}) => ({
   description: 'Hook issue board into the app shell',
   status: 'todo',
   priority: 'P1',
+  type: 'feature',
   position: 1,
   metadata: null,
   createdAt: new Date('2026-04-14T00:00:00.000Z'),
@@ -806,6 +816,91 @@ describe('/api/issues/[issueId]', () => {
 
     expect(response.status).toBe(409);
     expect(data.error).toContain("Issue priority is unavailable");
+    expect(db.issue.update).not.toHaveBeenCalled();
+  });
+
+  it('updates issue type through PATCH', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue() as any);
+    vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({ type: 'research' }) as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { type: 'research' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(db.issue.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ type: 'research' }),
+    }));
+    expect(data.issue).toEqual(expect.objectContaining({ id: 'issue-1', type: 'research' }));
+  });
+
+  it('preserves the stored type when patching an unrelated field', async () => {
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ type: 'bug' }) as any);
+    vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({
+      title: 'Retitled',
+      type: 'bug',
+    }) as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { title: 'Retitled' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    // `nextType` falls back to the stored value rather than resetting to the default.
+    expect(db.issue.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ type: 'bug' }),
+    }));
+  });
+
+  it('falls back to the default type when the row predates the type column', async () => {
+    vi.mocked(db.issue.findFirst)
+      .mockRejectedValueOnce(missingTypeColumnError())
+      .mockResolvedValueOnce(buildExistingIssue({ type: undefined, priority: undefined }) as any);
+    vi.mocked(db.issue.update).mockResolvedValue(buildExistingIssue({
+      title: 'Retitled',
+      type: undefined,
+      priority: undefined,
+    }) as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { title: 'Retitled' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect((vi.mocked(db.issue.update).mock.calls[0]?.[0] as { data: Record<string, unknown> }).data).not.toHaveProperty('type');
+    expect(data.issue).toEqual(expect.objectContaining({ type: 'feature' }));
+  });
+
+  it('blames the type column — not priority — when only the type column is missing', async () => {
+    // Regression: `priority` and `type` share one legacy-safe select, so a
+    // missing `type` column also blocks priority writes. The 409 must name the
+    // column that is actually missing or it sends operators after the wrong one.
+    vi.mocked(db.issue.findFirst)
+      .mockRejectedValueOnce(missingTypeColumnError())
+      .mockResolvedValueOnce(buildExistingIssue({ type: undefined, priority: undefined }) as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { priority: 'P0' },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toContain('Issue type is unavailable');
+    expect(data.error).not.toContain('Issue priority is unavailable');
     expect(db.issue.update).not.toHaveBeenCalled();
   });
 

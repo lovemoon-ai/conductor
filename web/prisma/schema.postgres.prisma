@@ -222,20 +222,23 @@ model CollaborationMember {
 model Issue {
   id          String   @id @default(uuid()) @db.Uuid
   projectId   String   @map("project_id") @db.Uuid
-  ownerUserId String   @map("owner_user_id") @db.Uuid
-  creatorUserId String @map("creator_user_id") @db.Uuid
+  ownerUserId String?  @map("owner_user_id") @db.Uuid
+  creatorUserId String? @map("creator_user_id") @db.Uuid
   title       String
   description String?
   status      String   @default("backlog")
   priority    String   @default("P1")
+  type        String   @default("feature")
   position    Float    @default(0)
   metadata    String?
+  aiBackendType String? @map("ai_backend_type")
+  aiSessionId   String? @map("ai_session_id")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  owner   User    @relation("IssueOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
-  creator User    @relation("IssueCreator", fields: [creatorUserId], references: [id], onDelete: Cascade)
+  owner   User?   @relation("IssueOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  creator User?   @relation("IssueCreator", fields: [creatorUserId], references: [id], onDelete: Cascade)
   tasks   Task[]
 
   @@index([projectId])

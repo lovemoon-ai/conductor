@@ -6,7 +6,13 @@ import type { Issue, Task } from '@/shared/types';
 import { Dialog } from '@/components/common/Dialog';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { useToast } from '@/components/common/FeedbackProvider';
-import { DEFAULT_ISSUE_PRIORITY, ISSUE_PRIORITIES, ISSUE_PRIORITY_LABELS } from '@/lib/issues/config';
+import {
+  ISSUE_PRIORITIES,
+  ISSUE_PRIORITY_LABELS,
+  ISSUE_TYPES,
+  ISSUE_TYPE_LABELS,
+  normalizeIssueType,
+} from '@/lib/issues/config';
 import { useIssuesStore } from '../store';
 import type { IssueOwnerOption } from './IssueCard';
 
@@ -75,6 +81,7 @@ type IssueDetailsFormState = {
   title: string;
   description: string;
   priority: Issue['priority'];
+  type: Issue['type'];
   ownerUserId: string;
   localError: string | null;
 };
@@ -83,6 +90,7 @@ type IssueDetailsFormAction =
   | { type: 'set-title'; value: string }
   | { type: 'set-description'; value: string }
   | { type: 'set-priority'; value: Issue['priority'] }
+  | { type: 'set-type'; value: Issue['type'] }
   | { type: 'set-owner'; value: string }
   | { type: 'set-error'; value: string | null };
 
@@ -97,6 +105,8 @@ function issueDetailsFormReducer(
       return { ...state, description: action.value };
     case 'set-priority':
       return { ...state, priority: action.value };
+    case 'set-type':
+      return { ...state, type: action.value };
     case 'set-owner':
       return { ...state, ownerUserId: action.value };
     case 'set-error':
@@ -220,6 +230,7 @@ function IssueDetailsDialogContent({
     title: issue.title,
     description: issue.description ?? '',
     priority: issue.priority,
+    type: normalizeIssueType(issue.type),
     ownerUserId: initialOwnerUserId,
     localError: null,
   });
@@ -241,13 +252,14 @@ function IssueDetailsDialogContent({
     const titleChanged = nextTitle !== issue.title;
     const descriptionChanged = nextDescription !== previousDescription;
     const priorityChanged = state.priority !== issue.priority;
+    const typeChanged = state.type !== normalizeIssueType(issue.type);
     const currentOwnerUserId = issue.ownerUserId ?? issue.owner?.id ?? '';
     const ownerChanged = Boolean(selectedOwnerUserId) && selectedOwnerUserId !== currentOwnerUserId;
     const selectedOwner = ownerOptions.find((option) => option.userId === selectedOwnerUserId) ?? null;
     const selectedOwnerProjectId = selectedOwner?.projectId ?? null;
     const projectChanged = Boolean(selectedOwnerProjectId) && selectedOwnerProjectId !== issue.projectId;
 
-    if (!titleChanged && !descriptionChanged && !priorityChanged && !ownerChanged && !projectChanged) {
+    if (!titleChanged && !descriptionChanged && !priorityChanged && !typeChanged && !ownerChanged && !projectChanged) {
       onClose();
       return;
     }
@@ -260,6 +272,7 @@ function IssueDetailsDialogContent({
         ...(titleChanged ? { title: nextTitle } : {}),
         ...(descriptionChanged ? { description: nextDescription ? nextDescription : null } : {}),
         ...(priorityChanged ? { priority: state.priority } : {}),
+        ...(typeChanged ? { type: state.type } : {}),
         ...(ownerChanged ? { ownerUserId: selectedOwnerUserId } : {}),
       });
       pushToast({
@@ -302,6 +315,25 @@ function IssueDetailsDialogContent({
           placeholder="Add context, acceptance criteria, or raw requirement notes"
           className="min-h-32 w-full resize-y webapp-input"
         />
+      </div>
+
+      <div>
+        <label htmlFor="issue-details-type" className="mb-2 block text-sm font-medium text-ink">Type</label>
+        <select
+          id="issue-details-type"
+          value={state.type}
+          onChange={(event) => dispatch({
+            type: 'set-type',
+            value: event.target.value as Issue['type'],
+          })}
+          className="w-full webapp-input"
+        >
+          {ISSUE_TYPES.map((value) => (
+            <option key={value} value={value}>
+              {ISSUE_TYPE_LABELS[value]}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div>
