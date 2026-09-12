@@ -931,9 +931,9 @@ export function ProjectItem({
                 )}
               </div>
               {hasMetadataChips || isMergedGroup ? (
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted">
+                <div className="mt-1.5 flex flex-wrap items-center gap-1 text-sm text-muted sm:mt-2 sm:gap-2">
                   {isGitProject ? (
-                    <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
+                    <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0 text-xs font-medium leading-5 text-[var(--accent)] sm:py-0.5 sm:leading-4">
                       git
                     </span>
                   ) : null}
@@ -949,7 +949,7 @@ export function ProjectItem({
                         <span
                           key={member.id}
                           title={`${formatBindingLabel(memberDaemon, member.workspacePath ?? null)} (${memberOnline ? 'online' : 'offline'})`}
-                          className="flex max-w-[12rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted"
+                          className="flex max-w-[9rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0 text-xs font-medium leading-5 text-muted sm:max-w-[12rem] sm:py-0.5 sm:leading-4"
                         >
                           <span
                             aria-hidden="true"
@@ -962,7 +962,7 @@ export function ProjectItem({
                   ) : daemonLabel ? (
                     <span
                       title={daemonTitle ? `${daemonTitle} (${isDaemonOnline ? 'online' : 'offline'})` : daemonLabel}
-                      className="flex max-w-[12rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted"
+                      className="flex max-w-[9rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0 text-xs font-medium leading-5 text-muted sm:max-w-[12rem] sm:py-0.5 sm:leading-4"
                     >
                       <span
                         aria-hidden="true"
@@ -974,28 +974,28 @@ export function ProjectItem({
                   {isMergedGroup ? (
                     <span
                       title={`${groupMembers.length} daemons share this project`}
-                      className="flex items-center gap-1 rounded bg-[var(--accent)]/15 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]"
+                      className="flex items-center gap-1 rounded bg-[var(--accent)]/15 px-1.5 py-0 text-xs font-medium leading-5 text-[var(--accent)] sm:py-0.5 sm:leading-4"
                     >
                       {groupMembers.length} daemons
                     </span>
                   ) : null}
                   {!isMergedGroup && isPendingBinding ? (
-                    <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted">
+                    <span className="flex items-center gap-1 rounded bg-[var(--paper)] px-1.5 py-0 text-xs font-medium leading-5 text-muted sm:py-0.5 sm:leading-4">
                       Binding pending
                     </span>
                   ) : null}
                   {hasCollaboration ? (
-                    <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
+                    <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0 text-xs font-medium leading-5 text-[var(--accent)] sm:py-0.5 sm:leading-4">
                       {collaborationMemberCount}/{collaboration?.maxMembers ?? 5} members
                     </span>
                   ) : null}
                   {runningCount > 0 ? (
-                    <span className="flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                    <span className="flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0 text-xs font-medium leading-5 text-emerald-600 sm:py-0.5 sm:leading-4 dark:text-emerald-400">
                       {runningCount} running
                     </span>
                   ) : null}
                   {killedCount > 0 ? (
-                    <span className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-muted">
+                    <span className="flex items-center gap-1 rounded px-1.5 py-0 text-xs font-medium leading-5 text-muted sm:py-0.5 sm:leading-4">
                       {killedCount} stopped
                     </span>
                   ) : null}
