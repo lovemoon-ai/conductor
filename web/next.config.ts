@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 import nextra from "nextra";
 import fs from "node:fs";
 import path from "node:path";
+import { apiRewrites } from "./src/lib/api-rewrites";
 
 const withNextra = nextra({
   contentDirBasePath: "/docs",
@@ -51,33 +52,7 @@ const nextConfig: NextConfig = {
   },
   serverExternalPackages: ["@prisma/client", "prisma"],
   async rewrites() {
-    return [
-      // Rewrite /auth/* to /api/auth/* for backward compatibility with Flutter app
-      {
-        source: "/auth/:path*",
-        destination: "/api/auth/:path*",
-      },
-      // Rewrite /projects/* to /api/projects/*
-      {
-        source: "/projects/:path*",
-        destination: "/api/projects/:path*",
-      },
-      // Rewrite /tasks/* to /api/tasks/*
-      {
-        source: "/tasks/:path*",
-        destination: "/api/tasks/:path*",
-      },
-      // Rewrite /agents/* to /api/agents/*
-      {
-        source: "/agents/:path*",
-        destination: "/api/agents/:path*",
-      },
-      // Rewrite /events to /api/events
-      {
-        source: "/events",
-        destination: "/api/events",
-      },
-    ];
+    return apiRewrites();
   },
 };
 
