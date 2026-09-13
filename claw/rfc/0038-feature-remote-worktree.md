@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented（2026-09-12，后端 + CLI + 端到端验证；前端入口未做）
+Implemented（2026-09-12 后端 + CLI + 端到端验证；2026-09-13 前端入口：创建对话框"Workspace on another daemon"选项 + 任务卡 `host:branch` 标签）
 
 ## Owner
 
@@ -198,7 +198,7 @@ dang217
 1. CLI（已完成）：`conductor remote wait`、`exec` 的 429 退避重试、SIGINT/SIGTERM 处理；skill 文档 `skills/conductor/reference/remote.md` 已补协议要点。
 2. 后端（已完成）：`lib/tasks/remote-worktree.ts`（目标解析 + 协议 builder）、`tasks/route.ts`（校验、注入、`remoteWorktree` 落盘）、`worktree.ts`（解析、身份比较、清理计划、继承、即时投递）、DELETE / teardown / worktree 路由、restart 继承；配套路由与单元测试。
 3. 端到端（已完成，见下节）。
-4. 前端：创建对话框加"工作区在另一台 daemon"选项，另开 issue。
+4. 前端（已完成，2026-09-13）：创建对话框高级选项中的"Workspace on another daemon"下拉（仅合并组、目标 daemon 在线且具备 `remote_exec` + `remote_file`、与本地 worktree 互斥、agent group 下禁用），任务卡显示 `host:branch`。
 5. 后续：`refresh_session` 重启后重新注入协议；附属终端按 `remoteWorktree.host` 开到 B。
 
 ## 实施记录与端到端结果（2026-09-12）

@@ -323,6 +323,17 @@ const parseTaskWorktreeBranch = (
   if (!launchConfig) {
     return null;
   }
+  // RFC 0038: the worktree lives on another daemon; show it as `host:branch`
+  // so the card says where the code actually is.
+  const remote = launchConfig.remoteWorktree ?? launchConfig.remote_worktree;
+  if (remote && typeof remote === 'object' && !Array.isArray(remote)) {
+    const remoteRecord = remote as Record<string, unknown>;
+    const host = normalizeOptionalString(remoteRecord.host);
+    const branch = normalizeOptionalString(remoteRecord.branch);
+    if (host && branch) {
+      return `${host}:${branch}`;
+    }
+  }
   const requested = normalizeBoolean(
     launchConfig.worktree ??
     launchConfig.createWorktree ??
