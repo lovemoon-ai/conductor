@@ -1,6 +1,6 @@
 {
   "name": "conductor-web",
-  "version": "0.1.0",
+  "version": "0.13.1",
   "private": true,
   "scripts": {
     "dev": "prisma generate && prisma db push && tsx server.ts",
