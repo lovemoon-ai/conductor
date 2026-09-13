@@ -200,6 +200,39 @@ describe('TaskItem', () => {
     expect(screen.getByText('abc123')).toBeInTheDocument();
   });
 
+  it('shows host:branch for a remote worktree task (RFC 0038)', () => {
+    render(
+      <TaskItem
+        task={{
+          id: 'task-remote-worktree-1',
+          title: 'Remote Worktree Task',
+          taskType: 'ai_task',
+          status: 'running',
+          projectId: null,
+          agentHost: 'daemon-a',
+          launchConfig: {
+            cwd: '/repo/alpha',
+            remoteWorktree: {
+              host: 'ubuntu',
+              branch: 'f8bc83',
+              repoRoot: '/home/duino/ws/alpha',
+              workspacePath: '/home/duino/ws/alpha',
+              baseRef: 'main',
+            },
+          },
+          createdAt: FIXED_DATE.toISOString(),
+          updatedAt: null,
+        }}
+        isUnread={false}
+        isSelected={false}
+        selectionMode={false}
+        onToggleSelect={() => {}}
+      />
+    );
+
+    expect(screen.getByText('ubuntu:f8bc83')).toBeInTheDocument();
+  });
+
   it('requires a second click on the running badge before killing the task', async () => {
     updateTaskMock.mockResolvedValue({
       id: 'task-kill-1',

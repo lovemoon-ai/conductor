@@ -123,7 +123,7 @@ describe('CreateTaskDialog', () => {
     projectsState.projects[0].repoRoot = '/repo';
     const draft = {
       title: 'Restore all options', initialContent: 'Implement the mobile fixes', projectId: 'project-1',
-      taskType: 'ai_task', createWorktree: true, agentHost: 'daemon-a', backendType: 'codex',
+      taskType: 'ai_task', createWorktree: true, remoteWorktreeHost: '', agentHost: 'daemon-a', backendType: 'codex',
       workerAgent: 'feature-dev', reviewers: [{ name: 'code-reviewer', backend: 'codex' }], submitError: null,
     };
     sessionStorage.setItem('conductor-create-task-draft:draft-user', JSON.stringify(draft));
@@ -696,6 +696,99 @@ describe('CreateTaskDialog', () => {
           projectId: 'p-b',
           agentHost: 'daemon-b',
         }));
+      });
+    });
+
+    describe('remote worktree (RFC 0038)', () => {
+      const remoteCapable = ['pty_task', 'remote_exec', 'remote_file'];
+
+      const openAdvanced = async () => {
+        fireEvent.click(await screen.findByText('Advanced options'));
+      };
+
+      it('offers the other daemon of the group only when it can host a remote worktree', async () => {
+        projectsState = { projects: mergedProjects };
+        agentsState.agents = [
+          { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: remoteCapable },
+          { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['gpt'], capabilities: ['pty_task'] },
+        ];
+        const view = render(<CreateTaskDialog open onClose={() => {}} />);
+        await screen.findByLabelText('Device');
+        await openAdvanced();
+        // daemon-b lacks remote_exec / remote_file, so nothing to offer.
+        expect(screen.queryByLabelText('Workspace on another daemon')).toBeNull();
+        view.unmount();
+
+        agentsState.agents[1] = { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['gpt'], capabilities: remoteCapable };
+        render(<CreateTaskDialog open onClose={() => {}} />);
+        await screen.findByLabelText('Device');
+        await openAdvanced();
+        const remoteSelect = await screen.findByLabelText('Workspace on another daemon');
+        const labels = within(remoteSelect).getAllByRole('option').map((o) => o.textContent);
+        // The AI's own daemon (daemon-a) is never listed; the default keeps things local.
+        expect(labels[0]).toMatch(/Same daemon/);
+        expect(labels.slice(1)).toEqual([expect.stringContaining('daemon-b')]);
+        expect(labels.join(' ')).not.toMatch(/daemon-a/);
+      });
+
+      it('submits launchConfig.remoteWorktree.host and drops the local worktree flag', async () => {
+        projectsState = { projects: mergedProjects };
+        agentsState.agents = [
+          { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: remoteCapable },
+          { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['gpt'], capabilities: remoteCapable },
+        ];
+        createTaskMock.mockResolvedValueOnce({ id: 'task-remote' });
+        render(<CreateTaskDialog open onClose={() => {}} />);
+        await screen.findByLabelText('Device');
+        await openAdvanced();
+        // Local worktree first, then remote: the remote choice must win and
+        // uncheck the local one (the API rejects both together).
+        const worktreeCheckbox = await screen.findByLabelText('Create task in a separate worktree');
+        fireEvent.click(worktreeCheckbox);
+        expect(worktreeCheckbox).toBeChecked();
+        fireEvent.change(screen.getByLabelText('Workspace on another daemon'), { target: { value: 'daemon-b' } });
+        expect(worktreeCheckbox).not.toBeChecked();
+
+        fireEvent.change(screen.getByLabelText('Task title'), { target: { value: 'Build on daemon-b' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+        await waitFor(() => {
+          expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+            projectId: 'p-a',
+            agentHost: 'daemon-a',
+            launchConfig: { remoteWorktree: { host: 'daemon-b' } },
+          }));
+        });
+      });
+
+      it('re-checking the local worktree clears the remote host, and agent groups disable it', async () => {
+        projectsState = { projects: mergedProjects };
+        agentsState.agents = [
+          { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: remoteCapable },
+          { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['gpt'], capabilities: remoteCapable },
+        ];
+        createTaskMock.mockResolvedValueOnce({ id: 'task-local' });
+        render(<CreateTaskDialog open onClose={() => {}} />);
+        await screen.findByLabelText('Device');
+        await openAdvanced();
+        const remoteSelect = await screen.findByLabelText('Workspace on another daemon');
+        fireEvent.change(remoteSelect, { target: { value: 'daemon-b' } });
+        expect((remoteSelect as HTMLSelectElement).value).toBe('daemon-b');
+        fireEvent.click(screen.getByLabelText('Create task in a separate worktree'));
+        expect((remoteSelect as HTMLSelectElement).value).toBe('');
+
+        // Naming a worker agent makes it a group → remote worktree unavailable.
+        const workerSelect = await screen.findByLabelText(/Agents/);
+        fireEvent.change(workerSelect, { target: { value: 'feature-dev' } });
+        expect(screen.getByLabelText('Workspace on another daemon')).toBeDisabled();
+        expect(screen.getByText('Not available together with an agent group.')).toBeInTheDocument();
+
+        fireEvent.change(screen.getByLabelText('Task title'), { target: { value: 'Local worktree' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+        await waitFor(() => {
+          expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+            launchConfig: { worktree: true },
+          }));
+        });
       });
     });
   });
