@@ -42,6 +42,7 @@ import {
   withKilledReasonFallback,
 } from "@/lib/tasks/killed-reason";
 import { persistTaskRuntimeState } from "@/lib/tasks/scheduled-messages";
+import { listDaemonTaskFireHosts } from "@/lib/tasks/stale-recovery";
 
 export const AGENT_WS_PATH = "/ws/agent";
 
@@ -475,7 +476,9 @@ export const processAgentResume = async (args: {
  *   * only touches rows whose status is *still* `killed` AND whose reason is
  *     `daemon_disconnected` — user_stopped / fire_exit / crash never get
  *     auto-revoked;
- *   * does NOT rewrite `agentHost` or `executionHost`. Manual-fire ai_task
+ *   * a daemon-launched ai_task is revived only while its fire is connected,
+ *     and then executionHost / the hub binding point at that fire;
+ *   * never rewrites `agentHost`, nor stamps the daemon as `executionHost`. Manual-fire ai_task
  *     rows have `agentHost=daemon-Y, executionHost=conductor-fire-X`; if we
  *     restamped executionHost to the calling daemon we'd misroute future
  *     sdk_message envelopes away from the still-alive fire (the daemon ws
@@ -523,6 +526,8 @@ export const processAgentAliveTasks = async (args: {
     id: string;
     projectId: string;
     agentHost: string | null;
+    executionHost?: string | null;
+    taskType?: string | null;
   }>;
   let includeAchievedFilter = true;
   const findRevocableTasks = (includeAchievedFilter: boolean) =>
@@ -541,7 +546,7 @@ export const processAgentAliveTasks = async (args: {
           { executionHost: args.agentHost },
         ],
       },
-      select: { id: true, projectId: true, agentHost: true },
+      select: { id: true, projectId: true, agentHost: true, executionHost: true, taskType: true },
     });
 
   try {
@@ -577,6 +582,15 @@ export const processAgentAliveTasks = async (args: {
 
   const revokedIds = (await Promise.all(revocableTasks.map(async (task) => {
     try {
+      // The daemon only vouches that the fire *process* exists. A daemon-launched
+      // ai_task is usable only through its fire's own ws, so revive it only with
+      // that fire connected, and point executionHost at it: left null, every
+      // user message 409s and stale recovery no longer knows what to watch.
+      const fireHosts = listDaemonTaskFireHosts(task, realtimeHub.getTaskAgentHost(task.id));
+      const liveFireHost = fireHosts.find((host) => realtimeHub.hasAgentHost(host, args.userId));
+      if (fireHosts.length > 0 && !liveFireHost) {
+        return null;
+      }
       // Optimistic single-row update guarded by the same predicate so a
       // concurrent user-initiated restart (which flips status to `running`)
       // wins and we don't accidentally re-bind to a stale fire.
@@ -591,9 +605,8 @@ export const processAgentAliveTasks = async (args: {
           status: "running",
           killedReason: null,
           killedAt: null,
-          // Intentionally NOT touching agentHost / executionHost — see the
-          // function docstring. The fire (or daemon) that next commits a
-          // message will re-stamp executionHost correctly.
+          // Never stamps the calling daemon — see the function docstring.
+          ...(liveFireHost ? { executionHost: liveFireHost } : {}),
         },
       });
       if (result.count === 0) {
@@ -601,7 +614,9 @@ export const processAgentAliveTasks = async (args: {
       }
       const isPureDaemonTask =
         normalizeOptionalString(task.agentHost) === args.agentHost;
-      if (isPureDaemonTask) {
+      if (liveFireHost) {
+        realtimeHub.bindTaskToAgent(task.id, liveFireHost, args.userId);
+      } else if (isPureDaemonTask) {
         // Pure daemon ai_task — the daemon ws is the message-delivery
         // channel, so rebind to it. Manual-fire tasks (agentHost = daemon,
         // executionHost = fire) deliberately skip this rebind: their
