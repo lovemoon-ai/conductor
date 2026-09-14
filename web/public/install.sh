@@ -301,13 +301,12 @@ setup_conductor_node() {
         ln -sfn "$NODE_INSTALL_DIR" "$NODE_LINK_DIR"
     fi
 
-    # Deliberately do NOT pin an npm prefix here. The bundled npm defaults to its own Node
-    # install dir, and `conductor update` -- which never sees this script -- resolves the same
-    # default. Overriding it would only stay in effect for this process, so the two would
-    # disagree afterwards and install into separate trees. An npm_config_prefix inherited from
-    # the environment (or from an older install block in the user's rc) is unset for the same
-    # reason: it would silently retarget the install.
-    unset npm_config_prefix
+    # Pin the prefix to the bundled npm's own default, its Node install dir, which is also where
+    # `conductor update` later resolves it from. Otherwise an inherited npm_config_prefix (e.g.
+    # from an older install block in the user's rc), NPM_CONFIG_PREFIX or a `prefix=` in ~/.npmrc
+    # would silently retarget the install. This only lasts for this process; nothing is persisted.
+    unset NPM_CONFIG_PREFIX
+    export npm_config_prefix="$NODE_INSTALL_DIR"
     NPM_CMD="${NODE_LINK_DIR}/bin/npm"
     NODE_CMD="${NODE_LINK_DIR}/bin/node"
     USED_CONDUCTOR_NODE=1
@@ -557,7 +556,11 @@ verify_installation() {
         return 1
     fi
 
-    if PATH="$ORIGINAL_PATH" conductor --version >/dev/null 2>&1; then
+    # For the managed Node, a different conductor already on PATH (e.g. installed by the system npm)
+    # would shadow this one. Other npms are not compared: version managers put shims on PATH.
+    if { [ "$USED_CONDUCTOR_NODE" -ne 1 ] \
+            || [ "$(PATH="$ORIGINAL_PATH" command -v conductor)" -ef "$conductor_bin" ]; } \
+        && PATH="$ORIGINAL_PATH" conductor --version >/dev/null 2>&1; then
         return 0
     fi
 
@@ -786,7 +789,10 @@ main() {
 
     detect_platform
 
-    if check_npm; then
+    if [ "${CONDUCTOR_SELF_NPM:-}" = "1" ]; then
+        log_info "CONDUCTOR_SELF_NPM=1: ignoring system npm."
+        setup_conductor_node
+    elif check_npm; then
         log_info "Using system npm"
     else
         log_info "npm not found."

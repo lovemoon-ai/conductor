@@ -30,6 +30,8 @@ SCENARIOS=(
     detects-stale-block-when-path-line-pasted-outside
     rerun-is-idempotent
     user-owned-npm-untouched
+    version-manager-shims-untouched
+    self-npm-ignores-system-npm
 )
 
 FAILURES=0
@@ -100,7 +102,10 @@ write_npm_stub() {
         printf 'stub_sandbox=%q\n' "$SANDBOX_REAL"
         printf '[ -n "$stub_default" ] || stub_default=$(dirname "$self_bin")\n'
         cat <<'STUB'
-prefix="${npm_config_prefix:-$stub_default}"
+# Like real npm: env config beats a `prefix=` in ~/.npmrc. Either env spelling may win in npm, so
+# the stub lets the uppercase one win to catch an installer that only clears the lowercase one.
+npmrc_prefix=$(sed -n 's/^prefix=//p' "$HOME/.npmrc" 2>/dev/null || true)
+prefix="${NPM_CONFIG_PREFIX:-${npm_config_prefix:-${npmrc_prefix:-$stub_default}}}"
 
 # Resolve the deepest existing ancestor, so a prefix that does not exist yet still resolves to a
 # real path that can be compared against the sandbox.
@@ -441,6 +446,50 @@ scenario_user_owned_npm_untouched() {
     assert_exists "${CASE_DIR}/nvm/lib/node_modules/@love-moon/conductor-cli" \
         "CLI installed into the user's own npm prefix"
     assert_absent "$(conductor_home)" "installer did not create ~/.conductor"
+}
+
+# asdf/mise put a shim on PATH rather than the installed binary itself. That still counts as
+# conductor being on PATH; pinning the version-stamped node dir into the rc would defeat the shims.
+scenario_version_manager_shims_untouched() {
+    new_case darwin arm64
+    local installs="${CASE_DIR}/asdf/installs/nodejs/22.0.0/bin" shims="${CASE_DIR}/asdf/shims" tool
+    mkdir -p "$installs" "$shims"
+    write_npm_stub "${installs}/npm"
+    write_node_stub "${installs}/node"
+    for tool in npm node conductor; do
+        printf '#!/usr/bin/env bash\nexec %q "$@"\n' "${installs}/${tool}" > "${shims}/${tool}"
+        chmod +x "${shims}/${tool}"
+    done
+
+    PATH_EXTRA="${shims}:" run_installer
+
+    assert_exists "${CASE_DIR}/asdf/installs/nodejs/22.0.0/lib/node_modules/@love-moon/conductor-cli" \
+        "CLI installed into the version manager's prefix"
+    assert_not_contains "${CASE_DIR}/output.log" "export PATH=" "no PATH setup offered over the shims"
+}
+
+# CONDUCTOR_SELF_NPM=1 installs into the managed Node even when a working npm is on PATH, and even
+# when the user's npm config points global installs elsewhere. A CLI that npm installed earlier
+# still shadows the new one, so the PATH setup must still be offered.
+scenario_self_npm_ignores_system_npm() {
+    new_case darwin arm64
+    mkdir -p "${CASE_DIR}/nvm/bin"
+    printf '#!/usr/bin/env bash\ntouch %q\nexit 1\n' "${CASE_DIR}/system-npm-used" \
+        > "${CASE_DIR}/nvm/bin/npm"
+    printf '#!/usr/bin/env bash\necho 0.1.0\n' > "${CASE_DIR}/nvm/bin/conductor"
+    chmod +x "${CASE_DIR}/nvm/bin/npm" "${CASE_DIR}/nvm/bin/conductor"
+    write_node_stub "${CASE_DIR}/nvm/bin/node"
+    printf 'prefix=%s\n' "${HOME_DIR}/npmrc-prefix" > "${HOME_DIR}/.npmrc"
+
+    PATH_EXTRA="${CASE_DIR}/nvm/bin:" run_installer CONDUCTOR_SELF_NPM=1 \
+        NPM_CONFIG_PREFIX="${HOME_DIR}/env-prefix"
+
+    assert_managed_node_layout
+    assert_absent "${CASE_DIR}/system-npm-used" "system npm never invoked"
+    assert_absent "${HOME_DIR}/npmrc-prefix" "~/.npmrc prefix does not retarget the install"
+    assert_absent "${HOME_DIR}/env-prefix" "NPM_CONFIG_PREFIX does not retarget the install"
+    assert_contains "${CASE_DIR}/output.log" 'export PATH="$HOME/.conductor/node/bin:$PATH"' \
+        "PATH setup offered over the older conductor on PATH"
 }
 
 # ----------------------------------------------------------------------------- main
