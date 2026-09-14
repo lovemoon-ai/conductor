@@ -1355,6 +1355,51 @@ describe("processAgentAliveTasks", () => {
     expect(realtimeHub.bindTaskToAgent).not.toHaveBeenCalled();
   });
 
+  it("does NOT revive a daemon-launched ai_task whose fire is not connected", async () => {
+    // The daemon still holds the fire process, but only the fire's own ws can
+    // take messages; reviving it would leave a `running` task that 409s.
+    vi.mocked(db.task.findMany).mockResolvedValue([
+      { id: "task-f1", projectId: "proj-1", agentHost: "daemon-Y", executionHost: null, taskType: "ai_task" },
+    ] as any);
+
+    const { processAgentAliveTasks } = await import("./agent-gateway");
+    const result = await processAgentAliveTasks({
+      userId: "user-1",
+      agentHost: "daemon-Y",
+      payload: { agent_host: "daemon-Y", alive_task_ids: ["task-f1"], reason: "agent_reconnect" },
+    });
+
+    expect(result.revokedTaskIds).toEqual([]);
+    expect(db.task.updateMany).not.toHaveBeenCalled();
+    expect(realtimeHub.bindTaskToAgent).not.toHaveBeenCalled();
+  });
+
+  it("revives a daemon-launched ai_task onto its connected fire", async () => {
+    const fireHost = "conductor-fire-daemon-Y-task-f1";
+    vi.mocked(db.task.findMany).mockResolvedValue([
+      { id: "task-f1", projectId: "proj-1", agentHost: "daemon-Y", executionHost: null, taskType: "ai_task" },
+    ] as any);
+    vi.mocked(db.task.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(realtimeHub.hasAgentHost).mockReturnValueOnce(true);
+
+    const { processAgentAliveTasks } = await import("./agent-gateway");
+    const result = await processAgentAliveTasks({
+      userId: "user-1",
+      agentHost: "daemon-Y",
+      payload: { agent_host: "daemon-Y", alive_task_ids: ["task-f1"], reason: "agent_reconnect" },
+    });
+
+    expect(result.revokedTaskIds).toEqual(["task-f1"]);
+    expect(realtimeHub.hasAgentHost).toHaveBeenCalledWith(fireHost, "user-1");
+    expect(db.task.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "running", executionHost: fireHost }),
+      }),
+    );
+    expect(realtimeHub.bindTaskToAgent).toHaveBeenCalledWith("task-f1", fireHost, "user-1");
+    expect(realtimeHub.bindTaskToAgent).not.toHaveBeenCalledWith("task-f1", "daemon-Y", "user-1");
+  });
+
   it("ignores empty payloads without touching the DB", async () => {
     const { processAgentAliveTasks } = await import("./agent-gateway");
     const result = await processAgentAliveTasks({

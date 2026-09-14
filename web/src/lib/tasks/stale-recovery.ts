@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { db } from "@/lib/db";
 import {
-  enqueueAgentCommand,
+  enqueueAndAttemptAgentCommand,
   isMissingAgentOutboxTableError,
 } from "@/lib/realtime/agent-outbox";
 import { realtimeHub } from "@/lib/realtime/hub";
@@ -18,6 +18,7 @@ export type RecoverableTaskRecord = {
   status: string;
   agentHost: string | null;
   executionHost: string | null;
+  taskType?: string | null;
   createdAt: Date;
   updatedAt?: Date | null;
   /** Raw JSON string; read for `killingStartedAt` when converging a stuck stop. */
@@ -42,6 +43,30 @@ const normalizeTaskStatus = (value: unknown): string => {
 
 const isTerminalTaskStatus = (status: string): boolean =>
   status === "completed" || status === "killed";
+
+const UNSAFE_HOST_SEGMENT = /[^A-Za-z0-9._-]+/g;
+
+/**
+ * Fire hosts that may serve a daemon-launched ai_task, most specific first;
+ * empty when the task is not one. Only a fire can take user messages for such
+ * a task (see resolveTaskUserMessageFireHost), so its liveness — not the
+ * daemon's — says whether the task is usable. The last candidate mirrors
+ * buildFireHostName in modules/conductor-sdk/src/agent-host.ts for the env the
+ * daemon launches fires with, so the fire is still identifiable after
+ * executionHost was cleared.
+ */
+export const listDaemonTaskFireHosts = (
+  task: { id: string; taskType?: string | null; agentHost?: string | null; executionHost?: string | null },
+  boundHost?: string | null,
+): string[] => {
+  const daemonHost = normalizeHost(task.agentHost);
+  // Not narrowed through `daemonHost`: the type guard would make it `never`.
+  if (task.taskType !== "ai_task" || !daemonHost || isConductorFireHost(normalizeHost(task.agentHost))) return [];
+  const derivedHost = `conductor-fire-${daemonHost.replace(UNSAFE_HOST_SEGMENT, "-")}-${task.id.replace(UNSAFE_HOST_SEGMENT, "-")}`;
+  return Array.from(
+    new Set([normalizeHost(task.executionHost), normalizeHost(boundHost), derivedHost].filter(isConductorFireHost)),
+  );
+};
 
 const parsePositiveInt = (raw: string | undefined, fallback: number): number => {
   if (!raw) return fallback;
@@ -98,8 +123,9 @@ const WEB_INSTANCE_STARTED_AT = Date.now();
 // (the "split-brain zombie"). Enqueue a durable `stop_task` into the agent
 // outbox so that whenever that host's socket reconnects, the pending command is
 // drained to it and the backend session is actually interrupted. We enqueue
-// (persist) but do not require immediate delivery: the whole reason we are here
-// is that the host is currently believed offline.
+// (persist) and do not require immediate delivery: usually the host is offline.
+// When it is the fire's still-connected daemon, the attempt delivers at once
+// instead of waiting for the outbox cron.
 // See claw/lessons/stable_recover_stale_split_brain_kill_20260425.md
 async function enqueueRecoveryStopTask(args: {
   userId: string;
@@ -116,22 +142,28 @@ async function enqueueRecoveryStopTask(args: {
     // of stopping the fresh run. Mirror the single-id invariant used by the
     // normal stop path in web/src/app/api/tasks/[taskId]/route.ts.
     const requestId = randomUUID();
-    await enqueueAgentCommand({
-      userId: args.userId,
-      agentHost: args.agentHost,
-      taskId: args.taskId,
-      eventType: "stop_task",
-      requestId,
-      envelope: {
-        type: "stop_task",
-        payload: {
-          task_id: args.taskId,
-          project_id: args.projectId,
-          request_id: requestId,
-          reason: "recovered_stale_disconnect",
+    await enqueueAndAttemptAgentCommand(
+      {
+        userId: args.userId,
+        agentHost: args.agentHost,
+        taskId: args.taskId,
+        eventType: "stop_task",
+        requestId,
+        envelope: {
+          type: "stop_task",
+          payload: {
+            task_id: args.taskId,
+            project_id: args.projectId,
+            request_id: requestId,
+            reason: "recovered_stale_disconnect",
+          },
         },
       },
-    });
+      {
+        sendToAgentHost: ({ userId, agentHost, envelope }) =>
+          realtimeHub.sendToAgentHost(userId, agentHost, envelope),
+      },
+    );
   } catch (error) {
     if (isMissingAgentOutboxTableError(error)) return;
     // Never let outbox bookkeeping fail the recovery itself — the DB row is
@@ -219,16 +251,34 @@ export async function recoverStaleDisconnectedAgentTasks(
       continue;
     }
 
-    if (realtimeHub.hasAgentHost(recoveryHost, userId)) continue;
+    // A daemon-launched ai_task lives or dies with its fire. A connected daemon
+    // must not vouch for it: it is bound at boot and is the agentHost fallback
+    // once executionHost is cleared, so checking it kept a fire that never
+    // reconnected `running` forever while every user message got a 409.
+    const fireHosts = listDaemonTaskFireHosts(task, boundHost);
+    if (fireHosts.some((host) => realtimeHub.hasAgentHost(host, userId))) continue;
+    // Fire gone but its daemon connected: the daemon owns the process, so it
+    // gets the stop and can actually end it. Queued to the fire instead, the
+    // stop could only land if that fire ever reconnected. Daemon offline too:
+    // keep the plain path below, whose stop reaches a tmux fire that outlived
+    // its daemon.
+    const daemonGuardsFire = fireHosts.length > 0 && realtimeHub.hasAgentHost(configuredHost, userId);
+    if (!daemonGuardsFire && realtimeHub.hasAgentHost(recoveryHost, userId)) continue;
+    const stopHost = daemonGuardsFire ? configuredHost : recoveryHost;
 
-    const recoveryTimeoutMs = isConductorFireHost(recoveryHost)
+    // The daemon's stop is delivered at once and cannot be taken back, so give
+    // the fire's own 10s reconnect loop the longer window before using it.
+    const recoveryTimeoutMs = !daemonGuardsFire && isConductorFireHost(recoveryHost)
       ? STALE_FIRE_TASK_RECOVERY_TIMEOUT_MS
       : STALE_DAEMON_TASK_RECOVERY_TIMEOUT_MS;
 
-    const disconnectAt =
+    const getDisconnectAt = (host: string): unknown =>
       typeof (realtimeHub as any).getAgentDisconnectAt === "function"
-        ? (realtimeHub as any).getAgentDisconnectAt(recoveryHost, userId)
+        ? (realtimeHub as any).getAgentDisconnectAt(host, userId)
         : null;
+    const disconnectAt = daemonGuardsFire
+      ? fireHosts.map(getDisconnectAt).find((value) => typeof value === "number")
+      : getDisconnectAt(recoveryHost);
     const lastActivityMs = (
       task.updatedAt instanceof Date ? task.updatedAt : task.createdAt
     )?.getTime?.();
@@ -281,7 +331,7 @@ export async function recoverStaleDisconnectedAgentTasks(
         userId,
         taskId: task.id,
         projectId: task.projectId,
-        agentHost: recoveryHost,
+        agentHost: stopHost,
       });
       if (typeof (realtimeHub as any).unbindTask === "function") {
         (realtimeHub as any).unbindTask(task.id);

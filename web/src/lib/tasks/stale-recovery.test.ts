@@ -9,7 +9,7 @@ vi.mock("@/lib/db", () => ({
 }));
 
 vi.mock("@/lib/realtime/agent-outbox", () => ({
-  enqueueAgentCommand: vi.fn(),
+  enqueueAndAttemptAgentCommand: vi.fn(),
   isMissingAgentOutboxTableError: () => false,
 }));
 
@@ -25,13 +25,14 @@ vi.mock("@/lib/realtime/hub", () => ({
 }));
 
 vi.mock("@/lib/subscription/plan-limits", () => ({
-  // Treat the recovery host as a daemon (not a fire host) for these tests.
-  isConductorFireHost: () => false,
+  // Treat the recovery host as a daemon (not a fire host) unless a test opts in.
+  isConductorFireHost: vi.fn(() => false),
 }));
 
 const { db } = await import("@/lib/db");
-const { enqueueAgentCommand } = await import("@/lib/realtime/agent-outbox");
+const { enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
 const { realtimeHub } = await import("@/lib/realtime/hub");
+const { isConductorFireHost } = await import("@/lib/subscription/plan-limits");
 const { recoverStaleDisconnectedAgentTasks } = await import("./stale-recovery");
 
 const buildStaleTask = () => ({
@@ -53,6 +54,7 @@ describe("recoverStaleDisconnectedAgentTasks", () => {
     // A concrete, long-past disconnect timestamp bypasses the boot-time floor
     // and makes the offline window exceed the recovery timeout deterministically.
     vi.mocked(realtimeHub.getAgentDisconnectAt as any).mockReturnValue(1);
+    vi.mocked(isConductorFireHost).mockImplementation((() => false) as any);
   });
 
   it("enqueues a durable stop_task when it defensively kills a stale task", async () => {
@@ -64,8 +66,8 @@ describe("recoverStaleDisconnectedAgentTasks", () => {
     );
     // ...AND a durable stop_task is queued for the (possibly still-alive) host
     // so the backend converges on reconnect instead of streaming a zombie.
-    expect(enqueueAgentCommand).toHaveBeenCalledTimes(1);
-    const [enqueueInput] = vi.mocked(enqueueAgentCommand).mock.calls[0];
+    expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledTimes(1);
+    const [enqueueInput] = vi.mocked(enqueueAndAttemptAgentCommand).mock.calls[0];
     expect(enqueueInput).toMatchObject({
       userId: "user-1",
       agentHost: "daemon-a",
@@ -91,7 +93,7 @@ describe("recoverStaleDisconnectedAgentTasks", () => {
     await recoverStaleDisconnectedAgentTasks("user-1", [buildStaleTask()] as any);
 
     expect(db.task.update).not.toHaveBeenCalled();
-    expect(enqueueAgentCommand).not.toHaveBeenCalled();
+    expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
   });
 
   // A task stuck mid-stop is invisible to the offline recovery path above: the
@@ -142,7 +144,7 @@ describe("recoverStaleDisconnectedAgentTasks", () => {
 
       // A duplicate un-acked stop row could later be drained against a fresh
       // in-place restart and kill the new run.
-      expect(enqueueAgentCommand).not.toHaveBeenCalled();
+      expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
     });
 
     it("leaves a recently-requested stop alone so a slow daemon can still finish", async () => {
@@ -175,6 +177,102 @@ describe("recoverStaleDisconnectedAgentTasks", () => {
       };
 
       await recoverStaleDisconnectedAgentTasks("user-1", [task] as any);
+
+      expect(db.task.update).not.toHaveBeenCalled();
+    });
+  });
+
+  // A daemon-launched ai_task can only take messages through its fire, so the
+  // fire's liveness decides; the daemon only decides who receives the stop.
+  describe("daemon-launched ai_task is judged by its fire", () => {
+    const FIRE = "conductor-fire-ubuntu-task-1";
+    const buildFireTask = (overrides: Record<string, unknown> = {}) => ({
+      ...buildStaleTask(),
+      taskType: "ai_task",
+      agentHost: "ubuntu",
+      executionHost: FIRE,
+      ...overrides,
+    });
+    const setOnline = (...hosts: string[]) =>
+      vi.mocked(realtimeHub.hasAgentHost).mockImplementation(((host: string) => hosts.includes(host)) as any);
+    const stopTarget = () => vi.mocked(enqueueAndAttemptAgentCommand).mock.calls[0]?.[0]?.agentHost;
+
+    beforeEach(() => {
+      vi.mocked(isConductorFireHost).mockImplementation(
+        ((host: unknown) => typeof host === "string" && host.startsWith("conductor-fire-")) as any,
+      );
+    });
+
+    it("keeps the task when fire and daemon are both online", async () => {
+      setOnline(FIRE, "ubuntu");
+
+      await recoverStaleDisconnectedAgentTasks("user-1", [buildFireTask()] as any);
+
+      expect(db.task.update).not.toHaveBeenCalled();
+    });
+
+    it("keeps the task when only the fire is online, even if the hub is bound to the daemon", async () => {
+      // tmux fires outlive a restarting daemon; the boot-time binding points at the daemon.
+      vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("ubuntu");
+      setOnline(FIRE);
+
+      await recoverStaleDisconnectedAgentTasks("user-1", [buildFireTask()] as any);
+
+      expect(db.task.update).not.toHaveBeenCalled();
+    });
+
+    it("recognises the fire by its derived name when executionHost was cleared", async () => {
+      setOnline(FIRE);
+
+      await recoverStaleDisconnectedAgentTasks("user-1", [buildFireTask({ executionHost: null })] as any);
+
+      expect(db.task.update).not.toHaveBeenCalled();
+    });
+
+    it("kills and queues the stop for the fire when both are offline", async () => {
+      setOnline();
+
+      await recoverStaleDisconnectedAgentTasks("user-1", [buildFireTask()] as any);
+
+      expect(db.task.update).toHaveBeenCalledTimes(1);
+      expect(stopTarget()).toBe(FIRE);
+    });
+
+    it.each([
+      ["executionHost was cleared (revived zombie)", { executionHost: null }, null],
+      ["the hub is still bound to the daemon", {}, "ubuntu"],
+    ])("kills and stops through the daemon when the fire is gone but %s", async (_label, overrides, bound) => {
+      vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(bound);
+      setOnline("ubuntu");
+
+      await recoverStaleDisconnectedAgentTasks("user-1", [buildFireTask(overrides)] as any);
+
+      expect(db.task.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "task-1" },
+          data: expect.objectContaining({ status: "killed", killedReason: "daemon_disconnected" }),
+        }),
+      );
+      expect(stopTarget()).toBe("ubuntu");
+    });
+
+    it("gives the fire the longer window before the daemon stops it", async () => {
+      setOnline("ubuntu");
+      vi.mocked(realtimeHub.getAgentDisconnectAt as any).mockImplementation((host: string) =>
+        host === FIRE ? Date.now() - 60_000 : null,
+      );
+
+      await recoverStaleDisconnectedAgentTasks("user-1", [buildFireTask()] as any);
+
+      expect(db.task.update).not.toHaveBeenCalled();
+    });
+
+    it("leaves a pty task on a connected daemon alone", async () => {
+      setOnline("ubuntu");
+
+      await recoverStaleDisconnectedAgentTasks("user-1", [
+        buildFireTask({ taskType: "pty_task", executionHost: "ubuntu" }),
+      ] as any);
 
       expect(db.task.update).not.toHaveBeenCalled();
     });
