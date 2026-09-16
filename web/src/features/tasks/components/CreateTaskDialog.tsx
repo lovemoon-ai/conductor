@@ -8,6 +8,7 @@ import { Dialog } from '@/components/common/Dialog';
 import { HelpTip } from '@/components/common/HelpTip';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { useTasksStore } from '../store';
+import { deriveDefaultTaskTitle } from '../utils/default-task-title';
 import { useProjectsStore } from '@/features/projects';
 import { useAgentsStore } from '@/features/agents';
 import { ApiRequestError } from '@/shared/api/client';
@@ -500,7 +501,7 @@ export function CreateTaskDialog({
       ? boundDaemonSupportsPty
       : daemons.some((agent) => supportsPtyTask(agent.capabilities));
   const hasEligibleDaemon = eligibleDaemons.length > 0;
-  const resolvedTitle = title.trim() || (taskType === 'ai_task' ? initialContent.trim().replace(/\s+/g, ' ').slice(0, 80) : '');
+  const resolvedTitle = title.trim() || (taskType === 'ai_task' ? deriveDefaultTaskTitle(initialContent) : '');
   const canSubmit = Boolean(resolvedTitle)
     && selectableProjects.length > 0
     && !isSubmitting

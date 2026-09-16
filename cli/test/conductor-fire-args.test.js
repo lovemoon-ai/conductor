@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   buildResumeArgsForBackend,
+  deriveTaskTitle,
   expandEnvVars,
   parseCliArgs,
   resolveAiSessionOptions,
@@ -849,5 +850,17 @@ describe("resolveAiSessionOptions", () => {
       "claude",
     );
     assert.deepEqual(options, {});
+  });
+});
+
+describe("deriveTaskTitle", () => {
+  it("uses the first clause capped at 10 CJK or 20 Latin characters", () => {
+    assert.equal(deriveTaskTitle("修复登录问题，然后补充单元测试"), "修复登录问题");
+    assert.equal(deriveTaskTitle("Fix app.ts crash. Then add tests."), "Fix app.ts crash");
+    assert.equal(deriveTaskTitle("帮我把任务列表页面在移动端的显示效果优化一下"), "帮我把任务列表页面在");
+    assert.equal(deriveTaskTitle("Improve the settings page layout for phones"), "Improve the settings");
+    assert.equal(deriveTaskTitle("Update Chrome DevTools settings"), "Update Chrome");
+    assert.equal(deriveTaskTitle("  ", undefined, "claude"), "Claude Task");
+    assert.equal(deriveTaskTitle("anything", " My title "), "My title");
   });
 });

@@ -1806,15 +1806,28 @@ async function resolveDefaultProjectId(conductor) {
   }
 }
 
-function deriveTaskTitle(prompt, explicit, backend = "codex") {
+// Keep in sync with web/src/features/tasks/utils/default-task-title.ts: first clause,
+// capped at 20 display columns (CJK/full-width/emoji = 2) so it fits the mobile header.
+export function deriveTaskTitle(prompt, explicit, backend = "codex") {
   if (explicit && explicit.trim()) {
     return explicit.trim();
   }
-  if (prompt) {
-    const compact = prompt.replace(/\s+/g, " ").trim();
-    if (compact) {
-      return compact.slice(0, 80);
+  const text = (prompt || "").trim();
+  const breakIndex = text.search(/[，。！？；\n]|[,.!?;](?=\s|$)/);
+  const clause = (breakIndex > 0 ? text.slice(0, breakIndex) : text).replace(/\s+/g, " ");
+  let title = "";
+  let width = 0;
+  for (const char of clause) {
+    width += char.codePointAt(0) >= 0x2e80 ? 2 : 1;
+    if (width > 20) {
+      // Never cut an English word in half; drop the partial word unless it is the only one.
+      if (/\w$/.test(title) && /\w/.test(char)) title = title.replace(/\s*\w+$/, "") || title;
+      break;
     }
+    title += char;
+  }
+  if (title.trim()) {
+    return title.trim();
   }
   const backendName = backend.charAt(0).toUpperCase() + backend.slice(1);
   return `${backendName} Task`;

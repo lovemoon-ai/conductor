@@ -208,7 +208,7 @@ describe('CreateTaskDialog', () => {
     expect(screen.getByText('Advanced options').closest('details')).not.toHaveAttribute('open');
     fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
     await waitFor(() => expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
-      title: 'Improve the settings page. Keep device controls easy to find.',
+      title: 'Improve the settings',
       initialContent: prompt,
       projectId: 'project-1',
       agentHost: 'daemon-a',
