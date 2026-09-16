@@ -134,6 +134,34 @@ describe('MessageInput', () => {
     expect(screen.getByTestId('message-input-schedule-button')).toHaveAttribute('tabindex', '0');
   });
 
+  it('keeps the actions menu closed when the composer is swiped', () => {
+    render(<MessageInput taskId="task-swipe-noop" onSend={vi.fn()} onSchedule={vi.fn()} />);
+    const composer = screen.getByTestId('message-input-composer');
+    const touchAt = (clientX: number) => ({ pointerId: 1, pointerType: 'touch', clientX, clientY: 100 });
+
+    fireEvent.pointerDown(composer, touchAt(300));
+    fireEvent.pointerMove(composer, touchAt(150));
+    fireEvent.pointerUp(composer, touchAt(150));
+
+    expect(screen.getByTestId('message-input-swipe-actions')).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('restores each task draft after switching to another task and back', () => {
+    const view = render(<MessageInput taskId="task-draft-a" onSend={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('message-input-textarea'), { target: { value: 'half-typed for A' } });
+
+    view.rerender(<MessageInput taskId="task-draft-b" onSend={vi.fn()} />);
+    expect(screen.getByTestId('message-input-textarea')).toHaveValue('');
+    fireEvent.change(screen.getByTestId('message-input-textarea'), { target: { value: 'draft for B' } });
+
+    view.rerender(<MessageInput taskId="task-draft-a" onSend={vi.fn()} />);
+    expect(screen.getByTestId('message-input-textarea')).toHaveValue('half-typed for A');
+
+    view.unmount();
+    render(<MessageInput taskId="task-draft-b" onSend={vi.fn()} />);
+    expect(screen.getByTestId('message-input-textarea')).toHaveValue('draft for B');
+  });
+
   it('moves keyboard focus onto the revealed menu when opened via the toggle', async () => {
     render(<MessageInput taskId="task-focus" onSend={vi.fn()} onSchedule={vi.fn()} />);
     fireEvent.click(screen.getByTestId('message-input-actions-toggle'));
