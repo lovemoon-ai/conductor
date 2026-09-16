@@ -1056,6 +1056,96 @@ describe('/api/issues/[issueId]', () => {
     }));
   });
 
+  it('resolves a remote worktree against the caller\'s own project when starting a collaboration issue', async () => {
+    vi.mocked(db.project.findMany).mockResolvedValue([
+      { id: 'project-own-a', collaborationId: 'collab-1' },
+    ] as any);
+    vi.mocked(db.collaborationMember.findMany).mockResolvedValue([
+      { userId: 'user-1', projectId: 'project-own-a' },
+      { userId: 'user-2', projectId: 'project-host' },
+    ] as any);
+    vi.mocked(db.defaultProject.findUnique).mockResolvedValue({ projectId: 'project-default' } as any);
+    vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+      projectId: 'project-host',
+      ownerUserId: 'user-1',
+      project: {
+        id: 'project-host',
+        userId: 'user-2',
+        collaborationId: 'collab-1',
+        name: 'Shared',
+        daemonHost: 'daemon-x',
+        workspacePath: '/host/repo',
+        repoRoot: '/host/repo',
+        worktreeBranch: 'main',
+        lastCommit: 'xxx',
+      },
+    }) as any);
+    vi.mocked(db.collaborationMember.findUnique).mockResolvedValue({
+      project: {
+        id: 'project-own-a',
+        userId: 'user-1',
+        name: 'Shared',
+        daemonHost: 'daemon-a',
+        workspacePath: '/own/a',
+        repoRoot: '/own/a',
+        worktreeBranch: 'main',
+        lastCommit: 'aaa',
+        lastCommitAt: null,
+        gitRemoteUrl: 'github.com/foo/shared',
+        mergeOptOut: false,
+      },
+    } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({
+      id: 'project-own-b',
+      userId: 'user-1',
+      name: 'Shared',
+      daemonHost: 'daemon-b',
+      workspacePath: '/own/b',
+      repoRoot: '/own/b',
+      worktreeBranch: 'main',
+      lastCommit: 'bbb',
+      gitRemoteUrl: 'github.com/foo/shared',
+      mergeOptOut: false,
+    } as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: [] },
+      { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'], capabilities: ['remote_exec', 'remote_file'] },
+    ] as any);
+    vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+      task: buildTask({ id: 'task-remote', projectId: 'project-own-a', status: 'init' }),
+      initialMessage: null,
+      initialMessageContent: null,
+    } as any);
+
+    const response = await PATCH(createMockRequest({
+      method: 'PATCH',
+      body: { status: 'doing', remoteWorktreeHost: 'daemon-b', metadata: { backendType: 'claude' } },
+    }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    expect(response.status).toBe(200);
+    // The merge predicate needs these on the caller's collaboration project.
+    expect(db.collaborationMember.findUnique).toHaveBeenCalledWith(expect.objectContaining({
+      select: {
+        project: {
+          select: expect.objectContaining({ name: true, gitRemoteUrl: true, mergeOptOut: true }),
+        },
+      },
+    }));
+    expect(db.project.findFirst).toHaveBeenCalledWith({
+      where: { userId: 'user-1', daemonHost: 'daemon-b', name: 'Shared' },
+    });
+    const createArgs = vi.mocked(createAiTaskArtifacts).mock.calls[0][0] as any;
+    expect(createArgs.projectId).toBe('project-own-a');
+    expect(createArgs.agentHost).toBe('daemon-a');
+    expect(createArgs.launchConfig.remoteWorktree).toEqual(expect.objectContaining({
+      host: 'daemon-b',
+      projectId: 'project-own-b',
+      repoRoot: '/own/b',
+    }));
+  });
+
   it('rejects owner changes while an issue is doing', async () => {
     vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
       ownerUserId: 'user-1',
@@ -1308,6 +1398,228 @@ describe('/api/issues/[issueId]', () => {
       const persistedMeta = JSON.parse(updateCall.data.metadata as string);
       expect(persistedMeta.daemonHost).toBe('daemon-b');
       expect(persistedMeta.backendType).toBe('claude');
+    });
+
+    it('runs the AI on the issue daemon with its worktree on the requested sibling (RFC 0038)', async () => {
+      vi.mocked(db.defaultProject.findUnique).mockResolvedValue({ projectId: 'project-default' } as any);
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildMergedExistingIssue() as any);
+      mockSiblingProject();
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: [] },
+        { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'], capabilities: ['remote_exec', 'remote_file'] },
+      ] as any);
+      vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+        task: buildTask({ id: 'task-remote', status: 'init', agentHost: 'daemon-a', executionHost: 'daemon-a' }),
+        initialMessage: null,
+        initialMessageContent: null,
+      } as any);
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: {
+          status: 'doing',
+          remoteWorktreeHost: 'daemon-b',
+          metadata: { backendType: 'claude', daemonHost: 'daemon-a' },
+        },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+
+      expect(response.status).toBe(200);
+      const createArgs = vi.mocked(createAiTaskArtifacts).mock.calls[0][0] as any;
+      expect(createArgs.projectId).toBe('project-1');
+      expect(createArgs.agentHost).toBe('daemon-a');
+      expect(createArgs.requestedId).toEqual(expect.any(String));
+      expect(createArgs.launchConfig).toEqual({
+        cwd: '/repo/a',
+        worktreeBranch: 'main',
+        remoteWorktree: {
+          host: 'daemon-b',
+          projectId: 'project-2',
+          repoRoot: '/repo/b',
+          workspacePath: '/repo/b',
+          branch: expect.stringMatching(/^[0-9a-f]{6}$/),
+          baseRef: 'main',
+        },
+      });
+      expect(createArgs.initialMessageContent).toContain('[conductor:remote-worktree]');
+      expect(createArgs.initialMessageContent).toContain('Hook issue board into the app shell');
+      expect(createArgs.metadata.initialContent).toBe(createArgs.initialMessageContent);
+      const updateCall = vi.mocked(db.issue.update).mock.calls[0][0] as any;
+      expect(updateCall.data.projectId).toBe('project-1');
+    });
+
+    it('re-parents onto the sibling AI daemon and hosts the worktree back on the original daemon', async () => {
+      vi.mocked(db.project.findMany).mockResolvedValue([
+        { id: 'project-1', collaborationId: null },
+        { id: 'project-2', collaborationId: null },
+      ] as any);
+      vi.mocked(db.defaultProject.findUnique).mockResolvedValue({ projectId: 'project-default' } as any);
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildMergedExistingIssue() as any);
+      const originalProject = buildMergedExistingIssue().project;
+      mockPrismaQuery(db.project.findFirst).mockImplementation(async ({ where }: any) => (
+        where.id === 'project-2' || where.daemonHost === 'daemon-b'
+          ? {
+            id: 'project-2',
+            userId: 'user-1',
+            collaborationId: null,
+            name: 'MergedApp',
+            daemonHost: 'daemon-b',
+            workspacePath: '/repo/b',
+            repoRoot: '/repo/b',
+            worktreeBranch: 'main',
+            lastCommit: 'bbb222',
+            gitRemoteUrl: 'github.com/foo/merged-app',
+            mergeOptOut: false,
+          }
+          : where.daemonHost === 'daemon-a' ? originalProject : null
+      ) as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: ['remote_exec', 'remote_file'] },
+        { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'], capabilities: [] },
+      ] as any);
+      vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+        task: buildTask({ id: 'task-remote', projectId: 'project-2', status: 'init', agentHost: 'daemon-b', executionHost: 'daemon-b' }),
+        initialMessage: null,
+        initialMessageContent: null,
+      } as any);
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: {
+          projectId: 'project-2',
+          status: 'doing',
+          remoteWorktreeHost: 'daemon-a',
+          metadata: { backendType: 'claude', daemonHost: 'daemon-b' },
+        },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(db.project.findFirst).toHaveBeenCalledWith({
+        where: { userId: 'user-1', daemonHost: 'daemon-a', name: 'MergedApp' },
+      });
+      const createArgs = vi.mocked(createAiTaskArtifacts).mock.calls[0][0] as any;
+      expect(createArgs.projectId).toBe('project-2');
+      expect(createArgs.agentHost).toBe('daemon-b');
+      expect(createArgs.launchConfig).toEqual({
+        cwd: '/repo/b',
+        worktreeBranch: 'main',
+        remoteWorktree: expect.objectContaining({
+          host: 'daemon-a',
+          projectId: 'project-1',
+          repoRoot: '/repo/a',
+          workspacePath: '/repo/a',
+        }),
+      });
+      const updateCall = vi.mocked(db.issue.update).mock.calls[0][0] as any;
+      expect(updateCall.data.projectId).toBe('project-2');
+    });
+
+    const REMOTE_CAPABLE_AGENTS = [
+      { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: [] },
+      { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'], capabilities: ['remote_exec', 'remote_file'] },
+    ];
+
+    it.each([
+      {
+        name: 'the remote daemon is offline',
+        setup: () => {
+          vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([REMOTE_CAPABLE_AGENTS[0]] as any);
+        },
+        body: { status: 'doing', remoteWorktreeHost: 'daemon-b' },
+        status: 409,
+        error: /daemon-b is offline/,
+      },
+      {
+        name: 'the remote daemon is the AI daemon',
+        setup: () => {},
+        body: { status: 'doing', remoteWorktreeHost: 'daemon-a' },
+        status: 409,
+        error: /different daemon/,
+      },
+      {
+        name: 'the caller holds a shared daemon token',
+        setup: () => {
+          vi.mocked(getActiveSubscriptionUser).mockResolvedValue({ id: 'user-1', tokenScope: 'daemon_share' } as any);
+        },
+        body: { status: 'doing', remoteWorktreeHost: 'daemon-b' },
+        status: 403,
+        error: /shared daemon token/,
+      },
+      {
+        name: 'the issue lives in the unbound default project',
+        setup: () => {
+          vi.mocked(db.defaultProject.findUnique).mockResolvedValue({ projectId: 'project-1' } as any);
+          vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue() as any);
+        },
+        body: { status: 'doing', remoteWorktreeHost: 'daemon-b' },
+        status: 409,
+        error: /bound on the launching daemon/,
+      },
+      {
+        name: 'a linked task would be restarted instead of starting a new one',
+        setup: () => {
+          mockIssueTasks({ linkedTasks: [buildTask({ status: 'killed' })] });
+        },
+        body: { status: 'doing', remoteWorktreeHost: 'daemon-b' },
+        status: 409,
+        error: /already has a linked task/,
+      },
+      {
+        name: 'the patch does not move the issue into doing',
+        setup: () => {},
+        body: { title: 'Renamed', remoteWorktreeHost: 'daemon-b' },
+        status: 409,
+        error: /only applies when moving the issue into doing/,
+      },
+      {
+        name: 'the host is empty',
+        setup: () => {},
+        body: { remote_worktree_host: '  ' },
+        status: 400,
+        error: /Invalid request/,
+      },
+    ])('rejects remoteWorktreeHost when $name', async ({ setup, body, status, error }) => {
+      vi.mocked(db.defaultProject.findUnique).mockResolvedValue({ projectId: 'project-default' } as any);
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildMergedExistingIssue() as any);
+      mockSiblingProject();
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(REMOTE_CAPABLE_AGENTS as any);
+      setup();
+
+      const response = await PATCH(createMockRequest({ method: 'PATCH', body }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+
+      expect(response.status).toBe(status);
+      expect((await extractJson(response) as any).error).toMatch(error);
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+      expect(db.issue.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a remote worktree host that cannot drive conductor remote', async () => {
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildMergedExistingIssue() as any);
+      mockSiblingProject();
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: [] },
+        { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'], capabilities: ['remote_exec'] },
+      ] as any);
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: {
+          status: 'doing',
+          remoteWorktreeHost: 'daemon-b',
+          metadata: { backendType: 'claude' },
+        },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+
+      expect(response.status).toBe(409);
+      expect((await extractJson(response) as any).error).toMatch(/remote_file/);
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
     });
 
     it('persists metadata.daemonHost as the actually-resolved host when the client honors the project binding', async () => {

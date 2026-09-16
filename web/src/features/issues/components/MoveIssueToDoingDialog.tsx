@@ -17,12 +17,20 @@ export type MoveIssueToDoingDaemonOption = {
   label?: string;
   /** Backends advertised by the daemon's online agent. */
   supportedBackends: string[];
+  /**
+   * RFC 0038: other options' hosts that can hold the git worktree of a task
+   * whose AI runs on this one (online with remote_exec + remote_file, a
+   * git-backed project the API treats as the same project as this option's).
+   */
+  remoteWorktreeHosts?: string[];
 };
 
 export type MoveIssueToDoingConfirm = {
   backendType: string;
   daemonHost: string;
   projectId: string;
+  /** Daemon hosting the worktree; omitted when it is the AI's own daemon. */
+  remoteWorktreeHost?: string;
 };
 
 const normalizeString = (value: string | null | undefined): string =>
@@ -31,11 +39,13 @@ const normalizeString = (value: string | null | undefined): string =>
 type MoveIssueToDoingFormState = {
   preferredDaemonHost: string;
   backendType: string;
+  remoteWorktreeHost: string;
 };
 
 type MoveIssueToDoingFormAction =
   | { type: 'select-daemon'; daemonHost: string; supportedBackends: string[] }
-  | { type: 'select-backend'; backendType: string };
+  | { type: 'select-backend'; backendType: string }
+  | { type: 'select-remote-worktree'; remoteWorktreeHost: string };
 
 function moveIssueToDoingFormReducer(
   state: MoveIssueToDoingFormState,
@@ -48,11 +58,18 @@ function moveIssueToDoingFormReducer(
         backendType: action.supportedBackends.includes(state.backendType)
           ? state.backendType
           : action.supportedBackends[0] ?? '',
+        // The AI daemon changed; the worktree host may now be that daemon.
+        remoteWorktreeHost: '',
       };
     case 'select-backend':
       return {
         ...state,
         backendType: action.backendType,
+      };
+    case 'select-remote-worktree':
+      return {
+        ...state,
+        remoteWorktreeHost: action.remoteWorktreeHost,
       };
     default:
       return state;
@@ -159,6 +176,7 @@ function MoveIssueToDoingDialogContent({
   const [state, dispatch] = useReducer(moveIssueToDoingFormReducer, {
     preferredDaemonHost: initialDaemonHost,
     backendType: initialBackendType,
+    remoteWorktreeHost: '',
   });
 
   const daemonHost = optionByHost.has(state.preferredDaemonHost)
@@ -169,9 +187,18 @@ function MoveIssueToDoingDialogContent({
   const backendType = availableBackends.includes(state.backendType)
     ? state.backendType
     : availableBackends[0] ?? '';
+  // Other online daemons that can host this task's worktree while the AI runs
+  // on `daemonHost`.
+  const remoteWorktreeHosts = (currentOption?.remoteWorktreeHosts ?? [])
+    .filter((host) => host !== daemonHost && optionByHost.has(host));
+  const remoteWorktreeHost = state.remoteWorktreeHost;
+  // Keep a vanished pick (daemon went offline while the dialog was open) and
+  // block confirm, instead of quietly falling back to a local worktree.
+  const remoteWorktreeHostUnavailable = Boolean(remoteWorktreeHost)
+    && !remoteWorktreeHosts.includes(remoteWorktreeHost);
 
   const handleConfirm = async () => {
-    if (!backendType || !currentOption || isSubmitting) {
+    if (!backendType || !currentOption || isSubmitting || remoteWorktreeHostUnavailable) {
       return;
     }
     setIsSubmitting(true);
@@ -180,6 +207,7 @@ function MoveIssueToDoingDialogContent({
         backendType,
         daemonHost: currentOption.host,
         projectId: currentOption.projectId,
+        ...(remoteWorktreeHost ? { remoteWorktreeHost } : {}),
       });
     } finally {
       setIsSubmitting(false);
@@ -245,6 +273,62 @@ function MoveIssueToDoingDialogContent({
         </select>
       </div>
 
+      {remoteWorktreeHostUnavailable ? (
+        <p
+          role="alert"
+          className="rounded-md border border-amber-400/50 bg-amber-50/50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200"
+        >
+          {remoteWorktreeHost === daemonHost ? (
+            // The picked AI daemon went offline and the AI fell back onto the
+            // daemon chosen as the workspace.
+            <>
+              Daemon <code>{state.preferredDaemonHost}</code> went offline, so the AI now runs on{' '}
+              <code>{daemonHost}</code>, your chosen workspace.
+            </>
+          ) : (
+            <>Workspace daemon <code>{remoteWorktreeHost}</code> is no longer available.</>
+          )}{' '}
+          Pick another workspace to continue.
+        </p>
+      ) : null}
+
+      {remoteWorktreeHosts.length > 0 || remoteWorktreeHostUnavailable ? (
+        <details className="rounded-lg border border-border px-3 py-2">
+          <summary className="cursor-pointer text-sm font-medium text-ink">
+            Workspace on another daemon{remoteWorktreeHost ? `: ${remoteWorktreeHost}` : ''}
+          </summary>
+          <select
+            id="issue-doing-remote-worktree"
+            aria-label="Workspace on another daemon"
+            value={remoteWorktreeHost}
+            onChange={(event) => dispatch({
+              type: 'select-remote-worktree',
+              remoteWorktreeHost: event.target.value,
+            })}
+            className="mt-2 w-full webapp-input"
+            disabled={isSubmitting}
+          >
+            <option value="">Same daemon as the AI (default)</option>
+            {remoteWorktreeHostUnavailable ? (
+              <option value={remoteWorktreeHost} disabled>
+                {remoteWorktreeHost} (unavailable)
+              </option>
+            ) : null}
+            {remoteWorktreeHosts.map((host) => {
+              const option = optionByHost.get(host);
+              return (
+                <option key={host} value={host}>
+                  {option?.label?.trim() ? option.label : host}
+                </option>
+              );
+            })}
+          </select>
+          <p className="mt-1 text-xs text-muted">
+            Run the AI on {daemonHost} but create the git worktree, build and test on the chosen daemon.
+          </p>
+        </details>
+      ) : null}
+
       <div className="flex justify-end gap-3">
         <button
           type="button"
@@ -256,7 +340,7 @@ function MoveIssueToDoingDialogContent({
         <button
           type="button"
           onClick={() => void handleConfirm()}
-          disabled={!backendType || !currentOption || isSubmitting}
+          disabled={!backendType || !currentOption || isSubmitting || remoteWorktreeHostUnavailable}
           className="webapp-btn-primary px-5 py-2.5 text-sm"
         >
           {isSubmitting ? 'Starting...' : 'Move To Doing'}

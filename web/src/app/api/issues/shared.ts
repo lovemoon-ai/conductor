@@ -295,6 +295,8 @@ export const issuePatchSchema = z.object({
   type: issueTypeSchema.optional(),
   position: z.number().finite().optional(),
   metadata: issueMetadataSchema.nullable().optional(),
+  /** RFC 0038: todo→doing only; the daemon hosting the spawned task's worktree. */
+  remoteWorktreeHost: z.string().min(1).optional(),
 }).refine((value) => Object.keys(value).length > 0, {
   message: 'No fields to update',
 });
@@ -360,6 +362,10 @@ export const normalizeIssuePatchBody = (body: unknown) => {
   }
   if (hasOwn(record, 'metadata')) {
     normalized.metadata = normalizeMetadata(record.metadata) ?? record.metadata;
+  }
+  if (hasOwn(record, 'remoteWorktreeHost') || hasOwn(record, 'remote_worktree_host')) {
+    normalized.remoteWorktreeHost =
+      normalizeOptionalString(readField(record, 'remote_worktree_host', 'remoteWorktreeHost')) ?? '';
   }
   return normalized;
 };

@@ -20,7 +20,8 @@ import {
 import { serializeTaskResponse } from '@/lib/tasks/serialization';
 import { normalizeOptionalString, normalizeTaskStatus, type JsonObject } from '@/lib/tasks/task-config';
 import { resolveTaskStopTargetHost, stopTaskBeforeRelaunch } from '@/lib/tasks/task-stop';
-import { buildTaskWorktreeLaunchConfig } from '@/lib/tasks/worktree';
+import { buildTaskWorktreeLaunchConfig, type RemoteWorktreeLaunchConfig } from '@/lib/tasks/worktree';
+import { buildRemoteWorktreeBootstrap, resolveRemoteWorktreeTarget } from '@/lib/tasks/remote-worktree';
 import {
   ConnectedAgent,
   normalizeBackendType,
@@ -511,6 +512,19 @@ export async function PATCH(
   let spawnTaskArgs: Parameters<typeof createAiTaskArtifacts>[0] | null = null;
   let restartPlan: PlannedInplaceTaskRestart | null = null;
 
+  // The workspace choice only shapes a brand-new task. Refuse it rather than
+  // silently restarting a linked task (or doing nothing) where the user asked.
+  if (input.remoteWorktreeHost && !shouldSpawnTask) {
+    return NextResponse.json(
+      {
+        error: linkedTask
+          ? 'This issue already has a linked task; its workspace cannot be moved to another daemon'
+          : 'remoteWorktreeHost only applies when moving the issue into doing starts a new task',
+      },
+      { status: 409 },
+    );
+  }
+
   if (shouldSpawnTask && !activeTask) {
     // When the client just chose a merged-group sibling in the doing dialog,
     // `targetProject` already points at the daemon the user selected — use it
@@ -561,6 +575,28 @@ export async function PATCH(
     }
 
     const agentHost = resolvedAgentHost.agentHost;
+    // RFC 0038: the AI runs on `agentHost`, its worktree on a merged-group sibling.
+    let remoteWorktree: RemoteWorktreeLaunchConfig | null = null;
+    if (input.remoteWorktreeHost) {
+      const resolved = await resolveRemoteWorktreeTarget({
+        userId: user.id,
+        project: {
+          id: executionProject.id,
+          name: executionProject.name,
+          daemonHost: projectDaemonHost,
+          workspacePath: projectWorkspacePath,
+          gitRemoteUrl: executionProject.gitRemoteUrl,
+          mergeOptOut: executionProject.mergeOptOut,
+        },
+        requestedHost: input.remoteWorktreeHost,
+        connectedAgents,
+        tokenScope: user.tokenScope ?? null,
+      });
+      if ('error' in resolved) {
+        return NextResponse.json({ error: resolved.error }, { status: resolved.status });
+      }
+      remoteWorktree = resolved.remoteWorktree;
+    }
     // Detect `/goal ...` on the *current* (post-PATCH) description and decide
     // whether this todo→doing transition should dispatch as a native goal run
     // instead of a normal turn. We only honor goal mode on backends that today
@@ -579,7 +615,7 @@ export async function PATCH(
       );
     }
 
-    const initialContent = useGoalMode
+    const issueContent = useGoalMode
       ? buildIssueGoalInitialContent({
           title: resolvedTitle,
           objective: goalParse.objective,
@@ -588,6 +624,13 @@ export async function PATCH(
           title: resolvedTitle,
           description: resolvedDescription,
         });
+    const initialContent = remoteWorktree
+      ? buildRemoteWorktreeBootstrap({
+          remoteWorktree,
+          localWorkspacePath: projectWorkspacePath,
+          taskPrompt: issueContent,
+        })
+      : issueContent;
     const metadata = {
       ...(requestedBackendType ? { backendType: requestedBackendType } : {}),
       ...(initialContent ? { initialContent } : {}),
@@ -595,7 +638,7 @@ export async function PATCH(
     let requestedTaskId: string | undefined;
     let launchConfig: JsonObject | null = null;
     if (projectWorkspacePath) {
-      if (projectRepoRoot) {
+      if (projectRepoRoot && !remoteWorktree) {
         requestedTaskId = randomUUID();
         try {
           launchConfig = buildTaskWorktreeLaunchConfig({
@@ -613,9 +656,11 @@ export async function PATCH(
           );
         }
       } else {
+        requestedTaskId = remoteWorktree ? randomUUID() : undefined;
         launchConfig = {
           cwd: projectWorkspacePath,
           ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
+          ...(remoteWorktree ? { remoteWorktree } : {}),
         };
       }
     }
