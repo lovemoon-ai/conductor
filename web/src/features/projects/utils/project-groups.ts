@@ -85,3 +85,29 @@ export const computeProjectGroups = (projects: Project[]): ProjectGroup[] => {
 
   return groups;
 };
+
+/**
+ * Expand some members of a merged group to EVERY project in `allProjects` that
+ * merges with any of them — hidden (archived) projects included.
+ *
+ * The project list only groups visible projects, so a group handed to a
+ * dialog can be missing members. Settings shared across the group (task labels,
+ * graph view) must still reach those members: readers that union across the
+ * full group would otherwise resurrect a value from a member the write skipped
+ * (e.g. a deleted label reappearing from a hidden daemon's project).
+ *
+ * Matching against every seed, not just the first, yields a superset of what
+ * any single-anchor reader (`TaskItem`, the labels API) computes, because
+ * `canMergeProjects` is pairwise and not guaranteed transitive.
+ */
+export const expandMergedProjectGroup = (
+  seeds: readonly Project[],
+  allProjects: readonly Project[],
+): Project[] => {
+  const expanded = allProjects.filter((candidate) =>
+    seeds.some((seed) => canMergeProjects(seed, candidate)),
+  );
+  // Seeds not (yet) present in the store still count as members.
+  const expandedIds = new Set(expanded.map((project) => project.id));
+  return [...expanded, ...seeds.filter((seed) => !expandedIds.has(seed.id))];
+};

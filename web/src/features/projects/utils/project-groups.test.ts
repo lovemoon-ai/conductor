@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Project } from '@/shared/types';
-import { canMergeProjects, computeProjectGroups } from './project-groups';
+import { canMergeProjects, computeProjectGroups, expandMergedProjectGroup } from './project-groups';
 
 const baseProject = (overrides: Partial<Project>): Project => {
   // Explicit `in` checks so callers can pass `null` to override the defaults
@@ -208,3 +208,37 @@ describe('computeProjectGroups', () => {
     expect(groups.map((g) => g.name)).toEqual(['Zeta', 'Alpha']);
   });
 });
+
+describe('expandMergedProjectGroup', () => {
+  const p = (id: string, daemonHost: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    name: 'conductor',
+    daemonHost,
+    gitRemoteUrl: 'github.com/acme/conductor',
+    ...extra,
+  }) as any;
+
+  it('includes hidden members the visible group left out', () => {
+    const visible = p('visible', 'mac-mini');
+    const hidden = p('hidden', 'linux-box', { hidden: true });
+    expect(
+      expandMergedProjectGroup([visible], [visible, hidden]).map((x) => x.id),
+    ).toEqual(['visible', 'hidden']);
+  });
+
+  it('excludes projects that do not merge', () => {
+    const mine = p('mine', 'mac-mini');
+    const otherRemote = p('other', 'linux-box', { gitRemoteUrl: 'github.com/else/conductor' });
+    const otherName = p('named', 'linux-box', { name: 'different' });
+    const optedOut = p('opted', 'linux-box', { mergeOptOut: true });
+    expect(
+      expandMergedProjectGroup([mine], [mine, otherRemote, otherName, optedOut]).map((x) => x.id),
+    ).toEqual(['mine']);
+  });
+
+  it('keeps a seed that is not in the store yet', () => {
+    const seed = p('seed', 'mac-mini');
+    expect(expandMergedProjectGroup([seed], []).map((x) => x.id)).toEqual(['seed']);
+  });
+});
+

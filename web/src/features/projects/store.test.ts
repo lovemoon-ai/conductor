@@ -375,3 +375,79 @@ describe('countTasksFiledElsewhere', () => {
     expect(mockGet).toHaveBeenCalledWith('/tasks?project_ids=proj-a%2Cproj-b&project_scope=real');
   });
 });
+
+describe('useProjectsStore updateProjectGroupMetadata', () => {
+  const member = (id: string, daemonHost: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    name: 'conductor',
+    daemonHost,
+    gitRemoteUrl: 'github.com/acme/conductor',
+    metadata: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    ...extra,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPatch.mockImplementation(async (url: string, input: { metadata: unknown }) => ({
+      ...member(new URL(`http://x${url}`).searchParams.get('projectId')!, 'x'),
+      metadata: input.metadata,
+    }));
+  });
+
+  it('also writes to a HIDDEN member of the merged group', async () => {
+    // Regression: the project list only groups visible projects, so a dialog
+    // passed visible ids only. A hidden member kept its old labels, and the
+    // readers — which union across every member — resurrected a deleted label.
+    useProjectsStore.setState({
+      projects: [
+        member('visible', 'mac-mini'),
+        member('hidden', 'linux-box', { hidden: true }),
+        member('unrelated', 'other-box', { name: 'something-else' }),
+      ] as any,
+    });
+
+    await useProjectsStore.getState().updateProjectGroupMetadata(
+      ['visible'],
+      () => ({ taskLabels: [] }),
+    );
+
+    const patched = mockPatch.mock.calls.map(([url]) =>
+      new URL(`http://x${url}`).searchParams.get('projectId'));
+    expect(patched).toEqual(['visible', 'hidden']);
+  });
+
+  it('builds each payload from that member\'s own freshest metadata', async () => {
+    useProjectsStore.setState({
+      projects: [
+        member('a', 'mac-mini', { metadata: { memos: ['a-memo'] } }),
+        member('b', 'linux-box', { metadata: { memos: ['b-memo'] } }),
+      ] as any,
+    });
+
+    await useProjectsStore.getState().updateProjectGroupMetadata(
+      ['a', 'b'],
+      (project) => ({ ...(project.metadata ?? {}), taskGraphEnabled: true }),
+    );
+
+    expect(mockPatch.mock.calls.map(([, input]) => input.metadata)).toEqual([
+      { memos: ['a-memo'], taskGraphEnabled: true },
+      { memos: ['b-memo'], taskGraphEnabled: true },
+    ]);
+  });
+
+  it('reports a partial fan-out instead of swallowing it', async () => {
+    useProjectsStore.setState({
+      projects: [member('a', 'mac-mini'), member('b', 'linux-box')] as any,
+    });
+    mockPatch
+      .mockImplementationOnce(async () => member('a', 'mac-mini'))
+      .mockRejectedValueOnce(new Error('daemon offline'));
+
+    await expect(
+      useProjectsStore.getState().updateProjectGroupMetadata(['a'], () => ({})),
+    ).rejects.toThrow('Saved on 1 of 2 daemons: daemon offline');
+  });
+});
+
