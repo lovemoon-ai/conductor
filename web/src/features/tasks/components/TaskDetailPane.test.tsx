@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { TaskDetailPane } from './TaskDetailPane';
 import { usePtyToggleStore } from '../pty-toggle-store';
 
@@ -39,7 +39,12 @@ vi.mock('@/features/chat', () => ({
   }: {
     taskId: string;
     autoFocusComposer?: boolean;
-  }) => <div data-testid="chat-view">chat:{taskId}:{String(Boolean(autoFocusComposer))}</div>,
+  }) => (
+    <div data-testid="chat-view">
+      chat:{taskId}:{String(Boolean(autoFocusComposer))}
+      <div className="message-composer" data-testid="composer" />
+    </div>
+  ),
 }));
 
 vi.mock('@/features/terminal', () => ({
@@ -294,5 +299,44 @@ describe('TaskDetailPane', () => {
         'terminal:task-attached-init:running',
       ),
     );
+  });
+
+  it('switches tasks when the composer is swiped, like the title', () => {
+    fetchTaskMock.mockReturnValue(new Promise(() => {}));
+    useTasksStoreMock.mockReturnValue({
+      tasks: [{ id: 'task-3', title: 'Swipe Task', taskType: 'ai_task', status: 'running', createdAt: '2026-03-23T00:00:00.000Z' }],
+      fetchTask: fetchTaskMock,
+      markTaskRead: markTaskReadMock,
+    });
+    const onSwipeLeft = vi.fn();
+    const onSwipeRight = vi.fn();
+    const onProgress = vi.fn();
+    render(
+      <TaskDetailPane
+        taskId="task-3"
+        onTitleSwipeLeft={onSwipeLeft}
+        onTitleSwipeRight={onSwipeRight}
+        onTitleSwipeProgress={onProgress}
+      />,
+    );
+    const touchAt = (clientX: number) => ({ pointerId: 1, pointerType: 'touch', clientX, clientY: 100 });
+    const swipe = (element: Element, fromX: number, toX: number) => {
+      fireEvent.pointerDown(element, touchAt(fromX));
+      fireEvent.pointerMove(element, touchAt((fromX + toX) / 2));
+      fireEvent.pointerUp(element, touchAt(toX));
+    };
+
+    // Outside the composer (e.g. the message list) the swipe is ignored.
+    swipe(screen.getByTestId('chat-view'), 200, 100);
+    expect(onProgress).not.toHaveBeenCalled();
+    expect(onSwipeLeft).not.toHaveBeenCalled();
+
+    const composer = screen.getByTestId('composer');
+    swipe(composer, 200, 100);
+    expect(onSwipeLeft).toHaveBeenCalledTimes(1);
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ direction: 'left', isDragging: true }));
+
+    swipe(composer, 100, 200);
+    expect(onSwipeRight).toHaveBeenCalledTimes(1);
   });
 });

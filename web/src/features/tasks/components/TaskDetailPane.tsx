@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { Header, type TitleSwipeProgress } from '@/components/layout/Header';
+import { useHorizontalSwipe } from '@/shared/hooks/useHorizontalSwipe';
 import { ChatView } from '@/features/chat';
 import { TerminalView } from '@/features/terminal';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
@@ -28,6 +29,9 @@ interface TaskDetailPaneProps {
 
 const TASK_SWIPE_CONTENT_OFFSET_PX = 14;
 const TASK_SWIPE_CONTENT_MAX_OPACITY_DROP = 0.16;
+
+const isComposerTarget = ({ target }: ReactPointerEvent<HTMLDivElement>) =>
+  target instanceof Element && Boolean(target.closest('.message-composer'));
 
 export function TaskDetailPane({
   taskId,
@@ -156,6 +160,14 @@ export function TaskDetailPane({
     );
   }, [livePtyTaskStatus]);
 
+  // Swiping the composer switches tasks exactly like swiping the title.
+  const composerSwipeHandlers = useHorizontalSwipe<HTMLDivElement>({
+    onSwipeLeft: onTitleSwipeLeft,
+    onSwipeRight: onTitleSwipeRight,
+    onProgress: onTitleSwipeProgress,
+    canStart: isComposerTarget,
+  });
+
   if (!task && pendingTaskId === taskId) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -241,6 +253,7 @@ export function TaskDetailPane({
       <div
         className={`min-h-0 flex-1 overflow-hidden ${contentTransitionClassName} ${contentSwipeClassName}`}
         style={contentSwipeStyle}
+        {...composerSwipeHandlers}
       >
         {task.taskType === 'pty_task' ? (
           <TerminalView task={task} />

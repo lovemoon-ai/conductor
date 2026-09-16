@@ -703,8 +703,7 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
       composerSwipe.closeActions();
     } else {
       composerSwipe.openActions();
-      // Land keyboard focus on the revealed menu so it is operable without a
-      // pointer; a touch swipe never reaches here so focus is not stolen there.
+      // Land keyboard focus on the revealed menu so it is operable without a pointer.
       requestAnimationFrame(() => firstSwipeActionRef.current?.focus());
     }
   }, [composerSwipe]);
@@ -718,7 +717,7 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
         onSend={handleCatchphraseSend}
       />
       <div className="relative w-full overflow-hidden rounded-2xl">
-        {/* Left-swipe menu: revealed behind the composer on its right edge. */}
+        {/* Actions menu: revealed behind the composer on its right edge by the toggle. */}
         <div
           className="absolute inset-y-0 right-0 z-0 flex items-center gap-1 pr-1"
           data-testid="message-input-swipe-actions"
@@ -765,10 +764,6 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
           ref={composerRef}
           data-testid="message-input-composer"
           style={composerSwipe.panelStyle}
-          onPointerDown={(event) => { if (event.pointerType !== 'mouse') composerSwipe.onPointerDown(event); }}
-          onPointerMove={(event) => { if (event.pointerType !== 'mouse') composerSwipe.onPointerMove(event); }}
-          onPointerUp={composerSwipe.onPointerUp}
-          onPointerCancel={composerSwipe.onPointerCancel}
           // Keep the optional swipe menu behind an opaque composer.
           className="message-composer relative z-10 w-full min-h-11 rounded-xl border border-border bg-[var(--surface-default)] p-3 transition-colors"
         >
