@@ -61,7 +61,7 @@ let tasksState: {
   achieveTask: typeof achieveTaskMock;
 };
 let projectsState: {
-  projects: Array<{ id: string; name: string; daemonHost?: string | null }>;
+  projects: Array<{ id: string; name: string; daemonHost?: string | null; metadata?: Record<string, unknown> | null }>;
   hiddenProjectIds: string[];
 };
 
@@ -185,6 +185,34 @@ describe('TaskList', () => {
       ],
       hiddenProjectIds: [],
     };
+  });
+
+  describe('label filter pill', () => {
+    it('shows the label name even when an unrelated project has a same-named label', () => {
+      // Regression: the pill looked the id up through a name-deduped union of
+      // ALL projects, so an unrelated project's "bug" shadowed this one and the
+      // pill fell back to the generic "Label".
+      projectsState.projects = [
+        { id: 'unrelated', name: 'Other', metadata: { taskLabels: [{ id: 'x1', name: 'bug' }] } },
+        { id: 'project-1', name: 'Project One', metadata: { taskLabels: [{ id: 'l1', name: 'bug' }] } },
+      ];
+
+      render(<TaskList viewMode="list" labelFilter="l1" onFilterByLabel={vi.fn()} />);
+
+      expect(screen.getByRole('button', { name: /Clear label filter/ })).toHaveTextContent('bug');
+    });
+
+    it('clears the filter from the pill', () => {
+      projectsState.projects = [
+        { id: 'project-1', name: 'Project One', metadata: { taskLabels: [{ id: 'l1', name: 'bug' }] } },
+      ];
+      const onFilterByLabel = vi.fn();
+
+      render(<TaskList viewMode="list" labelFilter="l1" onFilterByLabel={onFilterByLabel} />);
+      fireEvent.click(screen.getByRole('button', { name: /Clear label filter/ }));
+
+      expect(onFilterByLabel).toHaveBeenCalledWith('l1');
+    });
   });
 
   it('renders list view badges and items', async () => {

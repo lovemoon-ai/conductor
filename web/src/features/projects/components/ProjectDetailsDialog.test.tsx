@@ -44,13 +44,28 @@ vi.mock('@/components/common/FeedbackProvider', () => ({
 }));
 
 vi.mock('../store', () => {
-  const hook = (selector?: (state: {
-    updateProject: typeof updateProjectMock;
-    fetchProjects: typeof fetchProjectsMock;
-  }) => unknown) =>
-    selector
-      ? selector({ updateProject: updateProjectMock, fetchProjects: fetchProjectsMock })
-      : { updateProject: updateProjectMock, fetchProjects: fetchProjectsMock };
+  // Mirrors the real `updateProjectGroupMetadata`: fan out one PATCH per
+  // member, building each payload from that member's freshest snapshot. Tests
+  // then assert on `updateProjectMock`, i.e. on the fan-out that actually hit
+  // the API, rather than on an opaque store call.
+  const updateProjectGroupMetadata = async (
+    projectIds: string[],
+    build: (project: any) => Record<string, unknown>,
+  ) => {
+    for (const projectId of projectIds) {
+      const current = storeState.projects.find((entry) => entry.id === projectId);
+      if (!current) continue;
+      await updateProjectMock(projectId, { metadata: build(current) });
+    }
+  };
+  const buildState = () => ({
+    updateProject: updateProjectMock,
+    fetchProjects: fetchProjectsMock,
+    updateProjectGroupMetadata,
+    projects: storeState.projects as any[],
+  });
+  const hook = (selector?: (state: ReturnType<typeof buildState>) => unknown) =>
+    selector ? selector(buildState()) : buildState();
   // Mirror zustand's static accessors so the dialog can read/write the
   // shared `projects` list for optimistic updates.
   (hook as any).getState = () => storeState;
@@ -159,7 +174,9 @@ describe('ProjectDetailsDialog', () => {
       metadata: { ...project.metadata, taskGraphEnabled: true },
     });
 
-    render(<ProjectDetailsDialog open project={project} onClose={vi.fn()} />);
+    const { rerender } = render(
+      <ProjectDetailsDialog open project={project} onClose={vi.fn()} />,
+    );
 
     const switchButton = screen.getByRole('switch', { name: 'Graph view' });
     expect(switchButton).toHaveAttribute('aria-checked', 'false');
@@ -175,7 +192,123 @@ describe('ProjectDetailsDialog', () => {
       ],
       taskGraphEnabled: true,
     });
+
+    // The dialog reads the setting from its `project` / `mergedMembers` props,
+    // which the parent re-derives from the store after `updateProject` lands.
+    // Feed that re-render in rather than relying on a pinned optimistic value,
+    // so the assertion reflects the persisted state.
+    const persisted = { ...project, metadata: payload.metadata } as any;
+    resetStoreProjects([persisted]);
+    rerender(<ProjectDetailsDialog open project={persisted} onClose={vi.fn()} />);
     expect(screen.getByRole('switch', { name: 'Graph view' })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  describe('graph view across a merged project group', () => {
+    // Regression: the toggle used to write only the active member while every
+    // reader (Sidebar, MobileNav, tasks page) unions with
+    // `.some(isProjectTaskGraphEnabled)`. The switch therefore appeared to flip
+    // back off when the user changed daemon tabs, and turning it off never took
+    // effect because the other members stayed enabled.
+    const memberA = {
+      id: 'project-a',
+      name: 'Merged Project',
+      daemonHost: 'daemon-a',
+      workspacePath: '/repo/a',
+      gitRemoteUrl: 'github.com/acme/merged',
+    } as const;
+    const memberB = {
+      id: 'project-b',
+      name: 'Merged Project',
+      daemonHost: 'daemon-b',
+      workspacePath: '/repo/b',
+      gitRemoteUrl: 'github.com/acme/merged',
+    } as const;
+
+    const renderMerged = (
+      aMetadata: Record<string, unknown> | null,
+      bMetadata: Record<string, unknown> | null,
+    ) => {
+      const a = { ...memberA, metadata: aMetadata } as any;
+      const b = { ...memberB, metadata: bMetadata } as any;
+      resetStoreProjects([a, b]);
+      updateProjectMock.mockImplementation(async (id: string, input: any) => {
+        const target = storeState.projects.find((entry) => entry.id === id);
+        if (target) target.metadata = input.metadata;
+        return target;
+      });
+      return render(
+        <ProjectDetailsDialog open project={a} mergedMembers={[a, b]} onClose={vi.fn()} />,
+      );
+    };
+
+    it('enables graph view on every member of the group', async () => {
+      renderMerged(null, null);
+
+      fireEvent.click(screen.getByRole('switch', { name: 'Graph view' }));
+
+      await waitFor(() => expect(updateProjectMock).toHaveBeenCalledTimes(2));
+      expect(updateProjectMock.mock.calls.map(([id]) => id)).toEqual([
+        'project-a',
+        'project-b',
+      ]);
+      for (const [, payload] of updateProjectMock.mock.calls) {
+        expect(payload.metadata.taskGraphEnabled).toBe(true);
+      }
+    });
+
+    it('disables graph view on every member, so the readers\' union clears', async () => {
+      renderMerged({ taskGraphEnabled: true }, { taskGraphEnabled: true });
+
+      const switchButton = screen.getByRole('switch', { name: 'Graph view' });
+      expect(switchButton).toHaveAttribute('aria-checked', 'true');
+      fireEvent.click(switchButton);
+
+      await waitFor(() => expect(updateProjectMock).toHaveBeenCalledTimes(2));
+      for (const [, payload] of updateProjectMock.mock.calls) {
+        expect(payload.metadata.taskGraphEnabled).toBe(false);
+      }
+    });
+
+    it('shows the switch as on when only a sibling member has it enabled', () => {
+      // The union is what the rest of the app acts on, so the switch must agree
+      // with it instead of reporting just the active daemon's row.
+      renderMerged(null, { taskGraphEnabled: true });
+      expect(screen.getByRole('switch', { name: 'Graph view' })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      );
+    });
+
+    it('keeps the switch state when the user changes daemon tab', () => {
+      renderMerged(null, { taskGraphEnabled: true });
+
+      fireEvent.click(screen.getByRole('tab', { name: /daemon-b/ }));
+
+      expect(screen.getByRole('switch', { name: 'Graph view' })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      );
+    });
+
+    it('preserves each member\'s own unrelated metadata during the fan-out', async () => {
+      renderMerged(
+        { memos: [{ id: 'ma', content: 'a memo', createdAt: '2026-05-01T08:00:00.000Z' }] },
+        { bindingCandidate: { daemonHost: 'daemon-b', workspacePath: '/repo/b' } },
+      );
+
+      fireEvent.click(screen.getByRole('switch', { name: 'Graph view' }));
+
+      await waitFor(() => expect(updateProjectMock).toHaveBeenCalledTimes(2));
+      const [, aPayload] = updateProjectMock.mock.calls[0];
+      const [, bPayload] = updateProjectMock.mock.calls[1];
+      expect(aPayload.metadata.memos).toHaveLength(1);
+      expect(aPayload.metadata.taskGraphEnabled).toBe(true);
+      expect(bPayload.metadata.bindingCandidate).toEqual({
+        daemonHost: 'daemon-b',
+        workspacePath: '/repo/b',
+      });
+      expect(bPayload.metadata.taskGraphEnabled).toBe(true);
+    });
   });
 
   it('adds a new memo by prepending and patching metadata', async () => {

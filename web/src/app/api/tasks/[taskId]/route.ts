@@ -23,6 +23,10 @@ import {
 } from "@/lib/tasks/task-config";
 import { tagKilledReason } from "@/lib/tasks/killed-reason";
 import {
+  normalizeTaskLabelIds,
+  TASK_LABEL_IDS_METADATA_KEY,
+} from "@/lib/tasks/task-labels";
+import {
   applyLegacyTaskShape,
   isMissingAnyNewSchemaError,
   isMissingIssueIdSchemaError,
@@ -662,6 +666,20 @@ export async function PATCH(
     parseAgentScheduleAccess(existingMetadataObject?.agentScheduleAccess);
   if (effectiveScheduleAccess) {
     stickyMetadataFields.agentScheduleAccess = effectiveScheduleAccess;
+  }
+  // Task labels are human-curated, but they share the metadata blob with
+  // daemon-owned keys. Without stickiness, any daemon PATCH that merges its own
+  // metadata (or a `metadata: null` wipe) would silently drop the labels a
+  // person attached. Same rule as schedule access: an explicit list in THIS
+  // request wins, otherwise the stored list survives. An explicit empty list
+  // still clears, because it lands in the merge below and never becomes sticky.
+  const effectiveLabelIds = normalizeTaskLabelIds(
+    parsedMetadataInput && TASK_LABEL_IDS_METADATA_KEY in parsedMetadataInput
+      ? parsedMetadataInput[TASK_LABEL_IDS_METADATA_KEY]
+      : existingMetadataObject?.[TASK_LABEL_IDS_METADATA_KEY],
+  );
+  if (effectiveLabelIds.length > 0) {
+    stickyMetadataFields[TASK_LABEL_IDS_METADATA_KEY] = effectiveLabelIds;
   }
   // Defense-in-depth: strip `attachedToAiTaskId` from user-provided
   // metadata. Even though the sticky-spread-last logic below would

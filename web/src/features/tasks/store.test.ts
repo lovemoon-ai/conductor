@@ -5,6 +5,7 @@ const mockGet = vi.fn();
 const mockPost = vi.fn();
 const mockPatch = vi.fn();
 const mockDelete = vi.fn();
+const mockPut = vi.fn();
 
 vi.mock('@/shared/api/client', () => ({
   getApiClient: () => ({
@@ -12,6 +13,7 @@ vi.mock('@/shared/api/client', () => ({
     post: mockPost,
     patch: mockPatch,
     delete: mockDelete,
+    put: mockPut,
   }),
 }));
 
@@ -841,5 +843,107 @@ describe('tasks store', () => {
     ]);
     expect(useTasksStore.getState().currentProjectFilter).toBe('proj-c');
     expect(useTasksStore.getState().currentProjectIds).toEqual([]);
+  });
+
+  describe('setTaskLabels', () => {
+    const task = (labelIds?: string[]) => ({
+      id: 'task-1',
+      title: 'Labelled',
+      status: 'running' as const,
+      projectId: 'project-1',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      metadata: labelIds ? { labelIds, daemonName: 'mac-mini' } : { daemonName: 'mac-mini' },
+    });
+    const labelsInStore = () =>
+      (useTasksStore.getState().tasks.find((t) => t.id === 'task-1')?.metadata as any)?.labelIds;
+    const serverTask = (labelIds: string[]) => ({ ...task(labelIds), status: 'running' });
+    const controlled = () => {
+      let resolve!: (value: unknown) => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+      return { promise, resolve, reject };
+    };
+
+    beforeEach(() => {
+      // mockReset, not clearAllMocks: queued *Once returns must not leak.
+      mockPut.mockReset();
+      useTasksStore.setState({ tasks: [task()] as any });
+    });
+
+    it('applies the selection optimistically, before the server responds', async () => {
+      // Regression: without this, a second toggle computed from the task's
+      // still-unchanged ids dropped the first selection.
+      const pending = controlled();
+      mockPut.mockReturnValueOnce(pending.promise);
+
+      const write = useTasksStore.getState().setTaskLabels('task-1', ['A']);
+
+      expect(labelsInStore()).toEqual(['A']);
+      // Daemon-owned metadata is untouched by the optimistic write.
+      expect(useTasksStore.getState().tasks[0].metadata?.daemonName).toBe('mac-mini');
+
+      // Settle it: the per-task write queue is module state shared by tests.
+      await vi.waitFor(() => expect(mockPut).toHaveBeenCalledTimes(1));
+      pending.resolve(serverTask(['A']));
+      await write;
+    });
+
+    it('serializes writes so an older response cannot overwrite a newer selection', async () => {
+      const first = controlled();
+      const second = controlled();
+      mockPut.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+      const p1 = useTasksStore.getState().setTaskLabels('task-1', ['A']);
+      const p2 = useTasksStore.getState().setTaskLabels('task-1', ['A', 'B']);
+
+      // The second PUT is not sent until the first settles.
+      await vi.waitFor(() => expect(mockPut).toHaveBeenCalledTimes(1));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(mockPut).toHaveBeenCalledTimes(1);
+
+      first.resolve(serverTask(['A']));
+      await p1;
+      await vi.waitFor(() => expect(mockPut).toHaveBeenCalledTimes(2));
+      expect(mockPut.mock.calls[1][1]).toEqual({ label_ids: ['A', 'B'] });
+      // The older response must not clobber the newer optimistic selection.
+      expect(labelsInStore()).toEqual(['A', 'B']);
+
+      second.resolve(serverTask(['A', 'B']));
+      await p2;
+      expect(labelsInStore()).toEqual(['A', 'B']);
+    });
+
+    it('rolls a failed write back to the last server-confirmed labels', async () => {
+      useTasksStore.setState({ tasks: [task(['A'])] as any });
+      mockPut.mockRejectedValueOnce(new Error('offline'));
+
+      await expect(
+        useTasksStore.getState().setTaskLabels('task-1', ['A', 'B']),
+      ).rejects.toThrow('offline');
+
+      expect(labelsInStore()).toEqual(['A']);
+    });
+
+    it('rolls back to what the server confirmed, not to an unconfirmed intermediate', async () => {
+      useTasksStore.setState({ tasks: [task(['A'])] as any });
+      const first = controlled();
+      const second = controlled();
+      mockPut.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+      const p1 = useTasksStore.getState().setTaskLabels('task-1', ['A', 'B']);
+      const p2 = useTasksStore.getState().setTaskLabels('task-1', ['A', 'B', 'C']);
+
+      await vi.waitFor(() => expect(mockPut).toHaveBeenCalledTimes(1));
+      first.reject(new Error('offline'));
+      await expect(p1).rejects.toThrow('offline');
+      // A newer selection is pending, so the older failure leaves the UI alone.
+      expect(labelsInStore()).toEqual(['A', 'B', 'C']);
+
+      await vi.waitFor(() => expect(mockPut).toHaveBeenCalledTimes(2));
+      second.reject(new Error('offline'));
+      await expect(p2).rejects.toThrow('offline');
+      // Neither write landed: back to the original server state, not ['A','B'].
+      expect(labelsInStore()).toEqual(['A']);
+    });
   });
 });

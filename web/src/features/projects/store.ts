@@ -9,7 +9,7 @@ import type {
 } from '@/shared/types';
 import { getApiClient } from '@/shared/api/client';
 import { getStoredJwtToken } from '@/lib/auth/token-storage';
-import { computeProjectGroups } from './utils/project-groups';
+import { computeProjectGroups, expandMergedProjectGroup } from './utils/project-groups';
 
 const SELECTED_PROJECT_STORAGE_KEY = 'conductor-selected-project-id';
 // Legacy key kept only for one-time migration to the server-side hidden state.
@@ -329,6 +329,25 @@ interface ProjectsState {
   countTasksFiledElsewhere: (projectIds: string[]) => Promise<number>;
   /** Toggle a single project's mergeOptOut flag (split / re-merge). */
   setProjectMergeOptOut: (projectId: string, value: boolean) => Promise<Project>;
+  /**
+   * Apply one metadata change to every member of a merged project group.
+   *
+   * Some project settings (task labels, the graph-view toggle) describe the
+   * project itself, not the machine it happens to be checked out on, so
+   * configuring them on one daemon must take effect on its merged siblings.
+   * Members are independent DB rows, so this fans out one PATCH each.
+   *
+   * `buildMetadata` receives the freshest snapshot of each member — not a
+   * single pre-built payload — because `metadata` is PATCHed as a whole blob.
+   *
+   * The given ids are EXPANDED to the full merged group, hidden members
+   * included (see `expandMergedProjectGroup`), so readers that union across the
+   * group can never resurrect a value from a member this write skipped.
+   */
+  updateProjectGroupMetadata: (
+    projectIds: string[],
+    buildMetadata: (project: Project) => Record<string, unknown>,
+  ) => Promise<void>;
   /** Re-validate a project against its daemon to refresh git fields. */
   refreshProject: (projectId: string) => Promise<Project>;
   toggleShowHiddenProjects: () => void;
@@ -798,6 +817,45 @@ export const useProjectsStore = create<ProjectsState>()((set, get) => ({
         error: error instanceof Error ? error.message : 'Failed to update merge state',
       });
       throw error;
+    }
+  },
+
+  updateProjectGroupMetadata: async (projectIds, buildMetadata) => {
+    const requested = new Set(projectIds.flatMap((id) => {
+      const trimmed = id.trim();
+      return trimmed ? [trimmed] : [];
+    }));
+    const allProjects = get().projects;
+    const seeds = allProjects.filter((project) => requested.has(project.id));
+    const targets = expandMergedProjectGroup(seeds, allProjects).map((project) => project.id);
+    if (targets.length === 0) return;
+
+    // Sequential, and each member's metadata is re-read from the store right
+    // before its own PATCH. `metadata` is PATCHed as a whole blob, so building
+    // all payloads up front would let a concurrent memo write on member B get
+    // clobbered by a stale snapshot taken before member A's round-trip.
+    const failures: string[] = [];
+    for (const projectId of targets) {
+      const current = get().projects.find((p) => p.id === projectId);
+      if (!current) continue;
+      try {
+        await get().updateProject(projectId, {
+          metadata: buildMetadata(current),
+        });
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    // Surface a partial fan-out rather than swallowing it: the group has now
+    // diverged, and readers that union across members may keep showing the
+    // old value, so the caller should say so.
+    if (failures.length > 0) {
+      throw new Error(
+        failures.length === targets.length
+          ? failures[0]
+          : `Saved on ${targets.length - failures.length} of ${targets.length} daemons: ${failures[0]}`,
+      );
     }
   },
 

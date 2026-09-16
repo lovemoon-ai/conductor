@@ -23,6 +23,7 @@ import { filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } fro
 import { buildTaskDetailHref } from '@/features/tasks/utils/task-navigation';
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
 import { parseTaskType, type TaskType } from '@/lib/tasks/task-config';
+import { readTaskLabelIds } from '@/lib/tasks/task-labels';
 import { useHorizontalSwipe } from '@/shared/hooks/useHorizontalSwipe';
 
 const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
@@ -98,6 +99,8 @@ function TasksPageContent() {
   const daemonHostFilter = daemonHostFilterParam && daemonHostFilterParam.trim() ? daemonHostFilterParam : null;
   const backendFilterParam = searchParams.get('backend');
   const backendFilter = backendFilterParam && backendFilterParam.trim() ? backendFilterParam : null;
+  const labelFilterParam = searchParams.get('label');
+  const labelFilter = labelFilterParam && labelFilterParam.trim() ? labelFilterParam : null;
   const requestedViewMode = searchParams.get('view') === 'graph' ? 'graph' : 'list';
   const projectDaemonHostMap = useMemo(() => {
     const map = new Map<string, string | null>();
@@ -212,11 +215,20 @@ function TasksPageContent() {
       : typeFilteredTasks,
     [typeFilteredTasks, daemonHostFilter, projectDaemonHostMap],
   );
-  const visibleTasks = useMemo(
+  const backendFilteredTasks = useMemo(
     () => backendFilter
       ? daemonFilteredTasks.filter((task) => getStableTaskBackend(task) === backendFilter)
       : daemonFilteredTasks,
     [daemonFilteredTasks, backendFilter],
+  );
+  // Must mirror TaskList's chain exactly: the header count and the desktop
+  // inline detail's auto-selection read this list, so a filter applied only
+  // inside TaskList would let the detail pane open a task the list hides.
+  const visibleTasks = useMemo(
+    () => labelFilter
+      ? backendFilteredTasks.filter((task) => readTaskLabelIds(task).includes(labelFilter))
+      : backendFilteredTasks,
+    [backendFilteredTasks, labelFilter],
   );
   const taskCount = visibleTasks.length;
   const currentProjectName = projectId
@@ -448,6 +460,19 @@ function TasksPageContent() {
     [backendFilter, replaceTaskRoute],
   );
 
+  const handleFilterByLabel = useCallback(
+    (nextLabelId: string) => {
+      replaceTaskRoute((params) => {
+        if (labelFilter === nextLabelId) {
+          params.delete('label');
+        } else {
+          params.set('label', nextLabelId);
+        }
+      });
+    },
+    [labelFilter, replaceTaskRoute],
+  );
+
   const handleTitleDoubleClick = () => {
     void setTaskListRunningOnly(!showRunningOnly);
   };
@@ -568,10 +593,12 @@ function TasksPageContent() {
                   taskTypeFilter={taskTypeFilter}
                   daemonHostFilter={daemonHostFilter}
                   backendFilter={backendFilter}
+                  labelFilter={labelFilter}
                   onFilterByTaskType={handleFilterByTaskType}
                   onFilterByProject={handleFilterByProject}
                   onFilterByDaemonHost={handleFilterByDaemonHost}
                   onFilterByBackend={handleFilterByBackend}
+                  onFilterByLabel={handleFilterByLabel}
                 />
               </div>
             </ResizableTaskPane>
@@ -617,10 +644,12 @@ function TasksPageContent() {
               taskTypeFilter={taskTypeFilter}
               daemonHostFilter={daemonHostFilter}
               backendFilter={backendFilter}
+              labelFilter={labelFilter}
               onFilterByTaskType={handleFilterByTaskType}
               onFilterByProject={handleFilterByProject}
               onFilterByDaemonHost={handleFilterByDaemonHost}
               onFilterByBackend={handleFilterByBackend}
+              onFilterByLabel={handleFilterByLabel}
               onOpenTask={viewMode === 'graph' ? handleOpenTaskPage : undefined}
             />
             {/* End-of-list marker; also leaves blank room to swipe projects when cards fill the list. */}

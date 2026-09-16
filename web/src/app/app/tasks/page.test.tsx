@@ -25,7 +25,7 @@ let tasksState: {
   fetchTasksForProjects: typeof fetchTasksForProjectsMock;
   isLoading: boolean;
   currentProjectFilter: string | null;
-  tasks: Array<{ id: string; projectId?: string | null; status?: string }>;
+  tasks: Array<{ id: string; projectId?: string | null; status?: string; metadata?: Record<string, unknown> | null }>;
 };
 let searchParamsState = new URLSearchParams();
 let isDesktopViewport = false;
@@ -383,6 +383,34 @@ describe('TasksPage', () => {
         connectionTaskId: 'task-2',
       }),
     );
+  });
+
+  it('applies the label filter to the header count and the inline detail selection', () => {
+    // Regression: the page runs its own filter chain for the header count and
+    // desktop auto-selection, and the label filter was only applied inside
+    // TaskList. The detail pane could open a task the list was hiding.
+    isDesktopViewport = true;
+    searchParamsState = new URLSearchParams('label=lbl-bug');
+    tasksState.tasks = [
+      { id: 'task-1', projectId: 'project-1', status: 'running' },
+      { id: 'task-2', projectId: 'project-1', status: 'running', metadata: { labelIds: ['lbl-bug'] } },
+    ];
+
+    render(<TasksPage />);
+
+    expect(headerMock).toHaveBeenCalledWith(expect.objectContaining({ title: 'Tasks (1)' }));
+    expect(screen.getByText('task-detail:task-2:no-header')).toBeInTheDocument();
+    expect(screen.queryByText(/task-detail:task-1/)).not.toBeInTheDocument();
+  });
+
+  it('shows no inline detail when the label filter matches nothing', () => {
+    isDesktopViewport = true;
+    searchParamsState = new URLSearchParams('label=lbl-unused');
+
+    render(<TasksPage />);
+
+    expect(headerMock).toHaveBeenCalledWith(expect.objectContaining({ title: 'Tasks (0)' }));
+    expect(screen.queryByText(/task-detail:/)).not.toBeInTheDocument();
   });
 
   it('shows graph view as a full-page task surface when enabled for the project', () => {

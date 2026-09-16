@@ -14,6 +14,7 @@ import {
   type ProjectMemo,
   readProjectMemos,
 } from './ProjectDetailsDialog.utils';
+import { ProjectTaskLabelsSection } from './ProjectTaskLabelsSection';
 import { useProjectsStore } from '../store';
 import {
   buildMetadataWithTaskGraphEnabled,
@@ -131,6 +132,9 @@ export function ProjectDetailsDialog({
   onClose,
 }: ProjectDetailsDialogProps) {
   const updateProject = useProjectsStore((state) => state.updateProject);
+  const updateProjectGroupMetadata = useProjectsStore(
+    (state) => state.updateProjectGroupMetadata,
+  );
   const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const { pushToast } = useToast();
   const { confirm } = useConfirm();
@@ -178,10 +182,6 @@ export function ProjectDetailsDialog({
     setActiveProjectId(detailProjects[0]?.id ?? project.id);
   }, [activeProjectId, detailProjects, project.id]);
 
-  useEffect(() => {
-    setPendingTaskGraphEnabled(null);
-  }, [activeProject.id]);
-
   const memoEntries = useMemo<MemoTimelineEntry[]>(() => {
     const entries = detailProjects.flatMap((member) =>
       readProjectMemos(member).map((memo) => ({
@@ -209,7 +209,12 @@ export function ProjectDetailsDialog({
     0,
   );
   const activeDaemonLabel = getDaemonLabel(activeProject);
-  const taskGraphEnabled = pendingTaskGraphEnabled ?? isProjectTaskGraphEnabled(activeProject);
+  // Union across members, exactly as the consumers read it (Sidebar,
+  // MobileNav and the tasks page all use `.some(isProjectTaskGraphEnabled)`).
+  // Reading only `activeProject` made the switch appear to flip back off when
+  // the user switched daemon tabs in a merged project.
+  const taskGraphEnabled =
+    pendingTaskGraphEnabled ?? detailProjects.some(isProjectTaskGraphEnabled);
   const isOverLengthLimit = draftLength > MAX_MEMO_CONTENT_CHARS;
   const isOverCountLimit = activeProjectMemoCount >= MAX_MEMOS_PER_PROJECT;
   const canSubmitDraft =
@@ -241,15 +246,21 @@ export function ProjectDetailsDialog({
   const handleToggleTaskGraph = async () => {
     if (isTaskGraphMutating) return;
     const nextEnabled = !taskGraphEnabled;
-    const latestProject = readLatestProject(activeProject);
     setPendingTaskGraphEnabled(nextEnabled);
     setIsTaskGraphMutating(true);
     try {
-      await updateProject(latestProject.id, {
-        metadata: buildMetadataWithTaskGraphEnabled(latestProject, nextEnabled),
-      });
+      // Graph view is a property of the project, not of one daemon's checkout,
+      // so it fans out to the whole merged group. Turning it OFF *requires*
+      // this: the readers use `.some(...)`, so a single member left enabled
+      // would keep graph view on.
+      await updateProjectGroupMetadata(
+        detailProjects.map((member) => member.id),
+        (member) => buildMetadataWithTaskGraphEnabled(member, nextEnabled),
+      );
+      // Hand control back to the store rather than pinning the overlay.
+      setPendingTaskGraphEnabled(null);
     } catch (error) {
-      setPendingTaskGraphEnabled(isProjectTaskGraphEnabled(latestProject));
+      setPendingTaskGraphEnabled(null);
       pushToast({
         title: 'Failed to update task graph setting',
         description: error instanceof Error ? error.message : 'Please try again.',
@@ -428,6 +439,8 @@ export function ProjectDetailsDialog({
             </button>
           </div>
         </section>
+
+        <ProjectTaskLabelsSection members={detailProjects} />
 
         <section>
           <div className="flex items-baseline justify-between">

@@ -10,6 +10,17 @@ import type {
 import { getApiClient } from '@/shared/api/client';
 import { usePtyToggleStore } from './pty-toggle-store';
 import { useTaskCardGroupsSyncStore } from './task-card-groups-sync-store';
+import { buildMetadataWithTaskLabelIds, readTaskLabelIds } from '@/lib/tasks/task-labels';
+
+/**
+ * In-flight label writes, per task. `confirmed` is the last label set the
+ * server acknowledged — the rollback target if the newest write fails.
+ */
+const labelWrites = new Map<string, {
+  latestSeq: number;
+  confirmed: string[];
+  chain: Promise<unknown>;
+}>();
 
 let fetchTasksRequestSequence = 0;
 const TASK_MUTATION_TIMEOUT_MS = 60_000;
@@ -97,6 +108,8 @@ interface TasksState {
    * owned task; never changes the task's real project or daemon.
    */
   setTaskSecondProject: (taskId: string, projectId: string | null) => Promise<Task>;
+  /** Replace the set of project task labels attached to a task. */
+  setTaskLabels: (taskId: string, labelIds: string[]) => Promise<Task>;
   restartTask: (taskId: string, input?: RestartTaskInput) => Promise<RestartTaskResponse>;
   cleanupTaskWorktree: (taskId: string) => Promise<CleanupTaskWorktreeResponse>;
   deleteTask: (taskId: string) => Promise<void>;
@@ -490,6 +503,72 @@ export const useTasksStore = create<TasksState>()((set, get) => {
           error: error instanceof Error ? error.message : 'Failed to move task',
         });
         throw error;
+      }
+    },
+
+    setTaskLabels: async (taskId, labelIds) => {
+      // Optimistic + serialized per task. A picker computes each toggle from
+      // the task's current label ids; without the optimistic update a second
+      // click before the first save lands is computed from stale ids and drops
+      // the first selection. Serializing the PUTs keeps responses in order, so
+      // an older response can never overwrite a newer selection.
+      let write = labelWrites.get(taskId);
+      if (!write) {
+        write = {
+          latestSeq: 0,
+          confirmed: readTaskLabelIds(get().tasks.find((task) => task.id === taskId)),
+          chain: Promise.resolve(),
+        };
+        labelWrites.set(taskId, write);
+      }
+      const current = write;
+      const seq = ++current.latestSeq;
+
+      // Only the labels change locally; every other field stays whatever the
+      // store (e.g. a websocket status update) currently holds.
+      const applyLabelIds = (ids: string[]) => set((state) => {
+        const existing = state.tasks.find((task) => task.id === taskId);
+        if (!existing) return {};
+        return {
+          tasks: upsertTask(state.tasks, {
+            ...existing,
+            metadata: buildMetadataWithTaskLabelIds(existing.metadata, ids),
+          }),
+        };
+      });
+      applyLabelIds(labelIds);
+
+      const request = current.chain
+        .catch(() => undefined)
+        .then(async () => normalizeTask(
+          await getApiClient().put<Task>(`/tasks/${taskId}/labels`, {
+            label_ids: labelIds,
+          }),
+        ));
+      current.chain = request;
+
+      try {
+        const task = await request;
+        current.confirmed = readTaskLabelIds(task);
+        if (seq === current.latestSeq) {
+          set((state) => ({ tasks: upsertTask(state.tasks, task) }));
+        }
+        return task;
+      } catch (error) {
+        // Roll back to what the server last CONFIRMED — not to the snapshot
+        // before this call, which may itself be an unconfirmed optimistic
+        // state. A newer pending selection owns the UI, so leave it alone.
+        if (seq === current.latestSeq) {
+          applyLabelIds(current.confirmed);
+        }
+        set({
+          error: error instanceof Error ? error.message : 'Failed to update task labels',
+        });
+        throw error;
+      } finally {
+        if (seq === current.latestSeq && labelWrites.get(taskId) === current) {
+          labelWrites.delete(taskId);
+        }
       }
     },
 
