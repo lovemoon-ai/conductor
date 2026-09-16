@@ -623,6 +623,14 @@ function TasksPageContent() {
               onFilterByBackend={handleFilterByBackend}
               onOpenTask={viewMode === 'graph' ? handleOpenTaskPage : undefined}
             />
+            {/* End-of-list marker; also leaves blank room to swipe projects when cards fill the list. */}
+            {viewMode === 'list' && taskCount > 0 ? (
+              <div data-task-list-end aria-hidden="true" className="flex h-12 items-center justify-center gap-1.5">
+                <span className="h-0.5 w-10 rounded-full bg-muted/40" />
+                <span className="h-0.5 w-2.5 rounded-full bg-muted/40" />
+                <span className="h-0.5 w-10 rounded-full bg-muted/40" />
+              </div>
+            ) : null}
           </div>
         )}
       </div>

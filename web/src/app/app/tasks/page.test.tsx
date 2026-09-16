@@ -793,6 +793,34 @@ describe('TasksPage', () => {
     expect(replaceMock).toHaveBeenCalledWith('/app/tasks?projectId=project-3', { scroll: false });
   });
 
+  it('switches projects from the end-of-list marker', () => {
+    tasksState.tasks = [{ id: 'task-1', projectId: 'project-2', status: 'running' }];
+    renderProjectTwo();
+
+    swipeOn(document.querySelector('[data-task-list-end]')!);
+
+    expect(setSelectedProjectIdMock).toHaveBeenCalledWith('project-3');
+    expect(replaceMock).toHaveBeenCalledWith('/app/tasks?projectId=project-3', { scroll: false });
+  });
+
+  it.each([
+    { state: 'a single project with tasks', query: 'projectId=project-1', projects: [{ id: 'project-1', name: 'Conductor' }], shown: true },
+    { state: 'a project without tasks', query: 'projectId=project-2', projects: threeProjects, shown: false },
+    {
+      state: 'graph mode',
+      query: 'projectId=project-1&view=graph',
+      projects: threeProjects.map((project) => ({ ...project, metadata: { taskGraphEnabled: true } })),
+      shown: false,
+    },
+  ])('shows the end-of-list marker only for a non-empty list ($state)', ({ query, projects, shown }) => {
+    searchParamsState = new URLSearchParams(query);
+    projectsState = projects;
+
+    render(<TasksPage />);
+
+    expect(document.querySelector('[data-task-list-end]') !== null).toBe(shown);
+  });
+
   it('wraps both directions to the other project when only two projects exist', () => {
     searchParamsState = new URLSearchParams('projectId=project-1');
     projectsState = threeProjects.slice(0, 2);
