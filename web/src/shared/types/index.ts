@@ -528,6 +528,8 @@ export interface UpdateIssueInput {
   type?: IssueType;
   position?: number;
   metadata?: Record<string, unknown> | null;
+  /** RFC 0038: on todo→doing, host the spawned task's worktree on this daemon. */
+  remoteWorktreeHost?: string;
 }
 
 // Backend AI Session Types (GET /api/agents/[host]/sessions)

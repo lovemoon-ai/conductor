@@ -256,12 +256,16 @@ export const getUserProjectForCollaboration = async (
       select: {
         id: true,
         userId: true,
+        name: true,
         daemonHost: true,
         workspacePath: true,
         repoRoot: true,
         worktreeBranch: true,
         lastCommit: true,
         lastCommitAt: true,
+        // RFC 0038: resolving a remote worktree sibling uses the merge predicate.
+        gitRemoteUrl: true,
+        mergeOptOut: true,
       },
     },
   },

@@ -16,7 +16,7 @@ const pushToastMock = vi.fn();
 let searchParamsState = new URLSearchParams();
 let isDesktopViewport = true;
 let agentsState: {
-  agents: Array<{ id: string; host: string; supportedBackends?: string[] }>;
+  agents: Array<{ id: string; host: string; supportedBackends?: string[]; capabilities?: string[] }>;
   fetchAgents: typeof fetchAgentsMock;
 };
 let projectsState: {
@@ -159,10 +159,16 @@ vi.mock('@/features/issues', () => ({
       host: string;
       projectId: string;
       supportedBackends: string[];
+      remoteWorktreeHosts?: string[];
     }>;
     initialDaemon?: string | null;
     initialBackend?: string | null;
-    onConfirm: (args: { backendType: string; daemonHost: string; projectId: string }) => Promise<void> | void;
+    onConfirm: (args: {
+      backendType: string;
+      daemonHost: string;
+      projectId: string;
+      remoteWorktreeHost?: string;
+    }) => Promise<void> | void;
   }) => {
     if (!open) return null;
     const hostList = daemonOptions.map((option) => option.host).join('|');
@@ -207,6 +213,22 @@ vi.mock('@/features/issues', () => ({
             }}
           >
             confirm-move-issue-second
+          </button>
+        ) : null}
+        <div>remote-worktree-hosts={daemonOptions.map((option) => `${option.host}>${(option.remoteWorktreeHosts ?? []).join(',')}`).join(';')}</div>
+        {initialOption?.remoteWorktreeHosts?.[0] ? (
+          <button
+            type="button"
+            onClick={() => {
+              void onConfirm({
+                backendType: initialBackendChoice,
+                daemonHost: initialOption.host,
+                projectId: initialOption.projectId,
+                remoteWorktreeHost: initialOption.remoteWorktreeHosts?.[0],
+              });
+            }}
+          >
+            confirm-move-issue-remote-worktree
           </button>
         ) : null}
       </div>
@@ -731,6 +753,106 @@ describe('IssuesPage', () => {
         metadata: { backendType: 'claude', daemonHost: 'daemon-b' },
       });
     });
+  });
+
+  it('offers git-backed siblings with remote_exec + remote_file as remote worktree hosts and forwards the pick', async () => {
+    searchParamsState = new URLSearchParams('projectId=project-merged-a');
+    agentsState = {
+      agents: [
+        { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: ['remote_exec'] },
+        { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['claude'], capabilities: ['remote_exec', 'remote_file'] },
+      ],
+      fetchAgents: fetchAgentsMock,
+    };
+    projectsState = {
+      projects: [
+        { id: 'project-merged-a', name: 'Merged', daemonHost: 'daemon-a', gitRemoteUrl: 'github.com/foo/merged', repoRoot: '/repo/a' } as any,
+        { id: 'project-merged-b', name: 'Merged', daemonHost: 'daemon-b', gitRemoteUrl: 'github.com/foo/merged', repoRoot: '/repo/b' } as any,
+      ],
+      hiddenProjectIds: [],
+      isLoading: false,
+      fetchProjects: fetchProjectsMock,
+      setSelectedProjectId: setSelectedProjectIdMock,
+    };
+    issuesState = {
+      ...issuesState,
+      issues: [
+        {
+          id: 'issue-1',
+          projectId: 'project-merged-a',
+          title: 'Cross-daemon work',
+          status: 'todo',
+          position: 0,
+          createdAt: '2026-04-14T00:00:00.000Z',
+        },
+      ],
+    };
+
+    render(<IssuesPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'status-issue' }));
+
+    // daemon-a lacks remote_file, so only daemon-b can host a remote worktree.
+    expect(screen.getByText('remote-worktree-hosts=daemon-a>daemon-b;daemon-b>')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'confirm-move-issue-remote-worktree' }));
+
+    await waitFor(() => {
+      expect(updateIssueMock).toHaveBeenCalledWith('issue-1', {
+        status: 'doing',
+        position: 0,
+        remoteWorktreeHost: 'daemon-b',
+        metadata: { backendType: 'claude', daemonHost: 'daemon-a' },
+      });
+    });
+  });
+
+  it('pairs workspace hosts with each AI daemon because a project without a git remote merges with any', async () => {
+    searchParamsState = new URLSearchParams('projectId=project-p');
+    const capable = ['remote_exec', 'remote_file'];
+    agentsState = {
+      agents: [
+        { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: capable },
+        { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['claude'], capabilities: capable },
+        { id: 'daemon-3', host: 'daemon-c', supportedBackends: ['claude'], capabilities: capable },
+      ],
+      fetchAgents: fetchAgentsMock,
+    };
+    projectsState = {
+      projects: [
+        // No git remote: merges with both siblings, which do not merge with each other.
+        { id: 'project-p', name: 'Merged', daemonHost: 'daemon-a', repoRoot: '/repo/a' } as any,
+        { id: 'project-q', name: 'Merged', daemonHost: 'daemon-b', gitRemoteUrl: 'github.com/foo/one', repoRoot: '/repo/b' } as any,
+        { id: 'project-r', name: 'Merged', daemonHost: 'daemon-c', gitRemoteUrl: 'github.com/foo/two', repoRoot: '/repo/c' } as any,
+      ],
+      hiddenProjectIds: [],
+      isLoading: false,
+      fetchProjects: fetchProjectsMock,
+      setSelectedProjectId: setSelectedProjectIdMock,
+    };
+    issuesState = {
+      ...issuesState,
+      issues: [
+        {
+          id: 'issue-1',
+          projectId: 'project-p',
+          title: 'Cross-daemon work',
+          status: 'todo',
+          position: 0,
+          createdAt: '2026-04-14T00:00:00.000Z',
+        },
+      ],
+    };
+
+    render(<IssuesPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'status-issue' }));
+
+    // AI on daemon-b (project-q) must not be offered daemon-c (project-r): the
+    // API checks the workspace against the AI's own project and would 409.
+    expect(
+      screen.getByText('remote-worktree-hosts=daemon-a>daemon-b,daemon-c;daemon-b>daemon-a;daemon-c>daemon-a'),
+    ).toBeInTheDocument();
   });
 
   it('leaves an archived (hidden) sibling out of a merged-group issue start', async () => {

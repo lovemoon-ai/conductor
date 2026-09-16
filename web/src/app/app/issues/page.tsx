@@ -13,7 +13,10 @@ import {
   MoveIssueToDoingDialog,
   useIssuesStore,
 } from '@/features/issues';
-import type { MoveIssueToDoingDaemonOption } from '@/features/issues/components/MoveIssueToDoingDialog';
+import type {
+  MoveIssueToDoingConfirm,
+  MoveIssueToDoingDaemonOption,
+} from '@/features/issues/components/MoveIssueToDoingDialog';
 import { useProjectsStore } from '@/features/projects';
 import { canMergeProjects, computeProjectGroups } from '@/features/projects/utils/project-groups';
 import { excludeArchivedProjects } from '@/features/projects/utils/project-list-order';
@@ -52,6 +55,12 @@ const isConductorFireHost = (host: string | null | undefined): boolean =>
 
 const normalizeHost = (value: string | null | undefined): string =>
   typeof value === 'string' ? value.trim() : '';
+
+// RFC 0038: same predicate as the API — the worktree daemon is driven through
+// `conductor remote exec` and `conductor remote cp`.
+const supportsRemoteWorktree = (agent: Agent, project: Project): boolean =>
+  Boolean(normalizeHost(project.repoRoot))
+  && ['remote_exec', 'remote_file'].every((required) => agent.capabilities?.includes(required));
 
 const pickIssueBackend = (issue: Issue | null): string | null => {
   if (!issue?.metadata || typeof issue.metadata.backendType !== 'string') {
@@ -145,6 +154,7 @@ const getIssueDaemonOptions = (
   if (!projectHost) {
     return [];
   }
+  const optionProjects: Array<{ project: Project; canHostWorktree: boolean }> = [];
 
   for (const candidate of projects) {
     if (candidate.id !== project.id) {
@@ -167,9 +177,21 @@ const getIssueDaemonOptions = (
       projectId: candidate.id,
       supportedBackends: [...(agent.supportedBackends ?? [])],
     });
+    optionProjects.push({ project: candidate, canHostWorktree: supportsRemoteWorktree(agent, candidate) });
   }
 
-  return options;
+  // RFC 0038: pair each AI daemon with the workspace hosts the API will accept
+  // for it. "Same project" is not transitive (a project without a git remote
+  // merges with any), so check against the AI option's own project.
+  return options.map((option, index) => ({
+    ...option,
+    remoteWorktreeHosts: options
+      .filter((other, otherIndex) =>
+        otherIndex !== index
+        && optionProjects[otherIndex].canHostWorktree
+        && canMergeProjects(optionProjects[index].project, optionProjects[otherIndex].project))
+      .map((other) => other.host),
+  }));
 };
 
 type PendingIssueStart = {
@@ -434,11 +456,7 @@ function IssuesPageContent() {
     }
   };
 
-  const handleConfirmIssueStart = async (args: {
-    backendType: string;
-    daemonHost: string;
-    projectId: string;
-  }) => {
+  const handleConfirmIssueStart = async (args: MoveIssueToDoingConfirm) => {
     if (!pendingIssueStart) {
       return;
     }
@@ -466,6 +484,7 @@ function IssuesPageContent() {
         status: pendingIssueStart.status,
         position: nextPosition,
         ...(projectChanged ? { projectId: args.projectId } : {}),
+        ...(args.remoteWorktreeHost ? { remoteWorktreeHost: args.remoteWorktreeHost } : {}),
         metadata: {
           ...(issue.metadata ?? {}),
           backendType: args.backendType,
