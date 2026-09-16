@@ -15,6 +15,8 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import type { TaskType } from '@/lib/tasks/task-config';
+import { readMergedTaskLabels } from '@/lib/projects/task-labels';
+import { readTaskLabelIds } from '@/lib/tasks/task-labels';
 import { orderTasksWithPinnedFirst, useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
 import { useAuthStore } from '@/features/auth/store';
@@ -175,10 +177,13 @@ interface TaskListProps {
   taskTypeFilter?: TaskType | null;
   daemonHostFilter?: string | null;
   backendFilter?: string | null;
+  /** Task-label id to narrow the list to. */
+  labelFilter?: string | null;
   onFilterByTaskType?: (taskType: TaskType) => void;
   onFilterByProject?: (projectId: string) => void;
   onFilterByDaemonHost?: (daemonHost: string) => void;
   onFilterByBackend?: (backend: string) => void;
+  onFilterByLabel?: (labelId: string) => void;
 }
 
 export function TaskList({
@@ -191,10 +196,12 @@ export function TaskList({
   taskTypeFilter = null,
   daemonHostFilter = null,
   backendFilter = null,
+  labelFilter = null,
   onFilterByTaskType,
   onFilterByProject,
   onFilterByDaemonHost,
   onFilterByBackend,
+  onFilterByLabel,
 }: TaskListProps) {
   const {
     tasks,
@@ -343,9 +350,15 @@ export function TaskList({
       : daemonFilteredTasks,
     [daemonFilteredTasks, backendFilter],
   );
+  const labelFilteredTasks = useMemo(
+    () => labelFilter
+      ? backendFilteredTasks.filter((task) => readTaskLabelIds(task).includes(labelFilter))
+      : backendFilteredTasks,
+    [backendFilteredTasks, labelFilter],
+  );
   const visibleTasks = useMemo(
-    () => orderTasksWithPinnedFirst(backendFilteredTasks),
-    [backendFilteredTasks],
+    () => orderTasksWithPinnedFirst(labelFilteredTasks),
+    [labelFilteredTasks],
   );
 
   // Two independent visibility rules — historically they were a single
@@ -1127,10 +1140,12 @@ export function TaskList({
         activeProjectFilter={isMergedScope ? null : (effectiveProjectFilterIds[0] ?? null)}
         activeDaemonHostFilter={daemonHostFilter}
         activeBackendFilter={backendFilter}
+        activeLabelFilter={labelFilter}
         onFilterByTaskType={onFilterByTaskType}
         onFilterByProject={onFilterByProject}
         onFilterByDaemonHost={onFilterByDaemonHost}
         onFilterByBackend={onFilterByBackend}
+        onFilterByLabel={onFilterByLabel}
         isMergeDragging={draggingTaskId === task.id}
       />
     );
@@ -1143,7 +1158,20 @@ export function TaskList({
       : null;
   const hasDaemonTagFilter = Boolean(daemonHostFilter) && Boolean(onFilterByDaemonHost);
   const hasBackendTagFilter = Boolean(backendFilter) && Boolean(onFilterByBackend);
-  const hasTagFilter = Boolean(taskTypeFilterLabel) || hasDaemonTagFilter || hasBackendTagFilter;
+  // Resolve the filtered label id to its definition so the pill shows the
+  // label's name rather than a uuid. Scanning every project keeps this correct
+  // in cross-daemon merged views, where the id may be defined on a sibling.
+  const activeLabelDefinition = useMemo(
+    () => (labelFilter
+      ? readMergedTaskLabels(projects).find((label) => label.id === labelFilter) ?? null
+      : null),
+    [labelFilter, projects],
+  );
+  const hasLabelTagFilter = Boolean(labelFilter) && Boolean(onFilterByLabel);
+  const hasTagFilter = Boolean(taskTypeFilterLabel)
+    || hasDaemonTagFilter
+    || hasBackendTagFilter
+    || hasLabelTagFilter;
   const pillClassName =
     'inline-flex items-center gap-1 rounded bg-[var(--accent)]/10 px-2 py-0.5 text-xs font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20';
   const tagFilterBar = hasTagFilter ? (
@@ -1182,6 +1210,20 @@ export function TaskList({
           <span className="max-w-[10rem] truncate">{backendFilter}</span>
           <span aria-hidden="true">✕</span>
           <span className="sr-only">Clear backend filter</span>
+        </button>
+      ) : null}
+      {hasLabelTagFilter && labelFilter && onFilterByLabel ? (
+        <button
+          type="button"
+          onClick={() => onFilterByLabel(labelFilter)}
+          title={`Clear label filter (${activeLabelDefinition?.name ?? labelFilter})`}
+          className={pillClassName}
+        >
+          <span className="max-w-[10rem] truncate">
+            {activeLabelDefinition?.name ?? 'Label'}
+          </span>
+          <span aria-hidden="true">✕</span>
+          <span className="sr-only">Clear label filter</span>
         </button>
       ) : null}
     </div>

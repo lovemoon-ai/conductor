@@ -18,6 +18,13 @@ import { useTasksStore } from '../store';
 import { usePtyToggleStore } from '../pty-toggle-store';
 import { getStableTaskBackend, resolveTaskDisplayProjectId } from '../utils/task-filter';
 import { useProjectsStore } from '@/features/projects/store';
+import { canMergeProjects } from '@/features/projects/utils/project-groups';
+import {
+  readMergedTaskLabels,
+  TASK_LABEL_CHIP_CLASSNAME,
+} from '@/lib/projects/task-labels';
+import { readTaskLabelIds, resolveTaskLabels } from '@/lib/tasks/task-labels';
+import { TaskLabelPicker } from './TaskLabelPicker';
 import { useRuntimeStore } from '@/features/realtime';
 import { getApiClient } from '@/shared/api/client';
 import { Dialog } from '@/components/common/Dialog';
@@ -49,10 +56,13 @@ interface TaskItemProps {
   activeProjectFilter?: string | null;
   activeDaemonHostFilter?: string | null;
   activeBackendFilter?: string | null;
+  /** Id of the task label currently being filtered on, if any. */
+  activeLabelFilter?: string | null;
   onFilterByTaskType?: (taskType: TaskType) => void;
   onFilterByProject?: (projectId: string) => void;
   onFilterByDaemonHost?: (daemonHost: string) => void;
   onFilterByBackend?: (backend: string) => void;
+  onFilterByLabel?: (labelId: string) => void;
   /** Parent merge drag owns the gesture; suspend this card's swipe actions. */
   isMergeDragging?: boolean;
 }
@@ -441,10 +451,12 @@ function TaskItemComponent({
   activeProjectFilter = null,
   activeDaemonHostFilter = null,
   activeBackendFilter = null,
+  activeLabelFilter = null,
   onFilterByTaskType,
   onFilterByProject,
   onFilterByDaemonHost,
   onFilterByBackend,
+  onFilterByLabel,
   isMergeDragging = false,
 }: TaskItemProps) {
   const { push } = useRouter();
@@ -537,6 +549,7 @@ function TaskItemComponent({
   const markTaskRead = useTasksStore((state) => state.markTaskRead);
   const fetchTask = useTasksStore((state) => state.fetchTask);
   const setTaskSecondProject = useTasksStore((state) => state.setTaskSecondProject);
+  const setTaskLabels = useTasksStore((state) => state.setTaskLabels);
   const projects = useProjectsStore((state) => state.projects);
   const { confirm } = useConfirm();
   const { pushToast } = useToast();
@@ -1256,6 +1269,26 @@ function TaskItemComponent({
       ? `Click to clear project filter`
       : `Click to show only ${projectName ?? 'this project'}`
     : projectName ?? undefined;
+  // Task labels are defined per project and shared across the project's merged
+  // cross-daemon siblings, so the available set is the whole group's union —
+  // the same list the project settings dialog shows. Resolving ids through the
+  // group (rather than the single project row) keeps a card's chips correct
+  // even when the task is displayed under a sibling daemon's project.
+  const projectLabels = useMemo(() => {
+    if (!projectId) return [];
+    const own = projects.find((candidate) => candidate.id === projectId);
+    if (!own) return [];
+    return readMergedTaskLabels(
+      projects.filter(
+        (candidate) => candidate.id === projectId || canMergeProjects(own, candidate),
+      ),
+    );
+  }, [projects, projectId]);
+  const taskLabelIds = useMemo(() => readTaskLabelIds(task), [task]);
+  const taskLabels = useMemo(
+    () => resolveTaskLabels(taskLabelIds, projectLabels),
+    [taskLabelIds, projectLabels],
+  );
   const projectChipBaseClass = 'flex max-w-[10rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted';
   const projectChipActiveClass = 'ring-1 ring-[var(--accent)] ring-offset-1 ring-offset-transparent';
   const backendChipBaseClass = 'flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]';
@@ -1274,6 +1307,18 @@ function TaskItemComponent({
       ? `Click to clear daemon filter`
       : `Click to show only tasks on ${projectDaemonHost}`
     : projectDaemonHost ?? undefined;
+
+  const handleChangeLabels = async (nextIds: string[]) => {
+    try {
+      await setTaskLabels(task.id, nextIds);
+    } catch (error) {
+      pushToast({
+        title: 'Failed to update labels',
+        description: error instanceof Error ? error.message : 'Please try again.',
+        variant: 'error',
+      });
+    }
+  };
 
   const metadataChips = (
     <>
@@ -1364,6 +1409,45 @@ function TaskItemComponent({
             {projectDaemonHost}
           </span>
         )
+      ) : null}
+      {taskLabels.map((label) => (
+        onFilterByLabel ? (
+          <button
+            key={label.id}
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onFilterByLabel(label.id);
+            }}
+            title={
+              activeLabelFilter === label.id
+                ? 'Click to clear label filter'
+                : `Click to show only "${label.name}" tasks`
+            }
+            className={`max-w-[10rem] shrink-0 truncate transition-colors hover:opacity-80 ${TASK_LABEL_CHIP_CLASSNAME} ${activeLabelFilter === label.id ? 'ring-1 ring-[var(--accent)] ring-offset-1 ring-offset-transparent' : ''
+              }`}
+          >
+            {label.name}
+          </button>
+        ) : (
+          <span
+            key={label.id}
+            title={label.name}
+            className={`max-w-[10rem] shrink-0 truncate ${TASK_LABEL_CHIP_CLASSNAME}`}
+          >
+            {label.name}
+          </span>
+        )
+      ))}
+      {/* The picker only appears once the project actually defines labels —
+          the feature is opt-in per project, so an unconfigured project's cards
+          stay exactly as they were. */}
+      {projectLabels.length > 0 ? (
+        <TaskLabelPicker
+          projectLabels={projectLabels}
+          selectedIds={taskLabelIds}
+          onChange={(nextIds) => void handleChangeLabels(nextIds)}
+        />
       ) : null}
     </>
   );

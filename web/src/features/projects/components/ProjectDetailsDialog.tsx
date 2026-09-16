@@ -14,6 +14,7 @@ import {
   type ProjectMemo,
   readProjectMemos,
 } from './ProjectDetailsDialog.utils';
+import { ProjectTaskLabelsSection } from './ProjectTaskLabelsSection';
 import { useProjectsStore } from '../store';
 import {
   buildMetadataWithTaskGraphEnabled,
@@ -438,6 +439,8 @@ export function ProjectDetailsDialog({
             </button>
           </div>
         </section>
+
+        <ProjectTaskLabelsSection members={detailProjects} />
 
         <section>
           <div className="flex items-baseline justify-between">

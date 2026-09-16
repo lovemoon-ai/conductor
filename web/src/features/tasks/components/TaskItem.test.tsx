@@ -14,6 +14,7 @@ const confirmMock = vi.fn();
 const pushToastMock = vi.fn();
 const apiPostMock = vi.fn();
 const setTaskSecondProjectMock = vi.fn();
+const setTaskLabelsMock = vi.fn();
 const FIXED_DATE = new Date('2024-01-15T10:00:00Z');
 let runtimeByTask: Record<string, unknown> = {};
 type MockProject = {
@@ -22,6 +23,9 @@ type MockProject = {
   isDefault?: boolean;
   hidden?: boolean;
   collaborationId?: string | null;
+  daemonHost?: string | null;
+  gitRemoteUrl?: string | null;
+  metadata?: Record<string, unknown> | null;
 };
 let mockProjects: MockProject[] = [];
 
@@ -43,6 +47,7 @@ vi.mock('../store', () => ({
       markTaskRead: markTaskReadMock,
       fetchTask: vi.fn(),
       setTaskSecondProject: setTaskSecondProjectMock,
+      setTaskLabels: setTaskLabelsMock,
     }),
 }));
 
@@ -105,6 +110,8 @@ describe('TaskItem', () => {
     mockProjects = [];
     setTaskSecondProjectMock.mockReset();
     setTaskSecondProjectMock.mockResolvedValue(undefined);
+    setTaskLabelsMock.mockReset();
+    setTaskLabelsMock.mockResolvedValue(undefined);
     window.sessionStorage.clear();
     window.history.replaceState({}, '', '/');
     pushMock.mockReset();
@@ -146,6 +153,281 @@ describe('TaskItem', () => {
     fireEvent.pointerUp(container.querySelector('.task-row')!, { pointerId: 1, pointerType: 'mouse', button: 0 });
     await act(async () => { vi.advanceTimersByTime(600); });
     expect(screen.queryByRole('textbox', { name: 'Edit task title' })).not.toBeInTheDocument();
+  });
+
+  describe('task labels', () => {
+    const labelledTask = (labelIds?: string[]) => ({
+      id: 'task-labels',
+      title: 'Labelled task',
+      status: 'running' as const,
+      projectId: 'proj-a',
+      createdAt: FIXED_DATE.toISOString(),
+      updatedAt: null,
+      ...(labelIds ? { metadata: { labelIds } } : {}),
+    });
+
+    const renderLabelled = (labelIds?: string[], extraProps = {}) =>
+      render(
+        <TaskItem
+          task={labelledTask(labelIds)}
+          isUnread={false}
+          isSelected={false}
+          selectionMode={false}
+          onToggleSelect={() => {}}
+          {...extraProps}
+        />,
+      );
+
+    it('renders no label affordance when the project defines no labels', () => {
+      // The feature is opt-in per project — an unconfigured project's cards
+      // must look exactly as they did before.
+      mockProjects = [{ id: 'proj-a', name: 'conductor', daemonHost: 'mac-mini' }];
+      renderLabelled();
+      expect(screen.queryByRole('button', { name: 'Edit task labels' })).not.toBeInTheDocument();
+    });
+
+    it('shows the picker once the project defines labels', () => {
+      mockProjects = [{
+        id: 'proj-a',
+        name: 'conductor',
+        daemonHost: 'mac-mini',
+        metadata: { taskLabels: [{ id: 'l1', name: 'bug' }] },
+      }];
+      renderLabelled();
+      expect(screen.getByRole('button', { name: 'Edit task labels' })).toBeInTheDocument();
+    });
+
+    it('renders a chip for each label the task carries', () => {
+      mockProjects = [{
+        id: 'proj-a',
+        name: 'conductor',
+        daemonHost: 'mac-mini',
+        metadata: {
+          taskLabels: [
+            { id: 'l1', name: 'bug' },
+            { id: 'l2', name: 'chore' },
+          ],
+        },
+      }];
+      renderLabelled(['l2']);
+      expect(screen.getByText('chore')).toBeInTheDocument();
+      // 'bug' exists on the project but is not attached, so it only appears
+      // inside the (closed) picker — not as a chip.
+      expect(screen.queryByText('bug')).not.toBeInTheDocument();
+    });
+
+    it('offers labels defined on a merged cross-daemon sibling project', () => {
+      // Same name + different daemon + matching remote => one merged project,
+      // so the sibling's labels are available on this card.
+      mockProjects = [
+        {
+          id: 'proj-a',
+          name: 'conductor',
+          daemonHost: 'mac-mini',
+          gitRemoteUrl: 'github.com/acme/conductor',
+        },
+        {
+          id: 'proj-b',
+          name: 'conductor',
+          daemonHost: 'linux-box',
+          gitRemoteUrl: 'github.com/acme/conductor',
+          metadata: { taskLabels: [{ id: 'l9', name: 'infra' }] },
+        },
+      ];
+      renderLabelled(['l9']);
+      expect(screen.getByText('infra')).toBeInTheDocument();
+    });
+
+    it('does not offer labels from a same-named project that does not merge', () => {
+      mockProjects = [
+        {
+          id: 'proj-a',
+          name: 'conductor',
+          daemonHost: 'mac-mini',
+          gitRemoteUrl: 'github.com/acme/conductor',
+        },
+        {
+          id: 'proj-b',
+          name: 'conductor',
+          daemonHost: 'linux-box',
+          gitRemoteUrl: 'github.com/other/conductor',
+          metadata: { taskLabels: [{ id: 'l9', name: 'foreign' }] },
+        },
+      ];
+      renderLabelled(['l9']);
+      expect(screen.queryByText('foreign')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Edit task labels' })).not.toBeInTheDocument();
+    });
+
+    it('attaches a label through the picker', async () => {
+      mockProjects = [{
+        id: 'proj-a',
+        name: 'conductor',
+        daemonHost: 'mac-mini',
+        metadata: {
+          taskLabels: [
+            { id: 'l1', name: 'bug' },
+            { id: 'l2', name: 'chore' },
+          ],
+        },
+      }];
+      renderLabelled(['l1']);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit task labels' }));
+      fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /chore/ }));
+
+      await waitFor(() => expect(setTaskLabelsMock).toHaveBeenCalled());
+      // Emitted in project-definition order, not click order.
+      expect(setTaskLabelsMock).toHaveBeenCalledWith('task-labels', ['l1', 'l2']);
+    });
+
+    it('detaches a label through the picker', async () => {
+      mockProjects = [{
+        id: 'proj-a',
+        name: 'conductor',
+        daemonHost: 'mac-mini',
+        metadata: { taskLabels: [{ id: 'l1', name: 'bug' }] },
+      }];
+      renderLabelled(['l1']);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit task labels' }));
+      fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /bug/ }));
+
+      await waitFor(() => expect(setTaskLabelsMock).toHaveBeenCalled());
+      expect(setTaskLabelsMock).toHaveBeenCalledWith('task-labels', []);
+    });
+
+    it('opening the picker does not open the task', () => {
+      // The chip row lives inside a clickable card; an unguarded click would
+      // navigate instead of toggling a label.
+      mockProjects = [{
+        id: 'proj-a',
+        name: 'conductor',
+        daemonHost: 'mac-mini',
+        metadata: { taskLabels: [{ id: 'l1', name: 'bug' }] },
+      }];
+      renderLabelled(undefined, { onOpenTask: onOpenTaskMock });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit task labels' }));
+      expect(screen.getByRole('menu', { name: 'Task labels' })).toBeInTheDocument();
+      expect(onOpenTaskMock).not.toHaveBeenCalled();
+      expect(pushMock).not.toHaveBeenCalled();
+    });
+
+    it('filters by label when a chip is clicked', () => {
+      mockProjects = [{
+        id: 'proj-a',
+        name: 'conductor',
+        daemonHost: 'mac-mini',
+        metadata: { taskLabels: [{ id: 'l1', name: 'bug' }] },
+      }];
+      const onFilterByLabel = vi.fn();
+      renderLabelled(['l1'], { onFilterByLabel });
+
+      fireEvent.click(screen.getByText('bug'));
+      expect(onFilterByLabel).toHaveBeenCalledWith('l1');
+    });
+
+    it('renders the label menu outside the card, so the card cannot clip it', () => {
+      // Regression: the menu rendered inside the chip row, which is
+      // overflow-x-auto (forcing overflow-y to auto) inside an overflow-hidden
+      // card — in a real browser it was clipped to nothing. jsdom has no
+      // layout, so guard the structure: the menu must be portalled out.
+      mockProjects = [{
+        id: 'proj-a',
+        name: 'conductor',
+        daemonHost: 'mac-mini',
+        metadata: { taskLabels: [{ id: 'l1', name: 'bug' }] },
+      }];
+      const { container } = renderLabelled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit task labels' }));
+
+      const menu = screen.getByRole('menu', { name: 'Task labels' });
+      expect(container.contains(menu)).toBe(false);
+      expect(menu.parentElement).toBe(document.body);
+      expect(menu.style.position).toBe('fixed');
+    });
+
+    it('keeps the menu open across toggles and closes it on an outside press', async () => {
+      mockProjects = [{
+        id: 'proj-a',
+        name: 'conductor',
+        daemonHost: 'mac-mini',
+        metadata: { taskLabels: [{ id: 'l1', name: 'bug' }, { id: 'l2', name: 'chore' }] },
+      }];
+      renderLabelled(undefined, { onOpenTask: onOpenTaskMock });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit task labels' }));
+      // Let the deferred outside-press listener bind.
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+      const item = screen.getByRole('menuitemcheckbox', { name: /bug/ });
+      fireEvent.pointerDown(item);
+      fireEvent.click(item);
+      // Multi-select: a press inside the menu neither closes it nor bubbles
+      // through the React tree to the card (which would open the task).
+      expect(screen.getByRole('menu', { name: 'Task labels' })).toBeInTheDocument();
+      expect(onOpenTaskMock).not.toHaveBeenCalled();
+      expect(pushMock).not.toHaveBeenCalled();
+
+      fireEvent.pointerDown(document.body);
+      expect(screen.queryByRole('menu', { name: 'Task labels' })).not.toBeInTheDocument();
+    });
+
+    it('keeps label ids from another project when toggling a label', async () => {
+      // Regression: a filed task carries ids from its real project that the
+      // display project does not define; toggling any label erased them.
+      mockProjects = [{
+        id: 'proj-a',
+        name: 'conductor',
+        daemonHost: 'mac-mini',
+        metadata: { taskLabels: [{ id: 'l1', name: 'bug' }] },
+      }];
+      renderLabelled(['real-project-label']);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit task labels' }));
+      fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /bug/ }));
+
+      await waitFor(() => expect(setTaskLabelsMock).toHaveBeenCalled());
+      expect(setTaskLabelsMock).toHaveBeenCalledWith('task-labels', ['l1', 'real-project-label']);
+    });
+
+    it('renders the chip for a label whose name duplicates a sibling daemon\'s label', () => {
+      // Regression: two daemons each created "bug" before merging. Name-based
+      // dedupe dropped the second definition, so tasks tagged with it had no chip.
+      mockProjects = [
+        {
+          id: 'proj-a',
+          name: 'conductor',
+          daemonHost: 'mac-mini',
+          gitRemoteUrl: 'github.com/acme/conductor',
+          metadata: { taskLabels: [{ id: 'l1', name: 'bug' }] },
+        },
+        {
+          id: 'proj-b',
+          name: 'conductor',
+          daemonHost: 'linux-box',
+          gitRemoteUrl: 'github.com/acme/conductor',
+          metadata: { taskLabels: [{ id: 'l2', name: 'bug' }] },
+        },
+      ];
+      renderLabelled(['l2']);
+      expect(screen.getByText('bug')).toBeInTheDocument();
+    });
+
+    it('ignores a label id whose definition was deleted', () => {
+      mockProjects = [{
+        id: 'proj-a',
+        name: 'conductor',
+        daemonHost: 'mac-mini',
+        metadata: { taskLabels: [{ id: 'l1', name: 'bug' }] },
+      }];
+      renderLabelled(['l1', 'deleted-id']);
+      // Renders the surviving label and nothing for the dangling id.
+      expect(screen.getByText('bug')).toBeInTheDocument();
+      expect(screen.queryByText('deleted-id')).not.toBeInTheDocument();
+    });
   });
 
   it('shows backend labels without daemon labels in task list item', () => {

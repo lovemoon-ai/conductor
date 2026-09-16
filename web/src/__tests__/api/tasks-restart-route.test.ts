@@ -313,6 +313,52 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect((restartOutbox![0] as any).data.agentHost).toBe("daemon-2");
   });
 
+  it("carries the source task's labels over to a new-task successor", async () => {
+    // Regression: "new task from this" continues the same work, but the
+    // successor's metadata was built from scratch, so every restart silently
+    // untagged the task.
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        metadata: JSON.stringify({ labelIds: ["lbl-bug", "lbl-infra"], note: "source-only" }),
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+    const createArgs = vi.mocked(db.task.create).mock.calls.at(-1)?.[0] as any;
+    const successorMetadata = JSON.parse(createArgs.data.metadata);
+    expect(successorMetadata.labelIds).toEqual(["lbl-bug", "lbl-infra"]);
+    // Only the labels travel — unrelated source metadata stays on the source.
+    expect(successorMetadata.note).toBeUndefined();
+  });
+
+  it("does not add an empty labelIds key to a successor of an unlabelled task", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ metadata: null }) as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    const createArgs = vi.mocked(db.task.create).mock.calls.at(-1)?.[0] as any;
+    expect("labelIds" in JSON.parse(createArgs.data.metadata)).toBe(false);
+  });
+
   it("transfers group membership to a new-task successor", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(
       buildTask({

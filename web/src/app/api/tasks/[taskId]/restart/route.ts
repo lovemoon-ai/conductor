@@ -57,6 +57,10 @@ import {
 import { isTaskReclaimEnabled } from "@/lib/tasks/reclaim-config";
 import { mergeSuccessorTaskCardGroup } from "@/lib/user-preferences";
 import { buildGroupMemberMetadata } from "@/lib/tasks/agent-group";
+import {
+  readTaskLabelIdsFromMetadata,
+  TASK_LABEL_IDS_METADATA_KEY,
+} from "@/lib/tasks/task-labels";
 
 const appendBackendSuffix = (title: string, backend: string): string => `${title} [${backend}]`;
 const REFRESH_SESSION_ACK_TIMEOUT_MS = 60_000;
@@ -826,8 +830,12 @@ export async function POST(
           agent: sourceAgentName,
         })
       : {};
+  // "New task from this" continues the same work, so it keeps the labels a
+  // person attached — otherwise every restart would silently untag the task.
+  const sourceLabelIds = readTaskLabelIdsFromMetadata(sourceMetadata);
   const successorMetadata = {
     ...successorGroupMetadata,
+    ...(sourceLabelIds.length > 0 ? { [TASK_LABEL_IDS_METADATA_KEY]: sourceLabelIds } : {}),
     continuedFromTaskId: sourceTask.id,
     restartSourceBackendType: sourceBackend,
     restartStrategy: "new_task",
