@@ -158,6 +158,81 @@ export function sanitizeForLog(value, maxLen = 180) {
   return truncateText(String(value).replace(/\s+/g, " ").trim(), maxLen);
 }
 
+const TOOL_INPUT_SUMMARY_KEYS = ["command", "cmd", "file_path", "filePath", "path", "pattern", "query", "url", "description", "prompt"];
+
+function summarizeToolInput(input) {
+  let value = input;
+  if (typeof value === "string" && /^\s*[[{]/.test(value)) {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      // keep the raw string
+    }
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const key = TOOL_INPUT_SUMMARY_KEYS.find((candidate) => value[candidate]);
+    value = key ? value[key] : JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    value = value.join(" ");
+  }
+  return sanitizeForLog(value, 200) || undefined;
+}
+
+/**
+ * Track tool calls that started but have not finished on a turn object, so
+ * `getCurrentTurnStatus()` can report what a long silent turn is running.
+ */
+export function noteToolStarted(turn, id, name, input) {
+  if (!turn || !id || !name) {
+    return;
+  }
+  turn.activeTools ||= new Map();
+  const key = String(id);
+  if (turn.activeTools.has(key)) {
+    return;
+  }
+  turn.activeTools.set(key, {
+    name: String(name),
+    summary: summarizeToolInput(input),
+    started_at: new Date().toISOString(),
+  });
+}
+
+export function noteToolFinished(turn, id) {
+  if (id) {
+    turn?.activeTools?.delete(String(id));
+  }
+}
+
+/** Map a codex app-server (camelCase) or exec (snake_case) tool item to `{ name, input }`. */
+export function describeCodexToolItem(item) {
+  switch (String(item?.type || "").replace(/_/g, "").toLowerCase()) {
+    case "commandexecution":
+      return { name: "command", input: item.command };
+    case "filechange":
+      return { name: "apply_patch", input: (item.changes || []).map((change) => change?.path).join(" ") };
+    case "mcptoolcall":
+      return { name: [item.server, item.tool].filter(Boolean).join("."), input: item.arguments };
+    case "dynamictoolcall":
+    case "collabagenttoolcall":
+      return { name: item.tool, input: item.arguments ?? item.prompt };
+    case "websearch":
+      return { name: "web_search", input: item.query };
+    default:
+      return null;
+  }
+}
+
+export function withActiveTool(status, turn) {
+  if (!status) {
+    return null;
+  }
+  const tools = turn?.activeTools ? [...turn.activeTools.values()] : [];
+  const activeTool = tools[tools.length - 1];
+  return activeTool ? { ...status, active_tool: { ...activeTool } } : { ...status };
+}
+
 export function isTruthyEnv(value) {
   if (value === undefined || value === null) return false;
   const normalized = String(value).trim().toLowerCase();

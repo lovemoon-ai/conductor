@@ -15,8 +15,11 @@ import {
   isGoalStatus,
   loadEnvConfig,
   normalizeLogger,
+  noteToolFinished,
+  noteToolStarted,
   proxyToEnv,
   sanitizeForLog,
+  withActiveTool,
 } from "../shared.js";
 
 const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
@@ -166,9 +169,12 @@ function normalizeText(value) {
   return typeof value === "string" ? value : "";
 }
 
+function contentBlocks(message) {
+  return Array.isArray(message?.content) ? message.content : [];
+}
+
 function extractAssistantText(message) {
-  const content = Array.isArray(message?.content) ? message.content : [];
-  return content
+  return contentBlocks(message)
     .map((block) => (block?.type === "text" && typeof block.text === "string" ? block.text : ""))
     .filter(Boolean)
     .join("");
@@ -400,7 +406,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
   }
 
   getCurrentTurnStatus() {
-    return this.currentTurnStatus ? { ...this.currentTurnStatus } : null;
+    return withActiveTool(this.currentTurnStatus, this.currentTurn);
   }
 
   async ensureSessionInfo() {
@@ -890,6 +896,11 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       }
       case "assistant": {
         this.updateSessionInfo(message.session_id || message.sessionId);
+        for (const block of contentBlocks(message.message)) {
+          if (block?.type === "tool_use") {
+            noteToolStarted(currentTurn, block.id, block.name, block.input);
+          }
+        }
         const text = extractAssistantText(message.message);
         if (!text) {
           return;
@@ -908,6 +919,13 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         await this.emitAssistantMessage(text);
         return;
       }
+      case "user":
+        for (const block of contentBlocks(message.message)) {
+          if (block?.type === "tool_result") {
+            noteToolFinished(currentTurn, block.tool_use_id);
+          }
+        }
+        return;
       case "rate_limit_event":
         this.updateSessionInfo(message.session_id || message.sessionId);
         this.rateLimitInfo =

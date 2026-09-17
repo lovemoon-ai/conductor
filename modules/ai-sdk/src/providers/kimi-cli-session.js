@@ -15,8 +15,11 @@ import {
   getBoundedEnvInt,
   loadEnvConfig,
   normalizeLogger,
+  noteToolFinished,
+  noteToolStarted,
   proxyToEnv,
   sanitizeForLog,
+  withActiveTool,
 } from "../shared.js";
 
 const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
@@ -305,7 +308,7 @@ export class KimiCliSession extends EventEmitter {
   }
 
   getCurrentTurnStatus() {
-    return this.currentTurnStatus ? { ...this.currentTurnStatus } : null;
+    return withActiveTool(this.currentTurnStatus, this.currentTurn);
   }
 
   async ensureSessionInfo() {
@@ -953,6 +956,7 @@ export class KimiCliSession extends EventEmitter {
         if (toolId) {
           currentTurn.toolCalls.set(toolId, toolName);
         }
+        noteToolStarted(currentTurn, toolId, toolName, normalizedPayload?.function?.arguments);
         const phase = toolPhaseForName(toolName);
         await this.emitWorkingStatus(
           {
@@ -967,6 +971,7 @@ export class KimiCliSession extends EventEmitter {
       case "ToolResult": {
         const toolId = normalizeText(normalizedPayload.tool_call_id);
         const toolName = currentTurn.toolCalls.get(toolId) || "";
+        noteToolFinished(currentTurn, toolId);
         const phase = toolPhaseForName(toolName);
         const statusDoneLine =
           sanitizeSummary(normalizedPayload?.return_value?.message || normalizedPayload?.return_value?.output, 160) || undefined;

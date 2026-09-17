@@ -22,9 +22,12 @@ import {
   getBoundedEnvInt,
   loadEnvConfig,
   normalizeLogger,
+  noteToolFinished,
+  noteToolStarted,
   parseCommandParts,
   proxyToEnv,
   sanitizeForLog,
+  withActiveTool,
 } from "../shared.js";
 
 const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
@@ -336,7 +339,7 @@ export class KimiPrintSession extends EventEmitter {
   }
 
   getCurrentTurnStatus() {
-    return this.currentTurnStatus ? { ...this.currentTurnStatus } : null;
+    return withActiveTool(this.currentTurnStatus, this.currentTurn);
   }
 
   async ensureSessionInfo() {
@@ -695,6 +698,9 @@ export class KimiPrintSession extends EventEmitter {
           if (role === "assistant") {
             const assistantText = normalizeTextContent(payload.content);
             if (Array.isArray(payload?.tool_calls) && payload.tool_calls.length > 0) {
+              for (const call of payload.tool_calls) {
+                noteToolStarted(currentTurn, call?.id, call?.function?.name, call?.function?.arguments);
+              }
               void this.emitWorkingStatus(
                 {
                   phase: "command_execution",
@@ -720,6 +726,7 @@ export class KimiPrintSession extends EventEmitter {
             return;
           }
           if (role === "tool") {
+            noteToolFinished(currentTurn, payload.tool_call_id);
             void this.emitWorkingStatus(
               {
                 phase: "command_execution",

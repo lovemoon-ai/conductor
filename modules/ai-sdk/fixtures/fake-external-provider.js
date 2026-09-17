@@ -54,6 +54,12 @@ class FakeExternalSession {
 
   setSessionReplyTarget() {}
 
+  getCurrentTurnStatus() {
+    return this.currentTurn
+      ? { reply_in_progress: true, phase: "command_execution", active_tool: { name: "Bash", summary: "sleep 600" } }
+      : null;
+  }
+
   async interruptCurrentTurn() {
     if (!this.currentTurn) {
       return false;

@@ -246,6 +246,12 @@ const DEFAULT_POLL_INTERVAL_MS = parseInt(
 const DEFAULT_ERROR_LOOP_WINDOW_MS = 2 * 60 * 1000;
 const DEFAULT_ERROR_LOOP_BACKOFF_MS = 3 * 60 * 1000;
 const DEFAULT_ERROR_LOOP_THRESHOLD = 3;
+// A running turn that has sent no runtime status for this long reports the
+// provider's current tool so the app does not mistake a long tool for a hang.
+const DEFAULT_RUNTIME_HEARTBEAT_MS = 60 * 1000;
+const RUNTIME_HEARTBEAT_QUERY_TIMEOUT_MS = 5000;
+// Keep the line within the web chat status pill.
+const RUNTIME_HEARTBEAT_LINE_MAX_CHARS = 100;
 // Runtime backend tokens (first word of the resolved command line) that mean
 // "this task drives a chat-web Chromium browser". Mirrors ai-sdk's chat-web
 // aliases; user-facing aliases like `web-chatgpt` resolve to one of these.
@@ -738,6 +744,11 @@ async function main() {
     return await pendingRemoteInterruptQueue.enqueue(event);
   };
 
+  const handleReportRuntimeStatusCommand = async (event) => {
+    fireWatchdog.onInbound();
+    await reconnectRunner?.requestRuntimeStatusFromRemote?.(event || {});
+  };
+
   const rememberCompletedRefreshSessionRequest = (requestId, accepted) => {
     if (!requestId) {
       return accepted;
@@ -828,6 +839,7 @@ async function main() {
       onStopTask: handleStopTaskCommand,
       onInterruptTurn: handleInterruptTurnCommand,
       onRefreshSession: handleRefreshSessionCommand,
+      onReportRuntimeStatus: handleReportRuntimeStatusCommand,
     });
 
     const taskContext = await ensureTaskContext(conductor, {
@@ -1917,6 +1929,14 @@ function isTruthyEnv(value) {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
+function formatElapsedShort(ms) {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
 function isSessionClosedError(error) {
   return Boolean(error && typeof error === "object" && error.reason === "session_closed");
 }
@@ -2018,6 +2038,14 @@ export class BridgeRunner {
       500,
       60 * 1000,
     );
+    this.runtimeHeartbeatMs = getBoundedEnvInt(
+      "CONDUCTOR_RUNTIME_HEARTBEAT_MS",
+      DEFAULT_RUNTIME_HEARTBEAT_MS,
+      1000,
+      10 * 60 * 1000,
+    );
+    this.runtimeHeartbeatTimer = null;
+    this.turnStartedAt = 0;
     this.useSessionFileReplyStream =
       Boolean(this.backendSession) &&
       typeof this.backendSession.usesSessionFileReplyStream === "function" &&
@@ -2853,7 +2881,7 @@ export class BridgeRunner {
     };
   }
 
-  async reportRuntimeStatus(payload, replyTo) {
+  async reportRuntimeStatus(payload, replyTo, { force = false } = {}) {
     const runtimeContext = await this.resolveRuntimeContext();
     const runtime = this.createRuntimeStatus(payload, replyTo, runtimeContext);
     if (!runtime) {
@@ -2861,10 +2889,14 @@ export class BridgeRunner {
     }
 
     const signature = JSON.stringify(runtime);
-    if (signature === this.lastRuntimeStatusSignature) {
+    if (!force && signature === this.lastRuntimeStatusSignature) {
       return;
     }
-    this.lastRuntimeStatusSignature = signature;
+    // Heartbeats keep the provider's last signature, so its unchanged periodic
+    // status (e.g. claude tool_progress) does not replace the heartbeat line.
+    if (!force) {
+      this.lastRuntimeStatusSignature = signature;
+    }
     this.lastRuntimeStatusPayload = {
       ...runtime,
     };
@@ -2882,6 +2914,109 @@ export class BridgeRunner {
     } catch (error) {
       log(`Failed to report runtime status: ${error?.message || error}`);
     }
+    this.scheduleRuntimeHeartbeat();
+  }
+
+  /** (Re)start the silence timer; a no-op that just clears it outside a turn. */
+  scheduleRuntimeHeartbeat() {
+    clearTimeout(this.runtimeHeartbeatTimer);
+    this.runtimeHeartbeatTimer = null;
+    if (!this.runningTurn || this.stopped) {
+      return;
+    }
+    this.runtimeHeartbeatTimer = setTimeout(() => {
+      this.runtimeHeartbeatTimer = null;
+      void this.reportRuntimeHeartbeat();
+    }, this.runtimeHeartbeatMs);
+    this.runtimeHeartbeatTimer.unref?.();
+  }
+
+  async fetchBackendTurnStatus() {
+    const session = this.backendSession;
+    if (typeof session?.fetchCurrentTurnStatus === "function") {
+      let timer = null;
+      try {
+        return await Promise.race([
+          session.fetchCurrentTurnStatus(),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error("turn status query timed out")), RUNTIME_HEARTBEAT_QUERY_TIMEOUT_MS);
+          }),
+        ]);
+      } catch {
+        // fall back to the last status the session pushed
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    try {
+      return session?.getCurrentTurnStatus?.() ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  formatRuntimeHeartbeatLine(status, now = Date.now()) {
+    const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+    const tool = status?.active_tool;
+    const startedAt = Date.parse(tool?.started_at || "") || this.turnStartedAt || now;
+    const elapsed = formatElapsedShort(now - startedAt);
+    // Elapsed time goes before the tool input so it survives truncation.
+    if (tool?.name) {
+      const summary = tool.summary ? `: ${tool.summary}` : "";
+      return clip(`${this.backendName} running ${tool.name} (${elapsed})${summary}`, RUNTIME_HEARTBEAT_LINE_MAX_CHARS);
+    }
+    const base = status?.status_line || `${this.backendName} is working`;
+    return `${clip(base, RUNTIME_HEARTBEAT_LINE_MAX_CHARS - elapsed.length - 3)} (${elapsed})`;
+  }
+
+  async reportRuntimeHeartbeat() {
+    if (!this.runningTurn || this.stopped) {
+      return;
+    }
+    const lastSent = this.lastRuntimeStatusPayload;
+    const status = await this.fetchBackendTurnStatus();
+    // Skip if the turn ended, the provider settled it, or a newer frame (e.g.
+    // the terminal one) went out while querying: never re-open a settled turn.
+    if (
+      !this.runningTurn ||
+      this.stopped ||
+      status?.reply_in_progress === false ||
+      this.lastRuntimeStatusPayload !== lastSent
+    ) {
+      return;
+    }
+    await this.reportRuntimeStatus(
+      {
+        state: status?.state,
+        phase: status?.phase || "heartbeat",
+        reply_in_progress: true,
+        status_line: this.formatRuntimeHeartbeatLine(status),
+      },
+      status?.replyTo || this.activeTurnReplyTo,
+      // Forced so an unchanged line still goes out and re-arms the timer.
+      { force: true },
+    );
+  }
+
+  /** App asked (page load / stale composer) for the current runtime status. */
+  async requestRuntimeStatusFromRemote(event = {}) {
+    const taskId = typeof event.taskId === "string" ? event.taskId.trim() : "";
+    if (taskId && taskId !== this.taskId) {
+      return;
+    }
+    if (this.runningTurn) {
+      await this.reportRuntimeHeartbeat();
+      return;
+    }
+    if (this.lastRuntimeStatusPayload?.reply_in_progress) {
+      // No turn is running, so an in-progress frame is stale; settle it.
+      this.lastRuntimeStatusPayload = {
+        ...this.lastRuntimeStatusPayload,
+        reply_in_progress: false,
+        status_line: undefined,
+      };
+    }
+    await this.replayLastRuntimeStatus();
   }
 
   async replayLastRuntimeStatus() {
@@ -3134,6 +3269,7 @@ export class BridgeRunner {
     this.runningTurn = true;
     this.activeTurnReplyTo = this.normalizeReplyTarget(replyTo);
     const turnStartedAt = Date.now();
+    this.turnStartedAt = turnStartedAt;
     let turnWatchdog = null;
     if (this.isCopilotBackend) {
       turnWatchdog = setInterval(() => {
@@ -3316,6 +3452,7 @@ export class BridgeRunner {
         `turn end replyTo=${replyTo || "latest"} elapsedMs=${Date.now() - turnStartedAt} processedIds=${this.processedMessageIds.size}`,
       );
       this.runningTurn = false;
+      this.scheduleRuntimeHeartbeat();
     }
   }
 
@@ -3442,6 +3579,7 @@ export class BridgeRunner {
     this.lastRuntimeStatusSignature = null;
     this.runningTurn = true;
     const startedAt = Date.now();
+    this.turnStartedAt = startedAt;
     if (
       this.useSessionFileReplyStream &&
       typeof this.backendSession?.setSessionReplyTarget === "function"
@@ -3523,6 +3661,7 @@ export class BridgeRunner {
     } finally {
       this.copilotLog(`${logTag} turn end elapsedMs=${Date.now() - startedAt}`);
       this.runningTurn = false;
+      this.scheduleRuntimeHeartbeat();
     }
   }
 

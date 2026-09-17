@@ -76,6 +76,7 @@ export interface ConductorClientConnectOptions {
   onStopTask?: (event: StopTaskEvent) => Promise<void> | void;
   onInterruptTurn?: (event: InterruptTurnEvent) => Promise<boolean | void> | boolean | void;
   onRefreshSession?: (event: RefreshSessionEvent) => Promise<boolean | void> | boolean | void;
+  onReportRuntimeStatus?: (event: ReportRuntimeStatusEvent) => Promise<void> | void;
 }
 
 interface ConductorClientInit {
@@ -96,6 +97,7 @@ interface ConductorClientInit {
   onStopTask?: (event: StopTaskEvent) => Promise<void> | void;
   onInterruptTurn?: (event: InterruptTurnEvent) => Promise<boolean | void> | boolean | void;
   onRefreshSession?: (event: RefreshSessionEvent) => Promise<boolean | void> | boolean | void;
+  onReportRuntimeStatus?: (event: ReportRuntimeStatusEvent) => Promise<void> | void;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -127,6 +129,10 @@ export interface RefreshSessionEvent {
   sessionFilePath?: string;
 }
 
+export interface ReportRuntimeStatusEvent {
+  taskId: string;
+}
+
 export interface FlushPendingUpstreamEventsOptions {
   timeoutMs?: number;
   retryIntervalMs?: number;
@@ -149,6 +155,7 @@ export class ConductorClient {
   private readonly onStopTask?: (event: StopTaskEvent) => Promise<void> | void;
   private readonly onInterruptTurn?: (event: InterruptTurnEvent) => Promise<boolean | void> | boolean | void;
   private readonly onRefreshSession?: (event: RefreshSessionEvent) => Promise<boolean | void> | boolean | void;
+  private readonly onReportRuntimeStatus?: (event: ReportRuntimeStatusEvent) => Promise<void> | void;
   private deliveryScopeId: string;
   private closed = false;
   private durableOutboxFlushPromise: Promise<void> | null = null;
@@ -177,6 +184,7 @@ export class ConductorClient {
     this.onStopTask = init.onStopTask;
     this.onInterruptTurn = init.onInterruptTurn;
     this.onRefreshSession = init.onRefreshSession;
+    this.onReportRuntimeStatus = init.onReportRuntimeStatus;
     this.deliveryScopeId = init.deliveryScopeId;
     this.wsClient.registerHandler(this.handleBackendEvent);
   }
@@ -235,6 +243,7 @@ export class ConductorClient {
       onStopTask: options.onStopTask,
       onInterruptTurn: options.onInterruptTurn,
       onRefreshSession: options.onRefreshSession,
+      onReportRuntimeStatus: options.onReportRuntimeStatus,
     });
     client.replayDurableDownstreamInbox();
     try {
@@ -813,6 +822,20 @@ export class ConductorClient {
           `[sdk] refresh_session dispatch failed${taskId ? ` for task ${taskId}` : ''}: ${message}`,
         );
       });
+      return;
+    }
+
+    if (typeof payload?.type === 'string' && payload.type === 'report_runtime_status') {
+      // Best-effort, non-durable: the app re-asks on its next page load.
+      const taskId = typeof payload.payload?.task_id === 'string' ? payload.payload.task_id.trim() : '';
+      if (taskId && this.onReportRuntimeStatus) {
+        void Promise.resolve()
+          .then(() => this.onReportRuntimeStatus?.({ taskId }))
+          .catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            console.warn(`[sdk] report_runtime_status callback failed for task ${taskId}: ${message}`);
+          });
+      }
       return;
     }
 

@@ -8,6 +8,7 @@ const useTasksStoreMock = vi.fn();
 const useWebSocketStoreMock = vi.fn();
 const useProjectsStoreMock = vi.fn();
 const apiPostMock = vi.fn().mockResolvedValue({ delivered: true });
+const requestTaskRuntimeStatusMock = vi.fn();
 const fetchTaskMock = vi.fn().mockResolvedValue(null);
 const fetchProjectsMock = vi.fn().mockResolvedValue(undefined);
 const restartTaskMock = vi.fn().mockResolvedValue({
@@ -33,6 +34,7 @@ vi.mock('@/shared/api/client', () => ({
 }));
 
 vi.mock('@/features/realtime', () => ({
+  requestTaskRuntimeStatus: (taskId: string) => requestTaskRuntimeStatusMock(taskId),
   useRuntimeStore: (selector: (state: {
     byTask: Record<string, unknown>;
     clearTask: (taskId: string) => void;
@@ -237,6 +239,7 @@ describe('ChatView', () => {
     clearRuntimeMock.mockClear();
     apiPostMock.mockClear();
     apiPostMock.mockResolvedValue({ delivered: true });
+    requestTaskRuntimeStatusMock.mockClear();
     fetchTaskMock.mockClear();
     fetchTaskMock.mockResolvedValue(null);
     fetchProjectsMock.mockClear();
@@ -718,6 +721,21 @@ describe('ChatView', () => {
     await waitFor(() => {
       expect(fetchMessagesMock).toHaveBeenCalledWith('task-1', { force: true });
     });
+  });
+
+  it('asks the fire to re-report runtime status once the websocket is connected', () => {
+    websocketState = { status: 'connecting' };
+    useWebSocketStoreMock.mockImplementation((selector) => selector(websocketState));
+
+    const view = render(<ChatView taskId="task-1" />);
+    expect(requestTaskRuntimeStatusMock).not.toHaveBeenCalled();
+
+    websocketState = { status: 'connected' };
+    useWebSocketStoreMock.mockImplementation((selector) => selector(websocketState));
+    view.rerender(<ChatView taskId="task-1" />);
+
+    expect(requestTaskRuntimeStatusMock).toHaveBeenCalledTimes(1);
+    expect(requestTaskRuntimeStatusMock).toHaveBeenCalledWith('task-1');
   });
 
   it('sends an interrupt request for the current reply target', async () => {

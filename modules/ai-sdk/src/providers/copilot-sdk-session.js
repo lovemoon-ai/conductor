@@ -16,10 +16,13 @@ import {
   getBoundedEnvInt,
   loadEnvConfig,
   normalizeLogger,
+  noteToolFinished,
+  noteToolStarted,
   parseCommandParts,
   proxyToEnv,
   sanitizeForLog,
   withoutCopilotGithubTokenEnv,
+  withActiveTool,
 } from "../shared.js";
 
 const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
@@ -704,7 +707,7 @@ export class CopilotSdkSession extends EventEmitter {
   }
 
   getCurrentTurnStatus() {
-    return this.currentTurnStatus ? { ...this.currentTurnStatus } : null;
+    return withActiveTool(this.currentTurnStatus, this.currentTurn);
   }
 
   async ensureSessionInfo() {
@@ -1362,6 +1365,7 @@ export class CopilotSdkSession extends EventEmitter {
         }
         currentTurn.activeToolName = normalizeText(event.data?.toolName);
         currentTurn.activeToolPhase = toolPhaseForName(currentTurn.activeToolName);
+        noteToolStarted(currentTurn, event.data?.toolCallId, currentTurn.activeToolName, event.data?.arguments);
         await this.emitWorkingStatus(
           {
             phase: currentTurn.activeToolPhase,
@@ -1411,6 +1415,7 @@ export class CopilotSdkSession extends EventEmitter {
         }
         currentTurn.activeToolName = "";
         currentTurn.activeToolPhase = "";
+        noteToolFinished(currentTurn, event.data?.toolCallId);
         const preview = extractToolResultPreview(event.data?.result);
         await this.emitWorkingStatus(
           {

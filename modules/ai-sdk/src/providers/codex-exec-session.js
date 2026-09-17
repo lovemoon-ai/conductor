@@ -15,13 +15,17 @@ import {
   resolveTurnMedia,
 } from "../media-input.js";
 import {
+  describeCodexToolItem,
   emitLog,
   getBoundedEnvInt,
   loadEnvConfig,
   normalizeLogger,
+  noteToolFinished,
+  noteToolStarted,
   parseCommandParts,
   proxyToEnv,
   sanitizeForLog,
+  withActiveTool,
 } from "../shared.js";
 
 const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
@@ -295,7 +299,7 @@ export class CodexExecSession extends EventEmitter {
   }
 
   getCurrentTurnStatus() {
-    return this.currentTurnStatus ? { ...this.currentTurnStatus } : null;
+    return withActiveTool(this.currentTurnStatus, this.currentTurn);
   }
 
   async ensureSessionInfo() {
@@ -555,6 +559,12 @@ export class CodexExecSession extends EventEmitter {
             payload = { type: "raw", line: normalizedLine };
           }
           currentTurn.stdoutEvents.push(payload);
+          if (payload?.type === "item.started") {
+            const tool = describeCodexToolItem(payload.item);
+            noteToolStarted(currentTurn, payload.item?.id, tool?.name, tool?.input);
+          } else if (payload?.type === "item.completed") {
+            noteToolFinished(currentTurn, payload.item?.id);
+          }
           const phase = resolveExecPhase(payload);
           if (phase) {
             void this.emitWorkingStatus(
