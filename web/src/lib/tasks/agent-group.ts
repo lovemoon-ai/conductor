@@ -143,10 +143,10 @@ export function buildGroupMemberMetadata(params: {
 
 /**
  * Compose the initial turn ("bootstrap") delivered to a task in a group. It is
- * deliberately generic — it points the agent at its own doc and, for reviewers,
- * tells it how to discover its siblings (`conductor task group`). It hard-codes
- * no review policy and no sibling task ids. For the worker, the user's original
- * task prompt is appended after the bootstrap.
+ * deliberately generic and identical for every role — it points the agent at
+ * its own doc and at `conductor task group` for discovering its siblings. How
+ * and when members talk to each other is agent-doc business, never hard-coded
+ * here. For the worker, the user's original task prompt is appended after it.
  */
 export function buildAgentBootstrap(params: {
   agent: string;
@@ -162,18 +162,7 @@ export function buildAgentBootstrap(params: {
     `[conductor:agent] You are the "${agent}" agent for this task group (your role: ${role}).`,
   );
   lines.push(`Read and follow your agent doc: ${docPath}`);
-
-  if (role === "reviewer") {
-    lines.push("");
-    lines.push(
-      "To discover the task(s) you review and their ids, run: `conductor task group`",
-    );
-    lines.push(
-      "(it lists every task in your group; the entry with role \"worker\" is your review target). " +
-        "Follow your agent doc to set your own review cadence and to read/send feedback " +
-        "via `conductor task messages|show|send`.",
-    );
-  }
+  lines.push("`conductor task group` lists every task in your group with its role and id.");
 
   const bootstrap = lines.join("\n");
   return role === "worker" ? appendTaskPrompt(bootstrap, taskPrompt) : bootstrap;

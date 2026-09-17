@@ -16,7 +16,7 @@ icon: ../web/public/icon.svg
 agents:
   review:
     doc: claw/sop/04_review-code.md
-    description: Reviews code using the repository review SOP.
+    description: Reviews code using the repository review SOP. Standalone; in a task group pick code-reviewer.
   publish:
     doc: claw/sop/06_release.md
     description: Publishes releases using the repository release SOP.
@@ -25,4 +25,4 @@ agents:
     description: Executes feature-development tasks end to end with tests.
   code-reviewer:
     doc: claw/agents/code-reviewer.md
-    description: Periodically reviews the worker for drift and regressions.
+    description: Reviews the worker's finished changes when it requests review.

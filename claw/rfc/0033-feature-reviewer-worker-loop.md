@@ -28,7 +28,8 @@ runtime to find its siblings and their roles — task ids are **not** hard-passe
 the prompt. Verified: this needs no state machine, no scheduler, and no system-prompt
 wiring — an idle ai_task stays `running` with its fire alive, so an agent's
 self-scheduled `--every … --if-idle` wake fires reliably. (The one schema change is an
-additive nullable `groupId` column + index.)
+additive nullable `groupId` column + index.) **The self-scheduled review cadence is
+superseded by request-driven review — see Revision 2026-09-17.**
 
 ## Context
 
@@ -139,9 +140,9 @@ markdown — the agent does.
 3. **Stamp role + bootstrap.** On each task write `metadata.{groupId, agentRole,
    agentName}` (so the group query can report each member's role/agent) and an
    `initial_content` bootstrap that tells the agent *"you are agent `<name>` (role X);
-   read the registered doc path and follow it"* — plus, for reviewers, *"run
-   `conductor task group` to find your review target."* The worker's original prompt is
-   appended after its bootstrap.
+   read the registered doc path and follow it; `conductor task group` lists your
+   group"* — identical for every role. The worker's original prompt is appended after
+   its bootstrap.
 4. **Expose discovery.** `GET /api/tasks/:id/group` (CLI: `conductor task group`) returns
    every task sharing the caller's `groupId`, each with `{task_id, role, agent, status,
    is_self}`. This is how a reviewer learns the worker's id at runtime.
@@ -261,7 +262,8 @@ and SDK verification:
   the `agents` field; rejects path traversal / separators / duplicates / over-limit),
   `buildGroupMemberMetadata` (`{groupId, agentRole, agentName}`), `buildAgentBootstrap`
   (generic per-task bootstrap → points at the doc path resolved from project settings;
-  reviewers are told to run `conductor task group`; worker gets its prompt appended).
+  same text for every role, including a `conductor task group` pointer; worker gets
+  its prompt appended).
   `MAX_AGENTS_PER_TASK=8`.
 - **`web/src/app/api/tasks/route.ts`** — `POST /api/tasks` accepts `agents: string[]`
   (ai_task only). Assigns a shared `groupId`; `agents[0]` executes; reviewer siblings are
@@ -316,6 +318,32 @@ Remaining (live-agent behavior, not code): a real fire-backed run where the revi
 actually self-schedules and posts feedback over wall-clock — this needs a connected
 daemon + AI backend + OTP sign-in and is the manual PoC below. The full HTTP/CLI/DB
 machinery it relies on is verified above.
+
+## Revision 2026-09-17 — request-driven review, in agent docs only
+
+Live use of the self-scheduled design showed two gaps: the reviewer started
+reviewing (and polling) the moment the group was created, before any diff
+existed, and nothing told it when the worker finished — the user had to relay
+"done, please review" by hand. The fix stays entirely in agent docs, with no
+Conductor change:
+
+- `claw/agents/code-reviewer.md`: no schedule, no polling. Until a
+  `[review-request]` arrives, reply with one line and end the turn; on each
+  request, review the shared working directory against
+  `claw/sop/04_review-code.md` and send exactly one
+  `[review:<agent>] approved | changes requested: …` to the worker.
+- `claw/agents/feature-dev.md`: once the work is complete and verified, run
+  `conductor task group` and send each reviewer `[review-request] <what changed
+  and how it was verified>`, including the reply command (so reviewer docs that
+  lack the protocol can still answer); re-request only from reviewers that asked
+  for changes; stop when all approve or after 3 rounds.
+
+The handoff protocol belongs to the agents, not the router: a new agent type
+means a new doc, not a Conductor change. For the same reason the bootstrap lost
+its reviewer-only text ("set your own review cadence…") and is now identical for
+every role. A reviewer doc that lacks the protocol (e.g. the plain `review` SOP)
+still starts reviewing on its first turn, so its registry description marks it
+standalone and points group use at `code-reviewer`.
 
 ## Open Questions
 
