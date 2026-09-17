@@ -793,8 +793,8 @@ export function ProjectItem({
             selectProject();
           }}
           onDoubleClick={openProjectDetails}
-          className={`project-row webapp-card relative z-10 cursor-pointer px-4 pb-4 pt-4 transition-colors hover:border-[var(--accent)] ${isSelected ? 'webapp-card-list-pane-active' : 'webapp-card-list-pane-idle'
-            } ${isPendingBinding ? 'opacity-70' : ''}`}
+          className={`project-row webapp-card relative z-10 cursor-pointer px-4 py-2.5 transition-colors hover:border-[var(--accent)] ${isSelected ? 'webapp-card-list-pane-active' : 'webapp-card-list-pane-idle'
+            }`}
           role="button"
           tabIndex={0}
           aria-label={project.name}
@@ -821,8 +821,12 @@ export function ProjectItem({
             }
           }}
         >
-          {aggregation ? (
-            <ProjectCardTabBar
+          {/* Dim the content for pending-binding cards instead of the whole
+              panel: opacity on the panel would make its background translucent
+              and let the swipe-action layer (z-0, behind the card) show through. */}
+          <div className={isPendingBinding ? 'opacity-70' : undefined}>
+            {aggregation ? (
+              <ProjectCardTabBar
               tabs={aggregation.tabs}
               activeProjectId={aggregation.activeProjectId}
               onSelect={aggregation.onSelectTab}
@@ -830,7 +834,7 @@ export function ProjectItem({
               onRename={aggregation.onRenameTab}
             />
           ) : null}
-          <div className="flex items-start gap-3">
+          <div className="flex items-center gap-3">
             <button
               type="button"
               {...attributes}
@@ -918,7 +922,7 @@ export function ProjectItem({
                 ) : (
                   <h3
                     id={projectTitleId}
-                    className="truncate font-medium select-none"
+                    className="min-w-0 flex-1 truncate font-medium select-none"
                     onPointerDown={handleTitlePointerDown}
                     onMouseDown={handleTitleMouseDown}
                     onTouchStart={handleTitleTouchStart}
@@ -929,9 +933,18 @@ export function ProjectItem({
                     {project.name}
                   </h3>
                 )}
+                <div className="flex shrink-0 items-center gap-1">
+                  <button type="button" aria-label="Project details" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); openProjectDetails(); }} className="rounded-lg px-3 py-2 text-xs font-medium text-muted hover:bg-paper hover:text-ink">Details</button>
+                  {swipeActionsWidth > 0 ? <button type="button" aria-label="Project actions" aria-expanded={isActionsMenuOpen || swipe.isOpen} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); swipe.closeActions(); setIsActionsMenuOpen(!isActionsMenuOpen); }} className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-paper">⋯</button> : null}
+                </div>
               </div>
+              {/* Chips live in the text column — aligned under the title and
+                  never underneath the icon. The action buttons moved into the
+                  title row so they no longer squeeze the chips into a narrow
+                  column that wrapped one chip per line on merged (multi-daemon)
+                  cards. */}
               {hasMetadataChips || isMergedGroup ? (
-                <div className="mt-1.5 flex flex-wrap items-center gap-1 text-sm text-muted sm:mt-2 sm:gap-2">
+                <div className="mt-1 flex flex-wrap items-center gap-1 text-sm text-muted">
                   {isGitProject ? (
                     <span className="flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0 text-xs font-medium leading-5 text-[var(--accent)] sm:py-0.5 sm:leading-4">
                       git
@@ -1002,10 +1015,7 @@ export function ProjectItem({
                 </div>
               ) : null}
             </div>
-            <div className="flex shrink-0 items-center gap-1">
-              <button type="button" aria-label="Project details" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); openProjectDetails(); }} className="rounded-lg px-3 py-2 text-xs font-medium text-muted hover:bg-paper hover:text-ink">Details</button>
-              {swipeActionsWidth > 0 ? <button type="button" aria-label="Project actions" aria-expanded={isActionsMenuOpen || swipe.isOpen} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); swipe.closeActions(); setIsActionsMenuOpen(!isActionsMenuOpen); }} className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-paper">⋯</button> : null}
-            </div>
+          </div>
           </div>
         </div>
       </div>

@@ -479,7 +479,7 @@ export function ProjectList() {
       onDragEnd={handleDragEnd}
     >
       <SortableContext items={orderedRows.map(rowKeyOf)} strategy={stableProjectSortingStrategy}>
-        <div className="space-y-3">
+        <div className="space-y-2">
           {orderedRows.map((row) => {
             const key = rowKeyOf(row);
             const isAggregateTarget = aggregateTargetKey === key;
