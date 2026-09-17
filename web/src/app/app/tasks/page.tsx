@@ -3,6 +3,8 @@
 import { Suspense, useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/common/FeedbackProvider';
+import { ReadingSettings, TaskColumnSettings } from '@/features/workspace/WorkspaceControls';
+import { useTaskColumns } from '@/features/workspace/preferences';
 import { ResizableTaskPane } from '@/components/layout/ResizableTaskPane';
 import { Header, type TitleSwipeProgress } from '@/components/layout/Header';
 import {
@@ -26,7 +28,7 @@ import { parseTaskType, type TaskType } from '@/lib/tasks/task-config';
 import { readTaskLabelIds } from '@/lib/tasks/task-labels';
 import { useHorizontalSwipe } from '@/shared/hooks/useHorizontalSwipe';
 
-const DESKTOP_MEDIA_QUERY = '(min-width: 768px)';
+const DESKTOP_MEDIA_QUERY = '(min-width: 1024px)';
 const PROJECT_SWITCH_ANIMATION_MS = 220;
 const PROJECT_SWIPE_LIST_OFFSET_PX = 14;
 const PROJECT_SWIPE_LIST_MAX_OPACITY_DROP = 0.16;
@@ -64,6 +66,17 @@ const getDesktopViewportSnapshot = () =>
 
 function TasksPageContent() {
   const { push, replace } = useRouter();
+  const [fullscreen, setFullscreen] = useState(false);
+  const [columns] = useTaskColumns();
+  useEffect(() => {
+    if (!fullscreen) return;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented || document.querySelector('dialog[open], [aria-modal="true"], .workspace-disclosure[open]')) return;
+      setFullscreen(false);
+    };
+    window.addEventListener('keydown', escape);
+    return () => window.removeEventListener('keydown', escape);
+  }, [fullscreen]);
   const searchParams = useSearchParams();
   const { pushToast } = useToast();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -512,7 +525,7 @@ function TasksPageContent() {
   }, [replaceTaskRoute]);
 
   const taskStatusFilter = (
-    <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-3">
+    <div className="flex shrink-0 items-center justify-between gap-3 px-3 py-2">
       <div role="group" aria-label="Task status filter" className="inline-flex rounded-xl border border-border bg-[var(--surface-default)] p-1">
         {[{ label: 'All tasks', running: false }, { label: 'Running', running: true }].map((option) => (
           <button
@@ -529,13 +542,14 @@ function TasksPageContent() {
           </button>
         ))}
       </div>
+      {isDesktop && <TaskColumnSettings />}
     </div>
   );
   const selectedTask = visibleTasks.find((task) => task.id === effectiveSelectedTaskId);
 
   return (
-    <>
-      <Header
+    <div className="task-workspace flex min-h-0 flex-1 flex-col" data-fullscreen={fullscreen && inlineDetailEnabled} data-task-columns={columns.join(' ')} style={{ '--task-column-grid': `minmax(160px, 1fr) ${columns.filter((column) => column !== 'preview').map(() => 'minmax(0, 100px)').join(' ')} 110px` } as CSSProperties}>
+      <div className="task-workspace-heading"><Header
         title={currentProjectName ? `${currentProjectName} (${projectTaskCountLabel})` : `Tasks (${taskCount})`}
         compact
         onTitleDoubleClick={handleTitleDoubleClick}
@@ -576,7 +590,7 @@ function TasksPageContent() {
             </button>
           </div>
         }
-      />
+      /></div>
 
       {!inlineDetailEnabled && taskStatusFilter}
 
@@ -585,6 +599,11 @@ function TasksPageContent() {
           <div className="flex h-full">
             <ResizableTaskPane>
               {taskStatusFilter}
+              <div className="task-column-heading px-3 py-2 text-[11px] text-muted" aria-hidden="true">
+                <span>Conversation</span>
+                {(['type', 'backend', 'project', 'host', 'branch', 'updated'] as const).filter((column) => columns.includes(column)).map((column) => <span key={column}>{column === 'type' ? 'Type' : column.charAt(0).toUpperCase() + column.slice(1)}</span>)}
+                <span className="text-right">Status</span>
+              </div>
               <div className="task-list-surface min-h-0 flex-1 overflow-y-auto px-2 pb-3 webapp-scrollbar">
                 <TaskList
                   viewMode={viewMode}
@@ -607,9 +626,11 @@ function TasksPageContent() {
             </ResizableTaskPane>
             <div className="hidden min-h-0 min-w-0 flex-1 overflow-hidden bg-panel md:flex md:flex-col">
               {selectedTask && (
-                <div className="flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-border/60 px-6 py-3">
-                  <h2 className="min-w-0 text-sm font-semibold leading-5 text-ink">{selectedTask.title}</h2>
-                  <button type="button" aria-label="Open conversation in full page" title="Open conversation in full page" onClick={() => handleOpenTaskPage(selectedTask.id)} className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-paper">
+                <div className="flex min-h-11 shrink-0 items-center justify-between gap-3 border-b border-border/60 px-4 py-1">
+                  <h2 className="min-w-0 flex-1 truncate text-sm font-semibold leading-5 text-ink">{currentProjectName && <span className="font-normal text-muted">{currentProjectName} / </span>}{selectedTask.title}</h2>
+                  {fullscreen && <span className="text-xs text-muted" aria-label={`Task status: ${selectedTask.status}`}>{selectedTask.status}</span>}
+                  <ReadingSettings />
+                  <button type="button" aria-label={fullscreen ? "Exit full screen" : "Full screen conversation"} title={fullscreen ? "Exit full screen (Esc)" : "Full screen conversation"} aria-pressed={fullscreen} onClick={() => setFullscreen((value) => !value)} className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-paper">
                     <svg aria-hidden="true" className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M14 4h6v6m0-6L10 14M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5" /></svg>
                   </button>
                 </div>
@@ -673,7 +694,7 @@ function TasksPageContent() {
         onCreatedTask={desktopListMode ? handleTaskCreated : undefined}
         defaultProjectId={projectId}
       />
-    </>
+    </div>
   );
 }
 

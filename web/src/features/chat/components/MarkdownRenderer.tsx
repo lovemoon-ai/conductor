@@ -25,19 +25,10 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
             remarkPlugins={[remarkGfm]}
             components={{
               code({ className, children, ...props }) {
-                const match = /language-(\w+)/.exec(className || '');
-                const isInline = !match;
-                return isInline ? (
-                  <code className="px-1 py-0.5 bg-border/50 rounded text-sm" {...props}>
-                    {children}
-                  </code>
-                ) : (
-                  <pre className="p-3 bg-panel border border-border rounded-lg overflow-x-auto">
-                    <code className={className} {...props}>
-                      {children}
-                    </code>
-                  </pre>
-                );
+                return <code className={className} {...props}>{children}</code>;
+              },
+              pre({ children }) {
+                return <pre className="overflow-x-auto rounded-lg border border-border bg-panel p-3">{children}</pre>;
               },
               a({ href, children }) {
                 return (

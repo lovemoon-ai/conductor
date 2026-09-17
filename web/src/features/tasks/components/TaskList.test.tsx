@@ -653,8 +653,8 @@ describe('TaskList', () => {
       const props = lastPropsFor('task-1');
       expect(props?.showProjectName).toBe(false);
       expect(props?.showDaemonHost).toBe(false);
-      expect(props?.projectName).toBeNull();
-      expect(props?.projectDaemonHost).toBeNull();
+      expect(props?.projectName).toBe('Project One');
+      expect(props?.projectDaemonHost).toBe('daemon-a');
     });
 
     it('hides the project chip but keeps the daemon chip in a merged cross-daemon scope (default project case)', () => {
@@ -689,7 +689,7 @@ describe('TaskList', () => {
       const taskTwoProps = lastPropsFor('task-2');
       expect(taskOneProps?.showProjectName).toBe(false);
       expect(taskOneProps?.showDaemonHost).toBe(true);
-      expect(taskOneProps?.projectName).toBeNull();
+      expect(taskOneProps?.projectName).toBe('Default');
       expect(taskOneProps?.projectDaemonHost).toBe('daemon-a');
       expect(taskTwoProps?.showDaemonHost).toBe(true);
       expect(taskTwoProps?.projectDaemonHost).toBe('daemon-b');

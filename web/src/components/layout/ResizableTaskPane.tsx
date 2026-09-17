@@ -4,7 +4,7 @@ import { useRef, useState, useSyncExternalStore, type CSSProperties, type ReactN
 
 const KEY = 'conductor-task-pane-width';
 const subscribe = () => () => { };
-const clamp = (width: number) => Math.max(250, Math.min(520, width));
+const clamp = (width: number) => Math.max(250, Math.min(900, width));
 const readWidth = () => {
   try {
     const value = Number(localStorage.getItem(KEY));
@@ -36,12 +36,12 @@ export function ResizableTaskPane({ children }: { children: ReactNode }) {
         aria-label="Task list width"
         aria-orientation="vertical"
         aria-valuemin={250}
-        aria-valuemax={520}
+        aria-valuemax={900}
         aria-valuenow={width}
         tabIndex={0}
         className="task-pane-resizer absolute -right-1 top-0 z-20 h-full w-2 cursor-col-resize touch-none transition-colors"
         onKeyDown={(event) => {
-          const next = event.key === 'ArrowLeft' ? width - 20 : event.key === 'ArrowRight' ? width + 20 : event.key === 'Home' ? 250 : event.key === 'End' ? 520 : null;
+          const next = event.key === 'ArrowLeft' ? width - 20 : event.key === 'ArrowRight' ? width + 20 : event.key === 'Home' ? 250 : event.key === 'End' ? 900 : null;
           if (next === null) return;
           event.preventDefault();
           update(next, true);

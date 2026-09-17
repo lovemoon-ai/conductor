@@ -46,7 +46,6 @@ export function MessageBubble({
   const isActivity = message.role === 'sdk' && message.metadata?.synthetic === true && /^[\w-]+ session started\b/.test(message.content) && !message.attachments?.length;
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [isToolbarOpen, setIsToolbarOpen] = useState(false);
-  const [isTimestampVisible, setIsTimestampVisible] = useState(false);
   // Attachment bytes are released from the Web server once the retention window
   // has elapsed, so an older message can reference a body that no longer exists.
   const [releasedAttachmentIds, setReleasedAttachmentIds] = useState<string[]>([]);
@@ -67,24 +66,6 @@ export function MessageBubble({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const lastTouchEndAtRef = useRef(0);
-
-  const prefersTapTimestamp = () => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
-      return false;
-    }
-    return window.matchMedia('(hover: none), (pointer: coarse)').matches;
-  };
-
-  const formatTime = (dateStr?: string) => {
-    if (!dateStr) return '';
-    const date = new Date(dateStr);
-    return date.toLocaleString(undefined, {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  };
 
   const copyMessage = async () => {
     const copied = await copyToClipboard(message.content);
@@ -162,10 +143,6 @@ export function MessageBubble({
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [isToolbarOpen]);
-
-  useEffect(() => {
-    setIsTimestampVisible(false);
-  }, [message.id]);
 
   const isInteractiveTarget = (target: EventTarget | null) => (
     target instanceof HTMLElement && Boolean(target.closest('a, button, audio, video, summary'))
@@ -330,34 +307,22 @@ export function MessageBubble({
       <div className="w-full">
         <div
           ref={rootRef}
-          className={`group/message relative overflow-visible rounded-2xl ${message.createdAt ? 'pt-2' : ''}`}
+          className="group/message relative overflow-visible pl-7"
         >
-          {message.createdAt ? (
-            <span
-              suppressHydrationWarning
-              className={`pointer-events-none absolute left-4 -top-1 z-20 flex h-2 items-center text-[10px] leading-none text-muted transition-opacity ${isTimestampVisible ? 'opacity-100' : 'opacity-0 group-hover/message:opacity-100'
-                }`}
-            >
-              {formatTime(message.createdAt)}
-            </span>
-          ) : null}
-          <button type="button" aria-label="Message actions" onClick={() => setIsToolbarOpen(true)} className="absolute right-0 -top-3 z-10 flex size-7 items-center justify-center rounded-md bg-panel text-muted opacity-70 hover:opacity-100 focus-visible:opacity-100 md:opacity-0 md:group-hover/message:opacity-100">⋯</button>
+          <span role="img" aria-label={isUser ? 'User' : 'Assistant'} className={`absolute left-0 top-1 flex size-5 items-center justify-center rounded ${isUser ? 'bg-border/60 text-muted' : 'bg-accent/10 text-accent'}`}>
+            <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" className="size-3.5">
+              {isUser ? <><circle cx="10" cy="6" r="3" /><path d="M4 17v-2a6 6 0 0 1 12 0v2" /></> : <><rect x="3" y="5" width="14" height="12" rx="3" /><path d="M10 2v3M6 10h2m4 0h2M7 14h6" /></>}
+            </svg>
+          </span>
+          <button type="button" aria-label="Message actions" onClick={() => setIsToolbarOpen(true)} className="absolute right-0 top-0 z-10 flex size-7 items-center justify-center rounded-md bg-panel text-muted opacity-70 hover:opacity-100 focus-visible:opacity-100 md:opacity-0 md:group-hover/message:opacity-100">⋯</button>
           <div
-            className={`w-full rounded-2xl border px-4 py-3 ${isUser
-                ? 'ml-auto max-w-[92%] bg-[var(--surface-default)] border-transparent text-ink'
+            className={`message-body w-full min-w-0 rounded-md border px-2 py-1 pr-7 ${isUser
+                ? 'bg-[var(--surface-default)] border-transparent text-ink'
                 : 'bg-transparent border-transparent text-ink'
               }`}
             role="button"
             tabIndex={0}
             aria-expanded={isToolbarOpen}
-            onClick={(event) => {
-              if (isInteractiveTarget(event.target)) {
-                return;
-              }
-              if (prefersTapTimestamp()) {
-                setIsTimestampVisible((current) => !current);
-              }
-            }}
             onDoubleClick={(event) => {
               if (isInteractiveTarget(event.target)) {
                 return;
@@ -395,9 +360,9 @@ export function MessageBubble({
                 <div className="mt-2 text-sm"><MarkdownRenderer content={message.content} /></div>
               </details>
             ) : isUser ? (
-              <p className="whitespace-pre-wrap text-[15px] leading-7 text-ink">{message.content}</p>
+              <p className="whitespace-pre-wrap break-words text-ink">{message.content}</p>
             ) : (
-              <div className="text-[15px] leading-7">
+              <div className="min-w-0">
                 <MarkdownRenderer content={message.content} />
               </div>
             )}
@@ -488,7 +453,7 @@ export function MessageBubble({
       </div>
 
       {isToolbarOpen ? (
-        <div className="fixed inset-0 z-50">
+        <div role="dialog" aria-modal="true" aria-label="Message actions" className="fixed inset-0 z-50">
           <button
             type="button"
             className="absolute inset-0 bg-black/20"
