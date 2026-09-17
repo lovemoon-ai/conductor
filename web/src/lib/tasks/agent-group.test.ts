@@ -142,21 +142,20 @@ describe("buildAgentBootstrap", () => {
     expect(text).toContain("personas/build-agent.md");
     expect(text).toContain("--- Task ---");
     expect(text).toContain("Implement the login page");
-    // worker is not told to run `conductor task group`
-    expect(text).not.toContain("conductor task group");
+    expect(text).toContain("conductor task group");
   });
 
-  it("tells the reviewer to discover its group via `conductor task group`", () => {
+  it("gives the reviewer the same role-neutral bootstrap, without a task section", () => {
     const text = buildAgentBootstrap({
       agent: "code-reviewer",
       role: "reviewer",
       docPath: "reviews/code.md",
     });
-    expect(text).toContain('You are the "code-reviewer" agent');
-    expect(text).toContain("reviews/code.md");
-    expect(text).toContain("conductor task group");
-    // no hard-passed sibling ids, no task section
-    expect(text).not.toContain("--- Task ---");
+    expect(text).toBe(
+      '[conductor:agent] You are the "code-reviewer" agent for this task group (your role: reviewer).\n'
+        + "Read and follow your agent doc: reviews/code.md\n"
+        + "`conductor task group` lists every task in your group with its role and id.",
+    );
   });
 
   it("does not append a Task section for a worker without a prompt", () => {
@@ -178,7 +177,8 @@ describe("buildAgentBootstrap", () => {
     });
     expect(text).toBe(
       '/goal\n[conductor:agent] You are the "feature-dev" agent for this task group (your role: worker).\n'
-        + "Read and follow your agent doc: agents/dev.md\n\n--- Task ---\nship it",
+        + "Read and follow your agent doc: agents/dev.md\n"
+        + "`conductor task group` lists every task in your group with its role and id.\n\n--- Task ---\nship it",
     );
   });
 });

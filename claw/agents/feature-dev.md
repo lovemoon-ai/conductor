@@ -18,12 +18,20 @@ message.
   declaring done.
 - Follow the repository's conventions (see `CLAUDE.md`).
 
-## Working with a reviewer
+## Working with reviewers
 
-You may receive messages prefixed with `[review]` from a reviewer agent. Treat
-them as high-signal course-corrections: read, judge, and either apply the change
-or briefly explain why you are not. You do not need to seek the reviewer out —
-its feedback simply arrives as user messages.
+Your task group may include reviewer agents. They wait for you to ask.
 
-You do not need to know the reviewer's task id; just respond to `[review]`
-messages as they come.
+- When the work is complete and verified, run `conductor task group`. For each
+  member with role `reviewer`, send:
+  ```bash
+  conductor task send <reviewer_id> "[review-request] <what changed and how you verified it>
+  Reply once with: conductor task send <your task id> '[review:<reviewer agent name>] approved | changes requested: <findings>'"
+  ```
+  Write your task id literally (the `(you)` row of `conductor task group`).
+  Then end your turn; each reply arrives as a new message.
+  If the group lists no reviewers, skip this.
+- Apply each finding or briefly explain why you are not. Never reply to an
+  approval. Re-request review only from reviewers that requested changes, and
+  only if you changed something.
+- Stop when every reviewer has approved or after 3 rounds, then report to the user.

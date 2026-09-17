@@ -2522,7 +2522,8 @@ describe('/api/issues/[issueId]', () => {
       expect(workerArgs.groupId).toEqual(expect.any(String));
       expect(workerArgs.initialMessageContent).toBe(
         '[conductor:agent] You are the "feature-dev" agent for this task group (your role: worker).\n'
-          + 'Read and follow your agent doc: claw/agents/feature-dev.md\n\n'
+          + 'Read and follow your agent doc: claw/agents/feature-dev.md\n'
+          + '`conductor task group` lists every task in your group with its role and id.\n\n'
           + '--- Task ---\nIssue: Board implementation\n\nHook issue board into the app shell',
       );
       expect(workerArgs.metadata).toEqual(expect.objectContaining({
