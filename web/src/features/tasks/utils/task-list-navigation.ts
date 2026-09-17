@@ -1,4 +1,4 @@
-import type { Task } from '@/shared/types';
+import type { Project, Task } from '@/shared/types';
 import type { TaskType } from '@/lib/tasks/task-config';
 import { orderTasksWithPinnedFirst } from '../store';
 import {
@@ -7,6 +7,7 @@ import {
   type TaskCardGroup,
 } from './task-card-groups';
 import {
+  filterHiddenPersistentTasks,
   filterTasksByProject,
   getStableTaskBackend,
   resolveTaskDaemonHost,
@@ -20,6 +21,7 @@ export type TaskListNavigationOptions = {
   daemonHostFilter?: string | null;
   backendFilter?: string | null;
   projectDaemonHostMap?: Map<string, string | null> | null;
+  projects?: Project[];
 };
 
 export type TaskListNavigation = {
@@ -50,10 +52,9 @@ export const buildTaskListNavigation = (
   const tasksWithoutAttachedPty = attachedPtyTaskIds.size > 0
     ? tasks.filter((task) => !attachedPtyTaskIds.has(task.id))
     : tasks;
-  const projectVisibleTasks = filterTasksByProject(
-    tasksWithoutAttachedPty,
-    options.projectFilter,
-    options.hiddenProjectIds,
+  const projectVisibleTasks = filterHiddenPersistentTasks(
+    filterTasksByProject(tasksWithoutAttachedPty, options.projectFilter, options.hiddenProjectIds),
+    options.projects ?? [],
   );
   const runningFilteredTasks = options.runningOnly
     ? projectVisibleTasks.filter((task) => task.status === 'running' || task.status === 'killing')

@@ -473,6 +473,22 @@ describe('websocket runtime status handling', () => {
     expect(messages[0].content).toBe('Done');
   });
 
+  it('keeps top-level message metadata from server broadcasts', () => {
+    handleWSMessage({
+      type: 'task_sdk_message',
+      payload: {
+        id: 'msg-divider',
+        task_id: 'task-2',
+        role: 'sdk',
+        content: 'Round 2 · claude on mac-mini',
+        metadata: { synthetic: true, kind: 'persistent_round_start', round: 2 },
+      },
+    });
+
+    const messages = useChatStore.getState().messagesByTask['task-2'] ?? [];
+    expect(messages.at(-1)?.metadata).toEqual({ synthetic: true, kind: 'persistent_round_start', round: 2 });
+  });
+
   it('fetches task detail when a task status arrives before the task exists in the store', () => {
     const fetchTaskSpy = vi.mocked(useTasksStore.getState().fetchTask);
 

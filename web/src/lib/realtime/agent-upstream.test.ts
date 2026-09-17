@@ -58,7 +58,12 @@ vi.mock("@/lib/realtime/hub", () => ({
   },
 }));
 
+vi.mock("@/lib/tasks/persistent-task", () => ({
+  capturePersistentRoundSummary: vi.fn().mockResolvedValue(undefined),
+}));
+
 const { db } = await import("@/lib/db");
+const { capturePersistentRoundSummary } = await import("@/lib/tasks/persistent-task");
 const { projectTaskStatusUpdate } = await import("@/lib/channel/task-event-projector");
 const { acknowledgeAgentCommand, deliverAgentOutboxForHost, enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
 const { realtimeHub } = await import("@/lib/realtime/hub");
@@ -149,6 +154,38 @@ describe("commitSdkMessage split-brain guard", () => {
     expect(db.$transaction).toHaveBeenCalled();
     expect(realtimeHub.sendToAgentHost).not.toHaveBeenCalled();
     expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
+  });
+
+  it("hands committed replies to the persistent round summary capture", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "project-1",
+      status: "running",
+      agentHost: "conductor-fire-a",
+      executionHost: "conductor-fire-a",
+      taskType: "ai_task",
+      metadata: '{"persistent":{"enabled":true,"roundEndMessageId":"req-1"}}',
+    } as any);
+    vi.mocked(db.$transaction).mockResolvedValue([
+      { id: "message-1", createdAt: new Date("2026-07-22T00:00:00Z") },
+      {},
+    ] as any);
+
+    await commitSdkMessage({
+      userId: "user-1",
+      agentHost: "conductor-fire-a",
+      taskId: "task-1",
+      content: "Released 0.14.0",
+      metadata: { reply_to: "req-1" },
+    });
+
+    expect(capturePersistentRoundSummary).toHaveBeenCalledWith({
+      userId: "user-1",
+      taskId: "task-1",
+      taskMetadata: '{"persistent":{"enabled":true,"roundEndMessageId":"req-1"}}',
+      content: "Released 0.14.0",
+      messageMetadata: { reply_to: "req-1" },
+    });
   });
 
   it("freezes an achieved transcript and re-stops late SDK output", async () => {

@@ -1,4 +1,6 @@
-import type { Task } from '@/shared/types';
+import type { Project, Task } from '@/shared/types';
+import { computeProjectGroups } from '@/features/projects/utils/project-groups';
+import { isPersistentTask, shouldShowPersistentTasks } from '@/shared/utils/persistent-task';
 
 /**
  * Resolve the daemon host responsible for a task, falling back across the
@@ -123,5 +125,26 @@ export function filterTasksByProject(
   return tasks.filter((task) => {
     const displayId = resolveTaskDisplayProjectId(task);
     return !displayId || !hiddenProjectIdSet.has(displayId);
+  });
+}
+
+/**
+ * RFC 0039: drop persistent tasks shown under a project whose
+ * "Show persistent tasks" setting is off.
+ */
+export function filterHiddenPersistentTasks(tasks: Task[], projects: Project[]): Task[] {
+  if (projects.every((project) => shouldShowPersistentTasks(project.metadata))) return tasks;
+  // A merged cross-daemon group hides them as soon as any member turned the
+  // setting off, matching the single switch shown for the whole group (a daemon
+  // that joins later has no setting of its own yet).
+  const hidingProjectIds = new Set<string>();
+  for (const group of computeProjectGroups(projects)) {
+    if (group.members.some((member) => !shouldShowPersistentTasks(member.metadata))) {
+      group.members.forEach((member) => hidingProjectIds.add(member.id));
+    }
+  }
+  return tasks.filter((task) => {
+    const displayId = resolveTaskDisplayProjectId(task);
+    return !(displayId && hidingProjectIds.has(displayId) && isPersistentTask(task));
   });
 }

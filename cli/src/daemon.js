@@ -2033,7 +2033,7 @@ export function startDaemon(config = {}, deps = {}) {
     // *live* replacement as killed, using the previous run's log tail. Worse,
     // the daemon's own map would say running, so reconcile would never repair
     // it. Re-check that the task is still absent before speaking.
-    if (activeTaskProcesses.has(taskId)) {
+    if (activeTaskProcesses.has(taskId) || pendingTaskStarts.has(taskId)) {
       log(
         `Task ${taskId} was restarted while its dead tmux session was being reported; dropping the stale terminal status`,
       );
@@ -3847,6 +3847,7 @@ export function startDaemon(config = {}, deps = {}) {
     "project_agents_registry",
     "restart_daemon",
     "refresh_session_inplace",
+    "persistent_round_v1",
     "task_attachments_v1",
     "backend_session_list",
     CUSTOM_COMMANDS_CAPABILITY,
@@ -6979,6 +6980,42 @@ export function startDaemon(config = {}, deps = {}) {
     return true;
   }
 
+  // RFC 0039: make sure the previous round's fire is gone before a new round
+  // reuses its task id. The server has normally stopped it already, so what is
+  // left is a still-exiting child or a tmux record the liveness reaper has not
+  // swept yet; a fire that is somehow still alive is stopped here. Its terminal
+  // status is suppressed because the task row now belongs to the new round.
+  async function releaseReplacedFire(taskId) {
+    const record = activeTaskProcesses.get(taskId);
+    if (!recordHasLiveFire(record)) {
+      return true;
+    }
+    if (record.tmuxMode) {
+      const { alive, conclusive } = await probeTmuxSession(record.tmuxSession);
+      if (activeTaskProcesses.get(taskId) !== record) {
+        return !recordHasLiveFire(activeTaskProcesses.get(taskId));
+      }
+      if (!conclusive) {
+        return false;
+      }
+      if (!alive) {
+        activeTaskProcesses.delete(taskId);
+        forgetFireSessionRecord(record);
+        return true;
+      }
+      stopActiveTaskProcess(taskId, { reason: "persistent_new_round", suppressExitStatusReport: true });
+      // The tmux stop path retires the record synchronously and never consumes the flag.
+      suppressedExitStatusReports.delete(taskId);
+      return !activeTaskProcesses.has(taskId);
+    }
+    stopActiveTaskProcess(taskId, { reason: "persistent_new_round", suppressExitStatusReport: true });
+    const stopped = await waitForTaskToStop(taskId);
+    if (!stopped) {
+      suppressedExitStatusReports.delete(taskId);
+    }
+    return stopped;
+  }
+
   async function waitForTaskToStop(taskId, timeoutMs = DAEMON_FORCE_STOP_GRACE_MS) {
     const deadline = Date.now() + Math.max(timeoutMs, 0);
 
@@ -7569,6 +7606,23 @@ export function startDaemon(config = {}, deps = {}) {
       return;
     }
 
+    // RFC 0039: a persistent task's new round reuses the task id. Release the
+    // previous round's fire first instead of swallowing the round as a duplicate.
+    const replacesPreviousRound = payload?.replace_existing_fire === true;
+    if (
+      replacesPreviousRound &&
+      !pendingTaskStarts.has(taskId) &&
+      !(await releaseReplacedFire(taskId))
+    ) {
+      reportCreateTaskFailure({
+        taskId,
+        projectId,
+        requestId,
+        error: new Error("the previous round is still running on this daemon"),
+      });
+      return;
+    }
+
     const existingTaskRecord = activeTaskProcesses.get(taskId);
     if (recordHasLiveFire(existingTaskRecord) || pendingTaskStarts.has(taskId)) {
       log(
@@ -7724,6 +7778,12 @@ export function startDaemon(config = {}, deps = {}) {
       }
       if (BACKEND_HTTP) {
         env.CONDUCTOR_BACKEND_URL = BACKEND_HTTP;
+      }
+
+      // A new round may reuse the previous round's directory, and with it that
+      // fire's undelivered KILLED/COMPLETED event (see restart below).
+      if (replacesPreviousRound) {
+        dropSupersededTerminalStatusEvents(taskDir, taskId);
       }
 
       // Sampled before the spawn so it is a true "everything after this is

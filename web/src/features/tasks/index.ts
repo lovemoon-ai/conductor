@@ -1,5 +1,5 @@
 export { useTasksStore } from './store';
-export { filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } from './utils/task-filter';
+export { filterHiddenPersistentTasks, filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } from './utils/task-filter';
 export {
   TaskList,
   RefreshIcon,

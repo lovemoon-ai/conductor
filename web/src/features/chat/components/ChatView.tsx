@@ -9,11 +9,14 @@ import { useWebSocketStore } from '@/features/realtime';
 import { MessageBubble } from './MessageBubble';
 import { MessageInput, type MessageInputHandle } from './MessageInput';
 import { ScheduledMessageDialog } from './ScheduledMessageDialog';
+import { buildPersistentRoundGroups, PersistentRoundHeader } from './PersistentRounds';
+import { NewRoundDialog } from '@/features/tasks/components/PersistentTaskDialogs';
+import { PERSISTENT_ROUND_END_KIND, readPersistentTaskState } from '@/shared/utils/persistent-task';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { QuestionNav } from '@/components/common/QuestionNav';
 import { getApiClient } from '@/shared/api/client';
-import type { Message } from '@/shared/types';
+import type { Message, StartTaskRoundInput } from '@/shared/types';
 
 interface ChatViewProps {
   taskId: string;
@@ -49,6 +52,17 @@ interface StoredScrollState {
 }
 
 const getScrollStorageKey = (taskId: string) => `${SCROLL_STORAGE_PREFIX}${taskId}`;
+const getExpandedRoundsStorageKey = (taskId: string) => `conductor-chat-expanded-rounds:${taskId}`;
+
+const readStoredExpandedRounds = (taskId: string): Set<number> => {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(getExpandedRoundsStorageKey(taskId)) ?? '[]');
+    return new Set(Array.isArray(parsed) ? parsed.filter((round) => Number.isInteger(round)) : []);
+  } catch {
+    return new Set();
+  }
+};
 
 const getMaxScrollTop = (element: HTMLDivElement) => Math.max(0, element.scrollHeight - element.clientHeight);
 
@@ -269,6 +283,8 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const tasks = useTasksStore((state) => state.tasks);
   const fetchTask = useTasksStore((state) => state.fetchTask);
   const restartTask = useTasksStore((state) => state.restartTask);
+  const startTaskRound = useTasksStore((state) => state.startTaskRound);
+  const endTaskRound = useTasksStore((state) => state.endTaskRound);
   const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const websocketStatus = useWebSocketStore((state) => state.status);
   const task = tasks.find((t) => t.id === taskId);
@@ -278,6 +294,10 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const [showQuestionNav, setShowQuestionNav] = useState(false);
   const [activeQuestion, setActiveQuestion] = useState(0);
   const [scheduledMessage, setScheduledMessage] = useState<Message | null>(null);
+  // RFC 0039 persistent tasks.
+  const [expandedRounds, setExpandedRounds] = useState<Set<number>>(() => readStoredExpandedRounds(taskId));
+  const [isNewRoundDialogOpen, setIsNewRoundDialogOpen] = useState(false);
+  const [roundActionPending, setRoundActionPending] = useState(false);
   const questionRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const isJumpingQuestionRef = useRef(false);
   const lastScrollTopRef = useRef(0);
@@ -286,18 +306,42 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const activeQuestionRafRef = useRef<number | null>(null);
 
   const messages = messagesByTask[taskId] ?? EMPTY_MESSAGES;
+  const roundGroups = useMemo(() => buildPersistentRoundGroups(messages), [messages]);
+  const roundGroupByStartIndex = useMemo(
+    () => new Map(roundGroups.map((group) => [group.startIndex, group] as const)),
+    [roundGroups],
+  );
+  const collapsedMessageIndices = useMemo(() => {
+    const indices = new Set<number>();
+    roundGroups.slice(0, -1).forEach((group) => {
+      if (expandedRounds.has(group.round)) return;
+      for (let index = group.startIndex; index < group.endIndex; index += 1) indices.add(index);
+    });
+    return indices;
+  }, [expandedRounds, roundGroups]);
   const userQuestionIndexByMessageIndex = useMemo(() => {
     const map = new Map<number, number>();
     let q = 0;
     messages.forEach((msg, i) => {
-      if (msg.role === 'user') {
+      if (msg.role === 'user' && !collapsedMessageIndices.has(i) && msg.metadata?.kind !== PERSISTENT_ROUND_END_KIND) {
         map.set(i, q);
         q += 1;
       }
     });
     return map;
-  }, [messages]);
+  }, [collapsedMessageIndices, messages]);
   const userQuestionCount = userQuestionIndexByMessageIndex.size;
+  const persistentState = readPersistentTaskState(task?.metadata);
+  const isPersistent = persistentState?.enabled === true;
+  // Idle = the round was ended, or its session is gone: sending starts a new round.
+  const isRoundIdle = Boolean(
+    isPersistent &&
+    (persistentState?.roundEndedAt ||
+      task?.status === 'completed' ||
+      task?.status === 'killed' ||
+      task?.status === 'unknown'),
+  );
+  const roundEndMessageId = persistentState?.roundEndMessageId ?? null;
   const historyState = historyStateByTask[taskId];
   const isLoading = loadingTasks.has(taskId);
   const hasMoreBefore = historyState?.hasMoreBefore ?? false;
@@ -306,6 +350,15 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const runtimeReplyInProgress = Boolean(runtime?.replyInProgress);
   const runtimeReplyTo =
     runtimeReplyInProgress && typeof runtime?.replyTo === 'string' ? runtime.replyTo.trim() : '';
+  // The AI is still answering the end-of-round summary request (no reply yet, or
+  // still streaming it); a new round now would cut the summary off.
+  const isRoundSummaryPending = Boolean(
+    isPersistent &&
+    roundEndMessageId &&
+    task?.status === 'running' &&
+    (runtimeReplyTo === roundEndMessageId ||
+      !messages.some((message) => message.role !== 'user' && message.metadata?.reply_to === roundEndMessageId)),
+  );
   const interruptedReplyTargets = useMemo(() => {
     const targets = new Set<string>();
     messages.forEach((message) => {
@@ -456,7 +509,9 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
       return;
     }
 
-    if (!hasMoreBefore || !oldestMessageId) {
+    // Older pages would land in a collapsed round and add no height, so filling
+    // the viewport this way could walk the whole history; load on request instead.
+    if (!hasMoreBefore || !oldestMessageId || collapsedMessageIndices.has(0)) {
       autoLoadUntilFilledRef.current = false;
       return;
     }
@@ -467,7 +522,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     }
 
     void loadOlderMessages({ continueUntilFilled: true });
-  }, [hasMoreBefore, isLoading, loadOlderMessages, oldestMessageId]);
+  }, [collapsedMessageIndices, hasMoreBefore, isLoading, loadOlderMessages, oldestMessageId]);
 
   useEffect(() => {
     fetchMessages(taskId);
@@ -647,6 +702,18 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     dispatchUiState({ type: 'settleInterrupt' });
   }, [clearInterruptTimeout, hasPendingInterruptConfirmation]);
 
+  const startRound = async (input: Omit<StartTaskRoundInput, 'expectedRound'>) => {
+    dispatchUiState({ type: 'setComposerFeedback', feedback: null });
+    setRoundActionPending(true);
+    clearRuntime(taskId);
+    forceScrollToBottomRef.current = true;
+    try {
+      await startTaskRound(taskId, { ...input, expectedRound: persistentState?.round ?? 1 });
+    } finally {
+      setRoundActionPending(false);
+    }
+  };
+
   const handleSend = async (content: string, files: File[] = []) => {
     let attachmentsUploaded = false;
     if (interruptPending) {
@@ -669,6 +736,32 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
         },
       });
       if (files.length) throw new Error('Restart in progress');
+      return;
+    }
+    if (isRoundIdle) {
+      if (files.length) {
+        dispatchUiState({
+          type: 'setComposerFeedback',
+          feedback: {
+            variant: 'warning',
+            message: 'Start the new round with a text message, then attach files.',
+          },
+        });
+        throw new Error('Attachments cannot start a round');
+      }
+      try {
+        await startRound({ content });
+      } catch (error) {
+        messageInputRef.current?.restoreDraft(content);
+        dispatchUiState({
+          type: 'setComposerFeedback',
+          feedback: {
+            variant: 'error',
+            message: error instanceof Error ? error.message : 'Failed to start a new round.',
+          },
+        });
+        throw new Error('Failed to start a new round');
+      }
       return;
     }
     if (!isTaskRunning) {
@@ -715,6 +808,23 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
         },
       });
       throw new Error('Failed to upload attachments or send message');
+    }
+  };
+
+  const handleEndRound = async () => {
+    setRoundActionPending(true);
+    try {
+      await endTaskRound(taskId);
+    } catch (error) {
+      dispatchUiState({
+        type: 'setComposerFeedback',
+        feedback: {
+          variant: 'error',
+          message: error instanceof Error ? error.message : 'Failed to end the round.',
+        },
+      });
+    } finally {
+      setRoundActionPending(false);
     }
   };
 
@@ -1021,12 +1131,42 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
             <div className="mx-auto max-w-3xl space-y-6">
               {hasMoreBefore ? (
                 <div className="flex justify-center pb-1 text-xs text-muted">
-                  <span className="rounded-full border border-border bg-panel/80 px-3 py-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void loadOlderMessages()}
+                    disabled={isLoading}
+                    className="rounded-full border border-border bg-panel/80 px-3 py-1.5"
+                  >
                     {isLoading ? 'Loading older messages…' : 'Scroll to top to load older messages'}
-                  </span>
+                  </button>
                 </div>
               ) : null}
               {messages.map((message, msgIndex) => {
+                const roundGroup = roundGroupByStartIndex.get(msgIndex);
+                const roundCollapsed = collapsedMessageIndices.has(msgIndex);
+                const roundHeader = roundGroup ? (
+                  <PersistentRoundHeader
+                    // The first loaded round may have started on a page not loaded yet.
+                    group={hasMoreBefore && !roundGroup.divider ? { ...roundGroup, startedAt: null } : roundGroup}
+                    collapsed={roundCollapsed}
+                    onToggle={roundGroup === roundGroups[roundGroups.length - 1] ? undefined : () => {
+                      setExpandedRounds((current) => {
+                        const next = new Set(current);
+                        if (next.has(roundGroup.round)) next.delete(roundGroup.round);
+                        else next.add(roundGroup.round);
+                        try {
+                          window.sessionStorage.setItem(getExpandedRoundsStorageKey(taskId), JSON.stringify([...next]));
+                        } catch {
+                          // ignore storage errors
+                        }
+                        return next;
+                      });
+                    }}
+                  />
+                ) : null;
+                if (roundCollapsed || roundGroup?.divider === message) {
+                  return roundHeader ? <div key={message.id}>{roundHeader}</div> : null;
+                }
                 const qIdx = userQuestionIndexByMessageIndex.get(msgIndex);
                 const bubble = (
                   <MessageBubble
@@ -1046,11 +1186,12 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
                   />
                 );
                 if (qIdx == null) {
-                  return <div key={message.id}>{bubble}</div>;
+                  return <div key={message.id} className={roundHeader ? 'space-y-6' : undefined}>{roundHeader}{bubble}</div>;
                 }
                 return (
                   <div
                     key={message.id}
+                    className={roundHeader ? 'space-y-6' : undefined}
                     ref={(el) => {
                       if (el) {
                         questionRefs.current.set(qIdx, el);
@@ -1059,6 +1200,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
                       }
                     }}
                   >
+                    {roundHeader}
                     {bubble}
                   </div>
                 );
@@ -1111,6 +1253,38 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
               </span>
             </div>
           ) : null}
+          {isPersistent ? (
+            <div data-testid="persistent-round-bar" className="flex flex-wrap items-center gap-2 text-xs text-muted">
+              <span className="rounded-full bg-border/50 px-2.5 py-1 font-medium text-ink">
+                Round {persistentState?.round ?? 1}
+              </span>
+              <span className="mr-auto">
+                {isRoundSummaryPending
+                  ? 'Writing the round summary…'
+                  : isRoundIdle
+                    ? 'Round ended — sending a message starts a new round.'
+                    : 'Persistent task'}
+              </span>
+              {!persistentState?.roundEndedAt ? (
+                <button
+                  type="button"
+                  onClick={() => void handleEndRound()}
+                  disabled={roundActionPending}
+                  className="rounded-lg border border-border px-2.5 py-1 font-medium text-ink transition-colors hover:border-[var(--accent)] disabled:opacity-60"
+                >
+                  End round
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setIsNewRoundDialogOpen(true)}
+                disabled={roundActionPending}
+                className="rounded-lg border border-border px-2.5 py-1 font-medium text-ink transition-colors hover:border-[var(--accent)] disabled:opacity-60"
+              >
+                New round
+              </button>
+            </div>
+          ) : null}
           {visibleComposerFeedback ? (
             <InlineNotice variant={visibleComposerFeedback.variant}>
               {visibleComposerFeedback.message}
@@ -1127,7 +1301,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
             onInterrupt={() => {
               void handleInterrupt();
             }}
-            sendDisabled={!isTaskRunning || interruptPending || restartPending}
+            sendDisabled={(!isTaskRunning && !isRoundIdle) || isRoundSummaryPending || interruptPending || restartPending || roundActionPending}
             interruptEnabled={interruptEnabled}
             interruptPending={interruptPending}
             insertEnabled={insertEnabled}
@@ -1136,6 +1310,14 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
           />
         </div>
       </div>
+      {task && isPersistent ? (
+        <NewRoundDialog
+          task={task}
+          open={isNewRoundDialogOpen}
+          onClose={() => setIsNewRoundDialogOpen(false)}
+          onStartRound={startRound}
+        />
+      ) : null}
       <ScheduledMessageDialog
         open={scheduledMessage !== null}
         taskId={taskId}

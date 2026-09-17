@@ -112,6 +112,8 @@ interface CreateTaskDialogFormState {
   projectId: string;
   taskType: TaskType;
   createWorktree: boolean;
+  /** RFC 0039: create the task as a persistent task. */
+  persistent: boolean;
   /**
    * RFC 0038: daemon that hosts this task's git worktree while the AI runs on
    * `agentHost`. Empty = the worktree (if any) is local to the AI's daemon.
@@ -132,6 +134,7 @@ type CreateTaskDialogAction =
   | { type: 'set-project'; projectId: string }
   | { type: 'set-task-type'; taskType: TaskType }
   | { type: 'set-create-worktree'; createWorktree: boolean }
+  | { type: 'set-persistent'; persistent: boolean }
   | { type: 'set-remote-worktree-host'; remoteWorktreeHost: string }
   | { type: 'set-agent-host'; agentHost: string }
   | { type: 'set-backend'; backendType: string }
@@ -144,6 +147,7 @@ const initialCreateTaskDialogFormState: CreateTaskDialogFormState = {
   projectId: '',
   taskType: 'ai_task',
   createWorktree: false,
+  persistent: false,
   remoteWorktreeHost: '',
   agentHost: '',
   backendType: '',
@@ -159,6 +163,7 @@ const taskDraftSchema = z.object({
   projectId: z.string(),
   taskType: z.enum(['ai_task', 'pty_task']),
   createWorktree: z.boolean(),
+  persistent: z.boolean().default(false),
   remoteWorktreeHost: z.string().default(''),
   agentHost: z.string(),
   backendType: z.string(),
@@ -212,6 +217,8 @@ function createTaskDialogReducer(
         remoteWorktreeHost: action.createWorktree ? '' : state.remoteWorktreeHost,
         submitError: null,
       };
+    case 'set-persistent':
+      return { ...state, persistent: action.persistent, submitError: null };
     case 'set-remote-worktree-host':
       return {
         ...state,
@@ -271,6 +278,7 @@ export function CreateTaskDialog({
     projectId: requestedProjectId,
     taskType,
     createWorktree: requestedCreateWorktree,
+    persistent,
     remoteWorktreeHost: requestedRemoteWorktreeHost,
     agentHost: requestedAgentHost,
     backendType: requestedBackendType,
@@ -511,6 +519,9 @@ export function CreateTaskDialog({
         ...(agents ? { agents } : {}),
         ...(taskType === 'ai_task' && trimmedInitialContent
           ? { initialContent: trimmedInitialContent }
+          : {}),
+        ...(taskType === 'ai_task' && persistent
+          ? { metadata: { persistent: { enabled: true } } }
           : {}),
         launchConfig:
           taskType === 'pty_task'
@@ -850,6 +861,29 @@ export function CreateTaskDialog({
                   })}
                 </div>
               </div>
+
+              {taskType === 'ai_task' ? (
+                <div className="rounded-xl border border-border p-4">
+                  <label htmlFor="create-task-persistent" className="flex cursor-pointer items-start gap-3">
+                    <input
+                      id="create-task-persistent"
+                      type="checkbox"
+                      aria-label="Persistent task"
+                      checked={persistent}
+                      onChange={(e) => {
+                        dispatch({ type: 'set-persistent', persistent: e.target.checked });
+                      }}
+                      className="mt-0.5 size-4 rounded border-border text-[var(--accent)] focus:ring-[var(--accent)]"
+                    />
+                    <div className="min-w-0">
+                      <span className="text-sm font-medium text-ink">Persistent task</span>
+                      <p className="mt-1 text-xs text-muted">
+                        For recurring work. Each round starts a fresh AI session; the task keeps the whole history.
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              ) : null}
 
               {canCreateTaskWorktree ? (
                 <div className="rounded-xl border border-border p-4">

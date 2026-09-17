@@ -241,6 +241,33 @@ describe('ProjectDetailsDialog', () => {
       );
     };
 
+    it('hides persistent tasks on every member of the group', async () => {
+      renderMerged(null, null);
+      const toggle = screen.getByRole('switch', { name: 'Show persistent tasks' });
+      expect(toggle).toHaveAttribute('aria-checked', 'true');
+
+      fireEvent.click(toggle);
+
+      await waitFor(() => expect(updateProjectMock).toHaveBeenCalledTimes(2));
+      for (const [, payload] of updateProjectMock.mock.calls) {
+        expect(payload.metadata.showPersistentTasks).toBe(false);
+      }
+    });
+
+    it('reads persistent tasks as hidden when any member hides them, and shows them on every member', async () => {
+      // A daemon that joined the group later has no setting of its own.
+      renderMerged({ showPersistentTasks: false }, null);
+      const toggle = screen.getByRole('switch', { name: 'Show persistent tasks' });
+      expect(toggle).toHaveAttribute('aria-checked', 'false');
+
+      fireEvent.click(toggle);
+
+      await waitFor(() => expect(updateProjectMock).toHaveBeenCalledTimes(2));
+      for (const [, payload] of updateProjectMock.mock.calls) {
+        expect(payload.metadata.showPersistentTasks).toBe(true);
+      }
+    });
+
     it('enables graph view on every member of the group', async () => {
       renderMerged(null, null);
 

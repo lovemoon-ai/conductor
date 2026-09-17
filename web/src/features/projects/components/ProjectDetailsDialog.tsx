@@ -14,6 +14,7 @@ import {
   type ProjectMemo,
   readProjectMemos,
 } from './ProjectDetailsDialog.utils';
+import { SHOW_PERSISTENT_TASKS_METADATA_KEY, shouldShowPersistentTasks } from '@/shared/utils/persistent-task';
 import { ProjectTaskLabelsSection } from './ProjectTaskLabelsSection';
 import { useProjectsStore } from '../store';
 import {
@@ -142,6 +143,7 @@ export function ProjectDetailsDialog({
   const [isMutating, setIsMutating] = useState(false);
   const [isTaskGraphMutating, setIsTaskGraphMutating] = useState(false);
   const [pendingTaskGraphEnabled, setPendingTaskGraphEnabled] = useState<boolean | null>(null);
+  const [isPersistentVisibilityMutating, setIsPersistentVisibilityMutating] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState(project.id);
   // React 18 silently drops setState calls after unmount, but we still want
   // to avoid running through error UX (draft restore, button toggle) when
@@ -215,6 +217,7 @@ export function ProjectDetailsDialog({
   // the user switched daemon tabs in a merged project.
   const taskGraphEnabled =
     pendingTaskGraphEnabled ?? detailProjects.some(isProjectTaskGraphEnabled);
+  const persistentTasksShown = detailProjects.every((member) => shouldShowPersistentTasks(member.metadata));
   const isOverLengthLimit = draftLength > MAX_MEMO_CONTENT_CHARS;
   const isOverCountLimit = activeProjectMemoCount >= MAX_MEMOS_PER_PROJECT;
   const canSubmitDraft =
@@ -269,6 +272,30 @@ export function ProjectDetailsDialog({
     } finally {
       if (isMountedRef.current) {
         setIsTaskGraphMutating(false);
+      }
+    }
+  };
+
+  const handleTogglePersistentTasksShown = async () => {
+    if (isPersistentVisibilityMutating) return;
+    const nextShown = !persistentTasksShown;
+    setIsPersistentVisibilityMutating(true);
+    try {
+      // Same fan-out as graph view. The list hides a group's persistent tasks
+      // when any member is off, which is why the switch reads `every` member.
+      await updateProjectGroupMetadata(
+        detailProjects.map((member) => member.id),
+        (member) => ({ ...(member.metadata ?? {}), [SHOW_PERSISTENT_TASKS_METADATA_KEY]: nextShown }),
+      );
+    } catch (error) {
+      pushToast({
+        title: 'Failed to update persistent task setting',
+        description: error instanceof Error ? error.message : 'Please try again.',
+        variant: 'error',
+      });
+    } finally {
+      if (isMountedRef.current) {
+        setIsPersistentVisibilityMutating(false);
       }
     }
   };
@@ -434,6 +461,28 @@ export function ProjectDetailsDialog({
               <span
                 className={`inline-block size-5 rounded-full bg-white shadow-sm transition-transform ${
                   taskGraphEnabled ? 'translate-x-5' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+          <div className="mt-2 flex items-center justify-between gap-4 rounded-xl border border-border bg-paper/40 px-4 py-3">
+            <p className="min-w-0 text-sm font-medium text-ink">Show persistent tasks</p>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={persistentTasksShown}
+              aria-label="Show persistent tasks"
+              onClick={() => void handleTogglePersistentTasksShown()}
+              disabled={isPersistentVisibilityMutating}
+              className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors disabled:opacity-60 ${
+                persistentTasksShown
+                  ? 'border-[var(--accent)] bg-[var(--accent)]'
+                  : 'border-border bg-[var(--surface-subtle)]'
+              }`}
+            >
+              <span
+                className={`inline-block size-5 rounded-full bg-white shadow-sm transition-transform ${
+                  persistentTasksShown ? 'translate-x-5' : 'translate-x-1'
                 }`}
               />
             </button>

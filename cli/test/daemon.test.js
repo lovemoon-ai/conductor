@@ -1597,6 +1597,191 @@ describe("Daemon", () => {
     }, 700);
   });
 
+  // RFC 0039: a persistent task's new round reuses the task id. In tmux mode the
+  // previous round's record lingers until the liveness reaper, so the daemon has
+  // to probe the session itself rather than wait on its own map.
+  const runTmuxRoundReplacement = (t, { sessionAlive }, verify) => {
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    const taskPayload = { task_id: "task-tmux-round", project_id: "proj-tmux-round", backend_type: "codex" };
+    const calls = { newSession: 0, killSession: 0, hasSession: 0 };
+    const received = [];
+    const tmuxChild = (exitCode) => {
+      const child = new EventEmitter();
+      child.pid = 74000 + calls.newSession;
+      child.unref = () => {};
+      child.kill = () => {};
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      setImmediate(() => child.emit("exit", exitCode, null));
+      return child;
+    };
+    const mockSpawn = (cmd, args) => {
+      if (cmd !== "tmux") assert.fail(`unexpected spawn ${cmd}`);
+      if (args?.[0] === "new-session") {
+        calls.newSession += 1;
+        return tmuxChild(0);
+      }
+      if (args?.[0] === "has-session") {
+        calls.hasSession += 1;
+        return tmuxChild(sessionAlive ? 0 : 1);
+      }
+      if (args?.[0] === "kill-session") {
+        calls.killSession += 1;
+        return tmuxChild(0);
+      }
+      if (args?.[0] === "list-sessions") return tmuxChild(0);
+      assert.fail(`unexpected tmux ${JSON.stringify(args)}`);
+    };
+
+    wss.once("connection", (ws) => {
+      ws.on("message", (raw) => {
+        try {
+          received.push(JSON.parse(raw.toString("utf8")));
+        } catch {
+          // ignore non-JSON
+        }
+      });
+      ws.send(JSON.stringify({ type: "create_task", payload: { ...taskPayload, request_id: "round-1" } }));
+      setTimeout(() => {
+        ws.send(JSON.stringify({
+          type: "create_task",
+          payload: { ...taskPayload, request_id: "round-2", replace_existing_fire: true },
+        }));
+      }, 200);
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-tmux-round",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-tmux-round",
+        TMUX_LIVENESS_POLL_MS: 0,
+      },
+      {
+        spawn: mockSpawn,
+        spawnSync: (cmd, args) =>
+          cmd === "tmux" && args?.[0] === "-V"
+            ? { status: 0, error: null, pid: 12345 }
+            : { status: 1, error: new Error("ENOENT"), pid: undefined },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {}, on: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+      },
+    );
+
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        const killedReports = received.filter(
+          (msg) => msg?.type === "task_status_update" && msg.payload?.status === "KILLED",
+        );
+        verify({ calls, killedReports });
+        if (daemon && typeof daemon.close === "function") {
+          daemon.close();
+          daemon = null;
+        }
+        resolve();
+      }, 800);
+    });
+  };
+
+  it("starts a replacement round once the previous tmux session is gone (RFC 0039)", async (t) => {
+    await runTmuxRoundReplacement(t, { sessionAlive: false }, ({ calls, killedReports }) => {
+      assert.strictEqual(calls.hasSession, 1);
+      assert.strictEqual(calls.killSession, 0);
+      assert.strictEqual(calls.newSession, 2, "the new round must spawn instead of being ignored as a duplicate");
+      assert.deepStrictEqual(killedReports, []);
+    });
+  });
+
+  it("stops a still-alive previous tmux round without reporting it KILLED (RFC 0039)", async (t) => {
+    await runTmuxRoundReplacement(t, { sessionAlive: true }, ({ calls, killedReports }) => {
+      assert.strictEqual(calls.killSession, 1);
+      assert.strictEqual(calls.newSession, 2);
+      assert.deepStrictEqual(killedReports, [], "the old round's KILLED would land on the new round");
+    });
+  });
+
+  it("fails the new round when the previous fire does not exit (RFC 0039)", (t, done) => {
+    const previousGrace = process.env.CONDUCTOR_DAEMON_FORCE_STOP_GRACE_MS;
+    process.env.CONDUCTOR_DAEMON_FORCE_STOP_GRACE_MS = "150";
+    t.after(() => restoreEnv("CONDUCTOR_DAEMON_FORCE_STOP_GRACE_MS", previousGrace));
+
+    const taskPayload = { task_id: "task-round-stuck", project_id: "proj-round-stuck", backend_type: "codex" };
+    let spawnCount = 0;
+    const killSignals = [];
+    const received = [];
+    const mockSpawn = () => {
+      spawnCount += 1;
+      return {
+        pid: 53000 + spawnCount,
+        on: () => {},
+        kill: (signal) => killSignals.push(signal),
+        stdout: { on: () => {} },
+        stderr: { on: () => {} },
+      };
+    };
+
+    wss.once("connection", (ws) => {
+      ws.on("message", (raw) => {
+        try {
+          received.push(JSON.parse(raw.toString("utf8")));
+        } catch {
+          // ignore non-JSON
+        }
+      });
+      ws.send(JSON.stringify({ type: "create_task", payload: { ...taskPayload, request_id: "stuck-1" } }));
+      setTimeout(() => {
+        ws.send(JSON.stringify({
+          type: "create_task",
+          payload: { ...taskPayload, request_id: "stuck-2", replace_existing_fire: true },
+        }));
+      }, 100);
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-round-stuck",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-round-stuck",
+      },
+      {
+        spawn: mockSpawn,
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => [] }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.strictEqual(spawnCount, 1);
+      assert.ok(killSignals.includes("SIGTERM"), "the daemon must try to stop the previous round itself");
+      const failure = received.find(
+        (msg) => msg?.type === "task_status_update" && msg.payload?.status === "KILLED",
+      );
+      assert.match(failure?.payload?.summary ?? "", /previous round is still running/);
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 700);
+  });
+
   it("refuses restart_task with a tmux-aware error message when the tmux session is still alive", (t, done) => {
     const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
     process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
@@ -4479,6 +4664,72 @@ describe("Daemon", () => {
       }
       done();
     }, 500);
+  });
+
+  it("waits for an exiting fire before starting a replacement round (RFC 0039)", (t, done) => {
+    const taskPayload = {
+      task_id: "task-round",
+      project_id: "proj-round",
+      backend_type: "codex",
+    };
+    const exitHandlers = [];
+
+    const mockSpawn = () => {
+      const index = exitHandlers.length;
+      exitHandlers.push(null);
+      return {
+        pid: 52000 + index,
+        on: (event, handler) => {
+          if (event === "exit") exitHandlers[index] = handler;
+        },
+        stdout: { on: () => {} },
+        stderr: { on: () => {} },
+      };
+    };
+
+    wss.once("connection", (ws) => {
+      ws.send(JSON.stringify({ type: "create_task", payload: { ...taskPayload, request_id: "req-round-1" } }));
+      setTimeout(() => {
+        ws.send(JSON.stringify({
+          type: "create_task",
+          payload: { ...taskPayload, request_id: "req-round-2", replace_existing_fire: true },
+        }));
+        // The previous round's fire exits only after the new round was requested.
+        setTimeout(() => exitHandlers[0]?.(0, null), 150);
+      }, 100);
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-round",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-round",
+      },
+      {
+        spawn: mockSpawn,
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async () => ({ ok: true, json: async () => [] }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.strictEqual(exitHandlers.length, 2);
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 800);
   });
 
   it("clears pending create_task state after a pre-spawn failure", async (t) => {
@@ -8142,7 +8393,7 @@ describe("Daemon", () => {
       assert.ok(typeof handler === "function");
       assert.strictEqual(
         webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-        "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_file,pty_task,terminal_snapshot",
+        "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_file,pty_task,terminal_snapshot",
       );
 
       handler({
@@ -8172,7 +8423,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_file,pty_task,terminal_snapshot",
+      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_file,pty_task,terminal_snapshot",
     );
 
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -8445,7 +8696,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_file",
+      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_file",
     );
 
     handler({

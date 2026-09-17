@@ -24,6 +24,7 @@ import {
   RECLAIMABLE_KILLED_REASON,
   type KilledReason,
 } from "@/lib/tasks/killed-reason";
+import { capturePersistentRoundSummary } from "@/lib/tasks/persistent-task";
 
 type TaskOwnershipRecord = {
   id: string;
@@ -566,6 +567,15 @@ export async function commitSdkMessage(input: {
         createdAt: message.createdAt,
         metadata: normalizeMessageMetadata(input.metadata),
       },
+    });
+    await capturePersistentRoundSummary({
+      userId: input.userId,
+      taskId: task.id,
+      taskMetadata: task.metadata,
+      content: input.content,
+      messageMetadata: input.metadata,
+    }).catch((error) => {
+      console.warn(`[persistent-task] failed to capture round summary for ${task.id}`, error);
     });
   }
 
