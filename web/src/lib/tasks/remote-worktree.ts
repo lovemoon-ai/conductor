@@ -8,6 +8,7 @@
 
 import { db } from "@/lib/db";
 import { canMergeProjectsByFields } from "@/lib/projects/grouping";
+import { appendTaskPrompt } from "./agent-group";
 import { normalizeOptionalString, parseJsonObject, type JsonObject } from "./task-config";
 import {
   buildInitialWorktreeBranchName,
@@ -18,8 +19,6 @@ import {
 
 /** Both are required: `exec` for git/build/test, `file` for `remote cp`. */
 const REMOTE_WORKTREE_CAPABILITIES = ["remote_exec", "remote_file"] as const;
-/** Mirrors fire's `parseGoalDirectiveFromMessage`: `/goal`, optionally with inline text. */
-const GOAL_DIRECTIVE_LINE = /^\/goal(?:\s+.*)?$/i;
 
 /** The only field a caller supplies; everything else is resolved server-side. */
 export const readRemoteWorktreeRequestHost = (launchConfig: JsonObject | null): string | null => {
@@ -185,18 +184,5 @@ export function buildRemoteWorktreeBootstrap(params: {
     `When you finish, commit your work on branch ${remote.branch} in the remote worktree. Do not remove the worktree; conductor cleans it up.`,
   );
 
-  const bootstrap = lines.join("\n");
-  const prompt = typeof taskPrompt === "string" ? taskPrompt.trim() : "";
-  if (!prompt) {
-    return bootstrap;
-  }
-  // Fire only honours `/goal` on the FIRST non-empty line of a message. Keep a
-  // goal directive in front of the bootstrap or goal mode would silently drop.
-  const promptLines = prompt.split("\n");
-  const directive = promptLines[0].trim();
-  if (GOAL_DIRECTIVE_LINE.test(directive)) {
-    const rest = promptLines.slice(1).join("\n").trim();
-    return `${directive}\n${bootstrap}${rest ? `\n\n--- Task ---\n${rest}` : ""}`;
-  }
-  return `${bootstrap}\n\n--- Task ---\n${prompt}`;
+  return appendTaskPrompt(lines.join("\n"), taskPrompt);
 }

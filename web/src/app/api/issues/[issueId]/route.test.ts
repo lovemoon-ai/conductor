@@ -42,7 +42,18 @@ vi.mock('@/lib/db', () => ({
 
 vi.mock('@/lib/tasks/create-ai-task', () => ({
   createAiTaskArtifacts: vi.fn(),
+  createAndDispatchAiTask: vi.fn(),
   finalizeAiTaskCreation: vi.fn(),
+}));
+
+vi.mock('@/lib/projects/daemon-binding', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/projects/daemon-binding')>()),
+  resolveProjectAgentsRegistry: vi.fn(),
+}));
+
+vi.mock('@/lib/user-preferences', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/user-preferences')>()),
+  mergeRelatedTaskCardGroup: vi.fn(),
 }));
 
 vi.mock('@/lib/tasks/task-stop', async (importOriginal) => {
@@ -62,13 +73,16 @@ vi.mock('@/lib/realtime/hub', () => ({
     getAgentsForUser: vi.fn(),
     getTaskAgentHost: vi.fn(),
     bindTaskToAgent: vi.fn(),
+    broadcastToUser: vi.fn(),
     sendToAgentHost: vi.fn().mockReturnValue(true),
   },
 }));
 
 const { getActiveSubscriptionUser } = await import('@/lib/auth/middleware');
 const { db } = await import('@/lib/db');
-const { createAiTaskArtifacts, finalizeAiTaskCreation } = await import('@/lib/tasks/create-ai-task');
+const { createAiTaskArtifacts, createAndDispatchAiTask, finalizeAiTaskCreation } = await import('@/lib/tasks/create-ai-task');
+const { resolveProjectAgentsRegistry } = await import('@/lib/projects/daemon-binding');
+const { mergeRelatedTaskCardGroup } = await import('@/lib/user-preferences');
 const { stopTaskBeforeRelaunch } = await import('@/lib/tasks/task-stop');
 const { realtimeHub } = await import('@/lib/realtime/hub');
 const { deliverAgentOutboxForHost } = await import('@/lib/realtime/agent-outbox');
@@ -2450,4 +2464,221 @@ describe('/api/issues/[issueId]', () => {
     expect(data.spawnedTask).toBeNull();
   });
 
+  describe('agent group on todo→doing (RFC 0033)', () => {
+    const boundGitProject = {
+      id: 'project-1',
+      userId: 'user-1',
+      collaborationId: null,
+      name: 'App',
+      daemonHost: 'daemon-a',
+      workspacePath: '/repo',
+      repoRoot: '/repo',
+      worktreeBranch: 'main',
+      lastCommit: 'abc123',
+      gitRemoteUrl: null,
+      mergeOptOut: false,
+    };
+
+    beforeEach(() => {
+      vi.mocked(db.defaultProject.findUnique).mockResolvedValue({ projectId: 'project-default' } as any);
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ project: boundGitProject }) as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude', 'codex'], capabilities: [] },
+      ] as any);
+      vi.mocked(resolveProjectAgentsRegistry).mockResolvedValue([
+        { name: 'feature-dev', doc: 'claw/agents/feature-dev.md', description: null, backend: null },
+        { name: 'code-reviewer', doc: 'claw/agents/code-reviewer.md', description: null, backend: 'codex' },
+      ]);
+      vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+        task: buildTask({ id: 'task-worker', status: 'init', backendType: 'claude' }),
+        initialMessage: null,
+        initialMessageContent: null,
+      } as any);
+      vi.mocked(createAndDispatchAiTask).mockResolvedValue(buildTask({ id: 'task-reviewer', issueId: null }) as any);
+      vi.mocked(mergeRelatedTaskCardGroup).mockResolvedValue({ groups: [] } as any);
+    });
+
+    it('spawns the issue task as the worker and its reviewers in the same group and worktree', async () => {
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: {
+          status: 'doing',
+          agents: [{ name: 'feature-dev' }, { name: 'code-reviewer' }],
+          metadata: { backendType: 'claude', daemonHost: 'daemon-a' },
+        },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(resolveProjectAgentsRegistry).toHaveBeenCalledWith({
+        userId: 'user-1',
+        daemonHost: 'daemon-a',
+        workspacePath: '/repo',
+      });
+      const workerArgs = vi.mocked(createAiTaskArtifacts).mock.calls[0][0] as any;
+      expect(workerArgs.issueId).toBe('issue-1');
+      expect(workerArgs.requestedBackendType).toBe('claude');
+      expect(workerArgs.groupId).toEqual(expect.any(String));
+      expect(workerArgs.initialMessageContent).toBe(
+        '[conductor:agent] You are the "feature-dev" agent for this task group (your role: worker).\n'
+          + 'Read and follow your agent doc: claw/agents/feature-dev.md\n\n'
+          + '--- Task ---\nIssue: Board implementation\n\nHook issue board into the app shell',
+      );
+      expect(workerArgs.metadata).toEqual(expect.objectContaining({
+        initialContent: workerArgs.initialMessageContent,
+        groupId: workerArgs.groupId,
+        agentRole: 'worker',
+        agentName: 'feature-dev',
+      }));
+
+      expect(createAndDispatchAiTask).toHaveBeenCalledTimes(1);
+      const reviewerArgs = vi.mocked(createAndDispatchAiTask).mock.calls[0][0] as any;
+      expect(reviewerArgs).toEqual(expect.objectContaining({
+        projectId: 'project-1',
+        issueId: null,
+        title: 'Reviewer: code-reviewer',
+        agentHost: 'daemon-a',
+        requestedBackendType: 'codex',
+        groupId: workerArgs.groupId,
+      }));
+      expect(reviewerArgs.initialMessageContent).toContain('"code-reviewer" agent for this task group (your role: reviewer)');
+      // Reviewers share the worker's worktree without owning its branch.
+      expect(reviewerArgs.launchConfig).toEqual(expect.objectContaining({
+        worktree: true,
+        worktreeId: workerArgs.launchConfig.worktreeId,
+        worktreeBranch: workerArgs.launchConfig.worktreeBranch,
+        worktreeReuseOnly: true,
+      }));
+      expect(mergeRelatedTaskCardGroup).toHaveBeenCalledWith(
+        'user-1',
+        'task-worker',
+        'task-reviewer',
+        { source: 'feature-dev', related: 'code-reviewer' },
+      );
+    });
+
+    it('keeps a /goal directive on the first line of the worker bootstrap', async () => {
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+        project: boundGitProject,
+        description: '/goal ship the feature',
+      }) as any);
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: { status: 'doing', agents: ['feature-dev'], metadata: { backendType: 'claude' } },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+
+      expect(response.status).toBe(200);
+      const workerArgs = vi.mocked(createAiTaskArtifacts).mock.calls[0][0] as any;
+      expect(workerArgs.aiMode).toBe('goal');
+      expect(workerArgs.initialMessageContent).toMatch(/^\/goal\n\[conductor:agent\] You are the "feature-dev" agent/);
+      expect(workerArgs.initialMessageContent).toContain('--- Task ---\nship the feature');
+      expect(createAndDispatchAiTask).not.toHaveBeenCalled();
+    });
+
+    it('rejects an agent missing from the project registry before spawning', async () => {
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: { status: 'doing', agents: ['feature-dev', 'ghost'], metadata: { backendType: 'claude' } },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(400);
+      expect(data.error).toContain('unknown agent "ghost"');
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+      expect(db.issue.update).not.toHaveBeenCalled();
+    });
+
+    it('reports an offline project daemon before resolving the agent registry', async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([]);
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: { status: 'doing', agents: ['feature-dev'], metadata: { backendType: 'claude' } },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toBe('Project daemon daemon-a is offline');
+      expect(resolveProjectAgentsRegistry).not.toHaveBeenCalled();
+    });
+
+    it('rejects a reviewer backend the execution daemon does not advertise', async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: [] },
+      ] as any);
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: { status: 'doing', agents: ['feature-dev', 'code-reviewer'], metadata: { backendType: 'claude' } },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(400);
+      expect(data.error).toBe('agent "code-reviewer" requires backend "codex", but daemon "daemon-a" does not advertise it');
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    });
+
+    it('keeps the issue task when a reviewer spawn fails', async () => {
+      vi.mocked(createAndDispatchAiTask).mockRejectedValueOnce(new Error('daemon rejected reviewer'));
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: { status: 'doing', agents: ['feature-dev', 'code-reviewer'], metadata: { backendType: 'claude' } },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data.spawnedTask).toEqual(expect.objectContaining({ id: 'task-worker' }));
+      expect(finalizeAiTaskCreation).toHaveBeenCalledTimes(1);
+      expect(createAndDispatchAiTask).toHaveBeenCalledTimes(1);
+      expect(mergeRelatedTaskCardGroup).not.toHaveBeenCalled();
+      consoleError.mockRestore();
+    });
+
+    it('returns 409 instead of 500 when the task group_id column is missing', async () => {
+      vi.mocked(createAiTaskArtifacts).mockRejectedValueOnce(
+        new Prisma.PrismaClientKnownRequestError(
+          'The column `tasks.group_id` does not exist in the current database.',
+          { code: 'P2022', clientVersion: 'test' },
+        ),
+      );
+
+      const response = await PATCH(createMockRequest({
+        method: 'PATCH',
+        body: { status: 'doing', agents: ['feature-dev'], metadata: { backendType: 'claude' } },
+      }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toBe('Task groups require the latest database migration');
+      expect(finalizeAiTaskCreation).not.toHaveBeenCalled();
+    });
+
+    it('rejects malformed agents, agents with a remote worktree, and agents that would not spawn a task', async () => {
+      const patch = (body: Record<string, unknown>) => PATCH(createMockRequest({ method: 'PATCH', body }), {
+        params: Promise.resolve({ issueId: 'issue-1' }),
+      });
+
+      expect((await patch({ status: 'doing', agents: 'feature-dev' })).status).toBe(400);
+      expect((await patch({ status: 'doing', agents: ['feature-dev'], remoteWorktreeHost: 'daemon-b' })).status).toBe(409);
+      expect((await patch({ title: 'Renamed', agents: ['feature-dev'] })).status).toBe(409);
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+      expect(db.issue.update).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -1,7 +1,12 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { MoveIssueToDoingDialog, type MoveIssueToDoingDaemonOption } from './MoveIssueToDoingDialog';
+
+const apiGetMock = vi.hoisted(() => vi.fn());
+vi.mock('@/shared/api/client', () => ({
+  getApiClient: () => ({ get: apiGetMock }),
+}));
 
 vi.mock('@/components/common/Dialog', () => ({
   Dialog: ({
@@ -185,12 +190,12 @@ describe('MoveIssueToDoingDialog', () => {
     expect(screen.queryByRole('status')).toBeNull();
   });
 
-  describe('workspace on another daemon (RFC 0038)', () => {
-    const REMOTE_CAPABLE: MoveIssueToDoingDaemonOption[] = MERGED_DAEMONS.map((option) => ({
-      ...option,
-      remoteWorktreeHosts: MERGED_DAEMONS.filter((other) => other.host !== option.host).map((other) => other.host),
-    }));
+  const REMOTE_CAPABLE: MoveIssueToDoingDaemonOption[] = MERGED_DAEMONS.map((option) => ({
+    ...option,
+    remoteWorktreeHosts: MERGED_DAEMONS.filter((other) => other.host !== option.host).map((other) => other.host),
+  }));
 
+  describe('workspace on another daemon (RFC 0038)', () => {
     it('is hidden when no other daemon can host the worktree', () => {
       render(
         <MoveIssueToDoingDialog
@@ -344,6 +349,156 @@ describe('MoveIssueToDoingDialog', () => {
       const select = screen.getByLabelText('Workspace on another daemon') as HTMLSelectElement;
       expect(select).toHaveValue('');
       expect(Array.from(select.options).map((option) => option.value)).toEqual(['', 'daemon-a']);
+    });
+  });
+
+  describe('agents (RFC 0033)', () => {
+    const openAgentsSection = () => {
+      const details = screen.getByText('Agents (optional)').closest('details')!;
+      expect(details).not.toHaveAttribute('open');
+      details.open = true;
+      fireEvent(details, new Event('toggle'));
+    };
+
+    it('loads the registry only when opened and confirms with a worker + reviewer group', async () => {
+      apiGetMock.mockReset().mockResolvedValue({
+        agents: [
+          { name: 'feature-dev', description: null, backend: 'codex' },
+          { name: 'code-reviewer', description: null, backend: null },
+        ],
+      });
+      const onConfirm = vi.fn();
+      render(
+        <MoveIssueToDoingDialog
+          open
+          daemonOptions={SINGLE_DAEMON}
+          onClose={() => {}}
+          onConfirm={onConfirm}
+        />,
+      );
+
+      expect(apiGetMock).not.toHaveBeenCalled();
+      openAgentsSection();
+      expect(apiGetMock).toHaveBeenCalledWith('/projects/project-a/agents');
+
+      fireEvent.change(await screen.findByLabelText('Worker agent'), { target: { value: 'feature-dev' } });
+      // The worker's registry default backend is applied.
+      expect(screen.getByLabelText('Backend')).toHaveValue('codex');
+      fireEvent.click(screen.getByRole('button', { name: '+ Add reviewer' }));
+      fireEvent.change(screen.getByLabelText('Reviewer 1 agent'), { target: { value: 'code-reviewer' } });
+      fireEvent.change(screen.getByLabelText('Reviewer 1 backend'), { target: { value: 'claude' } });
+      expect(screen.getByText('Agents: feature-dev, code-reviewer')).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Move To Doing' }));
+      });
+
+      expect(onConfirm).toHaveBeenCalledWith({
+        backendType: 'codex',
+        daemonHost: 'daemon-a',
+        projectId: 'project-a',
+        agents: [{ name: 'feature-dev' }, { name: 'code-reviewer', backend: 'claude' }],
+      });
+    });
+
+    it('blocks the remote workspace while a worker agent is picked, and restores it when cleared', async () => {
+      apiGetMock.mockReset().mockResolvedValue({
+        agents: [{ name: 'feature-dev', description: null, backend: null }],
+      });
+      const onConfirm = vi.fn();
+      render(
+        <MoveIssueToDoingDialog
+          open
+          daemonOptions={REMOTE_CAPABLE}
+          onClose={() => {}}
+          onConfirm={onConfirm}
+        />,
+      );
+
+      fireEvent.change(screen.getByLabelText('Workspace on another daemon'), { target: { value: 'daemon-b' } });
+      openAgentsSection();
+      const workerAgent = await screen.findByLabelText('Worker agent');
+      fireEvent.change(workerAgent, { target: { value: 'feature-dev' } });
+
+      const workspace = screen.getByLabelText('Workspace on another daemon');
+      expect(workspace).toBeDisabled();
+      expect(workspace).toHaveValue('');
+      expect(screen.getByText('Not available together with an agent group.')).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Move To Doing' }));
+      });
+      expect(onConfirm).toHaveBeenLastCalledWith({
+        backendType: 'claude',
+        daemonHost: 'daemon-a',
+        projectId: 'project-a',
+        agents: [{ name: 'feature-dev' }],
+      });
+
+      fireEvent.change(workerAgent, { target: { value: '' } });
+      await waitFor(() => expect(screen.getByLabelText('Workspace on another daemon')).toHaveValue('daemon-b'));
+    });
+
+    it('loads the registry of the picked daemon\'s sibling project in a merged group', async () => {
+      apiGetMock.mockReset().mockResolvedValue({ agents: [] });
+      render(
+        <MoveIssueToDoingDialog
+          open
+          daemonOptions={MERGED_DAEMONS}
+          onClose={() => {}}
+          onConfirm={() => {}}
+        />,
+      );
+
+      fireEvent.change(screen.getByLabelText('Daemon'), { target: { value: 'daemon-b' } });
+      openAgentsSection();
+
+      await screen.findByText(/No agents registered for this project/);
+      expect(apiGetMock).toHaveBeenCalledTimes(1);
+      expect(apiGetMock).toHaveBeenCalledWith('/projects/project-b/agents');
+    });
+
+    it('blocks confirm while the picked agents are unvalidated after a daemon switch', async () => {
+      apiGetMock.mockReset()
+        .mockResolvedValueOnce({ agents: [{ name: 'feature-dev', description: null, backend: null }] })
+        .mockReturnValueOnce(new Promise(() => {}));
+      render(
+        <MoveIssueToDoingDialog
+          open
+          daemonOptions={MERGED_DAEMONS}
+          onClose={() => {}}
+          onConfirm={() => {}}
+        />,
+      );
+
+      openAgentsSection();
+      fireEvent.change(await screen.findByLabelText('Worker agent'), { target: { value: 'feature-dev' } });
+      const confirm = screen.getByRole('button', { name: 'Move To Doing' });
+      expect(confirm).toBeEnabled();
+
+      fireEvent.change(screen.getByLabelText('Daemon'), { target: { value: 'daemon-b' } });
+
+      expect(apiGetMock).toHaveBeenLastCalledWith('/projects/project-b/agents');
+      expect(screen.getByText('Loading registered agents…')).toBeInTheDocument();
+      expect(screen.getByText('Agents: feature-dev')).toBeInTheDocument();
+      expect(confirm).toBeDisabled();
+    });
+
+    it('shows the registry guidance when the project has no agents', async () => {
+      apiGetMock.mockReset().mockResolvedValue({ agents: [] });
+      render(
+        <MoveIssueToDoingDialog
+          open
+          daemonOptions={SINGLE_DAEMON}
+          onClose={() => {}}
+          onConfirm={() => {}}
+        />,
+      );
+
+      openAgentsSection();
+
+      expect(await screen.findByText(/No agents registered for this project/)).toBeInTheDocument();
+      expect(screen.queryByLabelText('Worker agent')).toBeNull();
     });
   });
 });

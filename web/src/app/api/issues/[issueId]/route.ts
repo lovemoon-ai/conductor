@@ -23,6 +23,18 @@ import { resolveTaskStopTargetHost, stopTaskBeforeRelaunch } from '@/lib/tasks/t
 import { buildTaskWorktreeLaunchConfig, type RemoteWorktreeLaunchConfig } from '@/lib/tasks/worktree';
 import { buildRemoteWorktreeBootstrap, resolveRemoteWorktreeTarget } from '@/lib/tasks/remote-worktree';
 import {
+  buildAgentBootstrap,
+  buildGroupMemberMetadata,
+  parseAgentsInput,
+  TASK_GROUP_SCHEMA_UNAVAILABLE_MESSAGE,
+} from '@/lib/tasks/agent-group';
+import {
+  findAgentGroupBackendError,
+  resolveAgentGroupPlan,
+  spawnAgentGroupReviewers,
+} from '@/lib/tasks/agent-group-spawn';
+import { isMissingGroupIdColumnError } from '@/lib/tasks/pty-compat';
+import {
   ConnectedAgent,
   normalizeBackendType,
   pickDefaultAgentHost,
@@ -332,6 +344,11 @@ export async function PATCH(
   }
 
   const input = parsed.data;
+  const agentsParse = parseAgentsInput(input.agents);
+  if (agentsParse && 'error' in agentsParse) {
+    return NextResponse.json({ error: agentsParse.error }, { status: 400 });
+  }
+  const agentGroup = agentsParse?.agents ?? null;
   const existingMetadata = parseIssueMetadata(existing.metadata);
   const nextMetadata = input.metadata !== undefined ? input.metadata : existingMetadata;
   const requestedBackendType = normalizeBackendType(nextMetadata?.backendType);
@@ -511,6 +528,7 @@ export async function PATCH(
   let spawnedTask: Awaited<ReturnType<typeof createAiTaskArtifacts>> | null = null;
   let spawnTaskArgs: Parameters<typeof createAiTaskArtifacts>[0] | null = null;
   let restartPlan: PlannedInplaceTaskRestart | null = null;
+  let reviewerSpawnArgs: Omit<Parameters<typeof spawnAgentGroupReviewers>[0], 'workerTaskId'> | null = null;
 
   // The workspace choice only shapes a brand-new task. Refuse it rather than
   // silently restarting a linked task (or doing nothing) where the user asked.
@@ -523,6 +541,19 @@ export async function PATCH(
       },
       { status: 409 },
     );
+  }
+  if (agentGroup && !shouldSpawnTask) {
+    return NextResponse.json(
+      {
+        error: linkedTask
+          ? 'This issue already has a linked task; it cannot be restarted as an agent group'
+          : 'agents only applies when moving the issue into doing starts a new task',
+      },
+      { status: 409 },
+    );
+  }
+  if (agentGroup && input.remoteWorktreeHost) {
+    return NextResponse.json({ error: 'remoteWorktree does not support agent groups' }, { status: 409 });
   }
 
   if (shouldSpawnTask && !activeTask) {
@@ -575,6 +606,31 @@ export async function PATCH(
     }
 
     const agentHost = resolvedAgentHost.agentHost;
+    // RFC 0033: run the task as a worker + reviewer agent group. Resolved after
+    // the daemon check: with the daemon offline the registry falls back to an
+    // empty local read and would misreport every agent as unknown.
+    const agentGroupPlan = agentGroup
+      ? await resolveAgentGroupPlan({
+          userId: user.id,
+          agents: agentGroup,
+          daemonHost: projectDaemonHost,
+          workspacePath: projectWorkspacePath,
+          requestedBackendType,
+        })
+      : null;
+    if (agentGroupPlan && 'error' in agentGroupPlan) {
+      return NextResponse.json({ error: agentGroupPlan.error }, { status: 400 });
+    }
+    const spawnBackendType = agentGroupPlan?.workerBackendType ?? requestedBackendType;
+    const executionAgent = agentGroupPlan
+      ? connectedAgents.find((agent) => agent.host === agentHost)
+      : undefined;
+    const agentGroupBackendError = agentGroupPlan && executionAgent
+      ? findAgentGroupBackendError(agentGroupPlan, executionAgent)
+      : null;
+    if (agentGroupBackendError) {
+      return NextResponse.json({ error: agentGroupBackendError }, { status: 400 });
+    }
     // RFC 0038: the AI runs on `agentHost`, its worktree on a merged-group sibling.
     let remoteWorktree: RemoteWorktreeLaunchConfig | null = null;
     if (input.remoteWorktreeHost) {
@@ -608,10 +664,10 @@ export async function PATCH(
     const resolvedTitle = input.title ?? existing.title;
     const resolvedDescription = input.description ?? existing.description;
     const goalParse = parseGoalDirective(resolvedDescription);
-    const useGoalMode = goalParse.mode === 'goal' && isGoalCapableBackend(requestedBackendType);
+    const useGoalMode = goalParse.mode === 'goal' && isGoalCapableBackend(spawnBackendType);
     if (goalParse.mode === 'goal' && !useGoalMode) {
       console.warn(
-        `[issues] /goal directive ignored for issue=${existing.id} — backend ${requestedBackendType ?? '(unspecified)'} does not support goal mode`,
+        `[issues] /goal directive ignored for issue=${existing.id} — backend ${spawnBackendType ?? '(unspecified)'} does not support goal mode`,
       );
     }
 
@@ -624,16 +680,30 @@ export async function PATCH(
           title: resolvedTitle,
           description: resolvedDescription,
         });
-    const initialContent = remoteWorktree
-      ? buildRemoteWorktreeBootstrap({
-          remoteWorktree,
-          localWorkspacePath: projectWorkspacePath,
+    const initialContent = agentGroupPlan
+      ? buildAgentBootstrap({
+          agent: agentGroupPlan.workerAgent,
+          role: 'worker',
+          docPath: agentGroupPlan.workerDoc,
           taskPrompt: issueContent,
         })
-      : issueContent;
+      : remoteWorktree
+        ? buildRemoteWorktreeBootstrap({
+            remoteWorktree,
+            localWorkspacePath: projectWorkspacePath,
+            taskPrompt: issueContent,
+          })
+        : issueContent;
     const metadata = {
-      ...(requestedBackendType ? { backendType: requestedBackendType } : {}),
+      ...(spawnBackendType ? { backendType: spawnBackendType } : {}),
       ...(initialContent ? { initialContent } : {}),
+      ...(agentGroupPlan
+        ? buildGroupMemberMetadata({
+            groupId: agentGroupPlan.groupId,
+            role: 'worker',
+            agent: agentGroupPlan.workerAgent,
+          })
+        : {}),
     };
     let requestedTaskId: string | undefined;
     let launchConfig: JsonObject | null = null;
@@ -671,11 +741,12 @@ export async function PATCH(
       issueId: existing.id,
       title: resolvedTitle,
       agentHost,
-      requestedBackendType,
+      requestedBackendType: spawnBackendType,
       requestedId: requestedTaskId,
       launchConfig,
       metadata: Object.keys(metadata).length > 0 ? metadata : null,
       initialMessageContent: initialContent,
+      ...(agentGroupPlan ? { groupId: agentGroupPlan.groupId } : {}),
       ...(useGoalMode
         ? {
             aiMode: 'goal' as const,
@@ -687,6 +758,17 @@ export async function PATCH(
           }
         : {}),
     };
+    reviewerSpawnArgs = agentGroupPlan
+      ? {
+          userId: user.id,
+          projectId: executionProject.id,
+          plan: agentGroupPlan,
+          agentHost,
+          workerLaunchConfig: launchConfig,
+          projectWorkspacePath,
+          projectWorktreeBranch,
+        }
+      : null;
   }
 
   if (shouldRestartLinkedTask && linkedTask) {
@@ -901,7 +983,15 @@ export async function PATCH(
         updatedIssue,
         skippedSpawn: false,
       };
+    }).catch((error: unknown) => {
+      if (reviewerSpawnArgs && isMissingGroupIdColumnError(error)) {
+        return null;
+      }
+      throw error;
     });
+    if (!transactionResult) {
+      return NextResponse.json({ error: TASK_GROUP_SCHEMA_UNAVAILABLE_MESSAGE }, { status: 409 });
+    }
 
     if (!transactionResult.skippedSpawn && transactionResult.createdTask) {
       spawnedTask = transactionResult.createdTask;
@@ -912,6 +1002,12 @@ export async function PATCH(
         ...spawnTaskArgs,
         ...transactionResult.createdTask,
       });
+      if (reviewerSpawnArgs) {
+        await spawnAgentGroupReviewers({
+          ...reviewerSpawnArgs,
+          workerTaskId: transactionResult.createdTask.task.id,
+        });
+      }
     }
     updated = transactionResult.updatedIssue;
   } else if (shouldKillActiveTask && activeTask) {
