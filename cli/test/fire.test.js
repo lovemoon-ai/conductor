@@ -648,6 +648,58 @@ describe("conductor-fire backends", () => {
     assert.equal(commandLine, "\"/daemon/Kimi/bin/kimi\" --debug");
   });
 
+  it("ignores a stale daemon cli command that belongs to a different backend", () => {
+    // A tmux-mode Fire inherits the tmux server's global environment, so a
+    // CONDUCTOR_CLI_COMMAND left by another backend's task must not leak into
+    // a commandless backend's session (regression: dsh sessions picked up
+    // `claude --model opus` and sent model=opus to the DeepSeek API).
+    const commandLine = resolveAiSessionCommandLine(
+      "dsh",
+      {},
+      {
+        CONDUCTOR_CLI_COMMAND: "claude --model opus",
+      },
+    );
+
+    assert.equal(commandLine, "");
+  });
+
+  it("ignores a stale daemon cli command resolved through an absolute path", () => {
+    const commandLine = resolveAiSessionCommandLine(
+      "copilot",
+      {},
+      {
+        CONDUCTOR_CLI_COMMAND: "/usr/local/bin/claude --model opus",
+      },
+    );
+
+    assert.equal(commandLine, "");
+  });
+
+  it("keeps a daemon cli command whose executable is not a known backend", () => {
+    const commandLine = resolveAiSessionCommandLine(
+      "dsh",
+      {},
+      {
+        CONDUCTOR_CLI_COMMAND: "my-custom-wrapper --flag",
+      },
+    );
+
+    assert.equal(commandLine, "my-custom-wrapper --flag");
+  });
+
+  it("honors a matching daemon cli command for command-optional backends", () => {
+    const commandLine = resolveAiSessionCommandLine(
+      "dsh",
+      {},
+      {
+        CONDUCTOR_CLI_COMMAND: "dsh --model deepseek-v4-pro",
+      },
+    );
+
+    assert.equal(commandLine, "dsh --model deepseek-v4-pro");
+  });
+
   it("treats CONDUCTOR_LAUNCHED_BY_DAEMON as daemon-hosted even without a cli command", () => {
     assert.equal(
       isLaunchedByDaemon({

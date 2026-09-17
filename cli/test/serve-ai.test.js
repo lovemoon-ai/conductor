@@ -4,7 +4,7 @@ import fs from "node:fs";
 import http from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { startServeAiServer } from "../src/serve-ai/index.js";
+import { startServeAiServer, resolveAiSessionCommandLine } from "../src/serve-ai/index.js";
 
 function createTestServer(overrides = {}) {
   const calls = [];
@@ -394,5 +394,18 @@ describe("serve-ai", { concurrency: false }, () => {
       },
     });
     assert.equal(authorized.status, 200);
+  });
+
+  it("ignores a stale CONDUCTOR_CLI_COMMAND from a different backend", () => {
+    // Regression: a dsh session inherited `claude --model opus` from the tmux
+    // server's global environment and forwarded model=opus to the DeepSeek API.
+    assert.equal(
+      resolveAiSessionCommandLine("dsh", {}, { CONDUCTOR_CLI_COMMAND: "claude --model opus" }),
+      "",
+    );
+    assert.equal(
+      resolveAiSessionCommandLine("claude", {}, { CONDUCTOR_CLI_COMMAND: "claude --model opus" }),
+      "claude --model opus",
+    );
   });
 });

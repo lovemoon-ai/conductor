@@ -28,6 +28,7 @@ import {
 } from "../src/fire/resume.js";
 import {
   filterRuntimeSupportedAllowCliList,
+  inferBuiltInRuntimeBackendFromCommand,
   isBuiltInRuntimeBackend,
   isCommandOptionalBuiltInRuntimeBackend,
   listAdvertisedBackends,
@@ -218,7 +219,22 @@ export function resolveAiSessionCommandLine(backend, allowCliList, env = process
   const daemonCommand =
     typeof env?.CONDUCTOR_CLI_COMMAND === "string" ? env.CONDUCTOR_CLI_COMMAND.trim() : "";
 
-  const resolvedCommand = configuredCommand || daemonCommand;
+  // CONDUCTOR_CLI_COMMAND may be stale: a tmux-mode Fire inherits the tmux
+  // SERVER's global environment for variables the daemon did not explicitly
+  // override, so a value left by another backend's task (e.g. `claude --model
+  // opus` reaching a dsh task) can leak in. Only honor the fallback when the
+  // command does not provably belong to a different built-in backend. Commands
+  // whose executable is not a known backend name (custom wrappers) are kept.
+  const inferredDaemonBackend = daemonCommand ? inferBuiltInRuntimeBackendFromCommand(daemonCommand) : "";
+  const usableDaemonCommand =
+    daemonCommand &&
+    (!inferredDaemonBackend ||
+      inferredDaemonBackend === normalizedSessionBackend ||
+      inferredDaemonBackend === normalizedBackend)
+      ? daemonCommand
+      : "";
+
+  const resolvedCommand = configuredCommand || usableDaemonCommand;
   if (!resolvedCommand) {
     return "";
   }
