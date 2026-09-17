@@ -26,6 +26,7 @@ import {
   normalizeTaskLabelIds,
   TASK_LABEL_IDS_METADATA_KEY,
 } from "@/lib/tasks/task-labels";
+import { PERSISTENT_METADATA_KEY } from "@/shared/utils/persistent-task";
 import {
   applyLegacyTaskShape,
   isMissingAnyNewSchemaError,
@@ -680,6 +681,15 @@ export async function PATCH(
   );
   if (effectiveLabelIds.length > 0) {
     stickyMetadataFields[TASK_LABEL_IDS_METADATA_KEY] = effectiveLabelIds;
+  }
+  // RFC 0039: persistent-task state (rounds, summary) is written by its own
+  // routes; an unrelated PATCH or a `metadata: null` wipe must not drop it.
+  const effectivePersistent =
+    parsedMetadataInput && PERSISTENT_METADATA_KEY in parsedMetadataInput
+      ? parsedMetadataInput[PERSISTENT_METADATA_KEY]
+      : existingMetadataObject?.[PERSISTENT_METADATA_KEY];
+  if (effectivePersistent && typeof effectivePersistent === "object") {
+    stickyMetadataFields[PERSISTENT_METADATA_KEY] = effectivePersistent;
   }
   // Defense-in-depth: strip `attachedToAiTaskId` from user-provided
   // metadata. Even though the sticky-spread-last logic below would

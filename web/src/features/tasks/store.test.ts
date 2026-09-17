@@ -34,6 +34,48 @@ describe('tasks store', () => {
     });
   });
 
+  it('starts a persistent round with snake_case fields and keeps persistent tasks last', async () => {
+    useTasksStore.setState({
+      tasks: [
+        { id: 'task-1', title: 'Normal', status: 'running', createdAt: '2026-09-01T00:00:00.000Z' },
+      ] as any,
+    });
+    mockPost.mockResolvedValueOnce({
+      id: 'task-2',
+      title: 'Release',
+      status: 'init',
+      metadata: { persistent: { enabled: true, round: 3 } },
+      created_at: '2026-09-01T00:00:00.000Z',
+    });
+
+    await useTasksStore.getState().startTaskRound('task-2', {
+      content: 'Ship 0.14.0',
+      backendType: 'codex',
+      agentHost: 'mac-mini',
+      worktree: 'new',
+      expectedRound: 2,
+    });
+
+    expect(mockPost).toHaveBeenCalledWith('/tasks/task-2/rounds', {
+      content: 'Ship 0.14.0',
+      backend_type: 'codex',
+      agent_host: 'mac-mini',
+      worktree: 'new',
+      expected_round: 2,
+    });
+    expect(useTasksStore.getState().tasks.map((task) => task.id)).toEqual(['task-1', 'task-2']);
+  });
+
+  it('refreshes the task when another client already moved it to a new round', async () => {
+    mockPost.mockRejectedValueOnce(Object.assign(new Error('moved'), { status: 409 }));
+    mockGet.mockResolvedValueOnce({ id: 'task-2', title: 'Release', status: 'init', created_at: '2026-09-01T00:00:00.000Z' });
+
+    await expect(
+      useTasksStore.getState().startTaskRound('task-2', { content: 'go', expectedRound: 2 }),
+    ).rejects.toThrow('moved');
+    expect(mockGet).toHaveBeenCalledWith('/tasks/task-2?recover_stale=1');
+  });
+
   // Regression: createTask typed the POST as a bare `Task`, so the multi-agent
   // extras were dropped. The reviewers then only appeared after a full refetch
   // (there is no browser-side `task_created` event) and never as a group.

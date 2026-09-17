@@ -19,7 +19,7 @@ import {
   getVisibleProjectGroupsForProjectList,
 } from '@/features/projects/utils/project-list-order';
 import { isProjectTaskGraphEnabled } from '@/features/projects/utils/task-graph-settings';
-import { filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } from '@/features/tasks';
+import { filterHiddenPersistentTasks, filterTasksByProject, getStableTaskBackend, resolveTaskDaemonHost } from '@/features/tasks';
 import { buildTaskDetailHref } from '@/features/tasks/utils/task-navigation';
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
 import { parseTaskType, type TaskType } from '@/lib/tasks/task-config';
@@ -194,8 +194,11 @@ function TasksPageContent() {
     [tasks, attachedPtyTaskIds],
   );
   const projectVisibleTasks = useMemo(
-    () => filterTasksByProject(tasksWithoutAttachedPty, projectScope.length > 0 ? projectScope : null, hiddenProjectIds),
-    [tasksWithoutAttachedPty, projectScope, hiddenProjectIds],
+    () => filterHiddenPersistentTasks(
+      filterTasksByProject(tasksWithoutAttachedPty, projectScope.length > 0 ? projectScope : null, hiddenProjectIds),
+      projects,
+    ),
+    [tasksWithoutAttachedPty, projectScope, hiddenProjectIds, projects],
   );
   const runningFilteredTasks = useMemo(
     () => showRunningOnly

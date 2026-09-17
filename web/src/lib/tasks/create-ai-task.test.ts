@@ -321,6 +321,48 @@ describe('createAiTaskArtifacts (goal mode)', () => {
   });
 });
 
+describe('finalizeAiTaskCreation (persistent round)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('sends the round prompt to the AI and asks the daemon to replace the previous fire', async () => {
+    await finalizeAiTaskCreation({
+      userId: 'user-1',
+      projectId: 'project-1',
+      title: 'Release',
+      agentHost: 'daemon-a',
+      task: {
+        id: 'task-1',
+        projectId: 'project-1',
+        issueId: null,
+        title: 'Release',
+        status: 'init',
+        agentHost: 'daemon-a',
+        executionHost: 'daemon-a',
+        backendType: 'claude',
+        sessionId: null,
+        sessionFilePath: null,
+        metadata: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      initialMessage: { id: 'msg-1', createdAt: new Date() },
+      initialMessageContent: 'Ship 0.14.0',
+      effectiveLaunchConfig: { cwd: '/repo' },
+      agentInitialContent: '[Persistent task — round 3]\n---\nShip 0.14.0',
+      replaceExistingFire: true,
+    });
+
+    const payload = vi.mocked(enqueueAndAttemptAgentCommand).mock.calls.at(-1)?.[0]?.envelope?.payload;
+    expect(payload).toMatchObject({
+      task_id: 'task-1',
+      initial_content: '[Persistent task — round 3]\n---\nShip 0.14.0',
+      replace_existing_fire: true,
+    });
+  });
+});
+
 describe('finalizeAiTaskCreation (goal mode)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

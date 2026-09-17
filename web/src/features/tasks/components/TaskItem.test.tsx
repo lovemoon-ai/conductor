@@ -45,7 +45,7 @@ vi.mock('../store', () => ({
       deleteTask: deleteTaskMock,
       achieveTask: vi.fn(),
       markTaskRead: markTaskReadMock,
-      fetchTask: vi.fn(),
+      fetchTask: vi.fn().mockResolvedValue(null),
       setTaskSecondProject: setTaskSecondProjectMock,
       setTaskLabels: setTaskLabelsMock,
     }),
@@ -141,6 +141,25 @@ describe('TaskItem', () => {
     expect(pushMock).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Hide actions' }));
     expect(screen.queryByRole('button', { name: 'Delete task' })).not.toBeInTheDocument();
+  });
+
+  it('marks a persistent task with its round and opens its settings from the actions', () => {
+    render(<TaskItem
+      task={{
+        id: 'task-persistent',
+        title: 'Biweekly release',
+        status: 'running',
+        projectId: null,
+        metadata: { persistent: { enabled: true, round: 3 } },
+        createdAt: FIXED_DATE.toISOString(),
+        updatedAt: null,
+      }}
+      isUnread={false} isSelected={false} selectionMode={false} onToggleSelect={() => {}}
+    />);
+    expect(screen.getByText('R3')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Persistent task settings' }));
+    expect(screen.getByText('Standing instructions')).toBeInTheDocument();
   });
 
   it('does not rename after a short title click whose pointer release is captured by the card', async () => {

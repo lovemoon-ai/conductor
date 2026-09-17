@@ -82,6 +82,7 @@ vi.mock('@/features/tasks', async () => {
   const { createPortal } = await import('react-dom');
   return {
     useTasksStore: (selector: (state: typeof tasksState) => unknown) => selector(tasksState),
+    filterHiddenPersistentTasks: (tasks: unknown[]) => tasks,
     filterTasksByProject: (
       tasks: Array<{ projectId?: string | null }>,
       projectFilter: string | string[] | null,

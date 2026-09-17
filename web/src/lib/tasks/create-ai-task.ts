@@ -369,7 +369,12 @@ export async function createAiTaskArtifacts(
 }
 
 export async function finalizeAiTaskCreation(
-  args: CreateAiTaskArgs & CreatedAiTaskArtifacts,
+  args: CreateAiTaskArgs & CreatedAiTaskArtifacts & {
+    /** What the AI receives when it differs from the displayed first message (RFC 0039 rounds). */
+    agentInitialContent?: string;
+    /** RFC 0039: the task id's previous fire may still be exiting; the daemon waits for it. */
+    replaceExistingFire?: boolean;
+  },
 ): Promise<void> {
   if (args.initialMessage && args.initialMessageContent) {
     realtimeHub.broadcast(args.userId, args.task.projectId, {
@@ -424,9 +429,10 @@ export async function finalizeAiTaskCreation(
           project_id: args.task.projectId,
           title: args.task.title,
           backend_type: args.task.backendType ?? args.metadata?.backendType,
-          initial_content: args.initialMessageContent ?? undefined,
+          initial_content: args.agentInitialContent ?? args.initialMessageContent ?? undefined,
           launch_config: dispatchLaunchConfig ?? undefined,
           request_id: requestId,
+          ...(args.replaceExistingFire ? { replace_existing_fire: true } : {}),
         },
       },
     },

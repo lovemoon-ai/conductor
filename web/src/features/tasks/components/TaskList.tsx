@@ -21,6 +21,7 @@ import { orderTasksWithPinnedFirst, useTasksStore } from '../store';
 import { useProjectsStore } from '@/features/projects';
 import { useAuthStore } from '@/features/auth/store';
 import {
+  filterHiddenPersistentTasks,
   filterTasksByProject,
   getStableTaskBackend,
   resolveTaskDaemonHost,
@@ -273,8 +274,11 @@ export function TaskList({
     [tasks, attachedPtyTaskIds],
   );
   const projectVisibleTasks = useMemo(
-    () => filterTasksByProject(tasksWithoutAttachedPty, effectiveProjectFilter, hiddenProjectIds),
-    [tasksWithoutAttachedPty, effectiveProjectFilter, hiddenProjectIds],
+    () => filterHiddenPersistentTasks(
+      filterTasksByProject(tasksWithoutAttachedPty, effectiveProjectFilter, hiddenProjectIds),
+      projects,
+    ),
+    [tasksWithoutAttachedPty, effectiveProjectFilter, hiddenProjectIds, projects],
   );
   // Normalize the filter to an id list so derived rendering helpers can treat
   // single- and merged-group cases uniformly.

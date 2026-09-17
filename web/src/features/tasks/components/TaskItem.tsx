@@ -13,6 +13,8 @@ import type { TaskType } from '@/lib/tasks/task-config';
 import { copyToClipboard } from '@/lib/clipboard';
 import { TaskStatusBadge } from './TaskStatusBadge';
 import { RestartTaskControls } from './RestartTaskControls';
+import { PersistentTaskSettingsDialog } from './PersistentTaskDialogs';
+import { readPersistentTaskState } from '@/shared/utils/persistent-task';
 import { PtyToggleButton } from './PtyToggleButton';
 import { useTasksStore } from '../store';
 import { usePtyToggleStore } from '../pty-toggle-store';
@@ -371,6 +373,13 @@ const PackIcon = () => (
   </svg>
 );
 
+const PersistentIcon = () => (
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h5M20 20v-5h-5" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.5 15a7 7 0 0012.2 2.5M18.5 9A7 7 0 006.3 6.5" />
+  </svg>
+);
+
 const NewTaskIcon = () => (
   <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <circle cx="7" cy="6" r="2.5" strokeWidth={2} />
@@ -462,6 +471,7 @@ function TaskItemComponent({
   const { push } = useRouter();
   const [isEditing, setIsEditing] = useState(false);
   const [isRestartDialogOpen, setIsRestartDialogOpen] = useState(false);
+  const [isPersistentDialogOpen, setIsPersistentDialogOpen] = useState(false);
   const [statusAction, setStatusAction] = useState<StatusAction>('idle');
   const [editTitle, setEditTitle] = useState('');
   const [swipeOffset, setSwipeOffset] = useState(0);
@@ -589,6 +599,8 @@ function TaskItemComponent({
   // Packing preserves the chat transcript; only AI tasks have one. Terminal
   // (PTY) tasks keep no chat, so packing them would preserve nothing useful.
   const showAchieveAction = taskType === 'ai_task';
+  const showPersistentAction = taskType === 'ai_task';
+  const persistentState = readPersistentTaskState(taskMetadata);
   const useMobileRenameBehavior = !desktopListPaneMode;
   const pinnedAt = normalizePinnedAt(taskMetadata?.pinnedAt);
   const isPinned = pinnedAt !== null;
@@ -608,6 +620,7 @@ function TaskItemComponent({
     (showAchieveAction ? 1 : 0) + // pack / achieve (ai_task only)
     (showSwipePinAction ? 1 : 0) +
     (showRestartAction ? 1 : 0) +
+    (showPersistentAction ? 1 : 0) +
     (showShareAction ? 1 : 0) +
     (showAttachedTerminalAction ? 1 : 0);
   const rightActionColumns = Math.max(1, Math.ceil(rightActionButtonCount / 2));
@@ -1635,6 +1648,28 @@ function TaskItemComponent({
             {isActionsMenuOpen ? <span className="text-[10px]">New task</span> : null}
           </button>
         ) : null}
+        {showPersistentAction ? (
+          <button
+            type="button"
+            tabIndex={isRightActionsOpen ? 0 : -1}
+            aria-label="Persistent task settings"
+            title="Persistent task"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsPersistentDialogOpen(true);
+              closeSwipeActions();
+            }}
+            onMouseEnter={showSwipeActionPopup('Persistent')}
+            onMouseLeave={hideSwipeActionPopup}
+            onFocus={showSwipeActionPopup('Persistent')}
+            onBlur={hideSwipeActionPopup}
+            className={swipeActionButtonClassName('default')}
+          >
+            <PersistentIcon />
+            {isActionsMenuOpen ? <span className="text-[10px]">Persistent</span> : null}
+          </button>
+        ) : null}
         {showShareAction ? (
           <button
             type="button"
@@ -1787,6 +1822,14 @@ function TaskItemComponent({
                   <PinIcon className="size-3.5" />
                 </button>
               ) : null}
+              {persistentState?.enabled ? (
+                <span
+                  className="shrink-0 rounded border border-border px-1 text-[10px] font-medium text-muted"
+                  title={`Persistent task — round ${persistentState.round}${persistentState.roundEndedAt ? ' (ended)' : ''}`}
+                >
+                  R{persistentState.round}
+                </span>
+              ) : null}
             </div>
             {runtimeText ? (
               <p className="task-row-preview mt-1.5 line-clamp-1 text-sm text-muted">
@@ -1816,6 +1859,13 @@ function TaskItemComponent({
         </div>
       </div>
       {swipeActionPopup ? <SwipeActionPopup state={swipeActionPopup} /> : null}
+      {showPersistentAction && isPersistentDialogOpen ? (
+        <PersistentTaskSettingsDialog
+          task={task}
+          open={isPersistentDialogOpen}
+          onClose={() => setIsPersistentDialogOpen(false)}
+        />
+      ) : null}
       {showRestartAction ? (
         <RestartTaskControls
           task={task}

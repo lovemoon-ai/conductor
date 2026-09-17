@@ -123,7 +123,7 @@ describe('CreateTaskDialog', () => {
     projectsState.projects[0].repoRoot = '/repo';
     const draft = {
       title: 'Restore all options', initialContent: 'Implement the mobile fixes', projectId: 'project-1',
-      taskType: 'ai_task', createWorktree: true, remoteWorktreeHost: '', agentHost: 'daemon-a', backendType: 'codex',
+      taskType: 'ai_task', createWorktree: true, persistent: false, remoteWorktreeHost: '', agentHost: 'daemon-a', backendType: 'codex',
       workerAgent: 'feature-dev', reviewers: [{ name: 'code-reviewer', backend: 'codex' }], submitError: null,
     };
     sessionStorage.setItem('conductor-create-task-draft:draft-user', JSON.stringify(draft));
@@ -553,7 +553,7 @@ describe('CreateTaskDialog', () => {
     expect(
       Boolean(executionHeading.compareDocumentPosition(worktreeLabel) & Node.DOCUMENT_POSITION_FOLLOWING),
     ).toBe(true);
-    const worktreeCheckbox = await screen.findByRole('checkbox');
+    const worktreeCheckbox = await screen.findByRole('checkbox', { name: 'Create task in a separate worktree' });
     fireEvent.click(worktreeCheckbox);
     fireEvent.change(screen.getByLabelText('Task title'), {
       target: { value: 'Use isolated branch' },
@@ -567,6 +567,25 @@ describe('CreateTaskDialog', () => {
         launchConfig: {
           worktree: true,
         },
+      }));
+    });
+  });
+
+  it('submits a persistent task', async () => {
+    createTaskMock.mockResolvedValueOnce({ id: 'task-persistent-1' });
+
+    render(<CreateTaskDialog open onClose={() => {}} />);
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Persistent task' }));
+    fireEvent.change(screen.getByLabelText('Task title'), {
+      target: { value: 'Biweekly release' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Biweekly release',
+        metadata: { persistent: { enabled: true } },
       }));
     });
   });
@@ -586,7 +605,7 @@ describe('CreateTaskDialog', () => {
 
     render(<CreateTaskDialog open onClose={() => {}} />);
 
-    expect(await screen.findByRole('checkbox')).toBeInTheDocument();
+    expect(await screen.findByRole('checkbox', { name: 'Create task in a separate worktree' })).toBeInTheDocument();
 
     screen.getByText('Advanced options').closest('details')!.open = true;
     fireEvent.click(screen.getByRole('radio', { name: /PTY Task/ }));

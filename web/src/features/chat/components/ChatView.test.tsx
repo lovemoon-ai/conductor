@@ -139,6 +139,20 @@ vi.mock('./MessageInput', async () => {
   return { MessageInput: MockMessageInput };
 });
 
+vi.mock('@/features/tasks/components/PersistentTaskDialogs', () => ({
+  NewRoundDialog: ({
+    open,
+    onStartRound,
+  }: {
+    open: boolean;
+    onStartRound: (input: { content: string; backendType?: string }) => Promise<void>;
+  }) => (open ? (
+    <button type="button" data-testid="new-round-dialog-start" onClick={() => void onStartRound({ content: 'from dialog', backendType: 'codex' })}>
+      start
+    </button>
+  ) : null),
+}));
+
 vi.mock('@/components/common/LoadingSpinner', () => ({
   LoadingSpinner: () => <div data-testid="loading-spinner" />,
 }));
@@ -1456,6 +1470,160 @@ describe('ChatView', () => {
       expect(metrics.getScrollTop()).toBe(
         scrollTopBeforeClick - QUESTION_JUMP_TOP_PADDING_PX,
       );
+    });
+  });
+
+  describe('persistent task rounds', () => {
+    const startTaskRoundMock = vi.fn().mockResolvedValue({ id: 'task-1' });
+
+    const usePersistentTask = (status: string, persistent: Record<string, unknown>) => {
+      const state = {
+        ...tasksState,
+        tasks: [{ id: 'task-1', status, taskType: 'ai_task', metadata: { persistent: { enabled: true, ...persistent } } }],
+        startTaskRound: startTaskRoundMock,
+        endTaskRound: vi.fn(),
+      };
+      useTasksStoreMock.mockImplementation((selector) => selector(state));
+    };
+
+    beforeEach(() => {
+      // Earlier tests in this file leave fake timers installed, which stalls waitFor.
+      vi.useRealTimers();
+      startTaskRoundMock.mockClear();
+    });
+
+    it('collapses earlier rounds behind their summary and expands them on click', () => {
+      usePersistentTask('running', { round: 2 });
+      chatState.messagesByTask['task-1'] = [
+        { ...makeMessage('r1-user', 'release 0.13.0'), role: 'user' },
+        { ...makeMessage('r1-end', 'summarize', { kind: 'persistent_round_end', round: 1 }), role: 'user' },
+        makeMessage('r1-summary', 'Released 0.13.0\nNext: 0.14.0', { reply_to: 'r1-end' }),
+        makeMessage('r2-start', 'Round 2 · codex on mac-mini', {
+          synthetic: true,
+          kind: 'persistent_round_start',
+          round: 2,
+          backend_type: 'codex',
+        }),
+        { ...makeMessage('r2-user', 'release 0.14.0'), role: 'user' },
+      ];
+
+      render(<ChatView taskId="task-1" />);
+
+      const headers = screen.getAllByTestId('persistent-round-header');
+      expect(headers).toHaveLength(2);
+      expect(headers[0]).toHaveTextContent('Round 1');
+      expect(headers[0]).toHaveTextContent('Released 0.13.0');
+      expect(headers[1]).toHaveTextContent('Round 2');
+      expect(screen.queryByTestId('message-r1-user')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('message-r2-start')).not.toBeInTheDocument();
+      expect(screen.getByTestId('message-r2-user')).toBeInTheDocument();
+
+      fireEvent.click(headers[0]);
+      expect(screen.getByTestId('message-r1-user')).toBeInTheDocument();
+      expect(screen.getByTestId('message-r1-summary')).toBeInTheDocument();
+    });
+
+    it('holds sends until the AI has replied to the round summary request', () => {
+      usePersistentTask('running', { round: 2, roundEndedAt: '2026-09-17T00:00:00.000Z', roundEndMessageId: 'r2-end' });
+      chatState.messagesByTask['task-1'] = [
+        { ...makeMessage('r2-end', 'summarize', { kind: 'persistent_round_end', round: 2 }), role: 'user' },
+      ];
+
+      const view = render(<ChatView taskId="task-1" />);
+      expect(screen.getByTestId('persistent-round-bar')).toHaveTextContent('Writing the round summary');
+      expect(screen.getByTestId('send-disabled')).toHaveTextContent('true');
+
+      chatState.messagesByTask['task-1'] = [
+        ...chatState.messagesByTask['task-1'],
+        makeMessage('r2-summary', 'Released 0.14.0', { reply_to: 'r2-end' }),
+      ];
+      view.rerender(<ChatView taskId="task-1" />);
+      expect(screen.getByTestId('persistent-round-bar')).toHaveTextContent('Round ended');
+      expect(screen.getByTestId('send-disabled')).toHaveTextContent('false');
+    });
+
+    it('starts a new round when sending after the round ended', async () => {
+      usePersistentTask('killed', { round: 2, roundEndedAt: '2026-09-17T00:00:00.000Z' });
+
+      render(<ChatView taskId="task-1" />);
+
+      expect(screen.getByTestId('persistent-round-bar')).toHaveTextContent('Round 2');
+      expect(screen.getByTestId('send-disabled')).toHaveTextContent('false');
+      fireEvent.click(screen.getByTestId('send-button'));
+
+      await waitFor(() => {
+        expect(startTaskRoundMock).toHaveBeenCalledWith('task-1', { content: 'hello', expectedRound: 2 });
+      });
+      expect(sendMessageMock).not.toHaveBeenCalled();
+      expect(clearRuntimeMock).toHaveBeenCalledWith('task-1');
+    });
+
+    it('starts a round from the New round dialog through the same path', async () => {
+      usePersistentTask('running', { round: 3 });
+      render(<ChatView taskId="task-1" />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'New round' }));
+      fireEvent.click(screen.getByTestId('new-round-dialog-start'));
+
+      await waitFor(() => {
+        expect(startTaskRoundMock).toHaveBeenCalledWith('task-1', {
+          content: 'from dialog',
+          backendType: 'codex',
+          expectedRound: 3,
+        });
+      });
+      expect(clearRuntimeMock).toHaveBeenCalledWith('task-1');
+    });
+
+    it('keeps waiting while the summary reply is still streaming', () => {
+      usePersistentTask('running', { round: 2, roundEndedAt: '2026-09-17T00:00:00.000Z', roundEndMessageId: 'r2-end' });
+      chatState.messagesByTask['task-1'] = [
+        { ...makeMessage('r2-end', 'summarize', { kind: 'persistent_round_end', round: 2 }), role: 'user' },
+        makeMessage('r2-partial', 'Released', { reply_to: 'r2-end' }),
+      ];
+      runtimeState = { ...runtimeState, byTask: { 'task-1': { replyInProgress: true, replyTo: 'r2-end' } } };
+      useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+
+      render(<ChatView taskId="task-1" />);
+
+      expect(screen.getByTestId('persistent-round-bar')).toHaveTextContent('Writing the round summary');
+      expect(screen.getByTestId('send-disabled')).toHaveTextContent('true');
+    });
+
+    it('never locks the composer of a task that is no longer persistent', () => {
+      usePersistentTask('running', { enabled: false, roundEndedAt: '2026-09-17T00:00:00.000Z', roundEndMessageId: 'gone' });
+
+      render(<ChatView taskId="task-1" />);
+
+      expect(screen.queryByTestId('persistent-round-bar')).not.toBeInTheDocument();
+      expect(screen.getByTestId('send-disabled')).toHaveTextContent('false');
+    });
+
+    it('does not date a round whose start is on an older page, and leaves collapsed questions out of the nav', () => {
+      usePersistentTask('running', { round: 2 });
+      chatState.historyStateByTask['task-1'] = { hasMoreBefore: true, oldestMessageId: 'r1-user-a' };
+      chatState.messagesByTask['task-1'] = [
+        { ...makeMessage('r1-user-a', 'first question'), role: 'user' },
+        { ...makeMessage('r1-user-b', 'second question'), role: 'user' },
+        makeMessage('r2-start', 'Round 2 · codex on mac-mini', {
+          synthetic: true,
+          kind: 'persistent_round_start',
+          round: 2,
+          backend_type: 'codex',
+        }),
+        { ...makeMessage('r2-user-a', 'third question'), role: 'user' },
+        { ...makeMessage('r2-user-b', 'fourth question'), role: 'user' },
+      ];
+
+      const view = render(<ChatView taskId="task-1" />);
+
+      const headers = screen.getAllByTestId('persistent-round-header');
+      expect(headers[0].textContent).toMatch(/^▸Round 1$/);
+      const nav = view.container.querySelector('nav[aria-label="Jump to question"]');
+      expect(nav?.querySelectorAll('button')).toHaveLength(2);
+      // With older rounds collapsed the list may not overflow, so the history hint must be clickable.
+      fireEvent.click(screen.getByRole('button', { name: 'Scroll to top to load older messages' }));
+      expect(fetchMessagesMock).toHaveBeenCalledWith('task-1', { beforeId: 'r1-user-a' });
     });
   });
 });

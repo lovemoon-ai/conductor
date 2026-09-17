@@ -426,6 +426,7 @@ export interface CreateTaskInput {
    * optional per-agent backend override (reviewers fall back to the worker's).
    */
   agents?: Array<{ name: string; backend?: string | null }>;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface UpdateTaskInput {
@@ -446,6 +447,23 @@ export interface RestartTaskInput {
   restartMode?: "refresh_session";
   /** Explicit daemon override for the new_task path (`agent_host`). */
   agentHost?: string;
+}
+
+/** RFC 0039: settings of a persistent task. */
+export interface PersistentTaskSettingsInput {
+  enabled?: boolean;
+  instructions?: string;
+  summary?: string;
+}
+
+/** RFC 0039: start a new round (fresh AI session) on a persistent task. */
+export interface StartTaskRoundInput {
+  content: string;
+  backendType?: string;
+  agentHost?: string;
+  worktree?: 'inherit' | 'new' | 'none';
+  /** The round the user was looking at; the server refuses if another client moved on. */
+  expectedRound?: number;
 }
 
 export interface RestartTaskResponse {

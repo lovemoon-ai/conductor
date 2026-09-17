@@ -6,11 +6,14 @@ import type {
   RestartTaskInput,
   UpdateTaskInput,
   CleanupTaskWorktreeResponse,
+  PersistentTaskSettingsInput,
+  StartTaskRoundInput,
 } from '@/shared/types';
 import { getApiClient } from '@/shared/api/client';
 import { usePtyToggleStore } from './pty-toggle-store';
 import { useTaskCardGroupsSyncStore } from './task-card-groups-sync-store';
 import { buildMetadataWithTaskLabelIds, readTaskLabelIds } from '@/lib/tasks/task-labels';
+import { isPersistentTask } from '@/shared/utils/persistent-task';
 
 /**
  * In-flight label writes, per task. `confirmed` is the last label set the
@@ -111,6 +114,10 @@ interface TasksState {
   /** Replace the set of project task labels attached to a task. */
   setTaskLabels: (taskId: string, labelIds: string[]) => Promise<Task>;
   restartTask: (taskId: string, input?: RestartTaskInput) => Promise<RestartTaskResponse>;
+  /** RFC 0039 persistent tasks: settings, end the current round, start a new one. */
+  updateTaskPersistent: (taskId: string, input: PersistentTaskSettingsInput) => Promise<Task>;
+  endTaskRound: (taskId: string) => Promise<Task>;
+  startTaskRound: (taskId: string, input: StartTaskRoundInput) => Promise<Task>;
   cleanupTaskWorktree: (taskId: string) => Promise<CleanupTaskWorktreeResponse>;
   deleteTask: (taskId: string) => Promise<void>;
   /**
@@ -204,12 +211,14 @@ export const getTaskPinnedAtTime = (task: { metadata?: Record<string, unknown> |
   return Number.isFinite(timestamp) ? timestamp : null;
 };
 
+/** Pinned tasks first, persistent tasks (RFC 0039) last, everything else keeps its order. */
 export const orderTasksWithPinnedFirst = <T extends { metadata?: Record<string, unknown> | null }>(tasks: T[]): T[] =>
   tasks
     .map((task, index) => ({
       task,
       index,
       pinnedAt: getTaskPinnedAtTime(task),
+      persistent: isPersistentTask(task),
     }))
     .sort((left, right) => {
       if (left.pinnedAt !== null && right.pinnedAt !== null) {
@@ -221,6 +230,9 @@ export const orderTasksWithPinnedFirst = <T extends { metadata?: Record<string, 
       }
       if (right.pinnedAt !== null) {
         return 1;
+      }
+      if (left.persistent !== right.persistent) {
+        return left.persistent ? 1 : -1;
       }
       return left.index - right.index;
     })
@@ -570,6 +582,44 @@ export const useTasksStore = create<TasksState>()((set, get) => {
           labelWrites.delete(taskId);
         }
       }
+    },
+
+    updateTaskPersistent: async (taskId, input) => {
+      const response = await getApiClient().patch<Task>(`/tasks/${taskId}/persistent`, input);
+      const task = normalizeTask(response);
+      set((state) => ({ tasks: upsertTask(state.tasks, task) }));
+      return task;
+    },
+
+    endTaskRound: async (taskId) => {
+      const response = await getApiClient().post<Task>(`/tasks/${taskId}/rounds/end`, {});
+      const task = normalizeTask(response);
+      set((state) => ({ tasks: upsertTask(state.tasks, task) }));
+      return task;
+    },
+
+    startTaskRound: async (taskId, input) => {
+      let response: Task;
+      try {
+        response = await getApiClient().post<Task>(`/tasks/${taskId}/rounds`, {
+          content: input.content,
+          ...(input.backendType ? { backend_type: input.backendType } : {}),
+          ...(input.agentHost ? { agent_host: input.agentHost } : {}),
+          ...(input.worktree ? { worktree: input.worktree } : {}),
+          ...(input.expectedRound ? { expected_round: input.expectedRound } : {}),
+        });
+      } catch (error) {
+        // Another client moved the task on: show the user its real round state.
+        if ((error as { status?: unknown } | null)?.status === 409) {
+          void get().fetchTask(taskId);
+        }
+        throw error;
+      }
+      // Not merged with the cached row: a new round really does reset the
+      // status and session binding.
+      const task = normalizeTask(response);
+      set((state) => ({ tasks: upsertTask(state.tasks, task, { moveToFront: true }) }));
+      return task;
     },
 
     restartTask: async (taskId, input) => {

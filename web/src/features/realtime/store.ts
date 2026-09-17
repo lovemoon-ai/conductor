@@ -178,7 +178,10 @@ function normalizeMessagePayload(payload: Record<string, unknown>): { taskId: st
       role,
       content,
       createdAt,
-      metadata: (messagePayload.metadata as Record<string, unknown> | null | undefined) ?? null,
+      metadata:
+        (messagePayload.metadata as Record<string, unknown> | null | undefined) ??
+        (payload.metadata as Record<string, unknown> | null | undefined) ??
+        null,
       attachments:
         (messagePayload.attachments as Message["attachments"] | undefined) ||
         (payload.attachments as Message["attachments"] | undefined) ||
