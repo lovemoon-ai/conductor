@@ -1,5 +1,5 @@
 ---
-"@love-moon/conductor-cli": minor
+"@love-moon/conductor-cli": patch
 ---
 
 Support persistent task rounds (RFC 0039). A `create_task` carrying
