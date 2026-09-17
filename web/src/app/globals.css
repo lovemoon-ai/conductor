@@ -482,7 +482,7 @@ dialog::backdrop {
 .conductor-workspace .message-composer:focus-within { border-color: var(--muted); box-shadow: none; }
 .conductor-workspace .project-row.webapp-card {
   border: 0; border-bottom: 1px solid var(--border); border-radius: 0;
-  background: var(--surface-panel); box-shadow: none; padding: 16px 20px;
+  background: var(--surface-panel); box-shadow: none; padding: 10px 20px;
 }
 .conductor-workspace .project-row.webapp-card:hover { background: var(--surface-subtle); }
 .conductor-workspace .project-row.webapp-card[aria-pressed="true"],
