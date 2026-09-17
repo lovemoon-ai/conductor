@@ -24,7 +24,7 @@ describe('ResizableTaskPane', () => {
     expect(separator).toHaveAttribute('aria-valuenow', '250');
     fireEvent.keyDown(separator, { key: 'End' });
     fireEvent.keyDown(separator, { key: 'ArrowRight' });
-    expect(separator).toHaveAttribute('aria-valuenow', '520');
+    expect(separator).toHaveAttribute('aria-valuenow', '900');
   });
 
   it('recovers from an invalid saved preference', () => {

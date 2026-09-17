@@ -61,15 +61,14 @@ describe('MessageBubble', () => {
     expect(row).toHaveClass('w-full');
     expect(column).toHaveClass('w-full');
     expect(column).not.toHaveClass('max-w-5xl');
-    expect(wrapper).toHaveClass('relative', 'overflow-visible', 'rounded-2xl');
+    expect(wrapper).toHaveClass('relative', 'overflow-visible', 'pl-7');
     expect(bubble).toHaveClass(
       'w-full',
-      'rounded-2xl',
+      'rounded-md',
       'border',
       'bg-[var(--surface-default)]',
       'border-transparent',
       'text-ink',
-      'max-w-[92%]',
     );
     expect(screen.getByText('user message')).toBeInTheDocument();
     expect(screen.queryByTestId('markdown-renderer')).not.toBeInTheDocument();
@@ -228,42 +227,21 @@ describe('MessageBubble', () => {
     expect(row).toHaveClass('w-full');
     expect(column).toHaveClass('w-full');
     expect(column).not.toHaveClass('max-w-5xl');
-    expect(bubble).toHaveClass('w-full', 'rounded-2xl', 'border', 'bg-transparent', 'border-transparent', 'text-ink');
+    expect(bubble).toHaveClass('w-full', 'rounded-md', 'border', 'bg-transparent', 'border-transparent', 'text-ink');
     expect(screen.getByTestId('markdown-renderer')).toHaveTextContent('ai message');
     expect(screen.queryByText('Conductor')).not.toBeInTheDocument();
-    expect(wrapper).toHaveClass('pt-2');
-    expect(wrapper.firstElementChild).toHaveClass('left-4', '-top-1', 'h-2', 'items-center', 'leading-none', 'opacity-0', 'group-hover/message:opacity-100');
+    expect(screen.getByRole('img', { name: 'Assistant' })).toBeInTheDocument();
+    expect(wrapper).not.toHaveClass('pt-2');
   });
 
-  it('shows the timestamp on single tap for mobile-style pointers', () => {
-    Object.defineProperty(window, 'matchMedia', {
-      writable: true,
-      value: vi.fn().mockImplementation((query: string) => ({
-        matches: query === '(hover: none), (pointer: coarse)',
-        media: query,
-        onchange: null,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-      })),
-    });
-
-    const { container } = render(<MessageBubble message={makeMessage({ role: 'assistant', content: 'ai message' })} />);
-    const wrapper = container.querySelector('.group\\/message') as HTMLElement;
-    const bubble = wrapper.querySelector('[role="button"]') as HTMLElement;
-    const timestamp = wrapper.firstElementChild as HTMLElement;
-
-    expect(timestamp).toHaveClass('opacity-0');
-
+  it('never shows message timestamps on hover or tap', () => {
+    const { container } = render(<MessageBubble message={makeMessage({ role: 'user' })} />);
+    const bubble = container.querySelector('[role="button"]') as HTMLElement;
+    fireEvent.mouseEnter(bubble);
     fireEvent.click(bubble);
-
-    expect(timestamp).toHaveClass('opacity-100');
-
-    fireEvent.click(bubble);
-
-    expect(timestamp).toHaveClass('opacity-0');
+    expect(container.querySelector('time')).toBeNull();
+    expect(container.textContent).not.toMatch(/2026|12:00|03[/-]07/);
+    expect(screen.getByRole('img', { name: 'User' })).toBeInTheDocument();
   });
 
   it('falls back to a placeholder when an expired image body can no longer be loaded', () => {

@@ -117,7 +117,7 @@ export default function WebAppLayout({
       <ProjectDocumentTitle />
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
         {/* Desktop Sidebar */}
-        <div className="hidden md:block">
+        <div className={`workspace-sidebar hidden ${isTaskChatPage ? '' : 'md:block'}`}>
           <Sidebar
             collapsed={isSidebarCollapsed}
             onToggleCollapsed={toggleSidebarCollapsed}

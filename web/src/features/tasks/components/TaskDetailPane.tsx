@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { ReadingSettings } from '@/features/workspace/WorkspaceControls';
 import { Header, type TitleSwipeProgress } from '@/components/layout/Header';
 import { ChatView } from '@/features/chat';
 import { TerminalView } from '@/features/terminal';
@@ -225,6 +226,7 @@ export function TaskDetailPane({
       {!hideHeader ? (
         <Header
           title={task.title}
+          actions={<ReadingSettings />}
           showBack={showBack}
           onBack={onBack}
           showConnectionStatus={showConnectionStatus}

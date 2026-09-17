@@ -1106,9 +1106,7 @@ export function TaskList({
     const projectEntry = projectMap.get(resolveTaskDisplayProjectId(task) ?? '');
     // Resolve the per-card daemon via the same fallback chain used by the filter
     // helpers so, e.g., Default-Project tasks still render their daemon chip.
-    const taskDaemonHost = showDaemonHost
-      ? resolveTaskDaemonHost(task, projectDaemonHostMap)
-      : null;
+    const taskDaemonHost = resolveTaskDaemonHost(task, projectDaemonHostMap);
     return (
       <TaskItem
         task={task}
@@ -1121,7 +1119,7 @@ export function TaskList({
         desktopListPaneMode={desktopListPaneMode}
         showProjectName={showProjectName}
         showDaemonHost={showDaemonHost}
-        projectName={showProjectName ? projectEntry?.name ?? null : null}
+        projectName={projectEntry?.name ?? null}
         projectDaemonHost={taskDaemonHost}
         activeTaskTypeFilter={taskTypeFilter}
         activeProjectFilter={isMergedScope ? null : (effectiveProjectFilterIds[0] ?? null)}

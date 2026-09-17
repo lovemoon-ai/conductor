@@ -181,6 +181,28 @@ describe("/api/tasks", () => {
       expect(data.error).toBe("Unauthorized");
     });
 
+    it("returns the metadata needed by optional workspace columns without presentation preferences", async () => {
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue({ id: "user-1", email: "test@example.com", phone: null });
+      vi.mocked(db.task.findMany).mockResolvedValue([{
+        id: "compact-task", projectId: "project-1", title: "Review workspace layout", status: "completed",
+        taskType: "ai_task", agentHost: "dev-host", executionHost: "dev-host", backendType: "codex",
+        metadata: JSON.stringify({ worktreeBranch: "feature/layout" }),
+        createdAt: new Date("2026-09-17T08:00:00Z"), updatedAt: new Date("2026-09-17T09:00:00Z"),
+      }] as any);
+      vi.mocked(db.$queryRaw).mockResolvedValue([
+        { task_id: "compact-task", role: "assistant", content: "Layout checked" },
+      ] as any);
+      const response = await GET(createMockRequest({ token: createTestToken("user-1") }));
+      const data = await extractJson(response);
+      expect(response.status).toBe(200);
+      expect(data).toHaveLength(1);
+      expect(data[0]).toMatchObject({
+        id: "compact-task", project_id: "project-1", task_type: "ai_task", backend_type: "codex",
+        agent_host: "dev-host", metadata: { worktreeBranch: "feature/layout" },
+        last_assistant_message: "Layout checked", updated_at: "2026-09-17T09:00:00.000Z",
+      });
+    });
+
     it("should return user tasks when authenticated", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const mockTasks = [

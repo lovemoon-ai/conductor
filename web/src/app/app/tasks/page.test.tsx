@@ -351,6 +351,39 @@ describe('TasksPage', () => {
     expect(fetchTasksMock).toHaveBeenCalledWith('project-1', { recoverStale: true });
   });
 
+  it('keeps the same detail DOM and draft through full screen and Escape', () => {
+    isDesktopViewport = true;
+    tasksState.tasks = [{ id: 'task-1', projectId: 'project-1', status: 'running' }];
+    searchParamsState = new URLSearchParams('projectId=project-1');
+    const { container } = render(<TasksPage />);
+    const detail = screen.getByText('task-detail:task-1:no-header');
+    const draft = document.createElement('textarea');
+    draft.value = 'Keep this unsent draft';
+    detail.appendChild(draft);
+    detail.scrollTop = 120;
+    fireEvent.click(screen.getByRole('button', { name: 'Full screen conversation' }));
+    expect(container.querySelector('[data-fullscreen="true"]')).not.toBeNull();
+    expect(screen.getByText('task-detail:task-1:no-header')).toBe(detail);
+    const settings = screen.getByLabelText('Reading settings').closest('details')!;
+    settings.open = true;
+    fireEvent.keyDown(screen.getByLabelText('Reading settings'), { key: 'Escape' });
+    expect(settings.open).toBe(false);
+    expect(container.querySelector('[data-fullscreen="true"]')).not.toBeNull();
+    fireEvent.keyDown(window, { key: 'Escape', isComposing: true });
+    expect(container.querySelector('[data-fullscreen="true"]')).not.toBeNull();
+    const messageActions = document.createElement('div');
+    messageActions.setAttribute('aria-modal', 'true');
+    document.body.appendChild(messageActions);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(container.querySelector('[data-fullscreen="true"]')).not.toBeNull();
+    messageActions.remove();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(container.querySelector('[data-fullscreen="true"]')).toBeNull();
+    expect(draft.value).toBe('Keep this unsent draft');
+    expect(detail.scrollTop).toBe(120);
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
   it('shows split view on desktop list mode and switches the selected task inline', () => {
     isDesktopViewport = true;
 

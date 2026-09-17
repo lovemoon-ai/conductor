@@ -635,7 +635,7 @@ function TaskItemComponent({
   const rightActionHasEmptyCell = rightActionButtonCount % 2 === 1;
   const stableBackend = getStableTaskBackend(task);
   const backend = stableBackend ?? runtime?.backend ?? null;
-  const runtimeText = runtime?.replyPreview || runtime?.statusDoneLine || runtime?.statusLine || runtime?.state || null;
+  const runtimeText = runtime?.replyPreview || runtime?.statusDoneLine || runtime?.statusLine || runtime?.state || task.lastAssistantMessage || task.lastUserMessage || null;
 
   const isTaskRunning = task.status === 'running';
   const canQuickRestart =
@@ -1277,7 +1277,7 @@ function TaskItemComponent({
 
   const metadataChips = (
     <>
-      {onFilterByTaskType ? (
+      <span data-task-column="type">{onFilterByTaskType ? (
         <button
           type="button"
           onClick={(event) => {
@@ -1297,7 +1297,8 @@ function TaskItemComponent({
           {taskTypeChipLabel}
         </span>
       )}
-      {backend ? (
+      </span>
+      <span data-task-column="backend">{backend ? (
         onFilterByBackend && stableBackend ? (
           <button
             type="button"
@@ -1317,7 +1318,8 @@ function TaskItemComponent({
           </span>
         )
       ) : null}
-      {worktreeBranch ? (
+      </span>
+      <span data-task-column="branch">{worktreeBranch ? (
         <span
           title={worktreeBranch}
           className="max-w-[11rem] truncate rounded bg-[var(--paper)] px-1.5 py-0.5 font-mono text-xs font-medium text-ink"
@@ -1325,7 +1327,8 @@ function TaskItemComponent({
           {worktreeBranch}
         </span>
       ) : null}
-      {showProjectName && projectName ? (
+      </span>
+      <span data-task-column="project" data-context-hidden={!showProjectName}>{projectName ? (
         onFilterByProject && projectId ? (
           <button
             type="button"
@@ -1345,7 +1348,8 @@ function TaskItemComponent({
           </span>
         )
       ) : null}
-      {showDaemonHost && projectDaemonHost ? (
+      </span>
+      <span data-task-column="host" data-context-hidden={!showDaemonHost}>{projectDaemonHost ? (
         onFilterByDaemonHost ? (
           <button
             type="button"
@@ -1365,6 +1369,7 @@ function TaskItemComponent({
           </span>
         )
       ) : null}
+      </span>
     </>
   );
   const statusBadgeLabel = isKillingTask
@@ -1652,9 +1657,9 @@ function TaskItemComponent({
           }
         }}
       >
-        <div className="flex flex-col gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
+        <div className="task-row-layout flex flex-col gap-1">
+          <div className="task-row-main min-w-0 flex-1">
+            <div className="task-row-title flex items-center gap-2">
               {isUnread ? <span className="size-2 shrink-0 rounded-full bg-[var(--accent)] animate-pulse" /> : null}
               {isEditing ? (
                 <input
@@ -1705,7 +1710,7 @@ function TaskItemComponent({
               ) : null}
             </div>
             {runtimeText ? (
-              <p className="task-row-preview mt-1.5 line-clamp-1 text-sm text-muted">
+              <p data-task-column="preview" className="task-row-preview mt-1.5 line-clamp-1 text-sm text-muted">
                 {runtimeText}
               </p>
             ) : null}
@@ -1713,8 +1718,9 @@ function TaskItemComponent({
               {metadataChips}
             </div>
           </div>
-          <div ref={statusBadgeRef} className="flex items-center gap-1.5">
-            <time className="mr-auto text-[11px] text-muted" dateTime={task.updatedAt ?? task.createdAt} suppressHydrationWarning>{new Date(task.updatedAt ?? task.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time>
+          <div ref={statusBadgeRef} className="task-row-footer flex items-center gap-1.5">
+            <time data-task-column="updated" className="mr-auto text-[11px] text-muted" dateTime={task.updatedAt ?? task.createdAt} suppressHydrationWarning>{new Date(task.updatedAt ?? task.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time>
+            <div className="task-row-status ml-auto flex items-center gap-1.5">
             <button type="button" aria-label={isRightActionsOpen ? 'Hide actions' : 'More actions'} aria-expanded={isRightActionsOpen} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); if (isRightActionsOpen) closeSwipeActions(); else setIsActionsMenuOpen(true); }} className="flex size-6 items-center justify-center rounded text-muted hover:bg-border/50" title="Task actions">⋯</button>
             {task.attachedTerminal ? (
               <PtyToggleButton
@@ -1728,6 +1734,7 @@ function TaskItemComponent({
               timeoutMs={killingTimeoutMs}
               {...statusBadgeProps}
             />
+            </div>
           </div>
         </div>
       </div>
