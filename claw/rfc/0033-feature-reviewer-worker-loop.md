@@ -290,6 +290,10 @@ and SDK verification:
   &lt;backend&gt;" reviewer dropdown reusing the daemon's advertised backends. Sent as
   `agents` only when a worker agent is selected (`shared/types`
   `CreateTaskInput.agents`).
+- **Issues** (2026-09-16) — the Move Issue To Doing dialog has the same picker in a
+  collapsed optional "Agents" section, sent as `agents` on `PATCH /api/issues/[id]`;
+  the todo→doing spawn makes the issue task the worker. Group wiring is shared in
+  `web/src/lib/tasks/agent-group-spawn.ts`.
 - **Agent docs** — `claw/agents/code-reviewer.md` (discovers via `conductor task group`,
   self-schedules with `--if-idle --keep-when-task-stopped`, read/send cycle),
   `claw/agents/feature-dev.md`.

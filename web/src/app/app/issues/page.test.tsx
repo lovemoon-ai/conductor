@@ -168,6 +168,7 @@ vi.mock('@/features/issues', () => ({
       daemonHost: string;
       projectId: string;
       remoteWorktreeHost?: string;
+      agents?: Array<{ name: string; backend?: string | null }>;
     }) => Promise<void> | void;
   }) => {
     if (!open) return null;
@@ -198,6 +199,20 @@ vi.mock('@/features/issues', () => ({
           }}
         >
           confirm-move-issue
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (!initialOption) return;
+            void onConfirm({
+              backendType: initialBackendChoice,
+              daemonHost: initialOption.host,
+              projectId: initialOption.projectId,
+              agents: [{ name: 'feature-dev' }, { name: 'code-reviewer', backend: 'codex' }],
+            });
+          }}
+        >
+          confirm-move-issue-agents
         </button>
         {daemonOptions.length > 1 ? (
           <button
@@ -485,6 +500,37 @@ describe('IssuesPage', () => {
         status: 'doing',
         position: 0,
         metadata: { backendType: 'codex', daemonHost: 'daemon-a' },
+      });
+    });
+  });
+
+  it('forwards the agent group picked in the doing dialog', async () => {
+    searchParamsState = new URLSearchParams('projectId=project-default');
+    issuesState = {
+      ...issuesState,
+      issues: [
+        {
+          id: 'issue-1',
+          projectId: 'project-default',
+          title: 'Fix issue board',
+          status: 'todo',
+          position: 0,
+          createdAt: '2026-04-14T00:00:00.000Z',
+        },
+      ],
+    };
+
+    render(<IssuesPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'status-issue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'confirm-move-issue-agents' }));
+
+    await waitFor(() => {
+      expect(updateIssueMock).toHaveBeenCalledWith('issue-1', {
+        status: 'doing',
+        position: 0,
+        agents: [{ name: 'feature-dev' }, { name: 'code-reviewer', backend: 'codex' }],
+        metadata: { backendType: 'claude', daemonHost: 'daemon-a' },
       });
     });
   });

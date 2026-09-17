@@ -2,6 +2,15 @@
 
 import { useMemo, useReducer, useState } from 'react';
 import { Dialog } from '@/components/common/Dialog';
+import {
+  AgentGroupPicker,
+  buildAgentGroupRequest,
+  reduceAgentGroup,
+  useProjectAgentRegistry,
+  type AgentGroupAction,
+  type AgentGroupSelection,
+} from '@/features/tasks/components/AgentGroupPicker';
+import type { CreateTaskInput } from '@/shared/types';
 
 /**
  * One row in the daemon picker. Each option carries the underlying project id
@@ -31,12 +40,14 @@ export type MoveIssueToDoingConfirm = {
   projectId: string;
   /** Daemon hosting the worktree; omitted when it is the AI's own daemon. */
   remoteWorktreeHost?: string;
+  /** RFC 0033: worker + reviewer agents; omitted for a plain task. */
+  agents?: CreateTaskInput['agents'];
 };
 
 const normalizeString = (value: string | null | undefined): string =>
   typeof value === 'string' ? value.trim() : '';
 
-type MoveIssueToDoingFormState = {
+type MoveIssueToDoingFormState = AgentGroupSelection & {
   preferredDaemonHost: string;
   backendType: string;
   remoteWorktreeHost: string;
@@ -45,7 +56,8 @@ type MoveIssueToDoingFormState = {
 type MoveIssueToDoingFormAction =
   | { type: 'select-daemon'; daemonHost: string; supportedBackends: string[] }
   | { type: 'select-backend'; backendType: string }
-  | { type: 'select-remote-worktree'; remoteWorktreeHost: string };
+  | { type: 'select-remote-worktree'; remoteWorktreeHost: string }
+  | AgentGroupAction;
 
 function moveIssueToDoingFormReducer(
   state: MoveIssueToDoingFormState,
@@ -54,6 +66,7 @@ function moveIssueToDoingFormReducer(
   switch (action.type) {
     case 'select-daemon':
       return {
+        ...state,
         preferredDaemonHost: action.daemonHost,
         backendType: action.supportedBackends.includes(state.backendType)
           ? state.backendType
@@ -72,7 +85,7 @@ function moveIssueToDoingFormReducer(
         remoteWorktreeHost: action.remoteWorktreeHost,
       };
     default:
-      return state;
+      return reduceAgentGroup(state, action);
   }
 }
 
@@ -177,7 +190,12 @@ function MoveIssueToDoingDialogContent({
     preferredDaemonHost: initialDaemonHost,
     backendType: initialBackendType,
     remoteWorktreeHost: '',
+    workerAgent: '',
+    reviewers: [],
   });
+  // The agent registry is fetched from the daemon, so only once the user opens
+  // the optional Agents section.
+  const [agentsSectionOpened, setAgentsSectionOpened] = useState(false);
 
   const daemonHost = optionByHost.has(state.preferredDaemonHost)
     ? state.preferredDaemonHost
@@ -191,14 +209,24 @@ function MoveIssueToDoingDialogContent({
   // on `daemonHost`.
   const remoteWorktreeHosts = (currentOption?.remoteWorktreeHosts ?? [])
     .filter((host) => host !== daemonHost && optionByHost.has(host));
-  const remoteWorktreeHost = state.remoteWorktreeHost;
+  const { availableAgents, isLoadingAgents, agentsLoadFailed } = useProjectAgentRegistry(
+    agentsSectionOpened ? currentOption?.projectId ?? null : null,
+    dispatch,
+  );
+  const agents = buildAgentGroupRequest(state);
+  // After a daemon switch the picked agents are not yet validated against the
+  // new project's registry; never submit a group the user can no longer see.
+  const agentsPending = Boolean(agents) && (isLoadingAgents || agentsLoadFailed);
+  // The API rejects a remote worktree for agent groups; the pick is kept and
+  // comes back if the worker agent is cleared.
+  const remoteWorktreeHost = agents ? '' : state.remoteWorktreeHost;
   // Keep a vanished pick (daemon went offline while the dialog was open) and
   // block confirm, instead of quietly falling back to a local worktree.
   const remoteWorktreeHostUnavailable = Boolean(remoteWorktreeHost)
     && !remoteWorktreeHosts.includes(remoteWorktreeHost);
 
   const handleConfirm = async () => {
-    if (!backendType || !currentOption || isSubmitting || remoteWorktreeHostUnavailable) {
+    if (!backendType || !currentOption || isSubmitting || remoteWorktreeHostUnavailable || agentsPending) {
       return;
     }
     setIsSubmitting(true);
@@ -208,6 +236,7 @@ function MoveIssueToDoingDialogContent({
         daemonHost: currentOption.host,
         projectId: currentOption.projectId,
         ...(remoteWorktreeHost ? { remoteWorktreeHost } : {}),
+        ...(agents ? { agents } : {}),
       });
     } finally {
       setIsSubmitting(false);
@@ -306,7 +335,7 @@ function MoveIssueToDoingDialogContent({
               remoteWorktreeHost: event.target.value,
             })}
             className="mt-2 w-full webapp-input"
-            disabled={isSubmitting}
+            disabled={isSubmitting || Boolean(agents)}
           >
             <option value="">Same daemon as the AI (default)</option>
             {remoteWorktreeHostUnavailable ? (
@@ -324,8 +353,40 @@ function MoveIssueToDoingDialogContent({
             })}
           </select>
           <p className="mt-1 text-xs text-muted">
-            Run the AI on {daemonHost} but create the git worktree, build and test on the chosen daemon.
+            {agents
+              ? 'Not available together with an agent group.'
+              : `Run the AI on ${daemonHost} but create the git worktree, build and test on the chosen daemon.`}
           </p>
+        </details>
+      ) : null}
+
+      {currentOption ? (
+        <details
+          className="rounded-lg border border-border px-3 py-2"
+          onToggle={(event) => {
+            if (event.currentTarget.open) setAgentsSectionOpened(true);
+          }}
+        >
+          <summary className="cursor-pointer text-sm font-medium text-ink">
+            Agents{agents ? `: ${agents.map((agent) => agent.name).join(', ')}` : ' (optional)'}
+          </summary>
+          <p className="mb-2 mt-1 text-xs text-muted">
+            Run this issue with a worker agent, plus optional reviewer agents that review it.
+          </p>
+          {agentsSectionOpened ? (
+            <AgentGroupPicker
+              id="issue-doing-worker-agent"
+              availableAgents={availableAgents}
+              isLoadingAgents={isLoadingAgents}
+              agentsLoadFailed={agentsLoadFailed}
+              availableBackends={availableBackends}
+              workerAgent={state.workerAgent}
+              reviewers={state.reviewers}
+              dispatch={dispatch}
+              onSelectBackend={(backend) => dispatch({ type: 'select-backend', backendType: backend })}
+              disabled={isSubmitting}
+            />
+          ) : null}
         </details>
       ) : null}
 
@@ -340,7 +401,7 @@ function MoveIssueToDoingDialogContent({
         <button
           type="button"
           onClick={() => void handleConfirm()}
-          disabled={!backendType || !currentOption || isSubmitting || remoteWorktreeHostUnavailable}
+          disabled={!backendType || !currentOption || isSubmitting || remoteWorktreeHostUnavailable || agentsPending}
           className="webapp-btn-primary px-5 py-2.5 text-sm"
         >
           {isSubmitting ? 'Starting...' : 'Move To Doing'}

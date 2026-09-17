@@ -168,4 +168,17 @@ describe("buildAgentBootstrap", () => {
     });
     expect(text).not.toContain("--- Task ---");
   });
+
+  it("keeps a /goal directive on the first line so fire still runs goal mode", () => {
+    const text = buildAgentBootstrap({
+      agent: "feature-dev",
+      role: "worker",
+      docPath: "agents/dev.md",
+      taskPrompt: "/goal\nship it",
+    });
+    expect(text).toBe(
+      '/goal\n[conductor:agent] You are the "feature-dev" agent for this task group (your role: worker).\n'
+        + "Read and follow your agent doc: agents/dev.md\n\n--- Task ---\nship it",
+    );
+  });
 });

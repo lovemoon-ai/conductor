@@ -176,9 +176,27 @@ export function buildAgentBootstrap(params: {
   }
 
   const bootstrap = lines.join("\n");
+  return role === "worker" ? appendTaskPrompt(bootstrap, taskPrompt) : bootstrap;
+}
+
+/** Mirrors fire's `parseGoalDirectiveFromMessage`: `/goal`, optionally with inline text. */
+const GOAL_DIRECTIVE_LINE = /^\/goal(?:\s+.*)?$/i;
+
+/**
+ * Append the user's task prompt after a bootstrap as a `--- Task ---` section.
+ * Fire only honours `/goal` on the FIRST non-empty line of a message, so a goal
+ * directive is kept in front of the bootstrap or goal mode would silently drop.
+ */
+export function appendTaskPrompt(bootstrap: string, taskPrompt?: string | null): string {
   const prompt = typeof taskPrompt === "string" ? taskPrompt.trim() : "";
-  if (role === "worker" && prompt) {
-    return `${bootstrap}\n\n--- Task ---\n${prompt}`;
+  if (!prompt) {
+    return bootstrap;
   }
-  return bootstrap;
+  const promptLines = prompt.split("\n");
+  const directive = promptLines[0].trim();
+  if (GOAL_DIRECTIVE_LINE.test(directive)) {
+    const rest = promptLines.slice(1).join("\n").trim();
+    return `${directive}\n${bootstrap}${rest ? `\n\n--- Task ---\n${rest}` : ""}`;
+  }
+  return `${bootstrap}\n\n--- Task ---\n${prompt}`;
 }

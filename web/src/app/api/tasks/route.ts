@@ -17,7 +17,6 @@ import {
 } from "@/lib/tasks/task-config";
 import {
   buildTaskWorktreeLaunchConfig,
-  inheritTaskWorktreeLaunchConfig,
   isRemoteWorktreeRequested,
   isTaskWorktreeRequested,
   type RemoteWorktreeLaunchConfig,
@@ -64,7 +63,11 @@ import {
   parseAgentsInput,
   TASK_GROUP_SCHEMA_UNAVAILABLE_MESSAGE,
 } from "@/lib/tasks/agent-group";
-import { resolveProjectAgentsRegistry } from "@/lib/projects/daemon-binding";
+import {
+  findAgentGroupBackendError,
+  resolveAgentGroupPlan,
+  spawnAgentGroupReviewers,
+} from "@/lib/tasks/agent-group-spawn";
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
@@ -598,28 +601,18 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
-  // RFC 0033: agent doc paths are NOT hard-coded — they come from the project's
-  // `agents` registry in `.conductor/settings.yaml`. Resolve it and require
-  // every requested agent to be registered.
-  const agentRegistry = agentGroup
-    ? await resolveProjectAgentsRegistry({
+  // RFC 0033: resolve agent docs from the project's registry.
+  const agentGroupPlan = agentGroup
+    ? await resolveAgentGroupPlan({
         userId: user.id,
+        agents: agentGroup,
         daemonHost: projectDaemonHost,
         workspacePath: projectWorkspacePath,
+        requestedBackendType,
       })
-    : [];
-  const agentRegistryMap = new Map(agentRegistry.map((entry) => [entry.name, entry]));
-  if (agentGroup) {
-    for (const spec of agentGroup) {
-      if (!agentRegistryMap.has(spec.name)) {
-        return NextResponse.json(
-          {
-            error: `unknown agent "${spec.name}" — register it in .conductor/settings.yaml (agents:)`,
-          },
-          { status: 400 },
-        );
-      }
-    }
+    : null;
+  if (agentGroupPlan && "error" in agentGroupPlan) {
+    return NextResponse.json({ error: agentGroupPlan.error }, { status: 400 });
   }
   const launchConfigField = parseJsonField(normalizedBody, "launch_config", "launchConfig");
   if (
@@ -667,30 +660,8 @@ export async function POST(request: NextRequest) {
   // `conductor task group` — we do NOT hard-pass sibling ids through the prompt.
   // All review behavior lives in the agent docs, run via the existing conductor
   // CLI — no orchestration here.
-  const groupId: string | null = agentGroup ? randomUUID() : null;
-  const workerEntry = agentGroup ? agentRegistryMap.get(agentGroup[0].name)! : null;
-  // The worker's backend: its own agent-entry override, else the explicit
-  // top-level backend_type, else the registry's per-agent default. Reviewers cascade the
-  // same way, falling back to the worker's backend.
-  const workerBackendType =
-    agentGroup?.[0]?.backend ?? requestedBackendType ?? workerEntry?.backend ?? null;
-  const reviewerSpecs: Array<{
-    agent: string;
-    backend: string | null;
-    doc: string;
-    taskId: string;
-  }> =
-    agentGroup && agentGroup.length > 1
-      ? agentGroup.slice(1).map((spec) => {
-          const entry = agentRegistryMap.get(spec.name)!;
-          return {
-            agent: spec.name,
-            backend: spec.backend ?? entry.backend,
-            doc: entry.doc,
-            taskId: randomUUID(),
-          };
-        })
-      : [];
+  const groupId: string | null = agentGroupPlan?.groupId ?? null;
+  const workerBackendType = agentGroupPlan?.workerBackendType ?? requestedBackendType;
   let remoteWorktree: RemoteWorktreeLaunchConfig | null = null;
   if (remoteWorktreeHost) {
     const resolved = await resolveRemoteWorktreeTarget({
@@ -712,11 +683,11 @@ export async function POST(request: NextRequest) {
     }
     remoteWorktree = resolved.remoteWorktree;
   }
-  const groupWorkerInitialContent: string | null = agentGroup
+  const groupWorkerInitialContent: string | null = agentGroupPlan
     ? buildAgentBootstrap({
-        agent: agentGroup[0].name,
+        agent: agentGroupPlan.workerAgent,
         role: "worker",
-        docPath: workerEntry!.doc,
+        docPath: agentGroupPlan.workerDoc,
         taskPrompt: initialContent,
       })
     : null;
@@ -884,39 +855,15 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Registry defaults are project-owned configuration, but execution still
-  // has to match the selected daemon's live capabilities. Reject the whole
-  // group before creating its worker when any member names a backend that the
-  // daemon does not advertise; otherwise the API would return a task that can
-  // never start (and reviewer creation is intentionally fail-soft).
-  if (agentGroup && agentHost) {
+  // Reject the whole group before creating its worker when any member names a
+  // backend that the execution daemon does not advertise.
+  if (agentGroupPlan && agentHost) {
     const executionAgent = connectedAgents.find((agent) => agent.host === agentHost);
-    if (executionAgent) {
-      const advertisedBackends = new Set(
-        executionAgent.supportedBackends
-          .map((backend) => normalizeBackendType(backend))
-          .filter((backend): backend is string => Boolean(backend)),
-      );
-      const requestedAgentBackends = [
-        { agent: agentGroup[0].name, backend: workerBackendType },
-        ...reviewerSpecs.map((spec) => ({
-          agent: spec.agent,
-          backend: spec.backend ?? workerBackendType,
-        })),
-      ];
-      const unsupported = requestedAgentBackends.find(
-        (entry) => entry.backend && !advertisedBackends.has(entry.backend),
-      );
-      if (unsupported?.backend) {
-        return NextResponse.json(
-          {
-            error:
-              `agent "${unsupported.agent}" requires backend "${unsupported.backend}", ` +
-              `but daemon "${agentHost}" does not advertise it`,
-          },
-          { status: 400 },
-        );
-      }
+    const backendError = executionAgent
+      ? findAgentGroupBackendError(agentGroupPlan, executionAgent)
+      : null;
+    if (backendError) {
+      return NextResponse.json({ error: backendError }, { status: 400 });
     }
   }
 
@@ -1087,120 +1034,23 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Spawn sibling reviewer tasks (RFC 0033). Each reviewer is an ordinary
-  // ai_task sharing the group's `groupId` and a bootstrap pointing it at its own
-  // agent doc. Each reviewer uses its own backend override, falling back to the
-  // worker's backend. A reviewer spawn failure must never fail the worker
-  // creation, so each is wrapped fail-soft.
-  const reviewerTaskIds: string[] = [];
-  // Pair each spawned reviewer with its agent name as we go. Looking the name
-  // up afterwards would mean keying on the pre-allocated `spec.taskId` and
-  // assuming it equals the id the create returned.
-  const reviewerGroupMembers: Array<{ taskId: string; agent: string }> = [];
-  if (taskType === "ai_task" && task && groupId && reviewerSpecs.length > 0) {
-    // Every member of a group must run in the *same* working directory: the
-    // worker's worktree when `worktree` was requested, otherwise the project
-    // workspace root. Reuse the worker's resolved worktree fields verbatim so
-    // the daemon's `buildTaskWorktreeRoot` (keyed on worktreeBranch) lands all
-    // siblings in one folder — the same sharing branch/fork tasks rely on.
-    //
-    // `reuseOnly` marks reviewers as non-owners: the worker creates the branch,
-    // reviewers wait for it. Without this every member would race on the same
-    // `git worktree add -b`. They still carry the full worktree identity so
-    // teardown's `hasSameTaskWorktreeRoot` sibling guard can see them and skip
-    // cleanup while a reviewer is still running.
-    const sharedWorktreeLaunchConfig = inheritTaskWorktreeLaunchConfig(launchConfig, {
-      reuseOnly: true,
-    });
-    for (const spec of reviewerSpecs) {
-      const reviewerBackendType = spec.backend ?? workerBackendType;
-      const reviewerInitialContent = buildAgentBootstrap({
-        agent: spec.agent,
-        role: "reviewer",
-        docPath: spec.doc,
-      });
-      const reviewerLaunchConfig: JsonObject = {
-        ...(reviewerBackendType ? { backendType: reviewerBackendType } : {}),
-        ...(sharedWorktreeLaunchConfig ?? {
-          ...(projectWorkspacePath ? { cwd: projectWorkspacePath } : {}),
-          ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
-        }),
-        initialContent: reviewerInitialContent,
-      };
-      try {
-        const reviewerTask = await createAndDispatchAiTask({
+  // Spawn sibling reviewer tasks (RFC 0033) and collapse the group into one
+  // tab card in the task list.
+  const { reviewerTaskIds, taskCardGroupsSnapshot } =
+    taskType === "ai_task" && task && agentGroupPlan
+      ? await spawnAgentGroupReviewers({
           userId: user.id,
           projectId,
-          issueId: null,
-          title: `Reviewer: ${spec.agent}`,
+          workerTaskId: task.id,
+          plan: agentGroupPlan,
           agentHost,
-          requestedId: spec.taskId,
-          requestedBackendType: reviewerBackendType,
-          launchConfig: reviewerLaunchConfig,
-          metadata: {
-            ...(reviewerBackendType ? { backendType: reviewerBackendType } : {}),
-            ...(fireTaskDaemonName ? { daemonName: fireTaskDaemonName } : {}),
-            initialContent: reviewerInitialContent,
-            ...buildGroupMemberMetadata({ groupId, role: "reviewer", agent: spec.agent }),
-          },
-          initialMessageContent: reviewerInitialContent,
+          workerLaunchConfig: launchConfig,
+          projectWorkspacePath,
+          projectWorktreeBranch,
+          fireTaskDaemonName,
           status: normalizeTaskStatus(defaultTaskStatus),
-          groupId,
-        });
-        reviewerTaskIds.push(reviewerTask.id);
-        reviewerGroupMembers.push({ taskId: reviewerTask.id, agent: spec.agent });
-      } catch (error) {
-        console.error(
-          `Failed to spawn reviewer task for agent "${spec.agent}"`,
-          error,
-        );
-      }
-    }
-  }
-
-  // Collapse the group into a single tab card in the task list. The shared
-  // `groupId` above is an execution-time relationship the agents use to find
-  // each other; it is invisible to the list view, which renders from the
-  // per-user card groups in `user_preferences`. Without this the members show
-  // up as unrelated cards. Mirrors the restart successor path.
-  let taskCardGroupsSnapshot:
-    | Awaited<ReturnType<typeof mergeRelatedTaskCardGroup>>
-    | null = null;
-  if (reviewerGroupMembers.length > 0 && task) {
-    // Name each tab after its agent, so the strip reads
-    // "feature-dev | code-reviewer" instead of the default ordinals "1 | 2".
-    const workerAgentName = agentGroup?.[0]?.name ?? null;
-    for (const { taskId: reviewerTaskId, agent } of reviewerGroupMembers) {
-      try {
-        // Serial on purpose: each merge is a read-modify-write of one
-        // preference row, so concurrent merges would clobber each other and
-        // only the last reviewer would survive in the card.
-        taskCardGroupsSnapshot = await mergeRelatedTaskCardGroup(
-          user.id,
-          task.id,
-          reviewerTaskId,
-          { source: workerAgentName, related: agent },
-        );
-      } catch (error) {
-        // Grouping is presentation state. The tasks are already created and
-        // dispatched; failing the POST here would invite a duplicate group.
-        console.warn(
-          `[tasks.POST] reviewer ${reviewerTaskId} was created but could not be grouped with ${task.id}`,
-          error,
-        );
-      }
-    }
-    if (taskCardGroupsSnapshot) {
-      realtimeHub.broadcastToUser(user.id, {
-        type: "task_card_groups_update",
-        payload: {
-          user_id: user.id,
-          snapshot: taskCardGroupsSnapshot,
-          updated_at: new Date().toISOString(),
-        },
-      });
-    }
-  }
+        })
+      : { reviewerTaskIds: [], taskCardGroupsSnapshot: null };
 
   const taskResponseRecord = ptySession ? { ...task, ptySession } : task;
 

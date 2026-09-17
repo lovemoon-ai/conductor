@@ -485,6 +485,7 @@ function IssuesPageContent() {
         position: nextPosition,
         ...(projectChanged ? { projectId: args.projectId } : {}),
         ...(args.remoteWorktreeHost ? { remoteWorktreeHost: args.remoteWorktreeHost } : {}),
+        ...(args.agents ? { agents: args.agents } : {}),
         metadata: {
           ...(issue.metadata ?? {}),
           backendType: args.backendType,
