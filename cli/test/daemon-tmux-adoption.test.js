@@ -1072,4 +1072,110 @@ describe("daemon tmux Fire adoption", () => {
 
     return { killedTaskIds };
   }
+
+  // --- task-scoped env must never leak from the tmux server's global env ----
+
+  // Regression for 2026-09-17: a dsh task inherited `CONDUCTOR_CLI_COMMAND=
+  // claude --model opus` from the tmux SERVER's global environment (left by
+  // the claude task that first started the server) and forwarded model=opus to
+  // the DeepSeek API. `spawnFireProcess` now passes every
+  // FIRE_TASK_SCOPED_ENV_KEYS entry explicitly — the daemon's value when set,
+  // `-e KEY=` (cleared to empty) when not — so no conditional variable can
+  // leak across tasks through the shared tmux server.
+  it("passes every task-scoped env var explicitly to tmux new-session, clearing unset ones", async () => {
+    const conductorHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-tmux-env-"));
+    const previousConductorHome = process.env.CONDUCTOR_HOME;
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_HOME = conductorHome;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+
+    const newSessionArgs = [];
+    let handler;
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: path.join(conductorHome, "ws"),
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: AGENT_NAME,
+        AGENT_TOKEN: "agent-token-abcdefgh12345678",
+        TMUX_LIVENESS_POLL_MS: 0,
+      },
+      {
+        spawn: (cmd, args) => {
+          const child = new EventEmitter();
+          child.pid = 4242;
+          child.unref = () => {};
+          child.kill = () => {};
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          if (cmd === "tmux" && args?.[0] === "new-session") {
+            newSessionArgs.push(args);
+          }
+          setImmediate(() => child.emit("exit", 0));
+          return child;
+        },
+        spawnSync: (cmd, args) =>
+          cmd === "tmux" && args?.[0] === "-V"
+            ? { status: 0, error: null, pid: 12345 }
+            : { status: 1, error: new Error("ENOENT"), pid: undefined },
+        fetch: async () => ({ ok: true, json: async () => ({}) }),
+        createWebSocketClient: (_sdkConfig, handlers = {}) => ({
+          registerHandler: (next) => {
+            handler = next;
+          },
+          connect: async () => {},
+          disconnect: async () => {},
+          sendJson: async () => {},
+        }),
+      },
+    );
+
+    try {
+      await waitUntil(() => typeof handler === "function", { message: "ws wiring" });
+      // create_task rejects backends not yet in SUPPORTED_BACKENDS, which is
+      // computed asynchronously during startup — give it a beat.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      handler({
+        type: "create_task",
+        payload: {
+          task_id: TASK_ID,
+          project_id: PROJECT_ID,
+          // dsh is a command-optional built-in with no allow_cli_list entry:
+          // the daemon sets no CLI command for it — exactly the conditional
+          // variable that used to leak.
+          backend_type: "dsh",
+          request_id: "req-env-scoping",
+        },
+      });
+      await waitUntil(() => newSessionArgs.length > 0, { message: "tmux new-session" });
+
+      const envFlags = new Map();
+      const args = newSessionArgs[0];
+      for (let i = 0; i < args.length - 1; i += 1) {
+        if (args[i] === "-e") {
+          const eqIndex = String(args[i + 1]).indexOf("=");
+          envFlags.set(
+            String(args[i + 1]).slice(0, eqIndex),
+            String(args[i + 1]).slice(eqIndex + 1),
+          );
+        }
+      }
+
+      // Unset for this task -> explicitly cleared, never inherited.
+      assert.strictEqual(envFlags.get("CONDUCTOR_CLI_COMMAND"), "");
+      assert.strictEqual(envFlags.get("CONDUCTOR_RESUME_CWD"), "");
+      assert.strictEqual(envFlags.get("CONDUCTOR_PTY_SESSION_ID"), "");
+      // Set for this task -> passed through with the daemon's value.
+      assert.strictEqual(envFlags.get("CONDUCTOR_TASK_ID"), TASK_ID);
+      assert.strictEqual(envFlags.get("CONDUCTOR_PROJECT_ID"), PROJECT_ID);
+      assert.strictEqual(envFlags.get("CONDUCTOR_AGENT_TOKEN"), "agent-token-abcdefgh12345678");
+      assert.strictEqual(envFlags.get("CONDUCTOR_DAEMON_NAME"), AGENT_NAME);
+    } finally {
+      await daemonInstance.close();
+      restoreEnv("CONDUCTOR_HOME", previousConductorHome);
+      restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode);
+      fs.rmSync(conductorHome, { recursive: true, force: true });
+    }
+  });
 });

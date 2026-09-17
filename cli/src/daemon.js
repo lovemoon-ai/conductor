@@ -891,6 +891,27 @@ const PTY_TASK_SCOPED_ENV_KEYS = [
   "CONDUCTOR_RESUME_CWD",
 ];
 
+// Task-scoped env vars a Fire must NEVER inherit from anywhere but this
+// daemon's explicit choice. In tmux mode the new session merges the tmux
+// SERVER's global environment (inherited from whatever task first started the
+// server), so a variable the daemon sets only conditionally — e.g.
+// CONDUCTOR_CLI_COMMAND, which command-optional backends (dsh/copilot) leave
+// unset — would leak a stale value from an earlier task (2026-09-17: a dsh
+// task inherited `claude --model opus` and forwarded model=opus to the
+// DeepSeek API).
+//
+// The invariant is enforced at the single choke point `spawnFireProcess`:
+// every key in this list is passed to `tmux new-session` explicitly — either
+// with the daemon's value or cleared as `-e KEY=` (empty is our "unset"
+// convention; every consumer trims/negates before use). RULE: any new
+// task-scoped env var added to a Fire spawn must be registered here.
+const FIRE_TASK_SCOPED_ENV_KEYS = [
+  ...PTY_TASK_SCOPED_ENV_KEYS,
+  "CONDUCTOR_AGENT_TOKEN",
+  "CONDUCTOR_BACKEND_URL",
+  "CONDUCTOR_DAEMON_NAME",
+];
+
 function stripPtyTaskScopedEnv(source) {
   const env = {
     ...(source && typeof source === "object" ? source : {}),
@@ -1690,6 +1711,17 @@ export function startDaemon(config = {}, deps = {}) {
       // CONDUCTOR_CLI_COMMAND="codex --dangerously-bypass-...").
       if (/[\u0000\r\n]/.test(stringValue)) continue;
       tmuxEnvFlags.push("-e", `${key}=${stringValue}`);
+    }
+
+    // Clear every task-scoped variable the daemon did NOT set for this task,
+    // or the session would inherit a stale value from the tmux server's
+    // global environment (see FIRE_TASK_SCOPED_ENV_KEYS). `-e KEY=` (empty)
+    // works on old tmux versions that lack the `-e KEY` unset form, and all
+    // our consumers treat "" as unset.
+    for (const scopedKey of FIRE_TASK_SCOPED_ENV_KEYS) {
+      if (env[scopedKey] === undefined || env[scopedKey] === null) {
+        tmuxEnvFlags.push("-e", `${scopedKey}=`);
+      }
     }
 
     // Use a non-login `bash -c` here: node and the CLI script are passed by
@@ -7679,7 +7711,13 @@ export function startDaemon(config = {}, deps = {}) {
         // even when the daemon was named through the config file.
         CONDUCTOR_DAEMON_NAME: AGENT_NAME,
         CONDUCTOR_LAUNCHED_BY_DAEMON: "1",
-        ...(cliCommand ? { CONDUCTOR_CLI_COMMAND: cliCommand } : {}),
+        // Always set CONDUCTOR_CLI_COMMAND — even to "" — so a tmux-mode Fire
+        // gets an explicit `-e CONDUCTOR_CLI_COMMAND=` that overrides any stale
+        // value in the tmux SERVER's global environment (inherited from whatever
+        // task first started the server). Without the override, a commandless
+        // backend (dsh/copilot) would see e.g. `claude --model opus` here and
+        // mis-apply its flags. Fire treats "" as unset.
+        CONDUCTOR_CLI_COMMAND: cliCommand,
       };
       if (AGENT_TOKEN) {
         env.CONDUCTOR_AGENT_TOKEN = AGENT_TOKEN;
@@ -8422,7 +8460,10 @@ export function startDaemon(config = {}, deps = {}) {
       CONDUCTOR_TASK_ID: normalizedTargetTaskId,
       CONDUCTOR_DAEMON_NAME: AGENT_NAME,
       CONDUCTOR_LAUNCHED_BY_DAEMON: "1",
-      ...(cliCommand ? { CONDUCTOR_CLI_COMMAND: cliCommand } : {}),
+      // Always set CONDUCTOR_CLI_COMMAND — even to "" — so a tmux-mode Fire
+      // gets an explicit `-e CONDUCTOR_CLI_COMMAND=` that overrides any stale
+      // value in the tmux SERVER's global environment (see create_task).
+      CONDUCTOR_CLI_COMMAND: cliCommand,
     };
     env.CONDUCTOR_RESUME_CWD = resolvedResumeCwd;
     if (AGENT_TOKEN) {

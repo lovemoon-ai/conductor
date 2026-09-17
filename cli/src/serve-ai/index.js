@@ -11,6 +11,7 @@ import { loadServeAiRuntimeConfig } from "./config.js";
 import { sendJson, sendOpenAiError } from "./errors.js";
 import { materializeImageInputs } from "./image-handler.js";
 import {
+  inferBuiltInRuntimeBackendFromCommand,
   listAdvertisedBackends,
   normalizeRuntimeBackendAlias,
   normalizeRuntimeBackendName,
@@ -124,7 +125,7 @@ function extractModelOptionFromCommandLine(commandLine) {
   return "";
 }
 
-function resolveAiSessionCommandLine(backend, allowCliList, env = process.env, sessionBackend = backend) {
+export function resolveAiSessionCommandLine(backend, allowCliList, env = process.env, sessionBackend = backend) {
   const normalizedBackend = normalizeRuntimeBackendName(backend);
   const normalizedSessionBackend = normalizeRuntimeBackendName(sessionBackend);
   const envKeyByBackend = {
@@ -148,7 +149,21 @@ function resolveAiSessionCommandLine(backend, allowCliList, env = process.env, s
       : "";
   const daemonCommand =
     typeof env?.CONDUCTOR_CLI_COMMAND === "string" ? env.CONDUCTOR_CLI_COMMAND.trim() : "";
-  const resolvedCommand = configuredCommand || daemonCommand;
+
+  // CONDUCTOR_CLI_COMMAND may be stale (e.g. leaked from a tmux server's
+  // global environment, left by another backend's task). Only honor the
+  // fallback when the command does not provably belong to a different built-in
+  // backend. Mirrors the same guard in bin/conductor-fire.js.
+  const inferredDaemonBackend = daemonCommand ? inferBuiltInRuntimeBackendFromCommand(daemonCommand) : "";
+  const usableDaemonCommand =
+    daemonCommand &&
+    (!inferredDaemonBackend ||
+      inferredDaemonBackend === normalizedSessionBackend ||
+      inferredDaemonBackend === normalizedBackend)
+      ? daemonCommand
+      : "";
+
+  const resolvedCommand = configuredCommand || usableDaemonCommand;
   if (!resolvedCommand) {
     return "";
   }

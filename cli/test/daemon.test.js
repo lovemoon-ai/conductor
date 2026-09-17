@@ -4262,7 +4262,10 @@ describe("Daemon", () => {
       "--",
     ]);
     assert.strictEqual(spawnCalls[0].options.env.CONDUCTOR_LAUNCHED_BY_DAEMON, "1");
-    assert.strictEqual(spawnCalls[0].options.env.CONDUCTOR_CLI_COMMAND, undefined);
+    // The daemon always sets CONDUCTOR_CLI_COMMAND ("" when the backend has no
+    // configured command) so a tmux-mode Fire overrides any stale value in the
+    // tmux server's global environment instead of inheriting it.
+    assert.strictEqual(spawnCalls[0].options.env.CONDUCTOR_CLI_COMMAND, "");
     assert.equal(
       sentEvents.some(
         (entry) =>
