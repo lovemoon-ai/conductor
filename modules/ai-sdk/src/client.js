@@ -187,6 +187,18 @@ export class RemoteAiSession extends EventEmitter {
     return this.currentTurnStatus ? { ...this.currentTurnStatus } : null;
   }
 
+  /**
+   * Ask the worker for the live turn status (including `active_tool`). Uses
+   * the control lane so it answers while `runTurn` holds the request queue.
+   */
+  async fetchCurrentTurnStatus() {
+    const status = await this.callWorker("getCurrentTurnStatus", [], { messageType: "control" });
+    if (status && typeof status === "object") {
+      this.currentTurnStatus = { ...status };
+    }
+    return this.getCurrentTurnStatus();
+  }
+
   setSessionMessageHandler(handler) {
     this.sessionMessageHandler = typeof handler === "function" ? handler : null;
   }
@@ -208,7 +220,9 @@ export class RemoteAiSession extends EventEmitter {
   }
 
   async getSessionUsageSummary() {
-    return this.callWorker("getSessionUsageSummary", []);
+    // Control lane: fire awaits this before every runtime-status report, so
+    // queueing it behind a running `runTurn` would stall mid-turn statuses.
+    return this.callWorker("getSessionUsageSummary", [], { messageType: "control" });
   }
 
   async interruptCurrentTurn() {

@@ -11,12 +11,16 @@ import {
 import { CodexAppServerTransport } from "../transports/codex-app-server-transport.js";
 import {
   TERMINAL_GOAL_STATUSES,
+  describeCodexToolItem,
   emitLog,
   getBoundedEnvInt,
   loadEnvConfig,
   normalizeLogger,
+  noteToolFinished,
+  noteToolStarted,
   proxyToEnv,
   sanitizeForLog,
+  withActiveTool,
 } from "../shared.js";
 
 const TERMINAL_GOAL_STATUSES_LOCAL = new Set(TERMINAL_GOAL_STATUSES);
@@ -371,7 +375,7 @@ export class CodexAppServerSession extends EventEmitter {
   }
 
   getCurrentTurnStatus() {
-    return this.currentTurnStatus ? { ...this.currentTurnStatus } : null;
+    return withActiveTool(this.currentTurnStatus, this.currentTurn);
   }
 
   async ensureSessionInfo() {
@@ -947,6 +951,8 @@ export class CodexAppServerSession extends EventEmitter {
         if (!currentTurn) {
           return;
         }
+        const tool = describeCodexToolItem(params?.item);
+        noteToolStarted(currentTurn, extractItemId(params?.item), tool?.name, tool?.input);
         const phase = resolveItemPhase(params?.item);
         if (!phase) {
           return;
@@ -978,6 +984,7 @@ export class CodexAppServerSession extends EventEmitter {
         if (!currentTurn) {
           return;
         }
+        noteToolFinished(currentTurn, extractItemId(params?.item));
         const phase = resolveItemPhase(params?.item);
         if (phase !== "assistant_message") {
           return;

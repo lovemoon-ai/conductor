@@ -897,6 +897,37 @@ describe('ConductorClient', () => {
     await client.close();
   });
 
+  test('report_runtime_status events invoke the callback without command acknowledgements', async () => {
+    const reportEvents: Array<{ taskId: string }> = [];
+
+    const client = await ConductorClient.connect({
+      config: makeConfig(),
+      env: {
+        CONDUCTOR_TASK_CREATE_RETRIES: '0',
+        HOSTNAME: 'test-host',
+      },
+      projectPath,
+      backendApi: backendApi as any,
+      wsClient: wsClient as any,
+      sessionStore,
+      agentHost: 'conductor-fire-test-host-1',
+      onReportRuntimeStatus: (event) => {
+        reportEvents.push(event);
+      },
+    });
+
+    await wsClient.emit({
+      type: 'report_runtime_status',
+      payload: { task_id: 'task-report-1', project_id: 'proj1' },
+    });
+    await wsClient.emit({ type: 'report_runtime_status', payload: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(reportEvents).toEqual([{ taskId: 'task-report-1' }]);
+    expect(backendApi.commitAgentCommandAckCalls).toEqual([]);
+    await client.close();
+  });
+
   test('refresh_session dispatch stays non-blocking while the refresh callback is still pending', async () => {
     const refreshEvents: Array<{ taskId: string; sessionId: string }> = [];
     const interruptEvents: Array<{ taskId: string; requestId?: string; targetReplyTo: string }> = [];

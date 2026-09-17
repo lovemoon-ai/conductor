@@ -13,8 +13,11 @@ import {
   getBoundedEnvInt,
   loadEnvConfig,
   normalizeLogger,
+  noteToolFinished,
+  noteToolStarted,
   proxyToEnv,
   sanitizeForLog,
+  withActiveTool,
 } from "../shared.js";
 
 const require = createRequire(import.meta.url);
@@ -255,7 +258,7 @@ export class DshSdkSession extends EventEmitter {
   }
 
   getCurrentTurnStatus() {
-    return this.currentTurnStatus ? { ...this.currentTurnStatus } : null;
+    return withActiveTool(this.currentTurnStatus, this.currentTurn);
   }
 
   async ensureSessionInfo() {
@@ -798,6 +801,7 @@ export class DshSdkSession extends EventEmitter {
       }
       case "tool/call": {
         const toolName = String(event.data?.name || "");
+        noteToolStarted(currentTurn, event.data?.callId, toolName, event.data?.arguments);
         const phase = toolPhaseForName(toolName);
         const argsPreview = sanitizeForLog(event.data?.arguments, 120);
         await this.emitWorkingStatus(
@@ -810,6 +814,9 @@ export class DshSdkSession extends EventEmitter {
         );
         return;
       }
+      case "tool/result":
+        noteToolFinished(currentTurn, event.data?.message?.content?.[0]?.toolCallId);
+        return;
       case "todo/write": {
         const todos = Array.isArray(event.data?.todos) ? event.data.todos : [];
         const done = todos.filter((item) => item?.status === "completed").length;

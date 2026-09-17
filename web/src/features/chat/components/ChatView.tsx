@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useChatStore } from '../store';
-import { useRuntimeStore } from '@/features/realtime';
+import { requestTaskRuntimeStatus, useRuntimeStore } from '@/features/realtime';
 import { useProjectsStore } from '@/features/projects';
 import { useTasksStore } from '@/features/tasks';
 import { useWebSocketStore } from '@/features/realtime';
@@ -499,6 +499,14 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
       void fetchMessages(taskId, { force: true });
     }
   }, [fetchMessages, taskId, websocketStatus]);
+
+  // Runtime status frames are not replayed on page load or reconnect; ask the
+  // task's fire to re-report (e.g. the tool a long silent turn is running).
+  useEffect(() => {
+    if (isTaskRunning && websocketStatus === 'connected') {
+      requestTaskRuntimeStatus(taskId);
+    }
+  }, [isTaskRunning, taskId, websocketStatus]);
 
   // Cancel any in-flight active-dot recomputation when the component
   // unmounts so we don't call setState on a stale instance.
@@ -1098,7 +1106,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
         <div className="mx-auto w-full max-w-3xl space-y-3">
           {aiRuntimeStatusText ? (
             <div className="flex flex-wrap gap-2 text-xs text-muted">
-              <span className="rounded-full bg-border/50 px-2.5 py-1">
+              <span className="max-w-full truncate rounded-full bg-border/50 px-2.5 py-1" title={aiRuntimeStatusText}>
                 {aiRuntimeStatusText}
               </span>
             </div>

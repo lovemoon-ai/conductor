@@ -14,8 +14,11 @@ import {
   getBoundedEnvInt,
   loadEnvConfig,
   normalizeLogger,
+  noteToolFinished,
+  noteToolStarted,
   proxyToEnv,
   sanitizeForLog,
+  withActiveTool,
 } from "../shared.js";
 
 const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
@@ -279,7 +282,7 @@ export class OpencodeSdkSession extends EventEmitter {
   }
 
   getCurrentTurnStatus() {
-    return this.currentTurnStatus ? { ...this.currentTurnStatus } : null;
+    return withActiveTool(this.currentTurnStatus, this.currentTurn);
   }
 
   async ensureSessionInfo() {
@@ -851,6 +854,11 @@ export class OpencodeSdkSession extends EventEmitter {
       return;
     }
     if (part.type === "tool") {
+      if (part.state?.status === "completed" || part.state?.status === "error") {
+        noteToolFinished(currentTurn, part.callID || part.id);
+      } else {
+        noteToolStarted(currentTurn, part.callID || part.id, part.tool, part.state?.input);
+      }
       const phase = toolPhaseForName(part.tool);
       const toolStatus = part.state?.status === "completed"
         ? part.state?.title || part.state?.output || ""

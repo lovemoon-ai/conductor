@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getApiClient } from '@/shared/api/client';
 import type { TaskRuntimeStatus } from '@/shared/types';
 
 interface RuntimeState {
@@ -18,17 +19,26 @@ interface RuntimeState {
  * transit — the composer stays stuck on "…composing reply" until the backend's
  * 12-minute idle deadline fires or the user reloads the page.
  *
- * This watchdog does automatically what a manual reload does: if a task sits in
- * `replyInProgress` with zero further activity (status updates OR messages) for
- * the timeout window, we locally clear the flag. An active turn emits status
- * frames continuously (every reasoning/command/delta), so each one resets the
- * timer; the watchdog only fires once the stream has genuinely gone silent.
- * The window is deliberately generous to avoid clearing during a legitimately
- * quiet long-running turn — it is a last-resort net, not the primary fix.
+ * Silence is not proof the turn is dead: a tool can run for many minutes
+ * without output. So if a task sits in `replyInProgress` with zero further
+ * activity (status updates OR messages) for the timeout window, we ask the
+ * task's fire to re-report instead of clearing locally. A running turn answers
+ * with a heartbeat (current tool + elapsed time), a settled one with
+ * `reply_in_progress: false`; a dead fire is converged by stale-task recovery.
+ * Fire also heartbeats every 60s of silence, so this rarely fires.
  */
 export const REPLY_IN_PROGRESS_WATCHDOG_MS = 120_000;
 
 const watchdogTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** Ask the task's fire to re-report its runtime status (best effort). */
+export function requestTaskRuntimeStatus(taskId: string): void {
+  void getApiClient()
+    .post(`/tasks/${taskId}/runtime-status`)
+    .catch(() => {
+      // The task may have stopped or its fire may be offline; nothing to do.
+    });
+}
 
 function cancelWatchdog(taskId: string): void {
   const timer = watchdogTimers.get(taskId);
@@ -80,28 +90,11 @@ export const useRuntimeStore = create<RuntimeState>()((set, get) => {
     cancelWatchdog(taskId);
     const timer = setTimeout(() => {
       watchdogTimers.delete(taskId);
-      const current = get().byTask[taskId];
-      if (!current?.replyInProgress) {
+      if (!get().byTask[taskId]?.replyInProgress) {
         return;
       }
-      // Locally release the stuck composer, mirroring a page reload.
-      set((state) => {
-        const existing = state.byTask[taskId];
-        if (!existing?.replyInProgress) {
-          return state;
-        }
-        return {
-          byTask: {
-            ...state.byTask,
-            [taskId]: {
-              ...existing,
-              replyInProgress: false,
-              statusLine: undefined,
-              statusDoneLine: existing.statusDoneLine ?? undefined,
-            },
-          },
-        };
-      });
+      requestTaskRuntimeStatus(taskId);
+      armWatchdog(taskId);
     }, REPLY_IN_PROGRESS_WATCHDOG_MS);
     // Node's timers expose unref(); browsers do not. Never block process exit.
     (timer as { unref?: () => void }).unref?.();
