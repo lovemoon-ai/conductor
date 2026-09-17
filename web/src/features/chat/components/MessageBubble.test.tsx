@@ -232,16 +232,38 @@ describe('MessageBubble', () => {
     expect(screen.queryByText('Conductor')).not.toBeInTheDocument();
     expect(screen.getByRole('img', { name: 'Assistant' })).toBeInTheDocument();
     expect(wrapper).not.toHaveClass('pt-2');
+    expect(wrapper.querySelector('.-top-2')).toHaveClass('left-9', 'h-2', 'items-center', 'leading-none', 'opacity-0', 'group-hover/message:opacity-100');
   });
 
-  it('never shows message timestamps on hover or tap', () => {
-    const { container } = render(<MessageBubble message={makeMessage({ role: 'user' })} />);
-    const bubble = container.querySelector('[role="button"]') as HTMLElement;
-    fireEvent.mouseEnter(bubble);
+  it('shows the timestamp on single tap for mobile-style pointers', () => {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: query === '(hover: none), (pointer: coarse)',
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+
+    const { container } = render(<MessageBubble message={makeMessage({ role: 'assistant', content: 'ai message' })} />);
+    const wrapper = container.querySelector('.group\\/message') as HTMLElement;
+    const bubble = wrapper.querySelector('[role="button"]') as HTMLElement;
+    const timestamp = wrapper.querySelector('.-top-2') as HTMLElement;
+
+    expect(timestamp).toHaveClass('opacity-0');
+
     fireEvent.click(bubble);
-    expect(container.querySelector('time')).toBeNull();
-    expect(container.textContent).not.toMatch(/2026|12:00|03[/-]07/);
-    expect(screen.getByRole('img', { name: 'User' })).toBeInTheDocument();
+
+    expect(timestamp).toHaveClass('opacity-100');
+
+    fireEvent.click(bubble);
+
+    expect(timestamp).toHaveClass('opacity-0');
   });
 
   it('falls back to a placeholder when an expired image body can no longer be loaded', () => {
