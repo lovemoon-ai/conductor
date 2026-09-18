@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ProjectItem } from './ProjectItem';
+import type { Project } from '@/shared/types';
 
 const pushMock = vi.fn();
 const updateProjectMock = vi.fn();
@@ -66,18 +67,11 @@ vi.mock('@/features/agents', () => ({
   useAgentsStore: (selector: (state: typeof agentsState) => unknown) => selector(agentsState),
 }));
 
-vi.mock('@/shared/hooks/useSwipeActions', () => ({
-  useSwipeActions: () => ({
-    isOpen: false,
-    panelStyle: { touchAction: 'pan-y' },
-    onPointerDown: vi.fn(),
-    onPointerMove: vi.fn(),
-    onPointerUp: vi.fn(),
-    onPointerCancel: vi.fn(),
-    closeActions: vi.fn(),
-    consumeTap: () => false,
-  }),
+vi.mock('./ProjectDetailsDialog', () => ({
+  ProjectDetailsDialog: ({ project }: { project: { name: string } }) => <div role="dialog">details:{project.name}</div>,
 }));
+
+const openActions = () => fireEvent.click(screen.getByRole('button', { name: 'Project actions' }));
 
 vi.mock('@dnd-kit/sortable', () => ({
   useSortable: () => ({
@@ -159,6 +153,25 @@ describe('ProjectItem', () => {
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('button', { name: 'Delete project' })).not.toBeInTheDocument();
+  });
+
+  it('does not reveal actions when the card is swiped sideways', () => {
+    render(<ProjectItem project={{ id: 'project-swipe', name: 'Swipe project', daemonHost: 'daemon-a' } as unknown as Project} />);
+    const card = screen.getByRole('button', { name: 'Swipe project' });
+    fireEvent.pointerDown(card, { pointerId: 1, clientX: 240, pointerType: 'touch' });
+    fireEvent.pointerMove(card, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    fireEvent.pointerUp(card, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    expect(screen.queryByRole('button', { name: 'Delete project' })).not.toBeInTheDocument();
+    expect(card).not.toHaveAttribute('style');
+  });
+
+  it('opens details from an icon-only Details button', () => {
+    render(<ProjectItem project={{ id: 'project-details', name: 'Detailed project', daemonHost: 'daemon-a' } as unknown as Project} />);
+    const details = screen.getByRole('button', { name: 'Project details' });
+    expect(details).toHaveTextContent('');
+    expect(details.querySelector('svg')).not.toBeNull();
+    fireEvent.click(details);
+    expect(screen.getByRole('dialog')).toHaveTextContent('details:Detailed project');
   });
 
   it('shows online indicator in daemon tag when daemon is online', () => {
@@ -243,7 +256,7 @@ describe('ProjectItem', () => {
     expect(screen.getByText('2/5 members')).toBeInTheDocument();
   });
 
-  it('creates and copies an invite link from the swipe action for unshared projects', async () => {
+  it('creates and copies an invite link from the actions menu for unshared projects', async () => {
     startProjectCollaborationMock.mockResolvedValue({
       id: 'collab-new',
       inviteToken: 'invite-token',
@@ -262,6 +275,7 @@ describe('ProjectItem', () => {
         } as any}
       />,
     );
+    openActions();
 
     expect(screen.queryByRole('button', { name: 'Invite' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Leave' })).toBeNull();
@@ -304,6 +318,7 @@ describe('ProjectItem', () => {
         } as any}
       />,
     );
+    openActions();
 
     fireEvent.click(container.querySelector('button[aria-label="Invite project"]')!);
 
@@ -319,7 +334,7 @@ describe('ProjectItem', () => {
     );
   });
 
-  it('copies an existing invite from the same Invite swipe action', async () => {
+  it('copies an existing invite from the same Invite action', async () => {
     const { container } = render(
       <ProjectItem
         project={{
@@ -340,6 +355,7 @@ describe('ProjectItem', () => {
         } as any}
       />,
     );
+    openActions();
 
     expect(screen.getByText('1/5 members')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Copy invite' })).toBeNull();
@@ -356,7 +372,7 @@ describe('ProjectItem', () => {
     expect(startProjectCollaborationMock).not.toHaveBeenCalled();
   });
 
-  it('shows the leave swipe action only after another member joins', async () => {
+  it('shows the leave action only after another member joins', async () => {
     const { container } = render(
       <ProjectItem
         project={{
@@ -378,15 +394,15 @@ describe('ProjectItem', () => {
         } as any}
       />,
     );
+    openActions();
 
     expect(screen.getByText('2/5 members')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Copy invite' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Leave' })).toBeNull();
 
     const inviteButton = container.querySelector('button[aria-label="Invite project"]');
-    const leaveButton = container.querySelector('button[aria-label="Leave collaboration"]');
     expect(inviteButton).not.toBeNull();
-    expect(leaveButton).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Leave collaboration"]')).not.toBeNull();
 
     fireEvent.click(inviteButton!);
 
@@ -395,10 +411,11 @@ describe('ProjectItem', () => {
     });
     expect(startProjectCollaborationMock).not.toHaveBeenCalled();
     await waitFor(() => {
-      expect(inviteButton).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Project actions' })).toHaveAttribute('aria-expanded', 'false');
     });
 
-    fireEvent.click(leaveButton!);
+    openActions();
+    fireEvent.click(screen.getByRole('button', { name: 'Leave collaboration' }));
 
     await waitFor(() => {
       expect(confirmMock).toHaveBeenCalledWith({
@@ -461,7 +478,7 @@ describe('ProjectItem', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
-  it('hides a project from the swipe action', () => {
+  it('hides a project from the actions menu', () => {
     const onHide = vi.fn();
 
     const { container } = render(
@@ -474,6 +491,7 @@ describe('ProjectItem', () => {
         onHide={onHide}
       />,
     );
+    openActions();
 
     const hideButton = container.querySelector('button[aria-label="Hide project"]');
     expect(hideButton).not.toBeNull();
@@ -487,7 +505,7 @@ describe('ProjectItem', () => {
     });
   });
 
-  it('marks hidden projects and restores them from the swipe action', () => {
+  it('marks hidden projects and restores them from the actions menu', () => {
     const onUnhide = vi.fn();
     const { container } = render(
       <ProjectItem
@@ -501,6 +519,7 @@ describe('ProjectItem', () => {
         onUnhide={onUnhide}
       />,
     );
+    openActions();
 
     // Hidden projects render the folder icon with a dashed stroke instead of a "Hidden" tag.
     expect(container.querySelector('path[stroke-dasharray]')).not.toBeNull();
@@ -613,7 +632,7 @@ describe('ProjectItem', () => {
 
     expect(sortableWrapper).not.toBeNull();
     expect(sortableWrapper).not.toHaveStyle({ touchAction: 'none' });
-    expect(card).toHaveStyle({ touchAction: 'pan-y' });
+    expect(card).not.toHaveStyle({ touchAction: 'none' });
     expect(dragHandle).toHaveStyle({ touchAction: 'none' });
   });
 
@@ -730,7 +749,8 @@ describe('ProjectItem', () => {
           onHide={vi.fn()}
         />,
       );
-      // Hide is invoked via the swipe action button. Find it by aria-label.
+      openActions();
+      // Hide is invoked via the actions-menu button. Find it by aria-label.
       fireEvent.click(screen.getByLabelText('Hide project'));
 
       expect(hideProjectGroupMock).toHaveBeenCalledWith(['p-a', 'p-b']);
@@ -765,7 +785,7 @@ describe('ProjectItem', () => {
     });
   });
 
-  describe('cross-daemon merge/split swipe toggle', () => {
+  describe('cross-daemon merge/split toggle', () => {
     const projectA = {
       id: 'p-a',
       name: 'Conductor',
@@ -795,6 +815,7 @@ describe('ProjectItem', () => {
       const { container } = render(
         <ProjectItem project={projectA as any} />,
       );
+      openActions();
       const button = container.querySelector(
         'button[aria-label="Merge same-name projects across daemons"]',
       );
@@ -806,6 +827,7 @@ describe('ProjectItem', () => {
       const { container } = render(
         <ProjectItem project={projectA as any} />,
       );
+      openActions();
       const button = container.querySelector(
         'button[aria-label="Merge same-name projects across daemons"]',
       );
@@ -837,6 +859,7 @@ describe('ProjectItem', () => {
           sortableId="merged:Conductor:p-a|p-b"
         />,
       );
+      openActions();
       const button = container.querySelector(
         'button[aria-label="Split cross-daemon merged project"]',
       );
@@ -861,6 +884,7 @@ describe('ProjectItem', () => {
       const { container } = render(
         <ProjectItem project={projectA as any} />,
       );
+      openActions();
       const button = container.querySelector(
         'button[aria-label="Merge same-name projects across daemons"]',
       );

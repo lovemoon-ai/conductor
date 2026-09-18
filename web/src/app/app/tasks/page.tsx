@@ -32,9 +32,9 @@ const DESKTOP_MEDIA_QUERY = '(min-width: 1024px)';
 const PROJECT_SWITCH_ANIMATION_MS = 220;
 const PROJECT_SWIPE_LIST_OFFSET_PX = 14;
 const PROJECT_SWIPE_LIST_MAX_OPACITY_DROP = 0.16;
-// Cards and tabs keep their own gestures (action menus, rename); only the list
-// surface they leave uncovered switches projects.
-const PROJECT_SWIPE_EXCLUDED_TARGETS = '[data-task-item-wrapper], [data-task-tab-card-body], [role="tab"], button, a, input, textarea, select, label';
+// Swiping anywhere on the list, task cards included, switches projects; only
+// tabs (hold to rename) and controls keep their own gestures.
+const PROJECT_SWIPE_EXCLUDED_TARGETS = '[role="tab"], button, a, input, textarea, select, label';
 
 // React bubbles portaled overlays (dialogs, menus) through the list, so the
 // swipe must also start inside the list's own DOM.
@@ -676,14 +676,6 @@ function TasksPageContent() {
               onFilterByLabel={handleFilterByLabel}
               onOpenTask={viewMode === 'graph' ? handleOpenTaskPage : undefined}
             />
-            {/* End-of-list marker; also leaves blank room to swipe projects when cards fill the list. */}
-            {viewMode === 'list' && taskCount > 0 ? (
-              <div data-task-list-end aria-hidden="true" className="flex h-12 items-center justify-center gap-1.5">
-                <span className="h-0.5 w-10 rounded-full bg-muted/40" />
-                <span className="h-0.5 w-2.5 rounded-full bg-muted/40" />
-                <span className="h-0.5 w-10 rounded-full bg-muted/40" />
-              </div>
-            ) : null}
           </div>
         )}
       </div>

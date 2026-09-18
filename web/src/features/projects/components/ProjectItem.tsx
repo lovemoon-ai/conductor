@@ -15,7 +15,6 @@ import type { Project } from '@/shared/types';
 import { copyToClipboard } from '@/lib/clipboard';
 import { useProjectsStore } from '../store';
 import { useAgentsStore } from '@/features/agents';
-import { useSwipeActions } from '@/shared/hooks/useSwipeActions';
 import { formatBindingLabel } from '../utils/format-binding-label';
 import { useConfirm, useToast } from '@/components/common/FeedbackProvider';
 import { ProjectDetailsDialog } from './ProjectDetailsDialog';
@@ -58,7 +57,6 @@ interface ProjectItemProps {
   };
 }
 
-const ACTIONS_WIDTH = 72;
 type SortableActivatorName = 'onPointerDown' | 'onMouseDown' | 'onTouchStart' | 'onKeyDown';
 type SortableActivatorListeners = Partial<Record<SortableActivatorName, (event: SyntheticEvent) => void>>;
 
@@ -106,6 +104,13 @@ const MergeIcon = () => (
 const SplitIcon = () => (
   <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.181 8.68a4.503 4.503 0 011.903 6.405m-9.768-2.782L3.56 14.06a4.5 4.5 0 006.364 6.364l1.757-1.757m4.682-4.682l4.5-4.5a4.5 4.5 0 00-6.364-6.364l-1.757 1.757M3 3l18 18" />
+  </svg>
+);
+
+const DetailsIcon = () => (
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="12" cy="12" r="9" strokeWidth={2} />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 11v5M12 8h.01" />
   </svg>
 );
 
@@ -266,15 +271,7 @@ export function ProjectItem({
   // merge by definition (their `daemonHost` is null).
   const showMergeToggle = !isDefault && (canSplitMerge || canRequestMerge);
   const [isMergeBusy, setIsMergeBusy] = useState(false);
-  const swipeActionsWidth =
-    (canInvite ? ACTIONS_WIDTH : 0)
-    + (canLeaveCollaboration ? ACTIONS_WIDTH : 0)
-    + (showMergeToggle ? ACTIONS_WIDTH : 0)
-    + (canHide || canUnhide ? ACTIONS_WIDTH : 0)
-    + (canDelete ? ACTIONS_WIDTH : 0);
-  const swipe = useSwipeActions({
-    maxOffset: swipeActionsWidth,
-  });
+  const hasActions = canInvite || canLeaveCollaboration || showMergeToggle || canHide || canUnhide || canDelete;
 
   const clearLongPress = useCallback(() => {
     if (longPressTimerRef.current) {
@@ -338,14 +335,14 @@ export function ProjectItem({
     }
     setIsEditing(false);
     renamingRef.current = false;
-    swipe.closeActions(); setIsActionsMenuOpen(false);
+    setIsActionsMenuOpen(false);
   };
 
   const handleCancelRename = () => {
     skipRenameOnBlurRef.current = true;
     setEditName(project.name);
     setIsEditing(false);
-    swipe.closeActions(); setIsActionsMenuOpen(false);
+    setIsActionsMenuOpen(false);
   };
 
   const handleTitlePointerDown = useCallback((e: ReactPointerEvent<HTMLHeadingElement>) => {
@@ -362,9 +359,9 @@ export function ProjectItem({
       skipRenameOnBlurRef.current = false;
       setEditName(project.name);
       setIsEditing(true);
-      swipe.closeActions(); setIsActionsMenuOpen(false);
+      setIsActionsMenuOpen(false);
     }, 500);
-  }, [clearLongPress, isDefault, isEditing, project.name, swipe]);
+  }, [clearLongPress, isDefault, isEditing, project.name]);
 
   const handleTitlePointerUp = useCallback(() => {
     clearLongPress();
@@ -387,18 +384,7 @@ export function ProjectItem({
 
   const handleCardPointerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     clearLongPressAfterMove(e.clientX, e.clientY);
-    swipe.onPointerMove(e);
-  }, [clearLongPressAfterMove, swipe]);
-
-  const handleCardPointerUp = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    clearLongPress();
-    swipe.onPointerUp(e);
-  }, [clearLongPress, swipe]);
-
-  const handleCardPointerCancel = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    clearLongPress();
-    swipe.onPointerCancel(e);
-  }, [clearLongPress, swipe]);
+  }, [clearLongPressAfterMove]);
 
   const handleDelete = async () => {
     if (isDefault) {
@@ -450,7 +436,7 @@ export function ProjectItem({
         });
       }
     }
-    swipe.closeActions(); setIsActionsMenuOpen(false);
+    setIsActionsMenuOpen(false);
   };
 
   const handleHide = () => {
@@ -466,7 +452,7 @@ export function ProjectItem({
       title: isMergedGroup ? 'Merged project hidden across daemons' : 'Project hidden',
       description: 'Double-click Projects to show hidden projects.',
     });
-    swipe.closeActions(); setIsActionsMenuOpen(false);
+    setIsActionsMenuOpen(false);
   };
 
   const handleUnhide = () => {
@@ -481,7 +467,7 @@ export function ProjectItem({
     pushToast({
       title: isMergedGroup ? 'Merged project restored' : 'Project restored',
     });
-    swipe.closeActions(); setIsActionsMenuOpen(false);
+    setIsActionsMenuOpen(false);
   };
 
   const handleToggleMerge = async () => {
@@ -527,7 +513,7 @@ export function ProjectItem({
       });
     } finally {
       setIsMergeBusy(false);
-      swipe.closeActions(); setIsActionsMenuOpen(false);
+      setIsActionsMenuOpen(false);
     }
   };
 
@@ -574,7 +560,7 @@ export function ProjectItem({
       });
     } finally {
       setIsCollaborationBusy(false);
-      swipe.closeActions(); setIsActionsMenuOpen(false);
+      setIsActionsMenuOpen(false);
     }
   };
 
@@ -607,7 +593,7 @@ export function ProjectItem({
       });
     } finally {
       setIsCollaborationBusy(false);
-      swipe.closeActions(); setIsActionsMenuOpen(false);
+      setIsActionsMenuOpen(false);
     }
   };
 
@@ -626,10 +612,6 @@ export function ProjectItem({
   const forwardSortableActivator = useCallback((name: SortableActivatorName, e: SyntheticEvent) => {
     (listeners as SortableActivatorListeners | undefined)?.[name]?.(e);
   }, [listeners]);
-
-  const handleCardPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    swipe.onPointerDown(e);
-  }, [swipe]);
 
   const handleDragHandlePointerDown = useCallback((e: ReactPointerEvent<HTMLElement>) => {
     e.stopPropagation();
@@ -676,12 +658,11 @@ export function ProjectItem({
   return (
     <div ref={setNodeRef} style={style}>
       <div className="relative flex flex-col overflow-hidden rounded-2xl">
-        {swipeActionsWidth > 0 && (
-          <div className={isActionsMenuOpen ? "project-action-menu relative order-2 flex h-14 overflow-x-auto border-b border-border bg-paper" : "absolute inset-y-0 right-0 flex z-0"} aria-hidden={!swipe.isOpen && !isActionsMenuOpen}>
+        {hasActions && isActionsMenuOpen && (
+          <div className="project-action-menu relative order-2 flex h-14 overflow-x-auto border-b border-border bg-paper">
             {canInvite ? (
               <button
                 type="button"
-                tabIndex={swipe.isOpen || isActionsMenuOpen ? 0 : -1}
                 aria-label="Invite project"
                 title="Invite"
                 disabled={isCollaborationBusy}
@@ -693,13 +674,12 @@ export function ProjectItem({
                 className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--accent)]/10 text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20 disabled:opacity-60"
               >
                 <InviteIcon />
-                {isActionsMenuOpen ? <span className="text-[10px]">Invite</span> : null}
+                <span className="text-[10px]">Invite</span>
               </button>
             ) : null}
             {canLeaveCollaboration ? (
               <button
                 type="button"
-                tabIndex={swipe.isOpen || isActionsMenuOpen ? 0 : -1}
                 aria-label="Leave collaboration"
                 title="Leave"
                 disabled={isCollaborationBusy}
@@ -711,13 +691,12 @@ export function ProjectItem({
                 className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--warning)]/10 text-ink transition-colors hover:bg-[var(--warning)]/20 disabled:opacity-60"
               >
                 <LeaveIcon />
-                {isActionsMenuOpen ? <span className="text-[10px]">Leave</span> : null}
+                <span className="text-[10px]">Leave</span>
               </button>
             ) : null}
             {showMergeToggle ? (
               <button
                 type="button"
-                tabIndex={swipe.isOpen || isActionsMenuOpen ? 0 : -1}
                 aria-label={canSplitMerge ? 'Split cross-daemon merged project' : 'Merge same-name projects across daemons'}
                 title={canSplitMerge ? 'Split' : 'Merge'}
                 disabled={isMergeBusy}
@@ -729,13 +708,12 @@ export function ProjectItem({
                 className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--accent)]/10 text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20 disabled:opacity-60"
               >
                 {canSplitMerge ? <SplitIcon /> : <MergeIcon />}
-                {isActionsMenuOpen ? <span className="text-[10px]">{canSplitMerge ? 'Split' : 'Merge'}</span> : null}
+                <span className="text-[10px]">{canSplitMerge ? 'Split' : 'Merge'}</span>
               </button>
             ) : null}
             {canHide ? (
               <button
                 type="button"
-                tabIndex={swipe.isOpen || isActionsMenuOpen ? 0 : -1}
                 aria-label="Hide project"
                 title="Hide"
                 onClick={(e) => {
@@ -746,12 +724,11 @@ export function ProjectItem({
                 className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--paper)] text-muted hover:text-ink transition-colors"
               >
                 <HideIcon />
-                {isActionsMenuOpen ? <span className="text-[10px]">Hide</span> : null}
+                <span className="text-[10px]">Hide</span>
               </button>
             ) : canUnhide ? (
               <button
                 type="button"
-                tabIndex={swipe.isOpen || isActionsMenuOpen ? 0 : -1}
                 aria-label="Show project"
                 title="Show"
                 onClick={(e) => {
@@ -762,13 +739,12 @@ export function ProjectItem({
                 className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--accent)]/10 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors"
               >
                 <ShowIcon />
-                {isActionsMenuOpen ? <span className="text-[10px]">Show</span> : null}
+                <span className="text-[10px]">Show</span>
               </button>
             ) : null}
             {canDelete ? (
               <button
                 type="button"
-                tabIndex={swipe.isOpen || isActionsMenuOpen ? 0 : -1}
                 aria-label="Delete project"
                 title="Delete"
                 onClick={(e) => {
@@ -779,19 +755,14 @@ export function ProjectItem({
                 className="w-[72px] h-full flex items-center justify-center border-l border-border bg-[var(--error)]/10 text-[var(--error)] hover:bg-[var(--error)]/20 transition-colors"
               >
                 <TrashIcon />
-                {isActionsMenuOpen ? <span className="text-[10px]">Delete</span> : null}
+                <span className="text-[10px]">Delete</span>
               </button>
             ) : null}
           </div>
         )}
 
         <div
-          onClick={() => {
-            if (swipe.consumeTap()) {
-              return;
-            }
-            selectProject();
-          }}
+          onClick={selectProject}
           onDoubleClick={openProjectDetails}
           className={`project-row webapp-card relative z-10 cursor-pointer px-4 py-2.5 transition-colors hover:border-[var(--accent)] ${isSelected ? 'webapp-card-list-pane-active' : 'webapp-card-list-pane-idle'
             }`}
@@ -800,30 +771,23 @@ export function ProjectItem({
           aria-label={project.name}
           aria-pressed={isSelected}
           data-project-id={project.id}
-          onPointerDown={handleCardPointerDown}
           onPointerMove={handleCardPointerMove}
-          onPointerUp={handleCardPointerUp}
-          onPointerCancel={handleCardPointerCancel}
-          style={swipe.panelStyle}
+          onPointerUp={clearLongPress}
+          onPointerCancel={clearLongPress}
           onKeyDown={(e: ReactKeyboardEvent<HTMLDivElement>) => {
             if (e.target !== e.currentTarget) return;
             if (e.key === 'Escape') {
-              swipe.closeActions(); setIsActionsMenuOpen(false);
+              setIsActionsMenuOpen(false);
               return;
             }
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              if (swipe.isOpen) {
-                swipe.closeActions(); setIsActionsMenuOpen(false);
-                return;
-              }
               selectProject();
             }
           }}
         >
           {/* Dim the content for pending-binding cards instead of the whole
-              panel: opacity on the panel would make its background translucent
-              and let the swipe-action layer (z-0, behind the card) show through. */}
+              panel so the card background stays opaque. */}
           <div className={isPendingBinding ? 'opacity-70' : undefined}>
             {aggregation ? (
               <ProjectCardTabBar
@@ -934,8 +898,8 @@ export function ProjectItem({
                   </h3>
                 )}
                 <div className="flex shrink-0 items-center gap-1">
-                  <button type="button" aria-label="Project details" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); openProjectDetails(); }} className="rounded-lg px-3 py-2 text-xs font-medium text-muted hover:bg-paper hover:text-ink">Details</button>
-                  {swipeActionsWidth > 0 ? <button type="button" aria-label="Project actions" aria-expanded={isActionsMenuOpen || swipe.isOpen} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); swipe.closeActions(); setIsActionsMenuOpen(!isActionsMenuOpen); }} className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-paper">⋯</button> : null}
+                  <button type="button" aria-label="Project details" title="Details" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); openProjectDetails(); }} className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-paper hover:text-ink"><DetailsIcon /></button>
+                  {hasActions ? <button type="button" aria-label="Project actions" aria-expanded={isActionsMenuOpen} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); setIsActionsMenuOpen(!isActionsMenuOpen); }} className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-paper">⋯</button> : null}
                 </div>
               </div>
               {/* Chips live in the text column — aligned under the title and

@@ -946,11 +946,13 @@ export function TaskList({
 
   const handleRowPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
+    // An active merge drag owns the pointer; keep the page's project swipe out.
+    if (drag?.active) event.stopPropagation();
     if (!drag || drag.input !== 'pointer' || drag.pointerId !== event.pointerId) return;
     const deltaX = event.clientX - drag.startX;
     const deltaY = event.clientY - drag.startY;
     if (!drag.active) {
-      // Horizontal-dominant card motion belongs to TaskItem's swipe — bow out.
+      // Horizontal-dominant motion is never a merge drag — bow out.
       if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > DRAG_ACTIVATE_THRESHOLD) {
         dragRef.current = null;
         return;
@@ -964,6 +966,7 @@ export function TaskList({
 
   const handleRowPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
+    if (drag?.active) event.stopPropagation();
     if (!drag || drag.input !== 'pointer' || drag.pointerId !== event.pointerId) return;
     const wasActive = drag.active;
     resetRowDrag();
@@ -1013,7 +1016,7 @@ export function TaskList({
     if (!drag.active) {
       if (Math.hypot(deltaX, deltaY) <= TOUCH_DRAG_MOVE_TOLERANCE) return;
       // Movement before the hold threshold is ordinary scroll/swipe. Do not
-      // preventDefault: native scrolling and TaskItem gestures keep ownership.
+      // preventDefault: native scrolling and the project swipe keep ownership.
       resetRowDrag();
       return;
     }

@@ -519,6 +519,16 @@ dialog::backdrop {
 
 .task-action-menu > button, .project-action-menu > button { flex-direction: column; gap: 4px; background: transparent; border: 0; }
 .task-action-menu > button { width: 100%; }
+/* The ⋯ menu follows the card's width, not the device: narrow cards (phones, a
+   narrow desktop pane) get 3 columns; from 480px (5 columns × 96px) it returns
+   to the 2-row strip. */
+.task-card { container: task-card / inline-size; }
+.task-action-menu { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: 56px; }
+.task-action-menu-filler { display: none; }
+@container task-card (min-width: 480px) {
+  .task-action-menu { grid-auto-flow: column; grid-template-rows: repeat(2, 44px); grid-template-columns: repeat(var(--task-action-columns), minmax(0, 1fr)); }
+  .task-action-menu-filler { display: flex; }
+}
 .project-action-menu > button { flex-shrink: 0; }
 
 /* Project conversations: one workspace, compact rows at narrow pane widths. */

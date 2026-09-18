@@ -59,7 +59,7 @@ export function getStableTaskBackend(task: Task): string | null {
 
 /**
  * Resolve the project a task should be *displayed* under. A display-only
- * `secondProjectId` (set on any task "moved" via the task-card swipe menu)
+ * `secondProjectId` (set on any task "moved" via the task-card actions menu)
  * overrides the real `projectId` for grouping, without changing any runtime
  * behaviour. Returns `null` when neither is set.
  */
