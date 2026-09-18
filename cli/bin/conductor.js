@@ -127,7 +127,7 @@ Usage: conductor <subcommand> [options]
 
 Subcommands:
   fire      Run AI coding agents with Conductor integration
-  daemon    Start long-running daemon for task orchestration
+  daemon    Start long-running daemon (or: daemon list/tools/quota to query daemons)
   config    Interactive configuration setup
   update    Update the CLI to the latest version
   diagnose  Diagnose a task and print likely root cause
@@ -151,6 +151,7 @@ Examples:
   conductor fire -- "fix the bug"
   conductor fire --backend claude -- "add feature"
   conductor daemon --config-file ~/.conductor/config.yaml
+  conductor daemon quota macmini --tool claude
   conductor diagnose <task-id>
   conductor send-file ./screenshot.png
   conductor channel connect feishu

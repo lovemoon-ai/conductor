@@ -26,6 +26,10 @@ export class FakeBackendApi {
     this.scheduledMessages = (initial.scheduledMessages ?? []).map((schedule) => ({ ...schedule }));
     this.createTaskGrouping = initial.createTaskGrouping ?? null;
     this.createAppTaskError = initial.createAppTaskError ?? null;
+    this.agents = initial.agents ?? [];
+    this.aiManagerStatus = initial.aiManagerStatus ?? {};
+    this.aiManagerQuota = initial.aiManagerQuota ?? {};
+    this.achievedTasks = initial.achievedTasks ?? [];
     this.calls = [];
     this.matchProjectByPathResult = initial.matchProjectByPathResult ?? {
       project: null,
@@ -241,6 +245,39 @@ export class FakeBackendApi {
       );
     }
     return result.map((task) => this.asTaskSummary(task));
+  }
+
+  async listAchievedTasks(params = {}) {
+    this.calls.push({ method: "listAchievedTasks", params });
+    const q = (params.query ?? "").toLowerCase();
+    const matches = this.achievedTasks.filter((task) =>
+      (!params.projectId || task.projectId === params.projectId)
+      && (!q || String(task.title).toLowerCase().includes(q) || String(task.snippet ?? "").toLowerCase().includes(q)));
+    const page = params.page ?? 1;
+    return {
+      tasks: matches.slice((page - 1) * 10, page * 10),
+      total: matches.length,
+      page,
+      pageSize: 10,
+      totalPages: Math.ceil(matches.length / 10),
+    };
+  }
+
+  // ---- daemon queries ----
+
+  async listAgents() {
+    this.calls.push({ method: "listAgents" });
+    return this.agents;
+  }
+
+  async getAiManagerStatus(agentHost) {
+    this.calls.push({ method: "getAiManagerStatus", agentHost });
+    return this.aiManagerStatus;
+  }
+
+  async getAiManagerQuota(agentHost, params = {}) {
+    this.calls.push({ method: "getAiManagerQuota", agentHost, params });
+    return this.aiManagerQuota;
   }
 
   async getTask(taskId) {

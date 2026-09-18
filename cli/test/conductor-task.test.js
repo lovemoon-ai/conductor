@@ -660,6 +660,59 @@ describe("conductor task list", () => {
     assert.match(lines.find((l) => l.startsWith("native")), /running\s+Native$/);
     assert.equal(lines.some((l) => l.startsWith("foreign")), false);
   });
+
+  const archivedFixture = () => new FakeBackendApi({
+    projects: [seedProject],
+    achievedTasks: [
+      {
+        id: "arch-1", projectId: "proj-1", projectName: "alpha", title: "real2sim pipeline",
+        achievedAt: "2026-09-18T03:01:33.042Z", snippet: "…fixed the real2sim export…",
+      },
+      { id: "arch-2", projectId: "proj-2", projectName: "beta", title: "Other", achievedAt: "2026-09-17T00:00:00.000Z" },
+    ],
+  });
+
+  it("--archived --search queries archived tasks in the resolved project", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = archivedFixture();
+    const code = await main(
+      ["list", "--archived", "--search", "real2sim"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 0, stderr.collect());
+    const call = backend.calls.find((c) => c.method === "listAchievedTasks");
+    assert.deepEqual(call.params, { query: "real2sim", projectId: "proj-1", page: undefined });
+    const lines = stdout.collect().trim().split("\n");
+    assert.match(lines[0], /^ID\s+ARCHIVED\s+PROJECT\s+TITLE$/);
+    assert.match(lines[1], /^arch-1\s+2026-09-18\s+alpha\s+real2sim pipeline$/);
+    assert.equal(lines[2], "    …fixed the real2sim export…");
+    assert.equal(lines.length, 3);
+  });
+
+  it("--archived --all-projects --json drops the project filter", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = archivedFixture();
+    const code = await main(
+      ["list", "--archived", "--all-projects", "--page", "1", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 0, stderr.collect());
+    const call = backend.calls.find((c) => c.method === "listAchievedTasks");
+    assert.deepEqual(call.params, { query: undefined, projectId: undefined, page: 1 });
+    const data = JSON.parse(stdout.collect());
+    assert.deepEqual(data.tasks.map((t) => t.id), ["arch-1", "arch-2"]);
+    assert.equal(data.totalPages, 1);
+  });
+
+  it("rejects archive-only flags without --archived", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const code = await main(["list", "--search", "x"], { stdout, stderr, ...makeCliDeps(archivedFixture()) });
+    assert.equal(code, 2);
+    assert.match(stderr.collect(), /archived/);
+  });
 });
 
 describe("conductor task group", () => {

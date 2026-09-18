@@ -5,6 +5,7 @@
  *
  * Subcommands:
  *   list [--project ...] [--issue <id>] [--status ...] [--include-moved]
+ *   list --archived [--search <text>] [--all-projects] [--page N]
  *   create --title <title> [--prompt <prompt>] [--backend <backend>]
  *          [--parent-task-id <id>] [--project ...]
  *   show <id>
@@ -242,8 +243,56 @@ async function buildMovedLabels(apis, projectId, tasks) {
   return moved.map((m) => (m ? `${m.dir} ${names.get(m.id) ?? m.id}` : ""));
 }
 
+// Archived (achieved) tasks come from a separate search endpoint: 10 per page,
+// matched against title and transcript, newest-archived first.
+async function handleArchivedList(argv, deps, apis) {
+  const project = argv.allProjects
+    ? null
+    : await resolveProject(apis, { env: deps.env, cwd: deps.cwd, project: argv.project });
+  const result = await apis.apiClient.listAchievedTasks({
+    query: argv.search,
+    projectId: project?.id,
+    page: argv.page,
+  });
+  if (argv.json) {
+    printJson(deps.stdout, result);
+    return EXIT.OK;
+  }
+  if (result.tasks.length === 0) {
+    printPretty(deps.stdout, "(no archived tasks)");
+    return EXIT.OK;
+  }
+  const projectWidth = Math.max(7, ...result.tasks.map((task) => String(task.projectName ?? "").length));
+  printPretty(deps.stdout, `${pad("ID", 36)} ${pad("ARCHIVED", 10)} ${pad("PROJECT", projectWidth)} TITLE`);
+  for (const task of result.tasks) {
+    printPretty(
+      deps.stdout,
+      `${pad(task.id, 36)} ${pad(String(task.achievedAt ?? "").slice(0, 10), 10)} ${pad(task.projectName ?? "", projectWidth)} ${task.title ?? ""}`,
+    );
+    if (task.snippet) printPretty(deps.stdout, `    ${task.snippet}`);
+  }
+  if (result.totalPages > 1) {
+    printPretty(deps.stdout, `Page ${result.page}/${result.totalPages} (${result.total} archived tasks); use --page for more.`);
+  }
+  return EXIT.OK;
+}
+
 async function handleList(argv, deps) {
+  // Validated here rather than with yargs implies/conflicts: those count the
+  // boolean defaults as "set", and the parser's fail() does not stop the handler.
+  let argsProblem = null;
+  if (!argv.archived && (argv.search !== undefined || argv.allProjects || argv.page !== undefined)) {
+    argsProblem = "--search, --all-projects and --page require --archived";
+  } else if (argv.archived && (argv.issue || argv.status || argv.includeMoved || (argv.allProjects && argv.project))) {
+    argsProblem = "--archived cannot be combined with --issue, --status, --include-moved, or --project with --all-projects";
+  }
+  if (argsProblem) {
+    const err = new Error(argsProblem);
+    err.code = "ARGS";
+    throw err;
+  }
   const apis = await buildApis(deps);
+  if (argv.archived) return handleArchivedList(argv, deps, apis);
   const project = await resolveProject(apis, { env: deps.env, cwd: deps.cwd, project: argv.project });
   const list = await apis.tasks.listTasks({
     projectId: project.id,
@@ -602,7 +651,11 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
             type: "boolean",
             default: false,
             describe: "Also list tasks moved into this project from other projects (adds a MOVED column)",
-          }),
+          })
+          .option("archived", { type: "boolean", describe: "List archived tasks instead of active ones" })
+          .option("search", { type: "string", describe: "With --archived: match title or transcript text" })
+          .option("all-projects", { type: "boolean", describe: "With --archived: search every project" })
+          .option("page", { type: "number", describe: "With --archived: result page (10 per page)" }),
         async (argv) => {
           exitCode = await handleList(argv, { ...handlerDeps, configFile: argv.configFile });
         },

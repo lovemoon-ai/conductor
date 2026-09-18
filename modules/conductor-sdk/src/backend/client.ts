@@ -710,14 +710,67 @@ export class BackendApiClient {
     });
   }
 
+  /** Daemons (agents) currently connected for this user. */
+  async listAgents(): Promise<Record<string, any>[]> {
+    const response = await this.request('GET', '/api/agents');
+    const payload = await this.parseJson(response);
+    if (!Array.isArray(payload)) {
+      throw new BackendApiError('Invalid agents response: expected list', response.status, payload);
+    }
+    return payload as Record<string, any>[];
+  }
+
+  /** Install / network status of the AI tools on a daemon. */
+  async getAiManagerStatus(agentHost: string): Promise<Record<string, any>> {
+    const query = new URLSearchParams({ agentHost });
+    const response = await this.request('GET', '/api/ai-manager/status', { query, timeoutMs: 45_000 });
+    return this.parseJson(response);
+  }
+
+  /** Usage-window / balance quota of the AI tools on a daemon. */
+  async getAiManagerQuota(
+    agentHost: string,
+    params: { tool?: string; forceRefresh?: boolean } = {},
+  ): Promise<Record<string, any>> {
+    const query = new URLSearchParams({ agentHost });
+    if (params.tool) query.set('tool', params.tool);
+    if (params.forceRefresh) query.set('forceRefresh', '1');
+    // The server waits up to 30s for the daemon to query every provider.
+    const response = await this.request('GET', '/api/ai-manager/quota', { query, timeoutMs: 45_000 });
+    return this.parseJson(response);
+  }
+
+  /** Search archived (achieved) tasks by title and transcript; 10 per page. */
+  async listAchievedTasks(
+    params: { query?: string; projectId?: string; page?: number } = {},
+  ): Promise<{ tasks: Record<string, any>[]; total: number; page: number; totalPages: number }> {
+    const query = new URLSearchParams();
+    if (params.query) query.set('q', params.query);
+    if (params.projectId) query.set('projectId', params.projectId);
+    if (params.page) query.set('page', String(params.page));
+    const response = await this.request('GET', '/api/tasks/achieved', { query });
+    const payload = await this.parseJson(response);
+    if (!payload || !Array.isArray(payload.tasks)) {
+      throw new BackendApiError('Invalid achieved tasks response', response.status, payload);
+    }
+    return payload;
+  }
+
   private async request(
     method: string,
     pathname: string,
-    opts: { body?: any; query?: URLSearchParams; headers?: Record<string, string> } = {},
+    opts: {
+      body?: any;
+      query?: URLSearchParams;
+      headers?: Record<string, string>;
+      timeoutMs?: number;
+    } = {},
   ): Promise<Response> {
     const url = this.buildUrl(pathname, opts.query);
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timeout = controller ? setTimeout(() => controller.abort(), this.timeoutMs) : null;
+    const timeout = controller
+      ? setTimeout(() => controller.abort(), opts.timeoutMs ?? this.timeoutMs)
+      : null;
     try {
       let response = await this.sendRequest(url, method, opts.body, controller, opts.headers);
       if (

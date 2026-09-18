@@ -20,8 +20,18 @@ import {
   describeForceRestartRefusal,
   parseDaemonLockState,
 } from "../src/daemon-lock.js";
+import { DAEMON_QUERY_VERBS, main as runDaemonQuery } from "./conductor-daemon-query.js";
 
 const argv = hideBin(process.argv);
+
+// `conductor daemon list|tools|quota` are read-only queries, not a daemon launch.
+// Exit (so startup below never runs) only after stdout drains: a piped
+// --json payload over 64KB would otherwise be cut off.
+if (DAEMON_QUERY_VERBS.has(argv[0])) {
+  const code = await runDaemonQuery(argv);
+  await new Promise((resolve) => process.stdout.write("", resolve));
+  process.exit(code);
+}
 
 const CLI_NAME = process.env.CONDUCTOR_CLI_NAME || "conductor-daemon";
 const CONDUCTOR_HOME = resolveConductorHome();
@@ -170,6 +180,7 @@ const args = yargs(argv)
   .example(`$0 --config-file ${resolveConductorConfigPath()}`, "Run with daemon_name from config")
   .example("$0 --nohup", "Run daemon in background with logfile")
   .example("$0 --nohup --force", "Restart daemon in background by stopping the existing one")
+  .example("$0 list | tools <host> | quota <host>", "Query online daemons, their AI tools and quota")
   .help()
   .strict()
   .parse();

@@ -158,6 +158,7 @@ conductor issue done  <id> [--evidence <text>|@FILE]
 
 ```bash
 conductor task list [--issue <id>] [--status ...] [--include-moved]
+conductor task list --archived [--search <text>] [--all-projects] [--page N]
 conductor task create --title <t>
                       [--prompt <p>] [--backend <name>]
                       [--parent-task-id <id>]
@@ -175,6 +176,7 @@ conductor task schedule delete <id> <schedule-id>
 要点：
 
 - `list` 默认只列 `projectId` 属于本项目的 task；`--include-moved` 额外列出在 web 中从其他项目 move 进来的 task（`secondProjectId` 为本项目），并加一列 MOVED（`from <项目>` / `to <项目>`）。`--json` 输出含 `secondProjectId`。
+- `list --archived` 列出已归档 task（每页 10 条，按归档时间倒序），默认限定当前项目，`--all-projects` 搜全部项目；`--search` 同时匹配标题和对话内容，并在下一行显示命中片段。项目归属按 web 的显示分组（move 过的 task 算在目标项目下），与默认 `list` 按真实 `projectId` 不同。`--json` 输出 `{ tasks, total, page, pageSize, totalPages }`。归档 task 仍可用 `task show` / `task messages` 查看。
 - `create` 固定创建 `ai_task`，走 web 前端相同的 app-task 通路，而不是 `conductor fire` 的 fire-task 通路。
 - `--title` 必填；`--prompt` 是首条 user message；`--backend` 可选，但指定后必须由目标在线 daemon 显式支持。
 - `--parent-task-id` 只接受当前用户可见、未归档的 task。成功后，新 task 与 parent 在同一 task-card group 中展示。

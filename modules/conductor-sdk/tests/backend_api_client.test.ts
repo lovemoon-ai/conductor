@@ -101,6 +101,38 @@ describe('BackendApiClient', () => {
     expect(tasks[0].secondProjectId).toBe('proj-1');
   });
 
+  test('daemon and archived-task queries hit the /api routes with their params', async () => {
+    const urls: URL[] = [];
+    const fetchImpl: FetchFn = async (url) => {
+      const parsed = new URL(String(url));
+      urls.push(parsed);
+      const body =
+        parsed.pathname === '/api/agents'
+          ? [{ host: 'macmini' }]
+          : parsed.pathname === '/api/tasks/achieved'
+            ? { tasks: [{ id: 'a1' }], total: 1, page: 2, pageSize: 10, totalPages: 1 }
+            : { ok: true };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    };
+    const client = new BackendApiClient(makeConfig(), { fetchImpl });
+
+    expect(await client.listAgents()).toEqual([{ host: 'macmini' }]);
+    await client.getAiManagerStatus('macmini');
+    await client.getAiManagerQuota('macmini', { tool: 'claude', forceRefresh: true });
+    const achieved = await client.listAchievedTasks({ query: 'real2sim', projectId: 'p1', page: 2 });
+    expect(achieved.tasks.map((task) => task.id)).toEqual(['a1']);
+
+    expect(urls.map((url) => `${url.pathname}?${url.searchParams}`)).toEqual([
+      '/api/agents?',
+      '/api/ai-manager/status?agentHost=macmini',
+      '/api/ai-manager/quota?agentHost=macmini&tool=claude&forceRefresh=1',
+      '/api/tasks/achieved?q=real2sim&projectId=p1&page=2',
+    ]);
+  });
+
   test('createAppTask posts directly to the frontend task pipeline', async () => {
     const urls: string[] = [];
     const fetchImpl: FetchFn = async (url, init) => {

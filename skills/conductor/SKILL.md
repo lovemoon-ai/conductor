@@ -66,7 +66,7 @@ Only run `conductor --help`, subcommand help, or read `~/.conductor/config.yaml`
 - `conductor fire`: run a coding CLI in the foreground and bridge it to a Conductor task.
 - `conductor task create`: create a daemon-backed app task through the same server path as the web frontend. Use it for a fresh remote task, including parent task-card grouping; do not use it to attach or resume the current local coding session.
 - `conductor project|issue|task`: manage entities, including messages, mid-turn inserts, schedules, and fresh app-task creation. See `reference/entity-commands.md`.
-- `conductor daemon`: keep a desktop agent online so tasks created from the app can run remotely.
+- `conductor daemon`: keep a desktop agent online so tasks created from the app can run remotely. `conductor daemon list|tools <host>|quota <host>` queries online daemons, their AI tools, and each tool's usage windows / balance.
 - `conductor diagnose <task-id>`: inspect a stuck or failed task and print likely root cause.
 - `conductor remote exec|cp|wait`: act on another daemon's host — run a one-shot command, copy files and directories (`-r`) either way, or re-attach to a command that outlived its timeout. See `reference/remote.md`.
 - `conductor channel connect feishu`: upload `channels.feishu` from the selected config file to the Conductor backend.
@@ -224,6 +224,16 @@ Operational notes:
 - `--nohup` backgrounds the daemon and writes logs to `~/.conductor/logs/`.
 - `--force` restarts an existing daemon if a lock file already exists.
 - `--clean-all` prunes stale daemon presence on the backend before starting.
+
+Read-only queries (all accept `--json`; they never start a daemon; the verb must come right after `daemon`):
+
+```bash
+conductor daemon list [--all]                           # online daemons, CLI version, AI backends (--all adds conductor-fire-* hosts)
+conductor daemon tools macmini                          # installed AI tools, versions, network reachability
+conductor daemon quota macmini [--tool claude] [--refresh]  # 5h/weekly usage %, credits or balance per tool
+```
+
+An offline or unknown host exits 4 (`daemon not connected for this user`).
 
 ### Diagnose A Broken Task
 
