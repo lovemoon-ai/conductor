@@ -1188,6 +1188,13 @@ export function startDaemon(config = {}, deps = {}) {
   // below after we verify tmux is installed; if tmux is missing we log a
   // warning and silently fall back to direct spawn rather than failing every
   // create_task with ENOENT.
+  //
+  // The daemon is not inside any tmux pane, so drop the launching shell's
+  // TMUX/TMUX_PANE: tmux prefers $TMUX over the per-uid default socket, and a
+  // daemon started via `su` from root's tmux pointed every spawn/probe/kill at
+  // /tmp/tmux-0/default ("Permission denied").
+  delete process.env.TMUX;
+  delete process.env.TMUX_PANE;
   const FIRE_TMUX_MODE_ENABLED = getFireTmuxModeEnabled(userConfig);
   // RFC 0035: a guest daemon runs on someone else's machine as a different
   // account. It keeps the ordinary daemon code path but drops the capabilities
@@ -1625,6 +1632,9 @@ export function startDaemon(config = {}, deps = {}) {
     return { attach, append, tail };
   }
 
+  // Headroom under tmux's 16384-byte imsg limit for a client command's argv.
+  const TMUX_ARGV_BYTE_BUDGET = 12 * 1024;
+
   // Spawn the Fire CLI either directly (default) or inside a detached tmux
   // session (when FIRE_TMUX_MODE_ACTIVE). In tmux mode the returned `child`
   // is the short-lived `tmux new-session` client; once it exits with code 0
@@ -1740,7 +1750,21 @@ export function startDaemon(config = {}, deps = {}) {
       "-c",
       shellCommand,
     ];
-    log(`Spawning Fire via tmux: session=${sessionName} cwd=${cwd}`);
+    // tmux rejects a command whose argv exceeds its 16KB message limit
+    // ("command too long"). The -e flags alone can take ~8KB on GPU hosts, so
+    // a long prompt (e.g. a persistent-round summary) no longer fits: hand
+    // bash a self-deleting 0600 script instead of `-c <command>`.
+    let launchScriptPath = "";
+    if (tmuxArgs.reduce((n, arg) => n + Buffer.byteLength(arg) + 1, 0) > TMUX_ARGV_BYTE_BUDGET) {
+      launchScriptPath = path.join(FIRE_SESSION_REGISTRY_DIR, `${sessionName}.sh`);
+      mkdirSyncFn(FIRE_SESSION_REGISTRY_DIR, { recursive: true });
+      writeFileSyncFn(launchScriptPath, `rm -f -- "$0"\n${shellCommand}\n`, { mode: 0o600 });
+      tmuxArgs.splice(-2, 2, launchScriptPath);
+    }
+    log(
+      `Spawning Fire via tmux: session=${sessionName} cwd=${cwd}` +
+        (launchScriptPath ? ` script=${launchScriptPath}` : ""),
+    );
     const child = spawnFn("tmux", tmuxArgs, {
       cwd,
       env,
@@ -1749,6 +1773,18 @@ export function startDaemon(config = {}, deps = {}) {
     });
     if (typeof child.unref === "function") {
       child.unref();
+    }
+    if (launchScriptPath) {
+      // Without a session nothing will run (and delete) the script.
+      const removeLaunchScript = () => {
+        try {
+          unlinkSyncFn(launchScriptPath);
+        } catch {
+          // already gone
+        }
+      };
+      child.once("exit", (code) => code !== 0 && removeLaunchScript());
+      child.once("error", removeLaunchScript);
     }
     return { child, tmuxSession: sessionName, exitMarkerToken };
   }
