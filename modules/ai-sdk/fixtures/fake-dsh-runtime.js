@@ -12,6 +12,7 @@
 //   [tool]           emit tool/call + todo/write before the reply
 //   [hang]           emit the inbox receipt + running status, then never finish
 //   [fail-turn]      end the turn with reason kind "error" and no reply
+//   [auto-compact]   emit compaction/start + compaction/end before the reply
 
 import readline from "node:readline";
 
@@ -88,6 +89,11 @@ function handlePrompt(id, params) {
       type: "todo/write",
       data: { todos: [{ content: "list files", status: "completed" }] },
     });
+  }
+
+  if (text.includes("[auto-compact]")) {
+    sessionEvent(sessionId, { type: "compaction/start", data: { compactionId: "c-1", turn: 1 } });
+    sessionEvent(sessionId, { type: "compaction/end", data: { compactionId: "c-1", turn: 1 } });
   }
 
   const replyText = text.includes("[echo-session]") ? sessionId : `echo:${text}`;

@@ -87,7 +87,7 @@ async function handleRequest(message) {
     throw new Error(`Unsupported worker method: ${method}`);
   }
   const args = Array.isArray(message.args) ? [...message.args] : [];
-  if (method === "runTurn" || method === "runGoal") {
+  if (method === "runTurn" || method === "runGoal" || method === "runCompact") {
     const firstArg = args[0];
     const options = args[1] && typeof args[1] === "object" ? { ...args[1] } : {};
     options.onProgress = (payload) => {

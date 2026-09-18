@@ -97,6 +97,115 @@ describe("claude agent-sdk session", () => {
     await session.close();
   });
 
+  it("runCompact sends the native /compact command on the resumed session without emitting a reply", async () => {
+    const captured = [];
+    const emitted = [];
+    const progress = [];
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      resumeSessionId: "claude-compact-1",
+      logger: { log: () => {} },
+      sdkModule: {
+        query: ({ prompt, options }) => {
+          captured.push({ prompt, resume: options.resume });
+          return {
+            async *[Symbol.asyncIterator]() {
+              yield { type: "system", subtype: "status", status: "compacting", session_id: "claude-compact-1" };
+              yield {
+                type: "system",
+                subtype: "compact_boundary",
+                session_id: "claude-compact-1",
+                compact_metadata: { trigger: "manual", pre_tokens: 52000, post_tokens: 3100 },
+              };
+              yield { type: "system", subtype: "status", status: null, compact_result: "success", session_id: "claude-compact-1" };
+              yield {
+                type: "assistant",
+                session_id: "claude-compact-1",
+                message: { content: [{ type: "text", text: "Compacted." }] },
+              };
+              yield { type: "result", subtype: "success", session_id: "claude-compact-1", result: "Compacted.", usage: { input_tokens: 5 } };
+            },
+            close: () => {},
+          };
+        },
+      },
+    });
+    session.setSessionMessageHandler((payload) => emitted.push(payload));
+
+    const result = await session.runCompact(
+      { instructions: "  keep the API decisions  " },
+      { onProgress: (payload) => progress.push(payload) },
+    );
+
+    assert.deepEqual(captured, [{ prompt: "/compact keep the API decisions", resume: "claude-compact-1" }]);
+    assert.deepEqual(result.compact, {
+      status: "compacted",
+      instructionsApplied: true,
+      preTokens: 52000,
+      postTokens: 3100,
+    });
+    assert.equal(emitted.length, 0);
+    assert.deepEqual(session.history, []);
+    assert.equal(progress.some((payload) => payload.phase === "context_compaction"), true);
+    await session.close();
+  });
+
+  it("runCompact is a noop before the conversation has a session", async () => {
+    let queried = false;
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      sdkModule: {
+        query: () => {
+          queried = true;
+          throw new Error("should not query");
+        },
+      },
+    });
+
+    const result = await session.runCompact({});
+
+    assert.equal(queried, false);
+    assert.deepEqual(result.compact, { status: "noop", instructionsApplied: false });
+    await session.close();
+  });
+
+  it("runCompact surfaces a failed compaction and treats a too-short conversation as a noop", async () => {
+    let compactError = "API Error: overloaded";
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      resumeSessionId: "claude-compact-2",
+      logger: { log: () => {} },
+      sdkModule: {
+        query: () => ({
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "system",
+              subtype: "status",
+              status: null,
+              compact_result: "failed",
+              compact_error: compactError,
+              session_id: "claude-compact-2",
+            };
+            yield { type: "result", subtype: "success", session_id: "claude-compact-2", result: "" };
+          },
+          close: () => {},
+        }),
+      },
+    });
+
+    await assert.rejects(session.runCompact({}), (error) => {
+      assert.equal(error.reason, "compact_failed");
+      assert.match(error.message, /overloaded/);
+      return true;
+    });
+
+    compactError = "Not enough messages to compact.";
+    const result = await session.runCompact({});
+    assert.deepEqual(result.compact, { status: "noop", instructionsApplied: false });
+    await session.close();
+  });
+
   it("runGoal prepends '/goal ' to the prompt and wraps the result as GoalResult", async () => {
     const capturedPrompts = [];
     const session = new ClaudeAgentSdkSession("claude", {

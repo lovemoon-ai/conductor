@@ -56,6 +56,18 @@ process.stdin.on("end", () => {
   const message = lines.length > 0 ? JSON.parse(lines[0]) : { role: "user", content: "" };
   const promptText = extractTextContent(message.content);
   const imageCount = extractImageCount(message.content);
+  if (promptText === "/compact") {
+    if (process.env.FAKE_KIMI_PRINT_COMPACT_ERROR === "1") {
+      // kimi-cli print mode writes provider errors as plain text and exits 0.
+      process.stdout.write("LLM provider error: rate limited\n");
+      return;
+    }
+    const reply = process.env.FAKE_KIMI_PRINT_EMPTY_CONTEXT === "1"
+      ? "The context is empty."
+      : "The context has been compacted.";
+    process.stdout.write(`${JSON.stringify({ role: "assistant", content: reply })}\n`);
+    return;
+  }
   const structured = promptText.includes("JSON Schema:");
   const responseText = structured
     ? "{\"ok\":true}\n"

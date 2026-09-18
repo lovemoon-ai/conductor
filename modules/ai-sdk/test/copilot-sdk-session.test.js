@@ -33,6 +33,15 @@ class FakeCopilotSession {
     this.state = state;
     this.onSendAndWait = onSendAndWait;
     this.handlers = new Map();
+    this.connection = {
+      sendRequest: async (method, params) => {
+        state.rpcRequests.push({ method, params });
+        if (typeof state.onRpc === "function") {
+          return await state.onRpc(method, params);
+        }
+        return {};
+      },
+    };
   }
 
   on(eventType, handler) {
@@ -89,6 +98,8 @@ function createCopilotSdkHarness({ onCreateSession, onResumeSession, onDisconnec
     createSessionConfigs: [],
     resumeSessionConfigs: [],
     sendTimeouts: [],
+    rpcRequests: [],
+    onRpc: null,
     onDisconnect,
     onStop,
   };
@@ -141,6 +152,131 @@ function createCopilotSdkHarness({ onCreateSession, onResumeSession, onDisconnec
 }
 
 describe("copilot sdk session", () => {
+  it("runCompact calls session.history.compact with custom instructions on the resumed session", async () => {
+    const harness = createCopilotSdkHarness();
+    harness.state.onRpc = (method) =>
+      method === "session.history.compact" ? { success: true, tokensRemoved: 4200, messagesRemoved: 12 } : {};
+    const session = new CopilotSdkSession("copilot", {
+      cwd: process.cwd(),
+      resumeSessionId: "copilot-resumed",
+      logger: { log: () => {} },
+      sdkModule: harness.sdkModule,
+    });
+    const emitted = [];
+    const progress = [];
+    session.setSessionMessageHandler((payload) => emitted.push(payload));
+
+    assert.equal(session.getSnapshot().capabilities.compact, true);
+    const result = await session.runCompact(
+      { instructions: " keep the todo list " },
+      { onProgress: (payload) => progress.push(payload) },
+    );
+
+    assert.deepEqual(harness.state.rpcRequests, [
+      {
+        method: "session.history.compact",
+        params: { sessionId: "copilot-resumed", customInstructions: "keep the todo list" },
+      },
+    ]);
+    assert.deepEqual(result.compact, { status: "compacted", instructionsApplied: true, tokensRemoved: 4200 });
+    assert.equal(emitted.length, 0);
+    assert.equal(harness.state.prompts.length, 0);
+    assert.equal(progress.some((payload) => payload.phase === "context_compaction"), true);
+    assert.equal(session.currentTurn, null);
+    await session.close();
+  });
+
+  it("runCompact maps the CLI's 'Nothing to compact.' error to a noop", async () => {
+    const harness = createCopilotSdkHarness();
+    harness.state.onRpc = () => {
+      throw new Error("Nothing to compact.");
+    };
+    const session = new CopilotSdkSession("copilot", {
+      cwd: process.cwd(),
+      resumeSessionId: "copilot-resumed",
+      logger: { log: () => {} },
+      sdkModule: harness.sdkModule,
+    });
+
+    const result = await session.runCompact({});
+
+    assert.deepEqual(result.compact, { status: "noop", instructionsApplied: false });
+    await session.close();
+  });
+
+  it("runCompact maps 'no active agent context' on a fresh session to a noop", async () => {
+    const harness = createCopilotSdkHarness();
+    harness.state.onRpc = () => {
+      throw new Error("Cannot compact: no active agent context. Send a message first.");
+    };
+    const session = new CopilotSdkSession("copilot", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      sdkModule: harness.sdkModule,
+    });
+
+    const result = await session.runCompact({});
+
+    assert.deepEqual(result.compact, { status: "noop", instructionsApplied: false });
+    await session.close();
+  });
+
+  it("an interrupt that lands before the compact request stops it from being sent", async () => {
+    const harness = createCopilotSdkHarness();
+    const session = new CopilotSdkSession("copilot", {
+      cwd: process.cwd(),
+      resumeSessionId: "copilot-resumed",
+      logger: { log: () => {} },
+      sdkModule: harness.sdkModule,
+    });
+
+    const compactPromise = session.runCompact({});
+    await session.interruptCurrentTurn();
+
+    await assert.rejects(compactPromise, (error) => error.reason === "turn_interrupted");
+    assert.equal(harness.state.rpcRequests.some((request) => request.method === "session.history.compact"), false);
+    assert.equal(session.currentTurn, null);
+    await session.close();
+  });
+
+  it("interrupting a compaction calls abortManualCompaction and settles as interrupted", async () => {
+    const harness = createCopilotSdkHarness();
+    let rejectCompact = null;
+    harness.state.onRpc = (method) => {
+      if (method === "session.history.compact") {
+        return new Promise((_, reject) => {
+          rejectCompact = reject;
+        });
+      }
+      if (method === "session.history.abortManualCompaction") {
+        rejectCompact?.(new Error("Compaction aborted"));
+        return { aborted: true };
+      }
+      return {};
+    };
+    const session = new CopilotSdkSession("copilot", {
+      cwd: process.cwd(),
+      resumeSessionId: "copilot-resumed",
+      logger: { log: () => {} },
+      sdkModule: harness.sdkModule,
+    });
+
+    const compactPromise = session.runCompact({});
+    while (!rejectCompact) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    await session.interruptCurrentTurn();
+
+    await assert.rejects(compactPromise, (error) => error.reason === "turn_interrupted");
+    assert.deepEqual(
+      harness.state.rpcRequests.map((request) => request.method),
+      ["session.history.compact", "session.history.abortManualCompaction"],
+    );
+    assert.equal(harness.state.abortCalls, 0);
+    assert.equal(session.currentTurn, null);
+    await session.close();
+  });
+
   it("loads a Copilot SDK whose approval decision matches Copilot CLI 1.x", async () => {
     assert.deepEqual(await approveAllCopilotPermissions({ kind: "read" }), {
       kind: "approve-once",

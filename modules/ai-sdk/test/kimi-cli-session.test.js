@@ -279,6 +279,35 @@ describe("kimi cli session", () => {
     await session.close();
   });
 
+  it("runCompact sends the built-in /compact command over wire without surfacing its reply", async () => {
+    const messages = [];
+    const statuses = [];
+    const session = new KimiCliSession("kimi", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_KIMI_WIRE}`,
+      logger: { log: () => {} },
+    });
+    session.setSessionMessageHandler(async (payload) => {
+      messages.push(payload);
+    });
+    session.setWorkingStatusHandler(async (payload) => {
+      statuses.push(payload);
+    });
+
+    assert.equal(session.getSnapshot().capabilities.compact, true);
+    const empty = await session.runCompact({ instructions: "ignored" });
+    assert.deepEqual(empty.compact, { status: "noop", instructionsApplied: false });
+
+    await session.runTurn("Reply with exactly OK");
+    const compacted = await session.runCompact({});
+    assert.deepEqual(compacted.compact, { status: "compacted", instructionsApplied: false });
+
+    assert.deepEqual(messages.map((payload) => payload.text), ["OK from fake kimi\n"]);
+    assert.deepEqual(session.history.map((item) => item.content), ["Reply with exactly OK", "OK from fake kimi\n"]);
+    assert.ok(statuses.some((payload) => payload.phase === "context_compaction"));
+    await session.close();
+  });
+
   it("emits auth_required when kimi reports missing model configuration", async () => {
     const authRequiredEvents = [];
     const session = new KimiCliSession("kimi", {

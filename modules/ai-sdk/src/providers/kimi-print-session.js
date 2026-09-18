@@ -325,6 +325,8 @@ export class KimiPrintSession extends EventEmitter {
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
       capabilities: {
+        // Kimi Code's `--prompt` CLI is unverified for slash commands.
+        compact: this.cliMode !== "prompt",
         media:
           this.cliMode === "prompt"
             ? UNSUPPORTED_MEDIA_CAPABILITIES
@@ -546,7 +548,43 @@ export class KimiPrintSession extends EventEmitter {
     }
   }
 
-  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null } = {}) {
+  /**
+   * Manually compact via kimi-cli's built-in `/compact` slash command; print
+   * mode runs it through the same soul as the interactive shell. Print output
+   * carries no compaction events, so the outcome is read from the CLI's fixed
+   * replies. The command takes no focus instructions.
+   *
+   * @param {import("../shared.js").CompactRequest} [request]
+   * @param {{ onProgress?: Function }} [options]
+   * @returns {Promise<import("../shared.js").CompactResult>}
+   */
+  async runCompact(request = {}, { onProgress = null } = {}) {
+    if (this.cliMode === "prompt") {
+      throw createTurnError("Kimi prompt mode does not support /compact", { reason: "unsupported_compact" });
+    }
+    if (this.pendingHistorySeed) {
+      return { compact: { status: "noop", instructionsApplied: false }, usage: null, metadata: {} };
+    }
+    const turnResult = await this.runTurn("/compact", { onProgress, suppressReply: true });
+    const reply = String(turnResult.text || "");
+    // Print mode exits 0 even when the model call fails, so only kimi-cli's
+    // fixed replies are trusted.
+    if (!/context has been compacted|context is empty/i.test(reply)) {
+      throw createTurnError(`Kimi compaction failed${reply.trim() ? `: ${reply.trim()}` : ""}`, {
+        reason: "compact_failed",
+      });
+    }
+    return {
+      compact: {
+        status: /context is empty/i.test(reply) ? "noop" : "compacted",
+        instructionsApplied: false,
+      },
+      usage: turnResult.usage,
+      metadata: turnResult.metadata,
+    };
+  }
+
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null, suppressReply = false } = {}) {
     if (this.closeRequested || this.closed) {
       throw this.createSessionClosedError();
     }
@@ -577,7 +615,9 @@ export class KimiPrintSession extends EventEmitter {
     }
 
     this.announceSession();
-    this.history.push({ role: "user", content: String(promptText || "") });
+    if (!suppressReply) {
+      this.history.push({ role: "user", content: String(promptText || "") });
+    }
 
     const currentTurn = {
       child: null,
@@ -721,7 +761,9 @@ export class KimiPrintSession extends EventEmitter {
             }
             if (assistantText) {
               currentTurn.fullText += assistantText;
-              void this.emitAssistantMessage(assistantText);
+              if (!suppressReply) {
+                void this.emitAssistantMessage(assistantText);
+              }
             }
             return;
           }
@@ -797,7 +839,7 @@ export class KimiPrintSession extends EventEmitter {
         child.stdin.end();
       });
 
-      if (result?.text) {
+      if (result?.text && !suppressReply) {
         this.history.push({ role: "assistant", content: result.text });
       }
       this.activeReplyTarget = "";

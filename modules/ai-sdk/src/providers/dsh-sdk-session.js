@@ -25,6 +25,12 @@ const require = createRequire(import.meta.url);
 const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
 const MIN_TURN_DEADLINE_MS = 30 * 1000;
 const MAX_TURN_DEADLINE_MS = 30 * 60 * 1000;
+export const COMPACT_SUMMARY_PROMPT = [
+  "Summarize our conversation so far so it can replace the full history.",
+  "Keep the goals, decisions, current state of the work, relevant files and commands, and open next steps.",
+  "Do not use tools. Reply with the summary only.",
+].join(" ");
+const COMPACT_SUMMARY_PREFIX = "Summary of the conversation so far:\n\n";
 
 // Pinned defaults for the dsh runtime route. `deepseek-official` is the
 // provider route the stock `@deepseek-ai/dsh-llm-deepseek` adapter registers;
@@ -151,7 +157,7 @@ function accumulateUsage(total, usage) {
  * the next runTurn spawns a fresh runtime resuming the same session id.
  */
 export class DshSdkSession extends EventEmitter {
-  static capabilities = Object.freeze({ goal: false });
+  static capabilities = Object.freeze({ goal: false, compact: true });
 
   getCapabilities() {
     return { ...DshSdkSession.capabilities };
@@ -431,6 +437,7 @@ export class DshSdkSession extends EventEmitter {
       return [];
     }
     const restored = [];
+    let compactSummaryPending = false;
     let content;
     try {
       content = fs.readFileSync(logPath, "utf8");
@@ -450,14 +457,25 @@ export class DshSdkSession extends EventEmitter {
       }
       if (event?.type === "user/message" && event.data?.source?.kind === "user") {
         const text = extractTextBlocks(event.data?.content);
-        if (text) {
+        // A `/compact` summary turn supersedes everything before it, but only
+        // once its reply lands; a failed or interrupted one changes nothing.
+        compactSummaryPending = text.includes(COMPACT_SUMMARY_PROMPT);
+        if (text && !compactSummaryPending) {
           restored.push({ role: "user", content: text });
         }
         continue;
       }
+      if (event?.type === "turn/end" && event.data?.reason?.kind !== "completed") {
+        compactSummaryPending = false;
+        continue;
+      }
       if (event?.type === "assistant/message") {
         const text = extractTextBlocks(event.data?.message?.content);
-        if (text) {
+        if (text && compactSummaryPending) {
+          restored.length = 0;
+          restored.push({ role: "assistant", content: `${COMPACT_SUMMARY_PREFIX}${text}` });
+          compactSummaryPending = false;
+        } else if (text) {
           restored.push({ role: "assistant", content: text });
         }
       }
@@ -785,8 +803,11 @@ export class DshSdkSession extends EventEmitter {
         if (!text) {
           return;
         }
-        currentTurn.emittedAssistantMessage = true;
         currentTurn.fullText = text;
+        if (currentTurn.suppressReply) {
+          return;
+        }
+        currentTurn.emittedAssistantMessage = true;
         await this.emitWorkingStatus(
           {
             phase: "message_aggregation",
@@ -841,6 +862,18 @@ export class DshSdkSession extends EventEmitter {
         );
         return;
       }
+      case "compaction/end": {
+        // Automatic compaction finished mid-turn; drop the "compacting" line.
+        await this.emitWorkingStatus(
+          {
+            phase: "turn_started",
+            reply_in_progress: true,
+            status_line: "dsh is working",
+          },
+          onProgress,
+        );
+        return;
+      }
       case "turn/end": {
         currentTurn.turnEndReason = event.data?.reason || null;
         return;
@@ -864,7 +897,41 @@ export class DshSdkSession extends EventEmitter {
     return true;
   }
 
-  async runTurn(promptText, { useInitialImages = false, onProgress = null } = {}) {
+  /**
+   * Manually compact the conversation. The dsh SDK wire exposes no compaction
+   * request (its engine's `compactNow` is internal), so the model summarizes
+   * the conversation in one silent turn and the chat continues on a fresh
+   * wire session seeded with only that summary.
+   *
+   * @param {import("../shared.js").CompactRequest} [request]
+   * @param {{ onProgress?: Function }} [options]
+   * @returns {Promise<import("../shared.js").CompactResult>}
+   */
+  async runCompact(request = {}, { onProgress = null } = {}) {
+    const instructions = typeof request?.instructions === "string" ? request.instructions.trim() : "";
+    const resumableLog = this.pendingResumeFromSessionId && this.findPersistedSessionLog(this.pendingResumeFromSessionId);
+    if (this.history.length === 0 && !resumableLog) {
+      return { compact: { status: "noop", instructionsApplied: false }, usage: null, metadata: {} };
+    }
+    const prompt = instructions ? `${COMPACT_SUMMARY_PROMPT}\n\nAdditional focus: ${instructions}` : COMPACT_SUMMARY_PROMPT;
+    const turnResult = await this.runTurn(prompt, { onProgress, suppressReply: true });
+    const summary = String(turnResult.text || "").trim();
+    if (!summary) {
+      throw createTurnError("dsh compaction produced an empty summary", { reason: "compact_failed" });
+    }
+    this.history = [{ role: "assistant", content: `${COMPACT_SUMMARY_PREFIX}${summary}` }];
+    // Dropping the runtime makes the next turn rotate onto a fresh id seeded
+    // with the summary. Rotating here instead would expose the new id for
+    // binding before it has a persisted log, so a restart would resume empty.
+    await this.disposeHarness();
+    return {
+      compact: { status: "compacted", instructionsApplied: Boolean(instructions) },
+      usage: turnResult.usage,
+      metadata: { source: DSH_SDK_VARIANT, sessionId: this.sessionId },
+    };
+  }
+
+  async runTurn(promptText, { useInitialImages = false, onProgress = null, suppressReply = false } = {}) {
     if (this.closeRequested) {
       throw this.createSessionClosedError();
     }
@@ -903,9 +970,12 @@ export class DshSdkSession extends EventEmitter {
     }
 
     const effectivePrompt = this.buildPrompt(promptText, { useInitialImages });
-    this.history.push({ role: "user", content: promptText });
+    if (!suppressReply) {
+      this.history.push({ role: "user", content: promptText });
+    }
 
     const currentTurn = {
+      suppressReply,
       emittedAssistantMessage: false,
       fullText: "",
       interrupted: false,
@@ -980,11 +1050,11 @@ export class DshSdkSession extends EventEmitter {
           ? runResult.finalResponse
           : currentTurn.fullText;
 
-      if (!currentTurn.emittedAssistantMessage && responseText) {
+      if (!suppressReply && !currentTurn.emittedAssistantMessage && responseText) {
         await this.emitAssistantMessage(responseText);
       }
 
-      if (responseText) {
+      if (!suppressReply && responseText) {
         this.history.push({ role: "assistant", content: responseText });
       }
 

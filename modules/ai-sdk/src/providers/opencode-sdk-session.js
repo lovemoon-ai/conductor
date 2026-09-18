@@ -24,6 +24,13 @@ import {
 const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
 const MIN_TURN_DEADLINE_MS = 30 * 1000;
 const MAX_TURN_DEADLINE_MS = 30 * 60 * 1000;
+const SUMMARY_EVENT_GRACE_MS = 2000;
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isHeadersTimeoutError(error) {
+  return [error?.code, error?.cause?.code].includes("UND_ERR_HEADERS_TIMEOUT");
+}
 
 function waitForever() {
   return new Promise(() => {});
@@ -272,7 +279,7 @@ export class OpencodeSdkSession extends EventEmitter {
       resumeReady: Boolean(this.sessionId),
       manualResume: null,
       currentTurnStatus: this.getCurrentTurnStatus(),
-      capabilities: { media: PROVIDER_MEDIA_CAPABILITIES[OPENCODE_PROVIDER_VARIANT] },
+      capabilities: { compact: true, media: PROVIDER_MEDIA_CAPABILITIES[OPENCODE_PROVIDER_VARIANT] },
       pid: this.transport.pid || undefined,
     };
   }
@@ -836,7 +843,9 @@ export class OpencodeSdkSession extends EventEmitter {
           phase: "message_aggregation",
           reply_in_progress: true,
           status_line: statusLineForPhase("message_aggregation"),
-          reply_preview: sanitizeSummary(this.collectAssistantText(messageState), 120),
+          reply_preview: currentTurn.suppressReply || messageState.info?.summary === true
+            ? undefined
+            : sanitizeSummary(this.collectAssistantText(messageState), 120),
         },
         onProgress,
       );
@@ -919,7 +928,9 @@ export class OpencodeSdkSession extends EventEmitter {
           phase: "message_aggregation",
           reply_in_progress: true,
           status_line: statusLineForPhase("message_aggregation"),
-          reply_preview: sanitizeSummary(this.collectAssistantText(messageState), 120),
+          reply_preview: currentTurn.suppressReply || messageState.info?.summary === true
+            ? undefined
+            : sanitizeSummary(this.collectAssistantText(messageState), 120),
         },
         onProgress,
       );
@@ -967,7 +978,8 @@ export class OpencodeSdkSession extends EventEmitter {
     if (currentTurn.activeAssistantMessageId === targetId) {
       currentTurn.activeAssistantMessageId = "";
     }
-    if (!text) {
+    // Compaction summaries (manual or automatic) are context, not a reply.
+    if (!text || currentTurn.suppressReply || messageState.info?.summary === true) {
       return false;
     }
     currentTurn.fullText += text;
@@ -1322,6 +1334,188 @@ export class OpencodeSdkSession extends EventEmitter {
     return true;
   }
 
+  createTurnState(abortController, onProgress) {
+    const currentTurn = {
+      abortController,
+      assistantMessages: new Map(),
+      assistantMessageOrder: [],
+      activeAssistantMessageId: "",
+      messageRoles: new Map(),
+      pendingMessageEvents: new Map(),
+      fullText: "",
+      items: [],
+      lastAssistantInfo: null,
+      onProgress,
+      resolve: null,
+      reject: null,
+      settled: false,
+      terminalWorkingStatusEmitted: false,
+    };
+    const completionPromise = new Promise((resolve, reject) => {
+      currentTurn.resolve = resolve;
+      currentTurn.reject = reject;
+    });
+    return { currentTurn, completionPromise };
+  }
+
+  /**
+   * Model to summarize with: `session.summarize` requires one explicitly.
+   * Prefer what the session actually ran on (last turn, then its recent
+   * messages); the configured model is only a fallback.
+   */
+  async resolveCompactionModel() {
+    const fromInfo = (info) => {
+      const providerID = info?.providerID || info?.model?.providerID;
+      const modelID = info?.modelID || info?.model?.modelID;
+      return typeof providerID === "string" && providerID && typeof modelID === "string" && modelID
+        ? { providerID, modelID }
+        : null;
+    };
+    const lastModel = fromInfo(this.lastAssistantInfo);
+    if (lastModel) {
+      return lastModel;
+    }
+    if (typeof this.client?.session?.messages === "function") {
+      const messages = await this.requestOrThrow(
+        this.client.session.messages(
+          { sessionID: this.sessionId, limit: 20 },
+          { throwOnError: true, responseStyle: "data" },
+        ),
+      ).catch((error) => {
+        this.trace(`compaction model lookup failed: ${extractErrorMessage(error)}`);
+        return [];
+      });
+      for (const entry of [...(Array.isArray(messages) ? messages : [])].reverse()) {
+        const model = fromInfo(entry?.info);
+        if (model) {
+          return model;
+        }
+      }
+    }
+    const configured = typeof this.options.model === "string" ? this.options.model.trim() : "";
+    const slash = configured.indexOf("/");
+    if (slash > 0 && slash < configured.length - 1) {
+      return { providerID: configured.slice(0, slash), modelID: configured.slice(slash + 1) };
+    }
+    throw createTurnError("Opencode compaction needs a model, but none could be resolved for this session", {
+      reason: "compact_failed",
+    });
+  }
+
+  /**
+   * Manually compact via the server's `session.summarize` (what the TUI's
+   * `/compact` calls). It takes no focus instructions and answers `true`
+   * even when summarizing fails, so success is judged from the summary
+   * message itself.
+   *
+   * @param {import("../shared.js").CompactRequest} [request]
+   * @param {{ onProgress?: Function }} [options]
+   * @returns {Promise<import("../shared.js").CompactResult>}
+   */
+  async runCompact(request = {}, { onProgress = null } = {}) {
+    if (this.closeRequested) {
+      throw this.createSessionClosedError();
+    }
+    if (this.currentTurn) {
+      throw createTurnError("Opencode turn already running", {
+        reason: "turn_already_running",
+      });
+    }
+    if (this.pendingHistorySeed || (!this.resumeSessionId && this.history.length === 0)) {
+      return { compact: { status: "noop", instructionsApplied: false }, usage: null, metadata: {} };
+    }
+
+    this.markTurnStartedStatus();
+    let model;
+    try {
+      await this.boot();
+      if (typeof this.client?.session?.summarize !== "function") {
+        throw new Error("Opencode summarize API is unavailable");
+      }
+      model = await this.resolveCompactionModel();
+    } catch (error) {
+      await this.failPendingTurnStart(error, onProgress);
+      throw error;
+    }
+
+    const abortController = new AbortController();
+    const { currentTurn, completionPromise } = this.createTurnState(abortController, onProgress);
+    currentTurn.suppressReply = true;
+    this.currentTurn = currentTurn;
+    const closeGuard = this.createCloseGuard(() => {
+      abortController.abort();
+      void this.interruptCurrentTurn();
+    });
+    const turnTimeoutGuard = this.createTurnTimeoutGuard(() => {
+      abortController.abort();
+      void this.interruptCurrentTurn();
+    });
+
+    try {
+      await this.emitWorkingStatus(
+        {
+          phase: "context_compaction",
+          reply_in_progress: true,
+          status_line: statusLineForPhase("context_compaction"),
+        },
+        onProgress,
+      );
+      // The response only arrives once summarizing finishes, which can outlive
+      // fetch's header timeout; `session.idle` marks completion either way.
+      const summarize = this.requestOrThrow(
+        this.client.session.summarize(
+          { sessionID: this.sessionId, ...model, auto: false },
+          { throwOnError: true, responseStyle: "data", signal: abortController.signal },
+        ),
+      ).catch((error) => (isHeadersTimeoutError(error) ? completionPromise : Promise.reject(error)));
+      await Promise.race([Promise.race([summarize, completionPromise]), closeGuard.promise, turnTimeoutGuard.promise]);
+      // Events trail the HTTP response on a separate stream; let idle land.
+      await Promise.race([completionPromise, delay(SUMMARY_EVENT_GRACE_MS)]);
+
+      const summaryInfo = currentTurn.lastAssistantInfo?.summary === true ? currentTurn.lastAssistantInfo : null;
+      if (summaryInfo?.error || summaryInfo?.finish === "error") {
+        throw createTurnError(
+          `Opencode compaction failed: ${extractErrorMessage(summaryInfo.error?.data || summaryInfo.error) || "unknown error"}`,
+          { reason: "compact_failed" },
+        );
+      }
+      await this.emitTerminalWorkingStatus(
+        currentTurn,
+        { phase: "turn_completed", status_done_line: "opencode compacted context" },
+        onProgress,
+      );
+      return {
+        // An empty session never gets here, so a summary whose events are
+        // still in flight counts as compacted.
+        compact: { status: "compacted", instructionsApplied: false },
+        usage: this.buildUsageFromAssistantInfo(summaryInfo),
+        metadata: { source: OPENCODE_PROVIDER_VARIANT, sessionId: this.sessionId || undefined, ...model },
+      };
+    } catch (error) {
+      if (error?.reason === "turn_timeout") {
+        await this.interruptCurrentTurn();
+      }
+      if (!this.closeRequested && error?.reason !== "session_closed") {
+        await this.emitTerminalWorkingStatus(
+          currentTurn,
+          { phase: "turn_failed", status_done_line: extractErrorMessage(error) },
+          onProgress,
+        );
+      }
+      if (this.closeRequested && error?.reason !== "session_closed") {
+        throw this.createSessionClosedError();
+      }
+      throw error;
+    } finally {
+      this.activeReplyTarget = "";
+      if (this.currentTurn === currentTurn) {
+        this.currentTurn = null;
+      }
+      closeGuard.cleanup();
+      turnTimeoutGuard.cleanup();
+    }
+  }
+
   async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null } = {}) {
     if (this.closeRequested) {
       throw this.createSessionClosedError();
@@ -1358,26 +1552,7 @@ export class OpencodeSdkSession extends EventEmitter {
     this.history.push({ role: "user", content: promptText });
 
     const abortController = new AbortController();
-    const currentTurn = {
-      abortController,
-      assistantMessages: new Map(),
-      assistantMessageOrder: [],
-      activeAssistantMessageId: "",
-      messageRoles: new Map(),
-      pendingMessageEvents: new Map(),
-      fullText: "",
-      items: [],
-      lastAssistantInfo: null,
-      onProgress,
-      resolve: null,
-      reject: null,
-      settled: false,
-      terminalWorkingStatusEmitted: false,
-    };
-    const completionPromise = new Promise((resolve, reject) => {
-      currentTurn.resolve = resolve;
-      currentTurn.reject = reject;
-    });
+    const { currentTurn, completionPromise } = this.createTurnState(abortController, onProgress);
     this.currentTurn = currentTurn;
 
     const closeGuard = this.createCloseGuard(() => {

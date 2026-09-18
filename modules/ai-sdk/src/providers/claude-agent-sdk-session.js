@@ -258,9 +258,10 @@ function sanitizeSummary(value, maxLen = 180) {
 export class ClaudeAgentSdkSession extends EventEmitter {
   // Capability advertised via getSnapshot().capabilities so worker proxies
   // can short-circuit runGoal without an IPC round trip. Claude exposes
-  // native `/goal` slash command, so this is true.
+  // native `/goal` and `/compact` slash commands, so both are true.
   static capabilities = Object.freeze({
     goal: true,
+    compact: true,
     media: PROVIDER_MEDIA_CAPABILITIES[CLAUDE_PROVIDER_VARIANT],
   });
 
@@ -822,6 +823,16 @@ export class ClaudeAgentSdkSession extends EventEmitter {
           this.updateSessionInfo(message.session_id || message.sessionId);
           return;
         }
+        if (message.subtype === "compact_boundary") {
+          currentTurn.compactMetadata =
+            message.compact_metadata && typeof message.compact_metadata === "object"
+              ? { ...message.compact_metadata }
+              : {};
+          return;
+        }
+        if (message.subtype === "status" && message.compact_result === "failed") {
+          currentTurn.compactError = normalizeText(message.compact_error) || "compaction failed";
+        }
         if (message.subtype === "status" && message.status === "compacting") {
           await this.emitWorkingStatus(
             {
@@ -905,8 +916,11 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         if (!text) {
           return;
         }
-        currentTurn.emittedAssistantMessage = true;
         currentTurn.fullText = text;
+        if (currentTurn.suppressReply) {
+          return;
+        }
+        currentTurn.emittedAssistantMessage = true;
         await this.emitWorkingStatus(
           {
             phase: "message_aggregation",
@@ -966,7 +980,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
     return true;
   }
 
-  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null } = {}) {
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null, suppressReply = false } = {}) {
     if (this.closeRequested) {
       throw this.createSessionClosedError();
     }
@@ -997,11 +1011,16 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       throw new Error("Claude Agent SDK is unavailable");
     }
 
-    this.history.push({ role: "user", content: promptText });
+    if (!suppressReply) {
+      this.history.push({ role: "user", content: promptText });
+    }
 
     const abortController = new AbortController();
     const currentTurn = {
       abortController,
+      suppressReply,
+      compactMetadata: null,
+      compactError: "",
       emittedAssistantMessage: false,
       fullText: "",
       items: [],
@@ -1092,11 +1111,11 @@ export class ClaudeAgentSdkSession extends EventEmitter {
             currentTurn.fullText ||
             extractAssistantText(currentTurn.items.find((item) => item?.type === "assistant")?.message);
 
-      if (!currentTurn.emittedAssistantMessage && responseText) {
+      if (!suppressReply && !currentTurn.emittedAssistantMessage && responseText) {
         await this.emitAssistantMessage(responseText);
       }
 
-      if (responseText) {
+      if (!suppressReply && responseText) {
         this.history.push({ role: "assistant", content: responseText });
       }
 
@@ -1127,6 +1146,8 @@ export class ClaudeAgentSdkSession extends EventEmitter {
           modelUsage: resultMessage.modelUsage ? { ...resultMessage.modelUsage } : undefined,
           structuredOutput: structuredOutput !== null ? structuredOutput : undefined,
         },
+        compactMetadata: currentTurn.compactMetadata || undefined,
+        compactError: currentTurn.compactError || undefined,
       };
     } catch (error) {
       if (error?.reason === "turn_timeout") {
@@ -1283,6 +1304,47 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         ...(turnResult?.metadata && typeof turnResult.metadata === "object" ? turnResult.metadata : {}),
         goalPrompt: prompt,
       },
+    };
+  }
+
+  /**
+   * Manually compact the conversation via Claude's native `/compact` slash
+   * command. Custom focus instructions are forwarded as the command argument.
+   * No assistant message is emitted; the caller renders the confirmation.
+   *
+   * @param {import("../shared.js").CompactRequest} [request]
+   * @param {{ onProgress?: Function }} [options]
+   * @returns {Promise<import("../shared.js").CompactResult>}
+   */
+  async runCompact(request = {}, { onProgress = null } = {}) {
+    const instructions = normalizeText(request?.instructions).trim();
+    if (!this.sessionId || this.pendingHistorySeed) {
+      return { compact: { status: "noop", instructionsApplied: false }, usage: null, metadata: {} };
+    }
+    const turnResult = await this.runTurn(instructions ? `/compact ${instructions}` : "/compact", {
+      onProgress,
+      suppressReply: true,
+    });
+    if (/not enough messages/i.test(turnResult.compactError || "")) {
+      return { compact: { status: "noop", instructionsApplied: false }, usage: turnResult.usage, metadata: turnResult.metadata };
+    }
+    if (turnResult.compactError) {
+      throw createTurnError(`Claude compaction failed: ${turnResult.compactError}`, {
+        reason: "compact_failed",
+      });
+    }
+    const boundary = turnResult.compactMetadata;
+    const preTokens = Number(boundary?.pre_tokens);
+    const postTokens = Number(boundary?.post_tokens);
+    return {
+      compact: {
+        status: boundary ? "compacted" : "noop",
+        instructionsApplied: Boolean(boundary && instructions),
+        preTokens: Number.isFinite(preTokens) ? preTokens : undefined,
+        postTokens: Number.isFinite(postTokens) ? postTokens : undefined,
+      },
+      usage: turnResult.usage,
+      metadata: turnResult.metadata,
     };
   }
 

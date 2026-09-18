@@ -1581,6 +1581,43 @@ export function parseGoalDirectiveFromMessage(content) {
   return objective ? { objective } : null;
 }
 
+/**
+ * Per-message `/compact` detector: first non-empty line is `/compact`
+ * (case-insensitive), optionally followed by focus instructions; any remaining
+ * lines are appended to them. Returns null when there is no directive.
+ */
+export function parseCompactDirectiveFromMessage(content) {
+  if (typeof content !== "string") {
+    return null;
+  }
+  const lines = content.split("\n");
+  let i = 0;
+  while (i < lines.length && lines[i].trim() === "") {
+    i += 1;
+  }
+  const match = i < lines.length ? lines[i].trim().match(/^\/compact(?:\s+(.*))?$/i) : null;
+  if (!match) {
+    return null;
+  }
+  const rest = lines.slice(i + 1).join("\n").trim();
+  return { instructions: [(match[1] || "").trim(), rest].filter(Boolean).join("\n\n") };
+}
+
+export function formatCompactReply(backendName, compact, instructions = "") {
+  if (compact?.status !== "compacted") {
+    return `${backendName} 当前没有可压缩的上下文。`;
+  }
+  const count = (value) => Number(value).toLocaleString("en-US");
+  const detail =
+    Number.isFinite(compact.preTokens) && Number.isFinite(compact.postTokens)
+      ? `（约 ${count(compact.preTokens)} → ${count(compact.postTokens)} tokens）`
+      : Number.isFinite(compact.tokensRemoved)
+        ? `（释放约 ${count(compact.tokensRemoved)} tokens）`
+        : "";
+  const ignored = instructions && !compact.instructionsApplied ? `\n${backendName} 不支持压缩附加说明，已忽略。` : "";
+  return `${backendName} 上下文已压缩${detail}。${ignored}`;
+}
+
 export function injectResolvedTaskId(taskId, env = process.env) {
   const normalizedTaskId = normalizeTaskId(taskId);
   if (!normalizedTaskId) {
@@ -3340,6 +3377,7 @@ export class BridgeRunner {
         useInitialImages,
         media,
         contextFiles,
+        replyTo,
         onProgress: (payload) => {
           void this.reportRuntimeStatus(payload, replyTo);
         },
@@ -3547,6 +3585,11 @@ export class BridgeRunner {
       // best-effort
     }
 
+    const compactDirective = hasAttachmentInputs ? null : parseCompactDirectiveFromMessage(content);
+    if (compactDirective) {
+      return this.runCompactCommand(compactDirective, options);
+    }
+
     if (willRunGoal) {
       const goalResult = await this.backendSession.runGoal(
         { objective: goalDirective.objective, source: { type: "manual" } },
@@ -3568,6 +3611,51 @@ export class BridgeRunner {
       };
     }
     return this.backendSession.runTurn(content, options);
+  }
+
+  /**
+   * `/compact`: compact the backend's context instead of sending the message
+   * to the model. Providers stay silent while compacting, so fire posts the
+   * single confirmation itself; backends without the capability get a notice
+   * rather than having `/compact` forwarded as prose.
+   */
+  async runCompactCommand({ instructions }, { onProgress, replyTo = "" } = {}) {
+    const snapshot =
+      typeof this.backendSession?.getSnapshot === "function" ? this.backendSession.getSnapshot() : null;
+    const compactCapable =
+      snapshot?.capabilities?.compact === true && typeof this.backendSession?.runCompact === "function";
+    let result = null;
+    let text;
+    if (compactCapable) {
+      onProgress?.({
+        phase: "context_compaction",
+        reply_in_progress: true,
+        status_line: `${this.backendName} compacting context`,
+      });
+      result = await this.backendSession.runCompact({ instructions }, { onProgress });
+      text = formatCompactReply(this.backendName, result?.compact, instructions);
+    } else {
+      text = `${this.backendName} 不支持 /compact，未执行压缩。`;
+    }
+    // Fire owns this reply, so it also settles the status: providers' noop
+    // paths return without emitting any progress of their own.
+    onProgress?.({ phase: "turn_completed", reply_in_progress: false, status_done_line: text });
+    log(`[compact] backend=${this.backendName} capable=${compactCapable} status=${result?.compact?.status || "unsupported"}`);
+    if (this.useSessionFileReplyStream && !this.stopped) {
+      try {
+        await this.sendSessionStreamMessage({ text, replyTo });
+      } catch (error) {
+        log(`[compact] failed to post confirmation: ${error?.message || error}`);
+      }
+    }
+    return {
+      text,
+      items: [],
+      usage: result?.usage || null,
+      provider: this.backendName,
+      events: [],
+      metadata: { ...(result?.metadata || {}), compact: result?.compact || null },
+    };
   }
 
   async handlePrePromptMessage(content) {
@@ -3637,6 +3725,7 @@ export class BridgeRunner {
     try {
       const result = await this.dispatchBackendTurn(content, {
         useInitialImages: Boolean(includeImages),
+        replyTo: replyTarget,
         onProgress: (payload) => {
           void this.reportRuntimeStatus(payload, replyTarget);
         },

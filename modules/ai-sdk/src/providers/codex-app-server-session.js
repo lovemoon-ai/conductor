@@ -243,6 +243,7 @@ export class CodexAppServerSession extends EventEmitter {
    */
   static capabilities = Object.freeze({
     goal: true,
+    compact: true,
     media: PROVIDER_MEDIA_CAPABILITIES[CODEX_APP_SERVER_VARIANT],
   });
 
@@ -701,7 +702,7 @@ export class CodexAppServerSession extends EventEmitter {
     if (!finalizedMessageId || !activeMessageId || activeMessageId === finalizedMessageId) {
       currentTurn.activeAssistantMessageId = "";
     }
-    if (!text) {
+    if (!text || currentTurn.suppressReply) {
       return false;
     }
     await this.emitAssistantMessage(text);
@@ -1378,6 +1379,95 @@ export class CodexAppServerSession extends EventEmitter {
         });
       }
       this.maybeEmitAuthRequired(error);
+      throw error;
+    } finally {
+      if (this.currentTurn === currentTurn) {
+        this.currentTurn = null;
+      }
+      closeGuard.cleanup();
+      turnTimeoutGuard.cleanup();
+    }
+  }
+
+  /**
+   * Manually compact the thread via `thread/compact/start`. The app-server
+   * runs compaction as a regular turn, so completion is the usual
+   * `turn/completed`. The protocol takes no focus instructions.
+   *
+   * @param {import("../shared.js").CompactRequest} [request]
+   * @returns {Promise<import("../shared.js").CompactResult>}
+   */
+  async runCompact(request = {}) {
+    if (this.closeRequested) {
+      throw this.createSessionClosedError();
+    }
+    if (this.currentTurn || this.currentGoalRun) {
+      throw createTurnError("Codex app-server turn already running", {
+        reason: "turn_already_running",
+      });
+    }
+    const instructions = typeof request?.instructions === "string" ? request.instructions.trim() : "";
+    if (instructions) {
+      this.trace("thread/compact/start takes no instructions; ignoring them");
+    }
+    if (this.pendingHistorySeed || (!this.resumeSessionId && this.history.length === 0)) {
+      return { compact: { status: "noop", instructionsApplied: false }, usage: null, metadata: {} };
+    }
+
+    this.markTurnStartedStatus();
+    try {
+      await this.boot();
+    } catch (error) {
+      await this.failPendingTurnStart(error);
+      throw error;
+    }
+
+    const closeGuard = this.createCloseGuard();
+    const turnTimeoutGuard = this.createTurnTimeoutGuard();
+    let resolveTurn = null;
+    let rejectTurn = null;
+    const completion = new Promise((resolve, reject) => {
+      resolveTurn = resolve;
+      rejectTurn = reject;
+    });
+    const currentTurn = {
+      turnId: "",
+      fullText: "",
+      activeAssistantMessageId: "",
+      activeAssistantMessageText: "",
+      resolve: resolveTurn,
+      reject: rejectTurn,
+      suppressReply: true,
+    };
+    this.currentTurn = currentTurn;
+    const metadata = { source: CODEX_APP_SERVER_VARIANT, threadId: this.sessionId };
+
+    try {
+      const completionResult = await Promise.race([
+        (async () => {
+          await this.transport.request("thread/compact/start", { threadId: this.sessionId });
+          return await completion;
+        })(),
+        closeGuard.promise,
+        turnTimeoutGuard.promise,
+      ]);
+      await this.emitTurnCompletedStatus(currentTurn);
+      return {
+        compact: { status: "compacted", instructionsApplied: false },
+        usage: completionResult?.usage || null,
+        metadata,
+      };
+    } catch (error) {
+      if (error?.reason === "turn_timeout") {
+        await this.interruptCurrentTurn();
+      }
+      if (!this.closeRequested && error?.reason !== "session_closed") {
+        await this.emitWorkingStatus({
+          phase: "turn_failed",
+          reply_in_progress: false,
+          status_done_line: error instanceof Error ? error.message : String(error),
+        });
+      }
       throw error;
     } finally {
       if (this.currentTurn === currentTurn) {

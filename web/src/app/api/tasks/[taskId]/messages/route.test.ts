@@ -359,6 +359,27 @@ describe("/api/tasks/[taskId]/messages", () => {
     }));
   });
 
+  it("delivers a /compact command to the task verbatim so fire can run it", async () => {
+    const content = "/compact keep the API decisions";
+    vi.mocked(db.task.findFirst).mockResolvedValue({ id: "task-compact", projectId: "proj-1", taskType: "ai_task" } as any);
+    vi.mocked(appendUserMessageToTask).mockResolvedValueOnce({
+      task: { id: "task-compact", projectId: "proj-1" } as any,
+      message: {
+        id: "msg-compact", taskId: "task-compact", role: "user", content, metadata: null,
+        createdAt: new Date("2026-09-18T00:00:00Z"),
+      } as any,
+    });
+
+    const response = await POST(createMockRequest({
+      method: "POST",
+      url: "http://localhost:6152/api/tasks/task-compact/messages",
+      body: { content, role: "user" },
+    }), { params: Promise.resolve({ taskId: "task-compact" }) });
+
+    expect(response.status).toBe(200);
+    expect(appendUserMessageToTask).toHaveBeenCalledWith(expect.objectContaining({ content, role: "user" }));
+  });
+
   it("returns existing message without re-creating when clientRequestId already exists", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue({
       id: "task-cri",

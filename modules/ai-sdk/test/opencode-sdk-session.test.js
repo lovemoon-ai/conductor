@@ -72,11 +72,12 @@ function createAsyncEventQueue() {
   };
 }
 
-function createStubSdkHarness({ onPromptAsync } = {}) {
+function createStubSdkHarness({ onPromptAsync, onSummarize, messages = [] } = {}) {
   const streamQueues = [];
   let promptCalls = 0;
   let subscribeCalls = 0;
   let abortCalls = 0;
+  const summarizeCalls = [];
   const sessionInfo = { id: "session-stub-opencode" };
 
   const client = {
@@ -117,6 +118,16 @@ function createStubSdkHarness({ onPromptAsync } = {}) {
         abortCalls += 1;
         return { ok: true };
       },
+      async summarize(payload) {
+        summarizeCalls.push(payload);
+        if (typeof onSummarize === "function") {
+          await onSummarize({ payload, getActiveQueue: () => streamQueues.at(-1) });
+        }
+        return true;
+      },
+      async messages() {
+        return messages;
+      },
     },
   };
 
@@ -129,6 +140,7 @@ function createStubSdkHarness({ onPromptAsync } = {}) {
     getAbortCalls() {
       return abortCalls;
     },
+    summarizeCalls,
     getPromptCalls() {
       return promptCalls;
     },
@@ -190,6 +202,194 @@ async function waitForCondition(predicate, timeoutMs = 1000) {
     });
   }
 }
+
+function emitCompaction(queue, { sessionId, error = undefined }) {
+  queue.push({
+    type: "message.updated",
+    properties: { info: { id: "compact-user", sessionID: sessionId, role: "user" } },
+  });
+  queue.push({
+    type: "message.updated",
+    properties: {
+      info: { id: "compact-summary", sessionID: sessionId, role: "assistant", summary: true, mode: "compaction", error },
+    },
+  });
+  queue.push({
+    type: "message.part.updated",
+    properties: {
+      part: { id: "summary-part", sessionID: sessionId, messageID: "compact-summary", type: "text", text: "## Goal\nsummary" },
+    },
+  });
+  queue.push({ type: "session.idle", properties: { sessionID: sessionId } });
+}
+
+describe("opencode sdk session - runCompact", () => {
+  const sessionId = "session-stub-opencode";
+
+  function makeCompactSession(harnessOptions = {}, sessionOptions = {}) {
+    const harness = createStubSdkHarness({
+      async onPromptAsync({ getActiveQueue }) {
+        emitSuccessfulTurn(getActiveQueue(), { sessionId, text: "hello back" });
+      },
+      ...harnessOptions,
+    });
+    const session = new OpencodeSdkSession("opencode", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      sdkModule: harness.sdkModule,
+      transport: new StubTransport(),
+      ...sessionOptions,
+    });
+    const messages = [];
+    const previews = [];
+    session.setSessionMessageHandler(async (payload) => {
+      messages.push(payload.text);
+    });
+    session.setWorkingStatusHandler?.(async (payload) => {
+      if (payload.reply_preview) {
+        previews.push(payload.reply_preview);
+      }
+    });
+    return { harness, session, messages, previews };
+  }
+
+  it("summarizes with the configured model and keeps the summary out of chat", async () => {
+    const { harness, session, messages, previews } = makeCompactSession(
+      {
+        async onSummarize({ getActiveQueue }) {
+          emitCompaction(getActiveQueue(), { sessionId });
+        },
+      },
+      { model: "anthropic/claude-sonnet" },
+    );
+    try {
+      assert.equal(session.getSnapshot().capabilities.compact, true);
+      await session.runTurn("hello");
+      const result = await session.runCompact({ instructions: "ignored" });
+
+      assert.deepEqual(harness.summarizeCalls, [
+        { sessionID: sessionId, providerID: "anthropic", modelID: "claude-sonnet", auto: false },
+      ]);
+      assert.deepEqual(result.compact, { status: "compacted", instructionsApplied: false });
+      assert.deepEqual(messages, ["hello back"]);
+      assert.equal(previews.some((preview) => preview.includes("## Goal")), false);
+      assert.equal(session.currentTurn, null);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("falls back to the model recorded on recent messages", async () => {
+    const { harness, session } = makeCompactSession({
+      messages: [
+        { info: { role: "user", model: { providerID: "openai", modelID: "gpt-5" } } },
+        { info: { role: "assistant", providerID: "deepseek", modelID: "deepseek-chat" } },
+      ],
+      async onSummarize({ getActiveQueue }) {
+        emitCompaction(getActiveQueue(), { sessionId });
+      },
+    });
+    try {
+      await session.runTurn("hello");
+      await session.runCompact({});
+      assert.equal(harness.summarizeCalls[0].providerID, "deepseek");
+      assert.equal(harness.summarizeCalls[0].modelID, "deepseek-chat");
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("falls back to the configured model when the message lookup fails", async () => {
+    const { harness, session } = makeCompactSession(
+      {
+        async onSummarize({ getActiveQueue }) {
+          emitCompaction(getActiveQueue(), { sessionId });
+        },
+      },
+      { model: "anthropic/claude-sonnet" },
+    );
+    harness.sdkModule.createOpencodeClient().session.messages = async () => {
+      throw new Error("lookup down");
+    };
+    try {
+      await session.runTurn("hello");
+      await session.runCompact({});
+      assert.equal(harness.summarizeCalls[0].providerID, "anthropic");
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("rejects when the summary message carries an error", async () => {
+    const { session } = makeCompactSession(
+      {
+        async onSummarize({ getActiveQueue }) {
+          emitCompaction(getActiveQueue(), { sessionId, error: { name: "APIError", data: { message: "rate limited" } } });
+        },
+      },
+      { model: "anthropic/claude-sonnet" },
+    );
+    try {
+      await session.runTurn("hello");
+      await assert.rejects(session.runCompact({}), (error) => {
+        assert.equal(error.reason, "compact_failed");
+        assert.match(error.message, /rate limited/);
+        return true;
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("counts a summarize that returned before its events as compacted", async () => {
+    const { harness, session } = makeCompactSession({}, { model: "anthropic/claude-sonnet" });
+    try {
+      await session.runTurn("hello");
+      const result = await session.runCompact({});
+      assert.equal(harness.summarizeCalls.length, 1);
+      assert.deepEqual(result.compact, { status: "compacted", instructionsApplied: false });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("is a noop before the session has any conversation", async () => {
+    const { harness, session } = makeCompactSession({}, { model: "anthropic/claude-sonnet" });
+    try {
+      const result = await session.runCompact({});
+      assert.deepEqual(result.compact, { status: "noop", instructionsApplied: false });
+      assert.equal(harness.summarizeCalls.length, 0);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("keeps an automatic compaction summary out of the chat during a normal turn", async () => {
+    const { session, messages } = makeCompactSession({
+      async onPromptAsync({ getActiveQueue }) {
+        const queue = getActiveQueue();
+        queue.push({
+          type: "message.updated",
+          properties: { info: { id: "auto-summary", sessionID: sessionId, role: "assistant", summary: true } },
+        });
+        queue.push({
+          type: "message.part.updated",
+          properties: {
+            part: { id: "auto-part", sessionID: sessionId, messageID: "auto-summary", type: "text", text: "## Goal" },
+          },
+        });
+        emitSuccessfulTurn(queue, { sessionId, text: "real answer", suffix: "2" });
+      },
+    });
+    try {
+      const result = await session.runTurn("hello");
+      assert.equal(result.text, "real answer");
+      assert.deepEqual(messages, ["real answer"]);
+    } finally {
+      await session.close();
+    }
+  });
+});
 
 describe("opencode sdk session", () => {
   it("runs opencode turns through the local server and emits assistant messages", async () => {

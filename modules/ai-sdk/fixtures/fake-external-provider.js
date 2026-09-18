@@ -1,7 +1,7 @@
 class FakeExternalSession {
-  // Goal-capable for the existing client tests that exercise the proxy
+  // Goal- and compact-capable for the client tests that exercise the proxy
   // capability snapshot.
-  static capabilities = Object.freeze({ goal: true });
+  static capabilities = Object.freeze({ goal: true, compact: true });
 
   constructor(backend, options = {}) {
     this.backend = backend;
@@ -115,6 +115,17 @@ class FakeExternalSession {
     };
   }
 
+  async runCompact(request = {}, options = {}) {
+    if (typeof options.onProgress === "function") {
+      options.onProgress({ phase: "context_compaction" });
+    }
+    return {
+      compact: { status: "compacted", instructionsApplied: Boolean(request?.instructions), preTokens: 100, postTokens: 10 },
+      usage: null,
+      metadata: { source: "fake-external-provider" },
+    };
+  }
+
   async getGoal() {
     return this.lastGoal ? { ...this.lastGoal } : null;
   }
@@ -196,6 +207,10 @@ class FakeNoGoalExternalSession {
   // wins over method-presence detection.
   async runGoal() {
     throw new Error("this fixture should never actually run a goal");
+  }
+
+  async runCompact() {
+    throw new Error("this fixture should never actually compact");
   }
 
   async close() {

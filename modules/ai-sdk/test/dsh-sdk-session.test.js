@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { DshSdkSession } from "../src/session-factory.js";
+import { COMPACT_SUMMARY_PROMPT } from "../src/providers/dsh-sdk-session.js";
 import {
   DSH_SDK_VARIANT,
   getBuiltInBackendEntry,
@@ -51,6 +52,53 @@ describe("dsh backend registry", () => {
 });
 
 describe("dsh sdk session", () => {
+  it("clears the compacting status once automatic compaction ends", async () => {
+    const session = createSession();
+    const statuses = [];
+    session.on("working_status", (payload) => statuses.push(payload));
+    try {
+      await session.runTurn("work [auto-compact]");
+      const compactingIndex = statuses.findIndex((payload) => payload.phase === "context_compaction");
+      assert.ok(compactingIndex >= 0);
+      assert.equal(statuses[compactingIndex + 1].status_line, "dsh is working");
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("runCompact summarizes silently and continues on a fresh session seeded with the summary", async () => {
+    const session = createSession();
+    const assistantMessages = [];
+    session.on("assistant_message", (payload) => assistantMessages.push(payload.text));
+
+    try {
+      assert.equal(session.getSnapshot().capabilities.compact, true);
+      const empty = await session.runCompact({});
+      assert.deepEqual(empty.compact, { status: "noop", instructionsApplied: false });
+
+      await session.runTurn("hello dsh");
+      const firstSessionId = session.getSnapshot().sessionId;
+      const result = await session.runCompact({ instructions: "keep the file list" });
+
+      assert.deepEqual(result.compact, { status: "compacted", instructionsApplied: true });
+      // The id only rotates on the next turn, once the new session gets a log.
+      assert.equal(session.getSessionInfo().sessionId, firstSessionId);
+      assert.equal(session.history.length, 1);
+      assert.match(session.history[0].content, /^Summary of the conversation so far:/);
+      assert.match(session.history[0].content, /Additional focus: keep the file list/);
+      assert.deepEqual(assistantMessages, ["echo:hello dsh"]);
+
+      // The next turn runs on the new session with the summary as its seed.
+      const next = await session.runTurn("continue");
+      assert.notEqual(session.getSnapshot().sessionId, firstSessionId);
+      assert.match(next.text, /Continue the existing conversation with this history\./);
+      assert.match(next.text, /Summary of the conversation so far:/);
+      assert.doesNotMatch(next.text, /User: hello dsh/);
+    } finally {
+      await session.close();
+    }
+  });
+
   it("runs one echo turn end to end against the fake runtime", async () => {
     const session = createSession();
     const assistantMessages = [];
@@ -144,6 +192,106 @@ describe("dsh sdk session", () => {
       assert.match(result.text, /earlier-user-question/);
       assert.match(result.text, /earlier-assistant-reply/);
       assert.match(result.text, /hi again/);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("restores only the compaction summary and later turns when resuming after /compact", async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "dsh-compact-resume-"));
+    const oldSessionId = "session-compacted42";
+    const sessionDir = path.join(root, "--proj--", oldSessionId);
+    await fsp.mkdir(sessionDir, { recursive: true });
+    const user = (seq, text) => ({
+      type: "user/message",
+      seq,
+      time: seq,
+      data: { role: "user", source: { kind: "user" }, content: [{ type: "text", text }] },
+    });
+    const assistant = (seq, text) => ({
+      type: "assistant/message",
+      seq,
+      time: seq,
+      data: { turn: 1, step: 1, message: { role: "assistant", content: [{ type: "text", text }] } },
+    });
+    const lines = [
+      { type: "session", version: 1, id: oldSessionId, createdAt: 1, cwd: process.cwd(), delegationDepth: 0 },
+      user(1, "earlier-user-question"),
+      assistant(2, "earlier-assistant-reply"),
+      user(3, `${COMPACT_SUMMARY_PROMPT}\n\nAdditional focus: keep ids`),
+      assistant(4, "the-compact-summary"),
+      user(5, "later-user-question"),
+      assistant(6, "later-assistant-reply"),
+    ];
+    await fsp.writeFile(
+      path.join(sessionDir, "session.jsonl"),
+      `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`,
+      "utf8",
+    );
+
+    const session = createSession({ resumeSessionId: oldSessionId, dshSessionRoot: root });
+    try {
+      const result = await session.runTurn("hi again");
+      assert.match(result.text, /Summary of the conversation so far:\n\nthe-compact-summary/);
+      assert.match(result.text, /later-user-question/);
+      assert.doesNotMatch(result.text, /earlier-user-question/);
+      assert.doesNotMatch(result.text, /Reply with the summary only/);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("keeps the full history on resume when a /compact turn failed or never finished", async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "dsh-compact-failed-"));
+    const user = (seq, text) => ({
+      type: "user/message",
+      seq,
+      data: { role: "user", source: { kind: "user" }, content: [{ type: "text", text }] },
+    });
+    const assistant = (seq, text) => ({
+      type: "assistant/message",
+      seq,
+      data: { turn: 1, step: 1, message: { role: "assistant", content: [{ type: "text", text }] } },
+    });
+    const writeLog = async (sessionId, events) => {
+      const dir = path.join(root, "--proj--", sessionId);
+      await fsp.mkdir(dir, { recursive: true });
+      await fsp.writeFile(path.join(dir, "session.jsonl"), `${events.map((e) => JSON.stringify(e)).join("\n")}\n`);
+    };
+    await writeLog("session-failed", [
+      user(1, "q1"),
+      assistant(2, "r1"),
+      user(3, COMPACT_SUMMARY_PROMPT),
+      { type: "turn/end", seq: 4, data: { turn: 2, reason: { kind: "error", error: { message: "boom" } } } },
+      user(5, "q2"),
+      assistant(6, "r2"),
+    ]);
+    await writeLog("session-cut", [user(1, "q1"), assistant(2, "r1"), user(3, COMPACT_SUMMARY_PROMPT)]);
+
+    const session = createSession({ dshSessionRoot: root });
+    try {
+      assert.deepEqual(session.loadPersistedHistory("session-failed"), [
+        { role: "user", content: "q1" },
+        { role: "assistant", content: "r1" },
+        { role: "user", content: "q2" },
+        { role: "assistant", content: "r2" },
+      ]);
+      assert.deepEqual(session.loadPersistedHistory("session-cut"), [
+        { role: "user", content: "q1" },
+        { role: "assistant", content: "r1" },
+      ]);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("runCompact is a noop when the session to resume has no persisted log", async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "dsh-compact-missing-"));
+    const session = createSession({ resumeSessionId: "session-gone", dshSessionRoot: root });
+    try {
+      const result = await session.runCompact({});
+      assert.deepEqual(result.compact, { status: "noop", instructionsApplied: false });
+      assert.deepEqual(session.history, []);
     } finally {
       await session.close();
     }

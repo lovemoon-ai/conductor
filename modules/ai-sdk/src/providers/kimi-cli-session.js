@@ -298,7 +298,7 @@ export class KimiCliSession extends EventEmitter {
           }
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
-      capabilities: { media: PROVIDER_MEDIA_CAPABILITIES[KIMI_PROVIDER_VARIANT] },
+      capabilities: { compact: true, media: PROVIDER_MEDIA_CAPABILITIES[KIMI_PROVIDER_VARIANT] },
       pid: this.transport.pid || undefined,
     };
   }
@@ -757,6 +757,9 @@ export class KimiCliSession extends EventEmitter {
     }
     currentTurn.fullText += text;
     currentTurn.bufferedAssistantText = "";
+    if (currentTurn.suppressReply) {
+      return false;
+    }
     await this.emitAssistantMessage(text);
     return true;
   }
@@ -902,6 +905,7 @@ export class KimiCliSession extends EventEmitter {
         );
         return;
       case "CompactionBegin":
+        currentTurn.compacted = true;
         await this.emitWorkingStatus(
           {
             phase: "context_compaction",
@@ -944,7 +948,9 @@ export class KimiCliSession extends EventEmitter {
               phase: "message_aggregation",
               reply_in_progress: true,
               status_line: statusLineForPhase("message_aggregation"),
-              reply_preview: sanitizeSummary(currentTurn.bufferedAssistantText, 120),
+              reply_preview: currentTurn.suppressReply
+                ? undefined
+                : sanitizeSummary(currentTurn.bufferedAssistantText, 120),
             },
             currentTurn.onProgress,
           );
@@ -1046,7 +1052,28 @@ export class KimiCliSession extends EventEmitter {
     return false;
   }
 
-  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null } = {}) {
+  /**
+   * Manually compact via Kimi CLI's built-in `/compact` slash command, which
+   * the wire `prompt` method dispatches like the interactive shell does. The
+   * command takes no focus instructions.
+   *
+   * @param {import("../shared.js").CompactRequest} [request]
+   * @param {{ onProgress?: Function }} [options]
+   * @returns {Promise<import("../shared.js").CompactResult>}
+   */
+  async runCompact(request = {}, { onProgress = null } = {}) {
+    if (this.pendingHistorySeed) {
+      return { compact: { status: "noop", instructionsApplied: false }, usage: null, metadata: {} };
+    }
+    const turnResult = await this.runTurn("/compact", { onProgress, suppressReply: true });
+    return {
+      compact: { status: turnResult.compacted ? "compacted" : "noop", instructionsApplied: false },
+      usage: turnResult.usage,
+      metadata: turnResult.metadata,
+    };
+  }
+
+  async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null, suppressReply = false } = {}) {
     if (this.closeRequested || this.closed) {
       throw this.createSessionClosedError();
     }
@@ -1078,9 +1105,13 @@ export class KimiCliSession extends EventEmitter {
       throw error;
     }
 
-    this.history.push({ role: "user", content: promptText });
+    if (!suppressReply) {
+      this.history.push({ role: "user", content: promptText });
+    }
 
     const currentTurn = {
+      suppressReply,
+      compacted: false,
       fullText: "",
       bufferedAssistantText: "",
       thinkText: "",
@@ -1131,7 +1162,7 @@ export class KimiCliSession extends EventEmitter {
       currentTurn.settled = true;
       await this.finalizeAssistantMessage(currentTurn);
 
-      if (currentTurn.fullText) {
+      if (currentTurn.fullText && !suppressReply) {
         this.history.push({ role: "assistant", content: currentTurn.fullText });
       }
 
@@ -1170,6 +1201,7 @@ export class KimiCliSession extends EventEmitter {
           promptStatus: normalizedStatus || undefined,
           contextUsagePercent: this.lastContextUsagePercent,
         },
+        compacted: currentTurn.compacted,
       };
     } catch (error) {
       if (error?.reason === "turn_timeout") {
