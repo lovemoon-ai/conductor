@@ -87,6 +87,31 @@ export function isTerminalGoalStatus(value) {
  *
  * @typedef {Object} SessionCapabilities
  * @property {boolean} [goal]
+ * @property {boolean} [compact]
+ */
+
+/**
+ * Manual context compaction (`/compact`) contract for providers that
+ * implement the optional `runCompact` method and advertise
+ * `capabilities.compact === true`. Providers must NOT emit assistant messages
+ * while compacting; the caller renders the user-facing confirmation.
+ *
+ * @typedef {Object} CompactRequest
+ * @property {string} [instructions] Optional focus instructions; providers
+ *   whose backend cannot take them ignore them and report
+ *   `instructionsApplied: false`.
+ *
+ * @typedef {Object} CompactState
+ * @property {"compacted"|"noop"} status `noop` = nothing to compact.
+ * @property {boolean} instructionsApplied
+ * @property {number} [preTokens]
+ * @property {number} [postTokens]
+ * @property {number} [tokensRemoved]
+ *
+ * @typedef {Object} CompactResult
+ * @property {CompactState} compact
+ * @property {unknown} [usage]
+ * @property {Record<string, unknown>} [metadata]
  */
 
 /**
@@ -95,7 +120,7 @@ export function isTerminalGoalStatus(value) {
  *
  * @type {Readonly<SessionCapabilities>}
  */
-export const DEFAULT_SESSION_CAPABILITIES = Object.freeze({ goal: false });
+export const DEFAULT_SESSION_CAPABILITIES = Object.freeze({ goal: false, compact: false });
 
 /**
  * Resolve a session's capability snapshot, falling back to

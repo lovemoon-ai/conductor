@@ -698,7 +698,7 @@ export class CopilotSdkSession extends EventEmitter {
           }
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
-      capabilities: { media: PROVIDER_MEDIA_CAPABILITIES[COPILOT_PROVIDER_VARIANT] },
+      capabilities: { compact: true, media: PROVIDER_MEDIA_CAPABILITIES[COPILOT_PROVIDER_VARIANT] },
     };
   }
 
@@ -828,7 +828,7 @@ export class CopilotSdkSession extends EventEmitter {
       return false;
     }
     const text = currentTurn.messageText.get(messageId) || "";
-    if (!text) {
+    if (!text || currentTurn.suppressReply) {
       return false;
     }
     currentTurn.emittedMessageIds.add(messageId);
@@ -1565,6 +1565,11 @@ export class CopilotSdkSession extends EventEmitter {
   }
 
   async interruptCurrentTurn() {
+    if (this.currentTurn?.abortCompaction) {
+      this.currentTurn.abortRequested = true;
+      this.currentTurn.abortCompaction();
+      return;
+    }
     if (!this.currentTurn || !this.session || typeof this.session.abort !== "function") {
       return;
     }
@@ -1574,6 +1579,130 @@ export class CopilotSdkSession extends EventEmitter {
       if (!this.closeRequested) {
         throw error;
       }
+    }
+  }
+
+  createTurnState(onProgress) {
+    return {
+      items: [],
+      events: [],
+      fullText: "",
+      messageOrder: [],
+      messageText: new Map(),
+      emittedMessageIds: new Set(),
+      activeToolName: "",
+      activeToolPhase: "",
+      abortRequested: false,
+      terminalWorkingStatusEmitted: false,
+      error: null,
+      onProgress,
+    };
+  }
+
+  /**
+   * Manually compact the session via the CLI's `session.history.compact` RPC
+   * (the same call its interactive `/compact` makes). `customInstructions`
+   * is not in the SDK's typed wrapper, so the request goes through the raw
+   * connection.
+   *
+   * @param {import("../shared.js").CompactRequest} [request]
+   * @param {{ onProgress?: Function }} [options]
+   * @returns {Promise<import("../shared.js").CompactResult>}
+   */
+  async runCompact(request = {}, { onProgress = null } = {}) {
+    if (this.currentTurn) {
+      throw this.createTurnAlreadyRunningError();
+    }
+    const instructions = typeof request?.instructions === "string" ? request.instructions.trim() : "";
+    const noop = { compact: { status: "noop", instructionsApplied: false }, usage: null, metadata: {} };
+    if (this.pendingHistorySeed) {
+      return noop;
+    }
+
+    const currentTurn = this.createTurnState(onProgress);
+    currentTurn.suppressReply = true;
+    this.currentTurn = currentTurn;
+    this.touchTurnActivity();
+    this.markTurnStartedStatus();
+    // `session.abort()` does not stop a manual compaction; it has its own abort RPC.
+    const abortCompaction = () => {
+      Promise.resolve()
+        .then(() =>
+          this.session?.connection?.sendRequest("session.history.abortManualCompaction", {
+            sessionId: this.session.sessionId,
+          }),
+        )
+        .catch(() => {});
+    };
+    currentTurn.abortCompaction = abortCompaction;
+    const closeGuard = this.createCloseGuard(abortCompaction);
+    const turnTimeoutGuard = this.createTurnTimeoutGuard(abortCompaction);
+
+    try {
+      await Promise.race([this.boot(), closeGuard.promise, turnTimeoutGuard.promise]);
+      this.applySessionInfo(this.session?.sessionId || this.sessionId);
+      await this.emitWorkingStatus(
+        { phase: "context_compaction", reply_in_progress: true, status_line: "copilot compacting context" },
+        onProgress,
+      );
+      if (currentTurn.abortRequested) {
+        throw createTurnError("Copilot compaction interrupted", { reason: "turn_interrupted" });
+      }
+      const result = await Promise.race([
+        this.requestOrThrow(
+          this.session.connection.sendRequest("session.history.compact", {
+            sessionId: this.session.sessionId,
+            // The CLI schema caps focus instructions at 4000 characters.
+            ...(instructions ? { customInstructions: instructions.slice(0, 4000) } : {}),
+          }),
+        ),
+        closeGuard.promise,
+        turnTimeoutGuard.promise,
+      ]);
+      if (result?.success === false) {
+        throw createTurnError("Copilot compaction failed", { reason: "compact_failed" });
+      }
+      await this.emitTerminalWorkingStatus(
+        currentTurn,
+        { phase: "turn_completed", status_done_line: "copilot compacted context" },
+        onProgress,
+      );
+      const tokensRemoved = Number(result?.tokensRemoved);
+      return {
+        compact: {
+          status: "compacted",
+          instructionsApplied: Boolean(instructions),
+          tokensRemoved: Number.isFinite(tokensRemoved) ? tokensRemoved : undefined,
+        },
+        usage: null,
+        metadata: { source: COPILOT_PROVIDER_VARIANT, sessionId: this.sessionId || undefined },
+      };
+    } catch (error) {
+      const message = extractErrorMessage(error);
+      // The CLI refuses when the session holds nothing it can summarize yet.
+      if (!currentTurn.abortRequested && /nothing to compact|no active agent context/i.test(message)) {
+        await this.emitTerminalWorkingStatus(
+          currentTurn,
+          { phase: "turn_completed", status_done_line: "copilot finished" },
+          onProgress,
+        );
+        return noop;
+      }
+      if (currentTurn.abortRequested && error?.reason !== "turn_timeout" && error?.reason !== "session_closed") {
+        await this.emitTerminalWorkingStatus(
+          currentTurn,
+          { phase: "turn_interrupted", status_done_line: "copilot interrupted" },
+          onProgress,
+        );
+        throw createTurnError("Copilot compaction interrupted", { reason: "turn_interrupted" });
+      }
+      await this.emitTerminalWorkingStatus(currentTurn, { phase: "turn_failed", status_done_line: message }, onProgress);
+      throw error;
+    } finally {
+      closeGuard.cleanup();
+      turnTimeoutGuard.cleanup();
+      this.activeReplyTarget = "";
+      this.currentTurn = null;
     }
   }
 
@@ -1601,20 +1730,7 @@ export class CopilotSdkSession extends EventEmitter {
       };
     }
 
-    const currentTurn = {
-      items: [],
-      events: [],
-      fullText: "",
-      messageOrder: [],
-      messageText: new Map(),
-      emittedMessageIds: new Set(),
-      activeToolName: "",
-      activeToolPhase: "",
-      abortRequested: false,
-      terminalWorkingStatusEmitted: false,
-      error: null,
-      onProgress,
-    };
+    const currentTurn = this.createTurnState(onProgress);
     this.currentTurn = currentTurn;
     this.touchTurnActivity();
     this.markTurnStartedStatus();

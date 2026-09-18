@@ -203,6 +203,21 @@ input.on("line", (line) => {
       });
       return;
     }
+    if (promptText === "/compact") {
+      // Mirrors kimi-cli's built-in slash command: no compaction on an empty context.
+      emitEvent("TurnBegin", { user_input: promptText });
+      if (turnCounter === 0) {
+        emitEvent("ContentPart", { type: "text", text: "The context is empty." });
+      } else {
+        emitEvent("CompactionBegin", {});
+        emitEvent("CompactionEnd", {});
+        emitEvent("ContentPart", { type: "text", text: "The context has been compacted." });
+        emitEvent("StatusUpdate", { context_usage: 0.05 });
+      }
+      emitEvent("TurnEnd", {});
+      respond(message.id, { status: "finished" });
+      return;
+    }
     emitStandardTurn(promptText);
     respond(message.id, {
       status: "finished",

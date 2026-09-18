@@ -668,6 +668,70 @@ describe("ai-sdk client boundary", () => {
     });
   });
 
+  it("forwards runCompact through the worker proxy with onProgress", async () => {
+    await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      const session = createAiSession("test-external-alias", {
+        cwd: process.cwd(),
+        logger: { log: () => {} },
+      });
+      try {
+        await session.readyPromise;
+        assert.ok(session instanceof RemoteAiSession);
+        assert.equal(session.getSnapshot().capabilities?.compact, true);
+        const progressEvents = [];
+        const result = await session.runCompact(
+          { instructions: "keep decisions" },
+          { onProgress: (payload) => progressEvents.push(payload) },
+        );
+        assert.deepEqual(result.compact, { status: "compacted", instructionsApplied: true, preTokens: 100, postTokens: 10 });
+        assert.deepEqual(progressEvents, [{ phase: "context_compaction" }]);
+      } finally {
+        await session.close();
+      }
+    });
+  });
+
+  it("forwards runCompact through the local proxy when worker is disabled", async () => {
+    await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      process.env.CONDUCTOR_AI_SDK_DISABLE_WORKER = "1";
+      const session = createAiSession("test-external-alias", {
+        cwd: process.cwd(),
+        logger: { log: () => {} },
+      });
+      try {
+        const result = await session.runCompact({});
+        assert.equal(result.compact.status, "compacted");
+        assert.equal(result.compact.instructionsApplied, false);
+      } finally {
+        await session.close();
+      }
+    });
+  });
+
+  it("runCompact throws unsupported_compact without a round trip when the backend lacks the capability", async () => {
+    await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      for (const disableWorker of [false, true]) {
+        if (disableWorker) {
+          process.env.CONDUCTOR_AI_SDK_DISABLE_WORKER = "1";
+        }
+        const session = createAiSession("test-external-no-goal", {
+          cwd: process.cwd(),
+          logger: { log: () => {} },
+        });
+        try {
+          await session.readyPromise;
+          assert.equal(session.getSnapshot().capabilities?.compact, false);
+          await assert.rejects(
+            () => session.runCompact({}),
+            (error) => error?.reason === "unsupported_compact",
+          );
+        } finally {
+          await session.close();
+        }
+      }
+    });
+  });
+
   it("forwards runGoal through the local proxy when worker is disabled", async () => {
     await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
       process.env.CONDUCTOR_AI_SDK_DISABLE_WORKER = "1";
