@@ -142,6 +142,25 @@ No changeset is needed for:
      is the alternative only when a write-capable token is already on the
      machine; never pause the release to ask for one.
 
+7. If the archive workflow fails **mid-upload** (each tarball is ~300 MB, and
+   GitHub occasionally answers `HTTP 422 ReleaseAsset.name already exists` or
+   `HTTP 400`), the release is left half-populated. Deleting the tag to retrigger
+   turns the existing release into an untagged **draft**, which the read-only
+   `gh` login cannot even see, and the next run collides with its leftover
+   assets. Recovery, without moving the tag (the workflow file of a tag-triggered
+   run comes from the tag's own commit, so a fix on `main` would not apply):
+   ```sh
+   git checkout -b release-retry/vX.Y.Z <commit with the fixed workflow>
+   # keep the branch trigger + version-from-branch-name block in
+   # .github/workflows/cli-release-archives.yml
+   git push -u origin release-retry/vX.Y.Z      # push:branches trigger re-runs build + publish
+   # after the release shows all 9 assets:
+   git push origin --delete release-retry/vX.Y.Z
+   ```
+   The publish step is idempotent since 0.13.1: it finds the release by tag
+   (drafts included), deletes leftover assets, re-publishes the release and
+   uploads each file separately with three attempts.
+
 There is no longer a manual step where the user runs `scripts/publish-npm.sh`
 or any other local publish command. After the version PR is merged, CI owns the
 npm publish step end to end.
