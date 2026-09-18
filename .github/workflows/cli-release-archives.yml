@@ -148,13 +148,43 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$RELEASE_NOTES_FILE"
+          repo="$GITHUB_REPOSITORY"
+
+          # A rerun (or a tag delete/re-push) leaves the previous release behind,
+          # possibly as an untagged draft holding half the assets. Look it up by
+          # tag across drafts too, strip its assets and publish it, so uploads
+          # never collide with a stale asset of the same name.
+          release_id="$(gh api "repos/$repo/releases" --paginate \
+            --jq "[.[] | select(.tag_name == \"$RELEASE_TAG\") | .id] | first // empty")"
+
+          if [ -n "$release_id" ]; then
+            echo "Reusing release $release_id for $RELEASE_TAG"
+            for asset_id in $(gh api "repos/$repo/releases/$release_id/assets" --paginate --jq '.[].id'); do
+              gh api -X DELETE "repos/$repo/releases/assets/$asset_id" >/dev/null
+            done
+            gh api -X PATCH "repos/$repo/releases/$release_id" \
+              -f tag_name="$RELEASE_TAG" -f name="$RELEASE_TAG" \
+              -F draft=false -F prerelease=false \
+              -f body="$(cat "$RELEASE_NOTES_FILE")" >/dev/null
           else
-            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$RELEASE_NOTES_FILE"
+            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$RELEASE_NOTES_FILE"
           fi
 
-          gh release upload "$RELEASE_TAG" cli/dist/release/* cli/Formula/conductor.rb --clobber
+          # ~300 MB per archive: upload one file at a time and retry, so a single
+          # flaky upload does not fail the whole release.
+          for file in cli/dist/release/* cli/Formula/conductor.rb; do
+            for attempt in 1 2 3; do
+              if gh release upload "$RELEASE_TAG" "$file" --clobber; then
+                break
+              fi
+              if [ "$attempt" = 3 ]; then
+                echo "::error::failed to upload $file after 3 attempts"
+                exit 1
+              fi
+              echo "upload of $file failed (attempt $attempt); retrying in 15s"
+              sleep 15
+            done
+          done
 
       # The rendered conductor.rb is now attached to the GitHub Release above.
       # Updating lovemoon-ai/homebrew-tap is done manually by the release agent
