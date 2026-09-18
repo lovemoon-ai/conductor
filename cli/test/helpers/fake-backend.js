@@ -204,6 +204,7 @@ export class FakeBackendApi {
     const summary = TaskSummary.fromJSON({
       id: record.id,
       project_id: record.projectId,
+      second_project_id: record.secondProjectId ?? null,
       title: record.title,
       status: record.status,
       ...(record.grouping
@@ -219,6 +220,7 @@ export class FakeBackendApi {
     summary.asObject = () => ({
       id: record.id,
       projectId: record.projectId,
+      secondProjectId: record.secondProjectId ?? null,
       issueId: record.issueId ?? null,
       title: record.title,
       status: record.status,
@@ -231,7 +233,12 @@ export class FakeBackendApi {
     this.calls.push({ method: "listTasks", params });
     let result = this.tasks.slice();
     if (params.projectId) {
-      result = result.filter((task) => task.projectId === params.projectId);
+      // Mirrors the server: `display` scope swaps moved-out tasks for moved-in ones.
+      result = result.filter((task) =>
+        (params.projectScope === "display" && task.secondProjectId
+          ? task.secondProjectId
+          : task.projectId) === params.projectId,
+      );
     }
     return result.map((task) => this.asTaskSummary(task));
   }

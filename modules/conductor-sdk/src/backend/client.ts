@@ -143,6 +143,7 @@ export class TaskSummary {
     public readonly createdAt?: string | null,
     public readonly updatedAt?: string | null,
     public readonly grouping?: TaskGroupingSummary | null,
+    public readonly secondProjectId?: string | null,
   ) {}
 
   static fromJSON(payload: Record<string, any>): TaskSummary {
@@ -185,6 +186,7 @@ export class TaskSummary {
       payload.created_at ?? null,
       payload.updated_at ?? null,
       grouping,
+      payload.second_project_id ?? payload.secondProjectId ?? null,
     );
   }
 }
@@ -240,14 +242,18 @@ export class BackendApiClient {
     return ProjectSummary.fromJSON(payload);
   }
 
-  async listTasks(params: { projectId?: string; status?: string } = {}): Promise<TaskSummary[]> {
+  async listTasks(
+    params: { projectId?: string; status?: string; projectScope?: 'real' | 'display' } = {},
+  ): Promise<TaskSummary[]> {
     const query = new URLSearchParams();
     if (params.projectId) {
       query.set('project_id', params.projectId);
-      // Match the task's REAL project. By default the server groups by where the
-      // user filed a task in the web UI (display-only), which would hide this
-      // project's filed-out tasks from agents and include foreign ones.
-      query.set('project_scope', 'real');
+      // Match the task's REAL project unless the caller asks for the web UI's
+      // display grouping (the server default), which hides this project's
+      // moved-out tasks and includes the ones moved in via `second_project_id`.
+      if (params.projectScope !== 'display') {
+        query.set('project_scope', 'real');
+      }
     }
     if (params.status) {
       query.set('status', params.status);

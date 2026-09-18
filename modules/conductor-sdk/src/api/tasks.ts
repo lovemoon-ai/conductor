@@ -3,6 +3,8 @@ import { ApiClient, SdkClientOptions, buildAuditMetadata } from './shared.js';
 export interface Task {
   id: string;
   projectId: string | null;
+  /** Project the task was moved to in the web UI (display-only); null if not moved. */
+  secondProjectId?: string | null;
   issueId?: string | null;
   title: string;
   status: string;
@@ -133,6 +135,7 @@ const normalizeTask = (payload: Record<string, any>): Task => {
             ? null
             : String(payload.project_id)
           : null,
+    secondProjectId: payload.secondProjectId ?? payload.second_project_id ?? null,
     issueId: payload.issueId ?? payload.issue_id ?? null,
     title: String(payload.title ?? ''),
     status: String(payload.status ?? ''),
@@ -238,6 +241,11 @@ export interface ListTasksInput {
   projectId?: string;
   issueId?: string;
   status?: string | string[];
+  /**
+   * Also include tasks moved into `projectId` from other projects (their
+   * `secondProjectId` is `projectId`), i.e. `projectId == P OR secondProjectId == P`.
+   */
+  includeMoved?: boolean;
 }
 
 export interface CreateTaskInput {
@@ -285,12 +293,26 @@ export class TasksApi {
     // The server `/api/tasks` only filters on `project_id`; status / issue
     // filtering happens client-side here so we can support both string and
     // array `status` shapes from the facade input.
-    const tasks = await this.client.listTasks({
-      projectId: input.projectId,
-    });
-    let normalized = (tasks as any[]).map((entry) =>
-      normalizeTask(typeof entry.asObject === 'function' ? entry.asObject() : entry),
-    );
+    const fetchNormalized = async (projectScope: 'real' | 'display') =>
+      ((await this.client.listTasks({ projectId: input.projectId, projectScope })) as any[]).map(
+        (entry) => normalizeTask(typeof entry.asObject === 'function' ? entry.asObject() : entry),
+      );
+    let normalized: Task[];
+    if (input.includeMoved && input.projectId) {
+      // Real scope has every task whose projectId is P; display scope adds the
+      // ones moved in. Merging the two existing scopes needs no server change.
+      const [real, display] = await Promise.all([
+        fetchNormalized('real'),
+        fetchNormalized('display'),
+      ]);
+      const seen = new Set(real.map((task) => task.id));
+      const sortTime = (task: Task) => Date.parse(task.updatedAt ?? task.createdAt ?? '') || 0;
+      normalized = [...real, ...display.filter((task) => !seen.has(task.id))].sort(
+        (a, b) => sortTime(b) - sortTime(a),
+      );
+    } else {
+      normalized = await fetchNormalized('real');
+    }
     if (input.issueId) {
       normalized = normalized.filter((task) => task.issueId === input.issueId);
     }

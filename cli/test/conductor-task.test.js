@@ -605,6 +605,61 @@ describe("conductor task list", () => {
     assert.equal(data.length, 1);
     assert.equal(data[0].id, "t1");
   });
+
+  const movedFixture = () => new FakeBackendApi({
+    projects: [
+      seedProject,
+      { id: "proj-2", name: "real2sim", daemonHost: "apex", workspacePath: "/tmp/r2s", isDefault: false },
+      { id: "proj-3", name: "gamma", workspacePath: "/tmp/gamma", isDefault: false },
+    ],
+    tasks: [
+      { id: "native", projectId: "proj-1", title: "Native", status: "running" },
+      { id: "moved-in", projectId: "proj-2", secondProjectId: "proj-1", title: "Moved in", status: "running" },
+      { id: "moved-out", projectId: "proj-1", secondProjectId: "proj-3", title: "Moved out", status: "running" },
+      { id: "foreign", projectId: "proj-2", title: "Foreign", status: "running" },
+    ],
+  });
+
+  it("lists only real-project tasks by default", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const code = await main(["list", "--json"], { stdout, stderr, ...makeCliDeps(movedFixture()) });
+    assert.equal(code, 0, stderr.collect());
+    const data = JSON.parse(stdout.collect().trim());
+    assert.deepEqual(data.map((t) => t.id), ["native", "moved-out"]);
+    assert.equal(data[1].secondProjectId, "proj-3");
+  });
+
+  it("--include-moved adds tasks moved in and exposes secondProjectId in JSON", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const code = await main(
+      ["list", "--include-moved", "--json"],
+      { stdout, stderr, ...makeCliDeps(movedFixture()) },
+    );
+    assert.equal(code, 0, stderr.collect());
+    const data = JSON.parse(stdout.collect().trim());
+    assert.deepEqual(data.map((t) => t.id).sort(), ["moved-in", "moved-out", "native"]);
+    const movedIn = data.find((t) => t.id === "moved-in");
+    assert.equal(movedIn.projectId, "proj-2");
+    assert.equal(movedIn.secondProjectId, "proj-1");
+  });
+
+  it("--include-moved labels the origin/target project in a MOVED column", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const code = await main(
+      ["list", "--include-moved"],
+      { stdout, stderr, ...makeCliDeps(movedFixture()) },
+    );
+    assert.equal(code, 0, stderr.collect());
+    const lines = stdout.collect().trim().split("\n");
+    assert.match(lines[0], /^ID\s+STATUS\s+MOVED\s+TITLE$/);
+    assert.match(lines.find((l) => l.startsWith("moved-in")), /from real2sim@apex\s+Moved in$/);
+    assert.match(lines.find((l) => l.startsWith("moved-out")), /to gamma\s+Moved out$/);
+    assert.match(lines.find((l) => l.startsWith("native")), /running\s+Native$/);
+    assert.equal(lines.some((l) => l.startsWith("foreign")), false);
+  });
 });
 
 describe("conductor task group", () => {

@@ -84,6 +84,23 @@ describe('BackendApiClient', () => {
     expect(requested.searchParams.get('project_scope')).toBe('real');
   });
 
+  test('listTasks display scope omits project_scope and keeps second_project_id', async () => {
+    const urls: string[] = [];
+    const fetchImpl: FetchFn = async (url) => {
+      urls.push(String(url));
+      return new Response(
+        JSON.stringify([{ id: 't1', project_id: 'proj-2', second_project_id: 'proj-1', title: 'T', status: 'running' }]),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+    const client = new BackendApiClient(makeConfig(), { fetchImpl });
+    const tasks = await client.listTasks({ projectId: 'proj-1', projectScope: 'display' });
+    const requested = new URL(urls[0]);
+    expect(requested.searchParams.get('project_id')).toBe('proj-1');
+    expect(requested.searchParams.has('project_scope')).toBe(false);
+    expect(tasks[0].secondProjectId).toBe('proj-1');
+  });
+
   test('createAppTask posts directly to the frontend task pipeline', async () => {
     const urls: string[] = [];
     const fetchImpl: FetchFn = async (url, init) => {

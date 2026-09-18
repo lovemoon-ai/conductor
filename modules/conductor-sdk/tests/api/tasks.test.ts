@@ -222,6 +222,36 @@ describe('TasksApi', () => {
     expect(multi.map((task) => task.id).sort()).toEqual(['t1', 't2']);
   });
 
+  test('listTasks includeMoved merges real and display scopes', async () => {
+    const byScope: Record<string, Array<Record<string, unknown>>> = {
+      real: [
+        { id: 'native', project_id: 'p1', title: 'A', status: 'running', updated_at: '2026-09-01T00:00:00Z' },
+        { id: 'out', project_id: 'p1', second_project_id: 'p3', title: 'B', status: 'running', updated_at: '2026-09-03T00:00:00Z' },
+      ],
+      display: [
+        { id: 'native', project_id: 'p1', title: 'A', status: 'running', updated_at: '2026-09-01T00:00:00Z' },
+        { id: 'in', project_id: 'p2', second_project_id: 'p1', title: 'C', status: 'running', updated_at: '2026-09-02T00:00:00Z' },
+      ],
+    };
+    const scopes: string[] = [];
+    const client = {
+      async listTasks(params: { projectId?: string; projectScope?: string }) {
+        scopes.push(String(params.projectScope));
+        return byScope[String(params.projectScope)].map((payload) => TaskSummary.fromJSON(payload));
+      },
+    };
+    const api = new TasksApi(client as any, { sdkVersion: '0.0.0-test', env: {} });
+
+    const tasks = await api.listTasks({ projectId: 'p1', includeMoved: true });
+    expect(scopes.sort()).toEqual(['display', 'real']);
+    expect(tasks.map((task) => task.id)).toEqual(['out', 'in', 'native']);
+    expect(tasks.find((task) => task.id === 'in')).toMatchObject({ projectId: 'p2', secondProjectId: 'p1' });
+
+    scopes.length = 0;
+    await api.listTasks({ projectId: 'p1' });
+    expect(scopes).toEqual(['real']);
+  });
+
   test('getTask returns normalized record', async () => {
     const { api } = makeApi([{ id: 't1', projectId: 'p1', title: 'A', status: 'running' }]);
     const task = await api.getTask('t1');

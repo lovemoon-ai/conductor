@@ -4,7 +4,7 @@
  * conductor task — entity-oriented task management.
  *
  * Subcommands:
- *   list [--project ...] [--issue <id>] [--status ...]
+ *   list [--project ...] [--issue <id>] [--status ...] [--include-moved]
  *   create --title <title> [--prompt <prompt>] [--backend <backend>]
  *          [--parent-task-id <id>] [--project ...]
  *   show <id>
@@ -59,6 +59,7 @@ function taskAsObject(task) {
   return {
     id: task.id,
     projectId: task.projectId,
+    secondProjectId: task.secondProjectId ?? null,
     issueId: task.issueId ?? null,
     title: task.title,
     status: task.status,
@@ -220,6 +221,27 @@ function formatContentPreview(value) {
   return `${text.slice(0, 57)}...`;
 }
 
+// "from <project>" for tasks moved into `projectId`, "to <project>" for tasks
+// moved out of it, "" otherwise. Project names are only fetched when needed.
+async function buildMovedLabels(apis, projectId, tasks) {
+  const moved = tasks.map((task) => {
+    if (task.secondProjectId === projectId && task.projectId !== projectId) {
+      return { dir: "from", id: task.projectId };
+    }
+    if (task.projectId === projectId && task.secondProjectId && task.secondProjectId !== projectId) {
+      return { dir: "to", id: task.secondProjectId };
+    }
+    return null;
+  });
+  const names = new Map();
+  if (moved.some(Boolean)) {
+    for (const p of await apis.projects.listProjects({ includeHidden: true })) {
+      names.set(p.id, p.daemonHost ? `${p.name ?? p.id}@${p.daemonHost}` : (p.name ?? p.id));
+    }
+  }
+  return moved.map((m) => (m ? `${m.dir} ${names.get(m.id) ?? m.id}` : ""));
+}
+
 async function handleList(argv, deps) {
   const apis = await buildApis(deps);
   const project = await resolveProject(apis, { env: deps.env, cwd: deps.cwd, project: argv.project });
@@ -227,6 +249,7 @@ async function handleList(argv, deps) {
     projectId: project.id,
     issueId: argv.issue ? String(argv.issue) : undefined,
     status: parseStatusList(argv.status),
+    includeMoved: argv.includeMoved,
   });
   const objects = (Array.isArray(list) ? list : []).map(taskAsObject);
   if (argv.json) {
@@ -237,13 +260,16 @@ async function handleList(argv, deps) {
     printPretty(deps.stdout, "(no tasks)");
     return EXIT.OK;
   }
-  printPretty(deps.stdout, `${pad("ID", 24)} ${pad("STATUS", 12)} TITLE`);
-  for (const task of objects) {
+  const movedLabels = argv.includeMoved ? await buildMovedLabels(apis, project.id, objects) : null;
+  const movedWidth = movedLabels ? Math.max(5, ...movedLabels.map((label) => label.length)) : 0;
+  const movedCol = (label) => (movedLabels ? `${pad(label, movedWidth)} ` : "");
+  printPretty(deps.stdout, `${pad("ID", 24)} ${pad("STATUS", 12)} ${movedCol("MOVED")}TITLE`);
+  objects.forEach((task, i) => {
     printPretty(
       deps.stdout,
-      `${pad(task.id, 24)} ${pad(task.status, 12)} ${task.title ?? ""}`,
+      `${pad(task.id, 24)} ${pad(task.status, 12)} ${movedCol(movedLabels?.[i] ?? "")}${task.title ?? ""}`,
     );
-  }
+  });
   return EXIT.OK;
 }
 
@@ -571,7 +597,12 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
         "List tasks in a project",
         (cmd) => cmd
           .option("issue", { type: "string", describe: "Filter by linked issue id" })
-          .option("status", { type: "string", describe: "Comma-separated status filter" }),
+          .option("status", { type: "string", describe: "Comma-separated status filter" })
+          .option("include-moved", {
+            type: "boolean",
+            default: false,
+            describe: "Also list tasks moved into this project from other projects (adds a MOVED column)",
+          }),
         async (argv) => {
           exitCode = await handleList(argv, { ...handlerDeps, configFile: argv.configFile });
         },
