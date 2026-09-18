@@ -956,6 +956,16 @@ describe("Daemon", () => {
     const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
     process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
     t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+    // Daemon launched via `su` from inside root's tmux pane: the inherited
+    // TMUX must not steer our tmux client at root's socket.
+    const previousTmux = process.env.TMUX;
+    const previousTmuxPane = process.env.TMUX_PANE;
+    process.env.TMUX = "/tmp/tmux-0/default,1600,1";
+    process.env.TMUX_PANE = "%1";
+    t.after(() => {
+      restoreEnv("TMUX", previousTmux);
+      restoreEnv("TMUX_PANE", previousTmuxPane);
+    });
 
     const taskPayload = {
       task_id: "task-tmux",
@@ -1079,9 +1089,101 @@ describe("Daemon", () => {
 
     setTimeout(() => {
       assert.strictEqual(tmuxSpawnCalls.length >= 1, true, "expected tmux new-session spawn");
+      const { args: tmuxArgs, opts: tmuxOpts } = tmuxSpawnCalls.find((c) => c.args[0] === "new-session");
+      assert.strictEqual(tmuxOpts.env.TMUX, undefined, "tmux client must not inherit TMUX");
+      assert.strictEqual(tmuxOpts.env.TMUX_PANE, undefined, "tmux client must not inherit TMUX_PANE");
+      assert.ok(!tmuxArgs.some((arg) => /^TMUX(_PANE)?=/.test(arg)), "no -e TMUX flags");
       // The clean tmux client exit must NOT trigger child.kill on the
       // daemon — Fire is now living under the tmux server.
       assert.strictEqual(killCalled, false);
+      if (daemon && typeof daemon.close === "function") {
+        daemon.close();
+        daemon = null;
+      }
+      done();
+    }, 500);
+  });
+
+  it("launches a long-prompt Fire via a launch script instead of overflowing tmux's argv limit", (t, done) => {
+    const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
+    process.env.CONDUCTOR_FIRE_TMUX_MODE = "true";
+    t.after(() => restoreEnv("CONDUCTOR_FIRE_TMUX_MODE", previousTmuxMode));
+
+    // A persistent-round prompt carrying a long summary: far past tmux's
+    // 16KB command limit once passed as `bash -c <command>`.
+    const longPrompt = "上一轮总结".repeat(2000);
+    const newSessions = [];
+    const writes = new Map();
+    const unlinked = [];
+
+    const mockSpawn = (cmd, args) => {
+      const child = new EventEmitter();
+      child.pid = 99002;
+      child.unref = () => {};
+      child.kill = () => {};
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      let code = 1;
+      if (cmd === "tmux" && args[0] === "new-session") {
+        newSessions.push(args);
+        // First launch: tmux fails, no session. Second: session created.
+        code = newSessions.length === 1 ? 1 : 0;
+      }
+      setImmediate(() => child.emit("exit", code, null));
+      return child;
+    };
+
+    wss.once("connection", (ws) => {
+      for (const taskId of ["task-long-fail", "task-long-ok"]) {
+        ws.send(JSON.stringify({
+          type: "create_task",
+          payload: { task_id: taskId, project_id: "proj-long", backend_type: "codex", initial_content: longPrompt },
+        }));
+      }
+    });
+
+    daemon = startDaemon(
+      {
+        BACKEND_URL: `ws://localhost:${port}`,
+        WORKSPACE_ROOT: "/tmp/test-ws-tmux-long",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "daemon-tmux-long-test",
+      },
+      {
+        spawn: mockSpawn,
+        spawnSync: (cmd, args) =>
+          cmd === "tmux" && args?.[0] === "-V"
+            ? { status: 0, error: null, pid: 12345 }
+            : { status: 1, error: new Error("ENOENT"), pid: undefined },
+        mkdirSync: () => {},
+        writeFileSync: (filePath, content, opts) => writes.set(filePath, { content, opts }),
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: (filePath) => unlinked.push(filePath),
+        renameSync: () => {},
+        createWriteStream: () => ({ write: () => {}, end: () => {}, on: () => {} }),
+        fetch: async () => ({ ok: true, json: async () => ({ removed: 0, remaining: 0 }) }),
+      },
+    );
+
+    setTimeout(() => {
+      assert.strictEqual(newSessions.length, 2, "expected two tmux new-session spawns");
+      const scripts = newSessions.map((args) => {
+        const argvBytes = args.reduce((n, arg) => n + Buffer.byteLength(arg) + 1, 0);
+        assert.ok(argvBytes < 16384, `tmux argv must fit its 16KB limit; got ${argvBytes}`);
+        assert.strictEqual(args.at(-2), "bash");
+        const scriptPath = args.at(-1);
+        assert.match(scriptPath, /fire-sessions\/conductor-fire-task-long-[^/]+\.sh$/);
+        const written = writes.get(scriptPath);
+        assert.ok(written, "launch script must be written before tmux runs it");
+        assert.strictEqual(written.opts.mode, 0o600);
+        assert.ok(written.content.startsWith('rm -f -- "$0"\n'), "script must delete itself first");
+        assert.ok(written.content.includes(longPrompt), "script must carry the full prompt");
+        assert.ok(/2>&1\s*\|\s*tee\s+-a\s+'.*conductor\.log'/.test(written.content));
+        return scriptPath;
+      });
+      assert.ok(unlinked.includes(scripts[0]), "failed launch must remove its script");
+      assert.ok(!unlinked.includes(scripts[1]), "a live session's bash owns the script");
       if (daemon && typeof daemon.close === "function") {
         daemon.close();
         daemon = null;
