@@ -143,6 +143,35 @@ describe('TaskItem', () => {
     expect(screen.queryByRole('button', { name: 'Delete task' })).not.toBeInTheDocument();
   });
 
+  it('selects the task from the actions menu', () => {
+    const onToggleSelect = vi.fn();
+    render(<TaskItem
+      task={{ id: 'task-select', title: 'Pick me', status: 'killed', projectId: null, createdAt: FIXED_DATE.toISOString(), updatedAt: null }}
+      isUnread={false} isSelected={false} selectionMode={false} onToggleSelect={onToggleSelect}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Select task' }));
+    expect(onToggleSelect).toHaveBeenCalledWith('task-select');
+    expect(screen.queryByRole('button', { name: 'Delete task' })).not.toBeInTheDocument();
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('does not reveal actions when the card is swiped sideways', () => {
+    render(<TaskItem
+      task={{ id: 'task-no-swipe', title: 'Stay put', status: 'killed', projectId: null, createdAt: FIXED_DATE.toISOString(), updatedAt: null }}
+      isUnread={false} isSelected={false} selectionMode={false} onToggleSelect={() => {}}
+    />);
+    const card = screen.getByRole('button', { name: /stay put/i });
+    for (const toX of [40, 240]) {
+      fireEvent.pointerDown(card, { pointerId: 1, clientX: 140, pointerType: 'touch' });
+      fireEvent.pointerMove(card, { pointerId: 1, clientX: toX, pointerType: 'touch' });
+      fireEvent.pointerUp(card, { pointerId: 1, clientX: toX, pointerType: 'touch' });
+    }
+    expect(screen.queryByRole('button', { name: 'Delete task' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Select task' })).not.toBeInTheDocument();
+    expect(card).not.toHaveAttribute('style');
+  });
+
   it('marks a persistent task with its round and opens its settings from the actions', () => {
     render(<TaskItem
       task={{
@@ -162,14 +191,18 @@ describe('TaskItem', () => {
     expect(screen.getByText('Standing instructions')).toBeInTheDocument();
   });
 
-  it('does not rename after a short title click whose pointer release is captured by the card', async () => {
+  it('does not rename after a short title press released off the title', async () => {
     vi.useFakeTimers();
+    // Title long-press rename only arms in desktop pane mode.
     const { container } = render(<TaskItem
       task={{ id: 'task-title-click', title: 'Read the task', status: 'killed', projectId: null, createdAt: FIXED_DATE.toISOString(), updatedAt: null }}
-      isUnread={false} isSelected={false} selectionMode={false} onToggleSelect={() => {}}
+      isUnread={false} isSelected={false} selectionMode={false} onToggleSelect={() => {}} desktopListPaneMode
     />);
-    fireEvent.pointerDown(screen.getByText('Read the task'), { pointerId: 1, pointerType: 'mouse', button: 0, clientX: 20, clientY: 20 });
-    fireEvent.pointerUp(container.querySelector('.task-row')!, { pointerId: 1, pointerType: 'mouse', button: 0 });
+    const title = screen.getByText('Read the task');
+    fireEvent.pointerDown(title, { pointerId: 1, pointerType: 'mouse', button: 0, clientX: 20, clientY: 20 });
+    // The pointer slides a few px off the title and is released over the card.
+    fireEvent.pointerLeave(title, { pointerId: 1, pointerType: 'mouse', clientX: 25, clientY: 20 });
+    fireEvent.pointerUp(container.querySelector('.task-row')!, { pointerId: 1, pointerType: 'mouse', button: 0, clientX: 25, clientY: 20 });
     await act(async () => { vi.advanceTimersByTime(600); });
     expect(screen.queryByRole('textbox', { name: 'Edit task title' })).not.toBeInTheDocument();
   });
@@ -665,12 +698,9 @@ describe('TaskItem', () => {
       />
     );
 
-    // Open the swipe menu, otherwise "New task" is unreachable for EVERY status
+    // Open the actions menu, otherwise "New task" is unreachable for EVERY status
     // and this assertion would pass without testing anything.
-    const card = screen.getByText('Killing Task').closest('[role="button"]');
-    fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
-    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
-    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
 
     // The menu is open (a sibling action is reachable) but restart is not in it.
     expect(await screen.findByRole('button', { name: 'Share task' })).toBeInTheDocument();
@@ -703,10 +733,7 @@ describe('TaskItem', () => {
       />
     );
 
-    const card = screen.getByText('Killed Task').closest('[role="button"]');
-    fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
-    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
-    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
 
     expect(await screen.findByRole('button', { name: 'New task' })).toBeInTheDocument();
   });
@@ -1103,12 +1130,12 @@ describe('TaskItem', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
-  it('opens new task from the swipe-left action menu', async () => {
+  it('opens new task from the actions menu', async () => {
     render(
       <TaskItem
         task={{
           id: 'task-9',
-          title: 'Swipe Task',
+          title: 'Menu Task',
           status: 'running',
           projectId: null,
           agentHost: 'daemon-a',
@@ -1122,12 +1149,7 @@ describe('TaskItem', () => {
       />,
     );
 
-    const card = screen.getByText('Swipe Task').closest('[role="button"]');
-    expect(card).not.toBeNull();
-
-    fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
-    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
-    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
 
     expect(await screen.findByRole('button', { name: 'Share task' })).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: 'New task' }));
@@ -1135,7 +1157,7 @@ describe('TaskItem', () => {
     expect(screen.getByTestId('restart-controls')).toBeInTheDocument();
   });
 
-  it('closes an in-progress swipe when a parent merge drag activates', () => {
+  it('closes the actions menu when a parent merge drag activates', () => {
     const task = {
       id: 'task-merge-drag',
       title: 'Merge Drag Task',
@@ -1155,10 +1177,8 @@ describe('TaskItem', () => {
       />,
     );
 
-    const card = screen.getByRole('button', { name: /merge drag task/i });
-    fireEvent.pointerDown(card, { pointerId: 3, clientX: 240, pointerType: 'touch' });
-    fireEvent.pointerMove(card, { pointerId: 3, clientX: 120, pointerType: 'touch' });
-    expect(card).not.toHaveStyle({ transform: 'translateX(0px)' });
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    expect(screen.getByRole('button', { name: 'Delete task' })).toBeInTheDocument();
 
     rerender(
       <TaskItem
@@ -1171,10 +1191,10 @@ describe('TaskItem', () => {
       />,
     );
 
-    expect(card).toHaveStyle({ transform: 'translateX(0px)' });
+    expect(screen.queryByRole('button', { name: 'Delete task' })).not.toBeInTheDocument();
   });
 
-  it('pins a task from the swipe-left action menu', async () => {
+  it('pins a task from the actions menu', async () => {
     updateTaskMock.mockResolvedValue({
       id: 'task-pin-1',
       title: 'Pin Task',
@@ -1200,12 +1220,7 @@ describe('TaskItem', () => {
       />,
     );
 
-    const card = screen.getByText('Pin Task').closest('[role="button"]');
-    expect(card).not.toBeNull();
-
-    fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
-    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
-    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Pin task' }));
 
     await waitFor(() => {
@@ -1247,12 +1262,6 @@ describe('TaskItem', () => {
 
     expect(screen.getByRole('button', { name: 'Unpin task' })).toBeInTheDocument();
 
-    const card = screen.getByText('Unpin Task').closest('[role="button"]');
-    expect(card).not.toBeNull();
-
-    fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
-    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
-    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
     fireEvent.click(await screen.findByRole('button', { name: 'Unpin task' }));
     expect(updateTaskMock).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm unpin' }));
@@ -1294,12 +1303,7 @@ describe('TaskItem', () => {
       />,
     );
 
-    const card = screen.getByText('Share Task').closest('[role="button"]');
-    expect(card).not.toBeNull();
-
-    fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
-    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
-    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 40, pointerType: 'touch' });
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
 
     fireEvent.click(await screen.findByRole('button', { name: 'Share task' }));
 
@@ -1312,9 +1316,9 @@ describe('TaskItem', () => {
         variant: 'success',
       });
     });
-    // The share dialog has a "Share" title; the swipe button also now
-    // carries a (visually hidden) "Share" label, so use getAllByText to
-    // assert at least one occurrence rather than failing on multiplicity.
+    // The share dialog has a "Share" title; the actions-menu button may also
+    // carry a "Share" label, so use getAllByText to assert at least one
+    // occurrence rather than failing on multiplicity.
     expect(screen.getAllByText('Share').length).toBeGreaterThan(0);
     expect(screen.getByRole('link', { name: 'http://localhost:3000/share/shared-token-1' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'http://localhost:3000/share/shared-token-1/plain' })).toBeInTheDocument();
@@ -1338,9 +1342,7 @@ describe('TaskItem', () => {
     apiPostMock.mockClear();
     confirmMock.mockClear();
 
-    fireEvent.pointerDown(card!, { pointerId: 2, clientX: 240, pointerType: 'touch' });
-    fireEvent.pointerMove(card!, { pointerId: 2, clientX: 40, pointerType: 'touch' });
-    fireEvent.pointerUp(card!, { pointerId: 2, clientX: 40, pointerType: 'touch' });
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Share task' }));
 
     expect(confirmMock).not.toHaveBeenCalled();
@@ -1349,12 +1351,12 @@ describe('TaskItem', () => {
     expect(screen.getByRole('link', { name: 'http://localhost:3000/share/shared-token-1/plain' })).toBeInTheDocument();
   });
 
-  it('only shows pin and delete in the swipe action menu for pty tasks', async () => {
+  it('only shows pin and delete in the actions menu for pty tasks', async () => {
     render(
       <TaskItem
         task={{
           id: 'task-pty-restart-1',
-          title: 'PTY Swipe Task',
+          title: 'PTY Menu Task',
           taskType: 'pty_task',
           status: 'running',
           projectId: null,
@@ -1369,12 +1371,7 @@ describe('TaskItem', () => {
       />,
     );
 
-    const card = screen.getByText('PTY Swipe Task').closest('[role="button"]');
-    expect(card).not.toBeNull();
-
-    fireEvent.pointerDown(card!, { pointerId: 1, clientX: 240, pointerType: 'touch' });
-    fireEvent.pointerMove(card!, { pointerId: 1, clientX: 120, pointerType: 'touch' });
-    fireEvent.pointerUp(card!, { pointerId: 1, clientX: 120, pointerType: 'touch' });
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
 
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: 'New task' })).not.toBeInTheDocument();
@@ -1532,8 +1529,7 @@ describe('TaskItem', () => {
       { id: 'proj-collab', name: 'Shared', collaborationId: 'collab-1' },
     ];
 
-    // The move button lives in the LEFT action panel, revealed by swiping the
-    // card to the RIGHT (the mirror of the swipe-left tests above).
+    // The move button lives in the ⋯ actions menu.
     const renderTaskInProject = (projectId: string, secondProjectId: string | null = null) => {
       render(<TaskItem
         task={{
@@ -1543,10 +1539,7 @@ describe('TaskItem', () => {
         }}
         isUnread={false} isSelected={false} selectionMode={false} onToggleSelect={() => {}}
       />);
-      const card = screen.getByText('Read the paper').closest('[role="button"]')!;
-      fireEvent.pointerDown(card, { pointerId: 1, clientX: 40, pointerType: 'touch' });
-      fireEvent.pointerMove(card, { pointerId: 1, clientX: 240, pointerType: 'touch' });
-      fireEvent.pointerUp(card, { pointerId: 1, clientX: 240, pointerType: 'touch' });
+      fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
     };
 
     const openMoveMenu = async (moved: boolean) =>

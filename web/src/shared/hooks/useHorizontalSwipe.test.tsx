@@ -80,6 +80,21 @@ describe('useHorizontalSwipe', () => {
     expect(onSwipeLeft).not.toHaveBeenCalled();
   });
 
+  it('captures the pointer only once a swipe turns horizontal, never on a tap', () => {
+    render(<SwipeSurface />);
+    const surface = screen.getByTestId('surface');
+    const setPointerCapture = vi.fn();
+    surface.setPointerCapture = setPointerCapture;
+
+    fireEvent.pointerDown(surface, touchAt(200, 100));
+    fireEvent.pointerUp(surface, touchAt(202, 101));
+    expect(setPointerCapture).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(surface, touchAt(200, 100));
+    fireEvent.pointerMove(surface, touchAt(176, 102));
+    expect(setPointerCapture).toHaveBeenCalledWith(1);
+  });
+
   it('does not start when canStart rejects the pointer', () => {
     render(<SwipeSurface canStart={() => false} />);
     const surface = screen.getByTestId('surface');

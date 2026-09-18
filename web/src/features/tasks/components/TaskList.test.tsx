@@ -907,6 +907,40 @@ describe('TaskList', () => {
       }
     });
 
+    it('keeps an active touch merge drag out of the page project swipe', () => {
+      vi.useFakeTimers();
+      try {
+        const parentPointerMove = vi.fn();
+        const parentPointerUp = vi.fn();
+        render(
+          <div onPointerMove={parentPointerMove} onPointerUp={parentPointerUp}>
+            <TaskList viewMode="list" projectFilter={null} />
+          </div>,
+        );
+        primeRowRects();
+
+        const wrapper = document.querySelector('[data-task-item-wrapper="task-1"]') as HTMLElement;
+        const pointer = { pointerId: 7, pointerType: 'touch', clientX: 20, clientY: 10 };
+        fireEvent.pointerDown(wrapper, pointer);
+        fireEvent.touchStart(wrapper, {
+          touches: [{ identifier: 7, clientX: 20, clientY: 10 }],
+        });
+        fireEvent.pointerMove(wrapper, pointer);
+        expect(parentPointerMove).toHaveBeenCalledTimes(1);
+
+        act(() => {
+          vi.advanceTimersByTime(450);
+        });
+        fireEvent.pointerMove(wrapper, { ...pointer, clientX: 120 });
+        fireEvent.pointerUp(wrapper, { ...pointer, clientX: 120 });
+
+        expect(parentPointerMove).toHaveBeenCalledTimes(1);
+        expect(parentPointerUp).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('keeps scrolling when touch moves before the long-press threshold', () => {
       vi.useFakeTimers();
       try {

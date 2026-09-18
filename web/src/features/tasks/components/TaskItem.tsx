@@ -65,7 +65,7 @@ interface TaskItemProps {
   onFilterByDaemonHost?: (daemonHost: string) => void;
   onFilterByBackend?: (backend: string) => void;
   onFilterByLabel?: (labelId: string) => void;
-  /** Parent merge drag owns the gesture; suspend this card's swipe actions. */
+  /** Parent merge drag owns the gesture; close this card's actions menu. */
   isMergeDragging?: boolean;
 }
 
@@ -83,63 +83,23 @@ interface ShareResponse {
 
 type StatusAction = 'idle' | 'confirm-kill' | 'killing' | 'confirm-restart' | 'restarting';
 
-const LEFT_ACTION_WIDTH = 52;
-const RIGHT_ACTION_BUTTON_WIDTH = 72;
-const SWIPE_OPEN_THRESHOLD = 0.45;
-const SWIPE_START_THRESHOLD = 8;
-
-// Class strings for the right-swipe action buttons. The icon is the only
-// child of the button — no inline label — so the icon stays perfectly
-// centred regardless of hover state. The label lives in a SwipeActionPopup
-// portal rendered into document.body (see below); see TaskItem's render
-// for the per-button onMouseEnter/onFocus/onMouseLeave/onBlur wiring.
-const SWIPE_ACTION_BUTTON_BASE =
+// Class strings for the ⋯ actions-menu buttons (icon above a small label).
+const ACTION_BUTTON_BASE =
   'relative flex items-center justify-center transition-colors';
-const swipeActionButtonClassName = (
-  tone: 'default' | 'pinned' | 'danger',
+const actionButtonClassName = (
+  tone: 'default' | 'active' | 'danger',
 ): string => {
   switch (tone) {
     case 'danger':
       // Icon stays red (text-[var(--error)] → SVG strokes inherit
       // currentColor) but the cell carries no default tinted background.
       // A soft red wash appears only on hover.
-      return `${SWIPE_ACTION_BUTTON_BASE} text-[var(--error)] hover:bg-[var(--error)]/10`;
-    case 'pinned':
-      return `${SWIPE_ACTION_BUTTON_BASE} text-[var(--accent)] hover:bg-[var(--accent)]/15`;
+      return `${ACTION_BUTTON_BASE} text-[var(--error)] hover:bg-[var(--error)]/10`;
+    case 'active':
+      return `${ACTION_BUTTON_BASE} text-[var(--accent)] hover:bg-[var(--accent)]/15`;
     default:
-      return `${SWIPE_ACTION_BUTTON_BASE} text-muted hover:bg-[var(--accent)]/10 hover:text-ink`;
+      return `${ACTION_BUTTON_BASE} text-muted hover:bg-[var(--accent)]/10 hover:text-ink`;
   }
-};
-
-interface SwipeActionPopupState {
-  label: string;
-  anchorRect: { top: number; left: number; width: number };
-}
-
-// Floating-pill tooltip rendered into document.body via React Portal so it
-// escapes the task card wrapper's `overflow-hidden rounded-2xl` clipping
-// box and floats freely above the page. Positioned just above the anchor
-// button using viewport coordinates (`position: fixed`).
-const SwipeActionPopup = ({ state }: { state: SwipeActionPopupState }) => {
-  if (typeof document === 'undefined') return null;
-  const { label, anchorRect } = state;
-  return createPortal(
-    <div
-      role="tooltip"
-      aria-hidden="true"
-      style={{
-        position: 'fixed',
-        top: anchorRect.top - 8,
-        left: anchorRect.left + anchorRect.width / 2,
-        transform: 'translate(-50%, -100%)',
-        zIndex: 9999,
-      }}
-      className="pointer-events-none whitespace-nowrap rounded bg-[var(--ink)]/95 px-2 py-1 text-[11px] leading-none text-[var(--paper)] shadow-lg"
-    >
-      {label}
-    </div>,
-    document.body,
-  );
 };
 
 // Display-only "move to project" picker. Rendered into document.body via a
@@ -279,7 +239,6 @@ const schedulePendingTaskOpenState = (
   pendingTaskOpenState = { ownerId, timeoutId };
 };
 
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const isShareDialogStateValid = (share: ShareDialogState): boolean => {
   if (!share.expiresAt) {
     return true;
@@ -474,13 +433,10 @@ function TaskItemComponent({
   const [isPersistentDialogOpen, setIsPersistentDialogOpen] = useState(false);
   const [statusAction, setStatusAction] = useState<StatusAction>('idle');
   const [editTitle, setEditTitle] = useState('');
-  const [swipeOffset, setSwipeOffset] = useState(0);
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
-  const [isSwiping, setIsSwiping] = useState(false);
   const [shareDialog, setShareDialog] = useState<ShareDialogState | null>(null);
   const [lastShareDialog, setLastShareDialog] = useState<ShareDialogState | null>(null);
-  const [swipeActionPopup, setSwipeActionPopup] = useState<SwipeActionPopupState | null>(null);
-  // Display-only "move to project" dropdown (left-swipe action). Open state is
+  // Display-only "move to project" dropdown (actions-menu item). Open state is
   // local; the actual move is a `secondProjectId` write that never touches the
   // task's real project or daemon. The menu is rendered through a portal (see
   // below) so it escapes the card wrapper's `overflow-hidden` clip box, hence
@@ -495,30 +451,6 @@ function TaskItemComponent({
   // unpins. Any other interaction (or the timeout) silently disarms it.
   const [pendingUnpinConfirm, setPendingUnpinConfirm] = useState(false);
   const pendingUnpinTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showSwipeActionPopup = useCallback(
-    (label: string) =>
-      (event: React.MouseEvent<HTMLButtonElement> | React.FocusEvent<HTMLButtonElement>) => {
-        const target = event.currentTarget;
-        if (!target) return;
-        const rect = target.getBoundingClientRect();
-        setSwipeActionPopup({
-          label,
-          anchorRect: { top: rect.top, left: rect.left, width: rect.width },
-        });
-      },
-    [],
-  );
-  const hideSwipeActionPopup = useCallback(() => {
-    setSwipeActionPopup(null);
-  }, []);
-  // The popup is bound to a specific button instance via getBoundingClientRect.
-  // When the card un-mounts or the swipe panel hides, force the popup state
-  // closed so it doesn't linger above an element that's no longer visible.
-  useEffect(() => {
-    if (swipeOffset === 0 && swipeActionPopup) {
-      setSwipeActionPopup(null);
-    }
-  }, [swipeOffset, swipeActionPopup]);
 
   // Cancel any armed unpin-confirm if the task gets unpinned out-of-band
   // (e.g. another tab) and clear the timer when the component unmounts.
@@ -536,12 +468,6 @@ function TaskItemComponent({
   const longPressStartYRef = useRef(0);
   const longPressFiredRef = useRef(false);
   const renamingRef = useRef(false);
-  const swipeOffsetRef = useRef(0);
-  const draggingRef = useRef(false);
-  const pointerIdRef = useRef<number | null>(null);
-  const startXRef = useRef(0);
-  const startOffsetRef = useRef(0);
-  const didSwipeRef = useRef(false);
   const dismissedStatusConfirmationRef = useRef(false);
   const dismissedStatusConfirmationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusBadgeRef = useRef<HTMLDivElement | null>(null);
@@ -589,7 +515,7 @@ function TaskItemComponent({
   // the stop resolves one way or the other.
   const showRestartAction = taskType === 'ai_task' && task.status !== 'killing';
   const showShareAction = taskType === 'ai_task';
-  // Only offer the "attach a terminal" swipe action on AI tasks that don't
+  // Only offer the "attach a terminal" action on AI tasks that don't
   // already have one — 1:1 is enforced by the DB, but the UI surfaces the
   // same constraint by hiding the button. Once the PtyToggleButton is
   // visible next to the status badge, it becomes the entry point for
@@ -604,27 +530,11 @@ function TaskItemComponent({
   const useMobileRenameBehavior = !desktopListPaneMode;
   const pinnedAt = normalizePinnedAt(taskMetadata?.pinnedAt);
   const isPinned = pinnedAt !== null;
-  // Right-swipe actions are laid out as a 2-row grid that fills column-by-
-  // column (CSS `grid-auto-flow: column`). Each grid cell is half the card
-  // height so the icons stay the same visual size as before but the total
-  // swipe-reveal width is halved when 4-5 buttons are visible — previously a
-  // single 5-button row took 5 × 72 = 360px, now it takes ceil(5/2) × 72 =
-  // 216px.
   // Pinned tasks unpin via the trailing pin icon on the title (two-click
-  // in-place confirm), so the swipe-action panel hides its Pin button to
-  // avoid two redundant entry points; unpinned tasks still get the swipe
-  // Pin button as the primary "make this important" action.
-  const showSwipePinAction = !isPinned;
-  const rightActionButtonCount =
-    1 + // delete (always)
-    (showAchieveAction ? 1 : 0) + // pack / achieve (ai_task only)
-    (showSwipePinAction ? 1 : 0) +
-    (showRestartAction ? 1 : 0) +
-    (showPersistentAction ? 1 : 0) +
-    (showShareAction ? 1 : 0) +
-    (showAttachedTerminalAction ? 1 : 0);
-  const rightActionColumns = Math.max(1, Math.ceil(rightActionButtonCount / 2));
-  const rightActionWidth = RIGHT_ACTION_BUTTON_WIDTH * rightActionColumns;
+  // in-place confirm), so the actions menu hides its Pin button to avoid two
+  // redundant entry points; unpinned tasks still get the Pin button as the
+  // primary "make this important" action.
+  const showPinAction = !isPinned;
   // Display-only "move to project" availability. ANY owned task may be filed
   // under any other own project: a move only writes `secondProjectId` and never
   // rewrites `projectId`, so the task always stays eligible to be moved back to
@@ -654,11 +564,22 @@ function TaskItemComponent({
   // already carries an override. The latter keeps "move back" reachable even
   // when every other project is hidden, which would otherwise strand the task.
   const canMoveToProject = moveTargetProjects.length > 0 || movedToProjectId !== null;
-  const leftActionWidth = LEFT_ACTION_WIDTH * (canMoveToProject ? 2 : 1);
+  // Sizes the wide-card 2-row layout of the ⋯ actions menu (see
+  // `.task-action-menu` in globals.css).
+  const actionButtonCount =
+    2 + // select + delete (always)
+    (canMoveToProject ? 1 : 0) +
+    (showAchieveAction ? 1 : 0) + // pack / achieve (ai_task only)
+    (showPinAction ? 1 : 0) +
+    (showRestartAction ? 1 : 0) +
+    (showPersistentAction ? 1 : 0) +
+    (showShareAction ? 1 : 0) +
+    (showAttachedTerminalAction ? 1 : 0);
+  const actionColumns = Math.max(1, Math.ceil(actionButtonCount / 2));
   // When the button count is odd, the bottom-right cell would otherwise be
   // a void. We render a small decorative slot there so the row stays
   // visually balanced (and gives the user a tiny moment of delight).
-  const rightActionHasEmptyCell = rightActionButtonCount % 2 === 1;
+  const actionHasEmptyCell = actionButtonCount % 2 === 1;
   const stableBackend = getStableTaskBackend(task);
   const backend = stableBackend ?? runtime?.backend ?? null;
   const runtimeText = runtime?.replyPreview || runtime?.statusDoneLine || runtime?.statusLine || runtime?.state || task.lastAssistantMessage || task.lastUserMessage || null;
@@ -678,17 +599,10 @@ function TaskItemComponent({
     isActive,
   });
 
-  const setSwipeOffsetValue = useCallback((value: number) => {
-    swipeOffsetRef.current = value;
-    setSwipeOffset(value);
-  }, []);
-
-  const closeSwipeActions = useCallback(() => {
+  const closeActionsMenu = useCallback(() => {
     setIsActionsMenuOpen(false);
-    setSwipeOffsetValue(0);
-    didSwipeRef.current = false;
     setMoveMenuAnchor(null);
-  }, [setSwipeOffsetValue]);
+  }, []);
 
   const handleMoveToProject = useCallback(
     async (targetProjectId: string | null) => {
@@ -697,7 +611,7 @@ function TaskItemComponent({
       try {
         await setTaskSecondProject(task.id, targetProjectId);
         setMoveMenuAnchor(null);
-        closeSwipeActions();
+        closeActionsMenu();
       } catch (error) {
         pushToast({
           title: 'Failed to move task',
@@ -708,7 +622,7 @@ function TaskItemComponent({
         setIsMovingProject(false);
       }
     },
-    [closeSwipeActions, isMovingProject, pushToast, setTaskSecondProject, task.id],
+    [closeActionsMenu, isMovingProject, pushToast, setTaskSecondProject, task.id],
   );
 
   useEffect(() => {
@@ -759,95 +673,21 @@ function TaskItemComponent({
 
   useEffect(() => {
     if (!isMergeDragging) return;
-    draggingRef.current = false;
-    pointerIdRef.current = null;
-    setIsSwiping(false);
-    closeSwipeActions();
+    closeActionsMenu();
     clearLongPress();
-  }, [clearLongPress, closeSwipeActions, isMergeDragging]);
+  }, [clearLongPress, closeActionsMenu, isMergeDragging]);
 
   const clearPendingOpenTask = useCallback(() => {
     clearPendingTaskOpenState();
   }, []);
-
-  const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    clearPendingOpenTask();
-    if (isInteractiveTarget(event.target)) {
-      return;
-    }
-    if (event.pointerType === 'mouse' && event.button !== 0) {
-      return;
-    }
-    draggingRef.current = true;
-    pointerIdRef.current = event.pointerId;
-    startXRef.current = event.clientX;
-    startOffsetRef.current = swipeOffsetRef.current;
-    didSwipeRef.current = false;
-    setIsSwiping(true);
-
-    const target = event.currentTarget;
-    if (typeof target.setPointerCapture === 'function') {
-      try {
-        target.setPointerCapture(event.pointerId);
-      } catch {
-        // ignore capture failures
-      }
-    }
-  }, [clearPendingOpenTask]);
-
-  const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current || pointerIdRef.current !== event.pointerId) {
-      return;
-    }
-    const delta = event.clientX - startXRef.current;
-    const nextOffset = clamp(startOffsetRef.current + delta, -rightActionWidth, leftActionWidth);
-    if (Math.abs(nextOffset - startOffsetRef.current) > SWIPE_START_THRESHOLD) {
-      didSwipeRef.current = true;
-      clearLongPress();
-    }
-    setSwipeOffsetValue(nextOffset);
-  }, [clearLongPress, leftActionWidth, rightActionWidth, setSwipeOffsetValue]);
-
-  const finalizeSwipe = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    // Pointer capture sends the release to the card instead of its title.
-    clearLongPress();
-    if (!draggingRef.current || pointerIdRef.current !== event.pointerId) {
-      return;
-    }
-    draggingRef.current = false;
-    setIsSwiping(false);
-
-    const currentOffset = swipeOffsetRef.current;
-    let targetOffset = 0;
-    if (currentOffset >= leftActionWidth * SWIPE_OPEN_THRESHOLD) {
-      targetOffset = leftActionWidth;
-    } else if (currentOffset <= -rightActionWidth * SWIPE_OPEN_THRESHOLD) {
-      targetOffset = -rightActionWidth;
-    }
-    setSwipeOffsetValue(targetOffset);
-    pointerIdRef.current = null;
-
-    const target = event.currentTarget;
-    if (typeof target.hasPointerCapture === 'function' && target.hasPointerCapture(event.pointerId)) {
-      target.releasePointerCapture(event.pointerId);
-    }
-  }, [clearLongPress, leftActionWidth, rightActionWidth, setSwipeOffsetValue]);
 
   const consumeTap = useCallback(() => {
     if (dismissedStatusConfirmationRef.current) {
       dismissedStatusConfirmationRef.current = false;
       return true;
     }
-    if (didSwipeRef.current) {
-      didSwipeRef.current = false;
-      return true;
-    }
-    if (swipeOffsetRef.current !== 0) {
-      closeSwipeActions();
-      return true;
-    }
     return false;
-  }, [closeSwipeActions]);
+  }, []);
 
   const handleTitlePointerDown = useCallback((event: ReactPointerEvent<HTMLHeadingElement>) => {
     if (useMobileRenameBehavior || selectionMode) {
@@ -1022,7 +862,7 @@ function TaskItemComponent({
         variant: 'error',
       });
     } finally {
-      closeSwipeActions();
+      closeActionsMenu();
     }
   };
 
@@ -1052,14 +892,14 @@ function TaskItemComponent({
         variant: 'error',
       });
     } finally {
-      closeSwipeActions();
+      closeActionsMenu();
     }
   };
 
   const handleShare = async () => {
     if (lastShareDialog && isShareDialogStateValid(lastShareDialog)) {
       setShareDialog(lastShareDialog);
-      closeSwipeActions();
+      closeActionsMenu();
       return;
     }
     if (lastShareDialog) {
@@ -1072,7 +912,7 @@ function TaskItemComponent({
       confirmLabel: 'Share',
     });
     if (!accepted) {
-      closeSwipeActions();
+      closeActionsMenu();
       return;
     }
 
@@ -1102,7 +942,7 @@ function TaskItemComponent({
       const message = error instanceof Error ? error.message : 'Failed to create share link';
       pushToast({ title: 'Share failed', description: message, variant: 'error' });
     } finally {
-      closeSwipeActions();
+      closeActionsMenu();
     }
   };
 
@@ -1120,7 +960,7 @@ function TaskItemComponent({
         variant: 'error',
       });
     } finally {
-      closeSwipeActions();
+      closeActionsMenu();
     }
   };
 
@@ -1161,7 +1001,7 @@ function TaskItemComponent({
   }, [pushToast]);
 
   const setPtyActive = usePtyToggleStore((s) => s.setActive);
-  // Guards against double-tap on the swipe Terminal action firing two POSTs.
+  // Guards against double-tap on the Terminal action firing two POSTs.
   // The DB unique constraint would reject the second one with a confusing
   // 409, surfacing a "this task already has an attached terminal" toast for
   // what looked like a single click.
@@ -1170,7 +1010,7 @@ function TaskItemComponent({
   const handleAttachTerminal = async () => {
     if (attachInFlightRef.current) return;
     attachInFlightRef.current = true;
-    closeSwipeActions();
+    closeActionsMenu();
     try {
       const api = getApiClient();
       await api.post(`/tasks/${task.id}/terminal`, {});
@@ -1213,7 +1053,7 @@ function TaskItemComponent({
         clearRuntime(task.id);
       }
       setStatusAction('idle');
-      closeSwipeActions();
+      closeActionsMenu();
     } catch (error) {
       setStatusAction('idle');
       pushToast({
@@ -1243,7 +1083,7 @@ function TaskItemComponent({
         clearRuntime(task.id);
       }
       setStatusAction('idle');
-      closeSwipeActions();
+      closeActionsMenu();
     } catch (error) {
       setStatusAction('idle');
       pushToast({
@@ -1253,14 +1093,6 @@ function TaskItemComponent({
       });
     }
   };
-
-  const isLeftActionsOpen = swipeOffset > 0;
-  const isRightActionsOpen = swipeOffset < 0 || isActionsMenuOpen;
-  const cardStyle = useMemo<CSSProperties>(() => ({
-    transform: `translateX(${swipeOffset}px)`,
-    transition: isSwiping ? 'none' : 'transform 180ms ease',
-    touchAction: 'pan-y',
-  }), [isSwiping, swipeOffset]);
 
   const isTaskTypeFilterActive = activeTaskTypeFilter === taskType;
   const taskTypeBaseClass = taskType === 'pty_task'
@@ -1518,58 +1350,7 @@ function TaskItemComponent({
         : {};
 
   return (
-    <div className="relative flex flex-col overflow-hidden rounded-2xl">
-      <div
-        className="absolute inset-y-0 left-0 z-0 flex items-center justify-center gap-1 bg-[var(--paper)]"
-        style={{ width: `${leftActionWidth}px` }}
-        aria-hidden={!isLeftActionsOpen}
-      >
-        <button
-          type="button"
-          tabIndex={isLeftActionsOpen ? 0 : -1}
-          aria-label={isSelected ? 'Deselect task' : 'Select task'}
-          title={isSelected ? 'Deselect' : 'Select'}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const shouldCloseAfterToggle = isSelected;
-            onToggleSelect(task.id);
-            if (shouldCloseAfterToggle) {
-              closeSwipeActions();
-            }
-          }}
-          className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${isSelected
-              ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
-              : 'border-border bg-[var(--paper)] text-muted hover:border-[var(--accent)] hover:text-[var(--accent)]'
-            }`}
-        >
-          <SelectIcon selected={isSelected} />
-        </button>
-        {canMoveToProject ? (
-          <button
-            type="button"
-            tabIndex={isLeftActionsOpen ? 0 : -1}
-            aria-label={movedToProjectId ? 'Move task back to its own project' : 'Move task to project'}
-            title={movedToProjectId ? 'Move back' : 'Move to project'}
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (isMoveMenuOpen) {
-                setMoveMenuAnchor(null);
-                return;
-              }
-              const rect = e.currentTarget.getBoundingClientRect();
-              setMoveMenuAnchor({ top: rect.top, left: rect.left, bottom: rect.bottom });
-            }}
-            className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${movedToProjectId
-                ? 'border-[var(--accent)] text-[var(--accent)] hover:bg-[var(--accent)]/10'
-                : 'border-border bg-[var(--paper)] text-muted hover:border-[var(--accent)] hover:text-[var(--accent)]'
-              }`}
-          >
-            <MoveToProjectIcon />
-          </button>
-        ) : null}
-      </div>
+    <div className="task-card relative flex flex-col overflow-hidden rounded-2xl">
       {canMoveToProject && moveMenuAnchor ? (
         <MoveToProjectMenu
           anchor={moveMenuAnchor}
@@ -1583,199 +1364,192 @@ function TaskItemComponent({
       ) : null}
 
       {/*
-        2-row, column-flow grid. With `grid-auto-flow: column` the items fill
-        column-by-column (item 1 → row 1 col 1, item 2 → row 2 col 1, item 3
-        → row 1 col 2, …). No static dividers — each cell reveals its label
-        on hover and a soft tint stands in for the visual separation.
+        Layout follows the card's width (see `.task-action-menu` in
+        globals.css): 3 columns on narrow cards, a 2-row column-flow strip of
+        `--task-action-columns` columns on wide ones.
       */}
-      <div
-        className={isActionsMenuOpen ? "task-action-menu relative order-2 grid grid-flow-col grid-rows-2 border-t border-border bg-paper" : "absolute inset-y-0 right-0 z-0 grid grid-flow-col grid-rows-2 bg-[var(--paper)]"}
-        style={{ gridTemplateColumns: `repeat(${rightActionColumns}, ${isActionsMenuOpen ? 'minmax(0, 1fr)' : RIGHT_ACTION_BUTTON_WIDTH + 'px'})`, height: isActionsMenuOpen ? 88 : undefined }}
-        aria-hidden={!isRightActionsOpen}
-      >
-        {showAttachedTerminalAction ? (
-          <button
-            type="button"
-            tabIndex={isRightActionsOpen ? 0 : -1}
-            aria-label="Attach terminal"
-            title="Attach terminal"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              void handleAttachTerminal();
-            }}
-            onMouseEnter={showSwipeActionPopup('Attach')}
-            onMouseLeave={hideSwipeActionPopup}
-            onFocus={showSwipeActionPopup('Attach')}
-            onBlur={hideSwipeActionPopup}
-            className={swipeActionButtonClassName('default')}
-          >
-            <TerminalIcon />
-            {isActionsMenuOpen ? <span className="text-[10px]">Terminal</span> : null}
-          </button>
-        ) : null}
-        {showSwipePinAction ? (
-          <button
-            type="button"
-            tabIndex={isRightActionsOpen ? 0 : -1}
-            aria-label="Pin task"
-            title="Pin"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              void handleTogglePin();
-            }}
-            onMouseEnter={showSwipeActionPopup('Pin')}
-            onMouseLeave={hideSwipeActionPopup}
-            onFocus={showSwipeActionPopup('Pin')}
-            onBlur={hideSwipeActionPopup}
-            className={swipeActionButtonClassName('default')}
-          >
-            <PinIcon filled={false} />
-            {isActionsMenuOpen ? <span className="text-[10px]">Pin</span> : null}
-          </button>
-        ) : null}
-        {showRestartAction ? (
-          <button
-            type="button"
-            tabIndex={isRightActionsOpen ? 0 : -1}
-            aria-label="New task"
-            title="New task"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setIsRestartDialogOpen(true);
-              closeSwipeActions();
-            }}
-            onMouseEnter={showSwipeActionPopup('New')}
-            onMouseLeave={hideSwipeActionPopup}
-            onFocus={showSwipeActionPopup('New')}
-            onBlur={hideSwipeActionPopup}
-            className={swipeActionButtonClassName('default')}
-          >
-            <NewTaskIcon />
-            {isActionsMenuOpen ? <span className="text-[10px]">New task</span> : null}
-          </button>
-        ) : null}
-        {showPersistentAction ? (
-          <button
-            type="button"
-            tabIndex={isRightActionsOpen ? 0 : -1}
-            aria-label="Persistent task settings"
-            title="Persistent task"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setIsPersistentDialogOpen(true);
-              closeSwipeActions();
-            }}
-            onMouseEnter={showSwipeActionPopup('Persistent')}
-            onMouseLeave={hideSwipeActionPopup}
-            onFocus={showSwipeActionPopup('Persistent')}
-            onBlur={hideSwipeActionPopup}
-            className={swipeActionButtonClassName('default')}
-          >
-            <PersistentIcon />
-            {isActionsMenuOpen ? <span className="text-[10px]">Persistent</span> : null}
-          </button>
-        ) : null}
-        {showShareAction ? (
-          <button
-            type="button"
-            tabIndex={isRightActionsOpen ? 0 : -1}
-            aria-label="Share task"
-            title="Share"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              void handleShare();
-            }}
-            onMouseEnter={showSwipeActionPopup('Share')}
-            onMouseLeave={hideSwipeActionPopup}
-            onFocus={showSwipeActionPopup('Share')}
-            onBlur={hideSwipeActionPopup}
-            className={swipeActionButtonClassName('default')}
-          >
-            <ShareIcon />
-            {isActionsMenuOpen ? <span className="text-[10px]">Share</span> : null}
-          </button>
-        ) : null}
-        {showAchieveAction ? (
-          <button
-            type="button"
-            tabIndex={isRightActionsOpen ? 0 : -1}
-            aria-label="Pack task"
-            title="Pack (keep chat history)"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              void handleAchieve();
-            }}
-            onMouseEnter={showSwipeActionPopup('Pack')}
-            onMouseLeave={hideSwipeActionPopup}
-            onFocus={showSwipeActionPopup('Pack')}
-            onBlur={hideSwipeActionPopup}
-            className={swipeActionButtonClassName('default')}
-          >
-            <PackIcon />
-            {isActionsMenuOpen ? <span className="text-[10px]">Pack</span> : null}
-          </button>
-        ) : null}
-        <button
-          type="button"
-          tabIndex={isRightActionsOpen ? 0 : -1}
-          aria-label="Delete task"
-          title="Delete"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            void handleDelete();
-          }}
-          onMouseEnter={showSwipeActionPopup('Delete')}
-          onMouseLeave={hideSwipeActionPopup}
-          onFocus={showSwipeActionPopup('Delete')}
-          onBlur={hideSwipeActionPopup}
-          className={swipeActionButtonClassName('danger')}
+      {isActionsMenuOpen ? (
+        <div
+          className="task-action-menu relative order-2 grid border-t border-border bg-paper"
+          style={{ '--task-action-columns': actionColumns } as CSSProperties}
         >
-          <TrashIcon />
-          {isActionsMenuOpen ? <span className="text-[10px]">Delete</span> : null}
-        </button>
-        {rightActionHasEmptyCell ? (
-          // Pure decoration — the empty cell at the bottom of the last
-          // column when the visible button count is odd (5 or 3 buttons).
-          // Non-interactive, no aria-label, hidden from the tab order.
-          <div
-            aria-hidden="true"
-            className="flex items-center justify-center text-lg select-none"
+          <button
+            type="button"
+            aria-label={isSelected ? 'Deselect task' : 'Select task'}
+            title={isSelected ? 'Deselect' : 'Select'}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onToggleSelect(task.id);
+              closeActionsMenu();
+            }}
+            className={actionButtonClassName(isSelected ? 'active' : 'default')}
           >
-            <span role="img" aria-label="smile">😊</span>
-          </div>
-        ) : null}
-      </div>
+            <SelectIcon selected={isSelected} />
+            <span className="text-xs">{isSelected ? 'Deselect' : 'Select'}</span>
+          </button>
+          {canMoveToProject ? (
+            <button
+              type="button"
+              aria-label={movedToProjectId ? 'Move task back to its own project' : 'Move task to project'}
+              title={movedToProjectId ? 'Move back' : 'Move to project'}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (isMoveMenuOpen) {
+                  setMoveMenuAnchor(null);
+                  return;
+                }
+                const rect = e.currentTarget.getBoundingClientRect();
+                setMoveMenuAnchor({ top: rect.top, left: rect.left, bottom: rect.bottom });
+              }}
+              className={actionButtonClassName(movedToProjectId ? 'active' : 'default')}
+            >
+              <MoveToProjectIcon />
+              <span className="text-xs">Move</span>
+            </button>
+          ) : null}
+          {showAttachedTerminalAction ? (
+            <button
+              type="button"
+              aria-label="Attach terminal"
+              title="Attach terminal"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void handleAttachTerminal();
+              }}
+              className={actionButtonClassName('default')}
+            >
+              <TerminalIcon />
+              <span className="text-xs">Terminal</span>
+            </button>
+          ) : null}
+          {showPinAction ? (
+            <button
+              type="button"
+              aria-label="Pin task"
+              title="Pin"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void handleTogglePin();
+              }}
+              className={actionButtonClassName('default')}
+            >
+              <PinIcon filled={false} />
+              <span className="text-xs">Pin</span>
+            </button>
+          ) : null}
+          {showRestartAction ? (
+            <button
+              type="button"
+              aria-label="New task"
+              title="New task"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsRestartDialogOpen(true);
+                closeActionsMenu();
+              }}
+              className={actionButtonClassName('default')}
+            >
+              <NewTaskIcon />
+              <span className="text-xs">New task</span>
+            </button>
+          ) : null}
+          {showPersistentAction ? (
+            <button
+              type="button"
+              aria-label="Persistent task settings"
+              title="Persistent task"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsPersistentDialogOpen(true);
+                closeActionsMenu();
+              }}
+              className={actionButtonClassName('default')}
+            >
+              <PersistentIcon />
+              <span className="text-xs">Persistent</span>
+            </button>
+          ) : null}
+          {showShareAction ? (
+            <button
+              type="button"
+              aria-label="Share task"
+              title="Share"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void handleShare();
+              }}
+              className={actionButtonClassName('default')}
+            >
+              <ShareIcon />
+              <span className="text-xs">Share</span>
+            </button>
+          ) : null}
+          {showAchieveAction ? (
+            <button
+              type="button"
+              aria-label="Pack task"
+              title="Pack (keep chat history)"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void handleAchieve();
+              }}
+              className={actionButtonClassName('default')}
+            >
+              <PackIcon />
+              <span className="text-xs">Pack</span>
+            </button>
+          ) : null}
+          <button
+            type="button"
+            aria-label="Delete task"
+            title="Delete"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              void handleDelete();
+            }}
+            className={actionButtonClassName('danger')}
+          >
+            <TrashIcon />
+            <span className="text-xs">Delete</span>
+          </button>
+          {actionHasEmptyCell ? (
+            // Pure decoration — the empty cell at the bottom of the last
+            // column when the visible button count is odd (2-row layout only).
+            // Non-interactive, no aria-label, hidden from the tab order.
+            <div
+              aria-hidden="true"
+              className="task-action-menu-filler flex items-center justify-center text-lg select-none"
+            >
+              <span role="img" aria-label="smile">😊</span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div
         onClick={handleCardClick}
         onDoubleClick={handleCardDoubleClick}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={finalizeSwipe}
-        onPointerCancel={finalizeSwipe}
-        style={cardStyle}
+        onPointerDown={clearPendingOpenTask}
         className={`task-row webapp-card relative z-10 cursor-pointer p-4 transition-colors hover:border-[var(--accent)] ${cardSurfaceClassName}`}
         role="button"
         tabIndex={0}
         onKeyDown={(e) => {
           if (e.target !== e.currentTarget) return;
           if (e.key === 'Escape') {
-            closeSwipeActions();
+            closeActionsMenu();
             return;
           }
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            if (swipeOffsetRef.current !== 0) {
-              closeSwipeActions();
-              return;
-            }
             openTaskDetail();
           }
         }}
@@ -1810,6 +1584,8 @@ function TaskItemComponent({
                   onPointerUp={handleTitlePointerUp}
                   onPointerMove={handleTitlePointerMove}
                   onPointerCancel={handleTitlePointerUp}
+                  // A press that slides off the title is not a long-press.
+                  onPointerLeave={handleTitlePointerUp}
                 >
                   {task.title}
                 </h3>
@@ -1852,7 +1628,7 @@ function TaskItemComponent({
           <div ref={statusBadgeRef} className="task-row-footer flex items-center gap-1.5">
             <time data-task-column="updated" className="mr-auto text-[11px] text-muted" dateTime={task.updatedAt ?? task.createdAt} suppressHydrationWarning>{new Date(task.updatedAt ?? task.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time>
             <div className="task-row-status ml-auto flex items-center gap-1.5">
-            <button type="button" aria-label={isRightActionsOpen ? 'Hide actions' : 'More actions'} aria-expanded={isRightActionsOpen} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); if (isRightActionsOpen) closeSwipeActions(); else setIsActionsMenuOpen(true); }} className="flex size-6 items-center justify-center rounded text-muted hover:bg-border/50" title="Task actions">⋯</button>
+            <button type="button" aria-label={isActionsMenuOpen ? 'Hide actions' : 'More actions'} aria-expanded={isActionsMenuOpen} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); if (isActionsMenuOpen) closeActionsMenu(); else setIsActionsMenuOpen(true); }} className="flex size-6 items-center justify-center rounded text-muted hover:bg-border/50" title="Task actions">⋯</button>
             {task.attachedTerminal ? (
               <PtyToggleButton
                 aiTaskId={task.id}
@@ -1869,7 +1645,6 @@ function TaskItemComponent({
           </div>
         </div>
       </div>
-      {swipeActionPopup ? <SwipeActionPopup state={swipeActionPopup} /> : null}
       {showPersistentAction && isPersistentDialogOpen ? (
         <PersistentTaskSettingsDialog
           task={task}

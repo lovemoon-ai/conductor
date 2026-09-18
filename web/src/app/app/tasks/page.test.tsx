@@ -756,7 +756,7 @@ describe('TasksPage', () => {
     expect(replaceMock).toHaveBeenLastCalledWith('/app/tasks?projectId=project-1', { scroll: false });
   });
 
-  it('switches projects when swiping the task list area outside task cards', () => {
+  it('switches projects when swiping the blank task list area', () => {
     searchParamsState = new URLSearchParams('projectId=project-3');
     projectsState = [
       { id: 'project-1', name: 'Conductor' },
@@ -819,6 +819,16 @@ describe('TasksPage', () => {
   it.each([
     { target: 'a task card', text: 'mock-task-card' },
     { target: 'a merged card body', text: 'mock-merged-card' },
+  ])('switches projects from swipes that start on $target', ({ text }) => {
+    renderProjectTwo();
+
+    swipeOn(screen.getByText(text));
+
+    expect(setSelectedProjectIdMock).toHaveBeenCalledWith('project-3');
+    expect(replaceMock).toHaveBeenCalledWith('/app/tasks?projectId=project-3', { scroll: false });
+  });
+
+  it.each([
     { target: 'a merged card tab', text: 'mock-task-tab' },
     { target: 'a button', text: 'select-task-2' },
     { target: 'a portaled overlay', text: 'mock-portal-overlay' },
@@ -853,34 +863,6 @@ describe('TasksPage', () => {
 
     expect(setSelectedProjectIdMock).toHaveBeenCalledWith('project-3');
     expect(replaceMock).toHaveBeenCalledWith('/app/tasks?projectId=project-3', { scroll: false });
-  });
-
-  it('switches projects from the end-of-list marker', () => {
-    tasksState.tasks = [{ id: 'task-1', projectId: 'project-2', status: 'running' }];
-    renderProjectTwo();
-
-    swipeOn(document.querySelector('[data-task-list-end]')!);
-
-    expect(setSelectedProjectIdMock).toHaveBeenCalledWith('project-3');
-    expect(replaceMock).toHaveBeenCalledWith('/app/tasks?projectId=project-3', { scroll: false });
-  });
-
-  it.each([
-    { state: 'a single project with tasks', query: 'projectId=project-1', projects: [{ id: 'project-1', name: 'Conductor' }], shown: true },
-    { state: 'a project without tasks', query: 'projectId=project-2', projects: threeProjects, shown: false },
-    {
-      state: 'graph mode',
-      query: 'projectId=project-1&view=graph',
-      projects: threeProjects.map((project) => ({ ...project, metadata: { taskGraphEnabled: true } })),
-      shown: false,
-    },
-  ])('shows the end-of-list marker only for a non-empty list ($state)', ({ query, projects, shown }) => {
-    searchParamsState = new URLSearchParams(query);
-    projectsState = projects;
-
-    render(<TasksPage />);
-
-    expect(document.querySelector('[data-task-list-end]') !== null).toBe(shown);
   });
 
   it('wraps both directions to the other project when only two projects exist', () => {

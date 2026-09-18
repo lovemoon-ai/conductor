@@ -80,14 +80,6 @@ export function useHorizontalSwipe<T extends Element>({
       startY: event.clientY,
       tracking: false,
     };
-
-    if (typeof event.currentTarget.setPointerCapture === 'function') {
-      try {
-        event.currentTarget.setPointerCapture(event.pointerId);
-      } catch {
-        // Pointer capture can fail if the browser has already cancelled it.
-      }
-    }
   };
 
   const onPointerMove = (event: ReactPointerEvent<T>) => {
@@ -109,6 +101,15 @@ export function useHorizontalSwipe<T extends Element>({
         return;
       }
       gesture.tracking = true;
+      // Capture only once the swipe is clearly horizontal: capturing on
+      // pointerdown would retarget taps' clicks away from the tapped child.
+      if (typeof event.currentTarget.setPointerCapture === 'function') {
+        try {
+          event.currentTarget.setPointerCapture(event.pointerId);
+        } catch {
+          // Pointer capture can fail if the browser has already cancelled it.
+        }
+      }
     }
 
     let progress = deltaX / SWIPE_FULL_DISTANCE_PX;
