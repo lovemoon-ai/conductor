@@ -7,7 +7,8 @@
 Report how many model tokens each turn consumed. After every turn (or `/goal`)
 `conductor fire` sends the turn's token count (fresh input + cache reads/writes +
 output) over the new `task_turn_usage` websocket event, and the server adds it
-to the task's running total shown in the task detail card.
+to the task's running total shown in the task detail card. A persistent task's
+total restarts with each round.
 
 Failed or interrupted turns and `/compact` are counted too; when a turn's usage
 is unknown the fire reports `null`, which clears the task's last-turn count.

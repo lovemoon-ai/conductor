@@ -105,6 +105,9 @@ const buildTask = (overrides: Record<string, unknown> = {}) => ({
   backendType: "claude",
   sessionId: "session-old",
   sessionFilePath: "/sessions/old.jsonl",
+  // The previous round's token counts.
+  tokenUsageTotal: 250000,
+  lastTurnTokenUsage: 40000,
   launchConfig: JSON.stringify({ cwd: "/repo" }),
   metadata: persistentMetadata(),
   achievedAt: null,
@@ -214,6 +217,8 @@ describe("persistent task rounds API", () => {
         backendType: "codex",
         sessionId: null,
         sessionFilePath: null,
+        tokenUsageTotal: 0,
+        lastTurnTokenUsage: null,
         launchConfig: JSON.stringify({ cwd: "/repo", worktreeBranch: "main" }),
       });
       expect(JSON.parse(stored.metadata as string).labelIds).toEqual(["l1"]);
@@ -225,7 +230,11 @@ describe("persistent task rounds API", () => {
         data: { status: "failed", lastError: "superseded_by_persistent_round" },
       });
 
-      // Other clients learn the new round.
+      // Other clients learn the new round, whose token counts start over.
+      expect(realtimeHub.broadcast).toHaveBeenCalledWith("user-1", "project-1", {
+        type: "task_token_usage",
+        payload: { task_id: "task-1", project_id: "project-1", token_usage_total: 0, last_turn_token_usage: null },
+      });
       expect(realtimeHub.broadcast).toHaveBeenCalledWith("user-1", "project-1", {
         type: "task_status_update",
         payload: expect.objectContaining({
