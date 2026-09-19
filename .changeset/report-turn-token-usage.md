@@ -9,8 +9,8 @@ Report how many model tokens each turn consumed. After every turn (or `/goal`)
 output) over the new `task_turn_usage` websocket event, and the server adds it
 to the task's running total shown in the task detail card.
 
-Failed or interrupted turns are counted too; when a turn's usage is unknown the
-fire reports `null`, which clears the task's last-turn count.
+Failed or interrupted turns and `/compact` are counted too; when a turn's usage
+is unknown the fire reports `null`, which clears the task's last-turn count.
 
 - `@love-moon/conductor-sdk`: new `ConductorClient.sendTurnUsage(taskId, { tokens })`.
 - `@love-moon/ai-sdk`: the Codex app-server provider's turn/goal `usage` now

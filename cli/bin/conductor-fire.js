@@ -3663,7 +3663,7 @@ export class BridgeRunner {
         reply_in_progress: true,
         status_line: `${this.backendName} compacting context`,
       });
-      result = await this.backendSession.runCompact({ instructions }, { onProgress });
+      result = await this.runWithTurnUsage(() => this.backendSession.runCompact({ instructions }, { onProgress }));
       text = formatCompactReply(this.backendName, result?.compact, instructions);
     } else {
       text = `${this.backendName} 不支持 /compact，未执行压缩。`;

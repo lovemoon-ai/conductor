@@ -1173,6 +1173,9 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         compactError: currentTurn.compactError || undefined,
       };
     } catch (error) {
+      // A failed turn still spent tokens; an interrupted query ends without a
+      // result, so fall back to the usage streamed so far.
+      const usage = error?.usage ?? sumStreamedUsage(currentTurn.usageByMessageId);
       if (error?.reason === "turn_timeout") {
         await this.interruptCurrentTurn();
       }
@@ -1188,12 +1191,11 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         );
       }
       if (this.closeRequested && error?.reason !== "session_closed") {
-        throw this.createSessionClosedError();
+        throw Object.assign(this.createSessionClosedError(), { usage });
       }
       this.maybeEmitAuthRequired(error?.message || "", error?.message || "");
-      // An interrupted query ends without a result: fall back to the usage streamed so far.
       if (error && typeof error === "object") {
-        error.usage ??= sumStreamedUsage(currentTurn.usageByMessageId);
+        error.usage = usage;
       }
       throw error;
     } finally {

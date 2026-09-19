@@ -200,6 +200,29 @@ describe("BridgeRunner.dispatchBackendTurn /compact routing", () => {
     assert.equal(progress.at(-1).reply_in_progress, false);
   });
 
+  it("reports the compaction's token usage like a turn", async () => {
+    const reports = [];
+    const backendSession = makeSession({
+      runCompact: async () => ({
+        compact: { status: "compacted", instructionsApplied: false },
+        usage: { input_tokens: 30, cache_read_input_tokens: 500, output_tokens: 20 },
+        metadata: {},
+      }),
+    });
+    const conductor = {
+      ...buildConductorStub(),
+      sendTurnUsage: async (_taskId, payload) => {
+        reports.push(payload);
+      },
+    };
+    const { runner } = buildRunner(backendSession, conductor);
+
+    await runner.dispatchBackendTurn("/compact", { replyTo: "msg-usage" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(reports, [{ tokens: 550 }]);
+  });
+
   it("treats /compact with attachments as a normal message", async () => {
     const backendSession = makeSession();
     const { runner } = buildRunner(backendSession);

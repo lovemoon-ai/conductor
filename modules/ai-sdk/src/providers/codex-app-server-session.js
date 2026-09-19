@@ -89,6 +89,15 @@ function readTokenCount(breakdown) {
   return Number.isFinite(value) ? value : null;
 }
 
+/** Adds tokens spent outside the reported attempt (an overflowed first try) to a turn result or error. */
+function addTurnTokens(holder, extraTokens) {
+  if (extraTokens > 0 && holder && typeof holder === "object") {
+    const counted = Number(holder.usage?.turnTotalTokens);
+    holder.usage = { ...(holder.usage || {}), turnTotalTokens: (Number.isFinite(counted) ? counted : 0) + extraTokens };
+  }
+  return holder;
+}
+
 /** A failed or interrupted turn still spent tokens: expose them on the error. */
 function attachTurnUsage(error, usage) {
   if (error && typeof error === "object" && error.usage === undefined) {
@@ -292,8 +301,10 @@ export class CodexAppServerSession extends EventEmitter {
     this.nativeSessionId = "";
     this.rateLimits = null;
     this.tokenUsage = null;
-    // Thread total when the current turn/goal started; see snapshotTokenUsage().
+    // Thread total when the current turn/goal/compaction started, and whether
+    // its own usage has arrived since; see snapshotTokenUsage().
     this.turnTokenBaseline = null;
+    this.turnTokensSeen = false;
     this.currentTurnStatus = null;
     this.currentTurnActivityAt = 0;
     this.now = typeof options.now === "function" ? options.now : () => Date.now();
@@ -576,9 +587,17 @@ export class CodexAppServerSession extends EventEmitter {
     }
   }
 
+  /** Start counting a turn's tokens from the thread total known right now. */
+  beginTurnTokenAccounting() {
+    this.turnTokenBaseline = readTokenCount(this.tokenUsage?.total);
+    this.turnTokensSeen = false;
+  }
+
   /**
    * Thread token usage plus `turnTotalTokens`: tokens spent since the current
-   * turn (or goal) started. Codex only reports thread-cumulative totals.
+   * turn (or goal) started. Codex only reports thread-cumulative totals, and
+   * only when a response completes, so a turn that ended before any response
+   * did has unknown usage.
    */
   snapshotTokenUsage() {
     if (!this.tokenUsage) {
@@ -587,7 +606,7 @@ export class CodexAppServerSession extends EventEmitter {
     const total = readTokenCount(this.tokenUsage.total);
     return {
       ...this.tokenUsage,
-      ...(total !== null && this.turnTokenBaseline !== null
+      ...(total !== null && this.turnTokenBaseline !== null && this.turnTokensSeen
         ? { turnTotalTokens: Math.max(0, total - this.turnTokenBaseline) }
         : {}),
     };
@@ -651,6 +670,7 @@ export class CodexAppServerSession extends EventEmitter {
     this.sessionInfo = null;
     this.tokenUsage = null;
     this.turnTokenBaseline = null;
+    this.turnTokensSeen = false;
     this.booted = false;
     this.bootPromise = null;
   }
@@ -1078,16 +1098,22 @@ export class CodexAppServerSession extends EventEmitter {
       }
       case "thread/tokenUsage/updated": {
         const tokenUsage = params?.tokenUsage && typeof params.tokenUsage === "object" ? { ...params.tokenUsage } : null;
-        // No total was known when this turn started (fresh boot or resume).
-        // Codex replays a resumed thread's total right after thread/resume,
-        // before this turn's own responses: that total is the baseline. A
-        // notification from this turn's first response has `total - last`.
-        if (this.currentTurn && this.turnTokenBaseline === null && tokenUsage) {
-          const total = readTokenCount(tokenUsage.total);
-          const last = readTokenCount(tokenUsage.last);
+        if (this.currentTurn && tokenUsage) {
+          // Codex replays a resumed thread's total right after thread/resume,
+          // before this turn's own responses (no or another turn id).
           const turnId = this.currentTurn.turnId;
           const beforeTurn = !turnId || Boolean(params?.turnId && params.turnId !== turnId);
-          this.turnTokenBaseline = total === null ? null : beforeTurn ? total : last === null ? null : total - last;
+          if (this.turnTokenBaseline === null) {
+            // No total was known when the turn started (fresh boot or resume):
+            // a replayed total is the baseline; this turn's first response
+            // has `total - last` before it.
+            const total = readTokenCount(tokenUsage.total);
+            const last = readTokenCount(tokenUsage.last);
+            this.turnTokenBaseline = total === null ? null : beforeTurn ? total : last === null ? null : total - last;
+          }
+          if (!beforeTurn) {
+            this.turnTokensSeen = true;
+          }
         }
         this.tokenUsage = tokenUsage;
         return;
@@ -1316,7 +1342,7 @@ export class CodexAppServerSession extends EventEmitter {
       resolve: resolveTurn,
       reject: rejectTurn,
     };
-    this.turnTokenBaseline = readTokenCount(this.tokenUsage?.total);
+    this.beginTurnTokenAccounting();
     this.currentTurn = currentTurn;
 
     try {
@@ -1381,6 +1407,8 @@ export class CodexAppServerSession extends EventEmitter {
         !currentTurn.goalMode &&
         this.isRecoverableContextOverflow(error)
       ) {
+        // The overflowed attempt already spent tokens; the fresh thread's totals won't include them.
+        const failedAttemptTokens = this.snapshotTokenUsage()?.turnTotalTokens ?? 0;
         // Drop the user message pushed for the failed attempt; the retry
         // re-adds it (and folds prior history in as a preface via buildPrompt).
         if (
@@ -1407,12 +1435,17 @@ export class CodexAppServerSession extends EventEmitter {
             status_line: "codex context full; retrying on a fresh thread",
           });
           this.emit("thread_recovered", { reason: "context_overflow", backend: this.backend });
-          return await this.runTurn(promptText, {
-            useInitialImages,
-            media: mediaInput,
-            contextFiles,
-            jsonSchema,
-          });
+          return addTurnTokens(
+            await this.runTurn(promptText, {
+              useInitialImages,
+              media: mediaInput,
+              contextFiles,
+              jsonSchema,
+            }),
+            failedAttemptTokens,
+          );
+        } catch (retryError) {
+          throw addTurnTokens(retryError, failedAttemptTokens);
         } finally {
           this._contextRecoveryInFlight = false;
         }
@@ -1486,6 +1519,7 @@ export class CodexAppServerSession extends EventEmitter {
       reject: rejectTurn,
       suppressReply: true,
     };
+    this.beginTurnTokenAccounting();
     this.currentTurn = currentTurn;
     const metadata = { source: CODEX_APP_SERVER_VARIANT, threadId: this.sessionId };
 
@@ -1515,6 +1549,7 @@ export class CodexAppServerSession extends EventEmitter {
           status_done_line: error instanceof Error ? error.message : String(error),
         });
       }
+      attachTurnUsage(error, this.snapshotTokenUsage());
       throw error;
     } finally {
       if (this.currentTurn === currentTurn) {
@@ -1687,7 +1722,7 @@ export class CodexAppServerSession extends EventEmitter {
       },
       goalMode: true,
     };
-    this.turnTokenBaseline = readTokenCount(this.tokenUsage?.total);
+    this.beginTurnTokenAccounting();
     this.currentTurn = currentTurn;
 
     try {
@@ -1772,7 +1807,8 @@ export class CodexAppServerSession extends EventEmitter {
           status: goalState.status,
           tokenBudget: goalState.tokenBudget !== undefined ? goalState.tokenBudget : tokenBudget,
         },
-        usage: goalResult?.usage || this.snapshotTokenUsage(),
+        // Fresh snapshot: usage can still arrive after the terminal goal status.
+        usage: this.snapshotTokenUsage() || goalResult?.usage || null,
         metadata: {
           source: CODEX_APP_SERVER_VARIANT,
           threadId: this.sessionId,

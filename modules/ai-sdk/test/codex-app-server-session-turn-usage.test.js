@@ -16,10 +16,10 @@ const usage = (turnId, total, last) => [
 ];
 
 // One codex turn: started, `[threadTotal, lastResponse]` usage updates, completed.
-const turn = (turnId, updates, status = "completed") => [
+const turn = (turnId, updates, status = "completed", error = null) => [
   ["turn/started", { turn: { id: turnId } }],
   ...updates.map(([total, last]) => usage(turnId, total, last)),
-  ["turn/completed", { turn: { id: turnId, status, error: null } }],
+  ["turn/completed", { turn: { id: turnId, status, error } }],
 ];
 
 // `onRequest(method)` returns the notifications codex sends after that request.
@@ -79,6 +79,59 @@ describe("codex app-server session - per-turn token usage", () => {
       assert.equal(error.usage.turnTotalTokens, 80);
       return true;
     });
+  });
+
+  it("reports unknown usage for a turn that ended before any response completed", async () => {
+    const session = makeTurnSession([turn("turn-1", [[60, 60]]), turn("turn-2", [], "interrupted")]);
+    await session.runTurn("one");
+    await assert.rejects(session.runTurn("stop me early"), (error) => {
+      assert.equal(error.usage.turnTotalTokens, undefined);
+      return true;
+    });
+  });
+
+  it("counts a context-overflow attempt's tokens into the retried turn", async () => {
+    const overflow = { message: "context_length_exceeded: input too long" };
+    const session = makeTurnSession([
+      turn("turn-1", [[500, 500]], "failed", overflow),
+      turn("turn-2", [[30, 30]]),
+    ]);
+    const result = await session.runTurn("big");
+    assert.equal(result.usage.turnTotalTokens, 530);
+  });
+
+  it("counts a compaction's own tokens", async () => {
+    const session = makeSession((method) =>
+      method === "turn/start"
+        ? turn("turn-1", [[60, 60]])
+        : method === "thread/compact/start"
+          ? turn("turn-c", [[80, 20]])
+          : [],
+    );
+    await session.runTurn("one");
+    const result = await session.runCompact();
+    assert.equal(result.compact.status, "compacted");
+    assert.equal(result.usage.turnTotalTokens, 20);
+  });
+
+  it("includes usage that arrives after the terminal goal status", async () => {
+    const session = makeSession((method) =>
+      method === "thread/goal/set"
+        ? [...turn("turn-g1", [[60, 60]]), ["thread/goal/updated", { goal: { objective: "ship", status: "complete" } }]]
+        : [],
+    );
+    const emitWorkingStatus = session.emitWorkingStatus.bind(session);
+    let late = false;
+    session.emitWorkingStatus = async (payload) => {
+      if (!late && String(payload?.status_done_line || "").startsWith("codex goal")) {
+        late = true;
+        await session.handleNotification(...usage("turn-g1", 130, 70));
+      }
+      return emitWorkingStatus(payload);
+    };
+    const result = await session.runGoal({ objective: "ship" });
+    assert.equal(late, true);
+    assert.equal(result.usage.turnTotalTokens, 130);
   });
 
   it("reports a whole goal's tokens", async () => {

@@ -103,6 +103,35 @@ describe("claude agent-sdk session", () => {
     await session.close();
   });
 
+  it("keeps a stopped turn's streamed usage on the session-closed error", async () => {
+    let session;
+    session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      sdkModule: {
+        query: () => ({
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "assistant",
+              session_id: "claude-session-1",
+              message: { id: "msg-1", content: [], usage: { input_tokens: 4, output_tokens: 6 } },
+            };
+            // Stopping the task aborts the query, which fails with its own error.
+            session.closeRequested = true;
+            throw new Error("The operation was aborted");
+          },
+          close: () => {},
+        }),
+      },
+    });
+
+    await assert.rejects(session.runTurn("hello"), (error) => {
+      assert.equal(error.reason, "session_closed");
+      assert.deepEqual(error.usage, { input_tokens: 4, output_tokens: 6 });
+      return true;
+    });
+  });
+
   it("emits a terminal working status when the Claude process exits before a result", async () => {
     const progressPayloads = [];
     const eventPayloads = [];
