@@ -1,5 +1,42 @@
 # @love-moon/conductor-sdk
 
+## 0.13.2
+
+### Patch Changes
+
+- 6547b2c: Add read-only daemon queries and archived-task search to the CLI:
+  `conductor daemon list [--all]` (online daemons, version, AI backends),
+  `conductor daemon tools <host>` (installed AI tools and reachability),
+  `conductor daemon quota <host> [--tool] [--refresh]` (usage windows / balance
+  per tool), and `conductor task list --archived [--search] [--all-projects]
+[--page]`. The SDK's `BackendApiClient` gains `listAgents`,
+  `getAiManagerStatus`, `getAiManagerQuota` and `listAchievedTasks` over the
+  existing web API routes; no server change.
+- 8e3a4c3: Report how many model tokens each turn consumed. After every turn (or `/goal`)
+  `conductor fire` sends the turn's token count (fresh input + cache reads/writes +
+  output) over the new `task_turn_usage` websocket event, and the server adds it
+  to the task's running total shown in the task detail card. A persistent task's
+  total restarts with each round.
+
+  Failed or interrupted turns and `/compact` are counted too; when a turn's usage
+  is unknown the fire reports `null`, which clears the task's last-turn count.
+
+  - `@love-moon/conductor-sdk`: new `ConductorClient.sendTurnUsage(taskId, { tokens })`.
+  - `@love-moon/ai-sdk`: the Codex app-server provider's turn/goal `usage` now
+    carries `turnTotalTokens`, the turn's share of Codex's thread-cumulative total.
+    Claude and Codex turn errors carry the tokens spent before the failure as
+    `error.usage` (Claude sums streamed usage when an interrupted query ends
+    without a result).
+  - Claude and Codex backends are counted; other backends report nothing yet.
+
+- 6989999: `conductor task list --include-moved` also lists tasks moved into the project
+  from other projects (`project_id == P OR second_project_id == P`), with a MOVED
+  column naming the origin/target project. `--json` output now carries
+  `secondProjectId`. The SDK gains `TasksApi.listTasks({ includeMoved })`,
+  `BackendApiClient.listTasks({ projectScope: 'display' })` and
+  `Task/TaskSummary.secondProjectId`; it merges the server's existing real and
+  display scopes, so no server change is needed.
+
 ## 0.13.1
 
 ## 0.13.0

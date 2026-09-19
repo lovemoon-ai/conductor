@@ -1,5 +1,68 @@
 # @love-moon/conductor-cli
 
+## 0.13.2
+
+### Patch Changes
+
+- 6547b2c: Add read-only daemon queries and archived-task search to the CLI:
+  `conductor daemon list [--all]` (online daemons, version, AI backends),
+  `conductor daemon tools <host>` (installed AI tools and reachability),
+  `conductor daemon quota <host> [--tool] [--refresh]` (usage windows / balance
+  per tool), and `conductor task list --archived [--search] [--all-projects]
+[--page]`. The SDK's `BackendApiClient` gains `listAgents`,
+  `getAiManagerStatus`, `getAiManagerQuota` and `listAchievedTasks` over the
+  existing web API routes; no server change.
+- 8c2833d: Support `/compact [focus instructions]` in task chats. Fire detects the command
+  per message (like `/goal`), runs the backend's native context compaction
+  instead of sending the text to the model, and posts one confirmation with the
+  token savings. Sessions advertise `capabilities.compact` and implement the new
+  optional `runCompact()`: claude (native `/compact`), codex app-server
+  (`thread/compact/start`), copilot (`session.history.compact`), kimi wire and
+  legacy print (built-in `/compact`), opencode (`session.summarize`) and dsh
+  (summary turn, then a fresh session seeded with the summary). Backends without
+  the capability (chat-web, codex exec, Kimi Code prompt mode) reply with a
+  not-supported notice. Opencode compaction summaries no longer surface as chat
+  replies, and dsh clears its "compacting context" status when automatic
+  compaction ends.
+- c3a55b8: Fix tmux-mode Fire launches that failed before Fire started. The daemon now
+  drops an inherited `TMUX`/`TMUX_PANE` at startup, so a daemon launched from
+  another user's tmux pane (e.g. `su` from root's session) no longer aims every
+  tmux call at that user's socket and fails with `error connecting to
+/tmp/tmux-0/default (Permission denied)`. A launch whose tmux argv would exceed
+  tmux's 16KB command limit (`command too long`), such as a persistent-round
+  prompt with a long summary, now runs through a self-deleting 0600 launch script
+  instead of `bash -c <command>`.
+- 8e3a4c3: Report how many model tokens each turn consumed. After every turn (or `/goal`)
+  `conductor fire` sends the turn's token count (fresh input + cache reads/writes +
+  output) over the new `task_turn_usage` websocket event, and the server adds it
+  to the task's running total shown in the task detail card. A persistent task's
+  total restarts with each round.
+
+  Failed or interrupted turns and `/compact` are counted too; when a turn's usage
+  is unknown the fire reports `null`, which clears the task's last-turn count.
+
+  - `@love-moon/conductor-sdk`: new `ConductorClient.sendTurnUsage(taskId, { tokens })`.
+  - `@love-moon/ai-sdk`: the Codex app-server provider's turn/goal `usage` now
+    carries `turnTotalTokens`, the turn's share of Codex's thread-cumulative total.
+    Claude and Codex turn errors carry the tokens spent before the failure as
+    `error.usage` (Claude sums streamed usage when an interrupted query ends
+    without a result).
+  - Claude and Codex backends are counted; other backends report nothing yet.
+
+- 6989999: `conductor task list --include-moved` also lists tasks moved into the project
+  from other projects (`project_id == P OR second_project_id == P`), with a MOVED
+  column naming the origin/target project. `--json` output now carries
+  `secondProjectId`. The SDK gains `TasksApi.listTasks({ includeMoved })`,
+  `BackendApiClient.listTasks({ projectScope: 'display' })` and
+  `Task/TaskSummary.secondProjectId`; it merges the server's existing real and
+  display scopes, so no server change is needed.
+- Updated dependencies [6547b2c]
+- Updated dependencies [8c2833d]
+- Updated dependencies [8e3a4c3]
+- Updated dependencies [6989999]
+  - @love-moon/conductor-sdk@0.13.2
+  - @love-moon/ai-sdk@0.13.2
+
 ## 0.13.1
 
 ### Patch Changes
