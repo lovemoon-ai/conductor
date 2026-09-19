@@ -21,7 +21,13 @@ codex app-server 会把 `spawn_agent` 起的子 agent 线程的 `thread/started`
 只有子 agent 才会设置），就不再用它覆盖 `sessionId`。测试：`modules/ai-sdk/test/codex-app-server-session-subagent.test.js`
 按事故中的事件顺序回放。
 
+## 同一轮顺带修复：commentary 延迟显示
+`resolveItemPhase` 不认识 v2 的 `{ type: "agentMessage", phase: "commentary" }`，返回 null，所以 `item/started` 和 `item/completed` 都不处理它，
+进度说明要等下一条消息的 delta 或 `turn/completed` 才发出。本事故中的延迟从 22 秒到 3 分钟不等。修复：把 `agentmessage` 加进
+assistant 消息的候选列表。`phase: "final_answer"` 以前是碰巧靠 phase 值才被识别的。
+
 ## 如何避免
 - provider 会话必须按“会话身份”（thread/session id）过滤上游事件，不能假设一条连接上只有自己的事件。协议里有 id 就要校验。
 - 加“兜底终态”时（例如“turnId 对不上也结束当前轮”），先想清楚：还有谁会发同类事件？兜底会不会被别人的事件触发？
 - 上游 CLI 引入新的并发能力（multi-agent、review、compact 子线程）时，用真实的 app-server 流量回放一遍会话层的状态机。
+- 解析上游 item 类型时，以协议生成的类型（`codex app-server generate-ts`）为准，别只靠 fixture 里手写的形状（fixture 用的是 `type: "message"`，正好掩盖了这个问题）。
