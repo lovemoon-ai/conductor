@@ -32,6 +32,7 @@ import {
 import {
   isMissingAnyNewSchemaError,
   isMissingPtySchemaError,
+  isMissingTokenUsageColumnError,
   legacyTaskSelect,
   taskSelectWithoutIssueId,
   withPtySchemaFallback,
@@ -58,6 +59,7 @@ type TaskOwnershipRecord = {
 type AgentEvent =
   | { type: "create_task"; payload: { task_id: string; project_id: string; title: string; prefill?: string } }
   | { type: "sdk_message"; payload: { task_id: string; content: string; metadata?: Record<string, unknown>; message_id?: string } }
+  | { type: "task_turn_usage"; payload: { task_id: string; tokens: number | null } }
   | {
       type: "task_status_update";
       payload: {
@@ -2027,6 +2029,47 @@ export const setupAgentGateway = (): WebSocketServer => {
               },
             });
             sendEnvelope(socket, { type: "runtime_status_recorded", payload: { task_id: task.id } });
+            break;
+          }
+          case "task_turn_usage": {
+            // null: a failed turn with unknown usage — clear the stale last-turn count only.
+            const tokens = event.payload.tokens === null ? null : Math.round(Number(event.payload.tokens));
+            if (!event.payload.task_id || (tokens !== null && !(Number.isFinite(tokens) && tokens >= 0))) {
+              sendEnvelope(socket, { type: "error", payload: { message: "task_turn_usage requires task_id and tokens" } });
+              break;
+            }
+            const task = await db.task.findFirst({
+              where: { id: event.payload.task_id, project: { userId: user.id } },
+              select: { id: true, projectId: true },
+            });
+            if (!task) {
+              sendEnvelope(socket, { type: "error", payload: { message: `Task ${event.payload.task_id} not found` } });
+              break;
+            }
+            let usage;
+            try {
+              usage = await db.task.update({
+                where: { id: task.id },
+                data:
+                  tokens === null
+                    ? { lastTurnTokenUsage: null }
+                    : { tokenUsageTotal: { increment: tokens }, lastTurnTokenUsage: tokens },
+                select: { tokenUsageTotal: true, lastTurnTokenUsage: true },
+              });
+            } catch (error) {
+              // Pre-migration DB: usage is best-effort, don't bounce an error to the fire every turn.
+              if (isMissingTokenUsageColumnError(error)) break;
+              throw error;
+            }
+            realtimeHub.broadcast(user.id, task.projectId, {
+              type: "task_token_usage",
+              payload: {
+                task_id: task.id,
+                project_id: task.projectId,
+                token_usage_total: usage.tokenUsageTotal,
+                last_turn_token_usage: usage.lastTurnTokenUsage,
+              },
+            });
             break;
           }
           case "ai_manager_response": {

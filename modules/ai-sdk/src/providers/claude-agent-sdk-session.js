@@ -54,6 +54,23 @@ function createTurnError(message, extras = {}) {
   return error;
 }
 
+/** Per-turn usage summed from streamed assistant messages (one entry per API response). */
+function sumStreamedUsage(usageByMessageId) {
+  if (!usageByMessageId.size) {
+    return null;
+  }
+  const total = {};
+  for (const usage of usageByMessageId.values()) {
+    for (const key of ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"]) {
+      const value = Number(usage?.[key]);
+      if (Number.isFinite(value)) {
+        total[key] = (total[key] || 0) + value;
+      }
+    }
+  }
+  return total;
+}
+
 function normalizeClaudeBackend(backend) {
   const normalized = String(backend || "").trim().toLowerCase();
   if (normalized === "claude-code") {
@@ -907,6 +924,9 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       }
       case "assistant": {
         this.updateSessionInfo(message.session_id || message.sessionId);
+        if (message.message?.id && message.message.usage) {
+          currentTurn.usageByMessageId.set(message.message.id, message.message.usage);
+        }
         for (const block of contentBlocks(message.message)) {
           if (block?.type === "tool_use") {
             noteToolStarted(currentTurn, block.id, block.name, block.input);
@@ -1027,6 +1047,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       query: null,
       resultMessage: null,
       terminalWorkingStatusEmitted: false,
+      usageByMessageId: new Map(),
     };
     this.currentTurn = currentTurn;
     this.markTurnStartedStatus();
@@ -1096,6 +1117,8 @@ export class ClaudeAgentSdkSession extends EventEmitter {
           permissionDenials: Array.isArray(resultMessage.permission_denials)
             ? [...resultMessage.permission_denials]
             : [],
+          // A failed turn still spent tokens.
+          usage: resultMessage.usage ? { ...resultMessage.usage } : null,
         });
       }
 
@@ -1150,6 +1173,9 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         compactError: currentTurn.compactError || undefined,
       };
     } catch (error) {
+      // A failed turn still spent tokens; an interrupted query ends without a
+      // result, so fall back to the usage streamed so far.
+      const usage = error?.usage ?? sumStreamedUsage(currentTurn.usageByMessageId);
       if (error?.reason === "turn_timeout") {
         await this.interruptCurrentTurn();
       }
@@ -1165,9 +1191,12 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         );
       }
       if (this.closeRequested && error?.reason !== "session_closed") {
-        throw this.createSessionClosedError();
+        throw Object.assign(this.createSessionClosedError(), { usage });
       }
       this.maybeEmitAuthRequired(error?.message || "", error?.message || "");
+      if (error && typeof error === "object") {
+        error.usage = usage;
+      }
       throw error;
     } finally {
       if (jsonSchema && typeof jsonSchema === "object") {

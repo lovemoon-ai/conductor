@@ -33,6 +33,8 @@ const worktreeTaskSelect = {
   sessionFilePath: true,
   launchConfig: true,
   metadata: true,
+  tokenUsageTotal: true,
+  lastTurnTokenUsage: true,
   createdAt: true,
   updatedAt: true,
   project: {
@@ -80,7 +82,7 @@ const findWorktreeTask = async (userId: string, taskId: string) =>
             where: { id: taskId, project: { userId } },
             select: worktreeTaskSelectWithoutIssueId,
           });
-          return task ? { ...task, issueId: null } : null;
+          return task ? { ...task, issueId: null, tokenUsageTotal: 0, lastTurnTokenUsage: null } : null;
         },
         async () => {
           const task = await db.task.findFirst({

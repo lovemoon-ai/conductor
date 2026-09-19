@@ -298,6 +298,8 @@ const runTaskListQuery = (
         achievedAt: null,
         secondProjectId: null,
         groupId: null,
+        tokenUsageTotal: 0,
+        lastTurnTokenUsage: null,
       })),
   );
 };

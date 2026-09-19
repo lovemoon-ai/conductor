@@ -14,9 +14,7 @@ import { useWebSocketStore } from '@/features/realtime';
 import { useRuntimeStore } from '@/features/realtime';
 import { useTasksStore } from '@/features/tasks';
 import { copyToClipboard } from '@/lib/clipboard';
-import { formatPercent, normalizeTaskId } from './ConnectionStatus.utils';
-
-const formatActiveScheduleCount = (count: number) => `${Math.max(0, count)} active`;
+import { formatTokenCount, normalizeTaskId } from './ConnectionStatus.utils';
 
 const COPIED_BUBBLE_DURATION_MS = 2000;
 const LONG_PRESS_DURATION_MS = 500;
@@ -91,9 +89,9 @@ export function ConnectionStatus({
   const pid = runtime?.pid ?? null;
   const taskIdValue = taskId || 'n/a';
   const sessionId = runtime?.sessionId || runtime?.threadId || currentTask?.sessionId || 'n/a';
-  const tokenUsagePercent = formatPercent(runtime?.tokenUsagePercent);
-  const contextUsagePercent = formatPercent(runtime?.contextUsagePercent);
-  const scheduledLabel = formatActiveScheduleCount(currentTask?.activeScheduledMessageCount ?? 0);
+  // While a turn runs its count is pending; a failed turn with unknown usage has none.
+  const taskTokens = currentTask?.tokenUsageTotal ? formatTokenCount(currentTask.tokenUsageTotal) : 'n/a';
+  const turnTokens = runtime?.replyInProgress ? '…' : formatTokenCount(currentTask?.lastTurnTokenUsage);
 
   useEffect(() => {
     if (!open) {
@@ -262,16 +260,14 @@ export function ConnectionStatus({
             </span>
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>PID</span>
             <span className={isPtyTask ? 'text-white' : 'text-ink'}>{pid ?? 'n/a'}</span>
-            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Scheduled</span>
-            <span className={isPtyTask ? 'text-white' : 'text-ink'}>{scheduledLabel}</span>
             <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Session ID</span>
             <span className={copyableClassName} {...copyGestureProps(sessionId)}>
               {sessionId}
             </span>
-            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Token Usage</span>
-            <span className={isPtyTask ? 'text-white' : 'text-ink'}>{tokenUsagePercent}</span>
-            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Context Usage</span>
-            <span className={isPtyTask ? 'text-white' : 'text-ink'}>{contextUsagePercent}</span>
+            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Task Tokens</span>
+            <span className={isPtyTask ? 'text-white' : 'text-ink'}>{taskTokens}</span>
+            <span className={isPtyTask ? 'text-zinc-400' : 'text-muted'}>Turn Tokens</span>
+            <span className={isPtyTask ? 'text-white' : 'text-ink'}>{turnTokens}</span>
           </div>
         </div>
       )}

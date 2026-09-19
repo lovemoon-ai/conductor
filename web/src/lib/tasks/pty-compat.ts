@@ -108,6 +108,11 @@ export const isMissingSecondProjectIdColumnError = (error: unknown): boolean =>
   hasErrorCode(error, "P2022") &&
   includesAny(errorMessage(error), ["second_project_id", "secondProjectId"]);
 
+/** True when the per-turn token usage columns are missing (pre-migration DB). */
+export const isMissingTokenUsageColumnError = (error: unknown): boolean =>
+  hasErrorCode(error, "P2022") &&
+  includesAny(errorMessage(error), ["token_usage_total", "tokenUsageTotal", "last_turn_token_usage", "lastTurnTokenUsage"]);
+
 /**
  * Returns true when task fields required by the current runtime are missing.
  * This historically handled PTY fields; killed-state fields join the same
@@ -121,7 +126,8 @@ export const isMissingPtySchemaError = (error: unknown): boolean =>
   isMissingKilledStateColumnError(error) ||
   isMissingAchievedAtColumnError(error) ||
   isMissingGroupIdColumnError(error) ||
-  isMissingSecondProjectIdColumnError(error);
+  isMissingSecondProjectIdColumnError(error) ||
+  isMissingTokenUsageColumnError(error);
 
 /**
  * Returns true when the error is caused by a missing issue_id column only.
@@ -199,6 +205,8 @@ export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
       killedAt: null;
       achievedAt: null;
       groupId: null;
+      tokenUsageTotal: number;
+      lastTurnTokenUsage: null;
     } => {
   if (!task) {
     return null as T extends null
@@ -212,6 +220,8 @@ export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
           killedAt: null;
           achievedAt: null;
           groupId: null;
+          tokenUsageTotal: number;
+          lastTurnTokenUsage: null;
         };
   }
   return {
@@ -228,6 +238,8 @@ export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
     killedAt: null,
     achievedAt: null,
     groupId: null,
+    tokenUsageTotal: 0,
+    lastTurnTokenUsage: null,
   } as T extends null
     ? null
     : T & {
@@ -239,6 +251,8 @@ export const applyLegacyTaskShape = <T extends TaskWithLegacyFallback | null>(
         killedAt: null;
         achievedAt: null;
         groupId: null;
+        tokenUsageTotal: number;
+        lastTurnTokenUsage: null;
       };
 };
 

@@ -8,10 +8,8 @@ export function normalizeTaskId(value: string | string[] | undefined): string | 
   return null;
 }
 
-export function formatPercent(value?: number): string {
-  if (!Number.isFinite(value)) {
-    return 'n/a';
-  }
-  const rounded = Math.round((Number(value) + Number.EPSILON) * 10) / 10;
-  return `${rounded}%`;
+const tokenCountFormat = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
+
+export function formatTokenCount(value?: number | null): string {
+  return typeof value === 'number' && Number.isFinite(value) ? tokenCountFormat.format(value) : 'n/a';
 }

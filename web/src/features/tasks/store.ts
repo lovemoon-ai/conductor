@@ -198,6 +198,8 @@ export const normalizeTask = (task: any): Task => ({
       : typeof task.active_scheduled_message_count === 'number'
         ? Math.max(0, task.active_scheduled_message_count)
         : 0,
+  tokenUsageTotal: task.tokenUsageTotal ?? task.token_usage_total ?? 0,
+  lastTurnTokenUsage: task.lastTurnTokenUsage ?? task.last_turn_token_usage ?? null,
   createdAt: task.createdAt ?? task.created_at ?? new Date().toISOString(),
   updatedAt: task.updatedAt ?? task.updated_at ?? null,
 });

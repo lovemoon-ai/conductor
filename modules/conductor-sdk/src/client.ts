@@ -453,6 +453,18 @@ export class ConductorClient {
     return { delivered: true };
   }
 
+  /**
+   * Report the tokens one finished turn consumed; the server adds them to the task total.
+   * `null` marks a failed turn whose usage is unknown.
+   */
+  async sendTurnUsage(taskId: string, payload: { tokens: number | null }): Promise<Record<string, any>> {
+    await this.sendEnvelope({
+      type: 'task_turn_usage',
+      payload: { task_id: taskId, tokens: payload.tokens },
+    });
+    return { delivered: true };
+  }
+
   async sendAgentResume(payload: {
     active_tasks?: string[];
     source?: string;

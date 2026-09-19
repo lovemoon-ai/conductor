@@ -75,6 +75,8 @@ describe("/api/tasks/[taskId]/worktree", () => {
         projectRelativePath: "app",
       }),
       metadata: null,
+      tokenUsageTotal: 112578,
+      lastTurnTokenUsage: 46678,
       createdAt: new Date("2026-04-03T12:00:00.000Z"),
       updatedAt: new Date("2026-04-03T12:01:00.000Z"),
       project: {
@@ -135,6 +137,9 @@ describe("/api/tasks/[taskId]/worktree", () => {
         id: "task-1",
         issue_id: "issue-1",
         task_type: "ai_task",
+        // The client replaces its task with this one; keep the token stats.
+        token_usage_total: 112578,
+        last_turn_token_usage: 46678,
       }),
       cleaned_at: "2026-04-03T12:05:00.000Z",
       removed_path: "/tmp/worktrees/task-1",

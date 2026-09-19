@@ -44,6 +44,94 @@ describe("claude agent-sdk session", () => {
     await session.close();
   });
 
+  it("attaches a failed turn's usage to the thrown error", async () => {
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      sdkModule: {
+        query: () => ({
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "result",
+              subtype: "error_during_execution",
+              session_id: "claude-session-1",
+              usage: { input_tokens: 3, output_tokens: 2 },
+              errors: ["interrupted"],
+            };
+          },
+          close: () => {},
+        }),
+      },
+    });
+
+    await assert.rejects(session.runTurn("hello"), (error) => {
+      assert.deepEqual(error.usage, { input_tokens: 3, output_tokens: 2 });
+      return true;
+    });
+
+    await session.close();
+  });
+
+  it("falls back to streamed usage when an interrupted query ends without a result", async () => {
+    const assistant = (id, usage) => ({
+      type: "assistant",
+      session_id: "claude-session-1",
+      message: { id, content: [{ type: "tool_use", id: `tool-${id}`, name: "Bash", input: {} }], usage },
+    });
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      sdkModule: {
+        query: () => ({
+          async *[Symbol.asyncIterator]() {
+            // One API response streams one message per content block, repeating its usage.
+            yield assistant("msg-1", { input_tokens: 2, cache_read_input_tokens: 100, output_tokens: 5 });
+            yield assistant("msg-1", { input_tokens: 2, cache_read_input_tokens: 100, output_tokens: 5 });
+            yield assistant("msg-2", { input_tokens: 1, cache_read_input_tokens: 200, output_tokens: 3 });
+          },
+          close: () => {},
+        }),
+      },
+    });
+
+    await assert.rejects(session.runTurn("hello"), (error) => {
+      assert.equal(error.reason, "missing_result");
+      assert.deepEqual(error.usage, { input_tokens: 3, cache_read_input_tokens: 300, output_tokens: 8 });
+      return true;
+    });
+
+    await session.close();
+  });
+
+  it("keeps a stopped turn's streamed usage on the session-closed error", async () => {
+    let session;
+    session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      sdkModule: {
+        query: () => ({
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "assistant",
+              session_id: "claude-session-1",
+              message: { id: "msg-1", content: [], usage: { input_tokens: 4, output_tokens: 6 } },
+            };
+            // Stopping the task aborts the query, which fails with its own error.
+            session.closeRequested = true;
+            throw new Error("The operation was aborted");
+          },
+          close: () => {},
+        }),
+      },
+    });
+
+    await assert.rejects(session.runTurn("hello"), (error) => {
+      assert.equal(error.reason, "session_closed");
+      assert.deepEqual(error.usage, { input_tokens: 4, output_tokens: 6 });
+      return true;
+    });
+  });
+
   it("emits a terminal working status when the Claude process exits before a result", async () => {
     const progressPayloads = [];
     const eventPayloads = [];

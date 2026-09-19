@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   BridgeRunner,
+  countTurnTokens,
   GOAL_CAPABLE_BACKENDS,
   parseGoalDirectiveFromMessage,
 } from "../bin/conductor-fire.js";
@@ -176,6 +177,95 @@ describe("daemon buildFireSpawnArgs (no --goal flag)", () => {
   it("emits just backend + -- when nothing to forward", () => {
     const args = buildFireSpawnArgs({ selectedBackend: "codex", initialContent: "" });
     assert.deepEqual(args, ["--backend", "codex", "--"]);
+  });
+});
+
+describe("turn token usage", () => {
+  it("counts Claude per-turn usage including cache reads and writes", () => {
+    assert.equal(
+      countTurnTokens({
+        input_tokens: 4,
+        cache_creation_input_tokens: 22098,
+        cache_read_input_tokens: 21072,
+        output_tokens: 94,
+        service_tier: "standard",
+      }),
+      43268,
+    );
+  });
+
+  it("uses the Codex provider's per-turn delta and ignores unknown shapes", () => {
+    assert.equal(countTurnTokens({ turnTotalTokens: 60, total: { totalTokens: 150 } }), 60);
+    assert.equal(countTurnTokens({ total: { totalTokens: 150 } }), null);
+    assert.equal(countTurnTokens({ inputTokens: 5 }), null);
+    assert.equal(countTurnTokens(null), null);
+  });
+
+  it("reports turn and goal usage to the server after dispatch", async () => {
+    const reports = [];
+    const conductor = {
+      ...buildConductorStub(),
+      sendTurnUsage: async (taskId, payload) => {
+        reports.push({ taskId, payload });
+        return { delivered: true };
+      },
+    };
+    const backendSession = makeGoalCapableSession({
+      runTurn: async () => ({ text: "turn", usage: { input_tokens: 10, output_tokens: 5 } }),
+      runGoal: async () => ({ text: "goal", usage: { turnTotalTokens: 70 } }),
+    });
+    const runner = buildRunner({ backendSession, conductor, taskId: "task-usage" });
+    await runner.dispatchBackendTurn("hello", {});
+    await runner.dispatchBackendTurn("/goal ship it", {});
+    assert.deepEqual(reports, [
+      { taskId: "task-usage", payload: { tokens: 15 } },
+      { taskId: "task-usage", payload: { tokens: 70 } },
+    ]);
+  });
+
+  it("reports failed turns: their spent tokens, or null when unknown", async () => {
+    const reports = [];
+    const conductor = {
+      ...buildConductorStub(),
+      sendTurnUsage: async (_taskId, payload) => {
+        reports.push(payload);
+      },
+    };
+    const failures = [
+      Object.assign(new Error("interrupted"), { usage: { input_tokens: 7, output_tokens: 3 } }),
+      new Error("crashed"),
+    ];
+    const backendSession = makeGoalCapableSession({
+      runTurn: async () => {
+        throw failures.shift();
+      },
+    });
+    const runner = buildRunner({ backendSession, conductor });
+    await assert.rejects(runner.dispatchBackendTurn("one", {}), /interrupted/);
+    await assert.rejects(runner.dispatchBackendTurn("two", {}), /crashed/);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(reports, [{ tokens: 10 }, { tokens: null }]);
+  });
+
+  it("never lets usage reporting break the turn", async () => {
+    const backendSession = makeGoalCapableSession({
+      runTurn: async () => ({ text: "turn", usage: { input_tokens: 1 } }),
+    });
+    for (const sendTurnUsage of [
+      async () => {
+        throw new Error("socket closed");
+      },
+      () => undefined,
+      undefined,
+    ]) {
+      const runner = buildRunner({
+        backendSession,
+        conductor: { ...buildConductorStub(), sendTurnUsage },
+      });
+      const result = await runner.dispatchBackendTurn("hello", {});
+      assert.equal(result.text, "turn");
+    }
+    await new Promise((resolve) => setImmediate(resolve));
   });
 });
 

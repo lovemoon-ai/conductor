@@ -53,6 +53,8 @@ type SerializableTask = {
   ptySession?: SerializablePtySession | null;
   attachedTerminal?: SerializableAttachedTerminalSummary | null;
   activeScheduledMessageCount?: number | null;
+  tokenUsageTotal?: number | null;
+  lastTurnTokenUsage?: number | null;
 };
 
 const serializePtySession = (ptySession: SerializablePtySession | null) =>
@@ -101,6 +103,8 @@ export const serializeTaskResponse = (task: SerializableTask) => ({
   updated_at: task.updatedAt.toISOString(),
   active_scheduled_message_count: Math.max(0, task.activeScheduledMessageCount ?? 0),
   activeScheduledMessageCount: Math.max(0, task.activeScheduledMessageCount ?? 0),
+  token_usage_total: task.tokenUsageTotal ?? 0,
+  last_turn_token_usage: task.lastTurnTokenUsage ?? null,
   pty_session: serializePtySession(task.ptySession ?? null),
   attached_terminal: task.attachedTerminal
     ? {
