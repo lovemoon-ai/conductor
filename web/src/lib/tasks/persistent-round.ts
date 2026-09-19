@@ -289,6 +289,9 @@ export async function startPersistentRound(input: {
           sessionFilePath: null,
           killedReason: null,
           killedAt: null,
+          // Each round is a fresh AI session: its token counts start over.
+          tokenUsageTotal: 0,
+          lastTurnTokenUsage: null,
           launchConfig: Object.keys(launchConfig).length > 0 ? JSON.stringify(launchConfig) : null,
           metadata: JSON.stringify(metadata),
         },
@@ -346,6 +349,11 @@ export async function startPersistentRound(input: {
       task_id: task.id,
       project_id: task.projectId,
     },
+  });
+  // The status update below carries no token counts; reset them on other clients too.
+  realtimeHub.broadcast(input.userId, task.projectId, {
+    type: "task_token_usage",
+    payload: { task_id: task.id, project_id: task.projectId, token_usage_total: 0, last_turn_token_usage: null },
   });
   broadcastPersistentTaskUpdate({
     userId: input.userId,
