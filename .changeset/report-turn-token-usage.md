@@ -1,7 +1,7 @@
 ---
-"@love-moon/conductor-cli": minor
-"@love-moon/conductor-sdk": minor
-"@love-moon/ai-sdk": minor
+"@love-moon/conductor-cli": patch
+"@love-moon/conductor-sdk": patch
+"@love-moon/ai-sdk": patch
 ---
 
 Report how many model tokens each turn consumed. After every turn (or `/goal`)

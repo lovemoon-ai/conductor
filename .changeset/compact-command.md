@@ -1,6 +1,6 @@
 ---
-"@love-moon/ai-sdk": minor
-"@love-moon/conductor-cli": minor
+"@love-moon/ai-sdk": patch
+"@love-moon/conductor-cli": patch
 ---
 
 Support `/compact [focus instructions]` in task chats. Fire detects the command
