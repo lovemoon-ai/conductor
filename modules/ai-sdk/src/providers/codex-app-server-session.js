@@ -958,8 +958,19 @@ export class CodexAppServerSession extends EventEmitter {
     if (this.closeRequested) {
       return;
     }
+    // Multi-agent mode streams spawned sub-agent threads over this connection.
+    // Only our own thread may drive turn/message state: a sub-agent's
+    // turn/completed must not end the parent turn and drop its final answer.
+    const threadId = typeof params?.threadId === "string" ? params.threadId.trim() : "";
+    if (threadId && this.sessionId && threadId !== this.sessionId) {
+      this.touchTurnActivity();
+      return;
+    }
     switch (method) {
       case "thread/started":
+        if (params?.thread?.parentThreadId) {
+          return;
+        }
         this.applyThreadInfo(params, { resumeReady: Boolean(this.resumeSessionId) });
         return;
       case "sessionConfigured":
