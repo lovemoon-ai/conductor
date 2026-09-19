@@ -660,6 +660,71 @@ describe("agent-gateway ownership handling", () => {
     );
   });
 
+  it("adds reported turn tokens to the task total and broadcasts the new usage", async () => {
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+
+    const socket = new FakeSocket();
+    vi.mocked(db.task.findFirst).mockResolvedValue({ id: "task-usage-1", projectId: "proj-1" } as any);
+    vi.mocked(db.task.update).mockResolvedValue({ tokenUsageTotal: 143268, lastTurnTokenUsage: 43268 } as any);
+
+    const wss = setupAgentGateway();
+    wss.emit("connection", socket as any, {
+      headers: {
+        authorization: "Bearer test-token",
+        "x-conductor-host": "conductor-fire-debug-123",
+      },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as any);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const send = async (payload: Record<string, unknown>) => {
+      socket.emit("message", Buffer.from(JSON.stringify({ type: "task_turn_usage", payload })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    await send({ task_id: "task-usage-1", tokens: "not-a-number" });
+    expect(db.task.update).not.toHaveBeenCalled();
+
+    await send({ task_id: "task-usage-1", tokens: 43268 });
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-usage-1" },
+      data: { tokenUsageTotal: { increment: 43268 }, lastTurnTokenUsage: 43268 },
+      select: { tokenUsageTotal: true, lastTurnTokenUsage: true },
+    });
+    expect(realtimeHub.broadcast).toHaveBeenCalledWith("user-1", "proj-1", {
+      type: "task_token_usage",
+      payload: {
+        task_id: "task-usage-1",
+        project_id: "proj-1",
+        token_usage_total: 143268,
+        last_turn_token_usage: 43268,
+      },
+    });
+
+    // A failed turn with unknown usage only clears the last-turn count.
+    await send({ task_id: "task-usage-1", tokens: null });
+    expect(db.task.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: { lastTurnTokenUsage: null } }),
+    );
+
+    // Tasks outside the user's projects are never touched.
+    vi.mocked(db.task.update).mockClear();
+    vi.mocked(db.task.findFirst).mockResolvedValueOnce(null);
+    await send({ task_id: "someone-elses-task", tokens: 5 });
+    expect(db.task.update).not.toHaveBeenCalled();
+
+    // A pre-migration DB is skipped quietly instead of erroring back every turn.
+    socket.send.mockClear();
+    vi.mocked(db.task.update).mockRejectedValueOnce(
+      Object.assign(new Error("The column `main.tasks.token_usage_total` does not exist"), { code: "P2022" }),
+    );
+    await send({ task_id: "task-usage-1", tokens: 5 });
+    expect(socket.send).not.toHaveBeenCalled();
+  });
+
   it("drops terminal output from stale daemons when another host owns the binding", async () => {
     vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue("daemon-live");
 

@@ -150,7 +150,7 @@ const findTaskDetail = async (userId: string, taskId: string) =>
           ptySession: true,
         },
       });
-      return task ? { ...task, issueId: null, achievedAt: null, secondProjectId: null } : null;
+      return task ? { ...task, issueId: null, achievedAt: null, secondProjectId: null, tokenUsageTotal: 0, lastTurnTokenUsage: null } : null;
     },
   );
 
@@ -179,7 +179,7 @@ const findTaskForPatch = async (userId: string, taskId: string) =>
           ptySession: true,
         },
       });
-      return task ? { ...task, issueId: null, achievedAt: null, secondProjectId: null } : null;
+      return task ? { ...task, issueId: null, achievedAt: null, secondProjectId: null, tokenUsageTotal: 0, lastTurnTokenUsage: null } : null;
     },
   );
 

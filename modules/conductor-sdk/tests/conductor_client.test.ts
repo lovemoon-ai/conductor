@@ -1079,6 +1079,15 @@ describe('ConductorClient', () => {
     await client.close();
   });
 
+  test('sendTurnUsage reports turn tokens over websocket', async () => {
+    const client = await makeClient();
+    await client.sendTurnUsage('task1', { tokens: 43268 });
+    expect(wsClient.sent).toEqual([
+      { type: 'task_turn_usage', payload: { task_id: 'task1', tokens: 43268 } },
+    ]);
+    await client.close();
+  });
+
   test('sendMessage commits over HTTP with stable message id', async () => {
     const client = await makeClient();
     await expect(client.sendMessage('task1', 'hello', { stream: true })).resolves.toEqual(

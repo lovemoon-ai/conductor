@@ -478,6 +478,20 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
       break;
     }
 
+    case 'task_token_usage': {
+      const taskId = normalizeTaskId(payload);
+      const tasksStore = useTasksStore.getState();
+      const task = taskId ? tasksStore.tasks.find((t) => t.id === taskId) : undefined;
+      if (task && typeof payload.token_usage_total === 'number') {
+        tasksStore.updateTaskInList({
+          ...task,
+          tokenUsageTotal: payload.token_usage_total,
+          lastTurnTokenUsage: typeof payload.last_turn_token_usage === 'number' ? payload.last_turn_token_usage : null,
+        });
+      }
+      break;
+    }
+
     case 'task_deleted': {
       const taskId = normalizeTaskId(payload);
       if (!taskId) break;

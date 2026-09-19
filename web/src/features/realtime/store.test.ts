@@ -542,6 +542,24 @@ describe('websocket runtime status handling', () => {
     });
   });
 
+  it('applies task_token_usage totals to the task in place', () => {
+    useTasksStore.setState({
+      tasks: [
+        { id: 'task-a', title: 'A', taskType: 'ai_task', status: 'running', createdAt: '2024-01-01T00:00:00.000Z' },
+        { id: 'task-b', title: 'B', taskType: 'ai_task', status: 'running', createdAt: '2024-01-01T00:00:00.000Z' },
+      ],
+    });
+
+    handleWSMessage({
+      type: 'task_token_usage',
+      payload: { task_id: 'task-b', token_usage_total: 143268, last_turn_token_usage: 43268 },
+    });
+
+    const tasks = useTasksStore.getState().tasks;
+    expect(tasks.map((task) => task.id)).toEqual(['task-a', 'task-b']);
+    expect(tasks[1]).toMatchObject({ tokenUsageTotal: 143268, lastTurnTokenUsage: 43268 });
+  });
+
   it('moves tasks with new assistant messages to the top and refreshes their preview', () => {
     useTasksStore.setState({
       tasks: [

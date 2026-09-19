@@ -223,6 +223,10 @@ export interface Task {
   ptySession?: PtySession | null;
   attachedTerminal?: AttachedTerminalSummary | null;
   activeScheduledMessageCount?: number;
+  /** Model tokens summed over every finished turn (input incl. cache + output). */
+  tokenUsageTotal?: number;
+  /** Tokens of the most recent finished turn; null until one is reported. */
+  lastTurnTokenUsage?: number | null;
   /** Non-null once the task has been achieved (packed). Achieved tasks are
    * excluded from the active list; their transcript is kept for search. */
   achievedAt?: string | null;

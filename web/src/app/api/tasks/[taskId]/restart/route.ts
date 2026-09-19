@@ -100,7 +100,7 @@ const findRestartSourceTask = async (userId: string, taskId: string) =>
             select: taskSelectWithoutIssueId,
           });
           return task
-            ? { ...task, issueId: null, achievedAt: null, secondProjectId: null }
+            ? { ...task, issueId: null, achievedAt: null, secondProjectId: null, tokenUsageTotal: 0, lastTurnTokenUsage: null }
             : null;
         },
         async () => {

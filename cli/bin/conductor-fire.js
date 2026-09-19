@@ -3591,9 +3591,11 @@ export class BridgeRunner {
     }
 
     if (willRunGoal) {
-      const goalResult = await this.backendSession.runGoal(
-        { objective: goalDirective.objective, source: { type: "manual" } },
-        options,
+      const goalResult = await this.runWithTurnUsage(() =>
+        this.backendSession.runGoal(
+          { objective: goalDirective.objective, source: { type: "manual" } },
+          options,
+        ),
       );
       // Goal SDK is expected to return `{ text, goal, usage, metadata }`. We
       // normalize back into the runTurn-compatible shape downstream consumers
@@ -3610,7 +3612,36 @@ export class BridgeRunner {
         },
       };
     }
-    return this.backendSession.runTurn(content, options);
+    return this.runWithTurnUsage(() => this.backendSession.runTurn(content, options));
+  }
+
+  /** Runs one backend turn and reports its token count, including failed or interrupted turns. */
+  async runWithTurnUsage(runTurn) {
+    let result;
+    try {
+      result = await runTurn();
+    } catch (error) {
+      this.reportTurnUsage(error?.usage, { failed: true });
+      throw error;
+    }
+    this.reportTurnUsage(result?.usage);
+    return result;
+  }
+
+  /**
+   * Best-effort: report a turn's token count to the server. A failed turn with
+   * unknown usage reports `null` so the task card drops the previous turn's count.
+   */
+  reportTurnUsage(usage, { failed = false } = {}) {
+    const tokens = countTurnTokens(usage);
+    if ((tokens === null && !failed) || typeof this.conductor?.sendTurnUsage !== "function") {
+      return;
+    }
+    Promise.resolve()
+      .then(() => this.conductor.sendTurnUsage(this.taskId, { tokens }))
+      .catch((error) => {
+        log(`Failed to report turn usage: ${error?.message || error}`);
+      });
   }
 
   /**
@@ -3839,6 +3870,24 @@ function log(message) {
   const line = `[${CLI_NAME} ${ts}] ${message}\n`;
   process.stdout.write(line);
   appendFireLocalLog(line);
+}
+
+/**
+ * Tokens one turn consumed: everything the model read (fresh input plus cache
+ * reads/writes) and wrote. Claude reports per-turn usage; the Codex provider
+ * derives `turnTotalTokens` from thread totals. Other shapes → null.
+ */
+export function countTurnTokens(usage) {
+  if (!usage || typeof usage !== "object") {
+    return null;
+  }
+  if (Number.isFinite(usage.turnTotalTokens)) {
+    return usage.turnTotalTokens;
+  }
+  const counts = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"]
+    .map((key) => Number(usage[key]))
+    .filter(Number.isFinite);
+  return counts.length > 0 ? counts.reduce((sum, count) => sum + count, 0) : null;
 }
 
 function logBackendReply(backend, text, { usage, replyTo }) {

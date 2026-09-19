@@ -84,6 +84,18 @@ ${schemaText}
 ${promptText}`;
 }
 
+function readTokenCount(breakdown) {
+  const value = Number(breakdown?.totalTokens);
+  return Number.isFinite(value) ? value : null;
+}
+
+/** A failed or interrupted turn still spent tokens: expose them on the error. */
+function attachTurnUsage(error, usage) {
+  if (error && typeof error === "object" && error.usage === undefined) {
+    error.usage = usage;
+  }
+}
+
 function normalizeItemId(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -280,6 +292,8 @@ export class CodexAppServerSession extends EventEmitter {
     this.nativeSessionId = "";
     this.rateLimits = null;
     this.tokenUsage = null;
+    // Thread total when the current turn/goal started; see snapshotTokenUsage().
+    this.turnTokenBaseline = null;
     this.currentTurnStatus = null;
     this.currentTurnActivityAt = 0;
     this.now = typeof options.now === "function" ? options.now : () => Date.now();
@@ -562,6 +576,23 @@ export class CodexAppServerSession extends EventEmitter {
     }
   }
 
+  /**
+   * Thread token usage plus `turnTotalTokens`: tokens spent since the current
+   * turn (or goal) started. Codex only reports thread-cumulative totals.
+   */
+  snapshotTokenUsage() {
+    if (!this.tokenUsage) {
+      return null;
+    }
+    const total = readTokenCount(this.tokenUsage.total);
+    return {
+      ...this.tokenUsage,
+      ...(total !== null && this.turnTokenBaseline !== null
+        ? { turnTotalTokens: Math.max(0, total - this.turnTokenBaseline) }
+        : {}),
+    };
+  }
+
   resolveContextUsagePercent() {
     const totalTokens = Number(this.tokenUsage?.total?.totalTokens);
     const contextWindow = Number(this.tokenUsage?.modelContextWindow);
@@ -619,6 +650,7 @@ export class CodexAppServerSession extends EventEmitter {
     this.manualResumeReady = false;
     this.sessionInfo = null;
     this.tokenUsage = null;
+    this.turnTokenBaseline = null;
     this.booted = false;
     this.bootPromise = null;
   }
@@ -1044,9 +1076,22 @@ export class CodexAppServerSession extends EventEmitter {
         await this.queueAssistantDelta(delta, { messageId });
         return;
       }
-      case "thread/tokenUsage/updated":
-        this.tokenUsage = params?.tokenUsage && typeof params.tokenUsage === "object" ? { ...params.tokenUsage } : null;
+      case "thread/tokenUsage/updated": {
+        const tokenUsage = params?.tokenUsage && typeof params.tokenUsage === "object" ? { ...params.tokenUsage } : null;
+        // No total was known when this turn started (fresh boot or resume).
+        // Codex replays a resumed thread's total right after thread/resume,
+        // before this turn's own responses: that total is the baseline. A
+        // notification from this turn's first response has `total - last`.
+        if (this.currentTurn && this.turnTokenBaseline === null && tokenUsage) {
+          const total = readTokenCount(tokenUsage.total);
+          const last = readTokenCount(tokenUsage.last);
+          const turnId = this.currentTurn.turnId;
+          const beforeTurn = !turnId || Boolean(params?.turnId && params.turnId !== turnId);
+          this.turnTokenBaseline = total === null ? null : beforeTurn ? total : last === null ? null : total - last;
+        }
+        this.tokenUsage = tokenUsage;
         return;
+      }
       case "account/rateLimits/updated":
         this.rateLimits = params?.rateLimits && typeof params.rateLimits === "object" ? { ...params.rateLimits } : null;
         return;
@@ -1141,7 +1186,7 @@ export class CodexAppServerSession extends EventEmitter {
         await this.emitTurnCompletedStatus(currentTurn);
         currentTurn.resolve({
           turn,
-          usage: this.tokenUsage ? { ...this.tokenUsage } : null,
+          usage: this.snapshotTokenUsage(),
         });
         this.currentTurn = null;
         return;
@@ -1271,6 +1316,7 @@ export class CodexAppServerSession extends EventEmitter {
       resolve: resolveTurn,
       reject: rejectTurn,
     };
+    this.turnTokenBaseline = readTokenCount(this.tokenUsage?.total);
     this.currentTurn = currentTurn;
 
     try {
@@ -1379,6 +1425,7 @@ export class CodexAppServerSession extends EventEmitter {
         });
       }
       this.maybeEmitAuthRequired(error);
+      attachTurnUsage(error, this.snapshotTokenUsage());
       throw error;
     } finally {
       if (this.currentTurn === currentTurn) {
@@ -1601,7 +1648,7 @@ export class CodexAppServerSession extends EventEmitter {
         if (isTerminalGoalStatusLocal(payload.status)) {
           resolveGoal?.({
             goal: { ...goalRun.latestGoal },
-            usage: this.tokenUsage ? { ...this.tokenUsage } : null,
+            usage: this.snapshotTokenUsage(),
             cleared: false,
           });
         }
@@ -1615,7 +1662,7 @@ export class CodexAppServerSession extends EventEmitter {
         };
         resolveGoal?.({
           goal: { ...finalGoal, status: finalGoal.status || "complete" },
-          usage: this.tokenUsage ? { ...this.tokenUsage } : null,
+          usage: this.snapshotTokenUsage(),
           cleared: true,
         });
       },
@@ -1640,6 +1687,7 @@ export class CodexAppServerSession extends EventEmitter {
       },
       goalMode: true,
     };
+    this.turnTokenBaseline = readTokenCount(this.tokenUsage?.total);
     this.currentTurn = currentTurn;
 
     try {
@@ -1678,7 +1726,7 @@ export class CodexAppServerSession extends EventEmitter {
         if (isTerminalGoalStatusLocal(initialGoal.status)) {
           resolveGoal?.({
             goal: { ...initialGoal },
-            usage: this.tokenUsage ? { ...this.tokenUsage } : null,
+            usage: this.snapshotTokenUsage(),
             cleared: false,
           });
         }
@@ -1724,7 +1772,7 @@ export class CodexAppServerSession extends EventEmitter {
           status: goalState.status,
           tokenBudget: goalState.tokenBudget !== undefined ? goalState.tokenBudget : tokenBudget,
         },
-        usage: goalResult?.usage || (this.tokenUsage ? { ...this.tokenUsage } : null),
+        usage: goalResult?.usage || this.snapshotTokenUsage(),
         metadata: {
           source: CODEX_APP_SERVER_VARIANT,
           threadId: this.sessionId,
@@ -1745,6 +1793,7 @@ export class CodexAppServerSession extends EventEmitter {
         });
       }
       this.maybeEmitAuthRequired(error);
+      attachTurnUsage(error, this.snapshotTokenUsage());
       throw error;
     } finally {
       // Always clear goal-run state (NOT currentTurn — that's done by per-turn

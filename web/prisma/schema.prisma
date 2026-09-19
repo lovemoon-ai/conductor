@@ -284,6 +284,11 @@ model Task {
   backendType String? @map("backend_type")
   sessionId String? @map("session_id")
   sessionFilePath String? @map("session_file_path")
+  /// Model tokens (fresh input + cache reads/writes + output) summed over every
+  /// reported turn. Float: long-lived tasks can pass the Int32 limit.
+  tokenUsageTotal    Float @default(0) @map("token_usage_total")
+  /// Tokens of the most recent finished turn; null until one is reported.
+  lastTurnTokenUsage Int?  @map("last_turn_token_usage")
   launchConfig String? @map("launch_config")
   metadata  String?
   /// RFC 0029: discriminates how a task entered the `killed` state so restart

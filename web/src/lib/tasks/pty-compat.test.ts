@@ -3,6 +3,7 @@ import {
   applyLegacyTaskShape,
   isMissingGroupIdColumnError,
   isMissingPtySchemaError,
+  isMissingTokenUsageColumnError,
   taskSelectWithoutIssueId,
 } from "./pty-compat";
 
@@ -37,6 +38,8 @@ describe("task schema compatibility shape", () => {
       ptySession: null,
       killedReason: null,
       killedAt: null,
+      tokenUsageTotal: 0,
+      lastTurnTokenUsage: null,
     });
   });
 
@@ -71,5 +74,11 @@ describe("task schema compatibility shape", () => {
         message: "The column `tasks.task_type` does not exist in the current database.",
       }),
     ).toBe(false);
+    const missingTokenColumn = {
+      code: "P2022",
+      message: "The column `main.tasks.token_usage_total` does not exist in the current database.",
+    };
+    expect(isMissingTokenUsageColumnError(missingTokenColumn)).toBe(true);
+    expect(isMissingPtySchemaError(missingTokenColumn)).toBe(true);
   });
 });

@@ -43,15 +43,13 @@ describe('ConnectionStatus', () => {
             pid: 2345,
             backend: 'codex',
             sessionId: 'session-xyz',
-            tokenUsagePercent: 12,
-            contextUsagePercent: 34,
           },
         },
       }),
     );
     useTasksStoreMock.mockImplementation((selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
       selector({
-        tasks: [{ id: 'task-123', executionHost: 'daemon-a', activeScheduledMessageCount: 2 }],
+        tasks: [{ id: 'task-123', executionHost: 'daemon-a', tokenUsageTotal: 1234567, lastTurnTokenUsage: 43268 }],
       }),
     );
   });
@@ -70,16 +68,55 @@ describe('ConnectionStatus', () => {
     expect(labels).toEqual([
       'Task ID',
       'PID',
-      'Scheduled',
       'Session ID',
-      'Token Usage',
-      'Context Usage',
+      'Task Tokens',
+      'Turn Tokens',
     ]);
-    expect(screen.getByText('2 active')).toBeInTheDocument();
+    expect(screen.getByText('1.2M')).toBeInTheDocument();
+    expect(screen.getByText('43.3K')).toBeInTheDocument();
     expect(screen.queryByText('Connection')).toBeNull();
     expect(screen.queryByText('Daemon')).toBeNull();
     expect(screen.queryByText('Backend')).toBeNull();
     expect(screen.queryByText('AI Mode')).toBeNull();
+  });
+
+  it('shows an ellipsis for the turn while a reply is in progress', () => {
+    useRuntimeStoreMock.mockImplementation((selector: (state: { byTask: Record<string, unknown> }) => unknown) =>
+      selector({ byTask: { 'task-123': { taskId: 'task-123', replyInProgress: true } } }),
+    );
+
+    render(<ConnectionStatus detailsEnabled />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open connection details' }));
+
+    expect(screen.getByText('1.2M')).toBeInTheDocument();
+    expect(screen.getByText('…')).toBeInTheDocument();
+    expect(screen.queryByText('43.3K')).toBeNull();
+  });
+
+  it('keeps the task total but shows n/a for a failed turn with unknown usage', () => {
+    useTasksStoreMock.mockImplementation((selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
+      selector({ tasks: [{ id: 'task-123', tokenUsageTotal: 1234567, lastTurnTokenUsage: null }] }),
+    );
+
+    render(<ConnectionStatus detailsEnabled />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open connection details' }));
+
+    const details = screen.getByText('Runtime Details').parentElement!;
+    const values = Array.from(details.querySelectorAll('span.text-ink')).map((item) => item.textContent);
+    expect(values.slice(-2)).toEqual(['1.2M', 'n/a']);
+  });
+
+  it('shows n/a for tokens before any turn is reported', () => {
+    useTasksStoreMock.mockImplementation((selector: (state: { tasks: Array<Record<string, unknown>> }) => unknown) =>
+      selector({ tasks: [{ id: 'task-123', tokenUsageTotal: 0, lastTurnTokenUsage: null }] }),
+    );
+
+    render(<ConnectionStatus detailsEnabled />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open connection details' }));
+
+    const details = screen.getByText('Runtime Details').parentElement!;
+    const values = Array.from(details.querySelectorAll('span.text-ink')).map((item) => item.textContent);
+    expect(values.slice(-2)).toEqual(['n/a', 'n/a']);
   });
 
   it('uses a dark panel with white text for pty tasks', () => {
@@ -111,8 +148,6 @@ describe('ConnectionStatus', () => {
             pid: 998,
             backend: 'codex',
             sessionId: 'session-pty-9',
-            tokenUsagePercent: 1,
-            contextUsagePercent: 2,
           },
         },
       }),
