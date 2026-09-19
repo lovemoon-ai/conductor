@@ -162,7 +162,7 @@ function resolveItemPhase(item) {
   ) {
     return "reasoning";
   }
-  if (hasCandidate("message", "agent_message", "output_text", "final_answer")) {
+  if (hasCandidate("message", "agentmessage", "agent_message", "output_text", "final_answer")) {
     return "assistant_message";
   }
   if (hasCandidate("compaction", "context_compacted", "compacted") || includesCandidate("compact")) {

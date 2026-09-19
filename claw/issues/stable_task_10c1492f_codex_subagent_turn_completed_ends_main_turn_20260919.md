@@ -65,10 +65,11 @@ AI 没有卡住，也没有停。codex 把第一轮完整跑完了（11:37:49 CS
    断言主轮只在主线程 `turn/completed` 时 resolve、最终答案被送出、子 agent 的消息不进 transcript。
 5. 修复前需要确认：app-server v2 的 `turn/*`、`item/*` 通知确实带 `threadId`（rollout 中的 `item_completed` 带 `thread_id`）。
 
-## 次要观察（未深挖）
+## 次要问题：commentary 落库延迟（已修复）
 主线程 commentary 的落库时间比 codex 写出时间晚 22 秒到 3 分钟，看起来要等下一条 assistant item 开始或者 `turn/completed`
 才会被刷出，`item/completed` 没有及时 finalize。原因是 `resolveItemPhase` 不认识 v2 的 `type: "agentMessage"`，所以消息边界只能靠下一条
-delta 的 itemId 变化或 `turn/completed` 来判断。这是另一个问题，不影响本结论，但会让长轮次显得“卡顿”，留作后续处理。
+delta 的 itemId 变化或 `turn/completed` 来判断。这是另一个问题，不影响本结论，但会让长轮次显得“卡顿”。已修复：`resolveItemPhase` 现在把 `agentmessage` 识别为 assistant 消息，
+commentary 会在它自己的 `item/completed` 时立即发出。测试：`modules/ai-sdk/test/codex-app-server-session-message-boundary.test.js`。
 
 ## 用户侧
 这个任务当前没有卡住。丢失的两份最终答案仍然在 l20 的 codex rollout 里（11:37:49、13:21:40），但 UI 上看不到。用户可以让 AI
