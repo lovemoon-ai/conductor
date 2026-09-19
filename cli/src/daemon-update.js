@@ -272,17 +272,6 @@ function buildInstallCommand(packageManager, pkgSpec) {
   }
 }
 
-function buildUninstallCommand(packageManager, packageName) {
-  switch (packageManager) {
-    case "pnpm":
-      return { command: "pnpm", args: ["remove", "-g", packageName] };
-    case "yarn":
-      return { command: "yarn", args: ["global", "remove", packageName] };
-    default:
-      return { command: "npm", args: ["uninstall", "-g", packageName] };
-  }
-}
-
 /**
  * `npm install -g` targets whichever npm wins the PATH lookup, which is not
  * necessarily the one that installed us. Pin it to the prefix the running
@@ -320,6 +309,7 @@ export async function runDaemonUpdate(params = {}, deps = {}) {
   const killFn = deps.kill || process.kill.bind(process);
   const readFileSync = deps.readFileSync || fs.readFileSync;
   const rmSync = deps.rmSync || fs.rmSync;
+  const renameSync = deps.renameSync || fs.renameSync;
   const sleep = deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const now = deps.now || (() => Date.now());
   const writeStatus = deps.writeStatus || writeDaemonUpdateStatus;
@@ -422,25 +412,43 @@ export async function runDaemonUpdate(params = {}, deps = {}) {
 
   log(`${install.command} ${install.args.join(" ")}`);
   let installResult = await runInstall();
-  if (!installResult.success) {
-    // A half-removed global install makes npm fail with ENOTEMPTY forever.
-    // Clear it out and try once more before giving up.
-    log(`install failed (exit ${installResult.code}); removing the broken install and retrying`);
+  // A half-removed global install makes npm fail with ENOTEMPTY forever. Move
+  // it aside and try once more. Any other failure (timeout, network, build)
+  // leaves the install untouched: the daemon and every fire it spawns run
+  // from that directory.
+  if (!installResult.success && /ENOTEMPTY/.test(`${installResult.stderr}${installResult.stdout}`)) {
+    log(`install failed (exit ${installResult.code}); moving the broken install aside and retrying`);
     log(String(installResult.stderr || installResult.stdout || "").trim().slice(-800));
-    const uninstall = buildUninstallCommand(packageManager, packageName);
-    await runCommand(uninstall.command, uninstall.args, { env: installEnv, timeoutMs: INSTALL_TIMEOUT_MS });
+    let packageDirectory = null;
+    let backupDirectory = null;
     try {
-      const packageDirectory = await resolveGlobalPackageDirectory({
+      packageDirectory = await resolveGlobalPackageDirectory({
         packageManager,
         packageName,
         runCommand: (command, args, options) => runCommand(command, args, { env: installEnv, ...options }),
       });
-      rmSync(packageDirectory, { recursive: true, force: true });
-      log(`removed ${packageDirectory}`);
+      const backup = path.join(path.dirname(packageDirectory), `.${path.basename(packageDirectory)}-update-backup`);
+      rmSync(backup, { recursive: true, force: true });
+      renameSync(packageDirectory, backup);
+      backupDirectory = backup;
+      log(`moved ${packageDirectory} aside`);
     } catch (error) {
-      log(`could not remove the global package directory: ${error?.message || error}`);
+      log(`could not move the global package directory aside: ${error?.message || error}`);
     }
     installResult = await runInstall();
+    if (backupDirectory) {
+      try {
+        if (installResult.success) {
+          rmSync(backupDirectory, { recursive: true, force: true });
+        } else {
+          rmSync(packageDirectory, { recursive: true, force: true });
+          renameSync(backupDirectory, packageDirectory);
+          log(`restored ${packageDirectory}`);
+        }
+      } catch (error) {
+        log(`could not clean up ${backupDirectory}: ${error?.message || error}`);
+      }
+    }
   }
   if (!installResult.success) {
     return fail(
