@@ -17,6 +17,8 @@ import {
 import { GUEST_BLOCKED_CAPABILITIES } from "../src/guest-daemon.js";
 
 const DAEMON_PID = 4242;
+const PACKAGE_DIR = path.join("/usr/local/lib/node_modules", "@love-moon/conductor-cli");
+const BACKUP_DIR = path.join("/usr/local/lib/node_modules", "@love-moon/.conductor-cli-update-backup");
 const NEW_DAEMON_PID = 5252;
 
 /**
@@ -31,6 +33,7 @@ function makeMachine({ installOutcomes = [{ success: true }], installedVersion =
     commands: [],
     spawned: [],
     removedDirs: [],
+    renames: [],
     lockPid: DAEMON_PID,
     installOutcomes: [...installOutcomes],
     installedVersion,
@@ -103,6 +106,7 @@ function runDeps(machine, overrides = {}) {
     kill: machine.kill,
     readFileSync: machine.readFileSync,
     rmSync: (dir) => machine.removedDirs.push(dir),
+    renameSync: (from, to) => machine.renames.push([from, to]),
     sleep: async () => {},
     writeStatus: (_statusPath, status) => machine.statuses.push({ ...status }),
     writeLine: () => {},
@@ -146,20 +150,34 @@ test("a failed install leaves the running daemon alone", async () => {
   assert.equal(machine.daemonAlive, true);
   assert.deepEqual(machine.signals, []);
   assert.deepEqual(machine.spawned, []);
+  // The daemon runs from the old install, so a failed retry must put it back.
+  assert.deepEqual(machine.renames, [
+    [PACKAGE_DIR, BACKUP_DIR],
+    [BACKUP_DIR, PACKAGE_DIR],
+  ]);
 });
 
-test("a broken global install is cleared out and the install retried once", async () => {
+test("a broken global install is moved aside and the install retried once", async () => {
   const machine = makeMachine({
     installOutcomes: [{ success: false, code: 1, stderr: "ENOTEMPTY" }, { success: true, code: 0 }],
   });
   const result = await runDaemonUpdate(runParams(), runDeps(machine));
 
   assert.equal(result.status, "completed");
-  assert.ok(machine.commands.some((entry) => entry.startsWith("npm uninstall -g")));
-  assert.deepEqual(machine.removedDirs, [
-    path.join("/usr/local/lib/node_modules", "@love-moon/conductor-cli"),
-  ]);
+  assert.deepEqual(machine.renames, [[PACKAGE_DIR, BACKUP_DIR]]);
+  assert.deepEqual(machine.removedDirs, [BACKUP_DIR, BACKUP_DIR]);
   assert.equal(machine.daemonAlive, false);
+});
+
+test("a timed-out install is not retried and never touches the running install", async () => {
+  const machine = makeMachine({ installOutcomes: [{ success: false, code: null, stderr: "" }] });
+  const result = await runDaemonUpdate(runParams(), runDeps(machine));
+
+  assert.equal(result.status, "failed");
+  assert.equal(machine.commands.filter((entry) => entry.includes("install -g")).length, 1);
+  assert.deepEqual(machine.renames, []);
+  assert.deepEqual(machine.removedDirs, []);
+  assert.equal(machine.daemonAlive, true);
 });
 
 test("a version mismatch after install aborts before touching the daemon", async () => {
