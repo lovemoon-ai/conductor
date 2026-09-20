@@ -1,6 +1,6 @@
 'use client';
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Message } from '@/shared/types';
 import { CatchphrasePopover } from '@/features/catchphrases/components/CatchphrasePopover';
 import { readFromClipboard } from '@/lib/clipboard';
@@ -176,6 +176,9 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
   const composerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Caret to reapply right after the re-render that follows a programmatic
+  // edit, so React re-assigning the textarea value cannot drop it.
+  const pendingCaretRef = useRef<number | null>(null);
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const isComposingRef = useRef(false);
   // Track which history entry is currently displayed by content rather than
@@ -338,6 +341,13 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   }, [content, selectedFiles.length]);
 
   const canSend = Boolean(content.trim() || selectedFiles.length) && !disabled && !sendDisabled && !isSubmitting;
+
+  useLayoutEffect(() => {
+    const caret = pendingCaretRef.current;
+    if (caret === null) return;
+    pendingCaretRef.current = null;
+    textareaRef.current?.setSelectionRange(caret, caret);
+  });
 
   const moveCaretToEnd = useCallback((nextValue?: string) => {
     const textarea = textareaRef.current;
@@ -643,13 +653,15 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
       e.preventDefault();
       const textarea = textareaRef.current;
       if (!textarea) return;
+      // Insert through the DOM so the value and the caret move together in one
+      // synchronous step. Restoring the caret in a later task let a keystroke
+      // typed before it ran land at the end of the textarea instead of after
+      // the new line, silently scrambling the message that got sent.
       const start = textarea.selectionStart;
       const end = textarea.selectionEnd;
-      const newContent = content.slice(0, start) + '\n' + content.slice(end);
-      updateContent(newContent);
-      setTimeout(() => {
-        textarea.selectionStart = textarea.selectionEnd = start + 1;
-      }, 0);
+      textarea.setRangeText('\n', start, end, 'end');
+      pendingCaretRef.current = start + 1;
+      updateContent(textarea.value);
       return;
     }
     e.preventDefault();

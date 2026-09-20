@@ -274,6 +274,32 @@ describe('MessageInput', () => {
     expect(textarea).toHaveValue('');
   });
 
+  it('keeps a keystroke typed right after Shift+Enter on the new line', async () => {
+    const onSend = vi.fn();
+    render(<MessageInput taskId="shift-enter-race" onSend={onSend} />);
+    const textarea = screen.getByRole('textbox', { name: 'Message input' }) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'first replace second' } });
+    textarea.setSelectionRange(5, 14);
+
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true });
+
+    // Synchronously, with no waiting: the caret must already sit after the new
+    // line by the time the next keystroke is processed. Restoring it in a later
+    // task left the caret at the end of the textarea, so a character typed in
+    // that window was appended there and the sent message came out scrambled.
+    expect(textarea).toHaveValue('first\nsecond');
+    expect(textarea.selectionStart).toBe(6);
+    expect(textarea.selectionEnd).toBe(6);
+
+    const caret = textarea.selectionStart;
+    const typed = `${textarea.value.slice(0, caret)}B${textarea.value.slice(caret)}`;
+    fireEvent.change(textarea, { target: { value: typed } });
+
+    expect(textarea).toHaveValue('first\nBsecond');
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('first\nBsecond');
+  });
+
   it('autofocuses the composer when requested', async () => {
     render(
       <MessageInput
