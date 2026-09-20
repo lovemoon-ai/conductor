@@ -253,6 +253,27 @@ describe('MessageInput', () => {
     expect(textarea).toHaveValue('keep this draft');
   });
 
+  it('inserts a newline with Shift+Enter and sends only on plain Enter', async () => {
+    const onSend = vi.fn();
+    render(<MessageInput taskId="shift-enter-draft" onSend={onSend} />);
+    const textarea = screen.getByRole('textbox', { name: 'Message input' }) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'first replace second' } });
+    textarea.setSelectionRange(5, 14);
+
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue('first\nsecond');
+    await waitFor(() => {
+      expect(textarea.selectionStart).toBe(6);
+      expect(textarea.selectionEnd).toBe(6);
+    });
+
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('first\nsecond');
+    expect(textarea).toHaveValue('');
+  });
+
   it('autofocuses the composer when requested', async () => {
     render(
       <MessageInput
