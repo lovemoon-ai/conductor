@@ -1,5 +1,6 @@
 'use client';
 
+import { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { MermaidDiagram } from './MermaidDiagram';
@@ -8,7 +9,7 @@ interface MarkdownRendererProps {
   content: string;
 }
 
-export function MarkdownRenderer({ content }: MarkdownRendererProps) {
+export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: MarkdownRendererProps) {
   // Split content by mermaid code blocks
   const parts = splitMermaidBlocks(content);
 
@@ -50,7 +51,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
       })}
     </div>
   );
-}
+});
 
 interface ContentPart {
   type: 'text' | 'mermaid';

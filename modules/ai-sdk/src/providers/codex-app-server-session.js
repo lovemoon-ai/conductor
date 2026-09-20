@@ -1099,12 +1099,16 @@ export class CodexAppServerSession extends EventEmitter {
           }
           return;
         }
-        await this.emitWorkingStatus({
-          phase: "message_aggregation",
-          reply_in_progress: true,
-          status_line: statusLineForPhase("message_aggregation"),
-        });
-        await this.queueAssistantDelta(delta, { messageId });
+        // Notifications from one stdout batch run concurrently. Buffer the
+        // delta before yielding so item/completed cannot flush a partial reply.
+        await Promise.all([
+          this.queueAssistantDelta(delta, { messageId }),
+          this.emitWorkingStatus({
+            phase: "message_aggregation",
+            reply_in_progress: true,
+            status_line: statusLineForPhase("message_aggregation"),
+          }),
+        ]);
         return;
       }
       case "thread/tokenUsage/updated": {
