@@ -1,5 +1,20 @@
 # @love-moon/ai-sdk
 
+## 0.13.3
+
+### Patch Changes
+
+- 0859251: Show Codex progress notes as soon as Codex finishes writing them. The session
+  did not recognize the app-server's `agentMessage` items, so a commentary message
+  was held back until the next message started or the turn ended, often minutes
+  later during long tool runs.
+- c1b66d1: Fix Codex tasks that stopped mid-reply after the agent spawned sub-agents. In
+  multi-agent mode the Codex app-server also streams the sub-agent threads, and
+  the first sub-agent to finish ended the parent turn. The parent's later
+  messages and final answer were dropped, and a sub-agent's report could show up
+  as the AI reply. The session now ignores notifications from other threads.
+- f6dbd6b: Show completed Codex replies while subsequent tools are still running, and keep replies intact when their final text and completion arrive together.
+
 ## 0.13.2
 
 ### Patch Changes

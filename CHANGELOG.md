@@ -18,6 +18,33 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.13.3] - 2026-09-20
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.13.3`
+- `@love-moon/conductor-sdk` `0.13.3`
+- `@love-moon/ai-sdk` `0.13.3`
+- `@love-moon/app-sdk` `0.13.3`
+- `@love-moon/chat-web` `0.13.3`
+
+### Changes
+
+### Patch Changes
+
+- 9858ad5: Fix Update daemon deleting the running install when the upgrade failed. Any
+  failed `npm install -g` (a timeout on a slow registry, a node-gyp error) used to
+  trigger an uninstall plus `rm -rf` of the global package before one retry. When
+  the retry also failed, the daemon kept running with its files gone and every new
+  task died at Fire launch with `MODULE_NOT_FOUND`. The clear-and-retry now only
+  runs on `ENOTEMPTY`, and it moves the old install aside and restores it if the
+  retry fails.
+- Updated dependencies [0859251]
+- Updated dependencies [c1b66d1]
+- Updated dependencies [f6dbd6b]
+  - @love-moon/ai-sdk@0.13.3
+  - @love-moon/conductor-sdk@0.13.3
+
 ## [0.13.2] - 2026-09-19
 
 ### Released packages
