@@ -280,17 +280,23 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const previousWebSocketStatusRef = useRef<'connected' | 'connecting' | 'disconnected' | null>(null);
   const pendingInterruptReplyToRef = useRef<string | null>(null);
   const messageInputRef = useRef<MessageInputHandle>(null);
-  const { messagesByTask, historyStateByTask, loadingTasks, fetchMessages, sendMessage, uploadAttachments, clearUploadedAttachmentCache, insertMessage } = useChatStore();
+  const messages = useChatStore((state) => state.messagesByTask[taskId] ?? EMPTY_MESSAGES);
+  const historyState = useChatStore((state) => state.historyStateByTask[taskId]);
+  const isLoading = useChatStore((state) => state.loadingTasks.has(taskId));
+  const fetchMessages = useChatStore((state) => state.fetchMessages);
+  const sendMessage = useChatStore((state) => state.sendMessage);
+  const uploadAttachments = useChatStore((state) => state.uploadAttachments);
+  const clearUploadedAttachmentCache = useChatStore((state) => state.clearUploadedAttachmentCache);
+  const insertMessage = useChatStore((state) => state.insertMessage);
   const runtime = useRuntimeStore((state) => state.byTask[taskId]);
   const clearRuntime = useRuntimeStore((state) => state.clearTask);
-  const tasks = useTasksStore((state) => state.tasks);
+  const task = useTasksStore((state) => state.tasks.find((item) => item.id === taskId));
   const fetchTask = useTasksStore((state) => state.fetchTask);
   const restartTask = useTasksStore((state) => state.restartTask);
   const startTaskRound = useTasksStore((state) => state.startTaskRound);
   const endTaskRound = useTasksStore((state) => state.endTaskRound);
   const fetchProjects = useProjectsStore((state) => state.fetchProjects);
   const websocketStatus = useWebSocketStore((state) => state.status);
-  const task = tasks.find((t) => t.id === taskId);
   const isTaskRunning = task?.status === 'running';
   const [uiState, dispatchUiState] = useReducer(chatViewUiReducer, INITIAL_CHAT_VIEW_UI_STATE);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -308,7 +314,6 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   // throttle the (O(N) getBoundingClientRect) scan to at most once per frame.
   const activeQuestionRafRef = useRef<number | null>(null);
 
-  const messages = messagesByTask[taskId] ?? EMPTY_MESSAGES;
   const roundGroups = useMemo(() => buildPersistentRoundGroups(messages), [messages]);
   const roundGroupByStartIndex = useMemo(
     () => new Map(roundGroups.map((group) => [group.startIndex, group] as const)),
@@ -345,8 +350,6 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
       task?.status === 'unknown'),
   );
   const roundEndMessageId = persistentState?.roundEndMessageId ?? null;
-  const historyState = historyStateByTask[taskId];
-  const isLoading = loadingTasks.has(taskId);
   const hasMoreBefore = historyState?.hasMoreBefore ?? false;
   const oldestMessageId = historyState?.oldestMessageId ?? null;
   const aiRuntimeStatusText = getAiRuntimeStatusText(runtime);
@@ -1176,12 +1179,8 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
                     message={message}
                     onResend={handleResend}
                     onSchedule={handleScheduleMessage}
-                    onRestart={() => {
-                      void handleRestart();
-                    }}
-                    onInterrupt={() => {
-                      void handleInterrupt();
-                    }}
+                    onRestart={handleRestart}
+                    onInterrupt={handleInterrupt}
                     restartEnabled={restartEnabled}
                     restartPending={restartPending}
                     interruptEnabled={interruptEnabled}

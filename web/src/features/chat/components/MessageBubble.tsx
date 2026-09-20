@@ -1,7 +1,7 @@
 'use client';
 
 import Image from 'next/image';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Message } from '@/shared/types';
 import { copyToClipboard } from '@/lib/clipboard';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -31,7 +31,7 @@ const formatBytes = (value: number) => {
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 };
 
-export function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   message,
   onResend,
   onSchedule,
@@ -510,4 +510,4 @@ export function MessageBubble({
       ) : null}
     </div>
   );
-}
+});

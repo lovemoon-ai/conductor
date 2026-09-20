@@ -639,7 +639,7 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
 
     if (e.key !== 'Enter') return;
     if (e.nativeEvent.isComposing || isComposingRef.current) return;
-    if (e.ctrlKey || e.metaKey) {
+    if (e.shiftKey || e.ctrlKey || e.metaKey) {
       e.preventDefault();
       const textarea = textareaRef.current;
       if (!textarea) return;

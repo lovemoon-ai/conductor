@@ -93,7 +93,7 @@ function scheduleTurn({ threadId, turnIndex, totalTurns, baseDelayMs, sendOrder,
     notification("item/started", {
       threadId,
       turnId,
-      item: { type: "message", role: "assistant", id: messageId },
+      item: { type: "agentMessage", id: messageId, text },
     });
   const fireDelta = () =>
     notification("item/agentMessage/delta", {
@@ -106,7 +106,7 @@ function scheduleTurn({ threadId, turnIndex, totalTurns, baseDelayMs, sendOrder,
     notification("item/completed", {
       threadId,
       turnId,
-      item: { type: "message", role: "assistant", id: messageId },
+      item: { type: "agentMessage", id: messageId, text },
     });
   const fireTurnCompleted = () =>
     notification("turn/completed", {
