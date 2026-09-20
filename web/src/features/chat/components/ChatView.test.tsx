@@ -24,7 +24,7 @@ const restartTaskMock = vi.fn().mockResolvedValue({
 });
 
 vi.mock('../store', () => ({
-  useChatStore: () => useChatStoreMock(),
+  useChatStore: (selector: (state: ReturnType<typeof useChatStoreMock>) => unknown) => selector(useChatStoreMock()),
 }));
 
 vi.mock('@/shared/api/client', () => ({

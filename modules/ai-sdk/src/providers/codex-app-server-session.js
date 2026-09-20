@@ -162,7 +162,7 @@ function resolveItemPhase(item) {
   ) {
     return "reasoning";
   }
-  if (hasCandidate("message", "agent_message", "output_text", "final_answer")) {
+  if (hasCandidate("message", "agentmessage", "agent_message", "output_text", "final_answer")) {
     return "assistant_message";
   }
   if (hasCandidate("compaction", "context_compacted", "compacted") || includesCandidate("compact")) {
@@ -1088,12 +1088,16 @@ export class CodexAppServerSession extends EventEmitter {
           }
           return;
         }
-        await this.emitWorkingStatus({
-          phase: "message_aggregation",
-          reply_in_progress: true,
-          status_line: statusLineForPhase("message_aggregation"),
-        });
-        await this.queueAssistantDelta(delta, { messageId });
+        // Notifications from one stdout batch run concurrently. Buffer the
+        // delta before yielding so item/completed cannot flush a partial reply.
+        await Promise.all([
+          this.queueAssistantDelta(delta, { messageId }),
+          this.emitWorkingStatus({
+            phase: "message_aggregation",
+            reply_in_progress: true,
+            status_line: statusLineForPhase("message_aggregation"),
+          }),
+        ]);
         return;
       }
       case "thread/tokenUsage/updated": {
