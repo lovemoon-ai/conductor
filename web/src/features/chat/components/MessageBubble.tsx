@@ -1,10 +1,11 @@
 'use client';
 
 import Image from 'next/image';
-import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { Message } from '@/shared/types';
 import { copyToClipboard } from '@/lib/clipboard';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { observeReplyTiming } from '../reply-latency';
 
 interface MessageBubbleProps {
   message: Message;
@@ -42,6 +43,9 @@ export const MessageBubble = memo(function MessageBubble({
   interruptEnabled = false,
   interruptPending = false,
 }: MessageBubbleProps) {
+  useLayoutEffect(() => {
+    observeReplyTiming(message, 'committed');
+  }, [message]);
   const isUser = message.role === 'user';
   const isActivity = message.role === 'sdk' && message.metadata?.synthetic === true && /^[\w-]+ session started\b/.test(message.content) && !message.attachments?.length;
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
