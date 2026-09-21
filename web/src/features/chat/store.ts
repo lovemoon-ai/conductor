@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { beginReplyTiming } from './reply-latency';
 import type { Message, SendMessageInput } from '@/shared/types';
 import { getApiClient, ApiRequestError } from '@/shared/api/client';
 import { getMessageAttachments } from '@/shared/utils/message-attachments';
@@ -207,6 +208,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   sendMessage: async (taskId, input) => {
+    const replyTiming = beginReplyTiming(taskId);
     // Optimistic update with temporary message
     const tempId = `temp-${Date.now()}`;
     const tempMessage: Message = {
@@ -242,6 +244,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       try {
         const message = normalizeMessage(await api.post<Message>(`/tasks/${taskId}/messages`, requestBody));
 
+        replyTiming?.bind(message.id);
+
         // Replace temp message with real one.
         // If websocket already pushed the same real message, merge by id to avoid duplicates.
         set((state) => ({
@@ -266,6 +270,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           continue;
         }
 
+        replyTiming?.cancel();
         // Give up: remove temp message and surface the failure to the caller.
         set((state) => ({
           messagesByTask: {

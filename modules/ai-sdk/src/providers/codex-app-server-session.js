@@ -280,6 +280,7 @@ export class CodexAppServerSession extends EventEmitter {
     this.backend = normalizeCodexBackend(backend);
     this.options = options;
     this.logger = normalizeLogger(options.logger);
+    this.traceReplyLatency = /^(1|true|yes)$/i.test(String(options.env?.CONDUCTOR_DEBUG ?? process.env.CONDUCTOR_DEBUG ?? ""));
     this.cwd =
       typeof options.cwd === "string" && options.cwd.trim()
         ? options.cwd.trim()
@@ -750,12 +751,21 @@ export class CodexAppServerSession extends EventEmitter {
       return false;
     }
     const text = currentTurn.activeAssistantMessageText || "";
+    const firstDeltaAt = currentTurn.activeAssistantFirstDeltaAt;
+    currentTurn.activeAssistantFirstDeltaAt = undefined;
     currentTurn.activeAssistantMessageText = "";
     if (!finalizedMessageId || !activeMessageId || activeMessageId === finalizedMessageId) {
       currentTurn.activeAssistantMessageId = "";
     }
     if (!text || currentTurn.suppressReply) {
       return false;
+    }
+    if (this.traceReplyLatency && firstDeltaAt !== undefined) {
+      this.writeLog(`[codex-reply-latency] ${JSON.stringify({
+        event: "reply_emit", replyTo: this.getCurrentReplyTarget(),
+        turnId: currentTurn.turnId, itemId: finalizedMessageId,
+        firstDeltaToEmitMs: performance.now() - firstDeltaAt,
+      })}`);
     }
     await this.emitAssistantMessage(text);
     return true;
@@ -949,6 +959,17 @@ export class CodexAppServerSession extends EventEmitter {
     }
     if (normalizedMessageId) {
       currentTurn.activeAssistantMessageId = normalizedMessageId;
+    }
+    if (this.traceReplyLatency && delta && currentTurn.activeAssistantFirstDeltaAt === undefined) {
+      const firstDeltaAt = performance.now();
+      currentTurn.activeAssistantFirstDeltaAt = firstDeltaAt;
+      if (!currentTurn.suppressReply) {
+        this.writeLog(`[codex-reply-latency] ${JSON.stringify({
+          event: "first_delta", replyTo: this.getCurrentReplyTarget(),
+          turnId: currentTurn.turnId, itemId: normalizedMessageId,
+          turnStartToDeltaMs: currentTurn.startedAt === undefined ? null : firstDeltaAt - currentTurn.startedAt,
+        })}`);
+      }
     }
     currentTurn.fullText += delta;
     currentTurn.activeAssistantMessageText += delta;
@@ -1331,6 +1352,7 @@ export class CodexAppServerSession extends EventEmitter {
       });
     }
 
+    const startedAt = performance.now();
     this.markTurnStartedStatus();
     try {
       await this.boot();
@@ -1350,6 +1372,7 @@ export class CodexAppServerSession extends EventEmitter {
       rejectTurn = reject;
     });
     const currentTurn = {
+      startedAt,
       turnId: "",
       fullText: "",
       activeAssistantMessageId: "",

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { observeReplyTiming } from '@/features/chat/reply-latency';
 import type { WSConnectionStatus, Message, TaskStatus, TaskRuntimeStatus } from '@/shared/types';
 import { getMessageAttachments } from '@/shared/utils/message-attachments';
 import { useChatStore } from '@/features/chat';
@@ -297,6 +298,7 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
     case 'task_sdk_message': {
       const normalized = normalizeMessagePayload(payload);
       if (!normalized) break;
+      observeReplyTiming(normalized.message, 'received');
       useChatStore.getState().addMessage(normalized.taskId, normalized.message);
       // Count message traffic as turn activity so the stuck-composer watchdog
       // does not fire while a turn is still streaming replies.
