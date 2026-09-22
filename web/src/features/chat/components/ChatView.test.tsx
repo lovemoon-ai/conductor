@@ -304,6 +304,70 @@ describe('ChatView', () => {
     useWebSocketStoreMock.mockImplementation((selector) => selector(websocketState));
   });
 
+  describe('idle notice on entry', () => {
+    const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+    const useMessages = (...messages: TestMessage[]) => {
+      chatState = { ...chatState, messagesByTask: { 'task-1': messages } };
+    };
+
+    it('tells the user how long ago a finished conversation last moved', () => {
+      useMessages(
+        { ...makeMessage('q', 'question'), role: 'user', createdAt: minutesAgo(125) },
+        { ...makeMessage('a', 'answer'), createdAt: minutesAgo(120) },
+      );
+
+      const view = render(<ChatView taskId="task-1" />);
+
+      expect(screen.getByTestId('chat-idle-notice')).toHaveTextContent('Last message: 2h ago — the prompt cache has likely expired.');
+
+      // The notice is a one-off hint for the entry; it steps aside once the chat moves on.
+      useMessages(...chatState.messagesByTask['task-1'], { ...makeMessage('next', 'next'), role: 'user', createdAt: minutesAgo(0) });
+      view.rerender(<ChatView taskId="task-1" />);
+      expect(screen.queryByTestId('chat-idle-notice')).not.toBeInTheDocument();
+    });
+
+    it('waits for the initial load before judging the last message', () => {
+      chatState = { ...chatState, loadingTasks: new Set(['task-1']) };
+      const view = render(<ChatView taskId="task-1" />);
+      expect(screen.queryByTestId('chat-idle-notice')).not.toBeInTheDocument();
+
+      chatState = { ...chatState, loadingTasks: new Set() };
+      useMessages({ ...makeMessage('a', 'answer'), createdAt: minutesAgo(30) });
+      view.rerender(<ChatView taskId="task-1" />);
+
+      expect(screen.getByTestId('chat-idle-notice')).toHaveTextContent('Last message: 30m ago');
+    });
+
+    it('withdraws the notice when the runtime later reports the AI is still mid-turn', () => {
+      // Runtime status is not replayed on load, so a long silent tool call can look idle at first.
+      useMessages({ ...makeMessage('a', 'Let me run the tests…'), createdAt: minutesAgo(10) });
+      const view = render(<ChatView taskId="task-1" />);
+      expect(screen.getByTestId('chat-idle-notice')).toBeInTheDocument();
+
+      runtimeState = { ...runtimeState, byTask: { 'task-1': { replyInProgress: true, replyTo: 'q' } } };
+      view.rerender(<ChatView taskId="task-1" />);
+
+      expect(screen.queryByTestId('chat-idle-notice')).not.toBeInTheDocument();
+    });
+
+    it('stays quiet within five minutes, while the AI still owes a reply, or mid-reply', () => {
+      useMessages({ ...makeMessage('a', 'answer'), createdAt: minutesAgo(4) });
+      const recent = render(<ChatView taskId="task-1" />);
+      expect(screen.queryByTestId('chat-idle-notice')).not.toBeInTheDocument();
+      recent.unmount();
+
+      useMessages({ ...makeMessage('q', 'question'), role: 'user', createdAt: minutesAgo(60) });
+      const unanswered = render(<ChatView taskId="task-1" />);
+      expect(screen.queryByTestId('chat-idle-notice')).not.toBeInTheDocument();
+      unanswered.unmount();
+
+      useMessages({ ...makeMessage('a', 'partial answer'), createdAt: minutesAgo(60) });
+      runtimeState = { ...runtimeState, byTask: { 'task-1': { replyInProgress: true, replyTo: 'q' } } };
+      render(<ChatView taskId="task-1" />);
+      expect(screen.queryByTestId('chat-idle-notice')).not.toBeInTheDocument();
+    });
+  });
+
   it('restores the saved reading position when reopening a task', () => {
     chatState = {
       ...chatState,
