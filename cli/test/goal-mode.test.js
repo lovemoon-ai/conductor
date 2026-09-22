@@ -147,9 +147,7 @@ describe("daemon buildFireSpawnArgs (no --goal flag)", () => {
       initialContent: "/goal ship it\n\nmore detail",
       launchConfig: {},
     });
-    const prefillIndex = args.indexOf("--prefill");
-    assert.ok(prefillIndex >= 0);
-    assert.equal(args[prefillIndex + 1], "/goal ship it\n\nmore detail");
+    assert.ok(args.includes("--prefill=/goal ship it\n\nmore detail"));
     assert.ok(!args.includes("--goal"));
   });
 
@@ -159,9 +157,7 @@ describe("daemon buildFireSpawnArgs (no --goal flag)", () => {
       initialContent: "",
       launchConfig: { goal: { objective: "fix the bug" } },
     });
-    const prefillIndex = args.indexOf("--prefill");
-    assert.ok(prefillIndex >= 0);
-    assert.equal(args[prefillIndex + 1], "fix the bug");
+    assert.ok(args.includes("--prefill=fix the bug"));
   });
 
   it("prefers initialContent (already prefixed by web) over goal.objective", () => {
@@ -170,8 +166,7 @@ describe("daemon buildFireSpawnArgs (no --goal flag)", () => {
       initialContent: "/goal new\n\nbody",
       launchConfig: { goal: { objective: "stale-objective" } },
     });
-    const prefillIndex = args.indexOf("--prefill");
-    assert.equal(args[prefillIndex + 1], "/goal new\n\nbody");
+    assert.ok(args.includes("--prefill=/goal new\n\nbody"));
   });
 
   it("emits just backend + -- when nothing to forward", () => {

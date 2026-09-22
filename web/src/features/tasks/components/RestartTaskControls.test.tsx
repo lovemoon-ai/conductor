@@ -9,7 +9,12 @@ const pushToastMock = vi.fn();
 const FIXED_DATE = new Date('2024-01-15T10:00:00Z');
 
 let agentsState = {
-  agents: [] as Array<{ host: string; supportedBackends: string[]; runtimeBackendMap?: Record<string, string> }>,
+  agents: [] as Array<{
+    host: string;
+    supportedBackends: string[];
+    runtimeBackendMap?: Record<string, string>;
+    capabilities?: string[];
+  }>,
 };
 let projectsState = {
   projects: [] as Array<{ id: string; daemonHost?: string | null }>,
@@ -233,6 +238,84 @@ describe('RestartTaskControls', () => {
       });
       expect(replaceMock).toHaveBeenCalledWith('/app/tasks?projectId=proj-1&taskId=task-2', { scroll: false });
       expect(onClose).toHaveBeenCalled();
+    });
+  });
+
+  it('sends an optional first message on a daemon that supports it', async () => {
+    agentsState = {
+      agents: [{ host: 'daemon-1', supportedBackends: ['codex'], capabilities: ['restart_first_message'] }],
+    };
+    restartTaskMock.mockResolvedValue({ mode: 'successor_new_task', sourceTaskId: 'task-1', task: { id: 'task-2' } });
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-1',
+          title: 'Stopped Task',
+          taskType: 'ai_task',
+          status: 'completed',
+          agentHost: 'daemon-1',
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          createdAt: FIXED_DATE.toISOString(),
+        }}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/First message/), { target: { value: '  Only write the migration.  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+
+    await waitFor(() => {
+      expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+        backendType: 'codex',
+        strategy: 'new_task',
+        firstMessage: 'Only write the migration.',
+      });
+    });
+  });
+
+  it('locks the first message on an older daemon without blocking the new task', async () => {
+    agentsState = {
+      agents: [
+        { host: 'daemon-1', supportedBackends: ['codex'], capabilities: ['restart_first_message'] },
+        { host: 'daemon-2', supportedBackends: ['codex'] },
+      ],
+    };
+    restartTaskMock.mockResolvedValue({ mode: 'successor_new_task', sourceTaskId: 'task-1', task: { id: 'task-2' } });
+
+    render(
+      <RestartTaskControls
+        open
+        onClose={() => {}}
+        task={{
+          id: 'task-1',
+          title: 'Stopped Task',
+          taskType: 'ai_task',
+          status: 'completed',
+          agentHost: 'daemon-1',
+          backendType: 'codex',
+          sessionId: 'sess-1',
+          createdAt: FIXED_DATE.toISOString(),
+        }}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/First message/), { target: { value: 'Only write the migration.' } });
+    fireEvent.change(screen.getByLabelText('Daemon'), { target: { value: 'daemon-2' } });
+
+    expect(screen.getByLabelText(/First message/)).toBeDisabled();
+    expect(screen.getByLabelText(/First message/)).toHaveValue('');
+    expect(screen.getByText(/Update daemon daemon-2 to set a first message/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Backend')).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'New task' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+    await waitFor(() => {
+      expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+        backendType: 'codex',
+        strategy: 'new_task',
+        agentHost: 'daemon-2',
+      });
     });
   });
 

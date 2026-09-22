@@ -640,6 +640,9 @@ export const useTasksStore = create<TasksState>()((set, get) => {
         if (typeof input?.agentHost === 'string' && input.agentHost.trim()) {
           body.agent_host = input.agentHost.trim();
         }
+        if (typeof input?.firstMessage === 'string' && input.firstMessage.trim()) {
+          body.first_message = input.firstMessage.trim();
+        }
         const response = await api.post<{
           mode: RestartTaskResponse['mode'];
           source_task_id: string;

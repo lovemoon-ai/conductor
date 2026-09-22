@@ -451,6 +451,8 @@ export interface RestartTaskInput {
   restartMode?: "refresh_session";
   /** Explicit daemon override for the new_task path (`agent_host`). */
   agentHost?: string;
+  /** new_task only: replaces the default "resume from the source transcript" first message. */
+  firstMessage?: string;
 }
 
 /** RFC 0039: settings of a persistent task. */

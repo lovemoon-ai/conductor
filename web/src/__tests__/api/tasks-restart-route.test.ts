@@ -1776,6 +1776,74 @@ describe("/api/tasks/[taskId]/restart", () => {
     // any downstream `/share/<token>/plain` transcript.
     const metadata = JSON.parse(messageCall.data.metadata);
     expect(metadata).toEqual({ synthetic: true, kind: "handoff_notice" });
+    // Without a first message the daemon keeps sending the transcript handoff.
+    const payload = JSON.parse(vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson as string);
+    expect(payload.payload).not.toHaveProperty("initial_content");
+  });
+
+  it("uses a user-set first message instead of the handoff notice and prompt", async () => {
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      {
+        id: "agent-1",
+        host: "daemon-1",
+        supportedBackends: ["codex", "claude"],
+        capabilities: ["restart_first_message"],
+      },
+    ] as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { backend_type: "codex", strategy: "new_task", first_message: "  Only write the migration.  " },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("successor_new_task");
+    expect(db.message.create).toHaveBeenCalledTimes(1);
+    expect(db.message.create).toHaveBeenCalledWith({
+      data: { taskId: data.task.id, role: "user", content: "Only write the migration." },
+    });
+    const payload = JSON.parse(vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson as string);
+    expect(payload.payload.initial_content).toBe("Only write the migration.");
+    expect(payload.payload.mode).toBe("fork_to_new_task");
+  });
+
+  it("returns 409 for a first message when the daemon does not support it", async () => {
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { backend_type: "codex", strategy: "new_task", first_message: "hi" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(409);
+    expect(data.error).toMatch(/must be updated/);
+    expect(db.task.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["without a strategy", { first_message: "hi" }],
+    ["with in-place strategy", { strategy: "inplace", first_message: "hi" }],
+    ["with a session refresh", { strategy: "new_task", restart_mode: "refresh_session", first_message: "hi" }],
+  ])("rejects a first message %s", async (_label, body) => {
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body,
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+
+    expect(response.status).toBe(400);
+    expect(db.agentOutbox.create).not.toHaveBeenCalled();
   });
 
   it("does not seed a handoff-notice message for inplace restart (same backend)", async () => {

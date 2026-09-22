@@ -2,6 +2,9 @@ import type { TaskStatus, RestartStrategy, RestartResultMode } from "@/shared/ty
 
 export type { RestartStrategy, RestartResultMode } from "@/shared/types";
 
+/** Daemon capability: honors `initial_content` on a fork_to_new_task restart. */
+export const RESTART_FIRST_MESSAGE_CAPABILITY = "restart_first_message";
+
 export const STOPPED_TASK_STATUSES = new Set<TaskStatus>(["completed", "killed", "unknown"]);
 export const RESTARTABLE_SOURCE_STATUSES = new Set<TaskStatus>([
   "running",

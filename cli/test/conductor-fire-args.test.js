@@ -15,6 +15,7 @@ import {
   syncPwdEnvWithProcessCwdForDaemonLaunch,
 } from "../bin/conductor-fire.js";
 import { listRuntimeSupportedBackends, resetRuntimeBackendCacheForTests } from "../src/runtime-backends.js";
+import { buildFireSpawnArgs } from "../src/daemon.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,6 +53,28 @@ afterEach(() => {
     process.env.AISDK_PROVIDER_PATH = DEFAULT_PROVIDER_PATH;
   }
   resetRuntimeBackendCacheForTests();
+});
+
+describe("daemon -> fire first message", () => {
+  // The daemon builds fire's argv; fire must read back the exact message.
+  // A separate `--prefill <value>` entry lost anything starting with "-".
+  for (const message of ["- step 1\n- step 2", "--model opus: do it", "-i x.png is wrong", "0.10", "/goal ship it"]) {
+    it(`round-trips ${JSON.stringify(message)}`, async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
+      const configPath = path.join(tempDir, "config.yaml");
+      fs.writeFileSync(configPath, "allow_cli_list:\n  codex: codex\n", "utf8");
+
+      const args = await parseCliArgs([
+        "node",
+        "conductor-fire",
+        "--config-file",
+        configPath,
+        ...buildFireSpawnArgs({ selectedBackend: "codex", initialContent: message }),
+      ]);
+
+      assert.equal(args.initialPrompt, message);
+    });
+  }
 });
 
 describe("conductor-fire defaults", () => {

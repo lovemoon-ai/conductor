@@ -9,6 +9,7 @@ import { useTasksStore } from '../store';
 import {
   canCreateSuccessorTask,
   getCompatibleRestartBackends,
+  RESTART_FIRST_MESSAGE_CAPABILITY,
 } from '@/lib/tasks/restart';
 import { Dialog } from '@/components/common/Dialog';
 import { useToast } from '@/components/common/FeedbackProvider';
@@ -43,6 +44,7 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
   const { pushToast } = useToast();
   const [selectedBackend, setSelectedBackend] = useState('');
   const [selectedDaemonHost, setSelectedDaemonHost] = useState('');
+  const [firstMessage, setFirstMessage] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const sourceAgentHost = typeof task.agentHost === 'string' ? task.agentHost.trim() : '';
@@ -108,12 +110,17 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
   useEffect(() => {
     if (open) {
       setSelectedDaemonHost('');
+      setFirstMessage('');
     }
   }, [open]);
   const selectedAgent = useMemo(
     () => agents.find((agent) => agent.host === effectiveSelectedDaemonHost) ?? null,
     [agents, effectiveSelectedDaemonHost],
   );
+  // Older daemons ignore a custom first message, so the field is only live for
+  // daemons that advertise it; the server rejects it otherwise.
+  const supportsFirstMessage = Boolean(selectedAgent?.capabilities?.includes(RESTART_FIRST_MESSAGE_CAPABILITY));
+  const effectiveFirstMessage = supportsFirstMessage ? firstMessage.trim() : '';
   const supportedBackends = useMemo(
     () => (Array.isArray(selectedAgent?.supportedBackends) ? selectedAgent.supportedBackends : []),
     [selectedAgent],
@@ -227,6 +234,7 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
         backendType: effectiveSelectedBackend,
         strategy: 'new_task',
         ...(agentHostOverride ? { agentHost: agentHostOverride } : {}),
+        ...(effectiveFirstMessage ? { firstMessage: effectiveFirstMessage } : {}),
       });
       if (onCreatedTask) {
         onCreatedTask(result.task.id);
@@ -302,6 +310,27 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
             ))}
             {!backendOptions.length && currentBackend ? <option value={currentBackend}>{currentBackend}</option> : null}
           </select>
+        </div>
+
+        <div className="space-y-2">
+          <label htmlFor={`restart-first-message-${task.id}`} className="text-sm font-medium text-ink">
+            First message <span className="font-normal text-muted">(optional)</span>
+          </label>
+          <textarea
+            id={`restart-first-message-${task.id}`}
+            value={supportsFirstMessage ? firstMessage : ''}
+            onChange={(event) => setFirstMessage(event.target.value)}
+            disabled={!supportsFirstMessage || isSubmitting}
+            rows={3}
+            placeholder="Leave empty to have the new task load this task's conversation as background."
+            className="webapp-input w-full resize-y disabled:cursor-not-allowed disabled:opacity-60"
+          />
+          {selectedAgent && !supportsFirstMessage ? (
+            <p className="text-xs text-muted">
+              Update daemon {selectedAgent.host} to set a first message. The new task will load this task&apos;s
+              conversation as background.
+            </p>
+          ) : null}
         </div>
 
         <div className="flex justify-end gap-3">
