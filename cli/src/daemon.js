@@ -704,7 +704,9 @@ export function buildFireSpawnArgs({ selectedBackend, initialContent, launchConf
   const prefill = typeof initialContent === "string" ? initialContent : "";
   const effectivePrefill = prefill || goalObjective;
   if (effectivePrefill) {
-    args.push("--prefill", effectivePrefill);
+    // `=` form: as a separate argv entry, yargs reads content that starts with
+    // "-" (a markdown list, "--model ...") as a new flag and drops it.
+    args.push(`--prefill=${effectivePrefill}`);
   }
   const resumeSessionId =
     normalizeOptionalString(launchConfig?.resumeSessionId) ||
@@ -3884,6 +3886,7 @@ export function startDaemon(config = {}, deps = {}) {
     "project_agents_registry",
     "restart_daemon",
     "refresh_session_inplace",
+    "restart_first_message",
     "persistent_round_v1",
     "task_attachments_v1",
     "backend_session_list",
@@ -8102,6 +8105,7 @@ export function startDaemon(config = {}, deps = {}) {
       source_session_file_path: sourceSessionFilePath,
       target_backend_type: targetBackendType,
       resume_context_url: resumeContextUrlRaw,
+      initial_content: initialContentRaw,
       request_id: requestIdRaw,
     } = payload || {};
 
@@ -8539,9 +8543,15 @@ export function startDaemon(config = {}, deps = {}) {
     if (isForkMode) {
       // Fork mode starts a brand-new session on the target backend; no --resume.
       // The prior conversation is delivered as a plain-text URL via the prompt
-      // so the target backend fetches it on its own.
-      args.push("--");
-      args.push(resumeHandoffPrompt);
+      // so the target backend fetches it on its own — unless the user set their
+      // own first message, which replaces it. That one goes through --prefill
+      // (string-typed) so fire does not coerce a numeric message like "0.10".
+      const customFirstMessage = normalizeOptionalString(initialContentRaw);
+      if (customFirstMessage) {
+        args.push(`--prefill=${customFirstMessage}`, "--");
+      } else {
+        args.push("--", resumeHandoffPrompt);
+      }
     } else {
       if (shouldResumeSession) {
         args.push("--resume", resolvedResumeSessionId);
