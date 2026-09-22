@@ -32,12 +32,12 @@ describe('workspace preferences', () => {
   });
   it('closes an open menu with Escape after keyboard focus moves outside', () => {
     render(<><ReadingSettings /><button>Outside</button></>);
-    const details = screen.getByLabelText('Reading settings').closest('details')!;
+    const details = screen.getByLabelText('Chat options').closest('details')!;
     details.open = true;
     screen.getByText('Outside').focus();
     fireEvent.keyDown(screen.getByText('Outside'), { key: 'Escape' });
     expect(details.open).toBe(false);
-    expect(screen.getByLabelText('Reading settings')).toHaveFocus();
+    expect(screen.getByLabelText('Chat options')).toHaveFocus();
   });
   it('keeps working when writes fail and resets after another tab clears storage', () => {
     localStorage.setItem('conductor-reading-size', '15');

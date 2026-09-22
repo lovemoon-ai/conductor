@@ -167,6 +167,7 @@ interface TaskListProps {
   viewMode: TaskListViewMode;
   activeTaskId?: string | null;
   onOpenTask?: (taskId: string) => void;
+  onMaximizeTask?: (taskId: string) => void;
   desktopListPaneMode?: boolean;
   /**
    * Either a single projectId, or — for the cross-daemon merged-project
@@ -191,6 +192,7 @@ export function TaskList({
   viewMode,
   activeTaskId = null,
   onOpenTask,
+  onMaximizeTask,
   desktopListPaneMode = false,
   projectFilter,
   runningOnly = false,
@@ -1136,6 +1138,7 @@ export function TaskList({
         selectionMode={selectionMode}
         onToggleSelect={toggleTaskSelection}
         onOpenTask={onOpenTask}
+        onMaximizeTask={onMaximizeTask}
         desktopListPaneMode={desktopListPaneMode}
         showProjectName={showProjectName}
         showDaemonHost={showDaemonHost}

@@ -117,33 +117,20 @@ describe('MessageInput', () => {
       Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalHeight });
     }
   });
-  it('reveals the attach and schedule actions from the swipe menu toggle', () => {
-    const onSend = vi.fn();
-    const onSchedule = vi.fn();
-    render(<MessageInput taskId="task-swipe" onSend={onSend} onSchedule={onSchedule} />);
+  it('has no actions toggle: attach sits beside the textarea and scheduling lives in the chat menu', () => {
+    render(<MessageInput taskId="task-no-toggle" onSend={vi.fn()} />);
 
-    const toggle = screen.getByTestId('message-input-actions-toggle');
-    // Closed by default: the revealed actions are not focusable.
-    expect(screen.getByTestId('message-input-attach-button')).toHaveAttribute('tabindex', '-1');
-    expect(screen.getByTestId('message-input-swipe-actions')).toHaveAttribute('aria-hidden', 'true');
-
-    fireEvent.click(toggle);
-
-    expect(screen.getByTestId('message-input-swipe-actions')).toHaveAttribute('aria-hidden', 'false');
-    expect(screen.getByTestId('message-input-attach-button')).toHaveAttribute('tabindex', '0');
-    expect(screen.getByTestId('message-input-schedule-button')).toHaveAttribute('tabindex', '0');
+    expect(screen.queryByTestId('message-input-actions-toggle')).toBeNull();
+    expect(screen.queryByTestId('message-input-schedule-button')).toBeNull();
+    expect(screen.getByTestId('message-input-attach-button')).toHaveAccessibleName('Add attachment');
   });
 
-  it('keeps the actions menu closed when the composer is swiped', () => {
-    render(<MessageInput taskId="task-swipe-noop" onSend={vi.fn()} onSchedule={vi.fn()} />);
-    const composer = screen.getByTestId('message-input-composer');
-    const touchAt = (clientX: number) => ({ pointerId: 1, pointerType: 'touch', clientX, clientY: 100 });
+  it('exposes the current draft through its handle', () => {
+    const inputRef = createRef<MessageInputHandle>();
+    render(<MessageInput ref={inputRef} taskId="task-get-draft" onSend={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('message-input-textarea'), { target: { value: 'ping me later' } });
 
-    fireEvent.pointerDown(composer, touchAt(300));
-    fireEvent.pointerMove(composer, touchAt(150));
-    fireEvent.pointerUp(composer, touchAt(150));
-
-    expect(screen.getByTestId('message-input-swipe-actions')).toHaveAttribute('aria-hidden', 'true');
+    expect(inputRef.current?.getDraft()).toBe('ping me later');
   });
 
   it('restores each task draft after switching to another task and back', () => {
@@ -160,34 +147,6 @@ describe('MessageInput', () => {
     view.unmount();
     render(<MessageInput taskId="task-draft-b" onSend={vi.fn()} />);
     expect(screen.getByTestId('message-input-textarea')).toHaveValue('draft for B');
-  });
-
-  it('moves keyboard focus onto the revealed menu when opened via the toggle', async () => {
-    render(<MessageInput taskId="task-focus" onSend={vi.fn()} onSchedule={vi.fn()} />);
-    fireEvent.click(screen.getByTestId('message-input-actions-toggle'));
-    // Focus is deferred to the next frame so keyboard users land on the menu
-    // instead of having to Shift+Tab back into it.
-    await waitFor(() => expect(screen.getByTestId('message-input-attach-button')).toHaveFocus());
-  });
-
-  it('schedules the current draft from the swipe menu', () => {
-    const onSchedule = vi.fn();
-    render(<MessageInput taskId="task-schedule" onSend={vi.fn()} onSchedule={onSchedule} />);
-    fireEvent.change(screen.getByTestId('message-input-textarea'), { target: { value: 'ping me later' } });
-
-    fireEvent.click(screen.getByTestId('message-input-actions-toggle'));
-    fireEvent.click(screen.getByTestId('message-input-schedule-button'));
-
-    expect(onSchedule).toHaveBeenCalledWith('ping me later');
-    // The menu closes after the action fires.
-    expect(screen.getByTestId('message-input-swipe-actions')).toHaveAttribute('aria-hidden', 'true');
-  });
-
-  it('omits the schedule action when scheduling is unavailable', () => {
-    render(<MessageInput taskId="task-no-schedule" onSend={vi.fn()} />);
-    fireEvent.click(screen.getByTestId('message-input-actions-toggle'));
-    expect(screen.queryByTestId('message-input-schedule-button')).toBeNull();
-    expect(screen.getByTestId('message-input-attach-button')).toBeTruthy();
   });
 
   it('selects and sends multiple files in their original order', async () => {

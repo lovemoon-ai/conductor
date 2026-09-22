@@ -13,7 +13,6 @@ import type { TaskType } from '@/lib/tasks/task-config';
 import { copyToClipboard } from '@/lib/clipboard';
 import { TaskStatusBadge } from './TaskStatusBadge';
 import { RestartTaskControls } from './RestartTaskControls';
-import { PersistentTaskSettingsDialog } from './PersistentTaskDialogs';
 import { readPersistentTaskState } from '@/shared/utils/persistent-task';
 import { PtyToggleButton } from './PtyToggleButton';
 import { useTasksStore } from '../store';
@@ -42,6 +41,8 @@ interface TaskItemProps {
   selectionMode: boolean;
   onToggleSelect: (taskId: string) => void;
   onOpenTask?: (taskId: string) => void;
+  /** Desktop list pane: double-click shows the task's conversation full screen. */
+  onMaximizeTask?: (taskId: string) => void;
   desktopListPaneMode?: boolean;
   /**
    * Whether to render the project-name chip. Independent of `showDaemonHost`
@@ -332,13 +333,6 @@ const PackIcon = () => (
   </svg>
 );
 
-const PersistentIcon = () => (
-  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h5M20 20v-5h-5" />
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.5 15a7 7 0 0012.2 2.5M18.5 9A7 7 0 006.3 6.5" />
-  </svg>
-);
-
 const NewTaskIcon = () => (
   <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <circle cx="7" cy="6" r="2.5" strokeWidth={2} />
@@ -410,6 +404,7 @@ function TaskItemComponent({
   selectionMode,
   onToggleSelect,
   onOpenTask,
+  onMaximizeTask,
   desktopListPaneMode = false,
   showProjectName = false,
   showDaemonHost = false,
@@ -430,7 +425,6 @@ function TaskItemComponent({
   const { push } = useRouter();
   const [isEditing, setIsEditing] = useState(false);
   const [isRestartDialogOpen, setIsRestartDialogOpen] = useState(false);
-  const [isPersistentDialogOpen, setIsPersistentDialogOpen] = useState(false);
   const [statusAction, setStatusAction] = useState<StatusAction>('idle');
   const [editTitle, setEditTitle] = useState('');
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
@@ -525,7 +519,6 @@ function TaskItemComponent({
   // Packing preserves the chat transcript; only AI tasks have one. Terminal
   // (PTY) tasks keep no chat, so packing them would preserve nothing useful.
   const showAchieveAction = taskType === 'ai_task';
-  const showPersistentAction = taskType === 'ai_task';
   const persistentState = readPersistentTaskState(taskMetadata);
   const useMobileRenameBehavior = !desktopListPaneMode;
   const pinnedAt = normalizePinnedAt(taskMetadata?.pinnedAt);
@@ -572,7 +565,6 @@ function TaskItemComponent({
     (showAchieveAction ? 1 : 0) + // pack / achieve (ai_task only)
     (showPinAction ? 1 : 0) +
     (showRestartAction ? 1 : 0) +
-    (showPersistentAction ? 1 : 0) +
     (showShareAction ? 1 : 0) +
     (showAttachedTerminalAction ? 1 : 0);
   const actionColumns = Math.max(1, Math.ceil(actionButtonCount / 2));
@@ -815,14 +807,15 @@ function TaskItemComponent({
     if (selectionMode || !desktopListPaneMode) {
       return;
     }
-    openTaskPage();
+    onMaximizeTask?.(task.id);
   }, [
     beginTitleEdit,
     consumeTap,
     desktopListPaneMode,
     isEditing,
-    openTaskPage,
+    onMaximizeTask,
     selectionMode,
+    task.id,
     useMobileRenameBehavior,
   ]);
 
@@ -1458,23 +1451,6 @@ function TaskItemComponent({
               <span className="text-xs">New task</span>
             </button>
           ) : null}
-          {showPersistentAction ? (
-            <button
-              type="button"
-              aria-label="Persistent task settings"
-              title="Persistent task"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsPersistentDialogOpen(true);
-                closeActionsMenu();
-              }}
-              className={actionButtonClassName('default')}
-            >
-              <PersistentIcon />
-              <span className="text-xs">Persistent</span>
-            </button>
-          ) : null}
           {showShareAction ? (
             <button
               type="button"
@@ -1645,13 +1621,6 @@ function TaskItemComponent({
           </div>
         </div>
       </div>
-      {showPersistentAction && isPersistentDialogOpen ? (
-        <PersistentTaskSettingsDialog
-          task={task}
-          open={isPersistentDialogOpen}
-          onClose={() => setIsPersistentDialogOpen(false)}
-        />
-      ) : null}
       {showRestartAction ? (
         <RestartTaskControls
           task={task}

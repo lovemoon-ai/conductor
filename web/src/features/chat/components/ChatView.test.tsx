@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { ChatView } from './ChatView';
+import { ChatMenuSlotContext } from '../chat-menu-slot';
+
+// Mounts ChatView under a header slot so its ⋯ menu (restart etc.) renders.
+const renderWithChatMenu = (ui: ReactElement) => {
+  const slot = document.createElement('div');
+  document.body.appendChild(slot);
+  return render(<ChatMenuSlotContext.Provider value={slot}>{ui}</ChatMenuSlotContext.Provider>);
+};
 
 const useChatStoreMock = vi.fn();
 const useRuntimeStoreMock = vi.fn();
@@ -61,19 +70,13 @@ vi.mock('./MessageBubble', () => ({
   MessageBubble: ({
     message,
     onResend,
-    onRestart,
     onInterrupt,
-    restartEnabled,
-    restartPending,
     interruptEnabled,
     interruptPending,
   }: {
     message: { id: string; content: string };
     onResend?: (content: string) => void;
-    onRestart?: () => void;
     onInterrupt?: () => void;
-    restartEnabled?: boolean;
-    restartPending?: boolean;
     interruptEnabled?: boolean;
     interruptPending?: boolean;
   }) => (
@@ -82,14 +85,9 @@ vi.mock('./MessageBubble', () => ({
       <button type="button" data-testid={`resend-${message.id}`} onClick={() => onResend?.(message.content)}>
         resend
       </button>
-      <button type="button" data-testid={`message-restart-${message.id}`} onClick={() => onRestart?.()}>
-        restart message
-      </button>
       <button type="button" data-testid={`message-interrupt-${message.id}`} onClick={() => onInterrupt?.()}>
         interrupt message
       </button>
-      <div data-testid={`message-restart-enabled-${message.id}`}>{String(Boolean(restartEnabled))}</div>
-      <div data-testid={`message-restart-pending-${message.id}`}>{String(Boolean(restartPending))}</div>
       <div data-testid={`message-interrupt-enabled-${message.id}`}>{String(Boolean(interruptEnabled))}</div>
       <div data-testid={`message-interrupt-pending-${message.id}`}>{String(Boolean(interruptPending))}</div>
     </div>
@@ -118,6 +116,7 @@ vi.mock('./MessageInput', async () => {
       resend: (content: string) => {
         setResendRequest(content);
       },
+      getDraft: () => 'draft from composer',
     }), []);
 
     return (
@@ -153,6 +152,13 @@ vi.mock('@/features/tasks/components/PersistentTaskDialogs', () => ({
       start
     </button>
   ) : null),
+  PersistentTaskSettingsDialog: ({ open }: { open: boolean }) => (open ? <div data-testid="persistent-settings-dialog" /> : null),
+}));
+
+vi.mock('./ScheduledMessageDialog', () => ({
+  ScheduledMessageDialog: ({ open, message }: { open: boolean; message: { content: string } | null }) => (
+    open ? <div data-testid="scheduled-message-dialog">{message?.content}</div> : null
+  ),
 }));
 
 vi.mock('@/components/common/LoadingSpinner', () => ({
@@ -425,7 +431,7 @@ describe('ChatView', () => {
     });
     expect(alertSpy).not.toHaveBeenCalled();
     expect(screen.getByTestId('send-disabled')).toHaveTextContent('true');
-    expect(screen.queryByTestId(/^message-restart-enabled-/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(/^message-interrupt-enabled-/)).not.toBeInTheDocument();
   });
 
   it('routes a message resend action into the composer request', () => {
@@ -442,17 +448,17 @@ describe('ChatView', () => {
     expect(screen.getByTestId('resend-request')).toHaveTextContent('repeat this prompt');
   });
 
-  it('restarts the current task from the message action sheet path', async () => {
+  it('restarts the current task from the chat menu', async () => {
     chatState = {
       ...chatState,
       messagesByTask: { 'task-1': [makeMessage('msg-user-1', 'restart this task')] },
     };
     useChatStoreMock.mockImplementation(() => chatState);
 
-    render(<ChatView taskId="task-1" />);
+    renderWithChatMenu(<ChatView taskId="task-1" />);
 
-    expect(screen.getByTestId('message-restart-enabled-msg-user-1')).toHaveTextContent('true');
-    fireEvent.click(screen.getByTestId('message-restart-msg-user-1'));
+    expect(screen.getByTestId('chat-menu-restart')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('chat-menu-restart'));
 
     await waitFor(() => {
       expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
@@ -462,6 +468,23 @@ describe('ChatView', () => {
     await waitFor(() => {
       expect(clearRuntimeMock).toHaveBeenCalledWith('task-1');
     });
+  });
+
+  it('schedules the composer draft and opens persistent settings from the chat menu', () => {
+    renderWithChatMenu(<ChatView taskId="task-1" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Schedule message' }));
+    expect(screen.getByTestId('scheduled-message-dialog')).toHaveTextContent('draft from composer');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Persistent task' }));
+    expect(screen.getByTestId('persistent-settings-dialog')).toBeInTheDocument();
+  });
+
+  it('renders no chat menu when no header slot frames the chat', () => {
+    render(<ChatView taskId="task-1" />);
+
+    expect(screen.queryByLabelText('Chat options')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('chat-menu-restart')).not.toBeInTheDocument();
   });
 
   it('shows restart session action in the empty state for a running task', async () => {
@@ -477,7 +500,7 @@ describe('ChatView', () => {
     });
   });
 
-  it('disables message restart for non-running tasks', () => {
+  it('disables the chat menu restart for non-running tasks', () => {
     chatState = {
       ...chatState,
       messagesByTask: { 'task-1': [makeMessage('msg-user-1', 'restart this task')] },
@@ -496,9 +519,9 @@ describe('ChatView', () => {
     useChatStoreMock.mockImplementation(() => chatState);
     useTasksStoreMock.mockImplementation((selector) => selector(tasksState));
 
-    render(<ChatView taskId="task-1" />);
+    renderWithChatMenu(<ChatView taskId="task-1" />);
 
-    expect(screen.getByTestId('message-restart-enabled-msg-user-1')).toHaveTextContent('false');
+    expect(screen.getByTestId('chat-menu-restart')).toBeDisabled();
   });
 
   it('disables restart while an interrupt request is pending', async () => {
@@ -527,19 +550,18 @@ describe('ChatView', () => {
     useChatStoreMock.mockImplementation(() => chatState);
     useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
 
-    render(<ChatView taskId="task-1" />);
+    renderWithChatMenu(<ChatView taskId="task-1" />);
 
     fireEvent.click(screen.getByTestId('interrupt-button'));
 
     await waitFor(() => {
       expect(screen.getByTestId('interrupt-pending')).toHaveTextContent('true');
     });
-    expect(screen.getByTestId('message-restart-enabled-msg-user-1')).toHaveTextContent('false');
+    expect(screen.getByTestId('chat-menu-restart')).toBeDisabled();
 
-    fireEvent.click(screen.getByTestId('message-restart-msg-user-1'));
+    fireEvent.click(screen.getByTestId('chat-menu-restart'));
 
     expect(restartTaskMock).not.toHaveBeenCalled();
-    expect(screen.getByText('Wait for the current interrupt to finish before restarting the AI session.')).toBeInTheDocument();
 
     resolveInterrupt();
   });
@@ -570,18 +592,19 @@ describe('ChatView', () => {
     };
     useChatStoreMock.mockImplementation(() => chatState);
 
-    render(<ChatView taskId="task-1" />);
-    fireEvent.click(screen.getByTestId('message-restart-msg-user-1'));
+    renderWithChatMenu(<ChatView taskId="task-1" />);
+    fireEvent.click(screen.getByTestId('chat-menu-restart'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('message-restart-pending-msg-user-1')).toHaveTextContent('true');
+      expect(screen.getByTestId('chat-menu-restart')).toHaveTextContent('Restarting AI session…');
     });
+    expect(screen.getByTestId('chat-menu-restart')).toBeDisabled();
     expect(screen.getByTestId('send-disabled')).toHaveTextContent('true');
     expect(screen.getByText('Restarting the current AI session…')).toBeInTheDocument();
 
     resolveRestart();
     await waitFor(() => {
-      expect(screen.getByTestId('message-restart-pending-msg-user-1')).toHaveTextContent('false');
+      expect(screen.getByTestId('chat-menu-restart')).toHaveTextContent('Restart AI session');
     });
   });
 
@@ -1009,10 +1032,10 @@ describe('ChatView', () => {
     };
     useChatStoreMock.mockImplementation(() => chatState);
 
-    render(<ChatView taskId="task-1" />);
+    renderWithChatMenu(<ChatView taskId="task-1" />);
 
     await act(async () => {
-      fireEvent.click(screen.getByTestId('message-restart-msg-user-1'));
+      fireEvent.click(screen.getByTestId('chat-menu-restart'));
       await Promise.resolve();
     });
 

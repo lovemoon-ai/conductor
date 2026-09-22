@@ -1,7 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useChatStore } from '../store';
+import { ChatMenuSlotContext } from '../chat-menu-slot';
 import { requestTaskRuntimeStatus, useRuntimeStore } from '@/features/realtime';
 import { useProjectsStore } from '@/features/projects';
 import { useTasksStore } from '@/features/tasks';
@@ -10,13 +12,14 @@ import { MessageBubble } from './MessageBubble';
 import { MessageInput, type MessageInputHandle } from './MessageInput';
 import { ScheduledMessageDialog } from './ScheduledMessageDialog';
 import { buildPersistentRoundGroups, PersistentRoundHeader } from './PersistentRounds';
-import { NewRoundDialog } from '@/features/tasks/components/PersistentTaskDialogs';
+import { NewRoundDialog, PersistentTaskSettingsDialog } from '@/features/tasks/components/PersistentTaskDialogs';
 import { PERSISTENT_ROUND_END_KIND, readPersistentTaskState } from '@/shared/utils/persistent-task';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { QuestionNav } from '@/components/common/QuestionNav';
 import { getApiClient } from '@/shared/api/client';
 import { useReadingSize } from '@/features/workspace/preferences';
+import { ReadingSettings } from '@/features/workspace/WorkspaceControls';
 import type { CSSProperties } from 'react';
 import type { Message, StartTaskRoundInput } from '@/shared/types';
 
@@ -192,6 +195,7 @@ type ChatViewUiAction =
   | { type: 'settleInsert' };
 
 const EMPTY_MESSAGES: Message[] = [];
+const CHAT_MENU_ITEM_CLASS_NAME = 'flex min-h-9 w-full items-center rounded px-2 text-left hover:bg-paper disabled:opacity-40 disabled:hover:bg-transparent';
 
 const INITIAL_CHAT_VIEW_UI_STATE: ChatViewUiState = {
   composerFeedback: null,
@@ -306,6 +310,8 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   // RFC 0039 persistent tasks.
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(() => readStoredExpandedRounds(taskId));
   const [isNewRoundDialogOpen, setIsNewRoundDialogOpen] = useState(false);
+  const [isPersistentDialogOpen, setIsPersistentDialogOpen] = useState(false);
+  const chatMenuSlot = useContext(ChatMenuSlotContext);
   const [roundActionPending, setRoundActionPending] = useState(false);
   const questionRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const isJumpingQuestionRef = useRef(false);
@@ -838,10 +844,10 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     setScheduledMessage(message);
   }, []);
 
-  const handleScheduleDraft = useCallback((draft: string) => {
+  const handleScheduleDraft = useCallback(() => {
     // Schedule the current composer draft: a message with no persisted id so
     // the dialog treats it as a fresh scheduled message, not a reschedule.
-    setScheduledMessage({ id: '', taskId, role: 'user', content: draft });
+    setScheduledMessage({ id: '', taskId, role: 'user', content: messageInputRef.current?.getDraft() ?? '' });
   }, [taskId]);
 
   const refreshScheduledMessageSummary = useCallback(() => {
@@ -1099,7 +1105,8 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
       <div className="relative min-h-0 flex-1">
         <div
           ref={scrollContainerRef}
-          className="webapp-scrollbar h-full overflow-y-auto px-3 py-2 md:px-4"
+          // pan-y keeps horizontal drags for the mobile task-switch swipe.
+          className="webapp-scrollbar h-full touch-pan-y overflow-y-auto px-3 py-2 md:px-4"
           onScroll={handleScroll}
         >
           {isLoading && messages.length === 0 ? (
@@ -1179,10 +1186,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
                     message={message}
                     onResend={handleResend}
                     onSchedule={handleScheduleMessage}
-                    onRestart={handleRestart}
                     onInterrupt={handleInterrupt}
-                    restartEnabled={restartEnabled}
-                    restartPending={restartPending}
                     interruptEnabled={interruptEnabled}
                     interruptPending={interruptPending}
                   />
@@ -1296,7 +1300,6 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
             ref={messageInputRef}
             taskId={taskId}
             onSend={handleSend}
-            onSchedule={handleScheduleDraft}
             onInsert={(content) => {
               void handleInsert(content);
             }}
@@ -1312,6 +1315,32 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
           />
         </div>
       </div>
+      {chatMenuSlot ? createPortal(
+        // Session-wide actions; the message toolbar only acts on its own message.
+        <ReadingSettings>
+          <button type="button" data-menu-item onClick={handleScheduleDraft} className={CHAT_MENU_ITEM_CLASS_NAME}>
+            Schedule message
+          </button>
+          {task && (task.taskType ?? 'ai_task') === 'ai_task' ? (
+            <>
+              <button type="button" data-menu-item data-testid="chat-menu-restart" disabled={!restartEnabled} onClick={() => void handleRestart()} className={CHAT_MENU_ITEM_CLASS_NAME}>
+                {restartPending ? 'Restarting AI session…' : 'Restart AI session'}
+              </button>
+              <button type="button" data-menu-item onClick={() => setIsPersistentDialogOpen(true)} className={CHAT_MENU_ITEM_CLASS_NAME}>
+                Persistent task
+              </button>
+            </>
+          ) : null}
+        </ReadingSettings>,
+        chatMenuSlot,
+      ) : null}
+      {task && isPersistentDialogOpen ? (
+        <PersistentTaskSettingsDialog
+          task={task}
+          open={isPersistentDialogOpen}
+          onClose={() => setIsPersistentDialogOpen(false)}
+        />
+      ) : null}
       {task && isPersistent ? (
         <NewRoundDialog
           task={task}

@@ -1,10 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
-import { ReadingSettings } from '@/features/workspace/WorkspaceControls';
+import { useContext, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { Header, type TitleSwipeProgress } from '@/components/layout/Header';
 import { useHorizontalSwipe } from '@/shared/hooks/useHorizontalSwipe';
-import { ChatView } from '@/features/chat';
+import { ChatMenuSlotContext, ChatView } from '@/features/chat';
 import { TerminalView } from '@/features/terminal';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { getApiClient } from '@/shared/api/client';
@@ -31,8 +30,17 @@ interface TaskDetailPaneProps {
 const TASK_SWIPE_CONTENT_OFFSET_PX = 14;
 const TASK_SWIPE_CONTENT_MAX_OPACITY_DROP = 0.16;
 
-const isComposerTarget = ({ target }: ReactPointerEvent<HTMLDivElement>) =>
-  target instanceof Element && Boolean(target.closest('.message-composer'));
+// Code blocks, tables and diagrams scroll sideways, so swipes starting there
+// stay with them; so do the message action sheet and other dialogs.
+const CHAT_SWIPE_EXCLUDED_TARGETS = '[role="dialog"], pre, table, .overflow-x-auto';
+
+// Portaled overlays bubble React events through the chat, so the swipe must
+// also start inside the pane's own DOM.
+const isChatSwipeTarget = ({ target, currentTarget }: ReactPointerEvent<HTMLDivElement>) =>
+  target instanceof Element
+  && currentTarget.contains(target)
+  && Boolean(target.closest('[data-chat-viewport]'))
+  && !target.closest(CHAT_SWIPE_EXCLUDED_TARGETS);
 
 export function TaskDetailPane({
   taskId,
@@ -51,6 +59,10 @@ export function TaskDetailPane({
 }: TaskDetailPaneProps) {
   const { tasks, fetchTask, markTaskRead } = useTasksStore();
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
+  // The chat portals its ⋯ menu into this pane's header, or into the
+  // surrounding one when the pane renders headerless.
+  const outerChatMenuSlot = useContext(ChatMenuSlotContext);
+  const [headerChatMenuSlot, setHeaderChatMenuSlot] = useState<HTMLElement | null>(null);
   const task = tasks.find((item) => item.id === taskId);
   const taskExistsRef = useRef(false);
   taskExistsRef.current = Boolean(task);
@@ -161,12 +173,13 @@ export function TaskDetailPane({
     );
   }, [livePtyTaskStatus]);
 
-  // Swiping the composer switches tasks exactly like swiping the title.
-  const composerSwipeHandlers = useHorizontalSwipe<HTMLDivElement>({
+  // Swiping the chat (messages or composer) switches tasks exactly like
+  // swiping the title.
+  const chatSwipeHandlers = useHorizontalSwipe<HTMLDivElement>({
     onSwipeLeft: onTitleSwipeLeft,
     onSwipeRight: onTitleSwipeRight,
     onProgress: onTitleSwipeProgress,
-    canStart: isComposerTarget,
+    canStart: isChatSwipeTarget,
   });
 
   if (!task && pendingTaskId === taskId) {
@@ -238,7 +251,7 @@ export function TaskDetailPane({
       {!hideHeader ? (
         <Header
           title={task.title}
-          actions={<ReadingSettings />}
+          actions={<div ref={setHeaderChatMenuSlot} className="contents" />}
           showBack={showBack}
           onBack={onBack}
           showConnectionStatus={showConnectionStatus}
@@ -255,7 +268,7 @@ export function TaskDetailPane({
       <div
         className={`min-h-0 flex-1 overflow-hidden ${contentTransitionClassName} ${contentSwipeClassName}`}
         style={contentSwipeStyle}
-        {...composerSwipeHandlers}
+        {...chatSwipeHandlers}
       >
         {task.taskType === 'pty_task' ? (
           <TerminalView task={task} />
@@ -271,7 +284,9 @@ export function TaskDetailPane({
             </p>
           </div>
         ) : (
-          <ChatView taskId={taskId} autoFocusComposer={hideHeader} />
+          <ChatMenuSlotContext.Provider value={hideHeader ? outerChatMenuSlot : headerChatMenuSlot}>
+            <ChatView taskId={taskId} autoFocusComposer={hideHeader} />
+          </ChatMenuSlotContext.Provider>
         )}
       </div>
     </>

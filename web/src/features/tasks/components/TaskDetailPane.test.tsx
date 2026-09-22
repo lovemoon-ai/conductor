@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { TaskDetailPane } from './TaskDetailPane';
 import { usePtyToggleStore } from '../pty-toggle-store';
 
@@ -29,23 +30,38 @@ vi.mock('@/shared/api/client', () => ({
 }));
 
 vi.mock('@/components/layout/Header', () => ({
-  Header: ({ title }: { title: string }) => <div data-testid="header">{title}</div>,
+  Header: ({ title, actions }: { title: string; actions?: ReactNode }) => (
+    <div data-testid="header">{title}{actions}</div>
+  ),
 }));
 
-vi.mock('@/features/chat', () => ({
-  ChatView: ({
+vi.mock('@/features/chat', async () => {
+  const React = await import('react');
+  const { createPortal } = await import('react-dom');
+  const ChatMenuSlotContext = React.createContext<HTMLElement | null>(null);
+  const ChatView = ({
     taskId,
     autoFocusComposer,
   }: {
     taskId: string;
     autoFocusComposer?: boolean;
-  }) => (
-    <div data-testid="chat-view">
-      chat:{taskId}:{String(Boolean(autoFocusComposer))}
-      <div className="message-composer" data-testid="composer" />
-    </div>
-  ),
-}));
+  }) => {
+    const menuSlot = React.useContext(ChatMenuSlotContext);
+    return (
+      <div data-testid="chat-view" data-chat-viewport="">
+        chat:{taskId}:{String(Boolean(autoFocusComposer))}
+        <div data-testid="message">
+          reply
+          <pre data-testid="code-block">wide code</pre>
+        </div>
+        <div role="dialog" data-testid="message-actions" />
+        <div className="message-composer" data-testid="composer" />
+        {menuSlot ? createPortal(<button type="button">Chat options</button>, menuSlot) : null}
+      </div>
+    );
+  };
+  return { ChatMenuSlotContext, ChatView };
+});
 
 vi.mock('@/features/terminal', () => ({
   TerminalView: ({ task }: { task: { id: string; status?: string } }) => (
@@ -301,7 +317,7 @@ describe('TaskDetailPane', () => {
     );
   });
 
-  it('switches tasks when the composer is swiped, like the title', () => {
+  it('switches tasks when the messages or the composer are swiped, like the title', () => {
     fetchTaskMock.mockReturnValue(new Promise(() => {}));
     useTasksStoreMock.mockReturnValue({
       tasks: [{ id: 'task-3', title: 'Swipe Task', taskType: 'ai_task', status: 'running', createdAt: '2026-03-23T00:00:00.000Z' }],
@@ -326,17 +342,46 @@ describe('TaskDetailPane', () => {
       fireEvent.pointerUp(element, touchAt(toX));
     };
 
-    // Outside the composer (e.g. the message list) the swipe is ignored.
-    swipe(screen.getByTestId('chat-view'), 200, 100);
+    // Sideways-scrolling content and the message action sheet keep the gesture.
+    swipe(screen.getByTestId('code-block'), 200, 100);
+    swipe(screen.getByTestId('message-actions'), 200, 100);
     expect(onProgress).not.toHaveBeenCalled();
     expect(onSwipeLeft).not.toHaveBeenCalled();
 
-    const composer = screen.getByTestId('composer');
-    swipe(composer, 200, 100);
+    swipe(screen.getByTestId('message'), 200, 100);
     expect(onSwipeLeft).toHaveBeenCalledTimes(1);
     expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ direction: 'left', isDragging: true }));
 
+    const composer = screen.getByTestId('composer');
+    swipe(composer, 200, 100);
+    expect(onSwipeLeft).toHaveBeenCalledTimes(2);
+
     swipe(composer, 100, 200);
     expect(onSwipeRight).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders the chat menu into its own header, or the surrounding one when headerless', async () => {
+    fetchTaskMock.mockReturnValue(new Promise(() => {}));
+    useTasksStoreMock.mockReturnValue({
+      tasks: [{ id: 'task-4', title: 'Menu Task', taskType: 'ai_task', status: 'running', createdAt: '2026-03-23T00:00:00.000Z' }],
+      fetchTask: fetchTaskMock,
+      markTaskRead: markTaskReadMock,
+    });
+    const view = render(<TaskDetailPane taskId="task-4" />);
+    await waitFor(() => {
+      expect(within(screen.getByTestId('header')).getByRole('button', { name: 'Chat options' })).toBeInTheDocument();
+    });
+    view.unmount();
+
+    const outerSlot = document.createElement('div');
+    document.body.appendChild(outerSlot);
+    const { ChatMenuSlotContext } = await import('@/features/chat');
+    render(
+      <ChatMenuSlotContext.Provider value={outerSlot}>
+        <TaskDetailPane taskId="task-4" hideHeader />
+      </ChatMenuSlotContext.Provider>,
+    );
+    expect(within(outerSlot).getByRole('button', { name: 'Chat options' })).toBeInTheDocument();
+    outerSlot.remove();
   });
 });

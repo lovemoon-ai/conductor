@@ -186,7 +186,9 @@ export function ScheduledMessageDialog({
 
       {view === 'form' ? (
         <ScheduledMessageForm
-          key={editing?.id ?? `new:${message?.id ?? ''}`}
+          // The form stays mounted while the dialog is closed, and a composer
+          // draft has no id, so its content must remount the form to seed it.
+          key={editing?.id ?? `new:${message?.id ?? ''}:${initialContent}`}
           taskId={taskId}
           initialContent={editing?.content ?? initialContent}
           sourceMessageId={message?.id || null}

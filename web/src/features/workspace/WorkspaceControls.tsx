@@ -26,13 +26,16 @@ function Disclosure({ label, children, icon }: { label: string; children: ReactN
   }, []);
   return <details ref={ref} className="workspace-disclosure relative shrink-0">
     <summary aria-label={label} title={label} className="flex size-11 cursor-pointer list-none items-center justify-center rounded-md text-muted hover:bg-border/40 md:size-8">{icon}</summary>
-    <div className="absolute right-0 top-full z-40 mt-1 w-56 rounded-lg border border-border bg-panel p-3 text-sm text-ink shadow-lg">{children}</div>
+    {/* Menu items (`data-menu-item`) close the menu once picked. */}
+    <div onClick={(event) => { if ((event.target as Element).closest('[data-menu-item]')) ref.current?.removeAttribute('open'); }} className="absolute right-0 top-full z-40 mt-1 w-56 rounded-lg border border-border bg-panel p-3 text-sm text-ink shadow-lg">{children}</div>
   </details>;
 }
-export function ReadingSettings() {
+/** The chat's ⋯ menu: session actions passed as children, then text size. */
+export function ReadingSettings({ children }: { children?: ReactNode }) {
   const [size, setSize] = useReadingSize();
   const current = () => size ?? (window.matchMedia('(min-width: 768px)').matches ? 14 : 16);
-  return <Disclosure label="Reading settings" icon="⋯">
+  return <Disclosure label="Chat options" icon="⋯">
+    {children ? <div className="mb-3 border-b border-border pb-2">{children}</div> : null}
     <p className="mb-2 text-xs text-muted">Text size</p>
     <div className="flex items-center justify-between gap-2">
       <button type="button" aria-label="Decrease text size" disabled={size === 12} onClick={() => setSize(current() - 1)} className="size-11 rounded border border-border disabled:opacity-40">A−</button>
