@@ -12,6 +12,7 @@ const REMOTE_EXEC_CAPABILITY = "remote_exec";
 export interface AuthorizedRemoteExecRequest {
   userId: string;
   agentHost: string;
+  capabilities: string[];
 }
 
 export async function authorizeRemoteExec(
@@ -48,7 +49,7 @@ export async function authorizeRemoteExec(
     );
   }
 
-  return { userId: userResult.id, agentHost: host };
+  return { userId: userResult.id, agentHost: host, capabilities: agent.capabilities };
 }
 
 function remoteExecOutcomeToResponse(outcome: RequestRemoteExecOutcome): Response {

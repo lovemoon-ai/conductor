@@ -168,7 +168,9 @@ describe("buildRemoteWorktreeBootstrap", () => {
     expect(text).toContain('daemon "ubuntu"');
     expect(text).toContain("/Users/a/ws/conductor) is a READ-ONLY copy");
     expect(text).toContain("conductor remote exec -t ubuntu -w <dir> -- <argv>");
-    expect(text).toContain("set -euo pipefail");
+    expect(text).toContain("Start multi-step write/build scripts with `set -euo pipefail`");
+    expect(text).toContain("leave it off read-only `... | head` queries");
+    expect(text).not.toContain("Start every script with");
     expect(text).toContain(
       "git worktree add -b f8bc83 /home/b/ws/conductor/.conductor/worktrees/f8bc83 main",
     );

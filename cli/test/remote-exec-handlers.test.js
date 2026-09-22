@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
 import {
   buildExecEnv,
@@ -280,6 +282,70 @@ test("exec refuses to start once too many runs are concurrently running", async 
   // Once they are cancelled the daemon accepts work again.
   const accepted = await handlers.dispatch({ action: "exec", args: { command: "pwd", workspace: dir } });
   assert.equal(accepted.result.status, "completed");
+});
+
+function countingSpawn() {
+  const spawned = [];
+  return {
+    spawned,
+    spawnFn: (command, args, options) => {
+      spawned.push(command);
+      return spawn(command, args, options);
+    },
+  };
+}
+
+// The CLI re-sends a POST whose response was lost; the command must not run twice.
+test("exec with a runId that already started returns that run instead of spawning again", async () => {
+  const dir = await makeTempDir();
+  const { spawned, spawnFn } = countingSpawn();
+  const handlers = createRemoteExecHandlers({ spawnFn });
+  const runId = randomUUID();
+  const args = {
+    command: process.execPath,
+    args: ["-e", "setTimeout(() => { process.stdout.write('once'); process.exit(3); }, 200)"],
+    workspace: dir,
+    runId,
+  };
+
+  const first = await handlers.dispatch({ action: "exec", args: { ...args, timeoutMs: 10 } });
+  const second = await handlers.dispatch({ action: "exec", args });
+
+  assert.equal(first.result.runId, runId);
+  assert.equal(first.result.status, "running");
+  assert.equal(second.result.runId, runId);
+  assert.equal(second.result.status, "failed");
+  assert.equal(second.result.exitCode, 3);
+  assert.equal(second.result.stdoutTail, "once");
+  assert.equal(spawned.length, 1);
+});
+
+test("exec spawns once when a duplicate runId arrives while the first is still starting", async () => {
+  const dir = await makeTempDir();
+  const { spawned, spawnFn } = countingSpawn();
+  const handlers = createRemoteExecHandlers({ spawnFn });
+  const args = { command: "pwd", workspace: dir, runId: randomUUID() };
+
+  // Both requests pass the up-front lookup before either reaches `rememberRun`.
+  const [a, b] = await Promise.all([
+    handlers.dispatch({ action: "exec", args }),
+    handlers.dispatch({ action: "exec", args }),
+  ]);
+
+  assert.equal(a.result.runId, args.runId);
+  assert.equal(b.result.runId, args.runId);
+  assert.equal(b.result.status, "completed");
+  assert.equal(spawned.length, 1);
+});
+
+test("exec without a runId still generates a fresh one per call", async () => {
+  const dir = await makeTempDir();
+  const handlers = createRemoteExecHandlers();
+
+  const a = await handlers.dispatch({ action: "exec", args: { command: "pwd", workspace: dir } });
+  const b = await handlers.dispatch({ action: "exec", args: { command: "pwd", workspace: dir } });
+
+  assert.notEqual(a.result.runId, b.result.runId);
 });
 
 test("multi-byte output split across chunks is decoded without replacement characters", async () => {

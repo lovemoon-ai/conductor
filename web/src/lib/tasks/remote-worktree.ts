@@ -167,7 +167,7 @@ export function buildRemoteWorktreeBootstrap(params: {
     "How to operate on the remote workspace",
     `- Run every file read/write, git, build and test command through: conductor remote exec -t ${h} -w <dir> -- <argv>`,
     `  Commands run without a shell. For pipes, redirects or multi-step scripts pass ONE script string: conductor remote exec -t ${h} -w <dir> -- bash -lc "$script"`,
-    "  Start every script with `set -euo pipefail`; without it a failed middle step still exits 0.",
+    "  Start multi-step write/build scripts with `set -euo pipefail`, or a failed middle step still exits 0; leave it off read-only `... | head` queries, which it turns into exit 141.",
     "- Output keeps only the LAST 64 000 characters. Read files with `sed -n '1,200p' <file>` or `rg`, never a bare `cat` of a large file.",
     `- Copy files with: conductor remote cp <local> ${h}:<remote>   (or the reverse).`,
     `- Commands longer than 60 s: add --timeout 20m, or run them as \`nohup ... > log 2>&1 &\` and poll the log. If the CLI is interrupted it prints a run id; resume with: conductor remote wait -t ${h} <runId>`,

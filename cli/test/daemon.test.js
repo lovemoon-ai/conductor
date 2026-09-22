@@ -8495,7 +8495,7 @@ describe("Daemon", () => {
       assert.ok(typeof handler === "function");
       assert.strictEqual(
         webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-        "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_file,pty_task,terminal_snapshot",
+        "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_exec_run_id,remote_file,pty_task,terminal_snapshot",
       );
 
       handler({
@@ -8525,7 +8525,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_file,pty_task,terminal_snapshot",
+      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_exec_run_id,remote_file,pty_task,terminal_snapshot",
     );
 
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -8798,7 +8798,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_file",
+      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_exec_run_id,remote_file",
     );
 
     handler({
