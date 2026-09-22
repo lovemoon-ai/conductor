@@ -1024,18 +1024,20 @@ async function main() {
           .trim()
           .toLowerCase();
         const enableGoalsForBackend = GOAL_CAPABLE_BACKENDS.includes(backendForGoalCheck);
-        backendSession = createAiSession(cliArgs.sessionBackend || cliArgs.backend, {
-          initialImages: cliArgs.initialImages,
-          cwd: runtimeProjectPath,
-          resumeSessionId: nextResumeSessionId,
-          configFile: cliArgs.configFile,
-          ...(cliArgs.sessionOptions || {}),
-          ...(sessionCommandLine ? { commandLine: sessionCommandLine } : {}),
-          ...(enableGoalsForBackend ? { goalMode: true } : {}),
-          logger: { log },
-          sessionStoreKey: taskContext.taskId ? `task-${taskContext.taskId}` : undefined,
-          resumePersistedSession: Boolean(!nextResumeSessionId && taskContext.taskId),
-        });
+        const openBackendSession = (resumeSessionId) =>
+          (backendSession = createAiSession(cliArgs.sessionBackend || cliArgs.backend, {
+            initialImages: cliArgs.initialImages,
+            cwd: runtimeProjectPath,
+            resumeSessionId,
+            configFile: cliArgs.configFile,
+            ...(cliArgs.sessionOptions || {}),
+            ...(sessionCommandLine ? { commandLine: sessionCommandLine } : {}),
+            ...(enableGoalsForBackend ? { goalMode: true } : {}),
+            logger: { log },
+            sessionStoreKey: taskContext.taskId ? `task-${taskContext.taskId}` : undefined,
+            resumePersistedSession: Boolean(!resumeSessionId && taskContext.taskId),
+          }));
+        openBackendSession(nextResumeSessionId);
 
         const runner = new BridgeRunner({
           backendSession,
@@ -1051,6 +1053,8 @@ async function main() {
           daemonName: resolvedDaemonName,
           prePrompt: resolvedPrePrompt || "",
           shouldProcessPrePrompt: Boolean(resolvedPrePrompt) && nextShouldProcessPrePrompt,
+          // `/clear` swaps in a brand-new session (no resume) in-process.
+          createFreshBackendSession: () => openBackendSession(undefined),
         });
         reconnectRunner = runner;
         if (pendingRemoteStopEvent) {
@@ -1618,6 +1622,14 @@ export function formatCompactReply(backendName, compact, instructions = "") {
   return `${backendName} 上下文已压缩${detail}。${ignored}`;
 }
 
+/**
+ * Per-message `/clear` detector. Only a bare `/clear` (case-insensitive)
+ * counts: anything after it is more likely an instruction for the model.
+ */
+export function isClearCommand(content) {
+  return typeof content === "string" && /^\/clear$/i.test(content.trim());
+}
+
 export function injectResolvedTaskId(taskId, env = process.env) {
   const normalizedTaskId = normalizeTaskId(taskId);
   if (!normalizedTaskId) {
@@ -2060,8 +2072,10 @@ export class BridgeRunner {
     daemonName,
     prePrompt,
     shouldProcessPrePrompt,
+    createFreshBackendSession,
   }) {
     this.backendSession = backendSession;
+    this.createFreshBackendSession = createFreshBackendSession;
     this.conductor = conductor;
     this.taskId = taskId;
     this.pollIntervalMs = pollIntervalMs;
@@ -2150,6 +2164,10 @@ export class BridgeRunner {
       2,
       20,
     );
+    this.attachSessionStreamHandlers();
+  }
+
+  attachSessionStreamHandlers() {
     if (
       this.useSessionFileReplyStream &&
       typeof this.backendSession?.setSessionMessageHandler === "function"
@@ -3589,6 +3607,9 @@ export class BridgeRunner {
     if (compactDirective) {
       return this.runCompactCommand(compactDirective, options);
     }
+    if (!hasAttachmentInputs && this.createFreshBackendSession && isClearCommand(content)) {
+      return this.runClearCommand(options);
+    }
 
     if (willRunGoal) {
       const goalResult = await this.runWithTurnUsage(() =>
@@ -3687,6 +3708,48 @@ export class BridgeRunner {
       events: [],
       metadata: { ...(result?.metadata || {}), compact: result?.compact || null },
     };
+  }
+
+  /**
+   * `/clear`: drop the AI context by closing the backend session and swapping
+   * in a fresh one (no resume). The task's chat history is kept; the new
+   * session is announced and, once it has an id, bound to the task just like
+   * at startup, so a later fire restart resumes it instead of the old one.
+   */
+  async runClearCommand({ onProgress, replyTo = "" } = {}) {
+    onProgress?.({
+      phase: "context_clear",
+      reply_in_progress: true,
+      status_line: `${this.backendName} clearing context`,
+    });
+    try {
+      await this.backendSession?.close?.();
+    } catch (error) {
+      log(`[clear] failed to close previous backend session: ${error?.message || error}`);
+    }
+    if (this.stopped) {
+      // The task is shutting down; don't spawn a session nobody will close.
+      throw Object.assign(new Error("backend session closed during /clear"), { reason: "session_closed" });
+    }
+    this.backendSession = this.createFreshBackendSession();
+    this.resumeSessionId = "";
+    this.sessionAnnouncementSent = false;
+    this.sessionAnnouncementSubscribed = false;
+    this.runtimeContextSnapshot = null;
+    this.attachSessionStreamHandlers();
+    await this.announceBackendSession();
+
+    const text = `${this.backendName} 上下文已清除，已开始新会话。`;
+    onProgress?.({ phase: "turn_completed", reply_in_progress: false, status_done_line: text });
+    log(`[clear] backend=${this.backendName} started a fresh session`);
+    if (this.useSessionFileReplyStream && !this.stopped) {
+      try {
+        await this.sendSessionStreamMessage({ text, replyTo });
+      } catch (error) {
+        log(`[clear] failed to post confirmation: ${error?.message || error}`);
+      }
+    }
+    return { text, items: [], usage: null, provider: this.backendName, events: [], metadata: {} };
   }
 
   async handlePrePromptMessage(content) {
