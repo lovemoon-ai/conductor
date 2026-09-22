@@ -623,11 +623,10 @@ describe("kimi cli session", () => {
 });
 
 describe("KimiWireTransport base args", () => {
-  it("drops configured resume/continue flags so a fresh session starts empty", () => {
+  it("drops configured resume flags so a fresh session starts empty", () => {
     assert.deepEqual(
       filterKimiWireBaseArgs([
         "--continue",
-        "-c",
         "-C",
         "--session",
         "abc",
@@ -653,9 +652,31 @@ describe("KimiWireTransport base args", () => {
     );
   });
 
+  it("leaves -c alone: it is kimi's --prompt alias and takes a value", () => {
+    // Dropping the flag but not its value would leave a stray positional
+    // argument ahead of --wire, which the CLI would read as the prompt.
+    assert.deepEqual(filterKimiWireBaseArgs(["-c", "preset prompt", "--debug"]), [
+      "-c",
+      "preset prompt",
+      "--debug",
+    ]);
+    assert.deepEqual(filterKimiWireBaseArgs(["-cpreset-prompt"]), ["-cpreset-prompt"]);
+  });
+
+  it("never leaves an orphan value behind for the flags it does drop", () => {
+    for (const args of [
+      ["--session", "stale", "--debug"],
+      ["-S", "stale", "--debug"],
+      ["--resume", "stale", "--debug"],
+      ["-r", "stale", "--debug"],
+    ]) {
+      assert.deepEqual(filterKimiWireBaseArgs(args), ["--debug"], `orphan left for ${args.join(" ")}`);
+    }
+  });
+
   it("appends only the caller's session id to the spawn args", () => {
     const transport = new KimiWireTransport({
-      commandLine: "kimi --continue --session=stale --verbose",
+      commandLine: "kimi --continue --session stale --verbose",
       cwd: "/tmp/kimi-wire-args",
       sessionId: "fresh-session",
     });
@@ -663,7 +684,10 @@ describe("KimiWireTransport base args", () => {
 
     assert.deepEqual(args.filter((arg) => arg.startsWith("--session")), ["--session=fresh-session"]);
     assert.ok(!args.includes("--continue"));
+    assert.ok(!args.includes("stale"), "the dropped --session must not leave its value behind");
     assert.ok(args.includes("--verbose"));
+    // Nothing before --wire may be a positional the CLI would read as a prompt.
+    assert.deepEqual(args.slice(0, args.indexOf("--wire")), ["--verbose"]);
     assert.ok(transport.buildResumeCommandLine().includes("--session fresh-session"));
     assert.ok(!transport.buildResumeCommandLine().includes("--continue"));
   });

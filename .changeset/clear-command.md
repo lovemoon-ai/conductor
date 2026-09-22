@@ -28,4 +28,7 @@ restart resumes the cleared conversation rather than the old one. The codex
 fresh-session bootstrap lock now covers that fallback too, and the kimi wire
 transport drops configured `--continue`/`--resume`/`--session` flags (like kimi
 print already did) so they cannot reattach a cleared session to the old
-conversation. The configured `pre_prompt` is not re-sent to the cleared session.
+conversation. Two caveats: the configured `pre_prompt` is not re-sent to the
+cleared session, and a chat-web task running with
+`CONDUCTOR_AI_SDK_DISABLE_WORKER=1` can only clear natively — its fallback would
+hit the browser profile lock, because in that mode the lock owner is fire itself.

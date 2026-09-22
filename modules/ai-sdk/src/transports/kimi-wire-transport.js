@@ -50,11 +50,15 @@ function quoteShellArg(value) {
 }
 
 /**
- * Drop resume/continue flags from the configured command line. The session id
- * is owned by the caller (we always append our own `--session=`), so a
- * configured `--continue`/`--resume` would silently reattach a fresh session —
- * e.g. a `/clear` — to the previous conversation. Mirrors the same guard in
- * kimi-print-session.js.
+ * Drop resume flags from the configured command line. The session id is owned
+ * by the caller (we always append our own `--session=`), so a configured
+ * `--continue`/`--session`/`--resume` would silently reattach a fresh session —
+ * e.g. a `/clear` — to the previous conversation.
+ *
+ * Only those flags are touched. Notably `-c` is kimi's alias for
+ * `--prompt`/`--command` (it takes a value), not a continue switch, so it is
+ * passed through untouched — dropping the flag alone would leave its value
+ * behind as a stray positional argument.
  */
 export function filterKimiWireBaseArgs(args) {
   const filtered = [];
@@ -68,7 +72,7 @@ export function filterKimiWireBaseArgs(args) {
       skipNext = false;
       continue;
     }
-    if (arg === "--continue" || arg === "-C" || arg === "-c") {
+    if (arg === "--continue" || arg === "-C") {
       continue;
     }
     if (arg === "--session" || arg === "-S" || arg === "--resume" || arg === "-r") {
