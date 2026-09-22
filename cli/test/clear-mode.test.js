@@ -29,17 +29,30 @@ function buildConductorStub() {
   };
 }
 
-function makeSession(sessionId, { sessionStream = true, onClose } = {}) {
-  const calls = { runTurn: [], close: 0, messageHandlers: 0 };
+function makeSession(sessionId, { sessionStream = true, onClose, clear = false, runClear } = {}) {
+  const calls = { runTurn: [], close: 0, messageHandlers: 0, runClear: [] };
+  let currentSessionId = sessionId;
   return {
     calls,
-    getSnapshot: () => ({ capabilities: { goal: false, compact: true } }),
+    getSnapshot: () => ({ capabilities: { goal: false, compact: true, clear } }),
+    ...(clear
+      ? {
+          runClear: async (request, options) => {
+            calls.runClear.push({ request, options });
+            if (typeof runClear === "function") {
+              return await runClear(request, options);
+            }
+            currentSessionId = `${sessionId}-cleared`;
+            return { clear: { status: "cleared", sessionId: currentSessionId }, usage: null, metadata: {} };
+          },
+        }
+      : {}),
     usesSessionFileReplyStream: () => sessionStream,
     setSessionMessageHandler: () => {
       calls.messageHandlers += 1;
     },
-    ensureSessionInfo: async () => (sessionId ? { sessionId } : null),
-    getSessionInfo: () => (sessionId ? { sessionId } : null),
+    ensureSessionInfo: async () => (currentSessionId ? { sessionId: currentSessionId } : null),
+    getSessionInfo: () => (currentSessionId ? { sessionId: currentSessionId } : null),
     close: async () => {
       calls.close += 1;
       await onClose?.();
@@ -51,8 +64,8 @@ function makeSession(sessionId, { sessionStream = true, onClose } = {}) {
   };
 }
 
-function buildRunner({ sessionStream = true, onClose } = {}) {
-  const oldSession = makeSession("old-session", { sessionStream, onClose });
+function buildRunner({ sessionStream = true, onClose, clear = false, runClear } = {}) {
+  const oldSession = makeSession("old-session", { sessionStream, onClose, clear, runClear });
   const freshSessions = [];
   const conductor = buildConductorStub();
   const runner = new BridgeRunner({
@@ -175,6 +188,62 @@ describe("BridgeRunner.dispatchBackendTurn /clear", () => {
 
     assert.deepEqual(order, ["lock-acquired", "lock-released"]);
     assert.deepEqual(conductor.bindings.map((binding) => binding.session_id), ["new-session-1"]);
+  });
+
+  it("uses the backend's native clear and keeps the same session alive", async () => {
+    const { runner, conductor, oldSession, freshSessions } = buildRunner({ clear: true });
+    const progress = [];
+
+    const result = await runner.dispatchBackendTurn("/clear", {
+      replyTo: "msg-clear",
+      onProgress: (payload) => progress.push(payload),
+    });
+
+    assert.equal(oldSession.calls.runClear.length, 1);
+    assert.deepEqual(oldSession.calls.runClear[0].request, {});
+    assert.equal(oldSession.calls.close, 0, "native clear must not close the session");
+    assert.equal(freshSessions.length, 0, "native clear must not spawn a replacement session");
+    assert.equal(runner.backendSession, oldSession);
+    assert.equal(oldSession.calls.runTurn.length, 0);
+    // The native clear moved to a new session id, so the task is rebound to it.
+    assert.deepEqual(conductor.bindings.map((binding) => binding.session_id), ["old-session-cleared"]);
+    assert.deepEqual(conductor.sent.map((entry) => entry.content), ["claude 上下文已清除。"]);
+    assert.equal(conductor.sent[0].metadata.reply_to, "msg-clear");
+    assert.equal(result.text, "claude 上下文已清除。");
+    assert.equal(result.metadata.clear.status, "cleared");
+    assert.deepEqual(progress.map((payload) => payload.phase), ["context_clear", "turn_completed"]);
+  });
+
+  it("reports a native noop when there was nothing to clear", async () => {
+    const { runner, conductor } = buildRunner({
+      clear: true,
+      runClear: async () => ({ clear: { status: "noop" }, usage: null, metadata: {} }),
+    });
+
+    const result = await runner.dispatchBackendTurn("/clear", { replyTo: "msg-clear" });
+
+    assert.deepEqual(conductor.sent.map((entry) => entry.content), ["claude 当前没有可清除的上下文。"]);
+    assert.equal(result.metadata.clear.status, "noop");
+  });
+
+  it("reports the native clear's token usage like a turn", async () => {
+    const reports = [];
+    const { runner, conductor } = buildRunner({
+      clear: true,
+      runClear: async () => ({
+        clear: { status: "cleared" },
+        usage: { input_tokens: 12, output_tokens: 8 },
+        metadata: {},
+      }),
+    });
+    conductor.sendTurnUsage = async (_taskId, payload) => {
+      reports.push(payload);
+    };
+
+    await runner.dispatchBackendTurn("/clear", { replyTo: "msg-usage" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(reports, [{ tokens: 20 }]);
   });
 
   it("routes the rest of the same message batch to the fresh session", async () => {

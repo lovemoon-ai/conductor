@@ -107,3 +107,40 @@ describe("codex app-server session - runCompact", () => {
     }
   });
 });
+
+describe("codex app-server session - runClear", () => {
+  it("advertises clear capability", () => {
+    assert.equal(makeSession().getSnapshot().capabilities.clear, true);
+  });
+
+  it("starts a fresh thread on the same transport and drops the old one", async () => {
+    const session = makeSession({ resumeSessionId: "thread-old" });
+    await session.boot();
+    assert.equal(session.sessionId, "thread-old");
+    session.history.push({ role: "user", content: "remember PINEAPPLE-42" });
+
+    const result = await session.runClear();
+
+    assert.deepEqual(result.clear, { status: "cleared", sessionId: "thread-1" });
+    assert.deepEqual(
+      session.transport.calls.map((call) => call.method),
+      ["thread/resume", "thread/start"],
+      "the transport (and its process) is reused; only the thread is replaced",
+    );
+    assert.equal(session.sessionId, "thread-1");
+    assert.deepEqual(session.history, []);
+    // A later re-boot must not resume the thread we walked away from.
+    assert.equal(session.resumeSessionId, "");
+    await session.close();
+  });
+
+  it("is a noop on a brand-new session that never ran a turn", async () => {
+    const session = makeSession();
+
+    const result = await session.runClear();
+
+    assert.equal(result.clear.status, "noop");
+    assert.deepEqual(session.transport.calls, []);
+    await session.close();
+  });
+});

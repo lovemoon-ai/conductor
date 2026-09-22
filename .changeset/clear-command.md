@@ -1,15 +1,31 @@
 ---
-"@love-moon/ai-sdk": patch
+"@love-moon/ai-sdk": minor
 "@love-moon/conductor-cli": minor
 ---
 
 Support `/clear` in task chats. Fire detects a bare `/clear` message (like
-`/compact`), closes the backend session and continues on a brand-new one, so
-the AI starts with an empty context while the task's chat history is kept. The
-new session is announced and, once it has an id, bound to the task, so a later
-restart resumes it rather than the old one. Works for every backend: no
-provider restores history without an explicit resume id. The codex fresh-session
-bootstrap lock now covers `/clear` too, and the kimi wire transport drops
-configured `--continue`/`--resume`/`--session` flags (like kimi print already
-did) so they cannot reattach a cleared session to the old conversation. The
-configured `pre_prompt` is not re-sent to the new session.
+`/compact`) and drops the AI's context instead of sending the text to the model.
+Sessions advertise `capabilities.clear` and implement the new optional
+`runClear()` on top of each backend's own native reset, so the backend process,
+browser or RPC connection stays up:
+
+- claude: native `/clear` slash command (the SDK's `conversation_reset` reports
+  the new conversation id)
+- codex app-server: `thread/start` on the live transport
+- codex exec: drops the replayed history, which is the whole context for a
+  stateless CLI
+- copilot: `createSession()` on the same client; the old conversation is
+  detached, not deleted
+- kimi wire and legacy print: the CLI's built-in `/clear` (prompt mode opts out)
+- opencode: `session.create` on the same `opencode serve`
+- dsh: rotates onto a fresh wire session id and keeps the runtime subprocess
+- chat-web: `newChat()` in the same browser and profile
+
+Backends without the capability (external providers) fall back to closing the
+session and continuing on a brand-new one. Either way the task's chat history is
+kept and the task is rebound to the session the backend ends up on, so a later
+restart resumes the cleared conversation rather than the old one. The codex
+fresh-session bootstrap lock now covers that fallback too, and the kimi wire
+transport drops configured `--continue`/`--resume`/`--session` flags (like kimi
+print already did) so they cannot reattach a cleared session to the old
+conversation. The configured `pre_prompt` is not re-sent to the cleared session.

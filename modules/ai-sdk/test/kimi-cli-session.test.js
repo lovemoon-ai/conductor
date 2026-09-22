@@ -309,6 +309,31 @@ describe("kimi cli session", () => {
     await session.close();
   });
 
+  it("runClear sends the built-in /clear command over wire without surfacing its reply", async () => {
+    const messages = [];
+    const session = new KimiCliSession("kimi", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_KIMI_WIRE}`,
+      logger: { log: () => {} },
+    });
+    session.setSessionMessageHandler(async (payload) => {
+      messages.push(payload);
+    });
+
+    assert.equal(session.getSnapshot().capabilities.clear, true);
+    await session.runTurn("Reply with exactly OK");
+    const sessionIdBefore = session.getSessionInfo()?.sessionId;
+
+    const cleared = await session.runClear();
+
+    assert.equal(cleared.clear.status, "cleared");
+    // The CLI clears in place, so the wire session (and its process) survives.
+    assert.equal(cleared.clear.sessionId, sessionIdBefore);
+    assert.deepEqual(session.history, []);
+    assert.deepEqual(messages.map((payload) => payload.text), ["OK from fake kimi\n"]);
+    await session.close();
+  });
+
   it("emits auth_required when kimi reports missing model configuration", async () => {
     const authRequiredEvents = [];
     const session = new KimiCliSession("kimi", {

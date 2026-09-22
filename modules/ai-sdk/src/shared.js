@@ -88,6 +88,7 @@ export function isTerminalGoalStatus(value) {
  * @typedef {Object} SessionCapabilities
  * @property {boolean} [goal]
  * @property {boolean} [compact]
+ * @property {boolean} [clear]
  */
 
 /**
@@ -115,12 +116,29 @@ export function isTerminalGoalStatus(value) {
  */
 
 /**
+ * Native context clear (`/clear`) contract for providers that implement the
+ * optional `runClear` method and advertise `capabilities.clear === true`.
+ * Providers must NOT emit assistant messages while clearing; the caller
+ * renders the user-facing confirmation.
+ *
+ * @typedef {Object} ClearState
+ * @property {"cleared"|"noop"} status `noop` = there was nothing to clear.
+ * @property {string} [sessionId] New session id when the backend starts a new
+ *   conversation; callers rebind the task to it.
+ *
+ * @typedef {Object} ClearResult
+ * @property {ClearState} clear
+ * @property {unknown} [usage]
+ * @property {Record<string, unknown>} [metadata]
+ */
+
+/**
  * Default capabilities assigned to providers that do not opt into any optional
  * feature. Treat the returned object as read-only; clone before mutating.
  *
  * @type {Readonly<SessionCapabilities>}
  */
-export const DEFAULT_SESSION_CAPABILITIES = Object.freeze({ goal: false, compact: false });
+export const DEFAULT_SESSION_CAPABILITIES = Object.freeze({ goal: false, compact: false, clear: false });
 
 /**
  * Resolve a session's capability snapshot, falling back to

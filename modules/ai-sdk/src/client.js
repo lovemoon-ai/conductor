@@ -31,6 +31,14 @@ function createUnsupportedCompactError(name) {
   return err;
 }
 
+function createUnsupportedClearError(name) {
+  const err = new Error(
+    `runClear() is not supported by backend session (${name || "unknown"}).`,
+  );
+  err.reason = "unsupported_clear";
+  return err;
+}
+
 const WORKER_PATH = fileURLToPath(new URL("./worker.js", import.meta.url));
 
 function sanitizeOptionsForWorker(options = {}) {
@@ -273,6 +281,17 @@ export class RemoteAiSession extends EventEmitter {
     }
     const { onProgress, ...restOptions } = options || {};
     return this.callWorker("runCompact", [request, restOptions], {
+      progressHandler: typeof onProgress === "function" ? onProgress : null,
+    });
+  }
+
+  async runClear(request = {}, options = {}) {
+    await this.readyPromise;
+    if (!this.snapshot?.capabilities || this.snapshot.capabilities.clear !== true) {
+      throw createUnsupportedClearError(this.snapshot?.provider || this.snapshot?.backend);
+    }
+    const { onProgress, ...restOptions } = options || {};
+    return this.callWorker("runClear", [request, restOptions], {
       progressHandler: typeof onProgress === "function" ? onProgress : null,
     });
   }
@@ -781,6 +800,14 @@ class LocalAiSessionProxy extends EventEmitter {
       throw createUnsupportedCompactError(session?.constructor?.name);
     }
     return await session.runCompact(request, options);
+  }
+
+  async runClear(request = {}, options = {}) {
+    const session = await this.readyPromise;
+    if (this.snapshot?.capabilities?.clear !== true || typeof session.runClear !== "function") {
+      throw createUnsupportedClearError(session?.constructor?.name);
+    }
+    return await session.runClear(request, options);
   }
 
   async getGoal() {

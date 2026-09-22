@@ -829,3 +829,61 @@ describe("copilot sdk session", () => {
     await session.close();
   });
 });
+
+describe("copilot sdk session - runClear", () => {
+  it("advertises clear capability", () => {
+    const harness = createCopilotSdkHarness();
+    const session = new CopilotSdkSession("copilot", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      sdkModule: harness.sdkModule,
+    });
+    assert.equal(session.getSnapshot().capabilities.clear, true);
+  });
+
+  it("creates a new session on the same client and detaches the old conversation", async () => {
+    let created = 0;
+    const harness = createCopilotSdkHarness({
+      onCreateSession: (_config, state) => {
+        created += 1;
+        return new FakeCopilotSession(`copilot-created-${created}`, state);
+      },
+    });
+    const session = new CopilotSdkSession("copilot", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      resumeSessionId: "copilot-resumed",
+      sdkModule: harness.sdkModule,
+    });
+    await session.boot();
+    assert.equal(session.sessionId, "copilot-resumed");
+    session.history.push({ role: "user", content: "remember PINEAPPLE-42" });
+
+    const result = await session.runClear();
+
+    assert.deepEqual(result.clear, { status: "cleared", sessionId: "copilot-created-1" });
+    assert.equal(harness.state.createSessionConfigs.length, 1);
+    // The CLI subprocess (the client) is reused; only the session is replaced.
+    assert.equal(harness.state.startCalls, 1);
+    assert.equal(harness.state.stopCalls, 0);
+    assert.equal(harness.state.disconnectCalls, 1, "the old conversation is detached, not destroyed");
+    assert.deepEqual(session.history, []);
+    assert.equal(session.resumeSessionId, "");
+    await session.close();
+  });
+
+  it("is a noop on a brand-new session that never ran a turn", async () => {
+    const harness = createCopilotSdkHarness();
+    const session = new CopilotSdkSession("copilot", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      sdkModule: harness.sdkModule,
+    });
+
+    const result = await session.runClear();
+
+    assert.equal(result.clear.status, "noop");
+    assert.equal(harness.state.createSessionConfigs.length, 0);
+    assert.equal(harness.state.startCalls, 0, "a clear must not boot the CLI just to clear nothing");
+  });
+});

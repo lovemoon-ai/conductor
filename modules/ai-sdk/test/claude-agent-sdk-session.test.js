@@ -238,6 +238,106 @@ describe("claude agent-sdk session", () => {
     await session.close();
   });
 
+  it("runClear sends the native /clear command and adopts the new session id", async () => {
+    const captured = [];
+    const emitted = [];
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      resumeSessionId: "claude-clear-1",
+      logger: { log: () => {} },
+      sdkModule: {
+        query: ({ prompt, options }) => {
+          captured.push({ prompt, resume: options.resume });
+          return {
+            async *[Symbol.asyncIterator]() {
+              // The CLI answers the slash command itself and moves to a new session.
+              yield { type: "system", subtype: "init", session_id: "claude-clear-2" };
+              yield { type: "result", subtype: "success", session_id: "claude-clear-2", result: "(no content)", usage: { input_tokens: 3 } };
+            },
+            close: () => {},
+          };
+        },
+      },
+    });
+    session.setSessionMessageHandler((payload) => emitted.push(payload));
+
+    const result = await session.runClear();
+
+    assert.deepEqual(captured, [{ prompt: "/clear", resume: "claude-clear-1" }]);
+    assert.deepEqual(result.clear, { status: "cleared", sessionId: "claude-clear-2" });
+    assert.equal(emitted.length, 0, "the clear must not surface an assistant reply");
+    assert.deepEqual(session.history, []);
+    await session.close();
+  });
+
+  it("runClear trusts the SDK's conversation_reset signal", async () => {
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      resumeSessionId: "claude-clear-reset",
+      logger: { log: () => {} },
+      sdkModule: {
+        query: () => ({
+          async *[Symbol.asyncIterator]() {
+            yield { type: "conversation_reset", new_conversation_id: "claude-clear-reset-2", session_id: "claude-clear-reset" };
+            yield { type: "result", subtype: "success", session_id: "claude-clear-reset-2", result: "", usage: {} };
+          },
+          close: () => {},
+        }),
+      },
+    });
+
+    const result = await session.runClear();
+
+    assert.deepEqual(result.clear, { status: "cleared", sessionId: "claude-clear-reset-2" });
+    await session.close();
+  });
+
+  it("runClear reports a noop when the session id did not move", async () => {
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      resumeSessionId: "claude-clear-3",
+      logger: { log: () => {} },
+      sdkModule: {
+        query: () => ({
+          async *[Symbol.asyncIterator]() {
+            yield { type: "result", subtype: "success", session_id: "claude-clear-3", result: "I cannot do that.", usage: {} };
+          },
+          close: () => {},
+        }),
+      },
+    });
+
+    const result = await session.runClear();
+
+    assert.equal(result.clear.status, "noop");
+    assert.equal(result.clear.sessionId, undefined);
+    await session.close();
+  });
+
+  it("runClear is a noop before the conversation has a session", async () => {
+    let queried = false;
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      sdkModule: {
+        query: () => {
+          queried = true;
+          throw new Error("should not query");
+        },
+      },
+    });
+
+    const result = await session.runClear();
+
+    assert.equal(queried, false);
+    assert.equal(result.clear.status, "noop");
+    await session.close();
+  });
+
+  it("advertises the clear capability", () => {
+    assert.equal(ClaudeAgentSdkSession.capabilities.clear, true);
+  });
+
   it("runCompact is a noop before the conversation has a session", async () => {
     let queried = false;
     const session = new ClaudeAgentSdkSession("claude", {

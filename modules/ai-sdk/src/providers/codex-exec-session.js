@@ -289,7 +289,7 @@ export class CodexExecSession extends EventEmitter {
       resumeReady: false,
       manualResume: null,
       currentTurnStatus: this.getCurrentTurnStatus(),
-      capabilities: { media: PROVIDER_MEDIA_CAPABILITIES[CODEX_EXEC_PROVIDER_VARIANT] },
+      capabilities: { clear: true, media: PROVIDER_MEDIA_CAPABILITIES[CODEX_EXEC_PROVIDER_VARIANT] },
       pid: this.currentTurn?.child?.pid || undefined,
     };
   }
@@ -403,6 +403,21 @@ export class CodexExecSession extends EventEmitter {
 
   buildPrompt(promptText) {
     return buildHistoryPrompt(this.history, promptText);
+  }
+
+  /**
+   * Native clear: `codex exec` is stateless — every turn replays this history
+   * as the prompt prefix (see buildPrompt), so dropping it IS the context
+   * clear. No process to restart, no session to rebind.
+   */
+  async runClear() {
+    const hadContext = this.history.length > 0;
+    this.history = [];
+    return {
+      clear: { status: hadContext ? "cleared" : "noop", sessionId: this.sessionId || undefined },
+      usage: null,
+      metadata: {},
+    };
   }
 
   buildExecArgs({ media = [], schemaFilePath = "", lastMessageFilePath = "" } = {}) {

@@ -298,7 +298,7 @@ export class KimiCliSession extends EventEmitter {
           }
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
-      capabilities: { compact: true, media: PROVIDER_MEDIA_CAPABILITIES[KIMI_PROVIDER_VARIANT] },
+      capabilities: { compact: true, clear: true, media: PROVIDER_MEDIA_CAPABILITIES[KIMI_PROVIDER_VARIANT] },
       pid: this.transport.pid || undefined,
     };
   }
@@ -1068,6 +1068,23 @@ export class KimiCliSession extends EventEmitter {
     const turnResult = await this.runTurn("/compact", { onProgress, suppressReply: true });
     return {
       compact: { status: turnResult.compacted ? "compacted" : "noop", instructionsApplied: false },
+      usage: turnResult.usage,
+      metadata: turnResult.metadata,
+    };
+  }
+
+  /**
+   * Native `/clear`: the Kimi CLI answers the slash command locally (no model
+   * call) and keeps the same wire session, so only the context is dropped.
+   */
+  async runClear(request = {}, { onProgress = null } = {}) {
+    if (this.pendingHistorySeed) {
+      return { clear: { status: "noop" }, usage: null, metadata: {} };
+    }
+    const turnResult = await this.runTurn("/clear", { onProgress, suppressReply: true });
+    this.history = [];
+    return {
+      clear: { status: "cleared", sessionId: this.sessionId || undefined },
       usage: turnResult.usage,
       metadata: turnResult.metadata,
     };

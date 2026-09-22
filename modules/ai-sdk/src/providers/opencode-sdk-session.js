@@ -279,7 +279,7 @@ export class OpencodeSdkSession extends EventEmitter {
       resumeReady: Boolean(this.sessionId),
       manualResume: null,
       currentTurnStatus: this.getCurrentTurnStatus(),
-      capabilities: { compact: true, media: PROVIDER_MEDIA_CAPABILITIES[OPENCODE_PROVIDER_VARIANT] },
+      capabilities: { compact: true, clear: true, media: PROVIDER_MEDIA_CAPABILITIES[OPENCODE_PROVIDER_VARIANT] },
       pid: this.transport.pid || undefined,
     };
   }
@@ -1412,6 +1412,41 @@ export class OpencodeSdkSession extends EventEmitter {
    * @param {{ onProgress?: Function }} [options]
    * @returns {Promise<import("../shared.js").CompactResult>}
    */
+  /**
+   * Native clear: create a new session on the SAME opencode server (the server
+   * process and its event stream stay up); the old session is left untouched on
+   * disk, exactly like the boot path's `session.create`.
+   */
+  async runClear() {
+    if (this.closeRequested) {
+      throw this.createSessionClosedError();
+    }
+    if (this.currentTurn) {
+      throw createTurnError("Opencode turn already running", {
+        reason: "turn_already_running",
+      });
+    }
+    if (this.pendingHistorySeed || (!this.resumeSessionId && !this.sessionId && this.history.length === 0)) {
+      return { clear: { status: "noop" }, usage: null, metadata: {} };
+    }
+    await this.boot();
+    if (typeof this.client?.session?.create !== "function") {
+      throw new Error("Opencode session create API is unavailable");
+    }
+    const session = await this.requestOrThrow(
+      this.client.session.create({}, { throwOnError: true, responseStyle: "data" }),
+    );
+    this.applySessionInfo(session);
+    // A later re-boot must not reattach to the session we walked away from.
+    this.resumeSessionId = "";
+    this.history = [];
+    return {
+      clear: { status: "cleared", sessionId: this.sessionId || undefined },
+      usage: null,
+      metadata: {},
+    };
+  }
+
   async runCompact(request = {}, { onProgress = null } = {}) {
     if (this.closeRequested) {
       throw this.createSessionClosedError();

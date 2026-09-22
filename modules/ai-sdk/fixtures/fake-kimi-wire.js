@@ -203,6 +203,14 @@ input.on("line", (line) => {
       });
       return;
     }
+    if (promptText === "/clear") {
+      // Mirrors kimi-cli's built-in slash command: handled locally, no model call.
+      emitEvent("TurnBegin", { user_input: promptText });
+      emitEvent("ContentPart", { type: "text", text: "The context has been cleared." });
+      emitEvent("TurnEnd", {});
+      respond(message.id, { status: "finished" });
+      return;
+    }
     if (promptText === "/compact") {
       // Mirrors kimi-cli's built-in slash command: no compaction on an empty context.
       emitEvent("TurnBegin", { user_input: promptText });

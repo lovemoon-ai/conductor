@@ -265,6 +265,7 @@ export class CodexAppServerSession extends EventEmitter {
   static capabilities = Object.freeze({
     goal: true,
     compact: true,
+    clear: true,
     media: PROVIDER_MEDIA_CAPABILITIES[CODEX_APP_SERVER_VARIANT],
   });
 
@@ -504,8 +505,7 @@ export class CodexAppServerSession extends EventEmitter {
     }
   }
 
-  async bootInternal() {
-    await this.transport.boot();
+  buildThreadParams() {
     const params = {
       cwd: this.cwd,
       approvalPolicy: "never",
@@ -516,6 +516,12 @@ export class CodexAppServerSession extends EventEmitter {
     if (this.options.model) {
       params.model = this.options.model;
     }
+    return params;
+  }
+
+  async bootInternal() {
+    await this.transport.boot();
+    const params = this.buildThreadParams();
 
     let result;
     if (this.resumeSessionId) {
@@ -1515,6 +1521,36 @@ export class CodexAppServerSession extends EventEmitter {
    * @param {import("../shared.js").CompactRequest} [request]
    * @returns {Promise<import("../shared.js").CompactResult>}
    */
+  /**
+   * Native clear: start a fresh thread on the SAME app-server connection. The
+   * process, transport and model config stay up; only the conversation is
+   * replaced, so the next turn runs against an empty thread.
+   */
+  async runClear() {
+    if (this.closeRequested) {
+      throw this.createSessionClosedError();
+    }
+    if (this.currentTurn || this.currentGoalRun) {
+      throw createTurnError("Codex app-server turn already running", {
+        reason: "turn_already_running",
+      });
+    }
+    if (this.pendingHistorySeed || (!this.resumeSessionId && !this.sessionId && this.history.length === 0)) {
+      return { clear: { status: "noop" }, usage: null, metadata: {} };
+    }
+    await this.boot();
+    const result = await this.transport.request("thread/start", this.buildThreadParams());
+    this.applyThreadInfo(result);
+    // A later re-boot must not resume the thread we just walked away from.
+    this.resumeSessionId = "";
+    this.history = [];
+    return {
+      clear: { status: "cleared", sessionId: this.sessionId || undefined },
+      usage: null,
+      metadata: {},
+    };
+  }
+
   async runCompact(request = {}) {
     if (this.closeRequested) {
       throw this.createSessionClosedError();

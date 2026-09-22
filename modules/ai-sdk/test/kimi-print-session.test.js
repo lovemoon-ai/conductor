@@ -80,3 +80,49 @@ test("prompt mode does not advertise compact", async () => {
   assert.equal(session.getSnapshot().capabilities.compact, false);
   await session.close();
 });
+
+test("legacy print runClear runs the built-in /clear command without surfacing its reply", async () => {
+  const session = new KimiPrintSession("kimi", {
+    cwd: process.cwd(),
+    commandLine: `${process.execPath} ${FAKE_KIMI_PRINT}`,
+    logger: { log: () => {} },
+  });
+  const messages = [];
+  session.setSessionMessageHandler(async (payload) => {
+    messages.push(payload);
+  });
+
+  assert.equal(session.getSnapshot().capabilities.clear, true);
+  await session.runTurn("Reply with exactly OK");
+  const sessionIdBefore = session.getSessionInfo()?.sessionId;
+
+  const cleared = await session.runClear();
+
+  assert.equal(cleared.clear.status, "cleared");
+  // The CLI clears its own context file; the --session id is unchanged.
+  assert.equal(cleared.clear.sessionId, sessionIdBefore);
+  assert.deepEqual(session.history, []);
+
+  process.env.FAKE_KIMI_PRINT_CLEAR_ERROR = "1";
+  try {
+    await assert.rejects(session.runClear(), (error) => error.reason === "clear_failed");
+  } finally {
+    delete process.env.FAKE_KIMI_PRINT_CLEAR_ERROR;
+  }
+
+  // Only the real turn surfaced replies; neither clear leaked its CLI answer.
+  assert.ok(!messages.some((payload) => /cleared/i.test(payload.text)));
+  assert.ok(!messages.some((payload) => /rate limited/i.test(payload.text)));
+  await session.close();
+});
+
+test("kimi prompt mode advertises no clear support", () => {
+  const session = new KimiPrintSession("kimi", {
+    cwd: process.cwd(),
+    commandLine: `${process.execPath} ${FAKE_KIMI_PRINT}`,
+    kimiCliMode: "prompt",
+    logger: { log: () => {} },
+  });
+
+  assert.equal(session.getSnapshot().capabilities.clear, false);
+});

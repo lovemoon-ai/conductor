@@ -1,7 +1,7 @@
 class FakeExternalSession {
-  // Goal- and compact-capable for the client tests that exercise the proxy
-  // capability snapshot.
-  static capabilities = Object.freeze({ goal: true, compact: true });
+  // Goal-, compact- and clear-capable for the client tests that exercise the
+  // proxy capability snapshot.
+  static capabilities = Object.freeze({ goal: true, compact: true, clear: true });
 
   constructor(backend, options = {}) {
     this.backend = backend;
@@ -126,6 +126,17 @@ class FakeExternalSession {
     };
   }
 
+  async runClear(request = {}, options = {}) {
+    if (typeof options.onProgress === "function") {
+      options.onProgress({ phase: "context_clear" });
+    }
+    return {
+      clear: { status: "cleared", sessionId: "fake-external-cleared" },
+      usage: null,
+      metadata: { source: "fake-external-provider" },
+    };
+  }
+
   async getGoal() {
     return this.lastGoal ? { ...this.lastGoal } : null;
   }
@@ -211,6 +222,10 @@ class FakeNoGoalExternalSession {
 
   async runCompact() {
     throw new Error("this fixture should never actually compact");
+  }
+
+  async runClear() {
+    throw new Error("this fixture should never actually clear");
   }
 
   async close() {

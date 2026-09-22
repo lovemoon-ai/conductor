@@ -596,6 +596,25 @@ function buildCopilotSessionConfig(options, cwd, permissionHandler) {
   return sessionConfig;
 }
 
+function resolveCopilotPermissionHandler(sdkModule) {
+  return typeof sdkModule?.approveAll === "function"
+    ? sdkModule.approveAll
+    : () => ({ kind: "approve-once" });
+}
+
+function sessionInfoExtrasFromConfig(sessionConfig = {}) {
+  return {
+    model:
+      typeof sessionConfig.model === "string" && sessionConfig.model.trim()
+        ? sessionConfig.model.trim()
+        : undefined,
+    reasoningEffort:
+      typeof sessionConfig.reasoningEffort === "string" && sessionConfig.reasoningEffort.trim()
+        ? sessionConfig.reasoningEffort.trim()
+        : undefined,
+  };
+}
+
 export class CopilotSdkSession extends EventEmitter {
   constructor(backend, options = {}) {
     super();
@@ -698,7 +717,7 @@ export class CopilotSdkSession extends EventEmitter {
           }
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
-      capabilities: { compact: true, media: PROVIDER_MEDIA_CAPABILITIES[COPILOT_PROVIDER_VARIANT] },
+      capabilities: { compact: true, clear: true, media: PROVIDER_MEDIA_CAPABILITIES[COPILOT_PROVIDER_VARIANT] },
     };
   }
 
@@ -1046,10 +1065,7 @@ export class CopilotSdkSession extends EventEmitter {
       throw new Error("GitHub Copilot SDK client is unavailable");
     }
 
-    const permissionHandler =
-      typeof sdkModule.approveAll === "function"
-        ? sdkModule.approveAll
-        : () => ({ kind: "approve-once" });
+    const permissionHandler = resolveCopilotPermissionHandler(sdkModule);
     const clientOptions = buildCopilotClientOptions(this.options, this.cwd, this.env);
     this.client = new sdkModule.CopilotClient(clientOptions);
     const cleanupIfClosedDuringBoot = async (session = null) => {
@@ -1079,16 +1095,48 @@ export class CopilotSdkSession extends EventEmitter {
       : await this.requestOrThrow(this.client.createSession(sessionConfig));
     await cleanupIfClosedDuringBoot(this.session);
     this.attachSessionEventHandlers(this.session);
-    this.applySessionInfo(this.session?.sessionId, {
-      model:
-        typeof sessionConfig.model === "string" && sessionConfig.model.trim()
-          ? sessionConfig.model.trim()
-          : undefined,
-      reasoningEffort:
-        typeof sessionConfig.reasoningEffort === "string" && sessionConfig.reasoningEffort.trim()
-          ? sessionConfig.reasoningEffort.trim()
-          : undefined,
-    });
+    this.applySessionInfo(this.session?.sessionId, sessionInfoExtrasFromConfig(sessionConfig));
+  }
+
+  /**
+   * Native clear: create a new session on the SAME CopilotClient, so the CLI
+   * subprocess keeps running. The old conversation is left on disk (resumable)
+   * and we simply stop listening to it.
+   */
+  async runClear() {
+    if (this.currentTurn) {
+      throw this.createTurnAlreadyRunningError();
+    }
+    if (this.pendingHistorySeed || (!this.session && !this.resumeSessionId && !this.sessionId)) {
+      return { clear: { status: "noop" }, usage: null, metadata: {} };
+    }
+    await this.boot();
+    const sdkModule = await this.getSdkModule();
+    const sessionConfig = buildCopilotSessionConfig(
+      this.options,
+      this.cwd,
+      resolveCopilotPermissionHandler(sdkModule),
+    );
+    const previousSession = this.session;
+    const session = await this.requestOrThrow(this.client.createSession(sessionConfig));
+    this.session = session;
+    this.attachSessionEventHandlers(session);
+    this.applySessionInfo(session?.sessionId, sessionInfoExtrasFromConfig(sessionConfig));
+    // A later re-boot must not reattach to the conversation we walked away from.
+    this.resumeSessionId = "";
+    this.history = [];
+    if (previousSession && previousSession !== session && typeof previousSession.disconnect === "function") {
+      try {
+        await previousSession.disconnect();
+      } catch {
+        // best effort: the old conversation is already detached from this session
+      }
+    }
+    return {
+      clear: { status: "cleared", sessionId: this.sessionId || undefined },
+      usage: null,
+      metadata: {},
+    };
   }
 
   attachSessionEventHandlers(session) {

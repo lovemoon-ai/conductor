@@ -56,6 +56,13 @@ process.stdin.on("end", () => {
   const message = lines.length > 0 ? JSON.parse(lines[0]) : { role: "user", content: "" };
   const promptText = extractTextContent(message.content);
   const imageCount = extractImageCount(message.content);
+  if (promptText === "/clear") {
+    const reply = process.env.FAKE_KIMI_PRINT_CLEAR_ERROR === "1"
+      ? "LLM provider error: rate limited"
+      : "The context has been cleared.";
+    process.stdout.write(`${JSON.stringify({ role: "assistant", content: reply })}\n`);
+    return;
+  }
   if (promptText === "/compact") {
     if (process.env.FAKE_KIMI_PRINT_COMPACT_ERROR === "1") {
       // kimi-cli print mode writes provider errors as plain text and exits 0.

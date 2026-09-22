@@ -3716,10 +3716,13 @@ export class BridgeRunner {
   }
 
   /**
-   * `/clear`: drop the AI context by closing the backend session and swapping
-   * in a fresh one (no resume). The task's chat history is kept; the new
-   * session is announced and, once it has an id, bound to the task just like
-   * at startup, so a later fire restart resumes it instead of the old one.
+   * `/clear`: drop the AI context. Backends that advertise
+   * `capabilities.clear` run their own native clear (claude's `/clear` slash
+   * command, kimi's built-in `/clear`, …) so the process and its session file
+   * survive; everyone else falls back to closing the session and swapping in a
+   * fresh one. Either way the task's chat history is kept and the task is
+   * rebound to whatever session id the backend ends up on, so a later fire
+   * restart resumes the cleared conversation instead of the old one.
    */
   async runClearCommand({ onProgress, replyTo = "" } = {}) {
     onProgress?.({
@@ -3727,6 +3730,37 @@ export class BridgeRunner {
       reply_in_progress: true,
       status_line: `${this.backendName} clearing context`,
     });
+    const snapshot =
+      typeof this.backendSession?.getSnapshot === "function" ? this.backendSession.getSnapshot() : null;
+    const clearCapable =
+      snapshot?.capabilities?.clear === true && typeof this.backendSession?.runClear === "function";
+    if (clearCapable) {
+      const result = await this.runWithTurnUsage(() => this.backendSession.runClear({}, { onProgress }));
+      // A native clear may land on a new session id (claude does); rebind so a
+      // restart resumes the cleared conversation.
+      await this.syncBackendSessionBinding();
+      const cleared = result?.clear?.status !== "noop";
+      const text = cleared
+        ? `${this.backendName} 上下文已清除。`
+        : `${this.backendName} 当前没有可清除的上下文。`;
+      onProgress?.({ phase: "turn_completed", reply_in_progress: false, status_done_line: text });
+      log(`[clear] backend=${this.backendName} native status=${result?.clear?.status || "cleared"}`);
+      if (this.useSessionFileReplyStream && !this.stopped) {
+        try {
+          await this.sendSessionStreamMessage({ text, replyTo });
+        } catch (error) {
+          log(`[clear] failed to post confirmation: ${error?.message || error}`);
+        }
+      }
+      return {
+        text,
+        items: [],
+        usage: result?.usage || null,
+        provider: this.backendName,
+        events: [],
+        metadata: { ...(result?.metadata || {}), clear: result?.clear || null },
+      };
+    }
     try {
       await this.backendSession?.close?.();
     } catch (error) {

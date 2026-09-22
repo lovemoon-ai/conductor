@@ -732,6 +732,66 @@ describe("ai-sdk client boundary", () => {
     });
   });
 
+  it("forwards runClear through the worker proxy with onProgress", async () => {
+    await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      const session = createAiSession("test-external-alias", {
+        cwd: process.cwd(),
+        logger: { log: () => {} },
+      });
+      try {
+        await session.readyPromise;
+        assert.ok(session instanceof RemoteAiSession);
+        assert.equal(session.getSnapshot().capabilities?.clear, true);
+        const progressEvents = [];
+        const result = await session.runClear({}, { onProgress: (payload) => progressEvents.push(payload) });
+        assert.deepEqual(result.clear, { status: "cleared", sessionId: "fake-external-cleared" });
+        assert.deepEqual(progressEvents, [{ phase: "context_clear" }]);
+      } finally {
+        await session.close();
+      }
+    });
+  });
+
+  it("forwards runClear through the local proxy when worker is disabled", async () => {
+    await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      process.env.CONDUCTOR_AI_SDK_DISABLE_WORKER = "1";
+      const session = createAiSession("test-external-alias", {
+        cwd: process.cwd(),
+        logger: { log: () => {} },
+      });
+      try {
+        const result = await session.runClear({});
+        assert.equal(result.clear.status, "cleared");
+      } finally {
+        await session.close();
+      }
+    });
+  });
+
+  it("runClear throws unsupported_clear without a round trip when the backend lacks the capability", async () => {
+    await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
+      for (const disableWorker of [false, true]) {
+        if (disableWorker) {
+          process.env.CONDUCTOR_AI_SDK_DISABLE_WORKER = "1";
+        }
+        const session = createAiSession("test-external-no-goal", {
+          cwd: process.cwd(),
+          logger: { log: () => {} },
+        });
+        try {
+          await session.readyPromise;
+          assert.equal(session.getSnapshot().capabilities?.clear, false);
+          await assert.rejects(
+            () => session.runClear({}),
+            (error) => error?.reason === "unsupported_clear",
+          );
+        } finally {
+          await session.close();
+        }
+      }
+    });
+  });
+
   it("forwards runGoal through the local proxy when worker is disabled", async () => {
     await withExternalProvider(FIXTURE_EXTERNAL_PROVIDER, async () => {
       process.env.CONDUCTOR_AI_SDK_DISABLE_WORKER = "1";
