@@ -1082,8 +1082,24 @@ describe('ConductorClient', () => {
   test('sendTurnUsage reports turn tokens over websocket', async () => {
     const client = await makeClient();
     await client.sendTurnUsage('task1', { tokens: 43268 });
+    await client.sendTurnUsage('task1', {
+      tokens: 43268,
+      input_tokens: 43174,
+      cached_input_tokens: 21072,
+      message_id: 'reply-1',
+    });
     expect(wsClient.sent).toEqual([
       { type: 'task_turn_usage', payload: { task_id: 'task1', tokens: 43268 } },
+      {
+        type: 'task_turn_usage',
+        payload: {
+          task_id: 'task1',
+          tokens: 43268,
+          input_tokens: 43174,
+          cached_input_tokens: 21072,
+          message_id: 'reply-1',
+        },
+      },
     ]);
     await client.close();
   });

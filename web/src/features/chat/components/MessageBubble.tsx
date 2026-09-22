@@ -6,6 +6,7 @@ import type { Message } from '@/shared/types';
 import { copyToClipboard } from '@/lib/clipboard';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { observeReplyTiming } from '../reply-latency';
+import { formatTurnUsage, placeMessageMeta, useMessageMetaStore, type MetaPlacement } from '../message-meta';
 
 interface MessageBubbleProps {
   message: Message;
@@ -44,7 +45,10 @@ export const MessageBubble = memo(function MessageBubble({
   const isActivity = message.role === 'sdk' && message.metadata?.synthetic === true && /^[\w-]+ session started\b/.test(message.content) && !message.attachments?.length;
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [isToolbarOpen, setIsToolbarOpen] = useState(false);
-  const [isTimestampVisible, setIsTimestampVisible] = useState(false);
+  // A tap shows the meta line on whichever side the placement rules pick; hover shows it too.
+  const shownMeta = useMessageMetaStore((state) => state.shown[message.id]);
+  const [hoverMeta, setHoverMeta] = useState<MetaPlacement>({ side: 'top', floating: false });
+  const { side: metaSide, floating: metaFloating } = shownMeta ?? hoverMeta;
   // Attachment bytes are released from the Web server once the retention window
   // has elapsed, so an older message can reference a body that no longer exists.
   const [releasedAttachmentIds, setReleasedAttachmentIds] = useState<string[]>([]);
@@ -71,6 +75,18 @@ export const MessageBubble = memo(function MessageBubble({
       return false;
     }
     return window.matchMedia('(hover: none), (pointer: coarse)').matches;
+  };
+
+  useEffect(() => () => useMessageMetaStore.getState().hide(message.id), [message.id]);
+
+  const toggleMeta = () => {
+    const store = useMessageMetaStore.getState();
+    if (store.shown[message.id]) {
+      store.hide(message.id);
+    } else if (rootRef.current) {
+      const { evict, ...placement } = placeMessageMeta(rootRef.current, message.id, store.shown);
+      store.show(message.id, placement, evict);
+    }
   };
 
   const formatTime = (dateStr?: string) => {
@@ -176,6 +192,21 @@ export const MessageBubble = memo(function MessageBubble({
       <span className={actionLabelClassName}>{label}</span>
     </div>
   );
+
+  const metaText = [formatTime(message.createdAt), ...formatTurnUsage(message.metadata)].filter(Boolean).join(' · ');
+  // Sticky, so a bubble taller than the view still shows its line at the view's edge,
+  // where it floats over the text as a pill.
+  const metaLine = metaText ? (
+    <div className={`pointer-events-none sticky z-20 h-0 ${metaSide === 'top' ? 'top-2' : 'bottom-2'}`}>
+      <span
+        data-message-meta={message.id}
+        suppressHydrationWarning
+        className={`absolute left-1.5 ${metaSide === 'top' ? '-top-2' : 'top-0'} flex items-center whitespace-nowrap bg-panel text-[10px] leading-none text-muted transition-opacity ${metaFloating ? 'h-4 rounded-full border border-border px-1.5 shadow-sm' : 'h-2 rounded-sm px-0.5'} ${shownMeta ? 'opacity-100' : 'opacity-0 group-hover/message:opacity-100'}`}
+      >
+        {metaText}
+      </span>
+    </div>
+  ) : null;
 
   const toolbarActions = (
     <>
@@ -288,21 +319,19 @@ export const MessageBubble = memo(function MessageBubble({
         <div
           ref={rootRef}
           className="group/message relative overflow-visible pl-7"
+          onPointerEnter={(event) => {
+            if (event.pointerType === 'mouse' && !shownMeta && rootRef.current) {
+              const { side, floating } = placeMessageMeta(rootRef.current, message.id, useMessageMetaStore.getState().shown);
+              if (side !== hoverMeta.side || floating !== hoverMeta.floating) setHoverMeta({ side, floating });
+            }
+          }}
         >
           <span role="img" aria-label={isUser ? 'User' : 'Assistant'} className={`absolute left-0 top-1 flex size-5 items-center justify-center rounded ${isUser ? 'bg-border/60 text-muted' : 'bg-accent/10 text-accent'}`}>
             <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" className="size-3.5">
               {isUser ? <><circle cx="10" cy="6" r="3" /><path d="M4 17v-2a6 6 0 0 1 12 0v2" /></> : <><rect x="3" y="5" width="14" height="12" rx="3" /><path d="M10 2v3M6 10h2m4 0h2M7 14h6" /></>}
             </svg>
           </span>
-          {message.createdAt ? (
-            <span
-              suppressHydrationWarning
-              className={`pointer-events-none absolute left-9 -top-2 z-20 flex h-2 items-center text-[10px] leading-none text-muted transition-opacity ${isTimestampVisible ? 'opacity-100' : 'opacity-0 group-hover/message:opacity-100'
-                }`}
-            >
-              {formatTime(message.createdAt)}
-            </span>
-          ) : null}
+          {metaSide === 'top' ? metaLine : null}
           <button type="button" aria-label="Message actions" onClick={() => setIsToolbarOpen(true)} className="absolute right-0 top-0 z-10 flex size-7 items-center justify-center rounded-md bg-panel text-muted opacity-70 hover:opacity-100 focus-visible:opacity-100 md:opacity-0 md:group-hover/message:opacity-100">⋯</button>
           <div
             className={`message-body w-full min-w-0 rounded-md border px-2 py-1 pr-7 ${isUser
@@ -317,7 +346,7 @@ export const MessageBubble = memo(function MessageBubble({
                 return;
               }
               if (prefersTapTimestamp()) {
-                setIsTimestampVisible((current) => !current);
+                toggleMeta();
               }
             }}
             onDoubleClick={(event) => {
@@ -445,7 +474,7 @@ export const MessageBubble = memo(function MessageBubble({
               </div>
             ) : null}
           </div>
-
+          {metaSide === 'bottom' ? metaLine : null}
         </div>
       </div>
 

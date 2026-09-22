@@ -60,6 +60,58 @@ describe("codex app-server session - per-turn token usage", () => {
     assert.equal(second.usage.turnTotalTokens, 60);
   });
 
+  it("reports each turn's input and cached input, including on a resumed thread", async () => {
+    const counts = (turnId, total, last) => [
+      "thread/tokenUsage/updated",
+      { threadId: "thread-1", turnId, tokenUsage: { total, last } },
+    ];
+    const session = makeTurnSession([
+      [
+        ["turn/started", { turn: { id: "turn-1" } }],
+        // Resumed: the thread already held 1000 tokens (800 input, 600 cached).
+        counts(
+          "turn-1",
+          { totalTokens: 1100, inputTokens: 890, cachedInputTokens: 680 },
+          { totalTokens: 100, inputTokens: 90, cachedInputTokens: 80 },
+        ),
+        counts(
+          "turn-1",
+          { totalTokens: 1300, inputTokens: 1080, cachedInputTokens: 860 },
+          { totalTokens: 200, inputTokens: 190, cachedInputTokens: 180 },
+        ),
+        ["turn/completed", { turn: { id: "turn-1", status: "completed" } }],
+      ],
+    ]);
+    const result = await session.runTurn("resumed");
+    assert.equal(result.usage.turnTotalTokens, 300);
+    assert.equal(result.usage.turnInputTokens, 280);
+    assert.equal(result.usage.turnCachedInputTokens, 260);
+  });
+
+  it("reports no input split when codex leaves it out of one of the two breakdowns", async () => {
+    const session = makeTurnSession([
+      [
+        ["turn/started", { turn: { id: "turn-1" } }],
+        [
+          "thread/tokenUsage/updated",
+          {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            tokenUsage: {
+              total: { totalTokens: 1100, inputTokens: 890, cachedInputTokens: 680 },
+              last: { totalTokens: 100 },
+            },
+          },
+        ],
+        ["turn/completed", { turn: { id: "turn-1", status: "completed" } }],
+      ],
+    ]);
+    const result = await session.runTurn("resumed");
+    assert.equal(result.usage.turnTotalTokens, 100);
+    assert.equal(result.usage.turnInputTokens, undefined);
+    assert.equal(result.usage.turnCachedInputTokens, undefined);
+  });
+
   it("excludes totals a resumed thread carried over from before", async () => {
     const session = makeTurnSession([turn("turn-1", [[1060, 60], [1100, 40]])]);
     const result = await session.runTurn("resumed");

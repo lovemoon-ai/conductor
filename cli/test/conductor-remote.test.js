@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { spawn } from "node:child_process";
 
 import {
   ConductorConfig,
@@ -12,6 +13,7 @@ import {
 } from "../src/remote/exec.js";
 import { runRemoteWait } from "../src/remote/wait.js";
 import { runRemote } from "../bin/conductor-remote.js";
+import { createRemoteExecHandlers } from "../src/remote-exec-handlers.js";
 
 const config = new ConductorConfig({
   agentToken: "test-token",
@@ -40,6 +42,7 @@ function makeFetch(responses) {
       if (!next) {
         throw new Error(`unexpected extra fetch: ${url}`);
       }
+      if (next.throw) throw next.throw;
       return {
         ok: next.status === undefined || next.status < 400,
         status: next.status ?? 200,
@@ -140,7 +143,9 @@ test("runRemoteExec posts argv to the target daemon and returns its exit code", 
   assert.equal(calls[0].url, "http://localhost:6152/api/agents/ubuntu/exec");
   assert.equal(calls[0].init.method, "POST");
   assert.equal(calls[0].init.headers.Authorization, "Bearer test-token");
-  assert.deepEqual(JSON.parse(calls[0].init.body), {
+  const { runId, ...body } = JSON.parse(calls[0].init.body);
+  assert.match(runId, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(body, {
     command: "ls",
     args: ["."],
     workspace: "/home/duino/ws/holomotion",
@@ -484,9 +489,9 @@ test("runRemoteExec retries the POST on 429 and then succeeds", async () => {
   assert.deepEqual(slept, [500, 1000], "backs off between attempts");
 });
 
-// A 5xx may mean the daemon already spawned the command; a second POST would
-// run it twice. Only 429 is safe to retry.
-test("runRemoteExec does not retry the POST on a 5xx", async () => {
+// The daemon answering with an error (bad workspace, …) gets the same answer on
+// every retry, so it is neither retried nor worth asking about.
+test("runRemoteExec does not retry the POST on a 502", async () => {
   const consoleImpl = makeConsole();
   const { fetch, calls } = makeFetch([{ status: 502, body: { error: "daemon went away" } }]);
 
@@ -500,6 +505,116 @@ test("runRemoteExec does not retry the POST on a 5xx", async () => {
   assert.equal(code, 255);
   assert.equal(calls.length, 1, "must not re-POST a command that may have started");
   assert.match(consoleImpl.errors.join("\n"), /daemon went away/);
+});
+
+const fetchFailed = () => new TypeError("fetch failed");
+
+// The response is lost after the daemon already started the command. The CLI
+// re-sends the same runId and the real daemon handlers hand back that run.
+test("runRemoteExec retries a POST lost to a network error without running it twice", async () => {
+  const consoleImpl = makeConsole();
+  const spawned = [];
+  const daemon = createRemoteExecHandlers({
+    spawnFn: (command, args, options) => {
+      spawned.push(command);
+      return spawn(command, args, options);
+    },
+  });
+  const calls = [];
+  const fetch = async (url, init) => {
+    calls.push({ url, init });
+    if (init.method === "GET") {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ dedupesRunId: true }) };
+    }
+    const outcome = await daemon.dispatch({ action: "exec", args: JSON.parse(init.body) });
+    if (calls.length === 1) throw fetchFailed();
+    return { ok: true, status: 200, text: async () => JSON.stringify(outcome.result) };
+  };
+
+  const code = await runRemoteExec(
+    ["-t", "ubuntu", "--", process.execPath, "-e", "process.stdout.write('ran'); process.exit(3)"],
+    { console: consoleImpl, fetch, config, sleep: async () => {} },
+  );
+
+  assert.equal(code, 3);
+  assert.equal(spawned.length, 1, "the retried POST must not spawn the command again");
+  assert.deepEqual(calls.map((call) => call.init.method), ["POST", "GET", "POST"]);
+  assert.equal(calls[1].url, "http://localhost:6152/api/agents/ubuntu/exec");
+  assert.equal(JSON.parse(calls[2].init.body).runId, JSON.parse(calls[0].init.body).runId);
+});
+
+test("runRemoteExec retries 5xx on a deduping daemon and asks only once", async () => {
+  const consoleImpl = makeConsole();
+  const { fetch, calls } = makeFetch([
+    { status: 504, body: { error: "daemon did not respond within 15000ms" } },
+    { body: { dedupesRunId: true } },
+    { throw: fetchFailed() },
+    { body: completedRun() },
+  ]);
+
+  const code = await runRemoteExec(["-t", "ubuntu", "make"], {
+    console: consoleImpl,
+    fetch,
+    config,
+    sleep: async () => {},
+  });
+
+  assert.equal(code, 0);
+  assert.deepEqual(calls.map((call) => call.init.method), ["POST", "GET", "POST", "POST"]);
+});
+
+test("runRemoteExec stops retrying the POST once --timeout has passed", async () => {
+  const consoleImpl = makeConsole();
+  const { fetch, calls } = makeFetch([{ status: 504, body: { error: "daemon did not respond" } }]);
+  let clock = 0;
+
+  const code = await runRemoteExec(["-t", "ubuntu", "--timeout", "10s", "make"], {
+    console: consoleImpl,
+    fetch,
+    config,
+    sleep: async () => {},
+    now: () => (clock += 15_000),
+  });
+
+  assert.equal(code, 255);
+  assert.equal(calls.length, 1);
+});
+
+// An old daemon ignores runId, so a second POST could run the command twice.
+test("runRemoteExec does not retry a network error when the daemon does not dedupe", async () => {
+  const consoleImpl = makeConsole();
+  const { fetch, calls } = makeFetch([{ throw: fetchFailed() }, { body: { dedupesRunId: false } }]);
+
+  const code = await runRemoteExec(["-t", "ubuntu", "make"], {
+    console: consoleImpl,
+    fetch,
+    config,
+    sleep: async () => {},
+  });
+
+  assert.equal(code, 255);
+  assert.deepEqual(calls.map((call) => call.init.method), ["POST", "GET"]);
+  assert.match(consoleImpl.errors.join("\n"), /fetch failed/);
+});
+
+// An old server has no GET handler and strips runId from the POST.
+test("runRemoteExec does not retry a 5xx when the server cannot say the daemon dedupes", async () => {
+  const consoleImpl = makeConsole();
+  const { fetch, calls } = makeFetch([
+    { status: 503, body: { error: "upstream unavailable" } },
+    { status: 405, body: {} },
+  ]);
+
+  const code = await runRemoteExec(["-t", "ubuntu", "make"], {
+    console: consoleImpl,
+    fetch,
+    config,
+    sleep: async () => {},
+  });
+
+  assert.equal(code, 255);
+  assert.deepEqual(calls.map((call) => call.init.method), ["POST", "GET"]);
+  assert.match(consoleImpl.errors.join("\n"), /upstream unavailable/);
 });
 
 // When the process that started a long command is killed (a tool timeout, Ctrl-C),

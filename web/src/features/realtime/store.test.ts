@@ -560,6 +560,27 @@ describe('websocket runtime status handling', () => {
     expect(tasks[1]).toMatchObject({ tokenUsageTotal: 143268, lastTurnTokenUsage: 43268 });
   });
 
+  it('records task_token_usage turn usage on the reply it names', () => {
+    useChatStore.setState({
+      messagesByTask: {
+        'task-b': [
+          { id: 'msg-1', taskId: 'task-b', role: 'sdk', content: 'earlier', createdAt: '2024-01-01T00:00:00.000Z' },
+          { id: 'msg-2', taskId: 'task-b', role: 'sdk', content: 'reply', createdAt: '2024-01-01T00:01:00.000Z', metadata: { backend: 'claude' } },
+        ],
+      },
+    });
+    const turnUsage = { tokens: 43268, task_tokens: 143268, input_tokens: 43174, cached_input_tokens: 21072 };
+
+    handleWSMessage({
+      type: 'task_token_usage',
+      payload: { task_id: 'task-b', token_usage_total: 143268, last_turn_token_usage: 43268, message_id: 'msg-2', turn_usage: turnUsage },
+    });
+
+    const [earlier, reply] = useChatStore.getState().messagesByTask['task-b'];
+    expect(earlier.metadata).toBeUndefined();
+    expect(reply.metadata).toEqual({ backend: 'claude', turn_usage: turnUsage });
+  });
+
   it('moves tasks with new assistant messages to the top and refreshes their preview', () => {
     useTasksStore.setState({
       tasks: [

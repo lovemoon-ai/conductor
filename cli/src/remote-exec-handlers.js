@@ -18,6 +18,8 @@ const KILL_GRACE_MS = 5_000;
 const NUL = String.fromCharCode(0);
 
 export const REMOTE_EXEC_CAPABILITY = "remote_exec";
+/** `exec` honours a caller-chosen `runId`, so a retried request cannot spawn twice. */
+export const REMOTE_EXEC_RUN_ID_CAPABILITY = "remote_exec_run_id";
 
 /**
  * Run arbitrary commands on this daemon's host on behalf of the account that
@@ -51,6 +53,15 @@ export function createRemoteExecHandlers(opts = {}) {
     // never learned.
     const waitMs = clampWaitMs(args.timeoutMs ?? args.timeout_ms);
     const waitDeadline = Date.now() + waitMs;
+    const attach = async (runState) => {
+      await waitForSettle(runState, Math.max(0, waitDeadline - Date.now()));
+      return toPublicRun(runState);
+    };
+
+    // A retry of a request that already started gets that run back rather than
+    // a second copy of the command.
+    const runId = typeof args.runId === "string" ? args.runId.trim() : "";
+    if (runId && runs.has(runId)) return attach(runs.get(runId));
 
     const command = normalizeCommand(args.command);
     if (!command) {
@@ -65,9 +76,11 @@ export function createRemoteExecHandlers(opts = {}) {
     }
     const cwd = await resolveWorkspace(args.workspace ?? args.workspace_path, defaultWorkspace);
     const env = buildExecEnv(args.env);
+    // ...including one that landed while `stat` above was still pending.
+    if (runId && runs.has(runId)) return attach(runs.get(runId));
 
     const runState = {
-      runId: randomUUID(),
+      runId: runId || randomUUID(),
       command,
       args: argv,
       workspace: cwd,
@@ -126,8 +139,7 @@ export function createRemoteExecHandlers(opts = {}) {
       });
     });
 
-    await waitForSettle(runState, Math.max(0, waitDeadline - Date.now()));
-    return toPublicRun(runState);
+    return attach(runState);
   }
 
   async function status(args = {}) {

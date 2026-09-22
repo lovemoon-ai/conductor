@@ -89,7 +89,41 @@ function readTokenCount(breakdown) {
   return Number.isFinite(value) ? value : null;
 }
 
-/** Adds tokens spent outside the reported attempt (an overflowed first try) to a turn result or error. */
+/**
+ * The thread counters a turn's usage is a delta of; null when the total is
+ * unknown. A breakdown without the input split carries the total alone, so a
+ * build that omits it reports no cache share rather than a bogus one.
+ */
+function readTokenCounts(breakdown) {
+  const totalTokens = readTokenCount(breakdown);
+  if (totalTokens === null) {
+    return null;
+  }
+  const inputTokens = Number(breakdown.inputTokens);
+  const cachedInputTokens = Number(breakdown.cachedInputTokens);
+  return Number.isFinite(inputTokens) && Number.isFinite(cachedInputTokens)
+    ? { totalTokens, inputTokens, cachedInputTokens }
+    : { totalTokens };
+}
+
+function subtractTokenCounts(a, b) {
+  if (!a || !b) {
+    return null;
+  }
+  const split = a.inputTokens !== undefined && b.inputTokens !== undefined;
+  return {
+    totalTokens: a.totalTokens - b.totalTokens,
+    ...(split
+      ? { inputTokens: a.inputTokens - b.inputTokens, cachedInputTokens: a.cachedInputTokens - b.cachedInputTokens }
+      : {}),
+  };
+}
+
+/**
+ * Adds tokens spent outside the reported attempt (an overflowed first try) to a
+ * turn result or error. Only the total grows: the input split, and so the cache
+ * share, stays that of the attempt the fresh thread reported.
+ */
 function addTurnTokens(holder, extraTokens) {
   if (extraTokens > 0 && holder && typeof holder === "object") {
     const counted = Number(holder.usage?.turnTotalTokens);
@@ -590,25 +624,36 @@ export class CodexAppServerSession extends EventEmitter {
 
   /** Start counting a turn's tokens from the thread total known right now. */
   beginTurnTokenAccounting() {
-    this.turnTokenBaseline = readTokenCount(this.tokenUsage?.total);
+    this.turnTokenBaseline = readTokenCounts(this.tokenUsage?.total);
     this.turnTokensSeen = false;
   }
 
   /**
-   * Thread token usage plus `turnTotalTokens`: tokens spent since the current
-   * turn (or goal) started. Codex only reports thread-cumulative totals, and
-   * only when a response completes, so a turn that ended before any response
-   * did has unknown usage.
+   * Thread token usage plus `turnTotalTokens` (and its `turnInputTokens` /
+   * `turnCachedInputTokens` split): tokens spent since the current turn (or
+   * goal) started. Codex only reports thread-cumulative totals, and only when
+   * a response completes, so a turn that ended before any response did has
+   * unknown usage.
    */
   snapshotTokenUsage() {
     if (!this.tokenUsage) {
       return null;
     }
-    const total = readTokenCount(this.tokenUsage.total);
+    const turn = this.turnTokensSeen
+      ? subtractTokenCounts(readTokenCounts(this.tokenUsage.total), this.turnTokenBaseline)
+      : null;
     return {
       ...this.tokenUsage,
-      ...(total !== null && this.turnTokenBaseline !== null && this.turnTokensSeen
-        ? { turnTotalTokens: Math.max(0, total - this.turnTokenBaseline) }
+      ...(turn
+        ? {
+            turnTotalTokens: Math.max(0, turn.totalTokens),
+            ...(turn.inputTokens !== undefined
+              ? {
+                  turnInputTokens: Math.max(0, turn.inputTokens),
+                  turnCachedInputTokens: Math.max(0, turn.cachedInputTokens),
+                }
+              : {}),
+          }
         : {}),
     };
   }
@@ -1143,9 +1188,8 @@ export class CodexAppServerSession extends EventEmitter {
             // No total was known when the turn started (fresh boot or resume):
             // a replayed total is the baseline; this turn's first response
             // has `total - last` before it.
-            const total = readTokenCount(tokenUsage.total);
-            const last = readTokenCount(tokenUsage.last);
-            this.turnTokenBaseline = total === null ? null : beforeTurn ? total : last === null ? null : total - last;
+            const total = readTokenCounts(tokenUsage.total);
+            this.turnTokenBaseline = beforeTurn ? total : subtractTokenCounts(total, readTokenCounts(tokenUsage.last));
           }
           if (!beforeTurn) {
             this.turnTokensSeen = true;

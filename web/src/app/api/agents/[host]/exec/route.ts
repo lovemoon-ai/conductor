@@ -8,6 +8,7 @@ const DEFAULT_WAIT_MS = 30_000;
 /** Slack so the daemon's own wait always expires first and we get a real run
  *  snapshot back instead of a bare gateway timeout. */
 const RESPONSE_SLACK_MS = 5_000;
+const REMOTE_EXEC_RUN_ID_CAPABILITY = "remote_exec_run_id";
 
 const noNul = (label: string) =>
   ({ message: `${label} must not contain NUL bytes` }) as const;
@@ -25,7 +26,23 @@ const requestSchema = z.object({
   workspace: z.string().trim().min(1).optional(),
   env: z.record(z.string(), z.string()).optional(),
   timeoutMs: z.number().int().positive().max(MAX_WAIT_MS).optional(),
+  runId: z.uuid().optional(),
 });
+
+/**
+ * Whether the daemon dedupes exec on `runId`. The CLI asks after a POST fails
+ * mid-flight: only then is re-sending it safe. A server without this handler
+ * answers 405, which the CLI reads as no.
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ host: string }> },
+) {
+  const { host } = await params;
+  const ctx = await authorizeRemoteExec(request, host);
+  if (ctx instanceof Response) return ctx;
+  return NextResponse.json({ dedupesRunId: ctx.capabilities.includes(REMOTE_EXEC_RUN_ID_CAPABILITY) });
+}
 
 export async function POST(
   request: NextRequest,

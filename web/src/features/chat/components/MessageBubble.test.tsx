@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MessageBubble } from './MessageBubble';
+import { useMessageMetaStore } from '../message-meta';
 
 vi.mock('./MarkdownRenderer', () => ({
   MarkdownRenderer: ({ content }: { content: string }) => (
@@ -193,7 +194,7 @@ describe('MessageBubble', () => {
     expect(screen.queryByText('Conductor')).not.toBeInTheDocument();
     expect(screen.getByRole('img', { name: 'Assistant' })).toBeInTheDocument();
     expect(wrapper).not.toHaveClass('pt-2');
-    expect(wrapper.querySelector('.-top-2')).toHaveClass('left-9', 'h-2', 'items-center', 'leading-none', 'opacity-0', 'group-hover/message:opacity-100');
+    expect(wrapper.querySelector('[data-message-meta]')).toHaveClass('-top-2', 'h-2', 'items-center', 'leading-none', 'opacity-0', 'group-hover/message:opacity-100');
   });
 
   it('shows the timestamp on single tap for mobile-style pointers', () => {
@@ -214,17 +215,54 @@ describe('MessageBubble', () => {
     const { container } = render(<MessageBubble message={makeMessage({ role: 'assistant', content: 'ai message' })} />);
     const wrapper = container.querySelector('.group\\/message') as HTMLElement;
     const bubble = wrapper.querySelector('[role="button"]') as HTMLElement;
-    const timestamp = wrapper.querySelector('.-top-2') as HTMLElement;
+    const timestamp = () => wrapper.querySelector('[data-message-meta]') as HTMLElement;
 
-    expect(timestamp).toHaveClass('opacity-0');
-
-    fireEvent.click(bubble);
-
-    expect(timestamp).toHaveClass('opacity-100');
+    expect(timestamp()).toHaveClass('opacity-0');
 
     fireEvent.click(bubble);
 
-    expect(timestamp).toHaveClass('opacity-0');
+    expect(timestamp()).toHaveClass('opacity-100');
+
+    fireEvent.click(bubble);
+
+    expect(timestamp()).toHaveClass('opacity-0');
+  });
+
+  it("shows a reply's turn usage beside its timestamp, below a bubble whose top is off screen", () => {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: query === '(hover: none), (pointer: coarse)',
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+    const { container, unmount } = render(
+      <MessageBubble
+        message={makeMessage({
+          metadata: { turn_usage: { tokens: 43268, task_tokens: 143268, input_tokens: 43174, cached_input_tokens: 21072 } },
+        })}
+      />,
+    );
+    const wrapper = container.querySelector('.group\\/message') as HTMLElement;
+    wrapper.getBoundingClientRect = () => ({ top: -500, bottom: 200 }) as DOMRect;
+
+    fireEvent.click(wrapper.querySelector('[role="button"]') as HTMLElement);
+
+    const meta = wrapper.querySelector('[data-message-meta]') as HTMLElement;
+    expect(meta).toHaveTextContent(/ · Turn 43\.3K · Task 143\.3K · Cache 48%$/);
+    expect(meta).toHaveClass('top-0', 'opacity-100');
+    expect(meta.parentElement).toHaveClass('sticky', 'bottom-2');
+    expect(meta.parentElement?.previousElementSibling).toHaveClass('message-body');
+    expect(useMessageMetaStore.getState().shown).toEqual({ 'message-1': { side: 'bottom', floating: false } });
+    // Leaving the chat forgets what was shown.
+    unmount();
+    expect(useMessageMetaStore.getState().shown).toEqual({});
   });
 
   it('falls back to a placeholder when an expired image body can no longer be loaded', () => {

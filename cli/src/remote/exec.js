@@ -6,6 +6,7 @@
  * or globs are actually wanted.
  */
 
+import { randomUUID } from "node:crypto";
 import process from "node:process";
 
 import {
@@ -13,6 +14,7 @@ import {
   UsageError,
   callApi,
   delay,
+  isRetryable,
   loadCliConfig,
   parseTimeoutMs as parseSharedTimeoutMs,
   withRetry,
@@ -25,12 +27,10 @@ const POLL_INTERVAL_MS = 1_000;
 /** How long a single request may block server-side before we switch to polling. */
 const POST_WAIT_MS = 10_000;
 /**
- * A 429 means the per-user in-flight cap (8) is full — nothing was started, so
- * retrying is safe. Six attempts at 500ms doubling waits out ~15s, longer than
- * one saturating POST can block (POST_WAIT_MS). Nothing else is retried here:
- * a 5xx may have started the command already, and a second POST would run it twice.
+ * Six attempts at 500ms doubling wait out ~15s, longer than one saturating POST
+ * can block (POST_WAIT_MS). What is safe to retry is decided in `execRemote`.
  */
-const POST_RETRY = { attempts: 6, retryable: (error) => error?.status === 429 };
+const POST_ATTEMPTS = 6;
 const INTERRUPT_SIGNALS = ["SIGINT", "SIGTERM"];
 
 const VALUE_FLAGS = new Map([
@@ -233,21 +233,51 @@ export async function execRemote(config, target, command, options = {}) {
   const basePath = `/api/agents/${encodeURIComponent(target)}/exec`;
   const deadline = now() + timeoutMs;
 
+  // Sent on every attempt: a daemon that already started this run returns it
+  // instead of running the command again.
+  const runId = randomUUID();
+  let dedupes;
+  const retryable = async (error) => {
+    // The per-user in-flight cap (8) is full: nothing was started.
+    if (error?.status === 429) return true;
+    // A 502 is the daemon's own answer (bad workspace, …); a retry gets the same one.
+    if (!isRetryable(error) || error.status === 502 || now() >= deadline) return false;
+    // A network error or other 5xx may have started the command already.
+    dedupes ??= await dedupesRunId(config, basePath, fetchImpl, sleep);
+    return dedupes;
+  };
+
   const started = await withRetry(() => callApi(config, "POST", basePath, {
     command,
     args,
+    runId,
     ...(workspace ? { workspace } : {}),
     ...(env && Object.keys(env).length > 0 ? { env } : {}),
     // Deliberately short, and independent of the overall deadline: that is
     // owned by the poll loop below. Handing the daemon the full budget would
     // make one HTTP request block for it and leave the loop unreachable.
     timeoutMs: Math.min(timeoutMs, POST_WAIT_MS),
-  }, fetchImpl), { ...POST_RETRY, sleep });
+  }, fetchImpl), { attempts: POST_ATTEMPTS, retryable, sleep });
 
   const waited = await waitForRun(config, basePath, started, {
     deadline, fetchImpl, sleep, now, killOnTimeout, signal,
   });
   return { ...waited, basePath };
+}
+
+/**
+ * Whether the target dedupes exec on `runId`, which is what makes re-sending a
+ * POST that failed mid-flight safe. Asked only after such a failure, so the happy
+ * path pays nothing. Anything short of a clear yes — an old server answers 405,
+ * an old daemon `false` — keeps the POST to 429-only retries.
+ */
+async function dedupesRunId(config, basePath, fetchImpl, sleep) {
+  try {
+    const answer = await withRetry(() => callApi(config, "GET", basePath, null, fetchImpl), { sleep });
+    return answer?.dedupesRunId === true;
+  } catch {
+    return false;
+  }
 }
 
 /**

@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import yargs from "yargs/yargs";
 import { hideBin } from "yargs/helpers";
 import yaml from "js-yaml";
-import { createAiSession } from "@love-moon/ai-sdk";
+import { createAiSession, summarizeTurnUsage } from "@love-moon/ai-sdk";
 import { ConductorClient, ProjectContext, loadConfig } from "@love-moon/conductor-sdk";
 import {
   buildResumeArgsForBackend as buildCliResumeArgsForBackend,
@@ -2093,6 +2093,8 @@ export class BridgeRunner {
       typeof prePrompt === "string" && prePrompt.trim() ? prePrompt.trim() : "";
     this.shouldProcessPrePrompt = Boolean(shouldProcessPrePrompt) && Boolean(this.prePrompt);
     this.sessionStreamReplyCounts = new Map();
+    // Last streamed reply per reply target: the message a streamed turn's usage is recorded on.
+    this.lastStreamedReplyIds = new Map();
     this.lastRuntimeStatusSignature = null;
     this.lastRuntimeStatusPayload = null;
     this.runtimeContextSnapshot = null;
@@ -3145,7 +3147,7 @@ export class BridgeRunner {
       usage: null,
       replyTo: replyTo || "latest",
     });
-    await this.conductor.sendMessage(this.taskId, normalizedText, {
+    const sent = await this.conductor.sendMessage(this.taskId, normalizedText, {
       model: this.backendSession.threadOptions?.model || this.backendName,
       backend: this.backendName,
       thread_id: sessionId || this.backendSession.threadId,
@@ -3161,6 +3163,9 @@ export class BridgeRunner {
       replyKey,
       Number(this.sessionStreamReplyCounts.get(replyKey) || 0) + 1,
     );
+    if (sent?.message_id) {
+      this.lastStreamedReplyIds.set(replyKey, sent.message_id);
+    }
     this.copilotLog(
       `session_file sdk_message sent replyTo=${replyTo || "latest"} responseLen=${normalizedText.length}`,
     );
@@ -3173,6 +3178,14 @@ export class BridgeRunner {
   normalizeSessionStreamReplyKey(replyTo) {
     const normalizedReplyTo = typeof replyTo === "string" ? replyTo.trim() : "";
     return normalizedReplyTo || "__latest__";
+  }
+
+  /** A streamed turn's last reply, read once so a later turn never reuses it. */
+  takeLastStreamedReplyId(replyTo) {
+    const replyKey = this.normalizeSessionStreamReplyKey(replyTo);
+    const messageId = this.lastStreamedReplyIds.get(replyKey);
+    this.lastStreamedReplyIds.delete(replyKey);
+    return messageId;
   }
 
   getSessionStreamReplyCount(replyTo) {
@@ -3333,6 +3346,8 @@ export class BridgeRunner {
     }
     this.lastRuntimeStatusSignature = null;
     this.runningTurn = true;
+    // Only this turn's own streamed replies may carry its usage.
+    this.lastStreamedReplyIds.clear();
     this.activeTurnReplyTo = this.normalizeReplyTarget(replyTo);
     const turnStartedAt = Date.now();
     this.turnStartedAt = turnStartedAt;
@@ -3403,22 +3418,30 @@ export class BridgeRunner {
         );
       }
 
-      if (!this.useSessionFileReplyStream) {
-        const responseText =
-          result.text ||
-          extractAgentTextFromItems(result.items) ||
-          extractAgentTextFromMetadata(result.metadata) ||
-          `(${this.backendName} 未返回任何文本)`;
-        logBackendReply(this.backendName, responseText, { usage: result.usage, replyTo: replyTo || "latest" });
-        await this.conductor.sendMessage(this.taskId, responseText, {
-          model: this.backendSession.threadOptions?.model || this.backendName,
-          backend: this.backendName,
-          usage: result.usage || null,
-          thread_id: this.backendSession.threadId,
-          items: result.items,
-          reply_to: replyTo,
-          cli_args: this.cliArgs,
-        });
+      // The usage report names the reply it belongs to, so it is sent after that
+      // reply — but a turn that failed to post its reply still spent its tokens.
+      let replyMessageId = this.takeLastStreamedReplyId(replyTo);
+      try {
+        if (!this.useSessionFileReplyStream) {
+          const responseText =
+            result.text ||
+            extractAgentTextFromItems(result.items) ||
+            extractAgentTextFromMetadata(result.metadata) ||
+            `(${this.backendName} 未返回任何文本)`;
+          logBackendReply(this.backendName, responseText, { usage: result.usage, replyTo: replyTo || "latest" });
+          const sent = await this.conductor.sendMessage(this.taskId, responseText, {
+            model: this.backendSession.threadOptions?.model || this.backendName,
+            backend: this.backendName,
+            usage: result.usage || null,
+            thread_id: this.backendSession.threadId,
+            items: result.items,
+            reply_to: replyTo,
+            cli_args: this.cliArgs,
+          });
+          replyMessageId = sent?.message_id;
+        }
+      } finally {
+        this.reportTurnUsage(result.usage, { messageId: replyMessageId });
       }
       await this.syncBackendSessionBinding();
       if (replyTo) {
@@ -3615,30 +3638,39 @@ export class BridgeRunner {
     return this.runWithTurnUsage(() => this.backendSession.runTurn(content, options));
   }
 
-  /** Runs one backend turn and reports its token count, including failed or interrupted turns. */
+  /**
+   * Runs one backend turn and reports a failed or interrupted turn's token
+   * count; the caller reports a finished turn's once its reply is sent.
+   */
   async runWithTurnUsage(runTurn) {
-    let result;
     try {
-      result = await runTurn();
+      return await runTurn();
     } catch (error) {
       this.reportTurnUsage(error?.usage, { failed: true });
       throw error;
     }
-    this.reportTurnUsage(result?.usage);
-    return result;
   }
 
   /**
-   * Best-effort: report a turn's token count to the server. A failed turn with
-   * unknown usage reports `null` so the task card drops the previous turn's count.
+   * Best-effort: report a turn's token usage to the server, tied to its reply
+   * message when there is one. A failed turn with unknown usage reports `null`
+   * so the task card drops the previous turn's count.
    */
-  reportTurnUsage(usage, { failed = false } = {}) {
-    const tokens = countTurnTokens(usage);
-    if ((tokens === null && !failed) || typeof this.conductor?.sendTurnUsage !== "function") {
+  reportTurnUsage(usage, { failed = false, messageId } = {}) {
+    const summary = summarizeTurnUsage(usage);
+    if ((!summary && !failed) || typeof this.conductor?.sendTurnUsage !== "function") {
       return;
     }
     Promise.resolve()
-      .then(() => this.conductor.sendTurnUsage(this.taskId, { tokens }))
+      .then(() =>
+        this.conductor.sendTurnUsage(this.taskId, {
+          tokens: summary?.tokens ?? null,
+          ...(summary?.inputTokens !== undefined
+            ? { input_tokens: summary.inputTokens, cached_input_tokens: summary.cachedInputTokens }
+            : {}),
+          ...(messageId ? { message_id: messageId } : {}),
+        }),
+      )
       .catch((error) => {
         log(`Failed to report turn usage: ${error?.message || error}`);
       });
@@ -3726,6 +3758,8 @@ export class BridgeRunner {
   }) {
     this.lastRuntimeStatusSignature = null;
     this.runningTurn = true;
+    // Only this turn's own streamed replies may carry its usage.
+    this.lastStreamedReplyIds.clear();
     const startedAt = Date.now();
     this.turnStartedAt = startedAt;
     if (
@@ -3776,7 +3810,7 @@ export class BridgeRunner {
           usage: result.usage,
           replyTo: replyTarget,
         });
-        await this.conductor.sendMessage(this.taskId, text, {
+        const sent = await this.conductor.sendMessage(this.taskId, text, {
           model: this.backendSession.threadOptions?.model || this.backendName,
           backend: this.backendName,
           usage: result.usage || null,
@@ -3785,8 +3819,10 @@ export class BridgeRunner {
           synthetic: true,
           ...(replyMetadata || {}),
         });
+        this.reportTurnUsage(result.usage, { messageId: sent?.message_id });
         this.copilotLog(`${logTag} sdk_message sent responseLen=${text.length}`);
       } else {
+        this.reportTurnUsage(result.usage, { messageId: this.takeLastStreamedReplyId(replyTarget) });
         this.copilotLog(`${logTag} session_file turn settled`);
       }
       await this.syncBackendSessionBinding();
@@ -3870,24 +3906,6 @@ function log(message) {
   const line = `[${CLI_NAME} ${ts}] ${message}\n`;
   process.stdout.write(line);
   appendFireLocalLog(line);
-}
-
-/**
- * Tokens one turn consumed: everything the model read (fresh input plus cache
- * reads/writes) and wrote. Claude reports per-turn usage; the Codex provider
- * derives `turnTotalTokens` from thread totals. Other shapes → null.
- */
-export function countTurnTokens(usage) {
-  if (!usage || typeof usage !== "object") {
-    return null;
-  }
-  if (Number.isFinite(usage.turnTotalTokens)) {
-    return usage.turnTotalTokens;
-  }
-  const counts = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"]
-    .map((key) => Number(usage[key]))
-    .filter(Number.isFinite);
-  return counts.length > 0 ? counts.reduce((sum, count) => sum + count, 0) : null;
 }
 
 function logBackendReply(backend, text, { usage, replyTo }) {

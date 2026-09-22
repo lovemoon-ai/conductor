@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { POST } from "./route";
+import { GET, POST } from "./route";
 import { GET as GET_RUN, DELETE as DELETE_RUN } from "./runs/[runId]/route";
 import { createMockRequest, extractJson } from "@/__tests__/helpers";
 
@@ -126,6 +126,40 @@ describe("/api/agents/[host]/exec", () => {
       },
       timeoutMs: 35_000,
     });
+  });
+
+  it("passes a caller-chosen runId through so the daemon can dedupe a retry", async () => {
+    const runId = "6f1c2a7e-3b4d-4e5f-8a9b-0c1d2e3f4a5b";
+    const res = await POST(
+      createMockRequest({ method: "POST", body: { command: "make", runId } }),
+      paramsFor("ubuntu"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(requestRemoteExec).mock.calls[0][0].args).toMatchObject({ command: "make", runId });
+
+    const bad = await POST(
+      createMockRequest({ method: "POST", body: { command: "make", runId: "run-1" } }),
+      paramsFor("ubuntu"),
+    );
+    expect(bad.status).toBe(400);
+  });
+
+  it("tells the CLI whether the daemon dedupes exec on runId, without contacting it", async () => {
+    const res = await GET(createMockRequest({ method: "GET" }), paramsFor("ubuntu"));
+    expect(res.status).toBe(200);
+    expect(await extractJson(res)).toEqual({ dedupesRunId: false });
+
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { ...agentWithRemoteExec("ubuntu"), capabilities: ["remote_exec", "remote_exec_run_id"] },
+    ]);
+    const upgraded = await GET(createMockRequest({ method: "GET" }), paramsFor("ubuntu"));
+    expect(await extractJson(upgraded)).toEqual({ dedupesRunId: true });
+
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([]);
+    const offline = await GET(createMockRequest({ method: "GET" }), paramsFor("ubuntu"));
+    expect(offline.status).toBe(404);
+    expect(requestRemoteExec).not.toHaveBeenCalled();
   });
 
   it("waits longer than the daemon so a slow run still returns a snapshot", async () => {

@@ -38,6 +38,7 @@ import {
   withPtySchemaFallback,
 } from "@/lib/tasks/pty-compat";
 import { normalizeTaskStatus } from "@/lib/tasks/task-config";
+import { normalizeMessageMetadata } from "@/shared/utils/message-attachments";
 import {
   buildKilledPatch,
   withKilledReasonFallback,
@@ -59,7 +60,16 @@ type TaskOwnershipRecord = {
 type AgentEvent =
   | { type: "create_task"; payload: { task_id: string; project_id: string; title: string; prefill?: string } }
   | { type: "sdk_message"; payload: { task_id: string; content: string; metadata?: Record<string, unknown>; message_id?: string } }
-  | { type: "task_turn_usage"; payload: { task_id: string; tokens: number | null } }
+  | {
+      type: "task_turn_usage";
+      payload: {
+        task_id: string;
+        tokens: number | null;
+        input_tokens?: number;
+        cached_input_tokens?: number;
+        message_id?: string;
+      };
+    }
   | {
       type: "task_status_update";
       payload: {
@@ -700,6 +710,28 @@ const normalizeOptionalString = (value: unknown): string | null => {
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
+
+/**
+ * Stores a turn's usage on its reply (the fire's `clientMessageId`) so the chat
+ * shows it beside that reply's timestamp. Returns what to broadcast, or null
+ * when the reply is not stored (yet).
+ */
+const recordReplyTurnUsage = async (
+  taskId: string,
+  clientMessageId: string,
+  turnUsage: Record<string, number>,
+): Promise<{ message_id: string; turn_usage: Record<string, number> } | null> => {
+  const message = await db.message.findUnique({
+    where: { clientMessageId },
+    select: { id: true, taskId: true, metadata: true },
+  });
+  if (!message || message.taskId !== taskId) return null;
+  await db.message.update({
+    where: { id: message.id },
+    data: { metadata: JSON.stringify({ ...normalizeMessageMetadata(message.metadata), turn_usage: turnUsage }) },
+  });
+  return { message_id: message.id, turn_usage: turnUsage };
+};
 
 const normalizePositiveInt = (value: unknown): number | null => {
   const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -2061,6 +2093,20 @@ export const setupAgentGateway = (): WebSocketServer => {
               if (isMissingTokenUsageColumnError(error)) break;
               throw error;
             }
+            const replyMessageId = normalizeOptionalString(event.payload.message_id);
+            const cacheCounts = [event.payload.input_tokens, event.payload.cached_input_tokens].map(Number);
+            const reply = replyMessageId && tokens !== null
+              ? await recordReplyTurnUsage(task.id, replyMessageId, {
+                  tokens,
+                  task_tokens: usage.tokenUsageTotal,
+                  ...(cacheCounts.every((count) => Number.isFinite(count) && count >= 0)
+                    ? { input_tokens: cacheCounts[0], cached_input_tokens: cacheCounts[1] }
+                    : {}),
+                }).catch((error) => {
+                  console.warn(`[agent-gateway] failed to record turn usage on reply ${replyMessageId}`, error);
+                  return null;
+                })
+              : null;
             realtimeHub.broadcast(user.id, task.projectId, {
               type: "task_token_usage",
               payload: {
@@ -2068,6 +2114,7 @@ export const setupAgentGateway = (): WebSocketServer => {
                 project_id: task.projectId,
                 token_usage_total: usage.tokenUsageTotal,
                 last_turn_token_usage: usage.lastTurnTokenUsage,
+                ...reply,
               },
             });
             break;

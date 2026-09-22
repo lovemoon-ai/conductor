@@ -13,6 +13,7 @@ import { MessageInput, type MessageInputHandle } from './MessageInput';
 import { ScheduledMessageDialog } from './ScheduledMessageDialog';
 import { buildPersistentRoundGroups, PersistentRoundHeader } from './PersistentRounds';
 import { NewRoundDialog, PersistentTaskSettingsDialog } from '@/features/tasks/components/PersistentTaskDialogs';
+import { formatRelativeTime } from '@/features/tasks/utils/resume-sessions';
 import { PERSISTENT_ROUND_END_KIND, readPersistentTaskState } from '@/shared/utils/persistent-task';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { InlineNotice } from '@/components/common/InlineNotice';
@@ -50,6 +51,9 @@ const QUESTION_ACTIVE_OFFSET_PX = 80;
 // jump is requested. Leaves a little breathing room above the message so the
 // timestamp / "older messages" header isn't covered.
 const QUESTION_JUMP_TOP_PADDING_PX = 12;
+// On entry, a finished conversation idle longer than the prompt-cache TTL gets
+// an elapsed-time notice so the user knows the next turn starts cold.
+const IDLE_NOTICE_MIN_ELAPSED_MS = 5 * 60 * 1000;
 
 interface StoredScrollState {
   scrollTop: number;
@@ -313,6 +317,8 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const [isPersistentDialogOpen, setIsPersistentDialogOpen] = useState(false);
   const chatMenuSlot = useContext(ChatMenuSlotContext);
   const [roundActionPending, setRoundActionPending] = useState(false);
+  const [idleNotice, setIdleNotice] = useState<{ messageId: string; ago: string } | null>(null);
+  const idleNoticeCheckedRef = useRef(false);
   const questionRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const isJumpingQuestionRef = useRef(false);
   const lastScrollTopRef = useRef(0);
@@ -539,6 +545,28 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   useEffect(() => {
     fetchMessages(taskId);
   }, [fetchMessages, taskId]);
+
+  useEffect(() => {
+    if (idleNoticeCheckedRef.current || isLoading || messages.length === 0) {
+      return;
+    }
+    idleNoticeCheckedRef.current = true;
+    const lastMessage = messages[messages.length - 1];
+    const now = Date.now();
+    if (
+      lastMessage.role !== 'user' &&
+      !runtimeReplyInProgress &&
+      now - Date.parse(lastMessage.createdAt ?? '') >= IDLE_NOTICE_MIN_ELAPSED_MS
+    ) {
+      setIdleNotice({ messageId: lastMessage.id, ago: formatRelativeTime(lastMessage.createdAt ?? null, now) });
+    }
+  }, [isLoading, messages, runtimeReplyInProgress]);
+
+  useLayoutEffect(() => {
+    if (idleNotice && shouldStickToBottomRef.current) {
+      scrollToBottom();
+    }
+  }, [idleNotice, scrollToBottom]);
 
   useEffect(() => (
     () => {
@@ -1211,6 +1239,11 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
                   </div>
                 );
               })}
+              {idleNotice && !runtimeReplyInProgress && messages[messages.length - 1]?.id === idleNotice.messageId ? (
+                <p data-testid="chat-idle-notice" className="py-1 text-center text-xs text-muted">
+                  Last message: {idleNotice.ago} — the prompt cache has likely expired.
+                </p>
+              ) : null}
             </div>
           )}
         </div>

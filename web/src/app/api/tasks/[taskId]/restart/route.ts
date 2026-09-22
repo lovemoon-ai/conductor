@@ -47,6 +47,7 @@ import {
   canCreateSuccessorTask,
   canInplaceRestart,
   normalizeRestartStrategy,
+  RESTART_FIRST_MESSAGE_CAPABILITY,
   RESTARTABLE_SOURCE_STATUSES,
   STOPPED_TASK_STATUSES,
 } from "@/lib/tasks/restart";
@@ -339,6 +340,13 @@ export async function POST(
   if (hasExplicitStrategy && !requestedStrategy) {
     return NextResponse.json({ error: "invalid strategy" }, { status: 400 });
   }
+  // Optional first message for the successor. Replaces the default handoff
+  // prompt (load the source transcript as background), so it only makes sense
+  // when a new task is created.
+  const firstMessage = normalizeOptionalString(normalizedBody.first_message ?? normalizedBody.firstMessage);
+  if (firstMessage && (requestedStrategy !== "new_task" || hasExplicitRestartMode)) {
+    return NextResponse.json({ error: "first_message requires strategy new_task" }, { status: 400 });
+  }
 
   // Explicit daemon override. Lets the caller run the restart on a specific
   // online daemon instead of the auto-resolved one — used when the original
@@ -439,6 +447,12 @@ export async function POST(
   if (!supportedBackends.includes(targetBackend)) {
     return NextResponse.json(
       { error: `Daemon ${restartAgentHost} does not support backend ${targetBackend}` },
+      { status: 409 },
+    );
+  }
+  if (firstMessage && !restartAgentCapabilities.includes(RESTART_FIRST_MESSAGE_CAPABILITY)) {
+    return NextResponse.json(
+      { error: `Daemon ${restartAgentHost} must be updated to support a custom first message` },
       { status: 409 },
     );
   }
@@ -955,24 +969,28 @@ export async function POST(
 
     // Seed the successor task's chat with a short human-friendly notice so
     // the user does not stare at an empty conversation while the new AI
-    // fetches the transcript URL. Failure here is non-fatal: the AI will
-    // still start correctly; the user just won't see the notice bubble.
+    // fetches the transcript URL — or, with a custom first message, with that
+    // message, which is what the AI receives instead. Failure here is
+    // non-fatal: the AI will still start correctly; the user just won't see
+    // the bubble.
     const [, , restartOutboxRow] = await Promise.all([
       tx.message
         .create({
-          data: {
-            taskId: successorTaskId,
-            role: "sdk",
-            content: buildHandoffNoticeContent({
-              sourceTitle: sourceTask.title,
-              sourceBackend,
-              targetBackend,
-            }),
-            metadata: JSON.stringify(HANDOFF_NOTICE_METADATA),
-          },
+          data: firstMessage
+            ? { taskId: successorTaskId, role: "user", content: firstMessage }
+            : {
+                taskId: successorTaskId,
+                role: "sdk",
+                content: buildHandoffNoticeContent({
+                  sourceTitle: sourceTask.title,
+                  sourceBackend,
+                  targetBackend,
+                }),
+                metadata: JSON.stringify(HANDOFF_NOTICE_METADATA),
+              },
         })
         .catch((error: unknown) => {
-          console.error("[restart] failed to insert handoff notice message", error);
+          console.error(`[restart] failed to insert ${firstMessage ? "first" : "handoff notice"} message`, error);
         }),
       tx.task.update({
         where: { id: sourceTask.id },
@@ -1016,6 +1034,8 @@ export async function POST(
               // Plain-text transcript URL the successor backend should fetch as
               // its resume context (replaces JSONL session translation).
               resume_context_url: resumeContextUrl,
+              // When set, the daemon sends this instead of the handoff prompt.
+              ...(firstMessage ? { initial_content: firstMessage } : {}),
               request_id: requestId,
             },
           }),

@@ -850,8 +850,7 @@ describe("Daemon", () => {
       );
       assert.ok(args.includes("--backend"));
       assert.ok(args.includes("codex"));
-      assert.ok(args.includes("--prefill"));
-      assert.ok(args.includes("hello"));
+      assert.ok(args.includes("--prefill=hello"));
       assert.strictEqual(args[args.length - 1], "--");
       spawned = true;
       return {
@@ -1007,8 +1006,7 @@ describe("Daemon", () => {
       assert.ok(innerCmd.includes("/tmp/cli.js"), "inner command must invoke CLI script");
       assert.ok(innerCmd.includes("--backend"));
       assert.ok(innerCmd.includes("'codex'"));
-      assert.ok(innerCmd.includes("--prefill"));
-      assert.ok(innerCmd.includes("'tmux hello'"));
+      assert.ok(innerCmd.includes("'--prefill=tmux hello'"));
       assert.ok(innerCmd.includes("conductor.log"));
       // Output is teed so the tmux pane shows live Fire output AND the log
       // file gets a copy. We assert the `2>&1 | tee -a '<log>'` shape.
@@ -8077,6 +8075,91 @@ describe("Daemon", () => {
     daemonInstance.close();
   });
 
+  it("sends a user-set first message instead of the handoff prompt", async () => {
+    let handler;
+    let connected = false;
+    const spawnCalls = [];
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-restart-first-message",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "restart-first-message-daemon",
+      },
+      {
+        spawn: (_cmd, args, opts) => {
+          spawnCalls.push({ args, opts });
+          return {
+            pid: 61235,
+            kill: () => {},
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ on: () => {}, write: () => {}, end: () => {} }),
+        resolveResumeContext: async () => ({ cwd: "" }),
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return {
+              ok: true,
+              json: async () => ({ metadata: { localPaths: { default: "/tmp/first-message-cwd" } } }),
+            };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {
+            connected = true;
+          },
+          disconnect: async () => {},
+          sendJson: async () => {},
+        }),
+      },
+    );
+
+    await waitUntil(() => connected, { message: "restart-first-message daemon to connect" });
+
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "fork_to_new_task",
+        source_task_id: "task-source-fm-1",
+        target_task_id: "task-successor-fm-1",
+        project_id: "proj-fork-fm-1",
+        title: "Fix login bug [codex]",
+        source_backend_type: "codex",
+        source_session_id: "sess-codex-source-fm",
+        target_backend_type: "codex",
+        resume_context_url: "http://localhost:6152/share/tok-fm/plain",
+        initial_content: "  Start over: write the migration only.  ",
+        request_id: "req-fork-fm-1",
+      },
+    });
+
+    await waitUntil(() => spawnCalls.length === 1, { message: "first-message fork to spawn" });
+
+    const [, ...argsRest] = spawnCalls[0].args;
+    assert.deepStrictEqual(argsRest, ["--backend", "codex", "--prefill=Start over: write the migration only.", "--"]);
+    assert.strictEqual(spawnCalls[0].opts.cwd, "/tmp/first-message-cwd");
+
+    daemonInstance.close();
+  });
+
   it("reports killed summary when fork_to_new_task payload omits resume_context_url", async () => {
     let handler;
     let connected = false;
@@ -8495,7 +8578,7 @@ describe("Daemon", () => {
       assert.ok(typeof handler === "function");
       assert.strictEqual(
         webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-        "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_file,pty_task,terminal_snapshot",
+        "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,restart_first_message,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_exec_run_id,remote_file,pty_task,terminal_snapshot",
       );
 
       handler({
@@ -8525,7 +8608,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_file,pty_task,terminal_snapshot",
+      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,restart_first_message,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_exec_run_id,remote_file,pty_task,terminal_snapshot",
     );
 
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -8798,7 +8881,7 @@ describe("Daemon", () => {
     assert.ok(typeof handler === "function");
     assert.strictEqual(
       webSocketClientOptions.extraHeaders["x-conductor-capabilities"],
-      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_file",
+      "project_path_validation,project_path_create,project_agents_registry,restart_daemon,refresh_session_inplace,restart_first_message,persistent_round_v1,task_attachments_v1,backend_session_list,custom_commands,update_daemon,remote_exec,remote_exec_run_id,remote_file",
     );
 
     handler({

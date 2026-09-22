@@ -112,7 +112,7 @@ export async function withRetry(fn, {
     } catch (error) {
       lastError = error;
       // An aborted transfer is the caller's own deadline firing, not a blip.
-      if (error?.name === "AbortError" || !retryable(error)) throw error;
+      if (error?.name === "AbortError" || !(await retryable(error))) throw error;
       if (attempt === attempts - 1) break;
       await sleep(baseDelayMs * 2 ** attempt);
     }
