@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createPortal } from 'react-dom';
 import { ScheduledMessageDialog } from './ScheduledMessageDialog';
 
 const apiPostMock = vi.fn().mockResolvedValue({ id: 'sched-1' });
@@ -333,8 +334,9 @@ describe('ScheduledMessageDialog', () => {
   it('prefills the composer draft when a closed dialog opens with it', async () => {
     const { Dialog: MockDialog } = await import('@/components/common/Dialog');
     const unmountWhenClosed = vi.mocked(MockDialog).getMockImplementation();
-    vi.mocked(MockDialog).mockImplementation(({ open, children, title }) => (
-      <div role="dialog" aria-label={title} hidden={!open}>{children}</div>
+    vi.mocked(MockDialog).mockImplementation(({ open, children, title }) => createPortal(
+      <div role="dialog" aria-label={title} hidden={!open}>{children}</div>,
+      document.body,
     ));
     try {
       const view = render(
