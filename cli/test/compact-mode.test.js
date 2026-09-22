@@ -217,10 +217,10 @@ describe("BridgeRunner.dispatchBackendTurn /compact routing", () => {
     };
     const { runner } = buildRunner(backendSession, conductor);
 
-    await runner.dispatchBackendTurn("/compact", { replyTo: "msg-usage" });
+    await runner.respondToMessage({ message_id: "msg-usage", role: "user", content: "/compact" });
     await new Promise((resolve) => setImmediate(resolve));
 
-    assert.deepEqual(reports, [{ tokens: 550 }]);
+    assert.deepEqual(reports, [{ tokens: 550, input_tokens: 530, cached_input_tokens: 500 }]);
   });
 
   it("treats /compact with attachments as a normal message", async () => {

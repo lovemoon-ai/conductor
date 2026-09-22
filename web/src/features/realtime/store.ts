@@ -491,6 +491,12 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
           lastTurnTokenUsage: typeof payload.last_turn_token_usage === 'number' ? payload.last_turn_token_usage : null,
         });
       }
+      // The turn's reply now carries its usage.
+      const chatStore = useChatStore.getState();
+      const reply = taskId ? chatStore.messagesByTask[taskId]?.find((m) => m.id === payload.message_id) : undefined;
+      if (taskId && reply && payload.turn_usage && typeof payload.turn_usage === 'object') {
+        chatStore.updateMessage(taskId, { ...reply, metadata: { ...reply.metadata, turn_usage: payload.turn_usage } });
+      }
       break;
     }
 

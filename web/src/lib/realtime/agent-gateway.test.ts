@@ -12,6 +12,8 @@ vi.mock("../db", () => ({
     },
     message: {
       create: vi.fn(),
+      findUnique: vi.fn(),
+      update: vi.fn(),
     },
     user: {
       findUnique: vi.fn(),
@@ -702,6 +704,47 @@ describe("agent-gateway ownership handling", () => {
         token_usage_total: 143268,
         last_turn_token_usage: 43268,
       },
+    });
+
+    // A turn tied to its reply records its usage on that reply and broadcasts it.
+    vi.mocked(db.message.findUnique).mockResolvedValueOnce({
+      id: "msg-db-1",
+      taskId: "task-usage-1",
+      metadata: JSON.stringify({ backend: "claude" }),
+    } as never);
+    await send({
+      task_id: "task-usage-1",
+      tokens: 43268,
+      input_tokens: 43174,
+      cached_input_tokens: 21072,
+      message_id: "reply-1",
+    });
+    const turnUsage = { tokens: 43268, task_tokens: 143268, input_tokens: 43174, cached_input_tokens: 21072 };
+    expect(db.message.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { clientMessageId: "reply-1" } }));
+    expect(db.message.update).toHaveBeenCalledWith({
+      where: { id: "msg-db-1" },
+      data: { metadata: JSON.stringify({ backend: "claude", turn_usage: turnUsage }) },
+    });
+    expect(realtimeHub.broadcast).toHaveBeenLastCalledWith("user-1", "proj-1", {
+      type: "task_token_usage",
+      payload: {
+        task_id: "task-usage-1",
+        project_id: "proj-1",
+        token_usage_total: 143268,
+        last_turn_token_usage: 43268,
+        message_id: "msg-db-1",
+        turn_usage: turnUsage,
+      },
+    });
+
+    // A reply that is not stored yet, or belongs to another task, still counts toward the total.
+    vi.mocked(db.message.update).mockClear();
+    vi.mocked(db.message.findUnique).mockResolvedValueOnce({ id: "msg-db-2", taskId: "other-task", metadata: null } as never);
+    await send({ task_id: "task-usage-1", tokens: 43268, message_id: "reply-2" });
+    expect(db.message.update).not.toHaveBeenCalled();
+    expect(realtimeHub.broadcast).toHaveBeenLastCalledWith("user-1", "proj-1", {
+      type: "task_token_usage",
+      payload: expect.not.objectContaining({ message_id: expect.anything() }),
     });
 
     // A failed turn with unknown usage only clears the last-turn count.
