@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 
 import {
   BridgeRunner,
-  countTurnTokens,
   GOAL_CAPABLE_BACKENDS,
   parseGoalDirectiveFromMessage,
 } from "../bin/conductor-fire.js";
@@ -181,46 +180,99 @@ describe("daemon buildFireSpawnArgs (no --goal flag)", () => {
 });
 
 describe("turn token usage", () => {
-  it("counts Claude per-turn usage including cache reads and writes", () => {
-    assert.equal(
-      countTurnTokens({
-        input_tokens: 4,
-        cache_creation_input_tokens: 22098,
-        cache_read_input_tokens: 21072,
-        output_tokens: 94,
-        service_tier: "standard",
-      }),
-      43268,
-    );
-  });
-
-  it("uses the Codex provider's per-turn delta and ignores unknown shapes", () => {
-    assert.equal(countTurnTokens({ turnTotalTokens: 60, total: { totalTokens: 150 } }), 60);
-    assert.equal(countTurnTokens({ total: { totalTokens: 150 } }), null);
-    assert.equal(countTurnTokens({ inputTokens: 5 }), null);
-    assert.equal(countTurnTokens(null), null);
-  });
-
-  it("reports turn and goal usage to the server after dispatch", async () => {
-    const reports = [];
+  it("reports turn and goal usage after their reply, tied to that reply", async () => {
+    const events = [];
+    let sentCount = 0;
     const conductor = {
       ...buildConductorStub(),
+      sendMessage: async (_taskId, content) => {
+        sentCount += 1;
+        events.push({ sent: content });
+        return { delivered: true, message_id: `reply-${sentCount}` };
+      },
       sendTurnUsage: async (taskId, payload) => {
-        reports.push({ taskId, payload });
+        events.push({ taskId, payload });
         return { delivered: true };
       },
     };
     const backendSession = makeGoalCapableSession({
-      runTurn: async () => ({ text: "turn", usage: { input_tokens: 10, output_tokens: 5 } }),
+      runTurn: async () => ({
+        text: "turn",
+        usage: { input_tokens: 10, cache_read_input_tokens: 90, output_tokens: 5 },
+      }),
       runGoal: async () => ({ text: "goal", usage: { turnTotalTokens: 70 } }),
     });
     const runner = buildRunner({ backendSession, conductor, taskId: "task-usage" });
-    await runner.dispatchBackendTurn("hello", {});
-    await runner.dispatchBackendTurn("/goal ship it", {});
-    assert.deepEqual(reports, [
-      { taskId: "task-usage", payload: { tokens: 15 } },
-      { taskId: "task-usage", payload: { tokens: 70 } },
+    await runner.respondToMessage({ message_id: "msg-1", role: "user", content: "hello" });
+    await runner.respondToMessage({ message_id: "msg-2", role: "user", content: "/goal ship it" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(events, [
+      { sent: "turn" },
+      {
+        taskId: "task-usage",
+        payload: { tokens: 105, input_tokens: 100, cached_input_tokens: 90, message_id: "reply-1" },
+      },
+      { sent: "goal" },
+      { taskId: "task-usage", payload: { tokens: 70, message_id: "reply-2" } },
     ]);
+  });
+
+  it("ties a streamed turn's usage to the last reply it streamed", async () => {
+    const reports = [];
+    let sentCount = 0;
+    const conductor = {
+      ...buildConductorStub(),
+      sendMessage: async () => {
+        sentCount += 1;
+        return { delivered: true, message_id: `streamed-${sentCount}` };
+      },
+      sendTurnUsage: async (_taskId, payload) => {
+        reports.push(payload);
+      },
+    };
+    let onMessage = null;
+    const backendSession = {
+      ...makeGoalCapableSession(),
+      usesSessionFileReplyStream: () => true,
+      setSessionMessageHandler: (handler) => {
+        onMessage = handler;
+      },
+      runTurn: async (_content, options) => {
+        await onMessage({ text: "first part", replyTo: options.replyTo });
+        await onMessage({ text: "final part", replyTo: options.replyTo });
+        return { text: "", usage: { input_tokens: 4, cache_read_input_tokens: 96, output_tokens: 10 } };
+      },
+    };
+    const runner = buildRunner({ backendSession, conductor });
+    await runner.respondToMessage({ message_id: "msg-1", role: "user", content: "hello" });
+    // A later turn that streams nothing does not reuse the earlier reply.
+    backendSession.runTurn = async () => ({ text: "", usage: { input_tokens: 5, output_tokens: 1 } });
+    await runner.respondToMessage({ message_id: "msg-2", role: "user", content: "again" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(reports, [
+      { tokens: 110, input_tokens: 100, cached_input_tokens: 96, message_id: "streamed-2" },
+      { tokens: 6, input_tokens: 5, cached_input_tokens: 0 },
+    ]);
+  });
+
+  it("still reports a finished turn whose reply could not be posted", async () => {
+    const reports = [];
+    const conductor = {
+      ...buildConductorStub(),
+      sendMessage: async () => {
+        throw new Error("task not found");
+      },
+      sendTurnUsage: async (_taskId, payload) => {
+        reports.push(payload);
+      },
+    };
+    const backendSession = makeGoalCapableSession({
+      runTurn: async () => ({ text: "turn", usage: { input_tokens: 10, output_tokens: 5 } }),
+    });
+    const runner = buildRunner({ backendSession, conductor });
+    await runner.respondToMessage({ message_id: "msg-1", role: "user", content: "hello" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(reports, [{ tokens: 15, input_tokens: 10, cached_input_tokens: 0 }]);
   });
 
   it("reports failed turns: their spent tokens, or null when unknown", async () => {
@@ -244,7 +296,7 @@ describe("turn token usage", () => {
     await assert.rejects(runner.dispatchBackendTurn("one", {}), /interrupted/);
     await assert.rejects(runner.dispatchBackendTurn("two", {}), /crashed/);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(reports, [{ tokens: 10 }, { tokens: null }]);
+    assert.deepEqual(reports, [{ tokens: 10, input_tokens: 7, cached_input_tokens: 0 }, { tokens: null }]);
   });
 
   it("never lets usage reporting break the turn", async () => {
@@ -258,12 +310,21 @@ describe("turn token usage", () => {
       () => undefined,
       undefined,
     ]) {
+      const sent = [];
       const runner = buildRunner({
         backendSession,
-        conductor: { ...buildConductorStub(), sendTurnUsage },
+        conductor: {
+          ...buildConductorStub(),
+          sendMessage: async (_taskId, content) => {
+            sent.push(content);
+            return { message_id: "reply-1" };
+          },
+          sendTurnUsage,
+        },
       });
-      const result = await runner.dispatchBackendTurn("hello", {});
-      assert.equal(result.text, "turn");
+      await runner.respondToMessage({ message_id: "msg-1", role: "user", content: "hello" });
+      assert.deepEqual(sent, ["turn"]);
+      assert.equal(runner.processedMessageIds.has("msg-1"), true);
     }
     await new Promise((resolve) => setImmediate(resolve));
   });

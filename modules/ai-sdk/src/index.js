@@ -7,6 +7,7 @@ export {
   resolveClaudePermissionPolicy,
 } from "./providers/claude-agent-sdk-session.js";
 export { appendContextFilesToPrompt, normalizeContextFiles } from "./context-files.js";
+export { summarizeTurnUsage } from "./turn-usage.js";
 export {
   assertMediaCapabilities,
   fileMediaToBase64,
