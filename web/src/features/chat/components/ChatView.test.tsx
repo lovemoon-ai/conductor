@@ -470,13 +470,13 @@ describe('ChatView', () => {
     });
   });
 
-  it('schedules the composer draft and opens persistent settings from the chat menu', () => {
+  it('schedules the composer draft and opens round settings from the chat menu', () => {
     renderWithChatMenu(<ChatView taskId="task-1" />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Schedule message' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Schedule' }));
     expect(screen.getByTestId('scheduled-message-dialog')).toHaveTextContent('draft from composer');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Persistent task' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next round' }));
     expect(screen.getByTestId('persistent-settings-dialog')).toBeInTheDocument();
   });
 
@@ -596,7 +596,7 @@ describe('ChatView', () => {
     fireEvent.click(screen.getByTestId('chat-menu-restart'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('chat-menu-restart')).toHaveTextContent('Restarting AI session…');
+      expect(screen.getByTestId('chat-menu-restart')).toHaveTextContent('Restarting…');
     });
     expect(screen.getByTestId('chat-menu-restart')).toBeDisabled();
     expect(screen.getByTestId('send-disabled')).toHaveTextContent('true');
@@ -604,7 +604,7 @@ describe('ChatView', () => {
 
     resolveRestart();
     await waitFor(() => {
-      expect(screen.getByTestId('chat-menu-restart')).toHaveTextContent('Restart AI session');
+      expect(screen.getByTestId('chat-menu-restart')).toHaveTextContent(/^Restart$/);
     });
   });
 

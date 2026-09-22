@@ -1319,15 +1319,15 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
         // Session-wide actions; the message toolbar only acts on its own message.
         <ReadingSettings>
           <button type="button" data-menu-item onClick={handleScheduleDraft} className={CHAT_MENU_ITEM_CLASS_NAME}>
-            Schedule message
+            Schedule
           </button>
           {task && (task.taskType ?? 'ai_task') === 'ai_task' ? (
             <>
               <button type="button" data-menu-item data-testid="chat-menu-restart" disabled={!restartEnabled} onClick={() => void handleRestart()} className={CHAT_MENU_ITEM_CLASS_NAME}>
-                {restartPending ? 'Restarting AI session…' : 'Restart AI session'}
+                {restartPending ? 'Restarting…' : 'Restart'}
               </button>
               <button type="button" data-menu-item onClick={() => setIsPersistentDialogOpen(true)} className={CHAT_MENU_ITEM_CLASS_NAME}>
-                Persistent task
+                Next round
               </button>
             </>
           ) : null}
