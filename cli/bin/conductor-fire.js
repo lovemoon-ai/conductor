@@ -1053,8 +1053,11 @@ async function main() {
           daemonName: resolvedDaemonName,
           prePrompt: resolvedPrePrompt || "",
           shouldProcessPrePrompt: Boolean(resolvedPrePrompt) && nextShouldProcessPrePrompt,
-          // `/clear` swaps in a brand-new session (no resume) in-process.
+          // `/clear` swaps in a brand-new session (no resume) in-process, and
+          // bootstraps it under the same lock the fresh-session boot path uses.
           createFreshBackendSession: () => openBackendSession(undefined, { fresh: true }),
+          withFreshSessionBootstrap: (fn) =>
+            withFreshSessionBootstrapLock(cliArgs.sessionBackend || cliArgs.backend, runtimeProjectPath, fn),
         });
         reconnectRunner = runner;
         if (pendingRemoteStopEvent) {
@@ -2073,9 +2076,11 @@ export class BridgeRunner {
     prePrompt,
     shouldProcessPrePrompt,
     createFreshBackendSession,
+    withFreshSessionBootstrap,
   }) {
     this.backendSession = backendSession;
     this.createFreshBackendSession = createFreshBackendSession;
+    this.withFreshSessionBootstrap = withFreshSessionBootstrap;
     this.conductor = conductor;
     this.taskId = taskId;
     this.pollIntervalMs = pollIntervalMs;
@@ -3737,7 +3742,9 @@ export class BridgeRunner {
     this.sessionAnnouncementSubscribed = false;
     this.runtimeContextSnapshot = null;
     this.attachSessionStreamHandlers();
-    await this.announceBackendSession();
+    await (this.withFreshSessionBootstrap
+      ? this.withFreshSessionBootstrap(() => this.announceBackendSession())
+      : this.announceBackendSession());
 
     const text = `${this.backendName} 上下文已清除，已开始新会话。`;
     onProgress?.({ phase: "turn_completed", reply_in_progress: false, status_done_line: text });

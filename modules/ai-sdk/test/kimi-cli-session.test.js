@@ -9,6 +9,7 @@ import {
   KimiPrintSession,
   createLocalAiSession,
 } from "../src/session-factory.js";
+import { KimiWireTransport, filterKimiWireBaseArgs } from "../src/transports/kimi-wire-transport.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -593,5 +594,52 @@ describe("kimi cli session", () => {
     assert.deepEqual(messages, ["Final answer."]);
 
     await session.close();
+  });
+});
+
+describe("KimiWireTransport base args", () => {
+  it("drops configured resume/continue flags so a fresh session starts empty", () => {
+    assert.deepEqual(
+      filterKimiWireBaseArgs([
+        "--continue",
+        "-c",
+        "-C",
+        "--session",
+        "abc",
+        "--session=abc",
+        "--resume",
+        "abc",
+        "--resume=abc",
+        "-S",
+        "abc",
+        "-Sabc",
+        "-r",
+        "abc",
+        "-rabc",
+      ]),
+      [],
+    );
+  });
+
+  it("keeps every other configured flag, including its value", () => {
+    assert.deepEqual(
+      filterKimiWireBaseArgs(["--model", "k2", "--verbose", "--work-dir=/tmp/x", "-m", "k2"]),
+      ["--model", "k2", "--verbose", "--work-dir=/tmp/x", "-m", "k2"],
+    );
+  });
+
+  it("appends only the caller's session id to the spawn args", () => {
+    const transport = new KimiWireTransport({
+      commandLine: "kimi --continue --session=stale --verbose",
+      cwd: "/tmp/kimi-wire-args",
+      sessionId: "fresh-session",
+    });
+    const args = transport.buildArgs();
+
+    assert.deepEqual(args.filter((arg) => arg.startsWith("--session")), ["--session=fresh-session"]);
+    assert.ok(!args.includes("--continue"));
+    assert.ok(args.includes("--verbose"));
+    assert.ok(transport.buildResumeCommandLine().includes("--session fresh-session"));
+    assert.ok(!transport.buildResumeCommandLine().includes("--continue"));
   });
 });

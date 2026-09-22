@@ -161,6 +161,22 @@ describe("BridgeRunner.dispatchBackendTurn /clear", () => {
     assert.equal(built.conductor.sent.length, 0);
   });
 
+  it("announces the fresh session under the fresh-session bootstrap lock", async () => {
+    const { runner, conductor } = buildRunner();
+    const order = [];
+    runner.withFreshSessionBootstrap = async (fn) => {
+      order.push("lock-acquired");
+      const result = await fn();
+      order.push("lock-released");
+      return result;
+    };
+
+    await runner.dispatchBackendTurn("/clear", { replyTo: "msg-clear" });
+
+    assert.deepEqual(order, ["lock-acquired", "lock-released"]);
+    assert.deepEqual(conductor.bindings.map((binding) => binding.session_id), ["new-session-1"]);
+  });
+
   it("routes the rest of the same message batch to the fresh session", async () => {
     const { runner, conductor, oldSession, freshSessions } = buildRunner({ sessionStream: false });
     const acked = [];
