@@ -1024,7 +1024,7 @@ async function main() {
           .trim()
           .toLowerCase();
         const enableGoalsForBackend = GOAL_CAPABLE_BACKENDS.includes(backendForGoalCheck);
-        const openBackendSession = (resumeSessionId) =>
+        const openBackendSession = (resumeSessionId, { fresh = false } = {}) =>
           (backendSession = createAiSession(cliArgs.sessionBackend || cliArgs.backend, {
             initialImages: cliArgs.initialImages,
             cwd: runtimeProjectPath,
@@ -1035,7 +1035,7 @@ async function main() {
             ...(enableGoalsForBackend ? { goalMode: true } : {}),
             logger: { log },
             sessionStoreKey: taskContext.taskId ? `task-${taskContext.taskId}` : undefined,
-            resumePersistedSession: Boolean(!resumeSessionId && taskContext.taskId),
+            resumePersistedSession: Boolean(!fresh && !resumeSessionId && taskContext.taskId),
           }));
         openBackendSession(nextResumeSessionId);
 
@@ -1054,7 +1054,7 @@ async function main() {
           prePrompt: resolvedPrePrompt || "",
           shouldProcessPrePrompt: Boolean(resolvedPrePrompt) && nextShouldProcessPrePrompt,
           // `/clear` swaps in a brand-new session (no resume) in-process.
-          createFreshBackendSession: () => openBackendSession(undefined),
+          createFreshBackendSession: () => openBackendSession(undefined, { fresh: true }),
         });
         reconnectRunner = runner;
         if (pendingRemoteStopEvent) {
