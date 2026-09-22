@@ -40,6 +40,7 @@ import {
 } from "./custom-command-handlers.js";
 import {
   REMOTE_EXEC_CAPABILITY,
+  REMOTE_EXEC_RUN_ID_CAPABILITY,
   createRemoteExecHandlers,
   handleRemoteExecRequest,
 } from "./remote-exec-handlers.js";
@@ -3890,7 +3891,7 @@ export function startDaemon(config = {}, deps = {}) {
     UPDATE_DAEMON_CAPABILITY,
   ];
   if (remoteExecEnabled) {
-    advertisedCapabilities.push(REMOTE_EXEC_CAPABILITY);
+    advertisedCapabilities.push(REMOTE_EXEC_CAPABILITY, REMOTE_EXEC_RUN_ID_CAPABILITY);
   } else {
     log("[remote-exec] Disabled by config (remote_exec: false); capability not advertised");
   }
