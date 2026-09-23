@@ -18,6 +18,88 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.14.0] - 2026-09-23
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.14.0`
+- `@love-moon/conductor-sdk` `0.14.0`
+- `@love-moon/ai-sdk` `0.14.0`
+- `@love-moon/app-sdk` `0.14.0`
+- `@love-moon/chat-web` `0.14.0`
+
+### Changes
+
+### Minor Changes
+
+- e168077: Support `/clear` in task chats. Fire detects a bare `/clear` message (like
+  `/compact`) and drops the AI's context instead of sending the text to the model.
+  Sessions advertise `capabilities.clear` and implement the new optional
+  `runClear()` on top of each backend's own native reset, so the backend process,
+  browser or RPC connection stays up:
+
+  - claude: native `/clear` slash command (the SDK's `conversation_reset` reports
+    the new conversation id)
+  - codex app-server: `thread/start` on the live transport
+  - codex exec: drops the replayed history, which is the whole context for a
+    stateless CLI
+  - copilot: `createSession()` on the same client; the old conversation is
+    detached, not deleted
+  - kimi wire and legacy print: the CLI's built-in `/clear` (prompt mode opts out)
+  - opencode: `session.create` on the same `opencode serve`
+  - dsh: rotates onto a fresh wire session id and keeps the runtime subprocess
+  - chat-web: `newChat()` in the same browser and profile
+
+  Backends without the capability (external providers) fall back to closing the
+  session and continuing on a brand-new one. Either way the task's chat history is
+  kept and the task is rebound to the session the backend ends up on, so a later
+  restart resumes the cleared conversation rather than the old one. The codex
+  fresh-session bootstrap lock now covers that fallback too, and the kimi wire
+  transport drops configured `--continue`/`--resume`/`--session` flags (like kimi
+  print already did) so they cannot reattach a cleared session to the old
+  conversation. Two caveats: the configured `pre_prompt` is not re-sent to the
+  cleared session, and a chat-web task running with
+  `CONDUCTOR_AI_SDK_DISABLE_WORKER=1` can only clear natively — its fallback would
+  hit the browser profile lock, because in that mode the lock owner is fire itself.
+
+- 12a829c: Show each AI reply's token usage beside its timestamp: the turn's tokens, the
+  task total after it, and the input cache share (the part of the turn's input
+  served from the prompt cache).
+
+  - `@love-moon/ai-sdk`: new `summarizeTurnUsage(usage)` normalizes a turn's usage
+    into `{ tokens, inputTokens, cachedInputTokens }` (Claude: fresh input + cache
+    writes + cache reads; Codex: input already includes cached). The Codex
+    app-server provider's turn/goal `usage` now also carries `turnInputTokens` and
+    `turnCachedInputTokens`.
+  - `@love-moon/conductor-sdk`: `sendTurnUsage` accepts `input_tokens`,
+    `cached_input_tokens` and the reply's `message_id`.
+  - `conductor fire` reports a finished turn's usage after its reply, naming that
+    reply (for streamed sessions, the turn's last streamed reply), so the server
+    records it on the message (`metadata.turn_usage`) and pushes it to open chats.
+
+### Patch Changes
+
+- b06e80e: Fix new tasks never answering when their first message starts with "-" (a
+  markdown list, `--model ...`, `-i ...`). The daemon passed the message to Fire
+  as `--prefill <message>`, and Fire's argument parser read the leading dash as a
+  new flag and dropped the message. It is now passed as `--prefill=<message>`.
+- 4141981: `conductor remote exec` now retries a POST lost to a network error or 5xx
+  without running the command twice. The CLI sends a `runId`, and an upgraded
+  daemon (capability `remote_exec_run_id`) returns the existing run for a repeated
+  id. Before retrying, the CLI asks the server whether the daemon dedupes. Old
+  servers and daemons keep the 429-only retry.
+- b06e80e: "New task from this" can start the new task with a first message you write
+  yourself. When one is set, the daemon sends it to the successor AI instead of
+  the default prompt that loads the source task's conversation as background. The
+  daemon advertises this as the `restart_first_message` capability; for older
+  daemons the dialog locks the field (the new task still starts with the default
+  background) and the server rejects a custom first message.
+- Updated dependencies [e168077]
+- Updated dependencies [d4f6fb9]
+- Updated dependencies [12a829c]
+  - @love-moon/ai-sdk@0.14.0
+  - @love-moon/conductor-sdk@0.14.0
+
 ## [0.13.3] - 2026-09-20
 
 ### Released packages
