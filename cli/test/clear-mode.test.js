@@ -257,10 +257,13 @@ describe("BridgeRunner.dispatchBackendTurn /clear", () => {
       reports.push(payload);
     };
 
-    await runner.dispatchBackendTurn("/clear", { replyTo: "msg-usage" });
+    // Driven through respondToMessage, which is the layer that ties a turn's
+    // usage to its reply message.
+    await runner.respondToMessage({ message_id: "msg-usage", role: "user", content: "/clear" });
     await new Promise((resolve) => setImmediate(resolve));
 
-    assert.deepEqual(reports, [{ tokens: 20 }]);
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].tokens, 20);
   });
 
   it("routes the rest of the same message batch to the fresh session", async () => {
