@@ -22,6 +22,7 @@ function createStubChatWebModule({
     openCalls: [],
     sendCalls: [],
     closeCalls: 0,
+    newChatCalls: 0,
   };
 
   class StubChatSession {
@@ -57,6 +58,12 @@ function createStubChatWebModule({
         response: `stub reply to: ${message}`,
         durationMs: 1,
       };
+    }
+
+    async newChat() {
+      state.newChatCalls += 1;
+      this.turnCounter = 0;
+      this.conversationId = undefined;
     }
 
     async close() {
@@ -426,5 +433,72 @@ describe("ChatWebSession", () => {
     const { mod } = createStubChatWebModule();
     const s = new ChatWebSession("chat-web", { chatWebModule: mod });
     assert.ok(s instanceof EventEmitter);
+  });
+});
+
+describe("ChatWebSession.runClear", () => {
+  it("advertises clear capability", () => {
+    const { mod } = createStubChatWebModule();
+    assert.equal(new ChatWebSession("chat-web", { chatWebModule: mod }).getSnapshot().capabilities.clear, true);
+  });
+
+  it("starts a new provider conversation in the same browser", async () => {
+    const { mod, state } = createStubChatWebModule({
+      sendImpl: async (message) => ({
+        turnIndex: 0,
+        message,
+        response: `stub reply to: ${message}`,
+        conversationId: state.newChatCalls > 0 ? "conv-after-clear" : "conv-before-clear",
+      }),
+    });
+    const session = new ChatWebSession("chat-web", { chatWebModule: mod, logger: { log: () => {} } });
+
+    await session.runTurn("remember PINEAPPLE-42");
+    assert.equal(session.getSessionInfo().sessionId, "conv-before-clear");
+
+    const result = await session.runClear();
+
+    assert.deepEqual(result.clear, { status: "cleared" });
+    assert.equal(state.newChatCalls, 1);
+    // Same browser, same profile: nothing was closed or reopened.
+    assert.equal(state.closeCalls, 0);
+    assert.equal(state.openCalls.length, 1);
+    assert.equal(session.providerConversationId, undefined);
+    assert.notEqual(session.getSessionInfo().sessionId, "conv-before-clear");
+    assert.equal((await session.ensureSessionInfo()).sessionIdDeferred, true);
+    assert.deepEqual(session.history, []);
+
+    // The next reply adopts the new provider conversation id.
+    await session.runTurn("hello again");
+    assert.equal(session.getSessionInfo().sessionId, "conv-after-clear");
+    await session.close();
+  });
+
+  it("is a noop when nothing has been said yet, even after the browser opened", async () => {
+    const { mod, state } = createStubChatWebModule();
+    const session = new ChatWebSession("chat-web", { chatWebModule: mod, logger: { log: () => {} } });
+
+    const beforeBoot = await session.runClear();
+    assert.equal(beforeBoot.clear.status, "noop");
+    assert.equal(state.openCalls.length, 0, "a clear must not boot a browser just to clear nothing");
+
+    // fire boots the browser when it announces the session, before any turn.
+    await session.boot();
+    const afterBoot = await session.runClear();
+
+    assert.equal(afterBoot.clear.status, "noop");
+    assert.equal(state.newChatCalls, 0, "an untouched chat must not be navigated for nothing");
+  });
+
+  it("refuses to clear while a turn is in flight", async () => {
+    const { mod, state } = createStubChatWebModule();
+    const session = new ChatWebSession("chat-web", { chatWebModule: mod, logger: { log: () => {} } });
+    await session.runTurn("hello");
+    session.currentTurn = { aborted: false };
+
+    await assert.rejects(session.runClear(), (error) => error.reason === "turn_already_running");
+    assert.equal(state.newChatCalls, 0);
+    session.currentTurn = null;
+    await session.close();
   });
 });

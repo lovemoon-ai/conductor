@@ -157,7 +157,7 @@ function accumulateUsage(total, usage) {
  * the next runTurn spawns a fresh runtime resuming the same session id.
  */
 export class DshSdkSession extends EventEmitter {
-  static capabilities = Object.freeze({ goal: false, compact: true });
+  static capabilities = Object.freeze({ goal: false, compact: true, clear: true });
 
   getCapabilities() {
     return { ...DshSdkSession.capabilities };
@@ -907,6 +907,30 @@ export class DshSdkSession extends EventEmitter {
    * @param {{ onProgress?: Function }} [options]
    * @returns {Promise<import("../shared.js").CompactResult>}
    */
+  /**
+   * Native clear: drop the conversation and rotate onto a fresh wire session id.
+   * The harness (and its runtime subprocess) stays up — the dsh runtime creates
+   * the new session lazily on its first prompt — so this costs no model call and
+   * no restart. Unlike runCompact there is nothing to carry over, so rotating
+   * here is safe: the new id has no persisted log, and resuming it restores an
+   * empty conversation, which is exactly what `/clear` promises.
+   */
+  async runClear() {
+    const resumableLog = this.pendingResumeFromSessionId && this.findPersistedSessionLog(this.pendingResumeFromSessionId);
+    if (this.history.length === 0 && !resumableLog) {
+      return { clear: { status: "noop" }, usage: null, metadata: {} };
+    }
+    this.history = [];
+    // Without this the next turn would restore the old session's log.
+    this.pendingResumeFromSessionId = "";
+    this.rotateSessionId();
+    return {
+      clear: { status: "cleared", sessionId: this.sessionId },
+      usage: null,
+      metadata: { source: DSH_SDK_VARIANT },
+    };
+  }
+
   async runCompact(request = {}, { onProgress = null } = {}) {
     const instructions = typeof request?.instructions === "string" ? request.instructions.trim() : "";
     const resumableLog = this.pendingResumeFromSessionId && this.findPersistedSessionLog(this.pendingResumeFromSessionId);

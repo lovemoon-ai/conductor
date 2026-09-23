@@ -1024,18 +1024,20 @@ async function main() {
           .trim()
           .toLowerCase();
         const enableGoalsForBackend = GOAL_CAPABLE_BACKENDS.includes(backendForGoalCheck);
-        backendSession = createAiSession(cliArgs.sessionBackend || cliArgs.backend, {
-          initialImages: cliArgs.initialImages,
-          cwd: runtimeProjectPath,
-          resumeSessionId: nextResumeSessionId,
-          configFile: cliArgs.configFile,
-          ...(cliArgs.sessionOptions || {}),
-          ...(sessionCommandLine ? { commandLine: sessionCommandLine } : {}),
-          ...(enableGoalsForBackend ? { goalMode: true } : {}),
-          logger: { log },
-          sessionStoreKey: taskContext.taskId ? `task-${taskContext.taskId}` : undefined,
-          resumePersistedSession: Boolean(!nextResumeSessionId && taskContext.taskId),
-        });
+        const openBackendSession = (resumeSessionId, { fresh = false } = {}) =>
+          (backendSession = createAiSession(cliArgs.sessionBackend || cliArgs.backend, {
+            initialImages: cliArgs.initialImages,
+            cwd: runtimeProjectPath,
+            resumeSessionId,
+            configFile: cliArgs.configFile,
+            ...(cliArgs.sessionOptions || {}),
+            ...(sessionCommandLine ? { commandLine: sessionCommandLine } : {}),
+            ...(enableGoalsForBackend ? { goalMode: true } : {}),
+            logger: { log },
+            sessionStoreKey: taskContext.taskId ? `task-${taskContext.taskId}` : undefined,
+            resumePersistedSession: Boolean(!fresh && !resumeSessionId && taskContext.taskId),
+          }));
+        openBackendSession(nextResumeSessionId);
 
         const runner = new BridgeRunner({
           backendSession,
@@ -1051,6 +1053,11 @@ async function main() {
           daemonName: resolvedDaemonName,
           prePrompt: resolvedPrePrompt || "",
           shouldProcessPrePrompt: Boolean(resolvedPrePrompt) && nextShouldProcessPrePrompt,
+          // `/clear` swaps in a brand-new session (no resume) in-process, and
+          // bootstraps it under the same lock the fresh-session boot path uses.
+          createFreshBackendSession: () => openBackendSession(undefined, { fresh: true }),
+          withFreshSessionBootstrap: (fn) =>
+            withFreshSessionBootstrapLock(cliArgs.sessionBackend || cliArgs.backend, runtimeProjectPath, fn),
         });
         reconnectRunner = runner;
         if (pendingRemoteStopEvent) {
@@ -1618,6 +1625,14 @@ export function formatCompactReply(backendName, compact, instructions = "") {
   return `${backendName} 上下文已压缩${detail}。${ignored}`;
 }
 
+/**
+ * Per-message `/clear` detector. Only a bare `/clear` (case-insensitive)
+ * counts: anything after it is more likely an instruction for the model.
+ */
+export function isClearCommand(content) {
+  return typeof content === "string" && /^\/clear$/i.test(content.trim());
+}
+
 export function injectResolvedTaskId(taskId, env = process.env) {
   const normalizedTaskId = normalizeTaskId(taskId);
   if (!normalizedTaskId) {
@@ -2060,8 +2075,12 @@ export class BridgeRunner {
     daemonName,
     prePrompt,
     shouldProcessPrePrompt,
+    createFreshBackendSession,
+    withFreshSessionBootstrap,
   }) {
     this.backendSession = backendSession;
+    this.createFreshBackendSession = createFreshBackendSession;
+    this.withFreshSessionBootstrap = withFreshSessionBootstrap;
     this.conductor = conductor;
     this.taskId = taskId;
     this.pollIntervalMs = pollIntervalMs;
@@ -2152,6 +2171,10 @@ export class BridgeRunner {
       2,
       20,
     );
+    this.attachSessionStreamHandlers();
+  }
+
+  attachSessionStreamHandlers() {
     if (
       this.useSessionFileReplyStream &&
       typeof this.backendSession?.setSessionMessageHandler === "function"
@@ -2326,6 +2349,13 @@ export class BridgeRunner {
       }
     } catch (error) {
       this.copilotLog(`session binding sync skipped: ${sanitizeForLog(error?.message || error, 160)}`);
+      return false;
+    }
+    // A deferred id is a local placeholder (chat-web before its first reply,
+    // and right after a native /clear) — binding it would point the task at
+    // something that can never be resumed. announceBackendSession holds off for
+    // the same reason; the real id lands with the next completed turn.
+    if (sessionInfo?.sessionIdDeferred === true) {
       return false;
     }
     return this.persistTaskSessionBinding({
@@ -3612,6 +3642,9 @@ export class BridgeRunner {
     if (compactDirective) {
       return this.runCompactCommand(compactDirective, options);
     }
+    if (!hasAttachmentInputs && this.createFreshBackendSession && isClearCommand(content)) {
+      return this.runClearCommand(options);
+    }
 
     if (willRunGoal) {
       const goalResult = await this.runWithTurnUsage(() =>
@@ -3719,6 +3752,85 @@ export class BridgeRunner {
       events: [],
       metadata: { ...(result?.metadata || {}), compact: result?.compact || null },
     };
+  }
+
+  /**
+   * `/clear`: drop the AI context. Backends that advertise
+   * `capabilities.clear` run their own native clear (claude's `/clear` slash
+   * command, kimi's built-in `/clear`, …) so the process and its session file
+   * survive; everyone else falls back to closing the session and swapping in a
+   * fresh one. Either way the task's chat history is kept and the task is
+   * rebound to whatever session id the backend ends up on, so a later fire
+   * restart resumes the cleared conversation instead of the old one.
+   */
+  async runClearCommand({ onProgress, replyTo = "" } = {}) {
+    onProgress?.({
+      phase: "context_clear",
+      reply_in_progress: true,
+      status_line: `${this.backendName} clearing context`,
+    });
+    const snapshot =
+      typeof this.backendSession?.getSnapshot === "function" ? this.backendSession.getSnapshot() : null;
+    const clearCapable =
+      snapshot?.capabilities?.clear === true && typeof this.backendSession?.runClear === "function";
+    if (clearCapable) {
+      const result = await this.runWithTurnUsage(() => this.backendSession.runClear({}, { onProgress }));
+      // A native clear may land on a new session id (claude does); rebind so a
+      // restart resumes the cleared conversation.
+      this.runtimeContextSnapshot = null;
+      await this.syncBackendSessionBinding();
+      const cleared = result?.clear?.status !== "noop";
+      const text = cleared
+        ? `${this.backendName} 上下文已清除。`
+        : `${this.backendName} 当前没有可清除的上下文。`;
+      onProgress?.({ phase: "turn_completed", reply_in_progress: false, status_done_line: text });
+      log(`[clear] backend=${this.backendName} native status=${result?.clear?.status || "cleared"}`);
+      if (this.useSessionFileReplyStream && !this.stopped) {
+        try {
+          await this.sendSessionStreamMessage({ text, replyTo });
+        } catch (error) {
+          log(`[clear] failed to post confirmation: ${error?.message || error}`);
+        }
+      }
+      return {
+        text,
+        items: [],
+        usage: result?.usage || null,
+        provider: this.backendName,
+        events: [],
+        metadata: { ...(result?.metadata || {}), clear: result?.clear || null },
+      };
+    }
+    try {
+      await this.backendSession?.close?.();
+    } catch (error) {
+      log(`[clear] failed to close previous backend session: ${error?.message || error}`);
+    }
+    if (this.stopped) {
+      // The task is shutting down; don't spawn a session nobody will close.
+      throw Object.assign(new Error("backend session closed during /clear"), { reason: "session_closed" });
+    }
+    this.backendSession = this.createFreshBackendSession();
+    this.resumeSessionId = "";
+    this.sessionAnnouncementSent = false;
+    this.sessionAnnouncementSubscribed = false;
+    this.runtimeContextSnapshot = null;
+    this.attachSessionStreamHandlers();
+    await (this.withFreshSessionBootstrap
+      ? this.withFreshSessionBootstrap(() => this.announceBackendSession())
+      : this.announceBackendSession());
+
+    const text = `${this.backendName} 上下文已清除，已开始新会话。`;
+    onProgress?.({ phase: "turn_completed", reply_in_progress: false, status_done_line: text });
+    log(`[clear] backend=${this.backendName} started a fresh session`);
+    if (this.useSessionFileReplyStream && !this.stopped) {
+      try {
+        await this.sendSessionStreamMessage({ text, replyTo });
+      } catch (error) {
+        log(`[clear] failed to post confirmation: ${error?.message || error}`);
+      }
+    }
+    return { text, items: [], usage: null, provider: this.backendName, events: [], metadata: {} };
   }
 
   async handlePrePromptMessage(content) {

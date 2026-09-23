@@ -99,6 +99,40 @@ describe("dsh sdk session", () => {
     }
   });
 
+  it("runClear rotates onto a fresh session without a model call or a restart", async () => {
+    const session = createSession();
+    const assistantMessages = [];
+    session.on("assistant_message", (payload) => assistantMessages.push(payload.text));
+
+    try {
+      assert.equal(session.getSnapshot().capabilities.clear, true);
+      const empty = await session.runClear();
+      assert.deepEqual(empty.clear, { status: "noop" });
+
+      await session.runTurn("remember PINEAPPLE-42");
+      const firstSessionId = session.getSnapshot().sessionId;
+      const harness = session.harness;
+
+      const result = await session.runClear();
+
+      assert.equal(result.clear.status, "cleared");
+      assert.notEqual(result.clear.sessionId, firstSessionId);
+      assert.equal(session.getSnapshot().sessionId, result.clear.sessionId);
+      assert.deepEqual(session.history, []);
+      // The runtime subprocess is reused; only the wire session id rotates.
+      assert.equal(session.harness, harness);
+      // The clear itself never prompts the model.
+      assert.deepEqual(assistantMessages, ["echo:remember PINEAPPLE-42"]);
+
+      // The next turn starts from an empty context — no history seed.
+      const next = await session.runTurn("what codeword?");
+      assert.doesNotMatch(next.text, /PINEAPPLE-42/);
+      assert.doesNotMatch(next.text, /Continue the existing conversation/);
+    } finally {
+      await session.close();
+    }
+  });
+
   it("runs one echo turn end to end against the fake runtime", async () => {
     const session = createSession();
     const assistantMessages = [];

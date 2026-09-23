@@ -221,7 +221,7 @@ export class ChatWebSession extends EventEmitter {
         ? { ready: true, command: this.providerConversationUrl() }
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
-      capabilities: { media: PROVIDER_MEDIA_CAPABILITIES[CHAT_WEB_SESSION_VARIANT] },
+      capabilities: { clear: true, media: PROVIDER_MEDIA_CAPABILITIES[CHAT_WEB_SESSION_VARIANT] },
       chatWebProvider: this.chatWebProvider,
       providerConversationId: this.providerConversationId,
       providerUrl: this.providerConversationUrl(),
@@ -379,6 +379,50 @@ export class ChatWebSession extends EventEmitter {
 
     this.trace(`session ready provider=${this.chatWebProvider} id=${this.sessionId}`);
     this.emit("session", this.getSessionInfo());
+  }
+
+  /**
+   * Native clear: start a new conversation in the SAME browser and profile
+   * (chat-web clicks the provider's "new chat" control, falling back to
+   * navigating home — both land on an empty chat), so no Chromium relaunch and
+   * no re-login. The old conversation stays in the provider's account.
+   *
+   * The new `/c/{uuid}` only exists after the next reply, so we drop back to a
+   * synthetic id until then — `ensureSessionInfo()` reports `sessionIdDeferred`
+   * for exactly this window.
+   */
+  async runClear() {
+    if (this.closeRequested) {
+      throw this.createSessionClosedError();
+    }
+    if (this.currentTurn) {
+      const error = new Error("chat-web turn already in progress");
+      error.reason = "turn_already_running";
+      throw error;
+    }
+    // Nothing has been said yet — fire boots the browser at announce time, so
+    // "booted" alone does not mean there is a conversation to walk away from.
+    if (!this.providerConversationId && this.history.length === 0) {
+      return { clear: { status: "noop" }, usage: null, metadata: {} };
+    }
+    await this.boot();
+    if (typeof this.chatSession?.newChat !== "function") {
+      throw new Error(`chat-web provider "${this.chatWebProvider}" cannot start a new chat`);
+    }
+    await this.chatSession.newChat();
+    this.providerConversationId = undefined;
+    this.sessionId = `chat-web-${this.chatWebProvider}-${Date.now().toString(36)}`;
+    this.sessionInfo = {
+      ...(this.sessionInfo || {}),
+      backend: this.backend,
+      sessionId: this.sessionId,
+      providerConversationId: undefined,
+      providerUrl: undefined,
+    };
+    this.history = [];
+    this.emit("session", this.getSessionInfo());
+    // No id to report: the provider mints one on the next reply.
+    return { clear: { status: "cleared" }, usage: null, metadata: {} };
   }
 
   /**

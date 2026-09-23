@@ -7,6 +7,7 @@ import readline from "node:readline";
 
 import { KIMI_CLI_PRINT_VARIANT as KIMI_PRINT_PROVIDER_VARIANT } from "../built-in-backends.js";
 import { appendContextFilesToPrompt } from "../context-files.js";
+import { assertKimiClearReply } from "./kimi-slash-commands.js";
 import {
   PROVIDER_MEDIA_CAPABILITIES,
   UNSUPPORTED_MEDIA_CAPABILITIES,
@@ -327,6 +328,7 @@ export class KimiPrintSession extends EventEmitter {
       capabilities: {
         // Kimi Code's `--prompt` CLI is unverified for slash commands.
         compact: this.cliMode !== "prompt",
+        clear: this.cliMode !== "prompt",
         media:
           this.cliMode === "prompt"
             ? UNSUPPORTED_MEDIA_CAPABILITIES
@@ -579,6 +581,34 @@ export class KimiPrintSession extends EventEmitter {
         status: /context is empty/i.test(reply) ? "noop" : "compacted",
         instructionsApplied: false,
       },
+      usage: turnResult.usage,
+      metadata: turnResult.metadata,
+    };
+  }
+
+  /**
+   * Native `/clear`: kimi-cli's built-in slash command, answered locally without
+   * a model call. Print mode spawns a child per turn, so nothing is torn down;
+   * the `--session` id stays the same and only its context file rotates.
+   *
+   * @param {Record<string, unknown>} [request]
+   * @param {{ onProgress?: Function }} [options]
+   * @returns {Promise<import("../shared.js").ClearResult>}
+   */
+  async runClear(request = {}, { onProgress = null } = {}) {
+    if (this.cliMode === "prompt") {
+      throw createTurnError("Kimi prompt mode does not support /clear", { reason: "unsupported_clear" });
+    }
+    if (this.pendingHistorySeed) {
+      return { clear: { status: "noop" }, usage: null, metadata: {} };
+    }
+    const turnResult = await this.runTurn("/clear", { onProgress, suppressReply: true });
+    // Print mode exits 0 even when the model call fails, so only kimi-cli's
+    // fixed reply is trusted.
+    assertKimiClearReply(turnResult.text);
+    this.history = [];
+    return {
+      clear: { status: "cleared", sessionId: this.sessionId || undefined },
       usage: turnResult.usage,
       metadata: turnResult.metadata,
     };

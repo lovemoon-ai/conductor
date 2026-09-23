@@ -359,8 +359,7 @@ describe("/api/tasks/[taskId]/messages", () => {
     }));
   });
 
-  it("delivers a /compact command to the task verbatim so fire can run it", async () => {
-    const content = "/compact keep the API decisions";
+  it.each(["/compact keep the API decisions", "/clear"])("delivers the slash command %j to the task verbatim so fire can run it", async (content) => {
     vi.mocked(db.task.findFirst).mockResolvedValue({ id: "task-compact", projectId: "proj-1", taskType: "ai_task" } as any);
     vi.mocked(appendUserMessageToTask).mockResolvedValueOnce({
       task: { id: "task-compact", projectId: "proj-1" } as any,

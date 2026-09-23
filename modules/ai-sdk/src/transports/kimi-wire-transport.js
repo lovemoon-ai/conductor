@@ -49,6 +49,48 @@ function quoteShellArg(value) {
   return `'${normalized.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * Drop resume flags from the configured command line. The session id is owned
+ * by the caller (we always append our own `--session=`), so a configured
+ * `--continue`/`--session`/`--resume` would silently reattach a fresh session —
+ * e.g. a `/clear` — to the previous conversation.
+ *
+ * Only those flags are touched. Notably `-c` is kimi's alias for
+ * `--prompt`/`--command` (it takes a value), not a continue switch, so it is
+ * passed through untouched — dropping the flag alone would leave its value
+ * behind as a stray positional argument.
+ */
+export function filterKimiWireBaseArgs(args) {
+  const filtered = [];
+  let skipNext = false;
+  for (const rawArg of Array.isArray(args) ? args : []) {
+    const arg = String(rawArg || "");
+    if (!arg) {
+      continue;
+    }
+    if (skipNext) {
+      skipNext = false;
+      continue;
+    }
+    if (arg === "--continue" || arg === "-C") {
+      continue;
+    }
+    if (arg === "--session" || arg === "-S" || arg === "--resume" || arg === "-r") {
+      skipNext = true;
+      continue;
+    }
+    if (
+      arg.startsWith("--session=") ||
+      arg.startsWith("--resume=") ||
+      ["-S", "-r"].some((prefix) => arg.startsWith(prefix) && arg.length > prefix.length)
+    ) {
+      continue;
+    }
+    filtered.push(arg);
+  }
+  return filtered;
+}
+
 export class KimiWireTransport extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -68,7 +110,7 @@ export class KimiWireTransport extends EventEmitter {
       throw new Error("Invalid kimi command");
     }
     this.command = command;
-    this.baseArgs = args;
+    this.baseArgs = filterKimiWireBaseArgs(args);
     this.env = options.env && typeof options.env === "object" ? { ...options.env } : {};
     this.sessionId =
       typeof options.sessionId === "string" && options.sessionId.trim()

@@ -279,6 +279,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
   static capabilities = Object.freeze({
     goal: true,
     compact: true,
+    clear: true,
     media: PROVIDER_MEDIA_CAPABILITIES[CLAUDE_PROVIDER_VARIANT],
   });
 
@@ -960,6 +961,12 @@ export class ClaudeAgentSdkSession extends EventEmitter {
           }
         }
         return;
+      case "conversation_reset":
+        // Emitted by /clear (and other fresh-session flows): the CLI mounted a
+        // new transcript, so this is the authoritative "context cleared" signal.
+        currentTurn.conversationReset = normalizeText(message.new_conversation_id) || "";
+        this.updateSessionInfo(currentTurn.conversationReset);
+        return;
       case "rate_limit_event":
         this.updateSessionInfo(message.session_id || message.sessionId);
         this.rateLimitInfo =
@@ -1041,6 +1048,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       suppressReply,
       compactMetadata: null,
       compactError: "",
+      conversationReset: "",
       emittedAssistantMessage: false,
       fullText: "",
       items: [],
@@ -1171,6 +1179,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         },
         compactMetadata: currentTurn.compactMetadata || undefined,
         compactError: currentTurn.compactError || undefined,
+        conversationReset: currentTurn.conversationReset || undefined,
       };
     } catch (error) {
       // A failed turn still spent tokens; an interrupted query ends without a
@@ -1371,6 +1380,33 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         instructionsApplied: Boolean(boundary && instructions),
         preTokens: Number.isFinite(preTokens) ? preTokens : undefined,
         postTokens: Number.isFinite(postTokens) ? postTokens : undefined,
+      },
+      usage: turnResult.usage,
+      metadata: turnResult.metadata,
+    };
+  }
+
+  /**
+   * Native `/clear`: the CLI handles the slash command itself and continues on
+   * a new session id, so the process stays up and only the context is dropped.
+   * A session id that did NOT move means the command was not handled natively.
+   */
+  async runClear(request = {}, { onProgress = null } = {}) {
+    if (!this.sessionId || this.pendingHistorySeed) {
+      return { clear: { status: "noop" }, usage: null, metadata: {} };
+    }
+    const previousSessionId = this.sessionId;
+    const turnResult = await this.runTurn("/clear", { onProgress, suppressReply: true });
+    const cleared = Boolean(
+      turnResult.conversationReset || (this.sessionId && this.sessionId !== previousSessionId),
+    );
+    if (cleared) {
+      this.history = [];
+    }
+    return {
+      clear: {
+        status: cleared ? "cleared" : "noop",
+        sessionId: cleared ? this.sessionId : undefined,
       },
       usage: turnResult.usage,
       metadata: turnResult.metadata,

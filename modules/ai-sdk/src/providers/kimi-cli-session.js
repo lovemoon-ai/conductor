@@ -10,6 +10,7 @@ import {
   resolveTurnMedia,
 } from "../media-input.js";
 import { KimiWireTransport } from "../transports/kimi-wire-transport.js";
+import { assertKimiClearReply } from "./kimi-slash-commands.js";
 import {
   emitLog,
   getBoundedEnvInt,
@@ -298,7 +299,7 @@ export class KimiCliSession extends EventEmitter {
           }
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
-      capabilities: { compact: true, media: PROVIDER_MEDIA_CAPABILITIES[KIMI_PROVIDER_VARIANT] },
+      capabilities: { compact: true, clear: true, media: PROVIDER_MEDIA_CAPABILITIES[KIMI_PROVIDER_VARIANT] },
       pid: this.transport.pid || undefined,
     };
   }
@@ -1069,6 +1070,28 @@ export class KimiCliSession extends EventEmitter {
     return {
       compact: { status: turnResult.compacted ? "compacted" : "noop", instructionsApplied: false },
       usage: turnResult.usage,
+      metadata: turnResult.metadata,
+    };
+  }
+
+  /**
+   * Native `/clear`: the Kimi CLI answers the slash command locally (no model
+   * call) and keeps the same wire session, so only the context is dropped.
+   */
+  async runClear(request = {}, { onProgress = null } = {}) {
+    if (this.pendingHistorySeed) {
+      return { clear: { status: "noop" }, usage: null, metadata: {} };
+    }
+    const turnResult = await this.runTurn("/clear", { onProgress, suppressReply: true });
+    assertKimiClearReply(turnResult.text);
+    this.history = [];
+    // The previous turn's context reading describes a context that no longer
+    // exists; leave it unknown until kimi reports the next StatusUpdate.
+    this.lastContextUsagePercent = undefined;
+    return {
+      clear: { status: "cleared", sessionId: this.sessionId || undefined },
+      // A built-in slash command spends no tokens of its own.
+      usage: null,
       metadata: turnResult.metadata,
     };
   }

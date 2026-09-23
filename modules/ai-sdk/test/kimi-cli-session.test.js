@@ -9,6 +9,7 @@ import {
   KimiPrintSession,
   createLocalAiSession,
 } from "../src/session-factory.js";
+import { KimiWireTransport, filterKimiWireBaseArgs } from "../src/transports/kimi-wire-transport.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -308,6 +309,55 @@ describe("kimi cli session", () => {
     await session.close();
   });
 
+  it("runClear sends the built-in /clear command over wire without surfacing its reply", async () => {
+    const messages = [];
+    const session = new KimiCliSession("kimi", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_KIMI_WIRE}`,
+      logger: { log: () => {} },
+    });
+    session.setSessionMessageHandler(async (payload) => {
+      messages.push(payload);
+    });
+
+    assert.equal(session.getSnapshot().capabilities.clear, true);
+    await session.runTurn("Reply with exactly OK");
+    const sessionIdBefore = session.getSessionInfo()?.sessionId;
+
+    const cleared = await session.runClear();
+
+    assert.equal(cleared.clear.status, "cleared");
+    // The CLI clears in place, so the wire session (and its process) survives.
+    assert.equal(cleared.clear.sessionId, sessionIdBefore);
+    assert.deepEqual(session.history, []);
+    // A built-in slash command spends no tokens, and the old context reading is gone.
+    assert.equal(cleared.usage, null);
+    assert.equal((await session.getSessionUsageSummary()).contextUsagePercent, undefined);
+    assert.deepEqual(messages.map((payload) => payload.text), ["OK from fake kimi\n"]);
+    await session.close();
+  });
+
+  it("runClear fails loudly when the CLI no longer answers /clear itself", async () => {
+    // The flag has to be set before the wire child spawns, so this test owns its
+    // own session.
+    process.env.FAKE_KIMI_WIRE_CLEAR_UNHANDLED = "1";
+    const session = new KimiCliSession("kimi", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_KIMI_WIRE}`,
+      logger: { log: () => {} },
+    });
+    try {
+      await session.runTurn("Reply with exactly OK");
+      // The model answered instead of the CLI: the context was NOT cleared, so
+      // reporting success would be worse than failing.
+      await assert.rejects(session.runClear(), (error) => error.reason === "clear_failed");
+      assert.notDeepEqual(session.history, [], "a failed clear must not drop the history");
+    } finally {
+      delete process.env.FAKE_KIMI_WIRE_CLEAR_UNHANDLED;
+      await session.close();
+    }
+  });
+
   it("emits auth_required when kimi reports missing model configuration", async () => {
     const authRequiredEvents = [];
     const session = new KimiCliSession("kimi", {
@@ -593,5 +643,76 @@ describe("kimi cli session", () => {
     assert.deepEqual(messages, ["Final answer."]);
 
     await session.close();
+  });
+});
+
+describe("KimiWireTransport base args", () => {
+  it("drops configured resume flags so a fresh session starts empty", () => {
+    assert.deepEqual(
+      filterKimiWireBaseArgs([
+        "--continue",
+        "-C",
+        "--session",
+        "abc",
+        "--session=abc",
+        "--resume",
+        "abc",
+        "--resume=abc",
+        "-S",
+        "abc",
+        "-Sabc",
+        "-r",
+        "abc",
+        "-rabc",
+      ]),
+      [],
+    );
+  });
+
+  it("keeps every other configured flag, including its value", () => {
+    assert.deepEqual(
+      filterKimiWireBaseArgs(["--model", "k2", "--verbose", "--work-dir=/tmp/x", "-m", "k2"]),
+      ["--model", "k2", "--verbose", "--work-dir=/tmp/x", "-m", "k2"],
+    );
+  });
+
+  it("leaves -c alone: it is kimi's --prompt alias and takes a value", () => {
+    // Dropping the flag but not its value would leave a stray positional
+    // argument ahead of --wire, which the CLI would read as the prompt.
+    assert.deepEqual(filterKimiWireBaseArgs(["-c", "preset prompt", "--debug"]), [
+      "-c",
+      "preset prompt",
+      "--debug",
+    ]);
+    assert.deepEqual(filterKimiWireBaseArgs(["-cpreset-prompt"]), ["-cpreset-prompt"]);
+  });
+
+  it("never leaves an orphan value behind for the flags it does drop", () => {
+    for (const args of [
+      ["--session", "stale", "--debug"],
+      ["-S", "stale", "--debug"],
+      ["--resume", "stale", "--debug"],
+      ["-r", "stale", "--debug"],
+    ]) {
+      assert.deepEqual(filterKimiWireBaseArgs(args), ["--debug"], `orphan left for ${args.join(" ")}`);
+    }
+  });
+
+  it("appends only the caller's session id to the spawn args", () => {
+    const transport = new KimiWireTransport({
+      commandLine: "kimi --continue --session stale --verbose",
+      cwd: "/tmp/kimi-wire-args",
+      sessionId: "fresh-session",
+    });
+    const args = transport.buildArgs();
+
+    assert.deepEqual(args.filter((arg) => arg.startsWith("--session")), ["--session=fresh-session"]);
+    assert.ok(!args.includes("--continue"));
+    assert.ok(!args.includes("stale"), "the dropped --session must not leave its value behind");
+    assert.ok(args.includes("--verbose"));
+    // Nothing before --wire may be a positional the CLI would read as a prompt.
+    assert.deepEqual(args.slice(0, args.indexOf("--wire")), ["--verbose"]);
+    assert.ok(transport.buildResumeCommandLine().includes("--session fresh-session"));
+    assert.ok(!transport.buildResumeCommandLine().includes("--continue"));
   });
 });
