@@ -490,19 +490,9 @@ export const serializeIssueWithTasks = (issue: {
   tasks?.tasks ?? null,
 );
 
+// The prompt is the issue's description alone; the title already names the
+// task. Only a description-less issue falls back to its title.
 export const buildIssueInitialContent = (issue: {
   title: string;
   description: string | null;
-}): string => {
-  const title = issue.title.trim();
-  const description = issue.description?.trim();
-  if (!description) {
-    return title;
-  }
-
-  return [
-    `Issue: ${title}`,
-    '',
-    description,
-  ].join('\n');
-};
+}): string => issue.description?.trim() || issue.title.trim();

@@ -13,7 +13,6 @@ import { getApiClient } from '@/shared/api/client';
 import { usePtyToggleStore } from './pty-toggle-store';
 import { useTaskCardGroupsSyncStore } from './task-card-groups-sync-store';
 import { buildMetadataWithTaskLabelIds, readTaskLabelIds } from '@/lib/tasks/task-labels';
-import { isPersistentTask } from '@/shared/utils/persistent-task';
 
 /**
  * In-flight label writes, per task. `confirmed` is the last label set the
@@ -213,14 +212,13 @@ export const getTaskPinnedAtTime = (task: { metadata?: Record<string, unknown> |
   return Number.isFinite(timestamp) ? timestamp : null;
 };
 
-/** Pinned tasks first, persistent tasks (RFC 0039) last, everything else keeps its order. */
+/** Pinned tasks first, everything else keeps its order. */
 export const orderTasksWithPinnedFirst = <T extends { metadata?: Record<string, unknown> | null }>(tasks: T[]): T[] =>
   tasks
     .map((task, index) => ({
       task,
       index,
       pinnedAt: getTaskPinnedAtTime(task),
-      persistent: isPersistentTask(task),
     }))
     .sort((left, right) => {
       if (left.pinnedAt !== null && right.pinnedAt !== null) {
@@ -232,9 +230,6 @@ export const orderTasksWithPinnedFirst = <T extends { metadata?: Record<string, 
       }
       if (right.pinnedAt !== null) {
         return 1;
-      }
-      if (left.persistent !== right.persistent) {
-        return left.persistent ? 1 : -1;
       }
       return left.index - right.index;
     })

@@ -34,7 +34,7 @@ describe('tasks store', () => {
     });
   });
 
-  it('starts a persistent round with snake_case fields and keeps persistent tasks last', async () => {
+  it('starts a persistent round with snake_case fields and moves the task to the front', async () => {
     useTasksStore.setState({
       tasks: [
         { id: 'task-1', title: 'Normal', status: 'running', createdAt: '2026-09-01T00:00:00.000Z' },
@@ -63,7 +63,7 @@ describe('tasks store', () => {
       worktree: 'new',
       expected_round: 2,
     });
-    expect(useTasksStore.getState().tasks.map((task) => task.id)).toEqual(['task-1', 'task-2']);
+    expect(useTasksStore.getState().tasks.map((task) => task.id)).toEqual(['task-2', 'task-1']);
   });
 
   it('refreshes the task when another client already moved it to a new round', async () => {

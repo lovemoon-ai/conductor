@@ -4,7 +4,6 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffec
 import type { Message } from '@/shared/types';
 import { CatchphrasePopover } from '@/features/catchphrases/components/CatchphrasePopover';
 import { readFromClipboard } from '@/lib/clipboard';
-import { useSwipeActions } from '@/shared/hooks/useSwipeActions';
 import { useChatStore } from '../store';
 import { compressImageIfNeeded } from '../image-compression';
 
@@ -13,8 +12,6 @@ const COMPOSER_HORIZONTAL_PADDING_PX = 24;
 const COMPOSER_GAP_PX = 8;
 const SEND_BUTTON_SAFETY_GAP_PX = 12;
 const INPUT_SCROLL_THRESHOLD_RATIO = 0.45;
-const SWIPE_ACTION_WIDTH_PX = 52;
-const SWIPE_ACTION_GAP_PX = 4; // matches the reveal panel's gap-1 and pr-1
 const MAX_ATTACHMENTS = 20;
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -34,7 +31,6 @@ const PLACEHOLDER_MESSAGES = [
 interface MessageInputProps {
   taskId: string;
   onSend: (content: string, files?: File[]) => Promise<void> | void;
-  onSchedule?: (draft: string) => void;
   onInsert?: (content: string) => void;
   onInterrupt?: () => void;
   disabled?: boolean;
@@ -59,6 +55,8 @@ export interface MessageInputHandle {
    * No-op when the user has already started a new draft (don't clobber it).
    */
   restoreDraft: (content: string) => void;
+  /** The current composer text, e.g. to schedule it from the chat menu. */
+  getDraft: () => string;
 }
 
 const getDraftStorageKey = (taskId: string) => `${DRAFT_STORAGE_PREFIX}${taskId}`;
@@ -142,7 +140,6 @@ const deriveSentHistoryFromMessages = (messages: Message[]): string[] => {
 const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(function MessageInputInner({
   taskId,
   onSend,
-  onSchedule,
   onInsert,
   onInterrupt,
   disabled,
@@ -160,14 +157,6 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [layoutState, setLayoutState] = useState(INITIAL_LAYOUT_STATE);
   const [isCatchphraseOpen, setIsCatchphraseOpen] = useState(false);
-  const swipeActionCount = onSchedule ? 2 : 1;
-  // Slide exactly as far as the reveal panel is wide: N buttons, the gaps
-  // between them, and the panel's trailing padding. Anything less leaves a
-  // sliver of the panel tucked under the composer's edge.
-  const swipeMenuWidth = swipeActionCount * SWIPE_ACTION_WIDTH_PX + swipeActionCount * SWIPE_ACTION_GAP_PX;
-  const composerSwipe = useSwipeActions({ maxOffset: swipeMenuWidth });
-  const { closeActions: closeComposerActions } = composerSwipe;
-  const firstSwipeActionRef = useRef<HTMLButtonElement>(null);
   const taskMessages = useChatStore((state) => state.messagesByTask[taskId]);
   const sentHistory = useMemo(
     () => deriveSentHistoryFromMessages(taskMessages ?? []),
@@ -422,6 +411,7 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
       updateContent(nextContent);
       moveCaretToEnd(nextContent);
     },
+    getDraft: () => content,
   }), [handleResend, content, moveCaretToEnd, updateContent]);
 
   const handleSubmit = () => {
@@ -703,22 +693,8 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
 
   const attachDisabled = disabled || sendDisabled || isSubmitting || selectedFiles.length >= MAX_ATTACHMENTS;
   const openAttachPicker = useCallback(() => {
-    closeComposerActions();
     fileInputRef.current?.click();
-  }, [closeComposerActions]);
-  const scheduleDraft = useCallback(() => {
-    closeComposerActions();
-    onSchedule?.(content);
-  }, [closeComposerActions, onSchedule, content]);
-  const toggleComposerActions = useCallback(() => {
-    if (composerSwipe.isOpen) {
-      composerSwipe.closeActions();
-    } else {
-      composerSwipe.openActions();
-      // Land keyboard focus on the revealed menu so it is operable without a pointer.
-      requestAnimationFrame(() => firstSwipeActionRef.current?.focus());
-    }
-  }, [composerSwipe]);
+  }, []);
 
   return (
     <div className="relative">
@@ -729,54 +705,9 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
         onSend={handleCatchphraseSend}
       />
       <div className="relative w-full overflow-hidden rounded-2xl">
-        {/* Actions menu: revealed behind the composer on its right edge by the toggle. */}
-        <div
-          className="absolute inset-y-0 right-0 z-0 flex items-center gap-1 pr-1"
-          data-testid="message-input-swipe-actions"
-          aria-hidden={!composerSwipe.isOpen}
-        >
-          <button
-            ref={firstSwipeActionRef}
-            type="button"
-            aria-label="Attach files"
-            title="Attach images or context files"
-            data-testid="message-input-attach-button"
-            tabIndex={composerSwipe.isOpen ? 0 : -1}
-            disabled={attachDisabled}
-            onClick={openAttachPicker}
-            style={{ width: SWIPE_ACTION_WIDTH_PX }}
-            className="flex h-10 flex-col items-center justify-center gap-0.5 rounded-xl text-muted transition-colors hover:bg-border/50 hover:text-ink disabled:opacity-40"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="size-4" aria-hidden="true">
-              <path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.9-8.9" />
-            </svg>
-            <span className="text-[10px] leading-none">Attach</span>
-          </button>
-          {onSchedule ? (
-            <button
-              type="button"
-              aria-label="Schedule this message"
-              title="Schedule this message"
-              data-testid="message-input-schedule-button"
-              tabIndex={composerSwipe.isOpen ? 0 : -1}
-              onClick={scheduleDraft}
-              style={{ width: SWIPE_ACTION_WIDTH_PX }}
-              className="flex h-10 flex-col items-center justify-center gap-0.5 rounded-xl text-muted transition-colors hover:bg-border/50 hover:text-ink"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="size-4" aria-hidden="true">
-                <circle cx="12" cy="12" r="9" />
-                <path d="M12 7v5l3 2" />
-                <path d="M17.5 3.5l3 3" />
-              </svg>
-              <span className="text-[10px] leading-none">Schedule</span>
-            </button>
-          ) : null}
-        </div>
         <div
           ref={composerRef}
           data-testid="message-input-composer"
-          style={composerSwipe.panelStyle}
-          // Keep the optional swipe menu behind an opaque composer.
           className="message-composer relative z-10 w-full min-h-11 rounded-xl border border-border bg-[var(--surface-default)] p-3 transition-colors"
         >
           <input
@@ -807,7 +738,7 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
           ) : null}
           {fileError ? <p className="mb-2 text-xs text-red-600">{fileError}</p> : null}
           <div className={isSendOnNextLine ? 'flex flex-col gap-2' : 'flex items-center gap-2'}>
-            <button type="button" aria-label="Add attachment" title="Attach files" disabled={attachDisabled} onClick={openAttachPicker} className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted hover:bg-border/50 disabled:opacity-40">
+            <button type="button" aria-label="Add attachment" title="Attach files" data-testid="message-input-attach-button" disabled={attachDisabled} onClick={openAttachPicker} className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted hover:bg-border/50 disabled:opacity-40">
               <svg aria-hidden="true" viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.9-8.9" /></svg>
             </button>
             <textarea
@@ -815,7 +746,6 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
               aria-label="Message input"
               value={content}
               onChange={(e) => updateContent(e.target.value)}
-              onFocus={() => { if (composerSwipe.isOpen) closeComposerActions(); }}
               onKeyDown={handleKeyDown}
               onDoubleClick={handleTextareaDoubleClick}
               onCompositionStart={() => { isComposingRef.current = true; }}
@@ -829,19 +759,6 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
                 }`}
             />
             <div className={isSendOnNextLine ? 'flex w-full items-center justify-end gap-2' : 'flex shrink-0 items-center gap-2'}>
-              <button
-                type="button"
-                aria-label={composerSwipe.isOpen ? 'Hide actions' : 'Show actions'}
-                title="More message actions"
-                data-testid="message-input-actions-toggle"
-                aria-expanded={composerSwipe.isOpen}
-                onClick={toggleComposerActions}
-                className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-border/50 hover:text-ink"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`size-4 transition-transform ${composerSwipe.isOpen ? 'rotate-180' : ''}`} aria-hidden="true">
-                  <circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" />
-                </svg>
-              </button>
               {/* Desktop-only: one-click send of the system clipboard contents. */}
               <button
                 type="button"

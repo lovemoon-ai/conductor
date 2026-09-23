@@ -12,9 +12,6 @@ interface MessageBubbleProps {
   message: Message;
   onResend?: (content: string) => void;
   onSchedule?: (message: Message) => void;
-  onRestart?: () => void;
-  restartEnabled?: boolean;
-  restartPending?: boolean;
   onInterrupt?: () => void;
   interruptEnabled?: boolean;
   interruptPending?: boolean;
@@ -37,9 +34,6 @@ export const MessageBubble = memo(function MessageBubble({
   message,
   onResend,
   onSchedule,
-  onRestart,
-  restartEnabled = false,
-  restartPending = false,
   onInterrupt,
   interruptEnabled = false,
   interruptPending = false,
@@ -133,14 +127,6 @@ export const MessageBubble = memo(function MessageBubble({
     setIsToolbarOpen(false);
   };
 
-  const restartTask = () => {
-    if (!restartEnabled || restartPending) {
-      return;
-    }
-    onRestart?.();
-    setIsToolbarOpen(false);
-  };
-
   const interruptTurn = () => {
     if (!interruptEnabled || interruptPending) {
       return;
@@ -191,11 +177,6 @@ export const MessageBubble = memo(function MessageBubble({
   // Each toolbar button gets a short single-word caption beneath it so the
   // action of every icon is legible at a glance.
   const actionLabelClassName = 'text-[10px] leading-none text-muted';
-  const restartActionLabel = restartPending
-    ? 'Restart pending'
-    : restartEnabled
-      ? 'Restart AI task'
-      : 'Restart unavailable';
   const interruptActionLabel = interruptPending
     ? 'Interrupt pending'
     : interruptEnabled
@@ -304,30 +285,6 @@ export const MessageBubble = memo(function MessageBubble({
           )}
         </button>,
       )}
-      {onRestart
-        ? renderAction(
-          'restart',
-          'Restart',
-          <button
-            type="button"
-            data-testid="message-bubble-restart-button"
-            aria-label={restartActionLabel}
-            title={restartActionLabel}
-            disabled={!restartEnabled || restartPending}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              restartTask();
-            }}
-            className={actionButtonClassName}
-          >
-            <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 3v4" />
-              <path d="M17.66 6.34A8 8 0 1 1 12 4" />
-            </svg>
-          </button>,
-        )
-        : null}
       {onInterrupt
         ? renderAction(
           'interrupt',

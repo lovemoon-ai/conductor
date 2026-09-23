@@ -3,7 +3,9 @@
 import { Suspense, useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/common/FeedbackProvider';
-import { ReadingSettings, TaskColumnSettings } from '@/features/workspace/WorkspaceControls';
+import { TaskColumnSettings } from '@/features/workspace/WorkspaceControls';
+import { ChatMenuSlotContext } from '@/features/chat';
+import { ConnectionStatus } from '@/components/common/ConnectionStatus';
 import { useTaskColumns } from '@/features/workspace/preferences';
 import { ResizableTaskPane } from '@/components/layout/ResizableTaskPane';
 import { Header, type TitleSwipeProgress } from '@/components/layout/Header';
@@ -67,6 +69,7 @@ const getDesktopViewportSnapshot = () =>
 function TasksPageContent() {
   const { push, replace } = useRouter();
   const [fullscreen, setFullscreen] = useState(false);
+  const [chatMenuSlot, setChatMenuSlot] = useState<HTMLElement | null>(null);
   const [columns] = useTaskColumns();
   useEffect(() => {
     if (!fullscreen) return;
@@ -513,6 +516,11 @@ function TasksPageContent() {
     return query ? `/app/tasks?${query}` : '/app/tasks';
   }, [searchParams, viewMode]);
 
+  const handleMaximizeTask = useCallback((taskId: string) => {
+    handleSelectTask(taskId);
+    setFullscreen(true);
+  }, [handleSelectTask]);
+
   const handleOpenTaskPage = useCallback((taskId: string) => {
     push(buildTaskDetailHref(taskId, buildCurrentTaskListHref()));
   }, [buildCurrentTaskListHref, push]);
@@ -609,6 +617,7 @@ function TasksPageContent() {
                   viewMode={viewMode}
                   activeTaskId={effectiveSelectedTaskId}
                   onOpenTask={handleSelectTask}
+                  onMaximizeTask={handleMaximizeTask}
                   desktopListPaneMode
                   projectFilter={projectScope.length > 0 ? projectScope : null}
                   runningOnly={showRunningOnly}
@@ -629,19 +638,23 @@ function TasksPageContent() {
                 <div className="flex min-h-11 shrink-0 items-center justify-between gap-3 border-b border-border/60 px-4 py-1">
                   <h2 className="min-w-0 flex-1 truncate text-sm font-semibold leading-5 text-ink">{currentProjectName && <span className="font-normal text-muted">{currentProjectName} / </span>}{selectedTask.title}</h2>
                   {fullscreen && <span className="text-xs text-muted" aria-label={`Task status: ${selectedTask.status}`}>{selectedTask.status}</span>}
-                  <ReadingSettings />
+                  {/* The page header (and its status light) is hidden in full screen. */}
+                  {fullscreen && <ConnectionStatus detailsEnabled taskId={selectedTask.id} />}
+                  <div ref={setChatMenuSlot} className="contents" />
                   <button type="button" aria-label={fullscreen ? "Exit full screen" : "Full screen conversation"} title={fullscreen ? "Exit full screen (Esc)" : "Full screen conversation"} aria-pressed={fullscreen} onClick={() => setFullscreen((value) => !value)} className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-paper">
                     <svg aria-hidden="true" className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M14 4h6v6m0-6L10 14M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5" /></svg>
                   </button>
                 </div>
               )}
               {effectiveSelectedTaskId ? (
-                <TaskDetailPane
-                  taskId={effectiveSelectedTaskId}
-                  compactHeader
-                  showConnectionStatus
-                  hideHeader
-                />
+                <ChatMenuSlotContext.Provider value={chatMenuSlot}>
+                  <TaskDetailPane
+                    taskId={effectiveSelectedTaskId}
+                    compactHeader
+                    showConnectionStatus
+                    hideHeader
+                  />
+                </ChatMenuSlotContext.Provider>
               ) : null}
             </div>
           </div>

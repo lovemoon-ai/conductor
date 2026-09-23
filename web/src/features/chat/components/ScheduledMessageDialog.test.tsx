@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createPortal } from 'react-dom';
 import { ScheduledMessageDialog } from './ScheduledMessageDialog';
 
 const apiPostMock = vi.fn().mockResolvedValue({ id: 'sched-1' });
@@ -41,7 +42,7 @@ const finishedSchedule = {
 };
 
 vi.mock('@/components/common/Dialog', () => ({
-  Dialog: ({
+  Dialog: vi.fn(({
     open,
     children,
     title,
@@ -49,7 +50,7 @@ vi.mock('@/components/common/Dialog', () => ({
     open: boolean;
     children: React.ReactNode;
     title: string;
-  }) => (open ? <div role="dialog" aria-label={title}>{children}</div> : null),
+  }) => (open ? <div role="dialog" aria-label={title}>{children}</div> : null)),
 }));
 
 vi.mock('@/components/common/FeedbackProvider', () => ({
@@ -326,6 +327,34 @@ describe('ScheduledMessageDialog', () => {
     await waitFor(() => {
       expect(screen.getByText('nightly deploy check')).toBeInTheDocument();
     });
+  });
+
+  // The real <dialog> keeps its children mounted while closed, so the form
+  // must still pick up a draft handed in when the dialog opens.
+  it('prefills the composer draft when a closed dialog opens with it', async () => {
+    const { Dialog: MockDialog } = await import('@/components/common/Dialog');
+    const unmountWhenClosed = vi.mocked(MockDialog).getMockImplementation();
+    vi.mocked(MockDialog).mockImplementation(({ open, children, title }) => createPortal(
+      <div role="dialog" aria-label={title} hidden={!open}>{children}</div>,
+      document.body,
+    ));
+    try {
+      const view = render(
+        <ScheduledMessageDialog open={false} taskId="task-1" message={null} onClose={() => {}} />,
+      );
+      view.rerender(
+        <ScheduledMessageDialog
+          open
+          taskId="task-1"
+          message={{ id: '', taskId: 'task-1', role: 'user', content: 'ping me later' }}
+          onClose={() => {}}
+        />,
+      );
+
+      expect(screen.getByRole('textbox', { name: 'Message content' })).toHaveValue('ping me later');
+    } finally {
+      vi.mocked(MockDialog).mockImplementation(unmountWhenClosed!);
+    }
   });
 
   it('offers a Sent filter for the terminal state of a one-off send', async () => {

@@ -66,7 +66,7 @@ describe('buildTaskListNavigation', () => {
     expect(result.tasks.map((task) => task.id)).toEqual(['ai-running']);
   });
 
-  it('puts persistent tasks last and hides them for projects that turned them off', () => {
+  it('keeps persistent tasks in place and hides them for projects that turned them off', () => {
     const persistent = { persistent: { enabled: true } };
     const tasks = [
       makeTask('persistent-a', { metadata: persistent }),
@@ -78,10 +78,10 @@ describe('buildTaskListNavigation', () => {
 
     expect(buildTaskListNavigation(tasks, []).tasks.map((task) => task.id)).toEqual([
       'pinned',
-      'normal-a',
-      'normal-b',
       'persistent-a',
+      'normal-a',
       'persistent-b',
+      'normal-b',
     ]);
 
     const hidden = buildTaskListNavigation(tasks, [], {
@@ -90,7 +90,7 @@ describe('buildTaskListNavigation', () => {
         makeProject('project-2', 'site', 'daemon-a', { showPersistentTasks: false }),
       ],
     });
-    expect(hidden.tasks.map((task) => task.id)).toEqual(['pinned', 'normal-a', 'normal-b', 'persistent-a']);
+    expect(hidden.tasks.map((task) => task.id)).toEqual(['pinned', 'persistent-a', 'normal-a', 'normal-b']);
   });
 
   it('hides persistent tasks across a merged project when any member turned them off', () => {

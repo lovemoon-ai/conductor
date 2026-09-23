@@ -305,7 +305,7 @@ describe('/api/issues/[issueId]', () => {
         updatedAt: new Date('2026-04-14T00:20:00.000Z'),
       },
       initialMessage: null,
-      initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+      initialMessageContent: 'Hook issue board into the app shell',
     } as any);
 
     const response = await PATCH(createMockRequest({
@@ -363,7 +363,7 @@ describe('/api/issues/[issueId]', () => {
         updatedAt: new Date('2026-04-14T00:20:00.000Z'),
       },
       initialMessage: null,
-      initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+      initialMessageContent: 'Hook issue board into the app shell',
     } as any);
 
     const response = await PATCH(createMockRequest({
@@ -383,7 +383,7 @@ describe('/api/issues/[issueId]', () => {
       requestedBackendType: 'claude',
       metadata: expect.objectContaining({
         backendType: 'claude',
-        initialContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+        initialContent: 'Hook issue board into the app shell',
       }),
     }), expect.any(Object));
   });
@@ -454,7 +454,7 @@ describe('/api/issues/[issueId]', () => {
         updatedAt: new Date('2026-04-14T00:20:00.000Z'),
       },
       initialMessage: null,
-      initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+      initialMessageContent: 'Hook issue board into the app shell',
     } as any);
 
     const response = await PATCH(createMockRequest({
@@ -524,7 +524,7 @@ describe('/api/issues/[issueId]', () => {
         updatedAt: new Date('2026-04-14T00:20:00.000Z'),
       },
       initialMessage: null,
-      initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+      initialMessageContent: 'Hook issue board into the app shell',
     } as any);
 
     const response = await PATCH(createMockRequest({
@@ -571,7 +571,7 @@ describe('/api/issues/[issueId]', () => {
         updatedAt: new Date('2026-04-14T00:20:00.000Z'),
       },
       initialMessage: null,
-      initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+      initialMessageContent: 'Hook issue board into the app shell',
     } as any);
 
     const response = await PATCH(createMockRequest({
@@ -626,7 +626,7 @@ describe('/api/issues/[issueId]', () => {
         updatedAt: new Date('2026-04-14T00:20:00.000Z'),
       },
       initialMessage: null,
-      initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+      initialMessageContent: 'Hook issue board into the app shell',
     } as any);
 
     const response = await PATCH(createMockRequest({
@@ -722,7 +722,7 @@ describe('/api/issues/[issueId]', () => {
         updatedAt: new Date('2026-04-14T00:20:00.000Z'),
       },
       initialMessage: null,
-      initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+      initialMessageContent: 'Hook issue board into the app shell',
     } as any);
 
     const response = await PATCH(createMockRequest({
@@ -1374,7 +1374,7 @@ describe('/api/issues/[issueId]', () => {
           updatedAt: new Date('2026-04-14T00:20:00.000Z'),
         },
         initialMessage: null,
-        initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+        initialMessageContent: 'Hook issue board into the app shell',
       } as any);
       mockPrismaQuery(db.issue.update).mockImplementation(async ({ data }: any) =>
         buildMergedExistingIssue({
@@ -2082,7 +2082,7 @@ describe('/api/issues/[issueId]', () => {
         id: 'message-1',
         createdAt: new Date('2026-04-14T00:20:00.000Z'),
       },
-      initialMessageContent: 'Issue: Board implementation\n\nHook issue board into the app shell',
+      initialMessageContent: 'Hook issue board into the app shell',
     } as any);
     vi.mocked(db.issue.update).mockRejectedValueOnce(new Error('issue update failed'));
 
@@ -2411,7 +2411,7 @@ describe('/api/issues/[issueId]', () => {
         updatedAt: new Date('2026-04-14T00:20:00.000Z'),
       },
       initialMessage: null,
-      initialMessageContent: 'Issue: Board implementation\n\n/goal kimi cannot do this',
+      initialMessageContent: '/goal kimi cannot do this',
       effectiveLaunchConfig: null,
     } as any);
 
@@ -2524,7 +2524,7 @@ describe('/api/issues/[issueId]', () => {
         '[conductor:agent] You are the "feature-dev" agent for this task group (your role: worker).\n'
           + 'Read and follow your agent doc: claw/agents/feature-dev.md\n'
           + '`conductor task group` lists every task in your group with its role and id.\n\n'
-          + '--- Task ---\nIssue: Board implementation\n\nHook issue board into the app shell',
+          + '--- Task ---\nHook issue board into the app shell',
       );
       expect(workerArgs.metadata).toEqual(expect.objectContaining({
         initialContent: workerArgs.initialMessageContent,

@@ -80,6 +80,8 @@ vi.mock('@/components/common/FeedbackProvider', () => ({
 vi.mock('@/features/tasks', async () => {
   const React = await import('react');
   const { createPortal } = await import('react-dom');
+  const { ChatMenuSlotContext } = await import('@/features/chat/chat-menu-slot');
+  const { ReadingSettings } = await import('@/features/workspace/WorkspaceControls');
   return {
     useTasksStore: (selector: (state: typeof tasksState) => unknown) => selector(tasksState),
     filterHiddenPersistentTasks: (tasks: unknown[]) => tasks,
@@ -108,12 +110,14 @@ vi.mock('@/features/tasks', async () => {
       viewMode,
       activeTaskId,
       onOpenTask,
+      onMaximizeTask,
       runningOnly,
       projectFilter,
     }: {
       viewMode: string;
       activeTaskId?: string | null;
       onOpenTask?: (taskId: string) => void;
+      onMaximizeTask?: (taskId: string) => void;
       runningOnly?: boolean;
       projectFilter?: string | string[] | null;
     }) => {
@@ -135,6 +139,11 @@ vi.mock('@/features/tasks', async () => {
           <button type="button" onClick={() => onOpenTask?.('task-2')}>
             select-task-2
           </button>
+          {onMaximizeTask ? (
+            <button type="button" onClick={() => onMaximizeTask('task-2')}>
+              maximize-task-2
+            </button>
+          ) : null}
           <div data-task-item-wrapper="task-1">mock-task-card</div>
           <div data-task-tab-card="group-1">
             <div role="tablist" aria-label="mock-merged-tabs">
@@ -167,11 +176,22 @@ vi.mock('@/features/tasks', async () => {
         </button>
       </div>
     ) : null,
-    TaskDetailPane: ({ taskId, hideHeader }: { taskId: string; hideHeader?: boolean }) => (
-      <div>task-detail:{taskId}:{hideHeader ? 'no-header' : 'header'}</div>
-    ),
+    // Like the real pane's ChatView, portal the chat menu into the header slot.
+    TaskDetailPane: function MockTaskDetailPane({ taskId, hideHeader }: { taskId: string; hideHeader?: boolean }) {
+      const menuSlot = React.useContext(ChatMenuSlotContext);
+      return (
+        <div>
+          task-detail:{taskId}:{hideHeader ? 'no-header' : 'header'}
+          {menuSlot ? createPortal(<ReadingSettings />, menuSlot) : null}
+        </div>
+      );
+    },
   };
 });
+
+vi.mock('@/components/common/ConnectionStatus', () => ({
+  ConnectionStatus: ({ taskId }: { taskId?: string | null }) => <div>connection-status:{taskId}</div>,
+}));
 
 vi.mock('@/features/projects', () => ({
   useProjectsStore: (selector: (state: {
@@ -365,9 +385,9 @@ describe('TasksPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Full screen conversation' }));
     expect(container.querySelector('[data-fullscreen="true"]')).not.toBeNull();
     expect(screen.getByText('task-detail:task-1:no-header')).toBe(detail);
-    const settings = screen.getByLabelText('Reading settings').closest('details')!;
+    const settings = screen.getByLabelText('Chat options').closest('details')!;
     settings.open = true;
-    fireEvent.keyDown(screen.getByLabelText('Reading settings'), { key: 'Escape' });
+    fireEvent.keyDown(screen.getByLabelText('Chat options'), { key: 'Escape' });
     expect(settings.open).toBe(false);
     expect(container.querySelector('[data-fullscreen="true"]')).not.toBeNull();
     fireEvent.keyDown(window, { key: 'Escape', isComposing: true });
@@ -382,6 +402,25 @@ describe('TasksPage', () => {
     expect(container.querySelector('[data-fullscreen="true"]')).toBeNull();
     expect(draft.value).toBe('Keep this unsent draft');
     expect(detail.scrollTop).toBe(120);
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('opens a double-clicked card full screen with its status light', () => {
+    isDesktopViewport = true;
+    tasksState.tasks = [
+      { id: 'task-1', projectId: 'project-1', status: 'running' },
+      { id: 'task-2', projectId: 'project-1', status: 'running' },
+    ];
+    searchParamsState = new URLSearchParams('projectId=project-1');
+    const { container } = render(<TasksPage />);
+    expect(screen.queryByText('connection-status:task-2')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'maximize-task-2' }));
+
+    expect(container.querySelector('[data-fullscreen="true"]')).not.toBeNull();
+    expect(screen.getByText('task-detail:task-2:no-header')).toBeInTheDocument();
+    expect(screen.getByText('connection-status:task-2')).toBeInTheDocument();
+    expect(screen.getByLabelText('Chat options')).toBeInTheDocument();
     expect(pushMock).not.toHaveBeenCalled();
   });
 

@@ -101,7 +101,8 @@ vi.mock('@/components/layout/Header', () => ({
   },
 }));
 
-vi.mock('@/features/chat', () => ({
+vi.mock('@/features/chat', async () => ({
+  ChatMenuSlotContext: (await import('@/features/chat/chat-menu-slot')).ChatMenuSlotContext,
   ChatView: ({ taskId }: { taskId: string }) => <div>chat:{taskId}</div>,
 }));
 

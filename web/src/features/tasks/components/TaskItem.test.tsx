@@ -172,7 +172,7 @@ describe('TaskItem', () => {
     expect(card).not.toHaveAttribute('style');
   });
 
-  it('marks a persistent task with its round and opens its settings from the actions', () => {
+  it('marks a persistent task with its round; its settings live in the chat menu, not the card actions', () => {
     render(<TaskItem
       task={{
         id: 'task-persistent',
@@ -187,8 +187,7 @@ describe('TaskItem', () => {
     />);
     expect(screen.getByText('R3')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Persistent task settings' }));
-    expect(screen.getByText('Standing instructions')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Persistent task settings' })).not.toBeInTheDocument();
   });
 
   it('does not rename after a short title press released off the title', async () => {
@@ -1413,7 +1412,8 @@ describe('TaskItem', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
-  it('navigates to the full task page on desktop list double click', () => {
+  it('maximizes the conversation in place on desktop list double click', () => {
+    const onMaximizeTaskMock = vi.fn();
     render(
       <TaskItem
         task={{
@@ -1431,6 +1431,7 @@ describe('TaskItem', () => {
         selectionMode={false}
         onToggleSelect={() => {}}
         onOpenTask={onOpenTaskMock}
+        onMaximizeTask={onMaximizeTaskMock}
         desktopListPaneMode
       />
     );
@@ -1439,9 +1440,8 @@ describe('TaskItem', () => {
 
     fireEvent.doubleClick(taskCard);
 
-    expect(markTaskReadMock).toHaveBeenCalledWith('task-11');
-    expect(pushMock).toHaveBeenCalledWith('/app/tasks/task-11');
-    expect(onOpenTaskMock).not.toHaveBeenCalled();
+    expect(onMaximizeTaskMock).toHaveBeenCalledWith('task-11');
+    expect(pushMock).not.toHaveBeenCalled();
   });
 
   it('keeps desktop title editing on long press', async () => {

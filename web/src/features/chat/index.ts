@@ -7,3 +7,4 @@ export { ScheduledMessageForm } from './components/ScheduledMessageForm';
 export { ScheduledMessageList } from './components/ScheduledMessageList';
 export { MarkdownRenderer } from './components/MarkdownRenderer';
 export { MermaidDiagram } from './components/MermaidDiagram';
+export { ChatMenuSlotContext } from './chat-menu-slot';
