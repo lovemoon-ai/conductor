@@ -10,6 +10,7 @@ import {
   resolveTurnMedia,
 } from "../media-input.js";
 import { KimiWireTransport } from "../transports/kimi-wire-transport.js";
+import { assertKimiClearReply } from "./kimi-slash-commands.js";
 import {
   emitLog,
   getBoundedEnvInt,
@@ -1082,10 +1083,15 @@ export class KimiCliSession extends EventEmitter {
       return { clear: { status: "noop" }, usage: null, metadata: {} };
     }
     const turnResult = await this.runTurn("/clear", { onProgress, suppressReply: true });
+    assertKimiClearReply(turnResult.text);
     this.history = [];
+    // The previous turn's context reading describes a context that no longer
+    // exists; leave it unknown until kimi reports the next StatusUpdate.
+    this.lastContextUsagePercent = undefined;
     return {
       clear: { status: "cleared", sessionId: this.sessionId || undefined },
-      usage: turnResult.usage,
+      // A built-in slash command spends no tokens of its own.
+      usage: null,
       metadata: turnResult.metadata,
     };
   }

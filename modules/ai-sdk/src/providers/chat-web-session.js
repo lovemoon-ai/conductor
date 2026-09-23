@@ -395,7 +395,14 @@ export class ChatWebSession extends EventEmitter {
     if (this.closeRequested) {
       throw this.createSessionClosedError();
     }
-    if (!this.booted && !this.providerConversationId) {
+    if (this.currentTurn) {
+      const error = new Error("chat-web turn already in progress");
+      error.reason = "turn_already_running";
+      throw error;
+    }
+    // Nothing has been said yet — fire boots the browser at announce time, so
+    // "booted" alone does not mean there is a conversation to walk away from.
+    if (!this.providerConversationId && this.history.length === 0) {
       return { clear: { status: "noop" }, usage: null, metadata: {} };
     }
     await this.boot();

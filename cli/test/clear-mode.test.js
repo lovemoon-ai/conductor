@@ -214,6 +214,23 @@ describe("BridgeRunner.dispatchBackendTurn /clear", () => {
     assert.deepEqual(progress.map((payload) => payload.phase), ["context_clear", "turn_completed"]);
   });
 
+  it("never binds the task to a deferred placeholder id after a native clear", async () => {
+    // chat-web drops back to a synthetic id until its next reply lands; binding
+    // it would point the task at something that can never be resumed.
+    const { runner, conductor, oldSession } = buildRunner({
+      clear: true,
+      runClear: async () => ({ clear: { status: "cleared" }, usage: null, metadata: {} }),
+    });
+    oldSession.ensureSessionInfo = async () => ({ sessionId: "chat-web-chatgpt-synthetic", sessionIdDeferred: true });
+    oldSession.getSessionInfo = () => ({ sessionId: "chat-web-chatgpt-synthetic", sessionIdDeferred: true });
+
+    await runner.dispatchBackendTurn("/clear", { replyTo: "msg-clear" });
+
+    assert.deepEqual(conductor.bindings, []);
+    assert.equal(runner.boundSessionId, "old-session");
+    assert.deepEqual(conductor.sent.map((entry) => entry.content), ["claude 上下文已清除。"]);
+  });
+
   it("reports a native noop when there was nothing to clear", async () => {
     const { runner, conductor } = buildRunner({
       clear: true,

@@ -203,7 +203,7 @@ input.on("line", (line) => {
       });
       return;
     }
-    if (promptText === "/clear") {
+    if (promptText === "/clear" && process.env.FAKE_KIMI_WIRE_CLEAR_UNHANDLED !== "1") {
       // Mirrors kimi-cli's built-in slash command: handled locally, no model call.
       emitEvent("TurnBegin", { user_input: promptText });
       emitEvent("ContentPart", { type: "text", text: "The context has been cleared." });

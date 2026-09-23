@@ -2349,6 +2349,13 @@ export class BridgeRunner {
       this.copilotLog(`session binding sync skipped: ${sanitizeForLog(error?.message || error, 160)}`);
       return false;
     }
+    // A deferred id is a local placeholder (chat-web before its first reply,
+    // and right after a native /clear) — binding it would point the task at
+    // something that can never be resumed. announceBackendSession holds off for
+    // the same reason; the real id lands with the next completed turn.
+    if (sessionInfo?.sessionIdDeferred === true) {
+      return false;
+    }
     return this.persistTaskSessionBinding({
       sessionId: sessionInfo?.sessionId,
       sessionFilePath: sessionInfo?.sessionFilePath,
@@ -3738,6 +3745,7 @@ export class BridgeRunner {
       const result = await this.runWithTurnUsage(() => this.backendSession.runClear({}, { onProgress }));
       // A native clear may land on a new session id (claude does); rebind so a
       // restart resumes the cleared conversation.
+      this.runtimeContextSnapshot = null;
       await this.syncBackendSessionBinding();
       const cleared = result?.clear?.status !== "noop";
       const text = cleared

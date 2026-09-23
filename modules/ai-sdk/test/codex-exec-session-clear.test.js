@@ -30,3 +30,14 @@ describe("codex exec session - runClear", () => {
     assert.equal(result.clear.status, "noop");
   });
 });
+
+describe("codex exec session - runClear guards", () => {
+  it("refuses to clear while a turn is in flight", async () => {
+    const session = makeSession();
+    session.history.push({ role: "user", content: "remember PINEAPPLE-42" });
+    session.currentTurn = { child: null };
+
+    await assert.rejects(session.runClear(), (error) => error.reason === "turn_already_running");
+    assert.notDeepEqual(session.history, []);
+  });
+});

@@ -330,8 +330,32 @@ describe("kimi cli session", () => {
     // The CLI clears in place, so the wire session (and its process) survives.
     assert.equal(cleared.clear.sessionId, sessionIdBefore);
     assert.deepEqual(session.history, []);
+    // A built-in slash command spends no tokens, and the old context reading is gone.
+    assert.equal(cleared.usage, null);
+    assert.equal((await session.getSessionUsageSummary()).contextUsagePercent, undefined);
     assert.deepEqual(messages.map((payload) => payload.text), ["OK from fake kimi\n"]);
     await session.close();
+  });
+
+  it("runClear fails loudly when the CLI no longer answers /clear itself", async () => {
+    // The flag has to be set before the wire child spawns, so this test owns its
+    // own session.
+    process.env.FAKE_KIMI_WIRE_CLEAR_UNHANDLED = "1";
+    const session = new KimiCliSession("kimi", {
+      cwd: process.cwd(),
+      commandLine: `${process.execPath} ${FAKE_KIMI_WIRE}`,
+      logger: { log: () => {} },
+    });
+    try {
+      await session.runTurn("Reply with exactly OK");
+      // The model answered instead of the CLI: the context was NOT cleared, so
+      // reporting success would be worse than failing.
+      await assert.rejects(session.runClear(), (error) => error.reason === "clear_failed");
+      assert.notDeepEqual(session.history, [], "a failed clear must not drop the history");
+    } finally {
+      delete process.env.FAKE_KIMI_WIRE_CLEAR_UNHANDLED;
+      await session.close();
+    }
   });
 
   it("emits auth_required when kimi reports missing model configuration", async () => {

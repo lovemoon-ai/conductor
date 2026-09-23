@@ -474,14 +474,31 @@ describe("ChatWebSession.runClear", () => {
     await session.close();
   });
 
-  it("is a noop before the browser has opened", async () => {
+  it("is a noop when nothing has been said yet, even after the browser opened", async () => {
     const { mod, state } = createStubChatWebModule();
     const session = new ChatWebSession("chat-web", { chatWebModule: mod, logger: { log: () => {} } });
 
-    const result = await session.runClear();
-
-    assert.equal(result.clear.status, "noop");
+    const beforeBoot = await session.runClear();
+    assert.equal(beforeBoot.clear.status, "noop");
     assert.equal(state.openCalls.length, 0, "a clear must not boot a browser just to clear nothing");
+
+    // fire boots the browser when it announces the session, before any turn.
+    await session.boot();
+    const afterBoot = await session.runClear();
+
+    assert.equal(afterBoot.clear.status, "noop");
+    assert.equal(state.newChatCalls, 0, "an untouched chat must not be navigated for nothing");
+  });
+
+  it("refuses to clear while a turn is in flight", async () => {
+    const { mod, state } = createStubChatWebModule();
+    const session = new ChatWebSession("chat-web", { chatWebModule: mod, logger: { log: () => {} } });
+    await session.runTurn("hello");
+    session.currentTurn = { aborted: false };
+
+    await assert.rejects(session.runClear(), (error) => error.reason === "turn_already_running");
     assert.equal(state.newChatCalls, 0);
+    session.currentTurn = null;
+    await session.close();
   });
 });

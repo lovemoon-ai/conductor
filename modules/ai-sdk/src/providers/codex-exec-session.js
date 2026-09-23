@@ -411,6 +411,11 @@ export class CodexExecSession extends EventEmitter {
    * clear. No process to restart, no session to rebind.
    */
   async runClear() {
+    if (this.currentTurn) {
+      throw createTurnError("Codex exec turn already running", {
+        reason: "turn_already_running",
+      });
+    }
     const hadContext = this.history.length > 0;
     this.history = [];
     return {

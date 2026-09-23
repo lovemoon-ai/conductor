@@ -7,6 +7,7 @@ import readline from "node:readline";
 
 import { KIMI_CLI_PRINT_VARIANT as KIMI_PRINT_PROVIDER_VARIANT } from "../built-in-backends.js";
 import { appendContextFilesToPrompt } from "../context-files.js";
+import { assertKimiClearReply } from "./kimi-slash-commands.js";
 import {
   PROVIDER_MEDIA_CAPABILITIES,
   UNSUPPORTED_MEDIA_CAPABILITIES,
@@ -602,14 +603,9 @@ export class KimiPrintSession extends EventEmitter {
       return { clear: { status: "noop" }, usage: null, metadata: {} };
     }
     const turnResult = await this.runTurn("/clear", { onProgress, suppressReply: true });
-    const reply = String(turnResult.text || "");
     // Print mode exits 0 even when the model call fails, so only kimi-cli's
     // fixed reply is trusted.
-    if (!/context has been cleared/i.test(reply)) {
-      throw createTurnError(`Kimi clear failed${reply.trim() ? `: ${reply.trim()}` : ""}`, {
-        reason: "clear_failed",
-      });
-    }
+    assertKimiClearReply(turnResult.text);
     this.history = [];
     return {
       clear: { status: "cleared", sessionId: this.sessionId || undefined },
