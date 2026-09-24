@@ -10059,9 +10059,10 @@ describe("Daemon", () => {
     }
   });
 
-  it("keeps PTY workspaces stable when no project path is bound", async () => {
+  it("starts unbound PTY shells in HOME and keeps the log in a stable workspace", async () => {
     let handler;
     let createdCwd = null;
+    let logPath = null;
     let renameCalls = 0;
     const events = [];
 
@@ -10094,7 +10095,7 @@ describe("Daemon", () => {
         renameSync: () => {
           renameCalls += 1;
         },
-        createWriteStream: () => ({
+        createWriteStream: (target) => (logPath = target, {
           on: () => {},
           write: () => {},
           end: () => {},
@@ -10142,10 +10143,10 @@ describe("Daemon", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 30));
 
-    assert.ok(createdCwd);
+    assert.strictEqual(createdCwd, process.env.HOME || os.homedir());
     assert.match(
-      createdCwd,
-      /^\/tmp\/test-ws-unbound-pty\/\d{4}-\d{2}-\d{2}\/\d{2}-\d{2}-\d{2}_pty_12345678$/,
+      logPath,
+      /^\/tmp\/test-ws-unbound-pty\/\d{4}-\d{2}-\d{2}\/\d{2}-\d{2}-\d{2}_pty_12345678\/conductor-terminal\.log$/,
     );
     assert.strictEqual(renameCalls, 0);
     expectEvent(events, "terminal_opened", (payload) => {

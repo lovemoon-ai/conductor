@@ -250,4 +250,39 @@ describe('ResumeSessionPanel', () => {
       expect.objectContaining({ projectId: 'project-bound' }),
     );
   });
+
+  it('toggles the first round and last message behind the ... button', async () => {
+    apiGetMock.mockResolvedValue({
+      sessions: [{
+        ...UNMATCHED_SESSION,
+        first_user_message: 'Fix the login bug\nin auth.ts',
+        first_reply: 'Patched the token check.',
+        last_message: 'Ship it',
+        last_message_role: 'user',
+      }],
+    });
+    render(<ResumeSessionPanel onClose={() => {}} />);
+
+    const toggle = await screen.findByRole('button', { name: 'Show conversation preview' });
+    expect(screen.queryByText('Patched the token check.')).not.toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText(/in auth\.ts/)).toBeInTheDocument();
+    expect(screen.getByText('Patched the token check.')).toBeInTheDocument();
+    expect(screen.getByText('Last message (user)')).toBeInTheDocument();
+    expect(screen.getByText('Ship it')).toBeInTheDocument();
+    // Previewing does not select the session.
+    expect(screen.queryByRole('button', { name: 'Resume Session' })).not.toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(screen.queryByText('Patched the token check.')).not.toBeInTheDocument();
+  });
+
+  it('hides the ... button when the daemon sent no preview', async () => {
+    render(<ResumeSessionPanel onClose={() => {}} />);
+
+    await screen.findByText('Fix the login bug');
+    expect(screen.queryByRole('button', { name: 'Show conversation preview' })).not.toBeInTheDocument();
+  });
 });

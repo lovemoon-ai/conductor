@@ -792,6 +792,10 @@ export async function collectBackendSessions({
           cwd: normalizeOptionalString(entry?.cwd),
           title: normalizeOptionalString(entry?.title),
           updated_at: Number.isFinite(entry?.updatedAt) ? new Date(entry.updatedAt).toISOString() : null,
+          first_user_message: normalizeOptionalString(entry?.preview?.firstUserMessage),
+          first_reply: normalizeOptionalString(entry?.preview?.firstReply),
+          last_message: normalizeOptionalString(entry?.preview?.lastMessage?.text),
+          last_message_role: normalizeOptionalString(entry?.preview?.lastMessage?.role),
         });
       }
     } catch (error) {
@@ -5784,6 +5788,9 @@ export function startDaemon(config = {}, deps = {}) {
     let taskDir =
       normalizeOptionalString(launchConfig.cwd) ||
       boundPath;
+    // No project path: the shell starts in HOME; the scratch dir below only
+    // holds the terminal log.
+    const shellCwd = taskDir || homeDir;
     if (!taskDir) {
       const now = new Date();
       const dayDir = path.join(WORKSPACE_ROOT, formatWorkspaceDate(now));
@@ -5809,7 +5816,7 @@ export function startDaemon(config = {}, deps = {}) {
 
     let launchSpec;
     try {
-      launchSpec = resolvePtyLaunchSpec(launchConfig, taskDir);
+      launchSpec = resolvePtyLaunchSpec(launchConfig, shellCwd);
     } catch (error) {
       logError(`Failed to resolve PTY launch config for ${taskId}: ${error?.message || error}`);
       sendAgentCommandAck({
@@ -5838,7 +5845,7 @@ export function startDaemon(config = {}, deps = {}) {
 
     const env = buildPtyTaskEnv(process.env, launchSpec.env);
 
-    const logPath = path.join(launchSpec.cwd, "conductor-terminal.log");
+    const logPath = path.join(taskDir, "conductor-terminal.log");
     let logStream;
     try {
       logStream = createWriteStreamFn(logPath, { flags: "a" });
@@ -5874,7 +5881,6 @@ export function startDaemon(config = {}, deps = {}) {
         rejectCreatePtyTaskDuringShutdown(payload, { sendAck: false });
         return;
       }
-      const resolvedLogPath = path.join(taskDir, "conductor-terminal.log");
 
       const startedAt = new Date().toISOString();
       const record = {
@@ -5883,7 +5889,8 @@ export function startDaemon(config = {}, deps = {}) {
         ptySessionId,
         projectId,
         taskDir,
-        logPath: resolvedLogPath,
+        cwd: launchSpec.cwd,
+        logPath,
         logStream,
         cols: launchSpec.cols,
         rows: launchSpec.rows,
@@ -5904,7 +5911,7 @@ export function startDaemon(config = {}, deps = {}) {
         project_id: projectId,
         pty_session_id: ptySessionId,
         pid: Number.isInteger(pty?.pid) ? pty.pid : null,
-        cwd: taskDir,
+        cwd: launchSpec.cwd,
         shell: launchSpec.shell,
         cols: launchSpec.cols,
         rows: launchSpec.rows,
@@ -6111,7 +6118,7 @@ export function startDaemon(config = {}, deps = {}) {
       project_id: record.projectId,
       pty_session_id: record.ptySessionId,
       pid: Number.isInteger(record.pty?.pid) ? record.pty.pid : null,
-      cwd: record.taskDir,
+      cwd: record.cwd,
       shell: record.shell,
       cols: record.cols,
       rows: record.rows,

@@ -104,6 +104,10 @@ export type BackendSessionsResult = {
     cwd: string | null;
     title: string | null;
     updated_at: string | null;
+    first_user_message: string | null;
+    first_reply: string | null;
+    last_message: string | null;
+    last_message_role: string | null;
   }>;
   errors: Array<{ backend: string; message: string }>;
 };

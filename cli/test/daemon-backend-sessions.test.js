@@ -112,6 +112,11 @@ describe("collectBackendSessions", () => {
             cwd: "/repo/b",
             title: "newer",
             updatedAt: Date.UTC(2026, 8, 2, 10, 0, 0),
+            preview: {
+              firstUserMessage: "fix it",
+              firstReply: "fixed",
+              lastMessage: { role: "user", text: "thanks" },
+            },
           },
         ];
       },
@@ -129,7 +134,13 @@ describe("collectBackendSessions", () => {
       cwd: "/repo/b",
       title: "newer",
       updated_at: "2026-09-02T10:00:00.000Z",
+      first_user_message: "fix it",
+      first_reply: "fixed",
+      last_message: "thanks",
+      last_message_role: "user",
     });
+    assert.equal(sessions[1].first_user_message, null);
+    assert.equal(sessions[1].last_message, null);
     assert.equal(sessions[2].updated_at, null);
     assert.equal(sessions[2].session_file_path, null);
   });
@@ -309,6 +320,10 @@ describe("daemon list_backend_sessions RPC", () => {
         cwd: "/repo/demo",
         title: "demo session",
         updated_at: "2026-09-02T10:00:00.000Z",
+        first_user_message: null,
+        first_reply: null,
+        last_message: null,
+        last_message_role: null,
       },
     ]);
     assert.equal(reply.payload.errors.length, 1);
