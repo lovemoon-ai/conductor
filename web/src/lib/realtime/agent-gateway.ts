@@ -885,6 +885,10 @@ const normalizeBackendSessionsResult = (
         cwd: normalizeOptionalString(record.cwd),
         title: normalizeOptionalString(record.title),
         updated_at: normalizeIsoTimestamp(record.updated_at),
+        first_user_message: normalizeOptionalString(record.first_user_message),
+        first_reply: normalizeOptionalString(record.first_reply),
+        last_message: normalizeOptionalString(record.last_message),
+        last_message_role: normalizeOptionalString(record.last_message_role),
       };
     })
     .filter((entry): entry is BackendSessionsResult["sessions"][number] => Boolean(entry));

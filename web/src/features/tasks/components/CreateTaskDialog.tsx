@@ -25,7 +25,7 @@ import { computeProjectGroups } from '@/features/projects/utils/project-groups';
 import { excludeArchivedProjects } from '@/features/projects/utils/project-list-order';
 import { useRouter } from 'next/navigation';
 import { ResumeSessionPanel } from './ResumeSessionPanel';
-import type { TaskType } from '@/lib/tasks/task-config';
+import { NewTerminalPanel } from './NewTerminalPanel';
 import type { Project } from '@/shared/types';
 
 interface CreateTaskDialogProps {
@@ -34,9 +34,6 @@ interface CreateTaskDialogProps {
   onCreatedTask?: (taskId: string) => void;
   defaultProjectId?: string | null;
 }
-
-const supportsPtyTask = (capabilities: string[] | undefined): boolean =>
-  Array.isArray(capabilities) && capabilities.some((capability) => capability.trim().toLowerCase() === 'pty_task');
 
 // RFC 0038: a daemon can host a task's worktree only if the AI on the other
 // daemon can drive it with `conductor remote exec` (git/build/test) and
@@ -83,23 +80,6 @@ export function getCreateTaskErrorMessage(error: unknown): string {
   return 'Failed to create task.';
 }
 
-const TASK_TYPE_OPTIONS: Array<{
-  value: TaskType;
-  label: string;
-  description: string;
-}> = [
-    {
-      value: 'ai_task',
-      label: 'AI Task',
-      description: 'Conversation-first task routed through the AI runner. The selected project fixes the daemon, and backend choices come from that daemon.',
-    },
-    {
-      value: 'pty_task',
-      label: 'PTY Task',
-      description: 'Persistent terminal session on a PTY-capable daemon. A bound project must use a PTY-capable daemon.',
-    },
-  ];
-
 interface CreateTaskDialogFormState {
   title: string;
   /**
@@ -110,7 +90,6 @@ interface CreateTaskDialogFormState {
    */
   initialContent: string;
   projectId: string;
-  taskType: TaskType;
   createWorktree: boolean;
   /** RFC 0039: create the task as a persistent task. */
   persistent: boolean;
@@ -132,7 +111,6 @@ type CreateTaskDialogAction =
   | { type: 'set-title'; title: string }
   | { type: 'set-initial-content'; initialContent: string }
   | { type: 'set-project'; projectId: string }
-  | { type: 'set-task-type'; taskType: TaskType }
   | { type: 'set-create-worktree'; createWorktree: boolean }
   | { type: 'set-persistent'; persistent: boolean }
   | { type: 'set-remote-worktree-host'; remoteWorktreeHost: string }
@@ -145,7 +123,6 @@ const initialCreateTaskDialogFormState: CreateTaskDialogFormState = {
   title: '',
   initialContent: '',
   projectId: '',
-  taskType: 'ai_task',
   createWorktree: false,
   persistent: false,
   remoteWorktreeHost: '',
@@ -161,7 +138,6 @@ const taskDraftSchema = z.object({
   title: z.string(),
   initialContent: z.string(),
   projectId: z.string(),
-  taskType: z.enum(['ai_task', 'pty_task']),
   createWorktree: z.boolean(),
   persistent: z.boolean().default(false),
   remoteWorktreeHost: z.string().default(''),
@@ -198,14 +174,6 @@ function createTaskDialogReducer(
         remoteWorktreeHost: '',
         workerAgent: '',
         reviewers: [],
-        submitError: null,
-      };
-    case 'set-task-type':
-      return {
-        ...state,
-        taskType: action.taskType,
-        createWorktree: action.taskType === 'ai_task' ? state.createWorktree : false,
-        remoteWorktreeHost: action.taskType === 'ai_task' ? state.remoteWorktreeHost : '',
         submitError: null,
       };
     // A local worktree and a remote one are mutually exclusive (the API rejects
@@ -269,14 +237,14 @@ export function CreateTaskDialog({
       clearDeviceSetupDraft(draftKey);
     }
   }, [open, draftKey]);
-  // 'create' = the regular new-task form; 'resume' = pick up an existing AI
-  // session found on a daemon (ResumeSessionPanel).
-  const [mode, setMode] = useState<'create' | 'resume'>('create');
+  // 'create' = the regular new-task form; 'terminal' = a PTY task
+  // (NewTerminalPanel); 'resume' = pick up an existing AI session found on a
+  // daemon (ResumeSessionPanel).
+  const [mode, setMode] = useState<'create' | 'terminal' | 'resume'>('create');
   const {
     title,
     initialContent,
     projectId: requestedProjectId,
-    taskType,
     createWorktree: requestedCreateWorktree,
     persistent,
     remoteWorktreeHost: requestedRemoteWorktreeHost,
@@ -370,13 +338,13 @@ export function CreateTaskDialog({
     : null;
   const isBoundProject = Boolean(boundDaemonHost) && !isDefaultProject;
   const selectedProjectSupportsWorktree = Boolean(projectRepoRoot);
-  const canCreateTaskWorktree = taskType === 'ai_task' && selectedProjectSupportsWorktree;
+  const canCreateTaskWorktree = selectedProjectSupportsWorktree;
   const createWorktree = canCreateTaskWorktree ? requestedCreateWorktree : false;
   // RFC 0038: the other members of a merged group whose daemon is online and
   // can host a remote worktree. Only ai_task, only without an agent group (the
   // API rejects remoteWorktree for groups), and never the AI's own daemon.
   const remoteWorktreeOptions = useMemo(() => {
-    if (!isMergedGroup || !mergedGroupDaemonOptions || taskType !== 'ai_task') return [];
+    if (!isMergedGroup || !mergedGroupDaemonOptions) return [];
     return mergedGroupDaemonOptions.flatMap((entry) => {
       if (entry.memberId === projectId || !entry.agent || !supportsRemoteWorktree(entry.agent.capabilities)) {
         return [];
@@ -389,7 +357,7 @@ export function CreateTaskDialog({
       const workspacePath = member && typeof member.workspacePath === 'string' ? member.workspacePath : null;
       return [{ host: entry.host, label: formatBindingLabel(entry.host, workspacePath) }];
     });
-  }, [currentGroup, isMergedGroup, mergedGroupDaemonOptions, projectId, taskType]);
+  }, [currentGroup, isMergedGroup, mergedGroupDaemonOptions, projectId]);
   const remoteWorktreeBlockedByAgents = Boolean(workerAgent.trim());
   const canUseRemoteWorktree = remoteWorktreeOptions.length > 0 && !remoteWorktreeBlockedByAgents;
   const remoteWorktreeHost = canUseRemoteWorktree
@@ -401,9 +369,6 @@ export function CreateTaskDialog({
     ? daemons.find((agent) => agent.host === boundDaemonHost) ?? null
     : null;
   const boundDaemonOnline = isBoundProject ? Boolean(boundDaemonAgent) : true;
-  const boundDaemonSupportsPty = isBoundProject
-    ? Boolean(boundDaemonAgent && supportsPtyTask(boundDaemonAgent.capabilities))
-    : true;
   const boundBindingLabel = boundDaemonHost ? formatBindingLabel(boundDaemonHost, boundWorkspacePath) : null;
   const daemonScope = isMergedGroup && mergedGroupDaemonOptions
     ? mergedGroupDaemonOptions
@@ -412,9 +377,7 @@ export function CreateTaskDialog({
     : isBoundProject
       ? (boundDaemonAgent ? [boundDaemonAgent] : [])
       : daemons;
-  const eligibleDaemons = taskType === 'pty_task'
-    ? daemonScope.filter((agent) => supportsPtyTask(agent.capabilities))
-    : daemonScope;
+  const eligibleDaemons = daemonScope;
   const agentHost = useMemo(() => {
     if (isMergedGroup || isBoundProject) {
       return boundDaemonHost ?? '';
@@ -430,15 +393,8 @@ export function CreateTaskDialog({
   const backendType = requestedBackendType && availableBackends.includes(requestedBackendType)
     ? requestedBackendType
     : (availableBackends[0] ?? '');
-  const canCreatePtyTask = isMergedGroup && mergedGroupDaemonOptions
-    ? mergedGroupDaemonOptions.some(
-      (entry) => entry.agent && supportsPtyTask(entry.agent.capabilities),
-    )
-    : isBoundProject
-      ? boundDaemonSupportsPty
-      : daemons.some((agent) => supportsPtyTask(agent.capabilities));
   const hasEligibleDaemon = eligibleDaemons.length > 0;
-  const resolvedTitle = title.trim() || (taskType === 'ai_task' ? deriveDefaultTaskTitle(initialContent) : '');
+  const resolvedTitle = title.trim() || deriveDefaultTaskTitle(initialContent);
   const canSubmit = Boolean(resolvedTitle)
     && selectableProjects.length > 0
     && !isSubmitting
@@ -451,9 +407,6 @@ export function CreateTaskDialog({
   const daemonSelectOptions = isMergedGroup && mergedGroupDaemonOptions
     ? mergedGroupDaemonOptions.flatMap((entry) => {
       if (!entry.agent) return [];
-      if (taskType === 'pty_task' && !supportsPtyTask(entry.agent.capabilities)) {
-        return [];
-      }
       return [{
         value: entry.memberId,
         host: entry.host,
@@ -466,7 +419,7 @@ export function CreateTaskDialog({
 
   // RFC 0033: agents registered in the selected project's .conductor/settings.yaml.
   const { availableAgents, isLoadingAgents, agentsLoadFailed } = useProjectAgentRegistry(
-    open && taskType === 'ai_task' && projectId ? projectId : null,
+    open && projectId ? projectId : null,
     dispatch,
   );
 
@@ -499,13 +452,9 @@ export function CreateTaskDialog({
     if (!resolvedTitle || !projectId) {
       return;
     }
-    if (taskType === 'pty_task' && !agentHost) {
-      return;
-    }
-
-    // RFC 0033: assemble the multi-agent group (ai_task only).
+    // RFC 0033: assemble the multi-agent group.
     const trimmedInitialContent = initialContent.trim();
-    const agents = taskType === 'ai_task' ? buildAgentGroupRequest({ workerAgent, reviewers }) : undefined;
+    const agents = buildAgentGroupRequest({ workerAgent, reviewers });
 
     setIsSubmitting(true);
     dispatch({ type: 'set-submit-error', submitError: null });
@@ -513,24 +462,15 @@ export function CreateTaskDialog({
       const task = await createTask({
         title: resolvedTitle,
         projectId: projectId || undefined,
-        taskType,
+        taskType: 'ai_task',
         agentHost: agentHost || undefined,
-        backendType: taskType === 'ai_task' ? backendType || undefined : undefined,
+        backendType: backendType || undefined,
         ...(agents ? { agents } : {}),
-        ...(taskType === 'ai_task' && trimmedInitialContent
-          ? { initialContent: trimmedInitialContent }
-          : {}),
-        ...(taskType === 'ai_task' && persistent
-          ? { metadata: { persistent: { enabled: true } } }
-          : {}),
-        launchConfig:
-          taskType === 'pty_task'
-            ? {
-              entrypointType: 'shell',
-            }
-            : remoteWorktreeHost
-              ? { remoteWorktree: { host: remoteWorktreeHost } }
-              : (createWorktree ? { worktree: true } : null),
+        ...(trimmedInitialContent ? { initialContent: trimmedInitialContent } : {}),
+        ...(persistent ? { metadata: { persistent: { enabled: true } } } : {}),
+        launchConfig: remoteWorktreeHost
+          ? { remoteWorktree: { host: remoteWorktreeHost } }
+          : (createWorktree ? { worktree: true } : null),
       });
       clearDeviceSetupDraft(draftKey);
       dispatch({ type: 'reset' });
@@ -551,7 +491,7 @@ export function CreateTaskDialog({
     <Dialog
       open={open}
       onClose={handleCloseDialog}
-      title={mode === 'resume' ? 'Resume Session' : 'Create New Task'}
+      title={mode === 'resume' ? 'Resume Session' : mode === 'terminal' ? 'New Terminal' : 'Create New Task'}
       maxWidthClassName="max-w-2xl"
       mobileSheet
       footer={mode === 'create' ? (
@@ -569,7 +509,7 @@ export function CreateTaskDialog({
             disabled={!canSubmit}
             className="webapp-btn-primary px-5 py-2.5 text-sm"
           >
-            {isSubmitting ? 'Creating...' : taskType === 'pty_task' ? 'Create PTY Task' : 'Create AI Task'}
+            {isSubmitting ? 'Creating...' : 'Create AI Task'}
           </button>
         </div>
       ) : undefined}
@@ -581,6 +521,7 @@ export function CreateTaskDialog({
       >
         {([
           { value: 'create', label: 'New Task' },
+          { value: 'terminal', label: 'New Terminal' },
           { value: 'resume', label: 'Resume Session' },
         ] as const).map((option) => (
           <button
@@ -599,29 +540,29 @@ export function CreateTaskDialog({
 
       {mode === 'resume' ? (
         <ResumeSessionPanel onClose={handleCloseDialog} onCreatedTask={onCreatedTask} />
+      ) : mode === 'terminal' ? (
+        <NewTerminalPanel onClose={handleCloseDialog} onCreatedTask={onCreatedTask} />
       ) : (
         <form id={formId} onSubmit={handleSubmit} className="create-task-form space-y-5">
-          {taskType === 'ai_task' ? (
-            <div>
-              <div className="mb-2 flex items-center gap-2">
-                <label htmlFor="create-task-prompt" className="block text-sm font-medium">
-                  What would you like to do?
-                </label>
-              </div>
-              <textarea
-                id="create-task-prompt"
-                aria-label="Task prompt"
-                value={initialContent}
-                onChange={(e) => {
-                  dispatch({ type: 'set-initial-content', initialContent: e.target.value });
-                }}
-                rows={4}
-                autoFocus
-                placeholder="Describe a change, ask a question, or give your agent a task…"
-                className="webapp-input w-full resize-y"
-              />
+          <div>
+            <div className="mb-2 flex items-center gap-2">
+              <label htmlFor="create-task-prompt" className="block text-sm font-medium">
+                What would you like to do?
+              </label>
             </div>
-          ) : null}
+            <textarea
+              id="create-task-prompt"
+              aria-label="Task prompt"
+              value={initialContent}
+              onChange={(e) => {
+                dispatch({ type: 'set-initial-content', initialContent: e.target.value });
+              }}
+              rows={4}
+              autoFocus
+              placeholder="Describe a change, ask a question, or give your agent a task…"
+              className="webapp-input w-full resize-y"
+            />
+          </div>
 
 
           <div>
@@ -693,9 +634,7 @@ export function CreateTaskDialog({
                     <HelpTip label="daemon">
                       {isBoundProject
                         ? 'The daemon is fixed for this project.'
-                        : taskType === 'ai_task'
-                          ? 'The selected daemon defines which AI backends are available below.'
-                          : 'PTY tasks will open a shell session on this daemon.'}
+                        : 'The selected daemon defines which AI backends are available below.'}
                     </HelpTip>
                   </div>
                   <select
@@ -722,59 +661,44 @@ export function CreateTaskDialog({
                   </select>
                 </div>
 
-                {taskType === 'ai_task' ? (
-                  <div>
-                    <div className="mb-2 flex items-center gap-2">
-                      <label htmlFor="create-task-backend" className="block text-sm font-medium">AI backend</label>
-                      <HelpTip label="backend selection" align="right">
-                        {selectedAgent?.host
-                          ? `${selectedAgent.host} currently advertises ${availableBackends.length} backend${availableBackends.length > 1 ? 's' : ''}.`
-                          : 'Choose a daemon to see backend options.'}
-                      </HelpTip>
-                    </div>
-                    {availableBackends.length > 0 ? (
-                      <select
-                        id="create-task-backend"
-                        value={backendType}
-                        onChange={(e) => {
-                          dispatch({ type: 'set-backend', backendType: e.target.value });
-                        }}
-                        className="webapp-input w-full"
-                      >
-                        {availableBackends.map((backend) => (
-                          <option key={backend} value={backend}>
-                            {backend}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <InlineNotice variant="warning">
-                        This daemon is online, but it does not advertise any AI backends yet. You can still switch daemons before creating the task.
-                      </InlineNotice>
-                    )}
+                <div>
+                  <div className="mb-2 flex items-center gap-2">
+                    <label htmlFor="create-task-backend" className="block text-sm font-medium">AI backend</label>
+                    <HelpTip label="backend selection" align="right">
+                      {selectedAgent?.host
+                        ? `${selectedAgent.host} currently advertises ${availableBackends.length} backend${availableBackends.length > 1 ? 's' : ''}.`
+                        : 'Choose a daemon to see backend options.'}
+                    </HelpTip>
+                  </div>
+                  {availableBackends.length > 0 ? (
+                    <select
+                      id="create-task-backend"
+                      value={backendType}
+                      onChange={(e) => {
+                        dispatch({ type: 'set-backend', backendType: e.target.value });
+                      }}
+                      className="webapp-input w-full"
+                    >
+                      {availableBackends.map((backend) => (
+                        <option key={backend} value={backend}>
+                          {backend}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <InlineNotice variant="warning">
+                      This daemon is online, but it does not advertise any AI backends yet. You can still switch daemons before creating the task.
+                    </InlineNotice>
+                  )}
 
 
-                  </div>
-                ) : (
-                  <div className="rounded-2xl border border-dashed border-border bg-panel/70 p-4">
-                    <div className="flex items-center gap-2">
-                      <p className="text-sm font-medium text-ink">Terminal entrypoint</p>
-                      <HelpTip label="terminal entrypoint" align="right">
-                        PTY tasks start with the default shell entrypoint. Advanced launch presets can be layered on later without changing this flow.
-                      </HelpTip>
-                    </div>
-                  </div>
-                )}
+                </div>
               </div>
             ) : (
               <InlineNotice variant="warning" className="mt-4">
                 {isBoundProject && boundDaemonHost && !boundDaemonOnline
                   ? `This project is bound to ${boundDaemonHost}, but the daemon is offline. Reconnect it before creating this task.`
-                  : isBoundProject && boundDaemonHost && taskType === 'pty_task' && !boundDaemonSupportsPty
-                    ? `This project is bound to ${boundDaemonHost}, but it does not support PTY tasks.`
-                    : taskType === 'pty_task'
-                      ? 'No PTY-capable daemon is online. Reconnect conductor daemon with PTY support before creating this task.'
-                      : 'Connect a device to run this task. You can keep writing your instructions here.'}
+                  : 'Connect a device to run this task. You can keep writing your instructions here.'}
                 <a href="/app/settings#devices" onClick={handleManageDevices} className="mt-2 block font-medium underline underline-offset-4">Manage devices</a>
               </InlineNotice>
             )}
@@ -785,7 +709,7 @@ export function CreateTaskDialog({
             <div className="mt-5 space-y-5">
               <div>
                 <div className="mb-2 flex items-center gap-2">
-                  <label htmlFor="create-task-title" className="block text-sm font-medium">Title {taskType === 'ai_task' ? <span className="font-normal text-muted">(optional)</span> : null}</label>
+                  <label htmlFor="create-task-title" className="block text-sm font-medium">Title <span className="font-normal text-muted">(optional)</span></label>
                 </div>
                 <input
                   id="create-task-title"
@@ -795,95 +719,31 @@ export function CreateTaskDialog({
                   onChange={(e) => {
                     dispatch({ type: 'set-title', title: e.target.value });
                   }}
-                  placeholder={taskType === 'pty_task' ? 'Name your terminal task' : resolvedTitle || 'Generated from your instructions'}
+                  placeholder={resolvedTitle || 'Generated from your instructions'}
                   className="webapp-input w-full"
                 />
               </div>
-              <div>
-                <span className="mb-2 block text-sm font-medium">Task Type</span>
-                <div className="grid gap-3 md:grid-cols-2">
-                  {TASK_TYPE_OPTIONS.map((option) => {
-                    const checked = taskType === option.value;
-                    const disabled = option.value === 'pty_task' && !canCreatePtyTask;
-                    return (
-                      <label
-                        key={option.value}
-                        className={`rounded-xl border px-3 py-3 transition-colors ${checked
-                            ? 'border-accent bg-accent/5'
-                            : 'border-border bg-paper/60 hover:border-accent/40 hover:bg-panel'
-                          } ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
-                      >
-                        <input
-                          type="radio"
-                          name="task-type"
-                          aria-label={option.label}
-                          value={option.value}
-                          checked={checked}
-                          disabled={disabled}
-                          onChange={() => {
-                            dispatch({ type: 'set-task-type', taskType: option.value });
-                          }}
-                          className="sr-only"
-                        />
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-semibold text-ink">{option.label}</span>
-                              <HelpTip label={option.label}>
-                                {option.description}
-                              </HelpTip>
-                              {checked ? (
-                                <span className="rounded-full bg-accent/12 px-2 py-0.5 text-[11px] font-medium text-[var(--accent)]">
-                                  Selected
-                                </span>
-                              ) : null}
-                            </div>
-                          </div>
-                          <span
-                            className={`mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${checked ? 'border-accent bg-accent text-white' : 'border-border text-transparent'
-                              }`}
-                            aria-hidden="true"
-                          >
-                            <svg className="size-3.5" viewBox="0 0 20 20" fill="currentColor">
-                              <path d="M16.704 5.29a1 1 0 010 1.42l-7.2 7.2a1 1 0 01-1.414 0l-3-3a1 1 0 111.414-1.42l2.293 2.294 6.493-6.494a1 1 0 011.414 0z" />
-                            </svg>
-                          </span>
-                        </div>
-                        {option.value === 'pty_task' && !canCreatePtyTask ? (
-                          <div className="mt-3">
-                            <HelpTip label="PTY availability">
-                              No PTY-capable daemon is online yet. Reconnect conductor daemon with PTY support to enable this mode.
-                            </HelpTip>
-                          </div>
-                        ) : null}
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
 
-              {taskType === 'ai_task' ? (
-                <div className="rounded-xl border border-border p-4">
-                  <label htmlFor="create-task-persistent" className="flex cursor-pointer items-start gap-3">
-                    <input
-                      id="create-task-persistent"
-                      type="checkbox"
-                      aria-label="Persistent task"
-                      checked={persistent}
-                      onChange={(e) => {
-                        dispatch({ type: 'set-persistent', persistent: e.target.checked });
-                      }}
-                      className="mt-0.5 size-4 rounded border-border text-[var(--accent)] focus:ring-[var(--accent)]"
-                    />
-                    <div className="min-w-0">
-                      <span className="text-sm font-medium text-ink">Persistent task</span>
-                      <p className="mt-1 text-xs text-muted">
-                        For recurring work. Each round starts a fresh AI session; the task keeps the whole history.
-                      </p>
-                    </div>
-                  </label>
-                </div>
-              ) : null}
+              <div className="rounded-xl border border-border p-4">
+                <label htmlFor="create-task-persistent" className="flex cursor-pointer items-start gap-3">
+                  <input
+                    id="create-task-persistent"
+                    type="checkbox"
+                    aria-label="Persistent task"
+                    checked={persistent}
+                    onChange={(e) => {
+                      dispatch({ type: 'set-persistent', persistent: e.target.checked });
+                    }}
+                    className="mt-0.5 size-4 rounded border-border text-[var(--accent)] focus:ring-[var(--accent)]"
+                  />
+                  <div className="min-w-0">
+                    <span className="text-sm font-medium text-ink">Persistent task</span>
+                    <p className="mt-1 text-xs text-muted">
+                      For recurring work. Each round starts a fresh AI session; the task keeps the whole history.
+                    </p>
+                  </div>
+                </label>
+              </div>
 
               {canCreateTaskWorktree ? (
                 <div className="rounded-xl border border-border p-4">
@@ -953,7 +813,7 @@ export function CreateTaskDialog({
               ) : null}
 
 
-              {taskType === 'ai_task' && hasEligibleDaemon ? (
+              {hasEligibleDaemon ? (
                 <div className="mt-4 border-t border-border pt-4">
                   <div className="mb-2 flex items-center gap-2">
                     <label htmlFor="create-task-worker-agent" className="block text-sm font-medium">

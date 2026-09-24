@@ -3121,6 +3121,70 @@ describe("/api/tasks", () => {
       );
     });
 
+    it("sends a New Terminal on the default project to the chosen daemon without a cwd", async () => {
+      // No cwd reaches the daemon, which then starts the shell in HOME.
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      const mockProject = { id: "proj-default", name: "Default", userId: "user-1" };
+      const createdAt = new Date("2024-01-09T00:00:00.000Z");
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId(mockProject.id);
+      vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
+      vi.mocked(db.task.create).mockImplementation((async ({ data }: any) => ({
+        id: "task-term-1",
+        status: "unknown",
+        executionHost: null,
+        backendType: null,
+        sessionId: null,
+        sessionFilePath: null,
+        metadata: null,
+        createdAt,
+        updatedAt: createdAt,
+        ...data,
+      })) as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-a", host: "daemon-a", supportedBackends: [], capabilities: ["pty_task"] },
+        { id: "agent-b", host: "daemon-b", supportedBackends: [], capabilities: ["pty_task"] },
+      ]);
+      vi.mocked(db.ptySession.create).mockResolvedValue({
+        id: "pty-term-1",
+        taskId: "task-term-1",
+        state: "pending",
+        entrypointType: "shell",
+        cwd: null,
+        createdAt,
+        updatedAt: createdAt,
+      } as any);
+
+      const response = await POST(createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: {
+          project_id: "proj-default",
+          title: "Orion",
+          task_type: "pty_task",
+          agent_host: "daemon-b",
+          launch_config: { entrypointType: "shell" },
+        },
+      }));
+
+      expect(response.status).toBe(200);
+      expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentHost: "daemon-b",
+          eventType: "create_pty_task",
+          envelope: {
+            type: "create_pty_task",
+            payload: expect.objectContaining({
+              project_id: "proj-default",
+              title: "Orion",
+              launch_config: { entrypointType: "shell" },
+            }),
+          },
+        }),
+        expect.any(Object),
+      );
+    });
+
     it("should reject pty_task when requested agent is not PTY-capable", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const mockProject = { id: "proj-pty", name: "Project Pty", userId: "user-1" };

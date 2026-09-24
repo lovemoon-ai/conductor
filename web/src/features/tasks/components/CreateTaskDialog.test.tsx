@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, within, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { CreateTaskDialog } from './CreateTaskDialog';
+import { TERMINAL_TITLES } from '../utils/terminal-title';
 import { ApiRequestError } from '@/shared/api/client';
 
 const pushMock = vi.fn();
@@ -123,7 +124,7 @@ describe('CreateTaskDialog', () => {
     projectsState.projects[0].repoRoot = '/repo';
     const draft = {
       title: 'Restore all options', initialContent: 'Implement the mobile fixes', projectId: 'project-1',
-      taskType: 'ai_task', createWorktree: true, persistent: false, remoteWorktreeHost: '', agentHost: 'daemon-a', backendType: 'codex',
+      createWorktree: true, persistent: false, remoteWorktreeHost: '', agentHost: 'daemon-a', backendType: 'codex',
       workerAgent: 'feature-dev', reviewers: [{ name: 'code-reviewer', backend: 'codex' }], submitError: null,
     };
     sessionStorage.setItem('conductor-create-task-draft:draft-user', JSON.stringify(draft));
@@ -237,28 +238,24 @@ describe('CreateTaskDialog', () => {
     await screen.findByLabelText('Worker agent');
     const selects = await screen.findAllByRole('combobox');
     expect(selects).toHaveLength(4);
-    const radios = screen.getAllByRole('radio');
-    expect(radios).toHaveLength(2);
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
 
     const [projectSelect, daemonSelect, backendSelect, workerAgentSelect] = selects;
-    const [aiTaskRadio, ptyTaskRadio] = radios;
 
     await waitFor(() => {
       expect(projectSelect).toHaveValue('project-1');
       expect(daemonSelect).toHaveValue('daemon-a');
       expect(backendSelect).toHaveValue('claude');
       expect(workerAgentSelect).toHaveValue('');
-      expect(aiTaskRadio).toBeChecked();
-      expect(ptyTaskRadio).not.toBeChecked();
     });
 
     expect(within(projectSelect).queryByRole('option', { name: 'No project' })).toBeNull();
     expect(within(daemonSelect).queryByRole('option', { name: 'Auto-select daemon' })).toBeNull();
     expect(within(backendSelect).queryByRole('option', { name: 'Default' })).toBeNull();
     expect(screen.queryByLabelText('worktree')).toBeNull();
-    expect(screen.queryByText('Conversation-first task routed through the AI runner. The selected project fixes the daemon, and backend choices come from that daemon.')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Show help for AI Task' }));
-    expect(screen.getByText('Conversation-first task routed through the AI runner. The selected project fixes the daemon, and backend choices come from that daemon.')).toBeInTheDocument();
+    expect(screen.queryByText('The selected daemon defines which AI backends are available below.')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show help for daemon' }));
+    expect(screen.getByText('The selected daemon defines which AI backends are available below.')).toBeInTheDocument();
   });
 
   it('defaults to the current project when provided', async () => {
@@ -310,38 +307,105 @@ describe('CreateTaskDialog', () => {
     });
   });
 
-  it('creates pty_task with a shell launchConfig only', async () => {
+  it('opens a terminal from the New Terminal tab with a constellation title and no project', async () => {
     createTaskMock.mockResolvedValueOnce({ id: 'task-pty-1' });
 
     render(<CreateTaskDialog open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'New Terminal' }));
 
-    screen.getByText('Advanced options').closest('details')!.open = true;
-    fireEvent.click(screen.getByRole('radio', { name: /PTY Task/ }));
-    fireEvent.change(screen.getByLabelText('Task title'), {
-      target: { value: 'Open a codex terminal' },
-    });
-    expect(screen.getByRole('radio', { name: /PTY Task/ })).toBeChecked();
-    expect(screen.getByRole('radio', { name: /AI Task/ })).not.toBeChecked();
+    // Only PTY-capable daemons are offered; the project defaults to none.
+    const daemonSelect = screen.getByLabelText('Daemon');
+    expect(within(daemonSelect).getAllByRole('option').map((option) => option.textContent)).toEqual(['daemon-a']);
+    expect(screen.getByLabelText(/Project/)).toHaveValue('');
+    expect(screen.queryByLabelText('Task title')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create PTY Task' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open Terminal' }));
 
     await waitFor(() => {
       expect(createTaskMock).toHaveBeenCalledWith({
-        title: 'Open a codex terminal',
+        title: expect.any(String),
         projectId: 'project-1',
         taskType: 'pty_task',
         agentHost: 'daemon-a',
-        backendType: undefined,
-        launchConfig: {
-          entrypointType: 'shell',
-        },
+        launchConfig: { entrypointType: 'shell' },
       });
     });
+    expect(TERMINAL_TITLES).toContain(createTaskMock.mock.calls[0][0].title);
     expect(pushMock).toHaveBeenCalledWith('/app/tasks/task-pty-1');
-    expect(screen.queryByLabelText('Terminal Entrypoint')).toBeNull();
-    expect(screen.queryByLabelText('Shell Path')).toBeNull();
-    expect(screen.queryByLabelText('Working Directory')).toBeNull();
-    expect(screen.queryByLabelText('worktree')).toBeNull();
+  });
+
+  it('opens a terminal in a project bound to the chosen daemon', async () => {
+    projectsState.projects.push(
+      { id: 'project-a', name: 'Repo A', daemonHost: 'daemon-a', workspacePath: '/repo/a' },
+      { id: 'project-b', name: 'Repo B', daemonHost: 'daemon-b', workspacePath: '/repo/b' },
+    );
+    createTaskMock.mockResolvedValueOnce({ id: 'task-pty-2' });
+
+    render(<CreateTaskDialog open onClose={() => {}} onCreatedTask={onCreatedTaskMock} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'New Terminal' }));
+
+    const projectSelect = screen.getByLabelText(/Project/);
+    expect(within(projectSelect).getAllByRole('option').map((option) => option.textContent))
+      .toEqual(['None (home directory)', 'Repo A']);
+    fireEvent.change(projectSelect, { target: { value: 'project-a' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Open Terminal' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+        projectId: 'project-a',
+        taskType: 'pty_task',
+        agentHost: 'daemon-a',
+      }));
+    });
+    expect(onCreatedTaskMock).toHaveBeenCalledWith('task-pty-2');
+  });
+
+  it('lists a bound default project under its daemon instead of offering a home-directory terminal', async () => {
+    projectsState.projects = [
+      { id: 'project-default', name: 'Bound Default', isDefault: true, daemonHost: 'daemon-a', workspacePath: '/repo/d' },
+      { id: 'project-a', name: 'Repo A', daemonHost: 'daemon-a', workspacePath: '/repo/a' },
+    ];
+    createTaskMock.mockResolvedValueOnce({ id: 'task-pty-3' });
+
+    render(<CreateTaskDialog open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'New Terminal' }));
+
+    const projectSelect = screen.getByLabelText(/Project/);
+    expect(within(projectSelect).getAllByRole('option').map((option) => option.textContent))
+      .toEqual(['Bound Default', 'Repo A']);
+    expect(projectSelect).toHaveValue('project-default');
+    expect(screen.getByText(/pick a project for this terminal/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Terminal' }));
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+        projectId: 'project-default',
+        agentHost: 'daemon-a',
+      }));
+    });
+  });
+
+  it('cannot open a terminal on a daemon with no project when the default project is bound elsewhere', () => {
+    projectsState.projects = [
+      { id: 'project-default', name: 'Bound Default', isDefault: true, daemonHost: 'daemon-b', workspacePath: '/repo/d' },
+    ];
+
+    render(<CreateTaskDialog open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'New Terminal' }));
+
+    expect(within(screen.getByLabelText(/Project/)).queryAllByRole('option')).toHaveLength(0);
+    expect(screen.getByText(/No project on this daemon/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open Terminal' })).toBeDisabled();
+  });
+
+  it('warns in the New Terminal tab when no PTY-capable daemon is online', () => {
+    agentsState.agents = agentsState.agents.map((agent) => ({ ...agent, capabilities: [] }));
+
+    render(<CreateTaskDialog open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'New Terminal' }));
+
+    expect(screen.getByText('No terminal-capable daemon online')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open Terminal' })).toBeNull();
   });
 
   it('uses inline selection callback when provided after task creation', async () => {
@@ -587,31 +651,6 @@ describe('CreateTaskDialog', () => {
         title: 'Biweekly release',
         metadata: { persistent: { enabled: true } },
       }));
-    });
-  });
-
-  it('hides worktree when PTY task is selected even for git projects', async () => {
-    projectsState = {
-      projects: [
-        {
-          id: 'project-git',
-          name: 'Git Project',
-          daemonHost: 'daemon-a',
-          workspacePath: '/repo/app',
-          repoRoot: '/repo',
-        },
-      ],
-    };
-
-    render(<CreateTaskDialog open onClose={() => {}} />);
-
-    expect(await screen.findByRole('checkbox', { name: 'Create task in a separate worktree' })).toBeInTheDocument();
-
-    screen.getByText('Advanced options').closest('details')!.open = true;
-    fireEvent.click(screen.getByRole('radio', { name: /PTY Task/ }));
-
-    await waitFor(() => {
-      expect(screen.queryByRole('checkbox')).toBeNull();
     });
   });
 

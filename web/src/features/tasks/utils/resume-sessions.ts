@@ -14,6 +14,11 @@ export interface DaemonSessionSummary {
   /** Existing task already resumed from this session, if any. */
   linkedTaskId: string | null;
   projectId: string | null;
+  /** Preview for the session card's "..." toggle; null when the daemon sent none. */
+  firstUserMessage: string | null;
+  firstReply: string | null;
+  lastMessage: string | null;
+  lastMessageRole: string | null;
 }
 
 export interface DaemonSessionsBackendError {
@@ -48,6 +53,10 @@ export const normalizeDaemonSession = (raw: unknown): DaemonSessionSummary | nul
     updatedAt: pickString(record.updated_at) ?? pickString(record.updatedAt),
     linkedTaskId: pickString(record.linked_task_id) ?? pickString(record.linkedTaskId),
     projectId: pickString(record.project_id) ?? pickString(record.projectId),
+    firstUserMessage: pickString(record.first_user_message) ?? pickString(record.firstUserMessage),
+    firstReply: pickString(record.first_reply) ?? pickString(record.firstReply),
+    lastMessage: pickString(record.last_message) ?? pickString(record.lastMessage),
+    lastMessageRole: pickString(record.last_message_role) ?? pickString(record.lastMessageRole),
   };
 };
 

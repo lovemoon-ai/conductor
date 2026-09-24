@@ -52,6 +52,7 @@ export function ResumeSessionPanel({ onClose, onCreatedTask }: ResumeSessionPane
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [previewKey, setPreviewKey] = useState<string | null>(null);
   const [fallbackProjectId, setFallbackProjectId] = useState('');
   const [instruction, setInstruction] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -248,44 +249,75 @@ export function ResumeSessionPanel({ onClose, onCreatedTask }: ResumeSessionPane
             const isLinked = Boolean(session.linkedTaskId);
             const relativeTime = formatRelativeTime(session.updatedAt, now);
             const cwdTail = getPathTail(session.cwd);
+            const hasPreview = Boolean(session.firstUserMessage || session.firstReply || session.lastMessage);
+            const showPreview = hasPreview && previewKey === key;
             return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => handleSelectSession(session)}
-                title={isLinked ? 'Open the task already linked to this session' : undefined}
-                className={`w-full rounded-xl border px-3 py-2.5 text-left transition-colors ${
-                  isSelected
-                    ? 'border-accent bg-accent/8'
-                    : 'border-border bg-paper/60 hover:border-accent/40 hover:bg-panel'
-                } ${isLinked ? 'opacity-60' : ''}`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="shrink-0 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
-                    {session.backend}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
-                    {sessionDisplayTitle(session)}
-                  </span>
-                  {isSessionActive(session.updatedAt, now) ? (
-                    <span
-                      className="shrink-0 rounded-full bg-[var(--accent)]/12 px-2 py-0.5 text-[11px] font-medium text-[var(--accent)]"
-                      title="This session may still be in use on your computer."
+              <div key={key}>
+                <div className="flex items-stretch gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleSelectSession(session)}
+                    title={isLinked ? 'Open the task already linked to this session' : undefined}
+                    className={`min-w-0 flex-1 rounded-xl border px-3 py-2.5 text-left transition-colors ${
+                      isSelected
+                        ? 'border-accent bg-accent/8'
+                        : 'border-border bg-paper/60 hover:border-accent/40 hover:bg-panel'
+                    } ${isLinked ? 'opacity-60' : ''}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="shrink-0 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
+                        {session.backend}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
+                        {sessionDisplayTitle(session)}
+                      </span>
+                      {isSessionActive(session.updatedAt, now) ? (
+                        <span
+                          className="shrink-0 rounded-full bg-[var(--accent)]/12 px-2 py-0.5 text-[11px] font-medium text-[var(--accent)]"
+                          title="This session may still be in use on your computer."
+                        >
+                          Active ⚡
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="mt-1 flex items-center gap-2 text-xs text-muted">
+                      {cwdTail ? <span className="truncate">{cwdTail}</span> : null}
+                      {relativeTime ? <span className="shrink-0">{relativeTime}</span> : null}
+                      {isLinked ? (
+                        <span className="shrink-0 rounded-full bg-border/50 px-2 py-0.5 text-[11px] font-medium">
+                          Linked task
+                        </span>
+                      ) : null}
+                    </div>
+                  </button>
+                  {hasPreview ? (
+                    <button
+                      type="button"
+                      aria-label="Show conversation preview"
+                      aria-expanded={showPreview}
+                      title="Show the first round and the last message"
+                      onClick={() => setPreviewKey(showPreview ? null : key)}
+                      className={`shrink-0 rounded-xl border px-2.5 text-sm font-semibold text-muted transition-colors hover:border-accent/40 hover:text-ink ${showPreview ? 'border-accent/40 bg-panel text-ink' : 'border-border bg-paper/60'}`}
                     >
-                      Active ⚡
-                    </span>
+                      ...
+                    </button>
                   ) : null}
                 </div>
-                <div className="mt-1 flex items-center gap-2 text-xs text-muted">
-                  {cwdTail ? <span className="truncate">{cwdTail}</span> : null}
-                  {relativeTime ? <span className="shrink-0">{relativeTime}</span> : null}
-                  {isLinked ? (
-                    <span className="shrink-0 rounded-full bg-border/50 px-2 py-0.5 text-[11px] font-medium">
-                      Linked task
-                    </span>
-                  ) : null}
-                </div>
-              </button>
+                {showPreview ? (
+                  <dl className="mt-1.5 max-h-[40vh] space-y-2 overflow-y-auto rounded-xl border border-border bg-paper/40 px-3 py-2.5 text-xs webapp-scrollbar">
+                    {([
+                      ['First message', session.firstUserMessage],
+                      ['First reply', session.firstReply],
+                      [`Last message${session.lastMessageRole ? ` (${session.lastMessageRole})` : ''}`, session.lastMessage],
+                    ] as const).map(([label, text]) => text ? (
+                      <div key={label}>
+                        <dt className="font-medium text-muted">{label}</dt>
+                        <dd className="mt-0.5 whitespace-pre-wrap break-words text-ink">{text}</dd>
+                      </div>
+                    ) : null)}
+                  </dl>
+                ) : null}
+              </div>
             );
           })}
         </div>

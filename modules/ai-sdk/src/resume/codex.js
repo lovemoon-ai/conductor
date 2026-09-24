@@ -3,11 +3,13 @@ import path from "node:path";
 
 import {
   buildResumeContext,
+  buildSessionPreview,
   isExistingDirectory,
   iterateJsonlEntries,
   normalizeSessionId,
   normalizeSessionTitle,
   readJsonlHeadEntries,
+  readJsonlTailEntries,
   resolveHomeDir,
   resolveSessionRunDirectory,
 } from "./shared.js";
@@ -127,12 +129,14 @@ export async function listSessions(options = {}) {
       continue;
     }
     const metaCwd = meta?.payload?.cwd;
+    const tailEntries = await readJsonlTailEntries(candidate.filePath);
     sessions.push({
       sessionId,
       sessionFilePath: candidate.filePath,
       cwd: typeof metaCwd === "string" && metaCwd.trim() ? metaCwd.trim() : null,
       title: extractCodexTitle(headEntries),
       updatedAt: candidate.updatedAt,
+      preview: buildSessionPreview(extractCodexMessages(headEntries), extractCodexMessages(tailEntries)),
     });
   }
   return sessions;
@@ -143,6 +147,42 @@ const SESSION_ID_IN_FILE_NAME = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}
 function extractSessionIdFromFileName(filePath) {
   const match = path.basename(filePath).match(SESSION_ID_IN_FILE_NAME);
   return match ? match[0] : "";
+}
+
+// The event stream's user/agent messages: what the user typed and the
+// assistant's replies, without injected context or tool output.
+const CODEX_MESSAGE_ROLES = { user_message: "user", agent_message: "assistant" };
+const CODEX_ITEM_TEXT_TYPES = { user: "input_text", assistant: "output_text" };
+
+function extractCodexMessages(entries) {
+  const messages = [];
+  for (const entry of entries) {
+    const role = entry?.type === "event_msg" ? CODEX_MESSAGE_ROLES[entry?.payload?.type] : null;
+    const text = entry?.payload?.message;
+    if (role && typeof text === "string" && text.trim()) {
+      messages.push({ role, text });
+    }
+  }
+  if (messages.length > 0) {
+    return messages;
+  }
+  // Sessions without those events only carry response items; skip injected
+  // wrappers such as <environment_context>, as the title does.
+  for (const entry of entries) {
+    const payload = entry?.type === "response_item" ? entry.payload : null;
+    const textType = payload?.type === "message" ? CODEX_ITEM_TEXT_TYPES[payload.role] : null;
+    if (!textType || !Array.isArray(payload.content)) {
+      continue;
+    }
+    const text = payload.content
+      .filter((item) => item?.type === textType && typeof item.text === "string")
+      .map((item) => item.text)
+      .join("\n");
+    if (text.trim() && !text.trim().startsWith("<")) {
+      messages.push({ role: payload.role, text });
+    }
+  }
+  return messages;
 }
 
 function extractCodexTitle(entries) {

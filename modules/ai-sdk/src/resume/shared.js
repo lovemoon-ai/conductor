@@ -52,7 +52,7 @@ export function normalizeSessionTitle(text, maxLength = 80) {
  * session files stay cheap to inspect). Unreadable files and unparsable lines
  * are skipped.
  */
-export async function readJsonlHeadEntries(filePath, maxLines = 50, maxBytes = 128 * 1024) {
+export async function readJsonlHeadEntries(filePath, maxLines = 200, maxBytes = 128 * 1024) {
   const entries = [];
   const input = fs.createReadStream(filePath, { end: maxBytes - 1 });
   const rl = readline.createInterface({ input, crlfDelay: Infinity });
@@ -80,6 +80,68 @@ export async function readJsonlHeadEntries(filePath, maxLines = 50, maxBytes = 1
     input.destroy();
   }
   return entries;
+}
+
+/**
+ * Parses the tail of a jsonl file (last `maxBytes`); the first, possibly
+ * partial, line is dropped unless the read started at the file's beginning.
+ */
+export async function readJsonlTailEntries(filePath, maxBytes = 64 * 1024) {
+  let handle;
+  try {
+    handle = await fsp.open(filePath, "r");
+    const { size } = await handle.stat();
+    const start = Math.max(0, size - maxBytes);
+    const buffer = Buffer.alloc(size - start);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+    const lines = buffer.subarray(0, bytesRead).toString("utf8").split("\n");
+    if (start > 0) {
+      lines.shift();
+    }
+    const entries = [];
+    for (const line of lines) {
+      try {
+        if (line.trim()) entries.push(JSON.parse(line));
+      } catch {
+        continue;
+      }
+    }
+    return entries;
+  } catch {
+    return [];
+  } finally {
+    await handle?.close();
+  }
+}
+
+function clipPreviewText(text, maxLength = 2000) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}…` : trimmed;
+}
+
+/**
+ * Session preview for the resume picker, from `{ role, text }` messages read
+ * off the head and tail of a session file: the first user message, the
+ * assistant text that answered it, and the session's last message.
+ */
+export function buildSessionPreview(headMessages, tailMessages) {
+  const firstUserIndex = headMessages.findIndex((message) => message.role === "user");
+  const replies = [];
+  if (firstUserIndex >= 0) {
+    for (const message of headMessages.slice(firstUserIndex + 1)) {
+      if (message.role === "user") break;
+      replies.push(message.text);
+    }
+  }
+  const last = tailMessages[tailMessages.length - 1] || headMessages[headMessages.length - 1] || null;
+  return {
+    firstUserMessage: firstUserIndex >= 0 ? clipPreviewText(headMessages[firstUserIndex].text) : null,
+    firstReply: clipPreviewText(replies.join("\n\n")),
+    lastMessage: last ? { role: last.role, text: clipPreviewText(last.text) } : null,
+  };
 }
 
 export async function isExistingDirectory(targetPath) {

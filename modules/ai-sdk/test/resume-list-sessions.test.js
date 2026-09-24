@@ -257,6 +257,107 @@ describe("ai-sdk listSessions", () => {
     assert.deepEqual(sessions.map((s) => s.sessionId), ["ses_real"]);
   });
 
+  it("previews a claude session's first round and last message", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "ai-sdk-preview-claude-"));
+    const projectDir = path.join(tmpRoot, ".claude", "projects", "demo");
+    await fsp.mkdir(projectDir, { recursive: true });
+    const line = (type, content, extra = {}) =>
+      JSON.stringify({ type, ...extra, message: { role: type, content } });
+    const filePath = path.join(projectDir, "session-preview.jsonl");
+    await fsp.writeFile(
+      filePath,
+      [
+        line("user", "<local-command-caveat>ignored</local-command-caveat>", { isMeta: true }),
+        line("user", "fix the build\nplease"),
+        line("assistant", [{ type: "thinking", thinking: "hmm" }, { type: "text", text: "Looking." }]),
+        line("assistant", [{ type: "tool_use", id: "t1", name: "Bash", input: {} }]),
+        line("user", [{ type: "tool_result", tool_use_id: "t1", content: "ok" }]),
+        line("assistant", [{ type: "text", text: "Fixed it." }]),
+        line("user", "now add a test"),
+        line("assistant", [{ type: "text", text: "Test added." }]),
+        line("user", "<command-name>/clear</command-name>"),
+        line("user", "<local-command-stdout></local-command-stdout>"),
+      ].join("\n"),
+      "utf8",
+    );
+
+    const [session] = await listClaudeSessions({ homeDir: tmpRoot });
+    assert.deepEqual(session.preview, {
+      firstUserMessage: "fix the build\nplease",
+      firstReply: "Looking.\n\nFixed it.",
+      lastMessage: { role: "assistant", text: "Test added." },
+    });
+  });
+
+  it("previews a codex session from its user/agent message events", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "ai-sdk-preview-codex-"));
+    const dayDir = path.join(tmpRoot, ".codex", "sessions", "2026", "03", "01");
+    await fsp.mkdir(dayDir, { recursive: true });
+    const id = "019cb2a4-de18-70b0-816b-a9b0d99400cc";
+    const event = (type, message) => JSON.stringify({ type: "event_msg", payload: { type, message } });
+    await fsp.writeFile(
+      path.join(dayDir, `rollout-${id}.jsonl`),
+      [
+        JSON.stringify({ type: "session_meta", payload: { id } }),
+        event("user_message", "hello codex"),
+        event("agent_message", "hi"),
+        event("user_message", "bye"),
+      ].join("\n"),
+      "utf8",
+    );
+
+    const [session] = await listCodexSessions({ homeDir: tmpRoot });
+    assert.deepEqual(session.preview, {
+      firstUserMessage: "hello codex",
+      firstReply: "hi",
+      lastMessage: { role: "user", text: "bye" },
+    });
+  });
+
+  it("previews a codex session from response items when it has no message events", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "ai-sdk-preview-codex-items-"));
+    const dayDir = path.join(tmpRoot, ".codex", "sessions", "2026", "03", "02");
+    await fsp.mkdir(dayDir, { recursive: true });
+    const id = "019cb2a4-de18-70b0-816b-a9b0d99400dd";
+    const item = (role, type, text) =>
+      JSON.stringify({ type: "response_item", payload: { type: "message", role, content: [{ type, text }] } });
+    await fsp.writeFile(
+      path.join(dayDir, `rollout-${id}.jsonl`),
+      [
+        JSON.stringify({ type: "session_meta", payload: { id } }),
+        item("developer", "input_text", "<permissions instructions>"),
+        item("user", "input_text", "<environment_context>ignored</environment_context>"),
+        item("user", "input_text", "say hi"),
+        item("assistant", "output_text", "hi"),
+      ].join("\n"),
+      "utf8",
+    );
+
+    const [session] = await listCodexSessions({ homeDir: tmpRoot });
+    assert.deepEqual(session.preview, {
+      firstUserMessage: "say hi",
+      firstReply: "hi",
+      lastMessage: { role: "assistant", text: "hi" },
+    });
+  });
+
+  it("reads the last message from the tail of a large session file", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "ai-sdk-preview-tail-"));
+    const projectDir = path.join(tmpRoot, ".claude", "projects", "demo");
+    await fsp.mkdir(projectDir, { recursive: true });
+    const line = (type, text) => JSON.stringify({ type, message: { role: type, content: text } });
+    const filler = Array.from({ length: 400 }, (_, i) => line("assistant", `filler ${i} ${"x".repeat(500)}`));
+    await fsp.writeFile(
+      path.join(projectDir, "session-big.jsonl"),
+      [line("user", "first"), ...filler, line("user", "the very last")].join("\n"),
+      "utf8",
+    );
+
+    const [session] = await listClaudeSessions({ homeDir: tmpRoot });
+    assert.equal(session.preview.firstUserMessage, "first");
+    assert.deepEqual(session.preview.lastMessage, { role: "user", text: "the very last" });
+  });
+
   it("returns [] when session roots are missing", async () => {
     const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "ai-sdk-list-empty-"));
     assert.deepEqual(await listClaudeSessions({ homeDir: tmpRoot }), []);

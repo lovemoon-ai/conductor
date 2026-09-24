@@ -6,11 +6,13 @@ import readline from "node:readline";
 import { resolveClaudeConfigDirs } from "../manager/paths.js";
 import {
   buildResumeContext,
+  buildSessionPreview,
   isExistingDirectory,
   normalizeSessionId,
   normalizeSessionTitle,
   pathExists,
   readJsonlHeadEntries,
+  readJsonlTailEntries,
   resolveSessionRunDirectory,
 } from "./shared.js";
 
@@ -173,12 +175,14 @@ export async function listSessions(options = {}) {
   const sessions = [];
   for (const candidate of selected) {
     const entries = await readJsonlHeadEntries(candidate.sessionFilePath);
+    const tailEntries = await readJsonlTailEntries(candidate.sessionFilePath);
     sessions.push({
       sessionId: candidate.sessionId,
       sessionFilePath: candidate.sessionFilePath,
       cwd: extractHeadCwd(entries),
       title: extractClaudeTitle(entries),
       updatedAt: candidate.updatedAt,
+      preview: buildSessionPreview(extractClaudeMessages(entries), extractClaudeMessages(tailEntries)),
     });
   }
   return sessions;
@@ -191,6 +195,32 @@ function extractHeadCwd(entries) {
     }
   }
   return null;
+}
+
+/**
+ * User/assistant text messages. Tool calls, tool results, meta entries and
+ * wrapped slash-command output (<command-name>, <local-command-stdout>) are skipped.
+ */
+function extractClaudeMessages(entries) {
+  const messages = [];
+  for (const entry of entries) {
+    if ((entry?.type !== "user" && entry?.type !== "assistant") || entry?.isMeta === true) {
+      continue;
+    }
+    const content = entry?.message?.content;
+    const text = typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+          .filter((item) => item?.type === "text" && typeof item.text === "string")
+          .map((item) => item.text)
+          .join("\n")
+        : "";
+    if (text.trim() && !text.trim().startsWith("<")) {
+      messages.push({ role: entry.type, text });
+    }
+  }
+  return messages;
 }
 
 function extractClaudeTitle(entries) {

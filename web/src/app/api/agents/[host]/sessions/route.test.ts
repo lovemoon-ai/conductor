@@ -36,6 +36,10 @@ const sessionEntry = (overrides: Record<string, unknown> = {}) => ({
   cwd: "/home/u/repo",
   title: "fix login bug",
   updated_at: "2026-09-01T10:00:00.000Z",
+  first_user_message: "fix login bug",
+  first_reply: "Done.",
+  last_message: "thanks",
+  last_message_role: "user",
   ...overrides,
 });
 
@@ -100,6 +104,11 @@ describe("GET /api/agents/[host]/sessions", () => {
       backend: "claude",
       linked_task_id: "task-1",
       project_id: "proj-inner",
+      // The daemon's conversation preview passes through for the "..." toggle.
+      first_user_message: "fix login bug",
+      first_reply: "Done.",
+      last_message: "thanks",
+      last_message_role: "user",
     });
     expect(data.sessions[1]).toMatchObject({
       backend: "codex",

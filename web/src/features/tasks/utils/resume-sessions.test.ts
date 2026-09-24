@@ -24,6 +24,10 @@ const makeSession = (overrides: Partial<DaemonSessionSummary>): DaemonSessionSum
   updatedAt: null,
   linkedTaskId: null,
   projectId: null,
+  firstUserMessage: null,
+  firstReply: null,
+  lastMessage: null,
+  lastMessageRole: null,
   ...overrides,
 });
 
@@ -39,6 +43,10 @@ describe('normalizeDaemonSession', () => {
         updated_at: '2026-09-02T11:00:00Z',
         linked_task_id: 'task-1',
         project_id: 'project-1',
+        first_user_message: 'fix it',
+        first_reply: 'done',
+        last_message: 'thanks',
+        last_message_role: 'user',
       }),
     ).toEqual({
       backend: 'codex',
@@ -49,6 +57,10 @@ describe('normalizeDaemonSession', () => {
       updatedAt: '2026-09-02T11:00:00Z',
       linkedTaskId: 'task-1',
       projectId: 'project-1',
+      firstUserMessage: 'fix it',
+      firstReply: 'done',
+      lastMessage: 'thanks',
+      lastMessageRole: 'user',
     });
   });
 
