@@ -1275,7 +1275,6 @@ describe('TaskItem', () => {
   });
 
   it('copies the share link with execCommand fallback when clipboard api is unavailable', async () => {
-    confirmMock.mockResolvedValue(true);
     apiPostMock.mockResolvedValue({ token: 'shared-token-1' });
     Object.defineProperty(window, 'isSecureContext', {
       configurable: true,
@@ -1308,6 +1307,7 @@ describe('TaskItem', () => {
 
     await waitFor(() => {
       expect(apiPostMock).toHaveBeenCalledWith('/tasks/task-share-1/share');
+      expect(confirmMock).not.toHaveBeenCalled();
       expect(execCommandMock).toHaveBeenCalledWith('copy');
       expect(pushToastMock).toHaveBeenCalledWith({
         title: 'Link copied',

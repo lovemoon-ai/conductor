@@ -899,16 +899,6 @@ function TaskItemComponent({
       setLastShareDialog(null);
     }
 
-    const accepted = await confirm({
-      title: 'Share this conversation?',
-      description: 'Anyone with the link can view all messages in this task without logging in. The link expires in 7 days.',
-      confirmLabel: 'Share',
-    });
-    if (!accepted) {
-      closeActionsMenu();
-      return;
-    }
-
     try {
       const api = getApiClient();
       const { token, expiresAt = null } = await api.post<ShareResponse>(`/tasks/${task.id}/share`);
@@ -1637,6 +1627,9 @@ function TaskItemComponent({
       >
         {shareDialog ? (
           <div className="space-y-4">
+            <p className="text-sm text-muted">
+              Anyone with the link can view all messages in this task without logging in. The link expires in 7 days.
+            </p>
             <div className="rounded-2xl border border-border bg-paper/70 p-4">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-sm font-medium text-ink">Link</p>
