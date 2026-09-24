@@ -277,7 +277,7 @@ export function TaskList({
   );
   const projectVisibleTasks = useMemo(
     () => filterHiddenPersistentTasks(
-      filterTasksByProject(tasksWithoutAttachedPty, effectiveProjectFilter, hiddenProjectIds),
+      filterTasksByProject(tasksWithoutAttachedPty, effectiveProjectFilter, hiddenProjectIds, projects),
       projects,
     ),
     [tasksWithoutAttachedPty, effectiveProjectFilter, hiddenProjectIds, projects],

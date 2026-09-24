@@ -19,6 +19,8 @@ import { ProjectTaskLabelsSection } from './ProjectTaskLabelsSection';
 import { useProjectsStore } from '../store';
 import {
   buildMetadataWithTaskGraphEnabled,
+  EXCLUDE_FROM_ALL_TASKS_METADATA_KEY,
+  isProjectExcludedFromAllTasks,
   isProjectTaskGraphEnabled,
 } from '../utils/task-graph-settings';
 
@@ -144,6 +146,7 @@ export function ProjectDetailsDialog({
   const [isTaskGraphMutating, setIsTaskGraphMutating] = useState(false);
   const [pendingTaskGraphEnabled, setPendingTaskGraphEnabled] = useState<boolean | null>(null);
   const [isPersistentVisibilityMutating, setIsPersistentVisibilityMutating] = useState(false);
+  const [isExcludeMutating, setIsExcludeMutating] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState(project.id);
   // React 18 silently drops setState calls after unmount, but we still want
   // to avoid running through error UX (draft restore, button toggle) when
@@ -218,6 +221,8 @@ export function ProjectDetailsDialog({
   const taskGraphEnabled =
     pendingTaskGraphEnabled ?? detailProjects.some(isProjectTaskGraphEnabled);
   const persistentTasksShown = detailProjects.every((member) => shouldShowPersistentTasks(member.metadata));
+  // The all-projects list excludes a merged group when any member is excluded.
+  const excludedFromAllTasks = detailProjects.some(isProjectExcludedFromAllTasks);
   const isOverLengthLimit = draftLength > MAX_MEMO_CONTENT_CHARS;
   const isOverCountLimit = activeProjectMemoCount >= MAX_MEMOS_PER_PROJECT;
   const canSubmitDraft =
@@ -296,6 +301,28 @@ export function ProjectDetailsDialog({
     } finally {
       if (isMountedRef.current) {
         setIsPersistentVisibilityMutating(false);
+      }
+    }
+  };
+
+  const handleToggleExclude = async () => {
+    if (isExcludeMutating) return;
+    const nextExcluded = !excludedFromAllTasks;
+    setIsExcludeMutating(true);
+    try {
+      await updateProjectGroupMetadata(
+        detailProjects.map((member) => member.id),
+        (member) => ({ ...(member.metadata ?? {}), [EXCLUDE_FROM_ALL_TASKS_METADATA_KEY]: nextExcluded }),
+      );
+    } catch (error) {
+      pushToast({
+        title: 'Failed to update exclude setting',
+        description: error instanceof Error ? error.message : 'Please try again.',
+        variant: 'error',
+      });
+    } finally {
+      if (isMountedRef.current) {
+        setIsExcludeMutating(false);
       }
     }
   };
@@ -483,6 +510,31 @@ export function ProjectDetailsDialog({
               <span
                 className={`inline-block size-5 rounded-full bg-white shadow-sm transition-transform ${
                   persistentTasksShown ? 'translate-x-5' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+          <div className="mt-2 flex items-center justify-between gap-4 rounded-xl border border-border bg-paper/40 px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-ink">Exclude</p>
+              <p className="mt-1 text-xs text-muted">Leave this project&apos;s tasks out of the all-projects task list.</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={excludedFromAllTasks}
+              aria-label="Exclude"
+              onClick={() => void handleToggleExclude()}
+              disabled={isExcludeMutating}
+              className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors disabled:opacity-60 ${
+                excludedFromAllTasks
+                  ? 'border-[var(--accent)] bg-[var(--accent)]'
+                  : 'border-border bg-[var(--surface-subtle)]'
+              }`}
+            >
+              <span
+                className={`inline-block size-5 rounded-full bg-white shadow-sm transition-transform ${
+                  excludedFromAllTasks ? 'translate-x-5' : 'translate-x-1'
                 }`}
               />
             </button>

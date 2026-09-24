@@ -24,3 +24,12 @@ export const buildMetadataWithTaskGraphEnabled = (
   metadata[TASK_GRAPH_ENABLED_METADATA_KEY] = enabled;
   return metadata;
 };
+
+/**
+ * `exclude: true` keeps the project card visible (unlike hiding the project)
+ * but drops its tasks from the unscoped "all projects" task list.
+ */
+export const EXCLUDE_FROM_ALL_TASKS_METADATA_KEY = 'exclude';
+
+export const isProjectExcludedFromAllTasks = (project: Project | null | undefined): boolean =>
+  !!project && readMetadataRecord(project)[EXCLUDE_FROM_ALL_TASKS_METADATA_KEY] === true;

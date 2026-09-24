@@ -268,6 +268,19 @@ describe('ProjectDetailsDialog', () => {
       }
     });
 
+    it('reads exclude as on when any member is excluded, and clears it on every member', async () => {
+      renderMerged({ exclude: true }, null);
+      const toggle = screen.getByRole('switch', { name: 'Exclude' });
+      expect(toggle).toHaveAttribute('aria-checked', 'true');
+
+      fireEvent.click(toggle);
+
+      await waitFor(() => expect(updateProjectMock).toHaveBeenCalledTimes(2));
+      for (const [, payload] of updateProjectMock.mock.calls) {
+        expect(payload.metadata.exclude).toBe(false);
+      }
+    });
+
     it('enables graph view on every member of the group', async () => {
       renderMerged(null, null);
 

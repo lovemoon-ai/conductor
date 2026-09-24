@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Task } from '@/shared/types';
+import type { Project, Task } from '@/shared/types';
 import {
   filterTasksByProject,
   resolveTaskDaemonHost,
@@ -79,6 +79,33 @@ describe('filterTasksByProject', () => {
     expect(
       filterTasksByProject(tasks, ['proj-a'], ['proj-a']),
     ).toEqual([]);
+  });
+});
+
+describe('filterTasksByProject with excluded projects', () => {
+  const makeProject = (
+    id: string,
+    name: string,
+    daemonHost: string,
+    metadata: Record<string, unknown> | null,
+  ): Project => ({ id, name, daemonHost, metadata } as Project);
+  const tasks = [makeTask('t1', 'proj-a'), makeTask('t2', 'proj-b'), makeTask('t3', null)];
+
+  it('drops an excluded project only from the unscoped view', () => {
+    const projects = [
+      makeProject('proj-a', 'app', 'daemon-a', { exclude: true }),
+      makeProject('proj-b', 'site', 'daemon-a', null),
+    ];
+    expect(filterTasksByProject(tasks, null, [], projects).map((t) => t.id)).toEqual(['t2', 't3']);
+    expect(filterTasksByProject(tasks, 'proj-a', [], projects).map((t) => t.id)).toEqual(['t1']);
+  });
+
+  it('drops a whole merged group when any member is excluded', () => {
+    const projects = [
+      makeProject('proj-a', 'app', 'daemon-a', { exclude: true }),
+      makeProject('proj-b', 'app', 'daemon-b', null),
+    ];
+    expect(filterTasksByProject(tasks, null, [], projects).map((t) => t.id)).toEqual(['t3']);
   });
 });
 

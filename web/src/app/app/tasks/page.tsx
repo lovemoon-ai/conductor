@@ -211,7 +211,7 @@ function TasksPageContent() {
   );
   const projectVisibleTasks = useMemo(
     () => filterHiddenPersistentTasks(
-      filterTasksByProject(tasksWithoutAttachedPty, projectScope.length > 0 ? projectScope : null, hiddenProjectIds),
+      filterTasksByProject(tasksWithoutAttachedPty, projectScope.length > 0 ? projectScope : null, hiddenProjectIds, projects),
       projects,
     ),
     [tasksWithoutAttachedPty, projectScope, hiddenProjectIds, projects],
