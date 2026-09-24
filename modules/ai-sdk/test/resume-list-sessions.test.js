@@ -275,6 +275,8 @@ describe("ai-sdk listSessions", () => {
         line("assistant", [{ type: "text", text: "Fixed it." }]),
         line("user", "now add a test"),
         line("assistant", [{ type: "text", text: "Test added." }]),
+        line("user", "<command-name>/clear</command-name>"),
+        line("user", "<local-command-stdout></local-command-stdout>"),
       ].join("\n"),
       "utf8",
     );

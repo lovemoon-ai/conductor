@@ -3129,7 +3129,7 @@ describe("/api/tasks", () => {
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
       setDefaultProjectId(mockProject.id);
       vi.mocked(db.project.findFirst).mockResolvedValue(mockProject as any);
-      vi.mocked(db.task.create).mockImplementation(async ({ data }: any) => ({
+      vi.mocked(db.task.create).mockImplementation((async ({ data }: any) => ({
         id: "task-term-1",
         status: "unknown",
         executionHost: null,
@@ -3140,7 +3140,7 @@ describe("/api/tasks", () => {
         createdAt,
         updatedAt: createdAt,
         ...data,
-      }));
+      })) as any);
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
         { id: "agent-a", host: "daemon-a", supportedBackends: [], capabilities: ["pty_task"] },
         { id: "agent-b", host: "daemon-b", supportedBackends: [], capabilities: ["pty_task"] },

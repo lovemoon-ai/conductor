@@ -197,7 +197,10 @@ function extractHeadCwd(entries) {
   return null;
 }
 
-/** User/assistant text messages; tool calls, tool results and meta entries are skipped. */
+/**
+ * User/assistant text messages. Tool calls, tool results, meta entries and
+ * wrapped slash-command output (<command-name>, <local-command-stdout>) are skipped.
+ */
 function extractClaudeMessages(entries) {
   const messages = [];
   for (const entry of entries) {
@@ -213,7 +216,7 @@ function extractClaudeMessages(entries) {
           .map((item) => item.text)
           .join("\n")
         : "";
-    if (text.trim()) {
+    if (text.trim() && !text.trim().startsWith("<")) {
       messages.push({ role: entry.type, text });
     }
   }

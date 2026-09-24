@@ -21,7 +21,8 @@ const supportsPtyTask = (capabilities: string[] | undefined): boolean =>
 /**
  * "New Terminal" mode inside CreateTaskDialog: a PTY task on a chosen daemon.
  * The project is optional; without one the task goes to the default project
- * and the daemon starts the shell in HOME.
+ * and the daemon starts the shell in HOME. That only works while the default
+ * project is unbound: a bound default is listed as a regular project instead.
  */
 export function NewTerminalPanel({ onClose, onCreatedTask }: NewTerminalPanelProps) {
   const { push } = useRouter();
@@ -40,13 +41,14 @@ export function NewTerminalPanel({ onClose, onCreatedTask }: NewTerminalPanelPro
     : (daemons[0]?.host ?? '');
   const hostProjects = useMemo(
     () => excludeArchivedProjects(projects)
-      .filter((project) => !project.isDefault && project.daemonHost === host && Boolean(project.workspacePath)),
+      .filter((project) => project.daemonHost === host && Boolean(project.workspacePath)),
     [projects, host],
   );
-  const defaultProjectId = projects.find((project) => project.isDefault)?.id ?? '';
+  const defaultProject = projects.find((project) => project.isDefault);
+  const homeProjectId = defaultProject && !defaultProject.daemonHost ? defaultProject.id : '';
   const projectId = hostProjects.some((project) => project.id === requestedProjectId)
     ? requestedProjectId
-    : defaultProjectId;
+    : (homeProjectId || hostProjects[0]?.id || '');
 
   const handleCreate = async () => {
     if (!host || !projectId || isSubmitting) {
@@ -107,24 +109,31 @@ export function NewTerminalPanel({ onClose, onCreatedTask }: NewTerminalPanelPro
 
       <div>
         <label htmlFor="new-terminal-project" className="mb-2 block text-sm font-medium">
-          Project <span className="font-normal text-muted">(optional)</span>
+          Project {homeProjectId ? <span className="font-normal text-muted">(optional)</span> : null}
         </label>
         <select
           id="new-terminal-project"
-          value={projectId === defaultProjectId ? '' : projectId}
+          value={projectId === homeProjectId ? '' : projectId}
           onChange={(e) => {
             setRequestedProjectId(e.target.value);
             setSubmitError(null);
           }}
           className="webapp-input w-full"
         >
-          <option value="">None (home directory)</option>
+          {homeProjectId ? <option value="">None (home directory)</option> : null}
           {hostProjects.map((project) => (
             <option key={project.id} value={project.id}>
               {project.name}
             </option>
           ))}
         </select>
+        {!homeProjectId ? (
+          <p className="mt-1 text-xs text-muted">
+            {hostProjects.length > 0
+              ? 'Your default project is bound to a daemon, so pick a project for this terminal.'
+              : 'No project on this daemon. Bind one, or use an unbound default project, to open a terminal here.'}
+          </p>
+        ) : null}
       </div>
 
       {submitError ? (

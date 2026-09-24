@@ -360,6 +360,44 @@ describe('CreateTaskDialog', () => {
     expect(onCreatedTaskMock).toHaveBeenCalledWith('task-pty-2');
   });
 
+  it('lists a bound default project under its daemon instead of offering a home-directory terminal', async () => {
+    projectsState.projects = [
+      { id: 'project-default', name: 'Bound Default', isDefault: true, daemonHost: 'daemon-a', workspacePath: '/repo/d' },
+      { id: 'project-a', name: 'Repo A', daemonHost: 'daemon-a', workspacePath: '/repo/a' },
+    ];
+    createTaskMock.mockResolvedValueOnce({ id: 'task-pty-3' });
+
+    render(<CreateTaskDialog open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'New Terminal' }));
+
+    const projectSelect = screen.getByLabelText(/Project/);
+    expect(within(projectSelect).getAllByRole('option').map((option) => option.textContent))
+      .toEqual(['Bound Default', 'Repo A']);
+    expect(projectSelect).toHaveValue('project-default');
+    expect(screen.getByText(/pick a project for this terminal/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Terminal' }));
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+        projectId: 'project-default',
+        agentHost: 'daemon-a',
+      }));
+    });
+  });
+
+  it('cannot open a terminal on a daemon with no project when the default project is bound elsewhere', () => {
+    projectsState.projects = [
+      { id: 'project-default', name: 'Bound Default', isDefault: true, daemonHost: 'daemon-b', workspacePath: '/repo/d' },
+    ];
+
+    render(<CreateTaskDialog open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'New Terminal' }));
+
+    expect(within(screen.getByLabelText(/Project/)).queryAllByRole('option')).toHaveLength(0);
+    expect(screen.getByText(/No project on this daemon/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open Terminal' })).toBeDisabled();
+  });
+
   it('warns in the New Terminal tab when no PTY-capable daemon is online', () => {
     agentsState.agents = agentsState.agents.map((agent) => ({ ...agent, capabilities: [] }));
 
