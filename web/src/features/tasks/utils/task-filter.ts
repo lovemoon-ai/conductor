@@ -1,5 +1,6 @@
 import type { Project, Task } from '@/shared/types';
 import { computeProjectGroups } from '@/features/projects/utils/project-groups';
+import { isProjectExcludedFromAllTasks } from '@/features/projects/utils/task-graph-settings';
 import { isPersistentTask, shouldShowPersistentTasks } from '@/shared/utils/persistent-task';
 
 /**
@@ -84,11 +85,16 @@ export function resolveTaskDisplayProjectId(
  *    the member projectIds pass. Used by the merged-project task list so a
  *    single logical "project" shows tasks from every daemon's same-named
  *    project together.
+ *
+ * `projects` is only consulted in the unscoped view: tasks of projects marked
+ * `exclude` (a merged group counts as excluded when any member is) are dropped
+ * there, while a scoped view of that project still shows them.
  */
 export function filterTasksByProject(
   tasks: Task[],
   projectFilter: string | string[] | null | undefined,
   hiddenProjectIds: string[] = [],
+  projects: Project[] = [],
 ): Task[] {
   const hiddenProjectIdSet = new Set(hiddenProjectIds.flatMap((id) => {
     const trimmed = id.trim();
@@ -119,6 +125,13 @@ export function filterTasksByProject(
     });
   }
 
+  if (projects.some(isProjectExcludedFromAllTasks)) {
+    for (const group of computeProjectGroups(projects)) {
+      if (group.members.some(isProjectExcludedFromAllTasks)) {
+        group.members.forEach((member) => hiddenProjectIdSet.add(member.id));
+      }
+    }
+  }
   if (hiddenProjectIdSet.size === 0) {
     return tasks;
   }

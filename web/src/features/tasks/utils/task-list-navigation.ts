@@ -53,7 +53,7 @@ export const buildTaskListNavigation = (
     ? tasks.filter((task) => !attachedPtyTaskIds.has(task.id))
     : tasks;
   const projectVisibleTasks = filterHiddenPersistentTasks(
-    filterTasksByProject(tasksWithoutAttachedPty, options.projectFilter, options.hiddenProjectIds),
+    filterTasksByProject(tasksWithoutAttachedPty, options.projectFilter, options.hiddenProjectIds, options.projects),
     options.projects ?? [],
   );
   const runningFilteredTasks = options.runningOnly
